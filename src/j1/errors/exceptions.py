@@ -55,6 +55,10 @@ class GraphExecutionError(J1Error):
     pass
 
 
+class SearchIndexerError(J1Error):
+    pass
+
+
 class ProfileError(J1Error):
     pass
 

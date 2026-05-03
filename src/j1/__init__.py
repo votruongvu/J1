@@ -80,6 +80,7 @@ from j1.errors.exceptions import (
     ProfileError,
     ProfileLoadError,
     ProfileNotFoundError,
+    SearchIndexerError,
     WorkspaceError,
 )
 from j1.intake.registry import JsonSourceRegistry, SourceRegistry
@@ -231,6 +232,12 @@ from j1.review.queue import (
     ReviewItemNotFoundError,
     ReviewQueue,
 )
+from j1.search import (
+    DEFAULT_DB_FILENAME,
+    MAX_INDEXED_BYTES,
+    SearchHit,
+    SqliteSearchIndexer,
+)
 from j1.workspace.layout import WorkspaceArea
 from j1.workspace.resolver import WorkspaceResolver
 
@@ -287,6 +294,7 @@ __all__ = [
     "CompilerConfig",
     "CompilerConfigError",
     "CompilerExecutionError",
+    "DEFAULT_DB_FILENAME",
     "DEFAULT_GRAPH_OUTPUT_MAPPING",
     "DEFAULT_OUTPUT_MAPPING",
     "DEFAULT_PROFILE_ID",
@@ -371,6 +379,7 @@ __all__ = [
     "KnowledgeCompilationResult",
     "KnowledgeCompiler",
     "KnowledgeProcessingActivities",
+    "MAX_INDEXED_BYTES",
     "ModelProvider",
     "ModelResponse",
     "PathTraversalError",
@@ -413,9 +422,12 @@ __all__ = [
     "ReviewQueue",
     "ReviewStatus",
     "SearchActivities",
+    "SearchHit",
     "SearchIndexInput",
     "SearchIndexResult",
     "SearchIndexer",
+    "SearchIndexerError",
+    "SqliteSearchIndexer",
     "Settings",
     "SkippedDocument",
     "SourceDocument",

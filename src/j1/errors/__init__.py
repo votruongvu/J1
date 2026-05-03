@@ -13,6 +13,7 @@ from j1.errors.exceptions import (
     ProfileError,
     ProfileLoadError,
     ProfileNotFoundError,
+    SearchIndexerError,
     WorkspaceError,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "ProfileError",
     "ProfileLoadError",
     "ProfileNotFoundError",
+    "SearchIndexerError",
     "WorkspaceError",
 ]
