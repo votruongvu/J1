@@ -63,6 +63,10 @@ class QueryRoutingError(J1Error):
     pass
 
 
+class CostControlError(J1Error):
+    pass
+
+
 class ProfileError(J1Error):
     pass
 

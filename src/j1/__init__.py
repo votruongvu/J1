@@ -40,8 +40,24 @@ from j1.connectors.graph import (
     GraphConfig,
     SubprocessGraphAdapter,
 )
+from j1.cost.aggregator import CostAggregator
+from j1.cost.budget import (
+    BudgetCheck,
+    BudgetDecision,
+    BudgetGuard,
+    BudgetLevel,
+    BudgetPolicy,
+)
+from j1.cost.estimator import CostEstimator
 from j1.cost.events import CostEvent
 from j1.cost.recorder import CostRecorder, DefaultCostRecorder
+from j1.cost.router import (
+    DEFAULT_PROVIDER_KIND,
+    DEFAULT_TASK_TO_MODEL,
+    ModelRouter,
+    ModelSelection,
+    TaskCategory,
+)
 from j1.cost.sink import CostSink, JsonlCostSink
 from j1.documents.models import DocumentRecord, SourceDocument
 from j1.enrichers import (
@@ -69,6 +85,7 @@ from j1.errors.exceptions import (
     CompilerConfigError,
     CompilerExecutionError,
     ConfigError,
+    CostControlError,
     DocumentNotFoundError,
     DuplicateDocumentError,
     GraphConfigError,
@@ -313,6 +330,8 @@ __all__ = [
     "DEFAULT_GRAPH_OUTPUT_MAPPING",
     "DEFAULT_OUTPUT_MAPPING",
     "DEFAULT_PROFILE_ID",
+    "DEFAULT_PROVIDER_KIND",
+    "DEFAULT_TASK_TO_MODEL",
     "ExternalGraphBuilder",
     "ExternalKnowledgeCompiler",
     "SubprocessCompilerAdapter",
@@ -328,12 +347,20 @@ __all__ = [
     "AuditEvent",
     "AuditRecorder",
     "AuditSink",
+    "BudgetCheck",
+    "BudgetDecision",
+    "BudgetGuard",
+    "BudgetLevel",
+    "BudgetPolicy",
     "CalculateCostInput",
     "CalculateCostResult",
     "CompileActivityInput",
     "ConfigError",
+    "CostAggregator",
     "CostBreakdown",
     "CostBreakdownPayload",
+    "CostControlError",
+    "CostEstimator",
     "CostEvent",
     "CostRecorder",
     "CostResult",
@@ -403,6 +430,8 @@ __all__ = [
     "MAX_INDEXED_BYTES",
     "ModelProvider",
     "ModelResponse",
+    "ModelRouter",
+    "ModelSelection",
     "PathTraversalError",
     "PrepareWorkspaceInput",
     "Profile",
@@ -463,6 +492,7 @@ __all__ = [
     "SourceRegistry",
     "SpendSummary",
     "TableExtractor",
+    "TaskCategory",
     "TemporalSettings",
     "UnknownProcessorError",
     "ValidateContextResult",
