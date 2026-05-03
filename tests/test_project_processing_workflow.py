@@ -761,3 +761,313 @@ def test_get_status_reflects_state_during_run(monkeypatch):
     assert final.state == WorkflowState.COMPLETED.value
     assert final.current_operation is None
     assert OPERATION_FINALIZE in final.completed_operations
+
+
+# ============================================================
+# Continue-as-new
+# ============================================================
+
+
+class _ContinueAsNewSentinel(BaseException):
+    """Stand-in for `temporalio.workflow.ContinueAsNewError` in tests.
+
+    The real `ContinueAsNewError` refuses direct construction outside the
+    workflow runtime, so tests substitute this BaseException-derived
+    sentinel — same semantics for our purposes (bypasses the workflow's
+    `except Exception` clauses, propagates to the test).
+    """
+
+
+def _multi_doc_handler(documents: list[str]):
+    """Activity handler that processes a list of documents successfully."""
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return list(documents)
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded",
+                artifact_ids=[f"art-{payload.document_id}"],
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    return handler
+
+
+def test_continue_as_new_triggers_after_threshold_documents(monkeypatch):
+    captured: dict = {}
+
+    def fake_continue_as_new(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        raise _ContinueAsNewSentinel()
+
+    _patch_workflow_runtime(
+        monkeypatch,
+        exec_handler=_multi_doc_handler(["doc-1", "doc-2", "doc-3", "doc-4"]),
+    )
+    monkeypatch.setattr(workflow, "continue_as_new", fake_continue_as_new)
+
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        continue_as_new_after_documents=2,
+    )
+
+    with pytest.raises(_ContinueAsNewSentinel):
+        asyncio.run(wf.run(request))
+
+    new_request = captured["args"][0]
+    assert isinstance(new_request, ProjectProcessingRequest)
+    assert new_request.documents_completed == 2
+    assert "art-doc-1" in new_request.produced_artifact_ids
+    assert "art-doc-2" in new_request.produced_artifact_ids
+    # Compile operations are recorded.
+    assert any("compile:doc-1" in op for op in new_request.completed_operations)
+    assert any("compile:doc-2" in op for op in new_request.completed_operations)
+
+
+def test_continue_as_new_carries_compact_state_only(monkeypatch):
+    """Verify the continuation payload contains IDs/counters/flags — not bytes."""
+    captured: dict = {}
+
+    def fake_continue_as_new(*args, **kwargs):
+        captured["args"] = args
+        raise _ContinueAsNewSentinel()
+
+    _patch_workflow_runtime(
+        monkeypatch,
+        exec_handler=_multi_doc_handler(["d-1", "d-2"]),
+    )
+    monkeypatch.setattr(workflow, "continue_as_new", fake_continue_as_new)
+
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        continue_as_new_after_documents=2,
+    )
+    with pytest.raises(_ContinueAsNewSentinel):
+        asyncio.run(wf.run(request))
+
+    new_request = captured["args"][0]
+    # All carried state is primitives / IDs / counters — verify by walking
+    # the dataclass fields and asserting nothing is bytes-ish or large.
+    from dataclasses import fields
+
+    for f in fields(new_request):
+        value = getattr(new_request, f.name)
+        assert not isinstance(value, bytes), (
+            f"{f.name} carries bytes — violates 'no large payloads' rule"
+        )
+    # No payload over a few KB.
+    import json
+    serialized = json.dumps(
+        {
+            "completed_operations": list(new_request.completed_operations),
+            "produced_artifact_ids": list(new_request.produced_artifact_ids),
+            "documents_completed": new_request.documents_completed,
+        }
+    )
+    assert len(serialized) < 4096, "continuation payload should stay compact"
+
+
+def test_continuation_resumes_from_checkpoint(monkeypatch):
+    """A second run started with continuation state skips already-processed docs."""
+    compile_calls: list[str] = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["d-1", "d-2", "d-3", "d-4"]
+        if name.endswith("compile"):
+            compile_calls.append(payload.document_id)
+            return ArtifactActivityResult(
+                status="succeeded",
+                artifact_ids=[f"art-{payload.document_id}"],
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+
+    # Restart from a checkpoint after 2 docs.
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        completed_operations=("validate", "list_documents", "compile:d-1", "compile:d-2"),
+        produced_artifact_ids=("art-d-1", "art-d-2"),
+        documents_completed=2,
+        workflow_run_id="wf-run-id-1",
+    )
+    result = asyncio.run(wf.run(request))
+
+    assert result.state == WorkflowState.COMPLETED.value
+    # Only docs 3 and 4 should have been compiled this run.
+    assert compile_calls == ["d-3", "d-4"]
+    # All four artifacts present (2 carried + 2 new).
+    assert set(result.artifact_ids) == {"art-d-1", "art-d-2", "art-d-3", "art-d-4"}
+
+
+def test_continuation_skips_validation(monkeypatch):
+    """Validation runs only on the original (non-continuation) start."""
+    validate_calls = 0
+
+    def handler(method, payload, kwargs):
+        nonlocal validate_calls
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            validate_calls += 1
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["d-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"]
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+
+    wf = ProjectProcessingWorkflow()
+    asyncio.run(
+        wf.run(
+            ProjectProcessingRequest(
+                scope=_scope(),
+                compiler_kind="c",
+                # Continuation: validate must be skipped.
+                completed_operations=("validate", "list_documents"),
+                documents_completed=0,
+                produced_artifact_ids=(),
+                workflow_run_id="wf-run-1",
+            )
+        )
+    )
+    assert validate_calls == 0
+
+
+def test_status_after_continuation_reflects_carried_state():
+    wf = ProjectProcessingWorkflow()
+    # Simulate what restoration looks like by setting fields the way run()
+    # would on continuation start.
+    wf._completed_operations = ["validate", "list_documents", "compile:d-1"]
+    wf._produced_artifact_ids = ["art-d-1"]
+    wf._documents_completed = 1
+    wf._documents_total = 4
+    status = wf.get_status()
+    assert status.completed_operations == [
+        "validate",
+        "list_documents",
+        "compile:d-1",
+    ]
+    assert status.produced_artifact_ids == ["art-d-1"]
+    assert status.documents_completed == 1
+
+
+def test_no_continue_as_new_when_disabled(monkeypatch):
+    """With the default threshold (0), continuation never fires."""
+    continue_calls: list = []
+
+    def fake_continue_as_new(*args, **kwargs):
+        continue_calls.append(args)
+        raise _ContinueAsNewSentinel()
+
+    _patch_workflow_runtime(
+        monkeypatch,
+        exec_handler=_multi_doc_handler(["d-1", "d-2", "d-3", "d-4"]),
+    )
+    monkeypatch.setattr(workflow, "continue_as_new", fake_continue_as_new)
+
+    wf = ProjectProcessingWorkflow()
+    result = asyncio.run(
+        wf.run(
+            ProjectProcessingRequest(
+                scope=_scope(),
+                compiler_kind="c",
+                # continue_as_new_after_documents defaults to 0
+            )
+        )
+    )
+    assert continue_calls == []
+    assert result.state == WorkflowState.COMPLETED.value
+    assert result.documents_completed == 4
+
+
+def test_continue_as_new_does_not_trigger_on_partial_batch(monkeypatch):
+    """3 docs with batch=2 → triggers after doc 2 only, not after doc 3."""
+    captured: dict = {}
+
+    def fake_continue_as_new(*args, **kwargs):
+        captured["called"] = captured.get("called", 0) + 1
+        captured["last_completed"] = args[0].documents_completed
+        raise _ContinueAsNewSentinel()
+
+    _patch_workflow_runtime(
+        monkeypatch,
+        exec_handler=_multi_doc_handler(["d-1", "d-2", "d-3"]),
+    )
+    monkeypatch.setattr(workflow, "continue_as_new", fake_continue_as_new)
+
+    wf = ProjectProcessingWorkflow()
+    with pytest.raises(_ContinueAsNewSentinel):
+        asyncio.run(
+            wf.run(
+                ProjectProcessingRequest(
+                    scope=_scope(),
+                    compiler_kind="c",
+                    continue_as_new_after_documents=2,
+                )
+            )
+        )
+    assert captured["called"] == 1
+    assert captured["last_completed"] == 2  # not 3
+
+
+def test_continuation_completes_full_pipeline_after_resume(monkeypatch):
+    """Multi-step pipeline (compile + index) completes correctly when started
+    from a continuation checkpoint."""
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["d-1", "d-2"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded",
+                artifact_ids=[f"art-{payload.document_id}"],
+            )
+        if name.endswith("index"):
+            return ProcessingActivityResult(status="succeeded")
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        indexer_kind="i",
+        # Resume after d-1 already done.
+        completed_operations=("validate", "list_documents", "compile:d-1"),
+        produced_artifact_ids=("art-d-1",),
+        documents_completed=1,
+    )
+    result = asyncio.run(wf.run(request))
+    assert result.state == WorkflowState.COMPLETED.value
+    assert set(result.artifact_ids) == {"art-d-1", "art-d-2"}

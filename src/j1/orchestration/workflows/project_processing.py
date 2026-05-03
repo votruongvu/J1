@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _replace_request
 from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -65,6 +65,14 @@ class ProjectProcessingRequest:
     review_after: tuple[str, ...] = ()
     actor: str = "system"
     correlation_id: str | None = None
+    # Continue-as-new control. Both default to 0 (disabled).
+    continue_as_new_after_documents: int = 0
+    history_event_threshold: int = 0
+    # Carried state across continue-as-new boundaries. Empty = fresh run.
+    completed_operations: tuple[str, ...] = ()
+    produced_artifact_ids: tuple[str, ...] = ()
+    documents_completed: int = 0
+    workflow_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,17 +130,36 @@ class ProjectProcessingWorkflow:
     async def run(
         self, request: ProjectProcessingRequest
     ) -> ProjectProcessingResult:
+        # Restore carried state when this is a continuation. Empty defaults
+        # mean a fresh run.
+        is_continuation = (
+            bool(request.completed_operations)
+            or request.documents_completed > 0
+            or bool(request.produced_artifact_ids)
+        )
+        self._completed_operations = list(request.completed_operations)
+        self._produced_artifact_ids = list(request.produced_artifact_ids)
+        self._documents_completed = request.documents_completed
+
         try:
-            await self._validate(request)
+            if not is_continuation:
+                await self._validate(request)
             documents = await self._list_documents(request)
             self._documents_total = len(documents)
 
-            for doc_id in documents:
+            # Skip documents already processed in a prior run.
+            for doc_id in documents[self._documents_completed:]:
                 self._set_pending(f"{OPERATION_COMPILE}:{doc_id}")
                 if await self._should_stop():
                     break
                 await self._process_document(request, doc_id)
                 self._documents_completed += 1
+
+                if self._should_continue_as_new(request):
+                    # In real Temporal, ContinueAsNewError (a BaseException
+                    # subclass) is raised here and bypasses the except clauses
+                    # below; the workflow restarts with the new request.
+                    workflow.continue_as_new(self._build_continuation(request))
 
             if (
                 not self._cancelled
@@ -438,6 +465,63 @@ class ProjectProcessingWorkflow:
     async def _should_stop(self) -> bool:
         await self._await_pause_or_cancel()
         return self._cancelled
+
+    # ---- Continue-as-new --------------------------------------------------
+
+    def _should_continue_as_new(
+        self, request: ProjectProcessingRequest
+    ) -> bool:
+        """Return True if the workflow should continue-as-new now.
+
+        Two thresholds (both opt-in):
+          * `continue_as_new_after_documents`: trigger every N documents.
+          * `history_event_threshold`: trigger when Temporal's recorded history
+            length crosses N events. Falls back to False outside a workflow
+            runtime (e.g., direct unit tests).
+        """
+        if (
+            request.continue_as_new_after_documents > 0
+            and self._documents_completed > 0
+            and self._documents_completed % request.continue_as_new_after_documents == 0
+        ):
+            return True
+        if request.history_event_threshold > 0:
+            try:
+                history_length = workflow.info().get_current_history_length()
+            except Exception:
+                # `workflow.info()` raises outside a workflow event loop
+                # (e.g., direct unit tests). Threshold is unreachable then.
+                return False
+            return history_length >= request.history_event_threshold
+        return False
+
+    def _build_continuation(
+        self, request: ProjectProcessingRequest
+    ) -> ProjectProcessingRequest:
+        """Compact carry-forward state for `workflow.continue_as_new`.
+
+        Carries IDs, counters, and flags only — never artifact bytes or
+        document content. Big payloads stay in J1 storage and are referenced
+        by ID after restart.
+        """
+        return _replace_request(
+            request,
+            completed_operations=tuple(self._completed_operations),
+            produced_artifact_ids=tuple(self._produced_artifact_ids),
+            documents_completed=self._documents_completed,
+            workflow_run_id=self._continuation_run_id(request),
+        )
+
+    def _continuation_run_id(
+        self, request: ProjectProcessingRequest
+    ) -> str | None:
+        if request.workflow_run_id:
+            return request.workflow_run_id
+        try:
+            return workflow.info().workflow_id
+        except Exception:
+            # Outside a workflow event loop — fall back to correlation_id.
+            return request.correlation_id
 
     # ---- Signals -----------------------------------------------------------
 
