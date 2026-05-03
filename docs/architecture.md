@@ -1,5 +1,11 @@
 # J1 Architecture
 
+> **For the external-integration surface map (REST + SSE + webhooks +
+> events + bulk + MCP) see
+> [external-integration-architecture.md](external-integration-architecture.md).**
+> This document covers the framework's internal layering and port
+> catalogue.
+
 ## Layer overview
 
 ```
