@@ -25,6 +25,36 @@ from j1.errors.exceptions import (
 from j1.intake.registry import JsonSourceRegistry, SourceRegistry
 from j1.intake.service import DocumentIntakeService
 from j1.jobs.status import ProcessingStatus, ReviewStatus
+from j1.orchestration.activities.payloads import (
+    ArtifactActivityResult,
+    CompileActivityInput,
+    EnrichActivityInput,
+    GraphActivityInput,
+    IndexActivityInput,
+    ProcessingActivityResult,
+    ProjectScope,
+    QueryActivityInput,
+    QueryActivityResult,
+)
+from j1.orchestration.activities.processing import (
+    ACTIVITY_BUILD_GRAPH,
+    ACTIVITY_COMPILE,
+    ACTIVITY_ENRICH,
+    ACTIVITY_INDEX,
+    ACTIVITY_QUERY,
+    ProcessingActivities,
+    UnknownProcessorError,
+)
+from j1.orchestration.temporal.client import build_client
+from j1.orchestration.temporal.config import TemporalSettings, load_temporal_settings
+from j1.orchestration.temporal.retries import DEFAULT_RETRY, RetryPolicySpec
+from j1.orchestration.temporal.status import map_workflow_status
+from j1.orchestration.temporal.worker import WorkerSpec, build_worker, run_worker
+from j1.orchestration.workflows.document_processing import (
+    DocumentProcessingRequest,
+    DocumentProcessingResult,
+    DocumentProcessingWorkflow,
+)
 from j1.processing.contracts import (
     EnrichmentProcessor,
     GraphBuilder,
@@ -50,6 +80,12 @@ from j1.workspace.layout import WorkspaceArea
 from j1.workspace.resolver import WorkspaceResolver
 
 __all__ = [
+    "ACTIVITY_BUILD_GRAPH",
+    "ACTIVITY_COMPILE",
+    "ACTIVITY_ENRICH",
+    "ACTIVITY_INDEX",
+    "ACTIVITY_QUERY",
+    "ArtifactActivityResult",
     "ArtifactDraft",
     "ArtifactNotFoundError",
     "ArtifactProcessingResult",
@@ -58,20 +94,28 @@ __all__ = [
     "AuditEvent",
     "AuditRecorder",
     "AuditSink",
+    "CompileActivityInput",
     "ConfigError",
     "CostBreakdown",
     "CostEvent",
     "CostRecorder",
     "CostResult",
     "CostSink",
+    "DEFAULT_RETRY",
     "DefaultAuditRecorder",
     "DefaultCostRecorder",
     "DocumentIntakeService",
     "DocumentNotFoundError",
+    "DocumentProcessingRequest",
+    "DocumentProcessingResult",
+    "DocumentProcessingWorkflow",
     "DocumentRecord",
     "DuplicateDocumentError",
+    "EnrichActivityInput",
     "EnrichmentProcessor",
+    "GraphActivityInput",
     "GraphBuilder",
+    "IndexActivityInput",
     "IntakeError",
     "InvalidIdentifierError",
     "J1Error",
@@ -83,22 +127,36 @@ __all__ = [
     "ModelProvider",
     "ModelResponse",
     "PathTraversalError",
+    "ProcessingActivities",
+    "ProcessingActivityResult",
     "ProcessingResult",
     "ProcessingService",
     "ProcessingStatus",
     "ProjectContext",
+    "ProjectScope",
+    "QueryActivityInput",
+    "QueryActivityResult",
     "QueryProvider",
     "QueryResult",
     "ResultStatus",
+    "RetryPolicySpec",
     "ReviewItemResult",
     "ReviewStatus",
     "SearchIndexer",
     "Settings",
     "SourceDocument",
     "SourceRegistry",
+    "TemporalSettings",
+    "UnknownProcessorError",
+    "WorkerSpec",
     "WorkspaceArea",
     "WorkspaceError",
     "WorkspaceResolver",
+    "build_client",
+    "build_worker",
+    "load_temporal_settings",
+    "map_workflow_status",
+    "run_worker",
 ]
 
 __version__ = "0.0.1"
