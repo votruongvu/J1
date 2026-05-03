@@ -178,6 +178,7 @@ them into a generic `/query`.
 | `POST` | `/search`   | Ranked `SearchHitRecord[]` (`artifactId`, `score`, citation fields). | You want hit metadata for UI lists. |
 | `POST` | `/retrieve` | `ContextBlockRecord[]` (`text` body + `citation`). | You're grounding an external LLM. |
 | `POST` | `/answer`   | `AnswerRecord` (`answer`, `mode`, `citations[]`, `graphPaths[]`, `confidence`, warnings). | You want J1 to answer directly. |
+| `POST` | `/answer?stream=true` | SSE stream (`text/event-stream`) — see [§ 8 Streaming](#8-streaming-answer-output). | You want incremental output. |
 
 `/answer` accepts an explicit `mode` (`AUTO` / `KNOWLEDGE_FIRST` /
 `GRAPH_FIRST` / `EVIDENCE_FIRST` / `CONSISTENCY_CHECK` / `REPORT_GENERATION`)
@@ -274,7 +275,197 @@ curl -X POST http://localhost:8000/feedback \
 
 ---
 
-## 7. Integration notes
+## 8. Streaming answer output
+
+`POST /answer?stream=true` returns the same answer in incremental
+Server-Sent Events form. **The non-streaming `POST /answer` shape is
+unchanged** — clients that don't pass `?stream=true` get the existing
+JSON envelope as before.
+
+### Layering
+
+Streaming follows the standard outer-layer rule: the core
+[`AnswerService`](../src/j1/integration/services.py) is untouched. A
+new transport-neutral
+[`AnswerStreamingService`](../src/j1/integration/streaming/service.py)
+wraps the existing answer port and emits `AnswerStreamEvent`s through a
+handler callback. The REST adapter's
+[`sse.py`](../src/j1/adapters/rest/sse.py) is the only place that
+knows about `text/event-stream` framing.
+
+### Same security as `POST /answer`
+
+The streaming branch lives on the **same route** as non-streaming, so
+every middleware and dependency runs identically:
+
+- The `kb:answer` scope is required.
+- Authentication, request validation (Pydantic `AnswerRequest`),
+  tenant scoping, and the standard error envelope all apply.
+- Errors *before* the stream is opened (401 / 403 / 422) come back as
+  the normal JSON envelope.
+- Errors *after* the stream is opened are emitted as a masked
+  `answer.failed` event (see below) — the underlying exception is
+  logged with the request id and never appears on the wire.
+
+### Request
+
+Same body as non-streaming `POST /answer`:
+
+```http
+POST /answer?stream=true HTTP/1.1
+Authorization: Bearer <api-key>
+X-Tenant-Id: acme
+X-Project-Id: alpha
+Content-Type: application/json
+
+{ "question": "What deliverables are due?", "mode": "AUTO" }
+```
+
+### Response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+X-Request-Id: 9f1c…
+```
+
+### Event types
+
+| Event                 | Meaning                                                |
+|-----------------------|--------------------------------------------------------|
+| `answer.started`      | The stream is open; question + mode in `data`.         |
+| `retrieval.started`   | Retrieval has begun.                                   |
+| `retrieval.completed` | Retrieval finished; `data.sourceCount` is the citation count. |
+| `generation.delta`    | A chunk of answer text in `data.text`. Repeated until the answer is fully sent. |
+| `citation.added`      | One per source, `data.artifactId` + `data.sourceDocumentId`. |
+| `answer.completed`    | Terminal-success — confidence, warnings, mode used.    |
+| `answer.failed`       | Terminal-failure with masked payload (see below).      |
+
+Emission order: `answer.started → retrieval.started → retrieval.completed
+→ generation.delta+ → citation.added* → answer.completed`. On failure:
+`answer.started → retrieval.started → answer.failed` (no further
+events).
+
+### Wire format
+
+Each event is one SSE message:
+
+```
+event: <event-name>
+data: <json-payload>
+
+```
+
+The JSON payload always carries the standard envelope:
+
+```json
+{ "requestId": "9f1c…", "event": "generation.delta", "data": {"text": "partial answer"} }
+```
+
+so consumers don't have to split `event:` from `data:` themselves.
+
+### Example stream
+
+```
+event: answer.started
+data: {"requestId":"9f1c…","event":"answer.started","data":{"question":"What deliverables are due?","mode":"AUTO","actor":"svc-power"}}
+
+event: retrieval.started
+data: {"requestId":"9f1c…","event":"retrieval.started","data":{"mode":"AUTO"}}
+
+event: retrieval.completed
+data: {"requestId":"9f1c…","event":"retrieval.completed","data":{"sourceCount":3,"modeUsed":"KNOWLEDGE_FIRST","relatedArtifactCount":0}}
+
+event: generation.delta
+data: {"requestId":"9f1c…","event":"generation.delta","data":{"text":"Three deliverables are due before"}}
+
+event: generation.delta
+data: {"requestId":"9f1c…","event":"generation.delta","data":{"text":"the end of the quarter."}}
+
+event: citation.added
+data: {"requestId":"9f1c…","event":"citation.added","data":{"artifactId":"a-1","artifactType":"compiled.text","sourceDocumentId":"doc-7","sourceLocation":null}}
+
+event: answer.completed
+data: {"requestId":"9f1c…","event":"answer.completed","data":{"modeUsed":"KNOWLEDGE_FIRST","citationCount":3,"confidence":0.81,"confidenceLevel":"high","reviewRequired":false,"warnings":[],"warningCategories":[]}}
+```
+
+### Error masking
+
+If generation raises after the stream is open, exactly one terminal
+event is emitted:
+
+```json
+{
+  "requestId": "9f1c…",
+  "event": "answer.failed",
+  "data": {
+    "code": "ANSWER_GENERATION_FAILED",
+    "message": "Answer generation failed.",
+    "retryable": true
+  }
+}
+```
+
+The wire body never contains the underlying exception type, message,
+file path, or stack — that's logged server-side with the request id
+for triage and never crosses the network.
+
+### Client example (fetch + ReadableStream)
+
+Native `EventSource` only supports `GET`, but the framework's auth
+contract requires headers, so we use `fetch`:
+
+```javascript
+const res = await fetch("/answer?stream=true", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer kb_local_dev_001",
+    "X-Tenant-Id": "acme",
+    "X-Project-Id": "alpha",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ question: "What deliverables are due?" }),
+});
+if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+  const messages = buffer.split("\n\n");
+  buffer = messages.pop();  // last item may be incomplete
+  for (const block of messages) {
+    if (!block.trim()) continue;
+    let eventName = null, dataStr = null;
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event: ")) eventName = line.slice(7);
+      else if (line.startsWith("data: ")) dataStr = line.slice(6);
+    }
+    const payload = JSON.parse(dataStr);
+    handle(eventName, payload);
+  }
+}
+```
+
+### Cancellation / disconnect
+
+The streaming response loop calls `request.is_disconnected()` between
+events and stops emitting once the client goes away. **Limitation:**
+the underlying `AnswerService.answer()` is currently synchronous and
+not cancellable mid-flight, so a disconnect cancels further event
+emission but does not abort an in-progress answer call. When a
+token-streaming `ModelProvider` is wired in, the streaming service can
+emit deltas as they arrive and propagate cancellation into the
+provider — the SSE adapter contract stays the same.
+
+---
+
+## 9. Integration notes
 
 - **Layering.** The adapter depends on `j1.integration.*` — never on
   `j1.processing.*` or `j1.orchestration.*` directly. New endpoints must reach
