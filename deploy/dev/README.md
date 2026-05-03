@@ -1,0 +1,227 @@
+# Local development with Docker
+
+A minimal Docker Compose stack for running the J1 framework locally.
+Brings up a REST API, a Temporal worker, a Temporal server, and the
+Temporal UI on a single laptop with no other infrastructure required.
+
+This stack is **for development only** — not a production deployment.
+See [docs/architecture.md](../../docs/architecture.md) for the full
+architecture, and the per-area docs (security, webhooks,
+event-integration, …) for production hardening.
+
+---
+
+## 1. Prerequisites
+
+- Docker (20.10+)
+- Docker Compose (v2 — invoked as `docker compose`, not
+  `docker-compose`)
+- Free local ports: **8000** (API), **7233** (Temporal gRPC),
+  **8080** (Temporal UI)
+
+That's it. No Python install, no Postgres, no Redis, no S3.
+
+---
+
+## 2. Bring it up
+
+```bash
+# 1. Copy the env template
+cp .env.example .env
+
+# 2. Start everything
+docker compose -f deploy/dev/docker-compose.yml up --build
+```
+
+The first run takes a couple of minutes (image build + Temporal
+schema init). Subsequent runs are fast.
+
+Services that come up:
+
+| Service          | URL / Port                          | What it is |
+|------------------|-------------------------------------|------------|
+| `api`            | http://localhost:8000               | J1 REST API (`python -m deploy.dev.api`) |
+| `worker`         | (no port — connects to Temporal)    | J1 Temporal worker (`python -m deploy.dev.worker`) |
+| `temporal`       | localhost:7233 (gRPC)               | Temporal server with SQLite persistence |
+| `temporal-ui`    | http://localhost:8080               | Browser UI for Temporal |
+
+---
+
+## 3. What's intentionally NOT in this stack (and why)
+
+The framework is library-only and the local stack mirrors that minimalism. These services were considered and deliberately omitted:
+
+| Service | Why omitted |
+|---|---|
+| **PostgreSQL** | The framework uses flat-file JSON registries (`JsonSourceRegistry`, `JsonArtifactRegistry`, `JsonReviewQueue`) and per-project SQLite FTS5 for search. There is no relational store. Adding Postgres would require a code change to make J1 use it. |
+| **Redis** | No caching layer, no session store, no distributed-lock requirement. Temporal handles workflow state + retries; webhooks have their own `WebhookDeliveryStore`. Redis is unused. |
+| **MinIO / S3** | Workspace state lives on disk under `J1_DATA_ROOT`, mounted as the named Docker volume `j1_workspace`. The codebase doesn't use object storage directly. |
+| **Production-grade Temporal** (Cassandra / Postgres backing, ES for search) | Overkill for laptop use. The bundled `temporalio/auto-setup` image with SQLite persistence is enough for a developer to see workflows execute end-to-end. |
+
+If a deployment needs any of these, add them in a separate
+`deploy/<env>/docker-compose.yml` (e.g. `deploy/staging/`) — keeping
+the dev stack minimal is by design.
+
+---
+
+## 4. Verify
+
+### API health
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected:
+
+```json
+{ "requestId": "...", "data": { "status": "ok" }, "meta": {} }
+```
+
+### What's wired
+
+```bash
+curl http://localhost:8000/capabilities | jq '.data.capabilities[] | {name, available}'
+```
+
+### Temporal UI
+
+Open <http://localhost:8080> in a browser. The default namespace is
+`default`. Until a workflow is triggered the UI shows an empty
+workflows list — that's expected.
+
+---
+
+## 5. Trigger a sample workflow
+
+```bash
+# 1. Create a project
+curl -X POST http://localhost:8000/projects \
+  -H "X-Tenant-Id: acme" \
+  -H "Content-Type: application/json" \
+  -d '{"projectId": "alpha"}'
+
+# 2. Upload a sample document
+echo "hello from local development" > /tmp/sample.txt
+curl -X POST http://localhost:8000/documents \
+  -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
+  -F "file=@/tmp/sample.txt"
+
+# 3. Start a project-wide ingestion workflow
+curl -X POST http://localhost:8000/ingestion-jobs \
+  -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "compilerKind": "stub.compiler",
+    "actor": "local-dev",
+    "correlationId": "demo-1"
+  }'
+```
+
+Response:
+
+```json
+{ "requestId": "...", "data": { "jobId": "...", "action": "start" }, "meta": {} }
+```
+
+### What you should see
+
+1. **Temporal UI** (http://localhost:8080) — a new workflow execution
+   under the `default` namespace, showing the workflow lifecycle.
+2. **Worker logs** (`docker compose -f deploy/dev/docker-compose.yml logs -f worker`)
+   — activity dispatch lines.
+3. **API response** — the `jobId` printed above is the Temporal
+   workflow id; you can query its status:
+
+   ```bash
+   curl http://localhost:8000/ingestion-jobs/<jobId> \
+     -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha"
+   ```
+
+The dev stack registers **no** real `KnowledgeCompiler` /
+`EnrichmentProcessor` implementations — the workflow may complete
+with `status=failed` because `stub.compiler` isn't a registered
+processor kind. That's expected for the dev stack: it confirms the
+plumbing (API → Temporal → worker → activities) end-to-end without
+forcing a vendor-specific processor on the developer.
+
+To run real processing, fork [`worker.py`](worker.py) and pass
+non-empty `compilers=` / `enrichers=` / `graph_builders=` maps to
+[`build_worker_spec`](_wiring.py).
+
+---
+
+## 6. Stop / reset
+
+```bash
+# Stop services (volumes preserved)
+docker compose -f deploy/dev/docker-compose.yml down
+
+# Stop + delete the workspace volume (factory reset)
+docker compose -f deploy/dev/docker-compose.yml down -v
+```
+
+`-v` removes the named volume `j1_workspace` — every project, every
+artifact, every search index, every audit log goes with it. Useful
+when starting from scratch; **do not run on shared environments**.
+
+---
+
+## 7. Configuration
+
+Every variable lives in [`.env.example`](../../.env.example). Highlights:
+
+| Var | Default | Notes |
+|---|---|---|
+| `J1_DATA_ROOT` | `/var/lib/j1` | Inside the container; mapped to the `j1_workspace` volume |
+| `J1_TEMPORAL_TARGET` | `temporal:7233` | Docker network DNS — don't use `localhost` from inside the container |
+| `J1_TEMPORAL_NAMESPACE` | `default` | The Temporal `auto-setup` image creates this on boot |
+| `J1_TEMPORAL_TASK_QUEUE` | `j1-processing` | Generic, stable; both API + worker read this |
+| `J1_API_PORT` | `8000` | Port inside the container; compose maps it to the same host port |
+| `J1_WORKER_MAX_CONCURRENT_ACTIVITIES` | `5` | Tune for laptop workload |
+| `J1_AUTH_API_KEYS` / `J1_AUTH_API_KEYS_FILE` | unset | Anonymous mode by default; set either to require auth |
+| `J1_WEBHOOK_SUBSCRIPTIONS` / `J1_WEBHOOK_SUBSCRIPTIONS_FILE` | unset | No webhook delivery by default |
+| `J1_EVENT_PUBLISHER_TYPE` | `noop` | Set to `bus` to fan events into the in-process `ApplicationEventBus` |
+
+The exhaustive reference for each variable group is in the per-area
+docs:
+
+- [docs/security.md § 7](../../docs/security.md)
+- [docs/webhooks.md § 6](../../docs/webhooks.md)
+- [docs/event-integration.md § 5](../../docs/event-integration.md)
+
+---
+
+## 8. Forking this for production
+
+1. **Switch Temporal off `auto-setup`.** Use `temporalio/server` with
+   a real Cassandra / Postgres + Elasticsearch backing.
+2. **Mount `J1_DATA_ROOT` on shared durable storage** (NFS / EFS /
+   Azure Files) — the JSON registries are single-writer, so multiple
+   API replicas writing to the same project are not supported.
+3. **Wire authentication.** Set `J1_AUTH_API_KEYS_FILE` to a path
+   mounted from your secret manager. See [docs/security.md](../../docs/security.md).
+4. **Plug in real processors.** Fork [`worker.py`](worker.py) and
+   register your own `KnowledgeCompiler` / `EnrichmentProcessor` /
+   `GraphBuilder` / `ModelProvider` implementations.
+5. **Deployment platform.** This compose file is laptop-grade. For
+   Kubernetes, the same image (`Dockerfile`) works as a base — split
+   the API and worker into separate Deployments / StatefulSets and
+   run the worker with N replicas to scale activity throughput.
+
+---
+
+## 9. Files in this directory
+
+| File | Purpose |
+|---|---|
+| [`Dockerfile`](Dockerfile) | Single image — runs both API and worker |
+| [`docker-compose.yml`](docker-compose.yml) | Brings up API + worker + Temporal + UI |
+| [`api.py`](api.py) | `python -m deploy.dev.api` — FastAPI server entrypoint |
+| [`worker.py`](worker.py) | `python -m deploy.dev.worker` — Temporal worker entrypoint |
+| [`_wiring.py`](_wiring.py) | Shared `ApplicationFacade` + `WorkerSpec` constructors |
+| `__init__.py` | Package marker |
+
+The framework's library code lives in `src/j1/` — none of it
+imports anything from this directory. This is a *deployment*; J1
+itself stays library-only.

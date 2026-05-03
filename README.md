@@ -31,6 +31,7 @@ documents → intake → compile → enrich → graph → index → query → an
 | Bulk import / export (NDJSON) | [docs/bulk.md](docs/bulk.md) |
 | MCP status | [docs/mcp-status.md](docs/mcp-status.md) |
 | Operational issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| **Local Docker stack** (API + worker + Temporal + UI) | [deploy/dev/README.md](deploy/dev/README.md) |
 
 ---
 
@@ -60,6 +61,33 @@ tests don't require one.
 The full suite is hermetic: every test uses `tmp_path`-style
 filesystem isolation, no external services, no network. CI just runs
 `pytest`.
+
+---
+
+## Run the whole stack locally with Docker
+
+A self-contained Docker Compose stack — API + worker + Temporal +
+Temporal UI — is in [deploy/dev/](deploy/dev/):
+
+```bash
+cp .env.example .env
+docker compose -f deploy/dev/docker-compose.yml up --build
+```
+
+- API: <http://localhost:8000>
+- Temporal UI: <http://localhost:8080>
+
+Trigger a sample workflow:
+
+```bash
+curl -X POST http://localhost:8000/projects \
+  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -d '{"projectId": "alpha"}'
+```
+
+See [deploy/dev/README.md](deploy/dev/README.md) for the full
+walkthrough, including which services were intentionally omitted
+(Postgres / Redis / S3) and why.
 
 ---
 

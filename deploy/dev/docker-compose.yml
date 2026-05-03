@@ -1,0 +1,97 @@
+# Local-development Docker Compose stack for J1.
+#
+# Brings up:
+#   - api          : FastAPI server (`python -m deploy.dev.api`)
+#   - worker       : Temporal worker (`python -m deploy.dev.worker`)
+#   - temporal     : Temporal server with in-memory persistence
+#   - temporal-ui  : Browser UI for Temporal
+#
+# Intentionally NOT included (and why — see deploy/dev/README.md § 3):
+#   - PostgreSQL   : the framework uses flat-file JSON registries +
+#                    per-project SQLite FTS5; no relational store
+#   - Redis        : not used anywhere in the framework
+#   - MinIO / S3   : workspace is filesystem-based, mounted as a
+#                    Docker volume
+
+name: j1-dev
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile
+    image: j1-dev:latest
+    container_name: j1-api
+    env_file: ../../.env
+    ports:
+      - "${J1_API_PORT:-8000}:8000"
+    volumes:
+      - j1_workspace:/var/lib/j1
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - j1-net
+    restart: unless-stopped
+    command: ["python", "-m", "deploy.dev.api"]
+
+  worker:
+    image: j1-dev:latest
+    container_name: j1-worker
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile
+    env_file: ../../.env
+    volumes:
+      - j1_workspace:/var/lib/j1
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - j1-net
+    restart: unless-stopped
+    command: ["python", "-m", "deploy.dev.worker"]
+
+  temporal:
+    # `auto-setup` includes a self-contained development server with
+    # SQLite persistence baked in. Suitable for laptop use; not for
+    # production. Pin a minor version for reproducibility.
+    image: temporalio/auto-setup:1.24
+    container_name: j1-temporal
+    environment:
+      - DB=sqlite
+      - SKIP_DEFAULT_NAMESPACE_CREATION=false
+      - DEFAULT_NAMESPACE=default
+    ports:
+      - "7233:7233"
+    networks:
+      - j1-net
+    healthcheck:
+      # `tctl --address temporal:7233 cluster health` is the canonical
+      # check; embedded curl works against the gRPC port too.
+      test: ["CMD", "tctl", "--address", "temporal:7233", "workflow", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:2.31.0
+    container_name: j1-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - j1-net
+
+networks:
+  j1-net:
+    driver: bridge
+
+volumes:
+  j1_workspace:
