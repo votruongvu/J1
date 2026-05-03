@@ -836,12 +836,10 @@ tests/
 ├── test_cost_recorder.py          DefaultCostRecorder
 ├── test_review_queue.py           JsonReviewQueue
 ├── test_activities_lifecycle.py   ProjectLifecycleActivities
-├── test_activities_processing.py  ProcessingActivities (via test_orchestration_activities.py)
 ├── test_activities_knowledge.py   KnowledgeProcessingActivities
 ├── test_activities_review.py      ReviewActivities
 ├── test_activities_search.py      SearchActivities
 ├── test_activities_accounting.py  AccountingActivities
-├── test_activities_lifecycle.py   ProjectLifecycleActivities
 ├── test_project_activities.py     ProjectActivities
 ├── test_project_processing_workflow.py  ProjectProcessingWorkflow (mocked Temporal)
 ├── test_orchestration_workflow.py  Additional workflow tests
