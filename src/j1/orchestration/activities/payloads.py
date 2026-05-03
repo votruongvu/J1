@@ -391,3 +391,21 @@ class CreateReviewItemsResult:
     status: str
     items: list[CreatedReviewItem] = field(default_factory=list)
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class ApplyReviewDecisionInput:
+    scope: ProjectScope
+    review_item_id: str
+    decision: str
+    actor: str
+    notes: str | None = None
+    correlation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ApplyReviewDecisionResult:
+    status: str
+    review_item_id: str
+    review_status: str
+    audit_event_id: str | None = None

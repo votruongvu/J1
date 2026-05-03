@@ -3,10 +3,13 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from j1.audit.recorder import AuditRecorder
 from j1.jobs.status import ReviewStatus
 from j1.orchestration.activities.payloads import (
+    ApplyReviewDecisionInput,
+    ApplyReviewDecisionResult,
     CreatedReviewItem,
     CreateReviewItemsInput,
     CreateReviewItemsResult,
@@ -15,10 +18,14 @@ from j1.review.models import ReviewItem
 from j1.review.queue import ReviewQueue
 
 ACTIVITY_CREATE_REVIEW_ITEMS = "j1.review.create_items"
+ACTIVITY_APPLY_REVIEW_DECISION = "j1.review.apply_decision"
 
 STATUS_SUCCEEDED = "succeeded"
 
 ACTION_REVIEW_REQUESTED = "j1.review.requested"
+ACTION_REVIEW_DECISION = "j1.review.decision"
+
+TARGET_REVIEW_ITEM = "review_item"
 
 
 class ReviewActivities:
@@ -35,7 +42,10 @@ class ReviewActivities:
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
 
     def all_activities(self) -> list:
-        return [self.create_review_items_activity]
+        return [
+            self.create_review_items_activity,
+            self.apply_review_decision_activity,
+        ]
 
     @activity.defn(name=ACTIVITY_CREATE_REVIEW_ITEMS)
     def create_review_items_activity(
@@ -77,3 +87,42 @@ class ReviewActivities:
                 )
             )
         return CreateReviewItemsResult(status=STATUS_SUCCEEDED, items=created)
+
+    @activity.defn(name=ACTIVITY_APPLY_REVIEW_DECISION)
+    def apply_review_decision_activity(
+        self, input: ApplyReviewDecisionInput
+    ) -> ApplyReviewDecisionResult:
+        ctx = input.scope.to_context()
+        try:
+            review_status = ReviewStatus(input.decision)
+        except ValueError as exc:
+            raise ApplicationError(
+                f"unknown review decision: {input.decision!r}",
+                non_retryable=True,
+            ) from exc
+
+        self._queue.update_status(
+            ctx,
+            input.review_item_id,
+            review_status,
+            actor=input.actor,
+            notes=input.notes,
+        )
+        event_id = self._audit.record(
+            ctx,
+            actor=input.actor,
+            action=ACTION_REVIEW_DECISION,
+            target_kind=TARGET_REVIEW_ITEM,
+            target_id=input.review_item_id,
+            correlation_id=input.correlation_id,
+            payload={
+                "decision": review_status.value,
+                "notes": input.notes,
+            },
+        )
+        return ApplyReviewDecisionResult(
+            status=STATUS_SUCCEEDED,
+            review_item_id=input.review_item_id,
+            review_status=review_status.value,
+            audit_event_id=event_id,
+        )

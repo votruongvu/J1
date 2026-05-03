@@ -80,5 +80,8 @@ def _merge(primary: QueryResponse, fallback: QueryResponse) -> QueryResponse:
         + list(fallback.related_artifacts),
         graph_paths=list(primary.graph_paths) + list(fallback.graph_paths),
         warnings=list(primary.warnings) + list(fallback.warnings) + [FALLBACK_NOTE],
+        warning_categories=(
+            list(primary.warning_categories) + list(fallback.warning_categories)
+        ),
         confidence=max(primary.confidence, fallback.confidence),
     )

@@ -129,6 +129,8 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     ArtifactEnrichmentInput,
     ArtifactEnrichmentResult,
+    ApplyReviewDecisionInput,
+    ApplyReviewDecisionResult,
     CalculateCostInput,
     CalculateCostResult,
     CompileActivityInput,
@@ -173,6 +175,7 @@ from j1.orchestration.activities.payloads import (
     WriteAuditResult,
 )
 from j1.orchestration.activities.review import (
+    ACTIVITY_APPLY_REVIEW_DECISION,
     ACTIVITY_CREATE_REVIEW_ITEMS,
     ReviewActivities,
 )
@@ -244,7 +247,12 @@ from j1.profiles import (
     bundled_profiles_dir,
 )
 from j1.projects.context import ProjectContext
-from j1.review.models import ReviewItem
+from j1.review.governance import (
+    ConfidenceLevel,
+    WarningCategory,
+    confidence_level_from_score,
+)
+from j1.review.models import ReviewDecision, ReviewItem
 from j1.review.queue import (
     JsonReviewQueue,
     ReviewItemNotFoundError,
@@ -279,6 +287,7 @@ __all__ = [
     "ACTIVITY_CALCULATE_COST",
     "ACTIVITY_COMPILE",
     "ACTIVITY_COMPUTE_SPEND",
+    "ACTIVITY_APPLY_REVIEW_DECISION",
     "ACTIVITY_CREATE_REVIEW_ITEMS",
     "ACTIVITY_ENRICH",
     "ACTIVITY_FINALIZE",
@@ -336,6 +345,8 @@ __all__ = [
     "ExternalKnowledgeCompiler",
     "SubprocessCompilerAdapter",
     "SubprocessGraphAdapter",
+    "ApplyReviewDecisionInput",
+    "ApplyReviewDecisionResult",
     "ArtifactActivityResult",
     "ArtifactDraft",
     "ArtifactEnrichmentInput",
@@ -355,6 +366,7 @@ __all__ = [
     "CalculateCostInput",
     "CalculateCostResult",
     "CompileActivityInput",
+    "ConfidenceLevel",
     "ConfigError",
     "CostAggregator",
     "CostBreakdown",
@@ -471,6 +483,7 @@ __all__ = [
     "ResultStatus",
     "RetryPolicySpec",
     "ReviewActivities",
+    "ReviewDecision",
     "ReviewItem",
     "ReviewItemNotFoundError",
     "ReviewItemResult",
@@ -499,6 +512,7 @@ __all__ = [
     "ValidateProjectInput",
     "ValidateProjectResult",
     "VisualContentDescriber",
+    "WarningCategory",
     "WorkerSpec",
     "WorkflowState",
     "WorkflowStatus",
@@ -507,8 +521,9 @@ __all__ = [
     "WorkspaceResolver",
     "WriteAuditInput",
     "WriteAuditResult",
-    "bundled_profiles_dir",
     "build_client",
+    "bundled_profiles_dir",
+    "confidence_level_from_score",
     "build_worker",
     "load_temporal_settings",
     "map_workflow_status",

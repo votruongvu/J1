@@ -1,6 +1,12 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from j1.review.governance import (
+    ConfidenceLevel,
+    WarningCategory,
+    confidence_level_from_score,
+)
+
 
 class QueryMode(StrEnum):
     AUTO = "auto"
@@ -45,3 +51,8 @@ class QueryResponse:
     confidence: float = 0.0
     review_required: bool = False
     warnings: list[str] = field(default_factory=list)
+    warning_categories: list[WarningCategory] = field(default_factory=list)
+
+    @property
+    def confidence_level(self) -> ConfidenceLevel:
+        return confidence_level_from_score(self.confidence)

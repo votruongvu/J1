@@ -15,6 +15,7 @@ from j1.query.models import (
     QueryResponse,
     SourceReference,
 )
+from j1.review.governance import WarningCategory
 from j1.search.indexer import SearchHit, SqliteSearchIndexer
 from j1.workspace.resolver import WorkspaceResolver
 
@@ -70,8 +71,10 @@ class KnowledgeQueryProvider:
             h.review_status == REVIEW_STATUS_PENDING for h in hits
         )
         warnings: list[str] = []
+        categories: list[WarningCategory] = []
         if review_required:
             warnings.append("Some sources are pending human review.")
+            categories.append(WarningCategory.REVIEW_REQUIRED)
         confidence = (
             sum(h.confidence for h in hits) / len(hits) if hits else 0.0
         )
@@ -83,6 +86,7 @@ class KnowledgeQueryProvider:
             confidence=confidence,
             review_required=review_required,
             warnings=warnings,
+            warning_categories=categories,
         )
 
     @staticmethod
@@ -114,8 +118,10 @@ class GraphQueryProvider:
         related = [r.artifact_id for r in records]
         paths = self._extract_paths(ctx, records, request.question)
         warnings: list[str] = []
+        categories: list[WarningCategory] = []
         if not paths:
             warnings.append("No graph paths found for the question.")
+            categories.append(WarningCategory.INFORMATIONAL)
         confidence = 0.5 if paths else 0.1
         return QueryResponse(
             answer=self._compose_answer(paths, request.question),
@@ -125,6 +131,7 @@ class GraphQueryProvider:
             graph_paths=paths,
             confidence=confidence,
             warnings=warnings,
+            warning_categories=categories,
         )
 
     def _extract_paths(
@@ -209,8 +216,10 @@ class EvidenceProvider:
             sum(h.confidence for h in hits) / len(hits) if hits else 0.0
         )
         warnings: list[str] = []
+        categories: list[WarningCategory] = []
         if not evidence:
             warnings.append("No evidence with linked source documents found.")
+            categories.append(WarningCategory.SOURCE_VERIFICATION_REQUIRED)
         return QueryResponse(
             answer=self._compose_answer(evidence, request.question),
             mode_used=self.mode.value,
@@ -218,6 +227,7 @@ class EvidenceProvider:
             related_artifacts=[h.artifact_id for h in hits],
             confidence=confidence,
             warnings=warnings,
+            warning_categories=categories,
         )
 
     @staticmethod
@@ -254,6 +264,7 @@ class ConsistencyProvider:
         warnings = [f"Consistency: {self._render_finding(f)}" for f in findings[:5]]
         if not warnings:
             warnings = ["No consistency findings recorded yet."]
+        categories = [WarningCategory.REVIEW_REQUIRED] * len(warnings)
         return QueryResponse(
             answer=self._compose_answer(findings, request.question),
             mode_used=self.mode.value,
@@ -262,6 +273,7 @@ class ConsistencyProvider:
             confidence=0.5 if findings else 0.1,
             review_required=True,
             warnings=warnings,
+            warning_categories=categories,
         )
 
     def _collect_findings(
@@ -324,6 +336,7 @@ class ReportGenerator:
         hits = hits[: request.max_results * 2]
         template = self._profile.report_templates.get(self._template_name, "")
         warnings: list[str] = []
+        categories: list[WarningCategory] = []
         if template:
             answer = self._render_template(template, hits, request.question)
         else:
@@ -331,6 +344,7 @@ class ReportGenerator:
             warnings.append(
                 "Profile has no report template; using built-in fallback layout."
             )
+            categories.append(WarningCategory.INFORMATIONAL)
         review_required = any(
             h.review_status == REVIEW_STATUS_PENDING for h in hits
         )
@@ -338,6 +352,8 @@ class ReportGenerator:
             warnings.append(
                 "Report includes artifacts that are pending human review."
             )
+            categories.append(WarningCategory.REVIEW_REQUIRED)
+            categories.append(WarningCategory.NOT_FOR_FINAL_DECISION)
         return QueryResponse(
             answer=answer,
             mode_used=self.mode.value,
@@ -346,6 +362,7 @@ class ReportGenerator:
             confidence=0.6 if hits else 0.0,
             review_required=review_required,
             warnings=warnings,
+            warning_categories=categories,
         )
 
     @staticmethod
