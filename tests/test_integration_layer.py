@@ -483,7 +483,7 @@ def test_application_facade_optional_ports_can_be_none(
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "j1"
 _FORBIDDEN_PREFIXES = ("j1.api", "j1.integration")
-_BOUNDARY_PACKAGES = {"api", "integration"}
+_BOUNDARY_PACKAGES = {"api", "integration", "adapters"}
 
 
 def _collect_imported_modules(path: Path) -> set[str]:

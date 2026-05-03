@@ -82,6 +82,7 @@ def _hit_to_dto(hit: SearchHit) -> SearchHitDTO:
         source_location=hit.source_location,
         confidence=hit.confidence,
         review_status=hit.review_status,
+        extracted_text=hit.extracted_text,
     )
 
 

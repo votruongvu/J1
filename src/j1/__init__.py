@@ -1,3 +1,4 @@
+from j1.adapters.rest import create_rest_api
 from j1.api import ServiceContainer, build_default_container, create_api
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import (
@@ -642,6 +643,7 @@ __all__ = [
     "configure_logging",
     "confidence_level_from_score",
     "create_api",
+    "create_rest_api",
     "get_logger",
     "hash_file",
     "heartbeat",

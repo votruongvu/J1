@@ -48,6 +48,7 @@ class SearchHitDTO:
     source_location: str | None = None
     confidence: float = 0.0
     review_status: str = "not_required"
+    extracted_text: str = ""
 
 
 @dataclass(frozen=True)

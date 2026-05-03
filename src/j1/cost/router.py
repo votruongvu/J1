@@ -1,10 +1,19 @@
+from __future__ import annotations
+
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from j1.errors.exceptions import CostControlError
-from j1.processing.contracts import ModelProvider
+
+if TYPE_CHECKING:
+    # Type-only import — `cost` initializes before `processing` in the chain
+    # triggered by `j1.cost.__init__`, so a runtime import here creates a
+    # cycle (`processing.contracts → processing.results → cost.breakdown →
+    # cost.router`). Documented in feedback_import_layering memory.
+    from j1.processing.contracts import ModelProvider
 
 DEFAULT_PROVIDER_KIND = "default"
 
