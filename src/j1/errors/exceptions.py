@@ -47,6 +47,14 @@ class CompilerExecutionError(J1Error):
     pass
 
 
+class GraphConfigError(J1Error):
+    pass
+
+
+class GraphExecutionError(J1Error):
+    pass
+
+
 class ProfileError(J1Error):
     pass
 

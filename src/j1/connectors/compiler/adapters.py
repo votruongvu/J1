@@ -53,11 +53,11 @@ class SubprocessCompilerAdapter:
             )
 
         substitutions = {
-            "input": str(request.input_file),
-            "outdir": str(request.workspace_dir),
-            "document_id": str(request.metadata.get("document_id", "")),
+            "{input}": str(request.input_file),
+            "{outdir}": str(request.workspace_dir),
+            "{document_id}": str(request.metadata.get("document_id", "")),
         }
-        command = [arg.format(**substitutions) for arg in request.config.command]
+        command = [_substitute(arg, substitutions) for arg in request.config.command]
 
         try:
             completed = subprocess.run(
@@ -87,3 +87,9 @@ class SubprocessCompilerAdapter:
             p for p in request.workspace_dir.iterdir() if p.is_file()
         )
         return AdapterResponse(output_files=output_files, log=log)
+
+
+def _substitute(arg: str, substitutions: dict[str, str]) -> str:
+    for key, value in substitutions.items():
+        arg = arg.replace(key, value)
+    return arg
