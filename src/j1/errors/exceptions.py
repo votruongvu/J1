@@ -59,6 +59,10 @@ class SearchIndexerError(J1Error):
     pass
 
 
+class QueryRoutingError(J1Error):
+    pass
+
+
 class ProfileError(J1Error):
     pass
 

@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,12 +133,15 @@ class SqliteSearchIndexer:
         db_path = self._db_path(ctx)
         if not db_path.exists():
             return []
+        sanitized = _sanitize_fts_query(query)
+        if not sanitized:
+            return []
         sql = (
             f"SELECT {_SELECT_COLUMNS}, bm25({_TABLE_NAME}) AS score "
             f"FROM {_TABLE_NAME} "
             f"WHERE {_TABLE_NAME} MATCH ?"
         )
-        params: list = [query]
+        params: list = [sanitized]
         if artifact_types:
             placeholders = ",".join("?" for _ in artifact_types)
             sql += f" AND artifact_type IN ({placeholders})"
@@ -245,6 +249,22 @@ class SqliteSearchIndexer:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
             return ""
+
+
+_FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Strip punctuation and join tokens with OR for natural-language queries.
+
+    Why: FTS5 treats `?`, `:`, `*`, `(`, `)` as query operators, so a question
+    like "where is the requirement?" raises a syntax error. Implicit AND
+    (FTS5's default for space-separated tokens) is also too strict — common
+    stop words drop recall to zero on natural-language input. Joining with OR
+    matches any token; BM25 ranking still surfaces the best matches first.
+    """
+    tokens = _FTS_TOKEN_RE.findall(query)
+    return " OR ".join(tokens)
 
 
 def _ensure_fts5_available() -> None:

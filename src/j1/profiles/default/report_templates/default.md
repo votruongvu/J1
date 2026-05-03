@@ -1,0 +1,5 @@
+# {{question}}
+
+## Artifacts
+
+{{artifacts}}
