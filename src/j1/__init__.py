@@ -8,11 +8,29 @@ from j1.audit.events import AuditEvent
 from j1.audit.recorder import AuditRecorder, DefaultAuditRecorder
 from j1.audit.sink import AuditSink, JsonlAuditSink
 from j1.config.settings import Settings
+from j1.connectors.compiler import (
+    ARTIFACT_KIND_CONCEPT,
+    ARTIFACT_KIND_INDEX,
+    ARTIFACT_KIND_LOG,
+    ARTIFACT_KIND_REPORT,
+    ARTIFACT_KIND_SOURCE,
+    ARTIFACT_KIND_SUMMARY,
+    DEFAULT_OUTPUT_MAPPING,
+    AdapterRequest,
+    AdapterResponse,
+    CallableCompilerAdapter,
+    CompilerAdapter,
+    CompilerConfig,
+    ExternalKnowledgeCompiler,
+    SubprocessCompilerAdapter,
+)
 from j1.cost.events import CostEvent
 from j1.cost.recorder import CostRecorder, DefaultCostRecorder
 from j1.cost.sink import CostSink, JsonlCostSink
 from j1.documents.models import DocumentRecord, SourceDocument
 from j1.errors.exceptions import (
+    CompilerConfigError,
+    CompilerExecutionError,
     ConfigError,
     DocumentNotFoundError,
     DuplicateDocumentError,
@@ -192,7 +210,23 @@ __all__ = [
     "ACTIVITY_VALIDATE_CONTEXT",
     "ACTIVITY_VALIDATE_PROJECT",
     "ACTIVITY_WRITE_AUDIT",
+    "ARTIFACT_KIND_CONCEPT",
+    "ARTIFACT_KIND_INDEX",
+    "ARTIFACT_KIND_LOG",
+    "ARTIFACT_KIND_REPORT",
+    "ARTIFACT_KIND_SOURCE",
+    "ARTIFACT_KIND_SUMMARY",
     "AccountingActivities",
+    "AdapterRequest",
+    "AdapterResponse",
+    "CallableCompilerAdapter",
+    "CompilerAdapter",
+    "CompilerConfig",
+    "CompilerConfigError",
+    "CompilerExecutionError",
+    "DEFAULT_OUTPUT_MAPPING",
+    "ExternalKnowledgeCompiler",
+    "SubprocessCompilerAdapter",
     "ArtifactActivityResult",
     "ArtifactDraft",
     "ArtifactEnrichmentInput",

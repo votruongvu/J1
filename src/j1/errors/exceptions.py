@@ -37,3 +37,11 @@ class DuplicateDocumentError(IntakeError):
 
 class DocumentNotFoundError(J1Error):
     pass
+
+
+class CompilerConfigError(J1Error):
+    pass
+
+
+class CompilerExecutionError(J1Error):
+    pass
