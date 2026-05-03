@@ -515,6 +515,220 @@ def test_pause_then_resume_during_run(monkeypatch):
     assert result.state == WorkflowState.COMPLETED.value
 
 
+def test_initial_status_includes_new_fields():
+    wf = ProjectProcessingWorkflow()
+    s = wf.get_status()
+    assert s.pending_operation is None
+    assert s.completed_operations == []
+    assert s.review_required is False
+    assert s.budget_approval_required is False
+
+
+def test_completed_operations_recorded_in_order(monkeypatch):
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1", "doc-2"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=[f"art-{payload.document_id}"]
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
+    asyncio.run(wf.run(request))
+
+    completed = wf.get_status().completed_operations
+    assert completed == [
+        "validate",
+        "list_documents",
+        "compile:doc-1",
+        "compile:doc-2",
+        "finalize",
+    ]
+
+
+def test_pending_operation_set_during_pause(monkeypatch):
+    captured: dict[str, WorkflowStatus] = {}
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"]
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    wf = ProjectProcessingWorkflow()
+    wf.pause()
+
+    async def wait_handler(predicate, kwargs):
+        captured["paused"] = wf.get_status()
+        wf.resume()
+
+    _patch_workflow_runtime(
+        monkeypatch, exec_handler=handler, wait_handler=wait_handler
+    )
+
+    request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
+    asyncio.run(wf.run(request))
+
+    paused_status = captured["paused"]
+    assert paused_status.state == WorkflowState.PAUSED.value
+    assert paused_status.pending_operation == "compile:doc-1"
+
+
+def test_budget_approval_required_flag_during_wait(monkeypatch):
+    captured: dict[str, WorkflowStatus] = {}
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compute_spend"):
+            return SpendSummary(
+                total_amount="100.00", currency="USD", event_count=1
+            )
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"]
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    wf = ProjectProcessingWorkflow()
+
+    async def wait_handler(predicate, kwargs):
+        captured["budget"] = wf.get_status()
+        wf.approve_budget()
+
+    _patch_workflow_runtime(
+        monkeypatch, exec_handler=handler, wait_handler=wait_handler
+    )
+
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        budget_limit_amount="10.00",
+    )
+    asyncio.run(wf.run(request))
+
+    s = captured["budget"]
+    assert s.state == WorkflowState.WAITING_FOR_BUDGET_APPROVAL.value
+    assert s.budget_approval_required is True
+    assert s.pending_operation == "compile:doc-1"
+
+
+def test_review_required_flag_during_wait(monkeypatch):
+    captured: dict[str, WorkflowStatus] = {}
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"]
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    wf = ProjectProcessingWorkflow()
+
+    async def wait_handler(predicate, kwargs):
+        captured["review"] = wf.get_status()
+        wf.approve_review()
+
+    _patch_workflow_runtime(
+        monkeypatch, exec_handler=handler, wait_handler=wait_handler
+    )
+
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        review_after=(GATE_AFTER_COMPILE,),
+    )
+    asyncio.run(wf.run(request))
+
+    s = captured["review"]
+    assert s.state == WorkflowState.WAITING_FOR_REVIEW.value
+    assert s.review_required is True
+    assert s.review_gate == GATE_AFTER_COMPILE
+
+
+def test_budget_check_runs_before_compile(monkeypatch):
+    """compute_spend must be called BEFORE compile, not after."""
+    call_order: list[str] = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compute_spend"):
+            call_order.append("compute_spend")
+            return SpendSummary(
+                total_amount="0.00", currency="USD", event_count=0
+            )
+        if name.endswith("compile"):
+            call_order.append("compile")
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"]
+            )
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        budget_limit_amount="10.00",
+    )
+    asyncio.run(wf.run(request))
+
+    assert call_order == ["compute_spend", "compile"]
+
+
+def test_failure_reason_in_status(monkeypatch):
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=False, message="bad scope")
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
+    asyncio.run(wf.run(request))
+
+    s = wf.get_status()
+    assert s.state == WorkflowState.FAILED_FINAL.value
+    assert "bad scope" in (s.error or "")
+
+
 def test_get_status_reflects_state_during_run(monkeypatch):
     statuses_observed: list[WorkflowStatus] = []
 
@@ -545,4 +759,5 @@ def test_get_status_reflects_state_during_run(monkeypatch):
 
     final = wf.get_status()
     assert final.state == WorkflowState.COMPLETED.value
-    assert final.current_operation == OPERATION_FINALIZE
+    assert final.current_operation is None
+    assert OPERATION_FINALIZE in final.completed_operations
