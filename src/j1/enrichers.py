@@ -1,0 +1,345 @@
+import json
+from collections.abc import Callable
+from typing import Any
+
+from j1.processing.contracts import ModelProvider
+from j1.processing.results import ArtifactDraft, ArtifactProcessingResult
+from j1.processing.status import ResultStatus
+from j1.profiles.model import Profile
+from j1.projects.context import ProjectContext
+
+DEFAULT_PROCESSOR_VERSION = "0.1.0"
+
+ARTIFACT_TYPE_DOCUMENT_MAP = "enriched.document_map"
+ARTIFACT_TYPE_REQUIREMENTS = "enriched.requirements"
+ARTIFACT_TYPE_TABLES = "enriched.tables"
+ARTIFACT_TYPE_VISUALS = "enriched.visuals"
+ARTIFACT_TYPE_FORMULAS = "enriched.formulas"
+ARTIFACT_TYPE_RISKS = "enriched.risks"
+ARTIFACT_TYPE_CONSISTENCY_FINDINGS = "enriched.consistency_findings"
+ARTIFACT_TYPE_SOURCE_MAP = "enriched.source_map"
+ARTIFACT_TYPE_CONFIDENCE_ASSESSMENT = "enriched.confidence_assessment"
+
+PROCESSOR_DOCUMENT_CLASSIFIER = "enricher.document_classifier"
+PROCESSOR_REQUIREMENT_EXTRACTOR = "enricher.requirement_extractor"
+PROCESSOR_TABLE_EXTRACTOR = "enricher.table_extractor"
+PROCESSOR_VISUAL_DESCRIBER = "enricher.visual_describer"
+PROCESSOR_FORMULA_EXTRACTOR = "enricher.formula_extractor"
+PROCESSOR_RISK_EXTRACTOR = "enricher.risk_extractor"
+PROCESSOR_CONSISTENCY_CHECKER = "enricher.consistency_checker"
+PROCESSOR_SOURCE_MAPPER = "enricher.source_mapper"
+PROCESSOR_CONFIDENCE_ASSESSOR = "enricher.confidence_assessor"
+
+
+class _StructuredEnricher:
+    """Base class for generic enrichment processors.
+
+    Subclasses set: kind, artifact_type, prompt_name, confidence_default,
+    review_required_default, and override _produce(ctx, artifact_id) to return
+    (json_data, markdown_text). Profiles supply prompts and config; processors
+    themselves carry no domain logic.
+    """
+
+    kind: str = "enricher.base"
+    artifact_type: str = "enriched.unknown"
+    prompt_name: str = ""
+    version: str = DEFAULT_PROCESSOR_VERSION
+    confidence_default: float = 0.5
+    review_required_default: bool = False
+    formats: tuple[str, ...] = ("json", "md")
+
+    def __init__(
+        self,
+        profile: Profile,
+        *,
+        enabled: bool = True,
+        version: str | None = None,
+        confidence: float | None = None,
+        review_required: bool | None = None,
+        content_source: Callable[[ProjectContext, str], bytes] | None = None,
+        model: ModelProvider | None = None,
+    ) -> None:
+        self._profile = profile
+        self._enabled = enabled
+        if version is not None:
+            self.version = version
+        if confidence is not None:
+            self.confidence_default = confidence
+        if review_required is not None:
+            self.review_required_default = review_required
+        self._content_source = content_source
+        self._model = model
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def profile(self) -> Profile:
+        return self._profile
+
+    def enrich(
+        self, ctx: ProjectContext, artifact_id: str
+    ) -> ArtifactProcessingResult:
+        if not self._enabled:
+            return ArtifactProcessingResult(
+                status=ResultStatus.SKIPPED,
+                message=f"{self.kind} disabled",
+                metadata={"processor_name": self.kind},
+            )
+        try:
+            json_data, md_text = self._produce(ctx, artifact_id)
+        except Exception as exc:
+            return ArtifactProcessingResult(
+                status=ResultStatus.FAILED,
+                error=str(exc),
+                message=type(exc).__name__,
+                metadata={"processor_name": self.kind},
+            )
+        drafts = self._build_drafts(artifact_id, json_data, md_text)
+        return ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED,
+            drafts=drafts,
+            metadata={"processor_name": self.kind, "processor_version": self.version},
+        )
+
+    def _produce(
+        self, ctx: ProjectContext, artifact_id: str
+    ) -> tuple[dict[str, Any], str]:
+        raise NotImplementedError
+
+    def _build_drafts(
+        self,
+        artifact_id: str,
+        json_data: dict[str, Any],
+        md_text: str,
+    ) -> list[ArtifactDraft]:
+        meta = self._build_metadata(artifact_id)
+        drafts: list[ArtifactDraft] = []
+        if "json" in self.formats:
+            drafts.append(
+                ArtifactDraft(
+                    kind=self.artifact_type,
+                    content=json.dumps(json_data, indent=2, default=str).encode(
+                        "utf-8"
+                    ),
+                    suggested_extension=".json",
+                    source_artifact_ids=[artifact_id],
+                    metadata={**meta, "format": "json"},
+                    review_required=self.review_required_default,
+                )
+            )
+        if "md" in self.formats:
+            drafts.append(
+                ArtifactDraft(
+                    kind=self.artifact_type,
+                    content=md_text.encode("utf-8"),
+                    suggested_extension=".md",
+                    source_artifact_ids=[artifact_id],
+                    metadata={**meta, "format": "markdown"},
+                    review_required=self.review_required_default,
+                )
+            )
+        return drafts
+
+    def _build_metadata(self, artifact_id: str) -> dict[str, str]:
+        return {
+            "processor_name": self.kind,
+            "processor_version": self.version,
+            "artifact_type": self.artifact_type,
+            "confidence": f"{self.confidence_default:.3f}",
+            "review_required": "true" if self.review_required_default else "false",
+            "source_artifact_id": artifact_id,
+            "prompt_name": self.prompt_name,
+        }
+
+    def _read_content(self, ctx: ProjectContext, artifact_id: str) -> bytes:
+        if self._content_source is None:
+            return b""
+        return self._content_source(ctx, artifact_id)
+
+    def _profile_prompt(self) -> str:
+        if not self.prompt_name:
+            return ""
+        return self._profile.prompts.get(self.prompt_name, "")
+
+
+class DocumentClassifier(_StructuredEnricher):
+    kind = PROCESSOR_DOCUMENT_CLASSIFIER
+    artifact_type = ARTIFACT_TYPE_DOCUMENT_MAP
+    prompt_name = "classify_document"
+    confidence_default = 0.7
+
+    def _produce(self, ctx, artifact_id):
+        content = self._read_content(ctx, artifact_id)
+        prompt = self._profile_prompt()
+        json_data = {
+            "source_artifact_id": artifact_id,
+            "classification": [],
+            "sections": [],
+            "byte_size": len(content),
+            "prompt_used": bool(prompt),
+        }
+        md_text = (
+            "# Document map\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "Sections: 0\n"
+        )
+        return json_data, md_text
+
+
+class RequirementExtractor(_StructuredEnricher):
+    kind = PROCESSOR_REQUIREMENT_EXTRACTOR
+    artifact_type = ARTIFACT_TYPE_REQUIREMENTS
+    prompt_name = "extract_requirements"
+    confidence_default = 0.6
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {
+            "source_artifact_id": artifact_id,
+            "requirements": [],
+            "prompt_used": bool(self._profile_prompt()),
+        }
+        md_text = (
+            "# Requirements\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "Total: 0\n"
+        )
+        return json_data, md_text
+
+
+class TableExtractor(_StructuredEnricher):
+    kind = PROCESSOR_TABLE_EXTRACTOR
+    artifact_type = ARTIFACT_TYPE_TABLES
+    prompt_name = "extract_tables"
+    confidence_default = 0.7
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {"source_artifact_id": artifact_id, "tables": []}
+        md_text = (
+            "# Tables\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "Total: 0\n"
+        )
+        return json_data, md_text
+
+
+class VisualContentDescriber(_StructuredEnricher):
+    kind = PROCESSOR_VISUAL_DESCRIBER
+    artifact_type = ARTIFACT_TYPE_VISUALS
+    prompt_name = "describe_visuals"
+    confidence_default = 0.5
+    review_required_default = True
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {"source_artifact_id": artifact_id, "visuals": []}
+        md_text = (
+            "# Visual content\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "_Pending human review._\n"
+        )
+        return json_data, md_text
+
+
+class FormulaExtractor(_StructuredEnricher):
+    kind = PROCESSOR_FORMULA_EXTRACTOR
+    artifact_type = ARTIFACT_TYPE_FORMULAS
+    prompt_name = "extract_formulas"
+    confidence_default = 0.5
+    review_required_default = True
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {"source_artifact_id": artifact_id, "formulas": []}
+        md_text = (
+            "# Formulas\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "_Pending human review._\n"
+        )
+        return json_data, md_text
+
+
+class RiskExtractor(_StructuredEnricher):
+    kind = PROCESSOR_RISK_EXTRACTOR
+    artifact_type = ARTIFACT_TYPE_RISKS
+    prompt_name = "extract_risks"
+    confidence_default = 0.6
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {"source_artifact_id": artifact_id, "risks": []}
+        md_text = (
+            "# Risks\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "Total: 0\n"
+        )
+        return json_data, md_text
+
+
+class ConsistencyChecker(_StructuredEnricher):
+    kind = PROCESSOR_CONSISTENCY_CHECKER
+    artifact_type = ARTIFACT_TYPE_CONSISTENCY_FINDINGS
+    prompt_name = "check_consistency"
+    confidence_default = 0.5
+    review_required_default = True
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {"source_artifact_id": artifact_id, "findings": []}
+        md_text = (
+            "# Consistency findings\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            "_Pending human review._\n"
+        )
+        return json_data, md_text
+
+
+class SourceMapper(_StructuredEnricher):
+    kind = PROCESSOR_SOURCE_MAPPER
+    artifact_type = ARTIFACT_TYPE_SOURCE_MAP
+    prompt_name = "map_sources"
+    confidence_default = 0.9
+    formats = ("json",)
+
+    def _produce(self, ctx, artifact_id):
+        content = self._read_content(ctx, artifact_id)
+        json_data = {
+            "source_artifact_id": artifact_id,
+            "sources": [
+                {
+                    "artifact_id": artifact_id,
+                    "byte_size": len(content),
+                }
+            ],
+        }
+        return json_data, ""
+
+
+class ConfidenceAssessor(_StructuredEnricher):
+    kind = PROCESSOR_CONFIDENCE_ASSESSOR
+    artifact_type = ARTIFACT_TYPE_CONFIDENCE_ASSESSMENT
+    prompt_name = "assess_confidence"
+    confidence_default = 0.8
+
+    def _produce(self, ctx, artifact_id):
+        json_data = {
+            "source_artifact_id": artifact_id,
+            "assessments": [],
+            "default_confidence": self.confidence_default,
+        }
+        md_text = (
+            "# Confidence assessment\n\n"
+            f"Source artifact: `{artifact_id}`\n\n"
+            f"Default confidence: {self.confidence_default:.3f}\n"
+        )
+        return json_data, md_text
+
+
+GENERIC_ENRICHERS: tuple[type[_StructuredEnricher], ...] = (
+    DocumentClassifier,
+    RequirementExtractor,
+    TableExtractor,
+    VisualContentDescriber,
+    FormulaExtractor,
+    RiskExtractor,
+    ConsistencyChecker,
+    SourceMapper,
+    ConfidenceAssessor,
+)

@@ -425,7 +425,7 @@ class KnowledgeProcessingActivities:
             content_hash=content_hash,
             byte_size=len(draft.content),
             status=ProcessingStatus.SUCCEEDED,
-            review_status=ReviewStatus.NOT_REQUIRED,
+            review_status=ReviewStatus.PENDING if draft.review_required else ReviewStatus.NOT_REQUIRED,
             version=1,
             created_at=now,
             updated_at=now,
@@ -458,6 +458,7 @@ def _draft_to_payload(draft: ArtifactDraft) -> DraftPayload:
         source_document_ids=list(draft.source_document_ids),
         source_artifact_ids=list(draft.source_artifact_ids),
         metadata={k: str(v) for k, v in draft.metadata.items()},
+        review_required=draft.review_required,
     )
 
 
@@ -469,6 +470,7 @@ def _payload_to_draft(payload: DraftPayload) -> ArtifactDraft:
         source_document_ids=list(payload.source_document_ids),
         source_artifact_ids=list(payload.source_artifact_ids),
         metadata=dict(payload.metadata),
+        review_required=payload.review_required,
     )
 
 

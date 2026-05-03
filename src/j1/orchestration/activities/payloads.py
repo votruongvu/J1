@@ -207,6 +207,7 @@ class DraftPayload:
     source_document_ids: list[str] = field(default_factory=list)
     source_artifact_ids: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
+    review_required: bool = False
 
 
 @dataclass(frozen=True)

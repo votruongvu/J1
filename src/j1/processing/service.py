@@ -328,7 +328,7 @@ class ProcessingService:
             content_hash=content_hash,
             byte_size=len(draft.content),
             status=ProcessingStatus.SUCCEEDED,
-            review_status=ReviewStatus.NOT_REQUIRED,
+            review_status=ReviewStatus.PENDING if draft.review_required else ReviewStatus.NOT_REQUIRED,
             version=1,
             created_at=now,
             updated_at=now,
