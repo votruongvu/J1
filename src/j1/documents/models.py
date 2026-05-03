@@ -18,12 +18,18 @@ class SourceDocument:
 class DocumentRecord:
     document_id: str
     project: ProjectContext
-    uri: str
-    content_hash: str
-    byte_size: int
+    original_filename: str
+    stored_filename: str
     mime_type: str | None
+    file_size: int
+    checksum: str
     status: ProcessingStatus
     created_at: datetime
-    updated_at: datetime
-    title: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def tenant_id(self) -> str:
+        return self.project.tenant_id
+
+    @property
+    def project_id(self) -> str:
+        return self.project.project_id

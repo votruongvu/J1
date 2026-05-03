@@ -48,17 +48,18 @@ def test_document_record_construction():
     record = DocumentRecord(
         document_id="d1",
         project=_ctx(),
-        uri="file:///tmp/a.pdf",
-        content_hash="sha256:abc",
-        byte_size=10,
+        original_filename="a.pdf",
+        stored_filename="d1.pdf",
         mime_type="application/pdf",
+        file_size=10,
+        checksum="sha256:abc",
         status=ProcessingStatus.PENDING,
         created_at=_ts(),
-        updated_at=_ts(),
     )
     assert record.document_id == "d1"
     assert record.status is ProcessingStatus.PENDING
-    assert record.metadata == {}
+    assert record.tenant_id == "acme"
+    assert record.project_id == "alpha"
 
 
 def test_artifact_record_construction():
