@@ -87,11 +87,19 @@ class AnswerRequestDTO:
 
 
 @dataclass(frozen=True)
+class GraphPathDTO:
+    nodes: list[str] = field(default_factory=list)
+    edges: list[str] = field(default_factory=list)
+    description: str | None = None
+
+
+@dataclass(frozen=True)
 class AnswerDTO:
     answer: str
     mode_used: str
     sources: list[CitationDTO] = field(default_factory=list)
     related_artifacts: list[str] = field(default_factory=list)
+    graph_paths: list[GraphPathDTO] = field(default_factory=list)
     confidence: float = 0.0
     confidence_level: str = "ambiguous"
     review_required: bool = False
@@ -132,3 +140,79 @@ class EventDTO:
 @dataclass(frozen=True)
 class EventResultDTO:
     event_id: str
+
+
+# ---- Project / job-control DTOs -----------------------------------------
+
+
+@dataclass(frozen=True)
+class ProjectDTO:
+    project_id: str
+    tenant_id: str
+    profile: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectCreateRequestDTO:
+    project_id: str
+    profile: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectIngestionRequestDTO:
+    compiler_kind: str
+    enricher_kind: str | None = None
+    graph_builder_kind: str | None = None
+    indexer_kind: str | None = None
+    budget_limit_amount: str | None = None
+    budget_currency: str = "USD"
+    review_after: list[str] = field(default_factory=list)
+    actor: str = "system"
+    correlation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class JobActionResultDTO:
+    job_id: str
+    action: str
+
+
+# ---- Cost / review DTOs --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CostSummaryDTO:
+    project_id: str
+    tenant_id: str
+    total_amount: str
+    currency: str = "USD"
+    by_level: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReviewItemDTO:
+    review_item_id: str
+    tenant_id: str
+    project_id: str
+    target_kind: str
+    target_id: str
+    review_status: str
+    requested_at: datetime
+    actor: str | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReviewDecisionRequestDTO:
+    decision: str
+    actor: str
+    notes: str | None = None
+    correlation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewDecisionResultDTO:
+    review_item_id: str
+    review_status: str
+    audit_event_id: str | None = None

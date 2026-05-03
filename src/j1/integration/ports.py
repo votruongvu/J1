@@ -5,12 +5,20 @@ from j1.integration.dto import (
     AnswerRequestDTO,
     ArtifactDTO,
     CitationDTO,
+    CostSummaryDTO,
     DocumentDTO,
     EventDTO,
     EventResultDTO,
     FeedbackDTO,
     FeedbackResultDTO,
+    JobActionResultDTO,
     JobStatusDTO,
+    ProjectCreateRequestDTO,
+    ProjectDTO,
+    ProjectIngestionRequestDTO,
+    ReviewDecisionRequestDTO,
+    ReviewDecisionResultDTO,
+    ReviewItemDTO,
     SearchHitDTO,
 )
 from j1.projects.context import ProjectContext
@@ -113,3 +121,66 @@ class EventPublisherPort(Protocol):
         ctx: ProjectContext,
         event: EventDTO,
     ) -> EventResultDTO: ...
+
+
+class ProjectAdminPort(Protocol):
+    """Project lifecycle: provision a workspace for a new project."""
+
+    def create_project(
+        self,
+        tenant_id: str,
+        request: ProjectCreateRequestDTO,
+    ) -> ProjectDTO: ...
+
+
+class JobControlPort(Protocol):
+    """Start and signal long-running ingestion jobs."""
+
+    async def start_project_job(
+        self,
+        ctx: ProjectContext,
+        request: ProjectIngestionRequestDTO,
+    ) -> JobActionResultDTO: ...
+
+    async def pause_job(
+        self, ctx: ProjectContext, job_id: str
+    ) -> JobActionResultDTO: ...
+
+    async def resume_job(
+        self, ctx: ProjectContext, job_id: str
+    ) -> JobActionResultDTO: ...
+
+    async def cancel_job(
+        self, ctx: ProjectContext, job_id: str
+    ) -> JobActionResultDTO: ...
+
+
+class CostSummaryPort(Protocol):
+    """Aggregate spend for a project, optionally scoped by correlation."""
+
+    def get_cost_summary(
+        self,
+        ctx: ProjectContext,
+        *,
+        correlation_id: str | None = None,
+        document_id: str | None = None,
+        query_id: str | None = None,
+    ) -> CostSummaryDTO: ...
+
+
+class ReviewPort(Protocol):
+    """Manage the human-review queue."""
+
+    def list_reviews(
+        self,
+        ctx: ProjectContext,
+        *,
+        pending_only: bool = True,
+    ) -> list[ReviewItemDTO]: ...
+
+    def apply_decision(
+        self,
+        ctx: ProjectContext,
+        review_item_id: str,
+        request: ReviewDecisionRequestDTO,
+    ) -> ReviewDecisionResultDTO: ...

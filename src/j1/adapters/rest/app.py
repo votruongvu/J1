@@ -20,23 +20,35 @@ from j1.adapters.rest.envelope import envelope, error_envelope, error_response
 from j1.adapters.rest.schemas import (
     AnswerRecord,
     AnswerRequest,
+    ArtifactListRecord,
+    ArtifactRecord,
     CapabilitiesRecord,
     CapabilityRecord,
     CitationDetailRecord,
     CitationRecord,
     ContextBlockRecord,
+    CostSummaryRecord,
     DocumentRecord,
     DocumentStatusRecord,
     FeedbackReceiptRecord,
     FeedbackRequest,
+    GraphPathRecord,
     HealthRecord,
     IngestRequest,
+    JobActionRecord,
     JobEventRecord,
     JobEventsRecord,
     JobStartRecord,
     JobStatusRecord,
+    ProjectCreateRequest,
+    ProjectIngestionRequest,
+    ProjectRecord,
     RetrieveRequest,
     RetrieveResultRecord,
+    ReviewDecisionRecord,
+    ReviewDecisionRequest,
+    ReviewItemRecord,
+    ReviewListRecord,
     SearchHitRecord,
     SearchRequest,
     SearchResultRecord,
@@ -55,9 +67,13 @@ from j1.integration.dto import (
     AnswerRequestDTO,
     EventDTO,
     FeedbackDTO,
+    ProjectCreateRequestDTO,
+    ProjectIngestionRequestDTO,
+    ReviewDecisionRequestDTO,
 )
 from j1.integration.services import ApplicationFacade
 from j1.projects.context import ProjectContext
+from j1.review.queue import ReviewItemNotFoundError
 from j1.workspace.resolver import WorkspaceResolver
 
 TENANT_HEADER = "X-Tenant-Id"
@@ -109,13 +125,17 @@ def create_rest_api(
         description=description
         or "Standard REST surface over the J1 knowledge base.",
         openapi_tags=[
+            {"name": "projects", "description": "Project provisioning"},
             {"name": "documents", "description": "Document upload and retrieval"},
-            {"name": "ingestion-jobs", "description": "Processing-job status and events"},
+            {"name": "ingestion-jobs", "description": "Processing-job lifecycle: start, status, signals, events"},
+            {"name": "artifacts", "description": "Produced artifact lookup"},
             {"name": "search", "description": "Keyword search over indexed artifacts"},
             {"name": "retrieve", "description": "Context-block retrieval with citations"},
             {"name": "answer", "description": "Generated answers with citations"},
             {"name": "citations", "description": "Citation lookup"},
             {"name": "sources", "description": "Source document lookup"},
+            {"name": "cost", "description": "Spend reporting"},
+            {"name": "reviews", "description": "Human-review queue"},
             {"name": "feedback", "description": "User feedback capture"},
             {"name": "system", "description": "Health, version, capabilities"},
         ],
@@ -170,6 +190,15 @@ def create_rest_api(
             request_id=_req_id(request),
         )
 
+    @app.exception_handler(ReviewItemNotFoundError)
+    async def _review_missing(request, exc) -> JSONResponse:
+        return error_response(
+            status_code=404,
+            code="REVIEW_ITEM_NOT_FOUND",
+            message=str(exc),
+            request_id=_req_id(request),
+        )
+
     @app.exception_handler(ApplicationError)
     async def _app_error(request, exc: ApplicationError) -> JSONResponse:
         return error_response(
@@ -203,6 +232,17 @@ def create_rest_api(
     def get_ctx(request: Request) -> ProjectContext:
         return resolver(request)
 
+    def get_tenant(request: Request) -> str:
+        tenant_id = request.headers.get(TENANT_HEADER)
+        if not tenant_id:
+            raise HTTPException(
+                status_code=400, detail=f"{TENANT_HEADER} header required"
+            )
+        # Validate tenant via ProjectContext (raises InvalidIdentifierError →
+        # handled by the global exception handler).
+        ProjectContext(tenant_id=tenant_id, project_id="placeholder")
+        return tenant_id
+
     def require_search():
         if facade.search is None:
             raise HTTPException(503, "search capability not configured")
@@ -222,6 +262,57 @@ def create_rest_api(
         if job_starter is None:
             raise HTTPException(503, "ingestion job starter not configured")
         return job_starter
+
+    def require_project_admin():
+        if facade.project_admin is None:
+            raise HTTPException(503, "project admin capability not configured")
+        return facade.project_admin
+
+    def require_job_control():
+        if facade.job_control is None:
+            raise HTTPException(503, "job control capability not configured")
+        return facade.job_control
+
+    def require_cost_summary():
+        if facade.cost_summary is None:
+            raise HTTPException(503, "cost summary capability not configured")
+        return facade.cost_summary
+
+    def require_review():
+        if facade.review is None:
+            raise HTTPException(503, "review capability not configured")
+        return facade.review
+
+    # ---- Projects ----------------------------------------------------
+
+    @app.post(
+        "/projects",
+        tags=["projects"],
+        summary="Create a project workspace",
+        description=(
+            "Provisions the per-project filesystem layout under the resolved "
+            "tenant. Idempotent — repeated calls return the same project."
+        ),
+    )
+    def post_project(
+        request: Request,
+        body: ProjectCreateRequest,
+        tenant_id: str = Depends(get_tenant),
+        admin=Depends(require_project_admin),
+    ) -> dict[str, Any]:
+        result = admin.create_project(
+            tenant_id,
+            ProjectCreateRequestDTO(
+                project_id=body.project_id,
+                profile=body.profile,
+            ),
+        )
+        record = ProjectRecord(
+            project_id=result.project_id,
+            tenant_id=result.tenant_id,
+            profile=result.profile,
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
 
     # ---- Documents ---------------------------------------------------
 
@@ -365,6 +456,116 @@ def create_rest_api(
         record = JobEventsRecord(job_id=job_id, events=events)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
+    @app.post(
+        "/ingestion-jobs",
+        tags=["ingestion-jobs"],
+        summary="Start a project-wide ingestion job",
+        description=(
+            "Starts a `ProjectProcessingWorkflow` covering every pending "
+            "document in the project. Returns the assigned `jobId` — poll "
+            "`/ingestion-jobs/{jobId}` for status."
+        ),
+    )
+    async def post_ingestion_job(
+        request: Request,
+        body: ProjectIngestionRequest,
+        ctx: ProjectContext = Depends(get_ctx),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        result = await control.start_project_job(
+            ctx,
+            ProjectIngestionRequestDTO(
+                compiler_kind=body.compiler_kind,
+                enricher_kind=body.enricher_kind,
+                graph_builder_kind=body.graph_builder_kind,
+                indexer_kind=body.indexer_kind,
+                budget_limit_amount=body.budget_limit_amount,
+                budget_currency=body.budget_currency,
+                review_after=list(body.review_after),
+                actor=body.actor,
+                correlation_id=body.correlation_id,
+            ),
+        )
+        record = JobActionRecord(job_id=result.job_id, action=result.action)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-jobs/{job_id}/pause",
+        tags=["ingestion-jobs"],
+        summary="Pause a running ingestion job",
+    )
+    async def pause_ingestion_job(
+        request: Request,
+        job_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        result = await control.pause_job(ctx, job_id)
+        record = JobActionRecord(job_id=result.job_id, action=result.action)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-jobs/{job_id}/resume",
+        tags=["ingestion-jobs"],
+        summary="Resume a paused ingestion job",
+    )
+    async def resume_ingestion_job(
+        request: Request,
+        job_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        result = await control.resume_job(ctx, job_id)
+        record = JobActionRecord(job_id=result.job_id, action=result.action)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-jobs/{job_id}/cancel",
+        tags=["ingestion-jobs"],
+        summary="Cancel an ingestion job",
+    )
+    async def cancel_ingestion_job(
+        request: Request,
+        job_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        result = await control.cancel_job(ctx, job_id)
+        record = JobActionRecord(job_id=result.job_id, action=result.action)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Artifacts ---------------------------------------------------
+
+    @app.get(
+        "/artifacts",
+        tags=["artifacts"],
+        summary="List artifacts in a project",
+    )
+    def list_artifacts(
+        request: Request,
+        kind: str | None = Query(default=None),
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        records = facade.retrieval.list_artifacts(ctx, kind=kind)
+        record = ArtifactListRecord(
+            artifacts=[_artifact_record(r) for r in records]
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/artifacts/{artifact_id}",
+        tags=["artifacts"],
+        summary="Get a single artifact",
+    )
+    def get_artifact(
+        request: Request,
+        artifact_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        dto = facade.retrieval.get_artifact(ctx, artifact_id)
+        record = _artifact_record(dto)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
     # ---- Search / retrieve / answer ---------------------------------
 
     @app.post(
@@ -480,6 +681,14 @@ def create_rest_api(
                 for c in dto.sources
             ],
             related_artifacts=list(dto.related_artifacts),
+            graph_paths=[
+                GraphPathRecord(
+                    nodes=list(p.nodes),
+                    edges=list(p.edges),
+                    description=p.description,
+                )
+                for p in dto.graph_paths
+            ],
             confidence=dto.confidence,
             confidence_level=dto.confidence_level,
             review_required=dto.review_required,
@@ -572,6 +781,86 @@ def create_rest_api(
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
+    # ---- Cost --------------------------------------------------------
+
+    @app.get(
+        "/cost",
+        tags=["cost"],
+        summary="Get aggregated project spend",
+        description=(
+            "Optionally scope the aggregation by `correlationId`, "
+            "`documentId`, or `queryId` query parameters."
+        ),
+    )
+    def get_cost(
+        request: Request,
+        correlation_id: str | None = Query(default=None, alias="correlationId"),
+        document_id: str | None = Query(default=None, alias="documentId"),
+        query_id: str | None = Query(default=None, alias="queryId"),
+        ctx: ProjectContext = Depends(get_ctx),
+        cost=Depends(require_cost_summary),
+    ) -> dict[str, Any]:
+        dto = cost.get_cost_summary(
+            ctx,
+            correlation_id=correlation_id,
+            document_id=document_id,
+            query_id=query_id,
+        )
+        record = CostSummaryRecord(
+            project_id=dto.project_id,
+            tenant_id=dto.tenant_id,
+            total_amount=dto.total_amount,
+            currency=dto.currency,
+            by_level=dict(dto.by_level),
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Reviews -----------------------------------------------------
+
+    @app.get(
+        "/reviews",
+        tags=["reviews"],
+        summary="List review queue items",
+    )
+    def list_reviews(
+        request: Request,
+        pending_only: bool = Query(default=True, alias="pendingOnly"),
+        ctx: ProjectContext = Depends(get_ctx),
+        review=Depends(require_review),
+    ) -> dict[str, Any]:
+        items = review.list_reviews(ctx, pending_only=pending_only)
+        record = ReviewListRecord(items=[_review_record(i) for i in items])
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/reviews/{review_id}/decision",
+        tags=["reviews"],
+        summary="Apply a decision to a review item",
+    )
+    def post_review_decision(
+        request: Request,
+        review_id: str,
+        body: ReviewDecisionRequest,
+        ctx: ProjectContext = Depends(get_ctx),
+        review=Depends(require_review),
+    ) -> dict[str, Any]:
+        result = review.apply_decision(
+            ctx,
+            review_id,
+            ReviewDecisionRequestDTO(
+                decision=body.decision,
+                actor=body.actor,
+                notes=body.notes,
+                correlation_id=body.correlation_id,
+            ),
+        )
+        record = ReviewDecisionRecord(
+            review_item_id=result.review_item_id,
+            review_status=result.review_status,
+            audit_event_id=result.audit_event_id,
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
     # ---- Health / version / capabilities ----------------------------
 
     @app.get("/health", tags=["system"], summary="Liveness check")
@@ -630,6 +919,31 @@ def create_rest_api(
                 available=True,
                 description="GET /citations/{id}",
             ),
+            CapabilityRecord(
+                name="projects.create",
+                available=facade.project_admin is not None,
+                description="POST /projects",
+            ),
+            CapabilityRecord(
+                name="ingestion-jobs.control",
+                available=facade.job_control is not None,
+                description="POST /ingestion-jobs[/{id}/{pause,resume,cancel}]",
+            ),
+            CapabilityRecord(
+                name="artifacts",
+                available=True,
+                description="GET /artifacts[/{id}]",
+            ),
+            CapabilityRecord(
+                name="cost",
+                available=facade.cost_summary is not None,
+                description="GET /cost",
+            ),
+            CapabilityRecord(
+                name="reviews",
+                available=facade.review is not None,
+                description="GET /reviews, POST /reviews/{id}/decision",
+            ),
         ]
         record = CapabilitiesRecord(api_version=version, capabilities=caps)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
@@ -656,6 +970,41 @@ def _document_record(dto) -> DocumentRecord:
         checksum=dto.checksum,
         status=dto.status,
         created_at=dto.created_at,
+    )
+
+
+def _artifact_record(dto) -> ArtifactRecord:
+    return ArtifactRecord(
+        artifact_id=dto.artifact_id,
+        tenant_id=dto.tenant_id,
+        project_id=dto.project_id,
+        kind=dto.kind,
+        location=dto.location,
+        content_hash=dto.content_hash,
+        byte_size=dto.byte_size,
+        status=dto.status,
+        review_status=dto.review_status,
+        version=dto.version,
+        created_at=dto.created_at,
+        updated_at=dto.updated_at,
+        source_document_ids=list(dto.source_document_ids),
+        source_artifact_ids=list(dto.source_artifact_ids),
+        metadata=dict(dto.metadata),
+    )
+
+
+def _review_record(dto) -> ReviewItemRecord:
+    return ReviewItemRecord(
+        review_item_id=dto.review_item_id,
+        tenant_id=dto.tenant_id,
+        project_id=dto.project_id,
+        target_kind=dto.target_kind,
+        target_id=dto.target_id,
+        review_status=dto.review_status,
+        requested_at=dto.requested_at,
+        actor=dto.actor,
+        notes=dto.notes,
+        metadata=dict(dto.metadata),
     )
 
 

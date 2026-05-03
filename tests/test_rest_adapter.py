@@ -1,6 +1,8 @@
 import io
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,18 +14,24 @@ from j1.adapters.rest import (
     create_rest_api,
 )
 from j1.artifacts.models import ArtifactRecord
+from j1.cost.aggregator import CostAggregator
+from j1.cost.breakdown import CostBreakdown
 from j1.documents.models import DocumentRecord
 from j1.integration import (
     AnswerService,
     ApplicationFacade,
     CitationLookupService,
+    CostSummaryService,
     DocumentIngestionService,
     EventPublisherService,
     FeedbackService,
     JsonlFeedbackStore,
+    ProjectAdminService,
     RetrievalService,
+    ReviewService,
     SearchService,
     SourceLookupService,
+    TemporalJobControlService,
 )
 from j1.jobs.status import ProcessingStatus, ReviewStatus
 from j1.profiles import DEFAULT_PROFILE_ID, ProfileLoader
@@ -36,6 +44,7 @@ from j1.query.providers import (
     KnowledgeQueryProvider,
     ReportGenerator,
 )
+from j1.review.models import ReviewItem
 from j1.search.indexer import SqliteSearchIndexer
 from j1.workspace.layout import WorkspaceArea
 
@@ -70,6 +79,35 @@ def feedback_store(workspace) -> JsonlFeedbackStore:
     return JsonlFeedbackStore(workspace)
 
 
+class _MockHandle:
+    def __init__(self, mock: "_MockTemporalClient", workflow_id: str) -> None:
+        self._mock = mock
+        self.id = workflow_id
+
+    async def signal(self, name: str, *args: Any, **kwargs: Any) -> None:
+        self._mock.signals.append((self.id, name))
+
+
+class _MockTemporalClient:
+    def __init__(self) -> None:
+        self.started: list[tuple[str, Any]] = []
+        self.signals: list[tuple[str, str]] = []
+
+    async def start_workflow(
+        self, fn: Any, arg: Any, *, id: str, task_queue: str, **kwargs: Any
+    ) -> _MockHandle:
+        self.started.append((id, arg))
+        return _MockHandle(self, id)
+
+    def get_workflow_handle(self, workflow_id: str) -> _MockHandle:
+        return _MockHandle(self, workflow_id)
+
+
+@pytest.fixture
+def mock_temporal() -> _MockTemporalClient:
+    return _MockTemporalClient()
+
+
 @pytest.fixture
 def application_facade(
     intake_service,
@@ -79,6 +117,11 @@ def application_facade(
     query_engine,
     feedback_store,
     audit_recorder,
+    workspace,
+    review_queue,
+    review_activities,
+    cost_sink,
+    mock_temporal,
 ) -> ApplicationFacade:
     return ApplicationFacade(
         ingestion=DocumentIngestionService(intake_service),
@@ -89,6 +132,14 @@ def application_facade(
         event_publisher=EventPublisherService(audit_recorder),
         search=SearchService(search_indexer),
         answer=AnswerService(query_engine),
+        project_admin=ProjectAdminService(workspace),
+        job_control=TemporalJobControlService(
+            client_provider=lambda: mock_temporal,
+            task_queue="j1-test",
+            workflow_id_factory=lambda ctx: f"wf-{ctx.project_id}",
+        ),
+        cost_summary=CostSummaryService(CostAggregator(workspace)),
+        review=ReviewService(review_queue, review_activities),
     )
 
 
@@ -603,15 +654,23 @@ def test_get_capabilities(client):
         "job_events",
         "feedback",
         "citations",
+        "projects.create",
+        "ingestion-jobs.control",
+        "artifacts",
+        "cost",
+        "reviews",
     }
     assert expected.issubset(names)
-    # job_starter wired → ingest available; search/answer wired in fixture.
     by_name = {c["name"]: c for c in data["capabilities"]}
     assert by_name["documents.ingest"]["available"] is True
     assert by_name["search"]["available"] is True
     assert by_name["answer"]["available"] is True
     assert by_name["job_status"]["available"] is False  # no Temporal in tests
     assert by_name["job_events"]["available"] is True   # workspace wired
+    assert by_name["projects.create"]["available"] is True
+    assert by_name["ingestion-jobs.control"]["available"] is True
+    assert by_name["cost"]["available"] is True
+    assert by_name["reviews"]["available"] is True
 
 
 # ---- OpenAPI -------------------------------------------------------
@@ -623,17 +682,27 @@ def test_openapi_spec_lists_all_endpoints(client):
     spec = response.json()
     paths = set(spec["paths"].keys())
     expected = {
+        "/projects",
         "/documents",
         "/documents/{document_id}",
         "/documents/{document_id}/ingest",
         "/documents/{document_id}/status",
+        "/ingestion-jobs",
         "/ingestion-jobs/{job_id}",
         "/ingestion-jobs/{job_id}/events",
+        "/ingestion-jobs/{job_id}/pause",
+        "/ingestion-jobs/{job_id}/resume",
+        "/ingestion-jobs/{job_id}/cancel",
+        "/artifacts",
+        "/artifacts/{artifact_id}",
         "/search",
         "/retrieve",
         "/answer",
         "/citations/{citation_id}",
         "/sources/{source_id}",
+        "/cost",
+        "/reviews",
+        "/reviews/{review_id}/decision",
         "/feedback",
         "/health",
         "/version",
@@ -646,13 +715,17 @@ def test_openapi_includes_tags_and_descriptions(client):
     spec = client.get("/openapi.json").json()
     tag_names = {t["name"] for t in spec.get("tags", [])}
     assert {
+        "projects",
         "documents",
         "ingestion-jobs",
+        "artifacts",
         "search",
         "retrieve",
         "answer",
         "citations",
         "sources",
+        "cost",
+        "reviews",
         "feedback",
         "system",
     }.issubset(tag_names)
@@ -679,3 +752,293 @@ def test_custom_context_resolver(application_facade):
     response = c.get("/documents/missing")  # no headers
     # 404 (not 400) — context was resolved by the resolver, document just doesn't exist.
     assert response.status_code == 404
+
+
+# ---- Projects -------------------------------------------------------
+
+
+def test_post_project_provisions_workspace(client, workspace):
+    response = client.post(
+        "/projects",
+        json={"projectId": "beta"},
+        headers={TENANT_HEADER: "acme"},
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["projectId"] == "beta"
+    assert data["tenantId"] == "acme"
+    from j1.projects.context import ProjectContext
+
+    raw_dir = workspace.area(
+        ProjectContext(tenant_id="acme", project_id="beta"),
+        WorkspaceArea.RAW,
+    )
+    assert raw_dir.exists()
+
+
+def test_post_project_requires_tenant_header(client):
+    response = client.post("/projects", json={"projectId": "beta"})
+    assert response.status_code == 400
+
+
+def test_post_project_validates_project_id(client):
+    response = client.post(
+        "/projects", json={"projectId": ""}, headers={TENANT_HEADER: "acme"}
+    )
+    assert response.status_code == 422
+
+
+def test_post_project_without_capability_returns_503(application_facade):
+    facade = ApplicationFacade(
+        ingestion=application_facade.ingestion,
+        retrieval=application_facade.retrieval,
+        citation_lookup=application_facade.citation_lookup,
+        source_lookup=application_facade.source_lookup,
+        feedback=application_facade.feedback,
+        event_publisher=application_facade.event_publisher,
+    )
+    c = TestClient(create_rest_api(facade))
+    response = c.post(
+        "/projects", json={"projectId": "x"}, headers={TENANT_HEADER: "acme"}
+    )
+    assert response.status_code == 503
+
+
+# ---- Project ingestion job control ---------------------------------
+
+
+def test_post_ingestion_job_starts_workflow(client, mock_temporal):
+    response = client.post(
+        "/ingestion-jobs",
+        json={"compilerKind": "external_knowledge_compiler"},
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["jobId"] == "wf-alpha"
+    assert data["action"] == "start"
+    assert mock_temporal.started and mock_temporal.started[0][0] == "wf-alpha"
+
+
+def test_post_ingestion_job_validates_required_field(client):
+    response = client.post(
+        "/ingestion-jobs", json={}, headers=_headers()
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "cancel"])
+def test_signal_endpoints_dispatch_to_temporal(client, mock_temporal, action):
+    response = client.post(
+        f"/ingestion-jobs/wf-1/{action}", headers=_headers()
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["jobId"] == "wf-1"
+    assert data["action"] == action
+    assert ("wf-1", action) in mock_temporal.signals
+
+
+def test_ingestion_job_control_without_capability_returns_503(application_facade):
+    facade = ApplicationFacade(
+        ingestion=application_facade.ingestion,
+        retrieval=application_facade.retrieval,
+        citation_lookup=application_facade.citation_lookup,
+        source_lookup=application_facade.source_lookup,
+        feedback=application_facade.feedback,
+        event_publisher=application_facade.event_publisher,
+    )
+    c = TestClient(create_rest_api(facade))
+    response = c.post(
+        "/ingestion-jobs",
+        json={"compilerKind": "x"},
+        headers=_headers(),
+    )
+    assert response.status_code == 503
+
+
+# ---- Artifacts ------------------------------------------------------
+
+
+def test_get_artifacts_lists_records(
+    client, ctx, artifact_registry, workspace
+):
+    _stage_artifact(workspace, ctx, artifact_registry, artifact_id="a-1")
+    _stage_artifact(workspace, ctx, artifact_registry, artifact_id="a-2")
+    response = client.get("/artifacts", headers=_headers())
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    ids = {a["artifactId"] for a in data["artifacts"]}
+    assert ids == {"a-1", "a-2"}
+
+
+def test_get_artifacts_filters_by_kind(
+    client, ctx, artifact_registry, workspace
+):
+    _stage_artifact(
+        workspace, ctx, artifact_registry, artifact_id="a-1", kind="kind-A"
+    )
+    _stage_artifact(
+        workspace, ctx, artifact_registry, artifact_id="a-2", kind="kind-B"
+    )
+    response = client.get("/artifacts?kind=kind-A", headers=_headers())
+    data = _assert_success_envelope(response.json())
+    assert [a["artifactId"] for a in data["artifacts"]] == ["a-1"]
+
+
+def test_get_artifact_returns_record(client, ctx, artifact_registry, workspace):
+    _stage_artifact(workspace, ctx, artifact_registry, artifact_id="a-1")
+    response = client.get("/artifacts/a-1", headers=_headers())
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["artifactId"] == "a-1"
+    # Path must be workspace-relative, not absolute.
+    assert not data["location"].startswith("/")
+
+
+def test_get_artifact_missing_returns_404(client):
+    response = client.get("/artifacts/missing", headers=_headers())
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "ARTIFACT_NOT_FOUND"
+
+
+# ---- Cost -----------------------------------------------------------
+
+
+def test_get_cost_summary_aggregates(client, ctx, cost_recorder):
+    cost_recorder.record(
+        ctx,
+        CostBreakdown(
+            vendor="anthropic",
+            model="m",
+            unit_kind="input_tokens",
+            units=10,
+            amount=Decimal("0.10"),
+        ),
+        correlation_id="run-1",
+    )
+    response = client.get(
+        "/cost?correlationId=run-1", headers=_headers()
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["totalAmount"] == "0.10"
+    assert data["byLevel"]["workflow_run"] == "0.10"
+
+
+def test_get_cost_without_capability_returns_503(application_facade):
+    facade = ApplicationFacade(
+        ingestion=application_facade.ingestion,
+        retrieval=application_facade.retrieval,
+        citation_lookup=application_facade.citation_lookup,
+        source_lookup=application_facade.source_lookup,
+        feedback=application_facade.feedback,
+        event_publisher=application_facade.event_publisher,
+    )
+    c = TestClient(create_rest_api(facade))
+    response = c.get("/cost", headers=_headers())
+    assert response.status_code == 503
+
+
+# ---- Reviews --------------------------------------------------------
+
+
+def test_list_reviews_empty(client):
+    response = client.get("/reviews", headers=_headers())
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["items"] == []
+
+
+def test_list_reviews_returns_pending_items(client, ctx, review_queue):
+    review_queue.add(
+        ReviewItem(
+            review_item_id="r-1",
+            project=ctx,
+            target_kind="artifact",
+            target_id="art-1",
+            review_status=ReviewStatus.PENDING,
+            requested_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    response = client.get("/reviews", headers=_headers())
+    data = _assert_success_envelope(response.json())
+    assert len(data["items"]) == 1
+    assert data["items"][0]["reviewItemId"] == "r-1"
+    assert data["items"][0]["reviewStatus"] == "pending"
+
+
+def test_apply_review_decision_updates_queue(client, ctx, review_queue):
+    review_queue.add(
+        ReviewItem(
+            review_item_id="r-1",
+            project=ctx,
+            target_kind="artifact",
+            target_id="art-1",
+            review_status=ReviewStatus.PENDING,
+            requested_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    response = client.post(
+        "/reviews/r-1/decision",
+        json={"decision": "approved", "actor": "alice"},
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["reviewItemId"] == "r-1"
+    assert data["reviewStatus"] == "approved"
+    # Queue is updated in place.
+    items = review_queue.list_items(ctx)
+    assert items[0].review_status == ReviewStatus.APPROVED
+
+
+def test_apply_review_decision_unknown_decision_returns_400(
+    client, ctx, review_queue
+):
+    review_queue.add(
+        ReviewItem(
+            review_item_id="r-1",
+            project=ctx,
+            target_kind="artifact",
+            target_id="art-1",
+            review_status=ReviewStatus.PENDING,
+            requested_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    response = client.post(
+        "/reviews/r-1/decision",
+        json={"decision": "wibble", "actor": "alice"},
+        headers=_headers(),
+    )
+    assert response.status_code == 400
+
+
+def test_apply_review_decision_missing_review_returns_404(client):
+    response = client.post(
+        "/reviews/missing/decision",
+        json={"decision": "approved", "actor": "alice"},
+        headers=_headers(),
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "REVIEW_ITEM_NOT_FOUND"
+
+
+# ---- Answer / graph_paths ------------------------------------------
+
+
+def test_answer_response_includes_graph_paths_field(
+    client, ctx, artifact_registry, search_indexer, workspace
+):
+    _stage_artifact(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-1", content=b"the schedule is firm",
+    )
+    search_indexer.index(ctx, ["a-1"])
+    response = client.post(
+        "/answer", json={"question": "schedule"}, headers=_headers()
+    )
+    data = _assert_success_envelope(response.json())
+    # Field must always be present (even if empty) so consumers can rely on it.
+    assert "graphPaths" in data
+    assert isinstance(data["graphPaths"], list)

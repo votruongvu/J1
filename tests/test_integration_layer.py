@@ -4,7 +4,7 @@ Verifies:
 1. Default port implementations call the underlying J1 services.
 2. DTO converters produce the right shapes.
 3. Dependency direction stays clean — core modules don't import from
-   `j1.api` or `j1.integration`.
+   `j1.integration` or `j1.adapters`.
 """
 
 import ast
@@ -482,8 +482,8 @@ def test_application_facade_optional_ports_can_be_none(
 
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "j1"
-_FORBIDDEN_PREFIXES = ("j1.api", "j1.integration")
-_BOUNDARY_PACKAGES = {"api", "integration", "adapters"}
+_FORBIDDEN_PREFIXES = ("j1.integration", "j1.adapters")
+_BOUNDARY_PACKAGES = {"integration", "adapters"}
 
 
 def _collect_imported_modules(path: Path) -> set[str]:
@@ -503,14 +503,14 @@ def _collect_imported_modules(path: Path) -> set[str]:
 
 
 def test_core_modules_do_not_import_external_layer():
-    """Core J1 modules must not depend on `j1.api` or `j1.integration`.
+    """Core J1 modules must not depend on `j1.integration` or `j1.adapters`.
 
-    The dependency arrow points only outward: external adapters depend on
-    integration ports, integration depends on core. A core file pulling
-    something from `j1.api` or `j1.integration` would invert that.
+    The dependency arrow points only outward: adapters depend on integration
+    ports, integration depends on core. A core file pulling something from
+    `j1.integration` or `j1.adapters` would invert that.
 
     Exception: the top-level `src/j1/__init__.py` re-exports the public
-    surface, which legitimately includes integration + api types. That's
+    surface, which legitimately includes integration + adapter types. That's
     the package facade, not a core module.
     """
     offenders: list[tuple[Path, str]] = []
@@ -534,7 +534,7 @@ def test_core_modules_do_not_import_external_layer():
 
 def test_integration_does_not_import_protocol_adapters():
     """`j1.integration` defines ports — it must not import any protocol
-    adapter (such as `j1.api`). Adapters depend on integration, not the reverse.
+    adapter under `j1.adapters`. Adapters depend on integration, not the reverse.
     """
     integration_root = _SRC_ROOT / "integration"
     offenders: list[tuple[Path, str]] = []
@@ -543,9 +543,9 @@ def test_integration_does_not_import_protocol_adapters():
         if "__pycache__" in rel.parts:
             continue
         for imp in _collect_imported_modules(py_file):
-            if imp == "j1.api" or imp.startswith("j1.api."):
+            if imp == "j1.adapters" or imp.startswith("j1.adapters."):
                 offenders.append((rel, imp))
     assert not offenders, (
-        "j1.integration must not import from j1.api:\n"
+        "j1.integration must not import from j1.adapters:\n"
         + "\n".join(f"  {p}: imports {imp}" for p, imp in offenders)
     )

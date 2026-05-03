@@ -135,12 +135,19 @@ class AnswerRequest(CamelModel):
     max_results: int = Field(default=10, ge=1, le=50)
 
 
+class GraphPathRecord(CamelModel):
+    nodes: list[str] = Field(default_factory=list)
+    edges: list[str] = Field(default_factory=list)
+    description: str | None = None
+
+
 class AnswerRecord(CamelModel):
     question: str
     answer: str
     mode_used: str
     citations: list[CitationRecord]
     related_artifacts: list[str] = Field(default_factory=list)
+    graph_paths: list[GraphPathRecord] = Field(default_factory=list)
     confidence: float = 0.0
     confidence_level: str = "ambiguous"
     review_required: bool = False
@@ -211,3 +218,106 @@ class CapabilityRecord(CamelModel):
 class CapabilitiesRecord(CamelModel):
     api_version: str
     capabilities: list[CapabilityRecord]
+
+
+# ---- Projects --------------------------------------------------------
+
+
+class ProjectCreateRequest(CamelModel):
+    project_id: str = Field(min_length=1)
+    profile: str | None = None
+
+
+class ProjectRecord(CamelModel):
+    project_id: str
+    tenant_id: str
+    profile: str | None = None
+
+
+# ---- Project ingestion jobs (workflow control) -----------------------
+
+
+class ProjectIngestionRequest(CamelModel):
+    compiler_kind: str = Field(min_length=1)
+    enricher_kind: str | None = None
+    graph_builder_kind: str | None = None
+    indexer_kind: str | None = None
+    budget_limit_amount: str | None = None
+    budget_currency: str = "USD"
+    review_after: list[str] = Field(default_factory=list)
+    actor: str = "system"
+    correlation_id: str | None = None
+
+
+class JobActionRecord(CamelModel):
+    job_id: str
+    action: str
+
+
+# ---- Artifacts -------------------------------------------------------
+
+
+class ArtifactRecord(CamelModel):
+    artifact_id: str
+    tenant_id: str
+    project_id: str
+    kind: str
+    location: str
+    content_hash: str
+    byte_size: int
+    status: str
+    review_status: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    source_document_ids: list[str] = Field(default_factory=list)
+    source_artifact_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactListRecord(CamelModel):
+    artifacts: list[ArtifactRecord]
+
+
+# ---- Cost ------------------------------------------------------------
+
+
+class CostSummaryRecord(CamelModel):
+    project_id: str
+    tenant_id: str
+    total_amount: str
+    currency: str = "USD"
+    by_level: dict[str, str] = Field(default_factory=dict)
+
+
+# ---- Reviews ---------------------------------------------------------
+
+
+class ReviewItemRecord(CamelModel):
+    review_item_id: str
+    tenant_id: str
+    project_id: str
+    target_kind: str
+    target_id: str
+    review_status: str
+    requested_at: datetime
+    actor: str | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewListRecord(CamelModel):
+    items: list[ReviewItemRecord]
+
+
+class ReviewDecisionRequest(CamelModel):
+    decision: str = Field(min_length=1)
+    actor: str = Field(min_length=1)
+    notes: str | None = None
+    correlation_id: str | None = None
+
+
+class ReviewDecisionRecord(CamelModel):
+    review_item_id: str
+    review_status: str
+    audit_event_id: str | None = None

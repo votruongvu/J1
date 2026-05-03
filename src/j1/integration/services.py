@@ -7,19 +7,32 @@ from typing import Any, BinaryIO
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
+from j1.cost.aggregator import CostAggregator
 from j1.documents.models import DocumentRecord
-from j1.errors.exceptions import DocumentNotFoundError
+from j1.errors.exceptions import (
+    DocumentNotFoundError,
+    InvalidIdentifierError,
+)
 from j1.integration.dto import (
     AnswerDTO,
     AnswerRequestDTO,
     ArtifactDTO,
     CitationDTO,
+    CostSummaryDTO,
     DocumentDTO,
     EventDTO,
     EventResultDTO,
     FeedbackDTO,
     FeedbackResultDTO,
+    GraphPathDTO,
+    JobActionResultDTO,
     JobStatusDTO,
+    ProjectCreateRequestDTO,
+    ProjectDTO,
+    ProjectIngestionRequestDTO,
+    ReviewDecisionRequestDTO,
+    ReviewDecisionResultDTO,
+    ReviewItemDTO,
     SearchHitDTO,
 )
 from j1.integration.feedback import (
@@ -28,10 +41,22 @@ from j1.integration.feedback import (
 )
 from j1.intake.registry import SourceRegistry
 from j1.intake.service import DocumentIntakeService
+from j1.orchestration.activities.payloads import (
+    ApplyReviewDecisionInput,
+    ProjectScope,
+)
+from j1.orchestration.activities.review import ReviewActivities
+from j1.orchestration.workflows.project_processing import (
+    ProjectProcessingRequest,
+    ProjectProcessingWorkflow,
+)
 from j1.projects.context import ProjectContext
 from j1.query.engine import HybridQueryEngine
 from j1.query.models import QueryMode, QueryRequest
+from j1.review.models import ReviewItem
+from j1.review.queue import ReviewQueue
 from j1.search.indexer import SearchHit, SqliteSearchIndexer
+from j1.workspace.resolver import WorkspaceResolver
 
 
 # ---- DTO converters -------------------------------------------------------
@@ -69,6 +94,21 @@ def _artifact_to_dto(record: ArtifactRecord) -> ArtifactDTO:
         source_document_ids=list(record.source_document_ids),
         source_artifact_ids=list(record.source_artifact_ids),
         metadata=dict(record.metadata),
+    )
+
+
+def _review_to_dto(item: ReviewItem) -> ReviewItemDTO:
+    return ReviewItemDTO(
+        review_item_id=item.review_item_id,
+        tenant_id=item.project.tenant_id,
+        project_id=item.project.project_id,
+        target_kind=item.target_kind,
+        target_id=item.target_id,
+        review_status=item.review_status.value,
+        requested_at=item.requested_at,
+        actor=item.actor,
+        notes=item.notes,
+        metadata=dict(item.metadata),
     )
 
 
@@ -227,6 +267,14 @@ class AnswerService:
                 for s in response.sources
             ],
             related_artifacts=list(response.related_artifacts),
+            graph_paths=[
+                GraphPathDTO(
+                    nodes=list(p.nodes),
+                    edges=list(p.edges),
+                    description=p.description,
+                )
+                for p in response.graph_paths
+            ],
             confidence=response.confidence,
             confidence_level=response.confidence_level.value,
             review_required=response.review_required,
@@ -356,6 +404,188 @@ class EventPublisherService:
         return EventResultDTO(event_id=event_id)
 
 
+# ---- Project / job-control services --------------------------------------
+
+
+class ProjectAdminService:
+    """Provisions per-project workspace directories."""
+
+    def __init__(self, workspace: WorkspaceResolver) -> None:
+        self._workspace = workspace
+
+    def create_project(
+        self,
+        tenant_id: str,
+        request: ProjectCreateRequestDTO,
+    ) -> ProjectDTO:
+        ctx = ProjectContext(
+            tenant_id=tenant_id,
+            project_id=request.project_id,
+            profile=request.profile,
+        )
+        self._workspace.ensure(ctx)
+        return ProjectDTO(
+            project_id=ctx.project_id,
+            tenant_id=ctx.tenant_id,
+            profile=ctx.profile,
+        )
+
+
+class TemporalJobControlService:
+    """Starts a `ProjectProcessingWorkflow` and signals it for control.
+
+    `client_provider` returns a Temporal client (kept as a callable so the
+    integration layer never imports `temporalio.client.Client` directly).
+    """
+
+    def __init__(
+        self,
+        client_provider: Callable[[], Any],
+        *,
+        task_queue: str,
+        workflow_id_factory: Callable[[ProjectContext], str] | None = None,
+    ) -> None:
+        self._client_provider = client_provider
+        self._task_queue = task_queue
+        self._workflow_id_factory = workflow_id_factory or _default_workflow_id
+
+    async def start_project_job(
+        self,
+        ctx: ProjectContext,
+        request: ProjectIngestionRequestDTO,
+    ) -> JobActionResultDTO:
+        client = self._client_provider()
+        scope = ProjectScope.from_context(ctx)
+        workflow_request = ProjectProcessingRequest(
+            scope=scope,
+            compiler_kind=request.compiler_kind,
+            enricher_kind=request.enricher_kind,
+            graph_builder_kind=request.graph_builder_kind,
+            indexer_kind=request.indexer_kind,
+            budget_limit_amount=request.budget_limit_amount,
+            budget_currency=request.budget_currency,
+            review_after=tuple(request.review_after),
+            actor=request.actor,
+            correlation_id=request.correlation_id,
+        )
+        workflow_id = self._workflow_id_factory(ctx)
+        await client.start_workflow(
+            ProjectProcessingWorkflow.run,
+            workflow_request,
+            id=workflow_id,
+            task_queue=self._task_queue,
+        )
+        return JobActionResultDTO(job_id=workflow_id, action="start")
+
+    async def pause_job(
+        self, ctx: ProjectContext, job_id: str
+    ) -> JobActionResultDTO:
+        await self._signal(job_id, "pause")
+        return JobActionResultDTO(job_id=job_id, action="pause")
+
+    async def resume_job(
+        self, ctx: ProjectContext, job_id: str
+    ) -> JobActionResultDTO:
+        await self._signal(job_id, "resume")
+        return JobActionResultDTO(job_id=job_id, action="resume")
+
+    async def cancel_job(
+        self, ctx: ProjectContext, job_id: str
+    ) -> JobActionResultDTO:
+        await self._signal(job_id, "cancel")
+        return JobActionResultDTO(job_id=job_id, action="cancel")
+
+    async def _signal(self, job_id: str, name: str) -> None:
+        client = self._client_provider()
+        handle = client.get_workflow_handle(job_id)
+        await handle.signal(name)
+
+
+def _default_workflow_id(ctx: ProjectContext) -> str:
+    return f"j1-{ctx.tenant_id}-{ctx.project_id}-{uuid.uuid4().hex[:12]}"
+
+
+class CostSummaryService:
+    def __init__(self, aggregator: CostAggregator) -> None:
+        self._agg = aggregator
+
+    def get_cost_summary(
+        self,
+        ctx: ProjectContext,
+        *,
+        correlation_id: str | None = None,
+        document_id: str | None = None,
+        query_id: str | None = None,
+    ) -> CostSummaryDTO:
+        total = self._agg.aggregate(
+            ctx,
+            correlation_id=correlation_id,
+            document_id=document_id,
+            query_id=query_id,
+        )
+        by_level = self._agg.by_levels(
+            ctx,
+            correlation_id=correlation_id,
+            document_id=document_id,
+            query_id=query_id,
+        )
+        return CostSummaryDTO(
+            project_id=ctx.project_id,
+            tenant_id=ctx.tenant_id,
+            total_amount=str(total),
+            by_level={
+                level.value: str(amount) for level, amount in by_level.items()
+            },
+        )
+
+
+class ReviewService:
+    """Wraps the review queue and `apply_review_decision` activity."""
+
+    def __init__(
+        self,
+        queue: ReviewQueue,
+        review_activities: ReviewActivities,
+    ) -> None:
+        self._queue = queue
+        self._review_activities = review_activities
+
+    def list_reviews(
+        self,
+        ctx: ProjectContext,
+        *,
+        pending_only: bool = True,
+    ) -> list[ReviewItemDTO]:
+        items = (
+            self._queue.list_pending(ctx)
+            if pending_only
+            else self._queue.list_items(ctx)
+        )
+        return [_review_to_dto(i) for i in items]
+
+    def apply_decision(
+        self,
+        ctx: ProjectContext,
+        review_item_id: str,
+        request: ReviewDecisionRequestDTO,
+    ) -> ReviewDecisionResultDTO:
+        result = self._review_activities.apply_review_decision_activity(
+            ApplyReviewDecisionInput(
+                scope=ProjectScope.from_context(ctx),
+                review_item_id=review_item_id,
+                decision=request.decision,
+                actor=request.actor,
+                notes=request.notes,
+                correlation_id=request.correlation_id,
+            )
+        )
+        return ReviewDecisionResultDTO(
+            review_item_id=result.review_item_id,
+            review_status=result.review_status,
+            audit_event_id=result.audit_event_id,
+        )
+
+
 # ---- Application facade ---------------------------------------------------
 
 
@@ -367,10 +597,10 @@ class ApplicationFacade:
     dispatch protocol-specific requests to the relevant port. They never
     reach into the underlying J1 services directly.
 
-    Optional ports (`job_status`, `search`, `answer`) can be `None` if the
-    deployment doesn't configure their backing service (no Temporal client,
-    no FTS5, no profile loader, etc.). Adapters check for `None` and
-    decline to expose those routes.
+    Optional ports may be `None` if the deployment doesn't configure their
+    backing service (no Temporal client, no FTS5 / profile loader, no review
+    queue wiring). Adapters check for `None` and decline to expose those
+    routes (typically with a 503).
     """
 
     ingestion: DocumentIngestionService
@@ -382,3 +612,7 @@ class ApplicationFacade:
     job_status: TemporalJobStatusService | None = None
     search: SearchService | None = None
     answer: AnswerService | None = None
+    project_admin: ProjectAdminService | None = None
+    job_control: TemporalJobControlService | None = None
+    cost_summary: CostSummaryService | None = None
+    review: ReviewService | None = None

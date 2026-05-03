@@ -18,19 +18,25 @@ from j1 import (
 )
 
 facade = ApplicationFacade(
-    ingestion=...,         # IngestionPort
-    source_lookup=...,     # SourceLookupPort
-    citation_lookup=...,   # CitationLookupPort
-    feedback=...,          # FeedbackPort
-    search=...,            # SearchPort           (optional)
-    answer=...,            # AnswerPort           (optional)
-    job_status=...,        # JobStatusPort        (optional)
+    ingestion=...,            # DocumentIngestionPort   (required)
+    retrieval=...,            # RetrievalPort           (required)
+    source_lookup=...,        # SourceLookupPort        (required)
+    citation_lookup=...,      # CitationLookupPort      (required)
+    feedback=...,             # FeedbackPort            (required)
+    event_publisher=...,      # EventPublisherPort      (required)
+    search=...,               # SearchPort              (optional)
+    answer=...,               # AnswerPort              (optional)
+    job_status=...,           # JobStatusPort           (optional)
+    project_admin=...,        # ProjectAdminPort        (optional)
+    job_control=...,          # JobControlPort          (optional)
+    cost_summary=...,         # CostSummaryPort         (optional)
+    review=...,               # ReviewPort              (optional)
 )
 
 app = create_rest_api(
     facade,
     workspace=WorkspaceResolver(load_settings()),  # required for /events
-    job_starter=my_job_starter,                    # required for /ingest
+    job_starter=my_job_starter,                    # required for /documents/{id}/ingest
     version="1.2.0",
 )
 ```
@@ -38,13 +44,17 @@ app = create_rest_api(
 `create_rest_api` returns a `FastAPI` instance. Optional dependencies degrade
 gracefully:
 
-| Missing dependency       | Endpoints affected                              | Behaviour |
-|--------------------------|-------------------------------------------------|-----------|
-| `facade.search=None`     | `POST /search`, `POST /retrieve`                | `503`     |
-| `facade.answer=None`     | `POST /answer`                                  | `503`     |
-| `facade.job_status=None` | `GET /ingestion-jobs/{jobId}`                   | `503`     |
-| `job_starter=None`       | `POST /documents/{documentId}/ingest`           | `503`     |
-| `workspace=None`         | `GET /ingestion-jobs/{jobId}/events`            | `503`     |
+| Missing dependency        | Endpoints affected                              | Behaviour |
+|---------------------------|-------------------------------------------------|-----------|
+| `facade.search=None`      | `POST /search`, `POST /retrieve`                | `503`     |
+| `facade.answer=None`      | `POST /answer`                                  | `503`     |
+| `facade.job_status=None`  | `GET /ingestion-jobs/{jobId}`                   | `503`     |
+| `facade.project_admin=None` | `POST /projects`                              | `503`     |
+| `facade.job_control=None` | `POST /ingestion-jobs[/{id}/{pause,resume,cancel}]` | `503` |
+| `facade.cost_summary=None`| `GET /cost`                                     | `503`     |
+| `facade.review=None`      | `GET /reviews`, `POST /reviews/{id}/decision`   | `503`     |
+| `job_starter=None`        | `POST /documents/{documentId}/ingest`           | `503`     |
+| `workspace=None`          | `GET /ingestion-jobs/{jobId}/events`            | `503`     |
 
 `/capabilities` advertises which endpoints the deployment has wired up.
 
@@ -58,8 +68,11 @@ default resolver reads two headers on every request:
 | Header           | Required | Notes                               |
 |------------------|----------|-------------------------------------|
 | `X-Tenant-Id`    | yes      | Alphanumeric / `_` / `-`            |
-| `X-Project-Id`   | yes      | Same character class as tenant      |
+| `X-Project-Id`   | yes¹     | Same character class as tenant      |
 | `X-Request-Id`   | no       | Echoed back; auto-generated if absent |
+
+¹ `POST /projects` is a tenant-scoped operation and only requires
+`X-Tenant-Id` — the project being created comes from the request body.
 
 To use a different scoping scheme (JWT claim, path prefix, etc.) pass a
 `context_resolver` callable into `create_rest_api`:
@@ -104,15 +117,16 @@ call.
 
 ### Error codes
 
-| Code                | HTTP | Source                                      |
-|---------------------|------|---------------------------------------------|
-| `HTTP_4xx`/`HTTP_5xx` | 4xx/5xx | `HTTPException` raised inside the adapter |
-| `INVALID_IDENTIFIER`| 400  | Bad tenant/project/document identifier       |
-| `INVALID_ARGUMENT`  | 400  | `ValueError` (e.g. unknown query mode)       |
-| `DOCUMENT_NOT_FOUND`| 404  | `DocumentNotFoundError`                      |
-| `ARTIFACT_NOT_FOUND`| 404  | `ArtifactNotFoundError`                      |
-| `APPLICATION_ERROR` | 400  | Temporal `ApplicationError`                  |
-| `J1_ERROR`          | 400  | Any other `J1Error` subclass                 |
+| Code                  | HTTP    | Source                                      |
+|-----------------------|---------|---------------------------------------------|
+| `HTTP_4xx`/`HTTP_5xx` | 4xx/5xx | `HTTPException` raised inside the adapter   |
+| `INVALID_IDENTIFIER`  | 400     | Bad tenant/project/document identifier      |
+| `INVALID_ARGUMENT`    | 400     | `ValueError` (e.g. unknown query mode)      |
+| `DOCUMENT_NOT_FOUND`  | 404     | `DocumentNotFoundError`                     |
+| `ARTIFACT_NOT_FOUND`  | 404     | `ArtifactNotFoundError`                     |
+| `REVIEW_ITEM_NOT_FOUND` | 404   | `ReviewItemNotFoundError`                   |
+| `APPLICATION_ERROR`   | 400     | Temporal `ApplicationError`                 |
+| `J1_ERROR`            | 400     | Any other `J1Error` subclass                |
 
 ---
 
@@ -121,21 +135,38 @@ call.
 All payloads are JSON with **camelCase** keys. All requests scoped via the
 context-resolver headers.
 
+### Projects
+
+| Method | Path         | Notes |
+|--------|--------------|-------|
+| `POST` | `/projects`  | Body: `{projectId, profile?}`. Provisions the workspace under the resolved tenant. Idempotent. |
+
 ### Documents
 
 | Method | Path                                  | Notes |
 |--------|---------------------------------------|-------|
 | `POST` | `/documents`                          | Multipart upload (`file=`, optional `actor`, `correlationId`). Returns `DocumentRecord`; duplicates return existing record with `meta.duplicate=true`. |
 | `GET`  | `/documents/{documentId}`             | Returns `DocumentRecord`. |
-| `POST` | `/documents/{documentId}/ingest`      | Body: `IngestRequest`. Triggers `job_starter`; returns `{jobId, documentId, status}`. |
+| `POST` | `/documents/{documentId}/ingest`      | Body: `IngestRequest`. Triggers the per-document `job_starter` callable; returns `{jobId, documentId, status}`. |
 | `GET`  | `/documents/{documentId}/status`      | Returns `{documentId, status}`. |
 
 ### Ingestion jobs
 
 | Method | Path                                  | Notes |
 |--------|---------------------------------------|-------|
+| `POST` | `/ingestion-jobs`                     | Body: `ProjectIngestionRequest`. Starts a project-wide `ProjectProcessingWorkflow`. Returns `{jobId, action: "start"}`. |
 | `GET`  | `/ingestion-jobs/{jobId}`             | Returns full `JobStatusRecord` (state, current operation, totals, gates, error). |
 | `GET`  | `/ingestion-jobs/{jobId}/events`      | Reads `audit/events.jsonl` filtered by `correlationId == jobId`. |
+| `POST` | `/ingestion-jobs/{jobId}/pause`       | Sends a `pause` signal to the workflow. |
+| `POST` | `/ingestion-jobs/{jobId}/resume`      | Sends a `resume` signal. |
+| `POST` | `/ingestion-jobs/{jobId}/cancel`      | Sends a `cancel` signal. |
+
+### Artifacts
+
+| Method | Path                              | Notes |
+|--------|-----------------------------------|-------|
+| `GET`  | `/artifacts?kind=...`             | Returns the project's `ArtifactRecord` list, optionally filtered by `kind`. Locations are workspace-relative — never absolute. |
+| `GET`  | `/artifacts/{artifactId}`         | Returns one `ArtifactRecord`. |
 
 ### Search / retrieve / answer
 
@@ -146,7 +177,7 @@ them into a generic `/query`.
 |--------|-------------|---------|----------|
 | `POST` | `/search`   | Ranked `SearchHitRecord[]` (`artifactId`, `score`, citation fields). | You want hit metadata for UI lists. |
 | `POST` | `/retrieve` | `ContextBlockRecord[]` (`text` body + `citation`). | You're grounding an external LLM. |
-| `POST` | `/answer`   | `AnswerRecord` (`answer`, `mode`, `citations[]`, `confidence`, warnings). | You want J1 to answer directly. |
+| `POST` | `/answer`   | `AnswerRecord` (`answer`, `mode`, `citations[]`, `graphPaths[]`, `confidence`, warnings). | You want J1 to answer directly. |
 
 `/answer` accepts an explicit `mode` (`AUTO` / `KNOWLEDGE_FIRST` /
 `GRAPH_FIRST` / `EVIDENCE_FIRST` / `CONSISTENCY_CHECK` / `REPORT_GENERATION`)
@@ -159,11 +190,24 @@ or omits it for auto-routing.
 | `GET`  | `/citations/{citationId}`  | `citationId` is the underlying `artifactId`. Returns `CitationDetailRecord`. |
 | `GET`  | `/sources/{sourceId}`      | `sourceId` is a `documentId`. Returns full `SourceDetailRecord`. |
 
+### Cost
+
+| Method | Path  | Notes |
+|--------|-------|-------|
+| `GET`  | `/cost?correlationId=&documentId=&queryId=` | Aggregates spend across the project's cost log. All filters optional. Returns `CostSummaryRecord` with `totalAmount` and `byLevel`. |
+
+### Reviews
+
+| Method | Path                                | Notes |
+|--------|-------------------------------------|-------|
+| `GET`  | `/reviews?pendingOnly=true`         | Lists items in the human-review queue. |
+| `POST` | `/reviews/{reviewId}/decision`      | Body: `{decision, actor, notes?, correlationId?}`. Applies a decision and writes an audit event. |
+
 ### Feedback
 
 | Method | Path        | Notes |
 |--------|-------------|-------|
-| `POST` | `/feedback` | Body: `FeedbackRequest` (`targetKind`, `targetId`, `rating` 1–5, optional `comment`). Returns `{feedbackId, submittedAt}`. |
+| `POST` | `/feedback` | Body: `FeedbackRequest` (`targetKind`, `targetId`, `rating` ∈ {-1, 0, 1}, optional `comment`). Returns `{feedbackId, submittedAt}`. |
 
 ### System
 
@@ -236,8 +280,9 @@ curl -X POST http://localhost:8000/feedback \
   `j1.processing.*` or `j1.orchestration.*` directly. New endpoints must reach
   back through a port.
 - **Idempotency.** `POST /documents` is content-hash-deduplicated; it's safe
-  to retry. `POST /documents/{id}/ingest` returns a fresh `jobId` each call —
-  callers should track job IDs themselves.
+  to retry. `POST /projects` is idempotent (returns the existing project on a
+  repeat call). `POST /documents/{id}/ingest` and `POST /ingestion-jobs` both
+  return a fresh `jobId` each call — callers should track job IDs themselves.
 - **Auth.** None ships with the adapter. Wrap the returned `FastAPI` instance
   with whatever middleware your deployment requires (OAuth2, mTLS, rate
   limiting), or supply a `context_resolver` that performs auth before mapping
@@ -245,5 +290,5 @@ curl -X POST http://localhost:8000/feedback \
 - **Rate limiting & observability.** Out of scope. Add via standard FastAPI
   middleware (`slowapi`, OpenTelemetry, etc.) on the returned app.
 - **Tests.** [`tests/test_rest_adapter.py`](../tests/test_rest_adapter.py)
-  covers all 15 endpoints, the standard envelope, request ID echoing, custom
+  covers every endpoint, the standard envelope, request ID echoing, custom
   context resolvers, and validation failures.
