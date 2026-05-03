@@ -17,6 +17,11 @@ from fastapi.responses import JSONResponse
 from temporalio.exceptions import ApplicationError
 
 from j1.adapters.rest.envelope import envelope, error_envelope, error_response
+from j1.adapters.rest.security import (
+    SecurityPolicy,
+    authenticate_request,
+    require_scope as _require_scope,
+)
 from j1.adapters.rest.schemas import (
     AnswerRecord,
     AnswerRequest,
@@ -71,6 +76,20 @@ from j1.integration.dto import (
     ProjectIngestionRequestDTO,
     ReviewDecisionRequestDTO,
 )
+from j1.integration.security import (
+    ANONYMOUS_CONTEXT,
+    Authenticator,
+    AuthorizationError,
+    SCOPE_ADMIN,
+    SCOPE_ANSWER,
+    SCOPE_AUDIT_READ,
+    SCOPE_FEEDBACK,
+    SCOPE_INGEST,
+    SCOPE_READ,
+    SCOPE_RETRIEVE,
+    SCOPE_SEARCH,
+    SecurityContext,
+)
 from j1.integration.services import ApplicationFacade
 from j1.projects.context import ProjectContext
 from j1.review.queue import ReviewItemNotFoundError
@@ -106,6 +125,8 @@ def create_rest_api(
     context_resolver: ContextResolver | None = None,
     job_starter: JobStarter | None = None,
     workspace: WorkspaceResolver | None = None,
+    authenticator: Authenticator | None = None,
+    anonymous_paths: frozenset[str] | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -142,8 +163,34 @@ def create_rest_api(
     )
 
     resolver = context_resolver or _default_context_resolver
+    policy = SecurityPolicy(
+        authenticator=authenticator,
+        anonymous_paths=(
+            anonymous_paths
+            if anonymous_paths is not None
+            else frozenset({"/health", "/version"})
+        ),
+    )
 
     # ---- Middleware --------------------------------------------------
+    # Registration order matters: the last-registered middleware is the
+    # outermost wrap. We want request_id to wrap security so the
+    # X-Request-Id header is present on early auth-failure responses too.
+
+    @app.middleware("http")
+    async def _security_middleware(request: Request, call_next):
+        try:
+            request.state.security_context = authenticate_request(
+                request, policy
+            )
+        except HTTPException as exc:
+            return error_response(
+                status_code=exc.status_code,
+                code="UNAUTHENTICATED",
+                message=str(exc.detail),
+                request_id=getattr(request.state, "request_id", uuid.uuid4().hex),
+            )
+        return await call_next(request)
 
     @app.middleware("http")
     async def _request_id_middleware(request: Request, call_next):
@@ -199,6 +246,19 @@ def create_rest_api(
             request_id=_req_id(request),
         )
 
+    @app.exception_handler(AuthorizationError)
+    async def _forbidden(request, exc: AuthorizationError) -> JSONResponse:
+        details: dict[str, Any] = {}
+        if exc.required_scope:
+            details["required_scope"] = exc.required_scope
+        return error_response(
+            status_code=403,
+            code="INSUFFICIENT_SCOPE",
+            message=str(exc),
+            request_id=_req_id(request),
+            details=details or None,
+        )
+
     @app.exception_handler(ApplicationError)
     async def _app_error(request, exc: ApplicationError) -> JSONResponse:
         return error_response(
@@ -242,6 +302,22 @@ def create_rest_api(
         # handled by the global exception handler).
         ProjectContext(tenant_id=tenant_id, project_id="placeholder")
         return tenant_id
+
+    def get_security(request: Request) -> SecurityContext:
+        return getattr(request.state, "security_context", ANONYMOUS_CONTEXT)
+
+    def scope_required(scope: str):
+        """FastAPI dependency factory enforcing a single scope.
+
+        No-op when the security context is anonymous (i.e. auth disabled or
+        the route is in `anonymous_paths`) — that decision was already made
+        upstream by the security middleware.
+        """
+
+        def _dep(request: Request) -> None:
+            _require_scope(get_security(request), scope)
+
+        return _dep
 
     def require_search():
         if facade.search is None:
@@ -293,6 +369,7 @@ def create_rest_api(
             "Provisions the per-project filesystem layout under the resolved "
             "tenant. Idempotent — repeated calls return the same project."
         ),
+        dependencies=[Depends(scope_required(SCOPE_ADMIN))],
     )
     def post_project(
         request: Request,
@@ -325,6 +402,7 @@ def create_rest_api(
             "document record. Duplicate uploads (by checksum) return the "
             "existing record."
         ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
     def post_document(
         request: Request,
@@ -359,6 +437,7 @@ def create_rest_api(
         "/documents/{document_id}",
         tags=["documents"],
         summary="Get document metadata",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def get_document(
         request: Request,
@@ -378,6 +457,7 @@ def create_rest_api(
             "document. Returns the job identifier — poll "
             "`/ingestion-jobs/{jobId}` for status."
         ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
     async def ingest_document(
         request: Request,
@@ -398,6 +478,7 @@ def create_rest_api(
         "/documents/{document_id}/status",
         tags=["documents"],
         summary="Get document processing status",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def get_document_status(
         request: Request,
@@ -416,6 +497,7 @@ def create_rest_api(
         "/ingestion-jobs/{job_id}",
         tags=["ingestion-jobs"],
         summary="Get ingestion job status",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     async def get_job(
         request: Request,
@@ -444,6 +526,7 @@ def create_rest_api(
             "Returns audit events whose `correlation_id` matches the job ID. "
             "Requires `workspace` to be configured at adapter construction."
         ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
     )
     def get_job_events(
         request: Request,
@@ -465,6 +548,7 @@ def create_rest_api(
             "document in the project. Returns the assigned `jobId` — poll "
             "`/ingestion-jobs/{jobId}` for status."
         ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
     async def post_ingestion_job(
         request: Request,
@@ -493,6 +577,7 @@ def create_rest_api(
         "/ingestion-jobs/{job_id}/pause",
         tags=["ingestion-jobs"],
         summary="Pause a running ingestion job",
+        dependencies=[Depends(scope_required(SCOPE_ADMIN))],
     )
     async def pause_ingestion_job(
         request: Request,
@@ -508,6 +593,7 @@ def create_rest_api(
         "/ingestion-jobs/{job_id}/resume",
         tags=["ingestion-jobs"],
         summary="Resume a paused ingestion job",
+        dependencies=[Depends(scope_required(SCOPE_ADMIN))],
     )
     async def resume_ingestion_job(
         request: Request,
@@ -523,6 +609,7 @@ def create_rest_api(
         "/ingestion-jobs/{job_id}/cancel",
         tags=["ingestion-jobs"],
         summary="Cancel an ingestion job",
+        dependencies=[Depends(scope_required(SCOPE_ADMIN))],
     )
     async def cancel_ingestion_job(
         request: Request,
@@ -540,6 +627,7 @@ def create_rest_api(
         "/artifacts",
         tags=["artifacts"],
         summary="List artifacts in a project",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def list_artifacts(
         request: Request,
@@ -556,6 +644,7 @@ def create_rest_api(
         "/artifacts/{artifact_id}",
         tags=["artifacts"],
         summary="Get a single artifact",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def get_artifact(
         request: Request,
@@ -577,6 +666,7 @@ def create_rest_api(
             "blocks suitable for grounding an LLM, or `/answer` to get a "
             "generated answer with citations."
         ),
+        dependencies=[Depends(scope_required(SCOPE_SEARCH))],
     )
     def post_search(
         request: Request,
@@ -616,6 +706,7 @@ def create_rest_api(
             "Returns ranked text blocks with their source citations — the "
             "shape an answer-generation pipeline expects to consume."
         ),
+        dependencies=[Depends(scope_required(SCOPE_RETRIEVE))],
     )
     def post_retrieve(
         request: Request,
@@ -651,6 +742,7 @@ def create_rest_api(
         "/answer",
         tags=["answer"],
         summary="Generate an answer with citations",
+        dependencies=[Depends(scope_required(SCOPE_ANSWER))],
     )
     def post_answer(
         request: Request,
@@ -707,6 +799,7 @@ def create_rest_api(
             "`citationId` is interpreted as the underlying `artifactId` — "
             "the citation surface is a thin view over an artifact's lineage."
         ),
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def get_citation(
         request: Request,
@@ -730,6 +823,7 @@ def create_rest_api(
         "/sources/{source_id}",
         tags=["sources"],
         summary="Look up a source document",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def get_source(
         request: Request,
@@ -757,12 +851,20 @@ def create_rest_api(
         "/feedback",
         tags=["feedback"],
         summary="Submit user feedback",
+        dependencies=[Depends(scope_required(SCOPE_FEEDBACK))],
     )
     def post_feedback(
         request: Request,
         body: FeedbackRequest,
         ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        # If the caller didn't supply an actor, attribute the feedback to the
+        # authenticated subject — keeps audit logs honest without leaking
+        # raw auth headers into the application services.
+        actor = body.actor or (
+            security.subject if not security.is_anonymous else None
+        )
         result = facade.feedback.submit_feedback(
             ctx,
             FeedbackDTO(
@@ -770,7 +872,7 @@ def create_rest_api(
                 target_id=body.target_id,
                 rating=body.rating,
                 comment=body.comment,
-                actor=body.actor,
+                actor=actor,
                 correlation_id=body.correlation_id,
                 metadata=dict(body.metadata),
             ),
@@ -791,6 +893,7 @@ def create_rest_api(
             "Optionally scope the aggregation by `correlationId`, "
             "`documentId`, or `queryId` query parameters."
         ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
     )
     def get_cost(
         request: Request,
@@ -821,6 +924,7 @@ def create_rest_api(
         "/reviews",
         tags=["reviews"],
         summary="List review queue items",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def list_reviews(
         request: Request,
@@ -836,6 +940,7 @@ def create_rest_api(
         "/reviews/{review_id}/decision",
         tags=["reviews"],
         summary="Apply a decision to a review item",
+        dependencies=[Depends(scope_required(SCOPE_ADMIN))],
     )
     def post_review_decision(
         request: Request,
@@ -878,6 +983,7 @@ def create_rest_api(
         tags=["system"],
         summary="Available capabilities",
         description="Reports which optional ports the deployment has wired up.",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
     )
     def get_capabilities(request: Request) -> dict[str, Any]:
         caps = [
