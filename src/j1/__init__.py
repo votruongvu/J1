@@ -29,12 +29,15 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     CompileActivityInput,
     EnrichActivityInput,
+    FinalizeInput,
     GraphActivityInput,
     IndexActivityInput,
     ProcessingActivityResult,
     ProjectScope,
     QueryActivityInput,
     QueryActivityResult,
+    SpendSummary,
+    ValidateContextResult,
 )
 from j1.orchestration.activities.processing import (
     ACTIVITY_BUILD_GRAPH,
@@ -45,6 +48,13 @@ from j1.orchestration.activities.processing import (
     ProcessingActivities,
     UnknownProcessorError,
 )
+from j1.orchestration.activities.project import (
+    ACTIVITY_COMPUTE_SPEND,
+    ACTIVITY_FINALIZE,
+    ACTIVITY_LIST_PENDING_DOCUMENTS,
+    ACTIVITY_VALIDATE_CONTEXT,
+    ProjectActivities,
+)
 from j1.orchestration.temporal.client import build_client
 from j1.orchestration.temporal.config import TemporalSettings, load_temporal_settings
 from j1.orchestration.temporal.retries import DEFAULT_RETRY, RetryPolicySpec
@@ -54,6 +64,17 @@ from j1.orchestration.workflows.document_processing import (
     DocumentProcessingRequest,
     DocumentProcessingResult,
     DocumentProcessingWorkflow,
+)
+from j1.orchestration.workflows.project_processing import (
+    GATE_AFTER_COMPILE,
+    GATE_AFTER_ENRICH,
+    GATE_AFTER_GRAPH,
+    GATE_AFTER_INDEX,
+    ProjectProcessingRequest,
+    ProjectProcessingResult,
+    ProjectProcessingWorkflow,
+    WorkflowState,
+    WorkflowStatus,
 )
 from j1.processing.contracts import (
     EnrichmentProcessor,
@@ -82,9 +103,13 @@ from j1.workspace.resolver import WorkspaceResolver
 __all__ = [
     "ACTIVITY_BUILD_GRAPH",
     "ACTIVITY_COMPILE",
+    "ACTIVITY_COMPUTE_SPEND",
     "ACTIVITY_ENRICH",
+    "ACTIVITY_FINALIZE",
     "ACTIVITY_INDEX",
+    "ACTIVITY_LIST_PENDING_DOCUMENTS",
     "ACTIVITY_QUERY",
+    "ACTIVITY_VALIDATE_CONTEXT",
     "ArtifactActivityResult",
     "ArtifactDraft",
     "ArtifactNotFoundError",
@@ -113,6 +138,11 @@ __all__ = [
     "DuplicateDocumentError",
     "EnrichActivityInput",
     "EnrichmentProcessor",
+    "FinalizeInput",
+    "GATE_AFTER_COMPILE",
+    "GATE_AFTER_ENRICH",
+    "GATE_AFTER_GRAPH",
+    "GATE_AFTER_INDEX",
     "GraphActivityInput",
     "GraphBuilder",
     "IndexActivityInput",
@@ -132,7 +162,11 @@ __all__ = [
     "ProcessingResult",
     "ProcessingService",
     "ProcessingStatus",
+    "ProjectActivities",
     "ProjectContext",
+    "ProjectProcessingRequest",
+    "ProjectProcessingResult",
+    "ProjectProcessingWorkflow",
     "ProjectScope",
     "QueryActivityInput",
     "QueryActivityResult",
@@ -146,9 +180,13 @@ __all__ = [
     "Settings",
     "SourceDocument",
     "SourceRegistry",
+    "SpendSummary",
     "TemporalSettings",
     "UnknownProcessorError",
+    "ValidateContextResult",
     "WorkerSpec",
+    "WorkflowState",
+    "WorkflowStatus",
     "WorkspaceArea",
     "WorkspaceError",
     "WorkspaceResolver",

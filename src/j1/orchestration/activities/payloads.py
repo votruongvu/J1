@@ -93,3 +93,26 @@ class QueryActivityResult:
     citations: list[str] = field(default_factory=list)
     error: str | None = None
     message: str | None = None
+
+
+@dataclass(frozen=True)
+class ValidateContextResult:
+    valid: bool
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class SpendSummary:
+    total_amount: str
+    currency: str
+    event_count: int
+
+
+@dataclass(frozen=True)
+class FinalizeInput:
+    scope: ProjectScope
+    state: str
+    artifact_ids: list[str] = field(default_factory=list)
+    error: str | None = None
+    actor: str = "system"
+    correlation_id: str | None = None
