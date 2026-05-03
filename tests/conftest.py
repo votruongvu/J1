@@ -12,8 +12,14 @@ from j1.cost.recorder import DefaultCostRecorder
 from j1.cost.sink import JsonlCostSink
 from j1.intake.registry import JsonSourceRegistry
 from j1.intake.service import DocumentIntakeService
+from j1.orchestration.activities.accounting import AccountingActivities
+from j1.orchestration.activities.knowledge import KnowledgeProcessingActivities
+from j1.orchestration.activities.lifecycle import ProjectLifecycleActivities
+from j1.orchestration.activities.review import ReviewActivities
+from j1.orchestration.activities.search import SearchActivities
 from j1.processing.service import ProcessingService
 from j1.projects.context import ProjectContext
+from j1.review.queue import JsonReviewQueue
 from j1.workspace.resolver import WorkspaceResolver
 
 
@@ -114,6 +120,47 @@ def processing_service(
         artifact_registry=artifact_registry,
         audit=audit_recorder,
         cost=cost_recorder,
+        clock=fixed_clock,
+        id_factory=id_factory,
+    )
+
+
+@pytest.fixture
+def review_queue(workspace: WorkspaceResolver) -> JsonReviewQueue:
+    return JsonReviewQueue(workspace)
+
+
+@pytest.fixture
+def lifecycle_activities(
+    workspace: WorkspaceResolver,
+    intake_service: DocumentIntakeService,
+    audit_recorder: DefaultAuditRecorder,
+) -> ProjectLifecycleActivities:
+    return ProjectLifecycleActivities(
+        workspace=workspace,
+        intake=intake_service,
+        audit=audit_recorder,
+    )
+
+
+@pytest.fixture
+def accounting_activities(
+    workspace: WorkspaceResolver,
+    audit_recorder: DefaultAuditRecorder,
+) -> AccountingActivities:
+    return AccountingActivities(workspace=workspace, audit=audit_recorder)
+
+
+@pytest.fixture
+def review_activities(
+    review_queue: JsonReviewQueue,
+    audit_recorder: DefaultAuditRecorder,
+    fixed_clock,
+    id_factory,
+) -> ReviewActivities:
+    return ReviewActivities(
+        review_queue=review_queue,
+        audit=audit_recorder,
         clock=fixed_clock,
         id_factory=id_factory,
     )
