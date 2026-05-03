@@ -12,3 +12,32 @@ class WorkspaceArea(StrEnum):
     SEARCH = "search"
     AUDIT = "audit"
     RUNTIME = "runtime"
+
+
+# Backup classification: which areas hold authoritative state and which can
+# be regenerated from authoritative state.
+#
+# DURABLE areas: must be included in any backup. Loss is permanent.
+# REBUILDABLE areas: derived from durable state and can be reconstructed
+#   (e.g., the search index can be rebuilt from `compiled/`/`enriched/`/
+#   `graph/` artifacts).
+DURABLE_AREAS: frozenset[WorkspaceArea] = frozenset({
+    WorkspaceArea.RAW,
+    WorkspaceArea.COMPILED,
+    WorkspaceArea.ENRICHED,
+    WorkspaceArea.GRAPH,
+    WorkspaceArea.AUDIT,
+    WorkspaceArea.RUNTIME,
+})
+
+REBUILDABLE_AREAS: frozenset[WorkspaceArea] = frozenset({
+    WorkspaceArea.SEARCH,
+})
+
+
+def is_durable(area: WorkspaceArea) -> bool:
+    return area in DURABLE_AREAS
+
+
+def is_rebuildable(area: WorkspaceArea) -> bool:
+    return area in REBUILDABLE_AREAS

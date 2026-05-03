@@ -83,6 +83,7 @@ from j1.enrichers import (
     VisualContentDescriber,
 )
 from j1.errors.exceptions import (
+    ChecksumMismatchError,
     CompilerConfigError,
     CompilerExecutionError,
     ConfigError,
@@ -101,10 +102,30 @@ from j1.errors.exceptions import (
     QueryRoutingError,
     SearchIndexerError,
     WorkspaceError,
+    WorkspaceLockedError,
 )
+from j1.checksum import (
+    assert_artifact_integrity,
+    assert_document_integrity,
+    hash_file,
+    verify_artifact,
+    verify_document,
+)
+from j1.heartbeat import heartbeat
 from j1.intake.registry import JsonSourceRegistry, SourceRegistry
 from j1.intake.service import DocumentIntakeService
 from j1.jobs.status import ProcessingStatus, ReviewStatus
+from j1.locks import (
+    AREA_COMPILED,
+    AREA_ENRICHED,
+    AREA_GRAPH,
+    AREA_PROJECT,
+    AREA_SEARCH,
+    DEFAULT_LEASE_SECONDS,
+    LockHandle,
+    WorkspaceLock,
+)
+from j1.logging.setup import JsonFormatter, configure_logging, get_logger
 from j1.orchestration.activities.accounting import (
     ACTIVITY_CALCULATE_COST,
     ACTIVITY_WRITE_AUDIT,
@@ -279,7 +300,14 @@ from j1.search import (
     SearchHit,
     SqliteSearchIndexer,
 )
-from j1.workspace.layout import WorkspaceArea
+from j1.testing import TestEnvironment, make_test_environment
+from j1.workspace.layout import (
+    DURABLE_AREAS,
+    REBUILDABLE_AREAS,
+    WorkspaceArea,
+    is_durable,
+    is_rebuildable,
+)
 from j1.workspace.resolver import WorkspaceResolver
 
 __all__ = [
@@ -307,6 +335,11 @@ __all__ = [
     "ACTIVITY_VALIDATE_CONTEXT",
     "ACTIVITY_VALIDATE_PROJECT",
     "ACTIVITY_WRITE_AUDIT",
+    "AREA_COMPILED",
+    "AREA_ENRICHED",
+    "AREA_GRAPH",
+    "AREA_PROJECT",
+    "AREA_SEARCH",
     "ARTIFACT_KIND_CONCEPT",
     "ARTIFACT_KIND_GRAPH_CACHE",
     "ARTIFACT_KIND_GRAPH_HTML",
@@ -338,10 +371,12 @@ __all__ = [
     "CompilerExecutionError",
     "DEFAULT_DB_FILENAME",
     "DEFAULT_GRAPH_OUTPUT_MAPPING",
+    "DEFAULT_LEASE_SECONDS",
     "DEFAULT_OUTPUT_MAPPING",
     "DEFAULT_PROFILE_ID",
     "DEFAULT_PROVIDER_KIND",
     "DEFAULT_TASK_TO_MODEL",
+    "DURABLE_AREAS",
     "ExternalGraphBuilder",
     "ExternalKnowledgeCompiler",
     "SubprocessCompilerAdapter",
@@ -367,6 +402,7 @@ __all__ = [
     "CalculateCostInput",
     "CalculateCostResult",
     "CompileActivityInput",
+    "ChecksumMismatchError",
     "ConfidenceLevel",
     "ConfigError",
     "CostAggregator",
@@ -431,6 +467,7 @@ __all__ = [
     "InvalidIdentifierError",
     "J1Error",
     "JsonArtifactRegistry",
+    "JsonFormatter",
     "JsonReviewQueue",
     "JsonSourceRegistry",
     "JsonlAuditSink",
@@ -440,6 +477,7 @@ __all__ = [
     "KnowledgeCompiler",
     "KnowledgeProcessingActivities",
     "KnowledgeQueryProvider",
+    "LockHandle",
     "MAX_INDEXED_BYTES",
     "ModelProvider",
     "ModelResponse",
@@ -518,20 +556,35 @@ __all__ = [
     "WorkerSpec",
     "WorkflowState",
     "WorkflowStatus",
+    "REBUILDABLE_AREAS",
+    "TestEnvironment",
     "WorkspaceArea",
+    "WorkspaceLock",
+    "WorkspaceLockedError",
     "WorkspaceError",
     "WorkspaceResolver",
     "WriteAuditInput",
     "WriteAuditResult",
+    "assert_artifact_integrity",
+    "assert_document_integrity",
     "build_client",
     "build_default_container",
-    "create_api",
-    "bundled_profiles_dir",
-    "confidence_level_from_score",
     "build_worker",
+    "bundled_profiles_dir",
+    "configure_logging",
+    "confidence_level_from_score",
+    "create_api",
+    "get_logger",
+    "hash_file",
+    "heartbeat",
+    "is_durable",
+    "is_rebuildable",
     "load_temporal_settings",
+    "make_test_environment",
     "map_workflow_status",
     "run_worker",
+    "verify_artifact",
+    "verify_document",
 ]
 
 __version__ = "0.0.1"

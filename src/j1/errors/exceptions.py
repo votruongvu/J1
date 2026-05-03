@@ -18,6 +18,32 @@ class PathTraversalError(WorkspaceError):
     pass
 
 
+class WorkspaceLockedError(WorkspaceError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        owner: str | None = None,
+        area: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.owner = owner
+        self.area = area
+
+
+class ChecksumMismatchError(J1Error):
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected: str | None = None,
+        actual: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.expected = expected
+        self.actual = actual
+
+
 class IntakeError(J1Error):
     pass
 

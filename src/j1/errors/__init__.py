@@ -1,4 +1,5 @@
 from j1.errors.exceptions import (
+    ChecksumMismatchError,
     CompilerConfigError,
     CompilerExecutionError,
     ConfigError,
@@ -17,9 +18,11 @@ from j1.errors.exceptions import (
     QueryRoutingError,
     SearchIndexerError,
     WorkspaceError,
+    WorkspaceLockedError,
 )
 
 __all__ = [
+    "ChecksumMismatchError",
     "CompilerConfigError",
     "CompilerExecutionError",
     "ConfigError",
@@ -38,4 +41,5 @@ __all__ = [
     "QueryRoutingError",
     "SearchIndexerError",
     "WorkspaceError",
+    "WorkspaceLockedError",
 ]
