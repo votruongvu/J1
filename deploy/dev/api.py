@@ -11,7 +11,6 @@ filesystem; pluggable processors (model providers, real compilers,
 etc.) are explicitly not wired here.
 """
 
-import asyncio
 import contextlib
 import logging
 import os
@@ -46,30 +45,29 @@ def _build_app():
     facade = build_application_facade(workspace)
     temporal_settings = load_temporal_settings()
 
-    # Lazy Temporal client — connect on the first job-control / job-
-    # status request rather than blocking startup. Useful when the
-    # Temporal server comes up after the API.
-    _client_state: dict = {"client": None}
+    # The Temporal client is constructed once inside the FastAPI
+    # lifespan (so it lives on the same event loop as the request
+    # handlers). `client_provider` is a sync lambda returning the
+    # already-connected client — that's the contract
+    # `TemporalJobControlService` and `TemporalJobStatusService`
+    # expect.
+    _client_box: dict = {"client": None}
 
-    async def _client_provider():
-        if _client_state["client"] is None:
-            _client_state["client"] = await build_client(temporal_settings)
-        return _client_state["client"]
-
-    def _sync_client_provider():
-        # `TemporalJobControlService` calls this synchronously from an
-        # async context. Use a small adapter that runs the coroutine on
-        # the running loop.
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return asyncio.ensure_future(_client_provider())
-        return loop.run_until_complete(_client_provider())
+    def client_provider():
+        client = _client_box["client"]
+        if client is None:
+            # Hit only if a request lands before lifespan startup
+            # finishes — extremely rare but worth a clear error.
+            raise RuntimeError(
+                "Temporal client not yet initialised — startup in progress"
+            )
+        return client
 
     job_control = TemporalJobControlService(
-        client_provider=_sync_client_provider,
+        client_provider=client_provider,
         task_queue=temporal_settings.task_queue,
     )
-    job_status = TemporalJobStatusService(client_provider=_sync_client_provider)
+    job_status = TemporalJobStatusService(client_provider=client_provider)
 
     facade_with_temporal = ApplicationFacade(
         ingestion=facade.ingestion,
@@ -87,36 +85,63 @@ def _build_app():
         review=facade.review,
     )
 
-    async def _start_project_workflow(ctx, request) -> str:
-        client = await _client_provider()
+    async def _start_project_workflow(ctx, document_id, body) -> str:
+        """`job_starter` callable — drives the per-document ingest path.
+
+        Distinct from `job_control.start_project_job`, which is the
+        project-wide variant. Both share the Temporal client built in
+        the lifespan handler.
+        """
+        client = client_provider()
         scope = ProjectScope.from_context(ctx)
-        workflow_id = f"j1-{ctx.tenant_id}-{ctx.project_id}-{request.compiler_kind}"
+        workflow_id = (
+            f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
+        )
         await client.start_workflow(
             ProjectProcessingWorkflow.run,
             ProjectProcessingRequest(
                 scope=scope,
-                compiler_kind=request.compiler_kind,
-                enricher_kind=request.enricher_kind,
-                graph_builder_kind=request.graph_builder_kind,
-                indexer_kind=request.indexer_kind,
-                actor=request.actor,
-                correlation_id=request.correlation_id,
+                compiler_kind=body.compiler_kind,
+                enricher_kind=body.enricher_kind,
+                graph_builder_kind=body.graph_builder_kind,
+                indexer_kind=body.indexer_kind,
+                actor=body.actor,
+                correlation_id=body.correlation_id,
             ),
             id=workflow_id,
             task_queue=temporal_settings.task_queue,
         )
         return workflow_id
 
-    return create_rest_api(
+    app = create_rest_api(
         facade_with_temporal,
         authenticator=maybe_build_authenticator(),
         workspace=workspace,
         event_bus=ApplicationEventBus(),
-        # `job_starter` is the per-document ingest hook, distinct from
-        # `job_control.start_project_job`. Wired here for completeness.
         job_starter=_start_project_workflow,
         version=os.environ.get("J1_API_VERSION", "0.0.1-dev"),
     )
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app):
+        _log.info(
+            "connecting to Temporal target=%s namespace=%s",
+            temporal_settings.target, temporal_settings.namespace,
+        )
+        _client_box["client"] = await build_client(temporal_settings)
+        _log.info("Temporal client ready")
+        try:
+            yield
+        finally:
+            # The Temporal Python SDK's Client has no explicit close;
+            # the underlying gRPC channel is reaped when the process
+            # exits.
+            _client_box["client"] = None
+
+    # `create_rest_api` doesn't expose a lifespan param yet; attach
+    # ours after construction. Standard Starlette/FastAPI pattern.
+    app.router.lifespan_context = _lifespan
+    return app
 
 
 def main() -> None:
