@@ -97,19 +97,22 @@ services:
     networks:
       - j1-net
     healthcheck:
-      # `temporal operator cluster health` is the modern equivalent
-      # of `tctl cluster health`. Probes the local gRPC frontend.
+      # `temporalio/auto-setup` ships `tctl` (the admin CLI), NOT the
+      # newer `temporal` binary — so the healthcheck has to use tctl.
+      # `tctl workflow list` succeeds only when the cluster is fully
+      # up (frontend + history + matching all reachable + the default
+      # namespace exists). Matches the recipe in Temporal's own
+      # docker-compose example repo.
       test:
         - "CMD"
-        - "temporal"
-        - "operator"
-        - "cluster"
-        - "health"
+        - "tctl"
         - "--address"
-        - "127.0.0.1:7233"
-      interval: 10s
+        - "temporal:7233"
+        - "workflow"
+        - "list"
+      interval: 5s
       timeout: 5s
-      retries: 15
+      retries: 30
       start_period: 30s
 
   temporal-ui:

@@ -68,3 +68,37 @@ def test_run_worker_awaits_run():
         instance.run.return_value = _ok()
         asyncio.run(run_worker(client=object(), settings=settings, spec=spec))
         instance.run.assert_called_once()
+
+
+def test_build_worker_forwards_activity_executor():
+    """Sync activities require an executor — the framework MUST allow
+    deployments to plug one in without subclassing the worker."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
+    settings = TemporalSettings()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        with patch("j1.orchestration.temporal.worker.Worker") as worker_cls:
+            build_worker(
+                client=object(), settings=settings, spec=spec,
+                activity_executor=executor,
+                max_concurrent_activities=10,
+            )
+            kwargs = worker_cls.call_args.kwargs
+            assert kwargs["activity_executor"] is executor
+            assert kwargs["max_concurrent_activities"] == 10
+
+
+def test_build_worker_omits_optional_kwargs_by_default():
+    """Back-compat: existing callers that don't pass an executor must
+    still get a Worker constructed (no `activity_executor=None` leak)."""
+    spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
+    settings = TemporalSettings()
+
+    with patch("j1.orchestration.temporal.worker.Worker") as worker_cls:
+        build_worker(client=object(), settings=settings, spec=spec)
+        kwargs = worker_cls.call_args.kwargs
+        # Optional fields are absent — let the SDK use its defaults.
+        assert "activity_executor" not in kwargs
+        assert "max_concurrent_activities" not in kwargs

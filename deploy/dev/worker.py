@@ -21,6 +21,7 @@ import logging
 import os
 import signal
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 from deploy.dev._wiring import build_settings, build_workspace, build_worker_spec
 from j1 import build_client, load_temporal_settings, run_worker
@@ -41,13 +42,28 @@ async def _run() -> None:
     client = await build_client(temporal_settings)
     spec = build_worker_spec(workspace)
 
+    # Every J1 activity is synchronous; the Temporal SDK requires
+    # a ThreadPoolExecutor to dispatch sync activities. Size it to
+    # the configured concurrency cap (with a small floor).
+    max_concurrent = int(
+        os.environ.get("J1_WORKER_MAX_CONCURRENT_ACTIVITIES", "5")
+    )
+    pool_size = max(max_concurrent, 4)
+
     _log.info(
         "registering %d activities + %d workflows; "
-        "max_concurrent_activities=%s",
+        "max_concurrent_activities=%d, pool_size=%d",
         len(spec.activities), len(spec.workflows),
-        os.environ.get("J1_WORKER_MAX_CONCURRENT_ACTIVITIES", "default"),
+        max_concurrent, pool_size,
     )
-    await run_worker(client, temporal_settings, spec)
+    with ThreadPoolExecutor(
+        max_workers=pool_size, thread_name_prefix="j1-activity"
+    ) as executor:
+        await run_worker(
+            client, temporal_settings, spec,
+            activity_executor=executor,
+            max_concurrent_activities=max_concurrent,
+        )
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:
