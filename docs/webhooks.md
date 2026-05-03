@@ -335,7 +335,20 @@ re-driven offline.
 
 ---
 
-## 9. Optional Temporal-backed delivery
+## 9. Queue / event-broker integration
+
+For high-volume enterprise integration use the
+broker-neutral `EventPublisher` abstraction documented in
+[event-integration.md](event-integration.md). It runs over the same
+`ApplicationEventBus` and the same 12 event-type names, so consumers
+can subscribe via webhook *or* via Kafka / RabbitMQ / SQS / NATS
+without code branching. The AsyncAPI 3.0 contract for the queue
+surface lives at
+[`docs/asyncapi/kb-events.asyncapi.yaml`](asyncapi/kb-events.asyncapi.yaml).
+
+---
+
+## 10. Optional Temporal-backed delivery
 
 Today's `WebhookDeliveryService` is synchronous + thread-pool. If the
 deployment already runs the J1 Temporal worker, deliveries can be moved
@@ -356,7 +369,7 @@ deployment.
 
 ---
 
-## 10. Testability
+## 11. Testability
 
 Both layers are designed for stub-driven tests:
 

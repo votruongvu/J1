@@ -1,0 +1,383 @@
+asyncapi: 3.0.0
+
+info:
+  title: J1 Knowledge Base Events
+  version: '1.0'
+  description: |
+    Logical event channels published by the J1 Knowledge Base. The same
+    `ApplicationEvent` model that drives the webhook + CloudEvents
+    layer (`j1.integration.events`) is the source of truth — webhooks
+    deliver these events over HTTP, queue/event adapters publish them
+    to broker infrastructure. Consumers should rely on `eventType` and
+    `schemaVersion`, not transport-specific details.
+
+    No exactly-once delivery is claimed. Consumers MUST be idempotent
+    (the suggested key is `idempotencyKey` in message headers; the
+    framework default is `<eventType>:<subject>`).
+
+    See `docs/event-integration.md` for the publisher abstraction,
+    configuration reference, and broker-adapter recipe.
+  license:
+    name: 'Refer to repository LICENSE'
+
+defaultContentType: application/json
+
+# Servers are example placeholders. Real broker URLs / topics belong
+# in deployment configuration, never in this spec.
+servers:
+  example-kafka:
+    host: 'kafka.example.invalid:9092'
+    protocol: kafka
+    description: |
+      Example Kafka cluster. Replace with deployment-specific URL.
+      Logical channel `kb.documents` typically maps to topic `kb.documents`,
+      but topic naming is an infrastructure-config concern.
+  example-rabbitmq:
+    host: 'amqps://rabbit.example.invalid'
+    protocol: amqp
+    description: Example RabbitMQ broker. Replace with deployment-specific URL.
+  example-sqs:
+    host: 'sqs.example-region.amazonaws.com'
+    protocol: 'https'
+    description: Example AWS SQS endpoint. Replace with deployment-specific URL.
+
+channels:
+  documents:
+    address: kb.documents
+    description: Document lifecycle (registration / upload).
+    messages:
+      DocumentUploaded:
+        $ref: '#/components/messages/DocumentUploaded'
+
+  ingestion:
+    address: kb.ingestion
+    description: Ingestion job lifecycle (parse → ingest pipeline).
+    messages:
+      DocumentParsingStarted:
+        $ref: '#/components/messages/DocumentParsingStarted'
+      DocumentParsingCompleted:
+        $ref: '#/components/messages/DocumentParsingCompleted'
+      DocumentIngestionStarted:
+        $ref: '#/components/messages/DocumentIngestionStarted'
+      DocumentIngestionCompleted:
+        $ref: '#/components/messages/DocumentIngestionCompleted'
+      DocumentIngestionFailed:
+        $ref: '#/components/messages/DocumentIngestionFailed'
+
+  indexing:
+    address: kb.indexing
+    description: Search-index + knowledge-graph updates.
+    messages:
+      DocumentIndexingStarted:
+        $ref: '#/components/messages/DocumentIndexingStarted'
+      DocumentIndexingCompleted:
+        $ref: '#/components/messages/DocumentIndexingCompleted'
+      KnowledgeUpdated:
+        $ref: '#/components/messages/KnowledgeUpdated'
+
+  query:
+    address: kb.query
+    description: Search / retrieve completion events.
+    messages:
+      QueryCompleted:
+        $ref: '#/components/messages/QueryCompleted'
+
+  answer:
+    address: kb.answer
+    description: Answer-generation completion events.
+    messages:
+      AnswerGenerated:
+        $ref: '#/components/messages/AnswerGenerated'
+
+  citation:
+    address: kb.citation
+    description: Citation lifecycle events.
+    messages:
+      CitationValidationFailed:
+        $ref: '#/components/messages/CitationValidationFailed'
+
+  audit:
+    address: kb.audit
+    description: |
+      Catch-all channel for events that don't map to a more specific
+      channel. The framework routes any event whose type isn't in
+      `EVENT_TYPE_TO_CHANNEL` here so operators get one subscription
+      that surfaces all custom / unknown events.
+
+operations:
+  publishDocumentUploaded:
+    action: send
+    channel: { $ref: '#/channels/documents' }
+    summary: A new document was registered into a project.
+    messages: [{ $ref: '#/channels/documents/messages/DocumentUploaded' }]
+  publishDocumentParsingStarted:
+    action: send
+    channel: { $ref: '#/channels/ingestion' }
+    messages: [{ $ref: '#/channels/ingestion/messages/DocumentParsingStarted' }]
+  publishDocumentParsingCompleted:
+    action: send
+    channel: { $ref: '#/channels/ingestion' }
+    messages: [{ $ref: '#/channels/ingestion/messages/DocumentParsingCompleted' }]
+  publishDocumentIngestionStarted:
+    action: send
+    channel: { $ref: '#/channels/ingestion' }
+    messages: [{ $ref: '#/channels/ingestion/messages/DocumentIngestionStarted' }]
+  publishDocumentIngestionCompleted:
+    action: send
+    channel: { $ref: '#/channels/ingestion' }
+    messages: [{ $ref: '#/channels/ingestion/messages/DocumentIngestionCompleted' }]
+  publishDocumentIngestionFailed:
+    action: send
+    channel: { $ref: '#/channels/ingestion' }
+    messages: [{ $ref: '#/channels/ingestion/messages/DocumentIngestionFailed' }]
+  publishDocumentIndexingStarted:
+    action: send
+    channel: { $ref: '#/channels/indexing' }
+    messages: [{ $ref: '#/channels/indexing/messages/DocumentIndexingStarted' }]
+  publishDocumentIndexingCompleted:
+    action: send
+    channel: { $ref: '#/channels/indexing' }
+    messages: [{ $ref: '#/channels/indexing/messages/DocumentIndexingCompleted' }]
+  publishKnowledgeUpdated:
+    action: send
+    channel: { $ref: '#/channels/indexing' }
+    messages: [{ $ref: '#/channels/indexing/messages/KnowledgeUpdated' }]
+  publishQueryCompleted:
+    action: send
+    channel: { $ref: '#/channels/query' }
+    messages: [{ $ref: '#/channels/query/messages/QueryCompleted' }]
+  publishAnswerGenerated:
+    action: send
+    channel: { $ref: '#/channels/answer' }
+    messages: [{ $ref: '#/channels/answer/messages/AnswerGenerated' }]
+  publishCitationValidationFailed:
+    action: send
+    channel: { $ref: '#/channels/citation' }
+    messages: [{ $ref: '#/channels/citation/messages/CitationValidationFailed' }]
+
+components:
+  messageTraits:
+    KbHeaders:
+      headers:
+        $ref: '#/components/schemas/CommonHeaders'
+
+  messages:
+    DocumentUploaded:
+      name: DocumentUploaded
+      title: Document uploaded
+      summary: Emitted after a document is registered into a project.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/DocumentUploadedPayload' }
+      examples:
+        - name: minimal
+          payload: |
+            {
+              "documentId": "doc-01J…",
+              "checksum": "sha256:9f1c…",
+              "fileSize": 4096,
+              "mimeType": "application/pdf",
+              "duplicate": false
+            }
+
+    DocumentParsingStarted:
+      name: DocumentParsingStarted
+      summary: Compilation kicked off for a document.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/DocumentReferencePayload' }
+
+    DocumentParsingCompleted:
+      name: DocumentParsingCompleted
+      summary: Compilation finished, compiled artifacts available.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/DocumentReferencePayload' }
+
+    DocumentIngestionStarted:
+      name: DocumentIngestionStarted
+      summary: A document- or project-wide ingestion job began.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/IngestionJobPayload' }
+
+    DocumentIngestionCompleted:
+      name: DocumentIngestionCompleted
+      summary: The ingestion job finished successfully.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/IngestionJobPayload' }
+
+    DocumentIngestionFailed:
+      name: DocumentIngestionFailed
+      summary: The ingestion job ended in a terminal failure.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/IngestionFailurePayload' }
+
+    DocumentIndexingStarted:
+      name: DocumentIndexingStarted
+      summary: The search indexer began work on a set of artifacts.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/IndexingPayload' }
+
+    DocumentIndexingCompleted:
+      name: DocumentIndexingCompleted
+      summary: Indexing finished.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/IndexingPayload' }
+
+    KnowledgeUpdated:
+      name: KnowledgeUpdated
+      summary: The knowledge graph or any artifact set materially changed.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/KnowledgeUpdatedPayload' }
+
+    QueryCompleted:
+      name: QueryCompleted
+      summary: A /search or /retrieve call finished.
+      description: |
+        The `query` field is included by default since the existing
+        public REST contract already returns it. Deployments that
+        treat search text as sensitive should set
+        `J1_EVENT_INCLUDE_SENSITIVE_PAYLOADS=false` (the framework
+        default) and supply a custom payload mapper that elides it.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/QueryCompletedPayload' }
+
+    AnswerGenerated:
+      name: AnswerGenerated
+      summary: An /answer call returned a generated answer.
+      description: |
+        Carries metadata only — `citationCount`, `confidence`,
+        `reviewRequired`. The full answer text is **never** included
+        in event payloads (consumers that need it should call
+        `GET /answer` directly).
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/AnswerGeneratedPayload' }
+
+    CitationValidationFailed:
+      name: CitationValidationFailed
+      summary: A citation lookup failed validation.
+      contentType: application/json
+      traits: [{ $ref: '#/components/messageTraits/KbHeaders' }]
+      payload: { $ref: '#/components/schemas/CitationValidationFailurePayload' }
+
+  schemas:
+    CommonHeaders:
+      type: object
+      description: |
+        Headers an adapter SHOULD set on every published message.
+        Aligned with the CloudEvents extension attributes used by the
+        webhook layer (`kbtenantid`, `kbcorrelationid`, `kbactor`,
+        `kbauthtype`) so consumers can read either transport without
+        branching.
+      required: [eventId, eventType, occurredAt, producer, schemaVersion]
+      properties:
+        eventId: { type: string, description: 'Globally unique event id (UUID hex).' }
+        eventType: { type: string, description: 'Stable event-type name (e.g. document.uploaded).' }
+        occurredAt: { type: string, format: date-time, description: 'When the event happened.' }
+        producer: { type: string, description: 'Logical producer identifier (default: j1).' }
+        schemaVersion: { type: string, description: 'Payload schema version. Bump on incompatible payload changes.' }
+        correlationId: { type: string, description: 'Caller-supplied correlation / trace id.' }
+        requestId: { type: string, description: 'Alias of correlationId — set when the source is an HTTP request.' }
+        tenantId: { type: string, description: 'Tenant scope of the event.' }
+        actor: { type: string, description: 'Authenticated subject who triggered the event.' }
+        authType: { type: string, enum: [api_key, jwt, anonymous], description: 'Auth method used by the actor.' }
+        idempotencyKey: { type: string, description: 'Suggested consumer-side dedup key. Default: <eventType>:<subject>.' }
+        traceparent: { type: string, description: 'W3C trace context (when set by the producer).' }
+
+    DocumentReferencePayload:
+      type: object
+      required: [documentId]
+      properties:
+        documentId: { type: string }
+        checksum: { type: string, description: 'SHA-256 of the source bytes; recommended ordering / dedup key.' }
+
+    DocumentUploadedPayload:
+      type: object
+      required: [documentId, checksum, fileSize, duplicate]
+      properties:
+        documentId: { type: string }
+        checksum: { type: string }
+        fileSize: { type: integer, minimum: 0 }
+        mimeType: { type: ['string', 'null'] }
+        duplicate:
+          type: boolean
+          description: 'true when the upload matched an existing checksum (idempotent re-upload).'
+
+    IngestionJobPayload:
+      type: object
+      required: [jobId, projectWide]
+      properties:
+        jobId: { type: string }
+        documentId: { type: ['string', 'null'] }
+        projectWide:
+          type: boolean
+          description: 'true for project-wide ingestion jobs, false for per-document.'
+
+    IngestionFailurePayload:
+      type: object
+      required: [jobId, errorCode, errorMessage, retryable]
+      properties:
+        jobId: { type: string }
+        documentId: { type: ['string', 'null'] }
+        errorCode:
+          type: string
+          description: |
+            Stable, public error code. Implementations MUST NOT leak
+            internal exception types or stack traces.
+        errorMessage:
+          type: string
+          description: 'Public, masked error message — safe for end-user display.'
+        retryable:
+          type: boolean
+          description: 'true if a consumer-side retry is reasonable.'
+
+    IndexingPayload:
+      type: object
+      required: [artifactCount]
+      properties:
+        artifactCount: { type: integer, minimum: 0 }
+        indexerKind: { type: string }
+
+    KnowledgeUpdatedPayload:
+      type: object
+      properties:
+        graphArtifactId: { type: string }
+        artifactCount: { type: integer, minimum: 0 }
+
+    QueryCompletedPayload:
+      type: object
+      required: [resultCount, surface]
+      properties:
+        query: { type: string, description: 'The query text — see message description for sensitivity policy.' }
+        resultCount: { type: integer, minimum: 0 }
+        surface:
+          type: string
+          enum: [search, retrieve]
+          description: 'Which REST surface generated this event.'
+
+    AnswerGeneratedPayload:
+      type: object
+      required: [modeUsed, citationCount, confidence, reviewRequired]
+      properties:
+        question: { type: string, description: 'The question text — already public via /answer.' }
+        modeUsed: { type: string }
+        citationCount: { type: integer, minimum: 0 }
+        confidence: { type: number, format: float }
+        reviewRequired: { type: boolean }
+
+    CitationValidationFailurePayload:
+      type: object
+      required: [citationId, errorCode]
+      properties:
+        citationId: { type: string }
+        artifactId: { type: string }
+        errorCode: { type: string }
+        errorMessage: { type: string }
