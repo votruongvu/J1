@@ -210,6 +210,19 @@ or omits it for auto-routing.
 |--------|-------------|-------|
 | `POST` | `/feedback` | Body: `FeedbackRequest` (`targetKind`, `targetId`, `rating` ∈ {-1, 0, 1}, optional `comment`). Returns `{feedbackId, submittedAt}`. |
 
+### Bulk import / export
+
+NDJSON streams of documents, sources, chunks (artifacts), citations,
+metadata, and feedback. See [bulk.md](bulk.md) for full record schemas,
+idempotency rules, partial-failure response shape, and the
+recommended backup/restore flow.
+
+| Method | Path                                          | Required scope    |
+|--------|-----------------------------------------------|-------------------|
+| `GET`  | `/exports/{documents\|sources\|chunks\|citations\|metadata}.ndjson` | `kb:read` |
+| `GET`  | `/exports/feedback.ndjson`                    | `kb:audit.read`   |
+| `POST` | `/imports/{documents\|sources\|metadata}.ndjson` | `kb:ingest`    |
+
 ### System
 
 | Method | Path             | Notes |

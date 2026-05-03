@@ -42,6 +42,8 @@ from j1.adapters.rest.schemas import (
     AnswerRequest,
     ArtifactListRecord,
     ArtifactRecord,
+    BulkImportFailureRow,
+    BulkImportResultRecord,
     CapabilitiesRecord,
     CapabilityRecord,
     CitationDetailRecord,
@@ -90,6 +92,10 @@ from j1.integration.dto import (
     ProjectCreateRequestDTO,
     ProjectIngestionRequestDTO,
     ReviewDecisionRequestDTO,
+)
+from j1.integration.bulk import (
+    BulkExportService,
+    BulkImportService,
 )
 from j1.integration.events import ApplicationEventBus
 from j1.integration.security import (
@@ -144,6 +150,8 @@ def create_rest_api(
     authenticator: Authenticator | None = None,
     anonymous_paths: frozenset[str] | None = None,
     event_bus: ApplicationEventBus | None = None,
+    bulk_export: BulkExportService | None = None,
+    bulk_import: BulkImportService | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -175,6 +183,7 @@ def create_rest_api(
             {"name": "cost", "description": "Spend reporting"},
             {"name": "reviews", "description": "Human-review queue"},
             {"name": "feedback", "description": "User feedback capture"},
+            {"name": "bulk", "description": "Bulk import / export (NDJSON)"},
             {"name": "system", "description": "Health, version, capabilities"},
         ],
     )
@@ -375,6 +384,16 @@ def create_rest_api(
         if facade.review is None:
             raise HTTPException(503, "review capability not configured")
         return facade.review
+
+    def require_bulk_export():
+        if bulk_export is None:
+            raise HTTPException(503, "bulk export capability not configured")
+        return bulk_export
+
+    def require_bulk_import():
+        if bulk_import is None:
+            raise HTTPException(503, "bulk import capability not configured")
+        return bulk_import
 
     # ---- Projects ----------------------------------------------------
 
@@ -1039,6 +1058,159 @@ def create_rest_api(
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
+    # ---- Bulk export ------------------------------------------------
+
+    NDJSON_CONTENT_TYPE = "application/x-ndjson"
+
+    def _ndjson_response(byte_iter, *, scope_label: str):
+        # Wrap the synchronous generator in a StreamingResponse so the
+        # outbound bytes are flushed to the client as the registry yields
+        # rows — important for large projects.
+        return StreamingResponse(
+            byte_iter,
+            media_type=NDJSON_CONTENT_TYPE,
+            headers={"Content-Disposition": f'attachment; filename="{scope_label}.ndjson"'},
+        )
+
+    @app.get(
+        "/exports/documents.ndjson",
+        tags=["bulk"],
+        summary="Export every document as NDJSON",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def export_documents(
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkExportService = Depends(require_bulk_export),
+    ):
+        return _ndjson_response(svc.export_documents(ctx), scope_label="documents")
+
+    @app.get(
+        "/exports/sources.ndjson",
+        tags=["bulk"],
+        summary="Export every source as NDJSON (alias of /exports/documents.ndjson)",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def export_sources(
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkExportService = Depends(require_bulk_export),
+    ):
+        return _ndjson_response(svc.export_sources(ctx), scope_label="sources")
+
+    @app.get(
+        "/exports/chunks.ndjson",
+        tags=["bulk"],
+        summary="Export every artifact (chunk) as NDJSON",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def export_chunks(
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkExportService = Depends(require_bulk_export),
+    ):
+        return _ndjson_response(svc.export_artifacts(ctx), scope_label="chunks")
+
+    @app.get(
+        "/exports/citations.ndjson",
+        tags=["bulk"],
+        summary="Export every citation (artifact → source-document edge) as NDJSON",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def export_citations(
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkExportService = Depends(require_bulk_export),
+    ):
+        return _ndjson_response(svc.export_citations(ctx), scope_label="citations")
+
+    @app.get(
+        "/exports/metadata.ndjson",
+        tags=["bulk"],
+        summary="Export per-document metadata as NDJSON",
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def export_metadata(
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkExportService = Depends(require_bulk_export),
+    ):
+        return _ndjson_response(svc.export_metadata(ctx), scope_label="metadata")
+
+    @app.get(
+        "/exports/feedback.ndjson",
+        tags=["bulk"],
+        summary="Export every feedback record as NDJSON",
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def export_feedback(
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkExportService = Depends(require_bulk_export),
+    ):
+        return _ndjson_response(svc.export_feedback(ctx), scope_label="feedback")
+
+    # ---- Bulk import ------------------------------------------------
+
+    @app.post(
+        "/imports/documents.ndjson",
+        tags=["bulk"],
+        summary="Bulk-import documents (idempotent by checksum)",
+        description=(
+            "Body must be NDJSON whose lines match `DocumentExportRecord`. "
+            "Existing documents (by checksum) are counted as "
+            "`skippedIdempotent`; invalid lines are reported in `failures` "
+            "and the rest of the file is still processed."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def import_documents(
+        request: Request,
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkImportService = Depends(require_bulk_import),
+    ) -> dict[str, Any]:
+        body = await request.body()
+        result = svc.import_documents(ctx, body.splitlines())
+        return envelope(
+            _bulk_result_record(result).model_dump(by_alias=True),
+            _req_id(request),
+        )
+
+    @app.post(
+        "/imports/sources.ndjson",
+        tags=["bulk"],
+        summary="Bulk-import sources (alias of /imports/documents.ndjson)",
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def import_sources(
+        request: Request,
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkImportService = Depends(require_bulk_import),
+    ) -> dict[str, Any]:
+        body = await request.body()
+        result = svc.import_sources(ctx, body.splitlines())
+        return envelope(
+            _bulk_result_record(result).model_dump(by_alias=True),
+            _req_id(request),
+        )
+
+    @app.post(
+        "/imports/metadata.ndjson",
+        tags=["bulk"],
+        summary="Verify document metadata (round-trip integrity check)",
+        description=(
+            "Each row must match an existing document and its declared "
+            "fields must equal the registry's stored values. No state is "
+            "mutated — failures are reported per-row in `failures`."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def import_metadata(
+        request: Request,
+        ctx: ProjectContext = Depends(get_ctx),
+        svc: BulkImportService = Depends(require_bulk_import),
+    ) -> dict[str, Any]:
+        body = await request.body()
+        result = svc.verify_metadata(ctx, body.splitlines())
+        return envelope(
+            _bulk_result_record(result).model_dump(by_alias=True),
+            _req_id(request),
+        )
+
     # ---- Health / version / capabilities ----------------------------
 
     @app.get("/health", tags=["system"], summary="Liveness check")
@@ -1123,6 +1295,16 @@ def create_rest_api(
                 available=facade.review is not None,
                 description="GET /reviews, POST /reviews/{id}/decision",
             ),
+            CapabilityRecord(
+                name="bulk.export",
+                available=bulk_export is not None,
+                description="GET /exports/{documents,sources,chunks,citations,metadata,feedback}.ndjson",
+            ),
+            CapabilityRecord(
+                name="bulk.import",
+                available=bulk_import is not None,
+                description="POST /imports/{documents,sources,metadata}.ndjson",
+            ),
         ]
         record = CapabilitiesRecord(api_version=version, capabilities=caps)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
@@ -1199,6 +1381,23 @@ def _build_answer_stream_response(
         event_iter(),
         media_type=SSE_CONTENT_TYPE,
         headers=SSE_HEADERS,
+    )
+
+
+def _bulk_result_record(result) -> BulkImportResultRecord:
+    return BulkImportResultRecord(
+        succeeded=result.succeeded,
+        skipped_idempotent=result.skipped_idempotent,
+        failures=[
+            BulkImportFailureRow(
+                line_number=f.line_number,
+                record_id=f.record_id,
+                code=f.code,
+                message=f.message,
+            )
+            for f in result.failures
+        ],
+        total=result.total,
     )
 
 

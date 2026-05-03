@@ -321,3 +321,21 @@ class ReviewDecisionRecord(CamelModel):
     review_item_id: str
     review_status: str
     audit_event_id: str | None = None
+
+
+# ---- Bulk import / export -------------------------------------------
+
+
+class BulkImportFailureRow(CamelModel):
+    line_number: int
+    record_id: str | None = None
+    code: str
+    message: str
+
+
+class BulkImportResultRecord(CamelModel):
+    """Wire shape for `POST /imports/*.ndjson` responses."""
+    succeeded: int
+    skipped_idempotent: int
+    failures: list[BulkImportFailureRow] = Field(default_factory=list)
+    total: int
