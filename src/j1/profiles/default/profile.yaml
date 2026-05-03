@@ -1,0 +1,29 @@
+profile_id: default
+display_name: Default Profile
+description: Generic baseline profile for J1. Defines no domain-specific behavior.
+version: "1.0"
+
+classification:
+  hints: []
+
+confidence:
+  default_threshold: 0.0
+  rules: []
+
+artifacts:
+  schemas_subdir: schemas
+
+extraction:
+  prompts_subdir: prompts
+
+review:
+  rules_file: review_rules.yaml
+
+graph:
+  taxonomy_file: graph_taxonomy.yaml
+
+query:
+  routing_file: query_routing.yaml
+
+reports:
+  templates_subdir: report_templates

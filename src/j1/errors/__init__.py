@@ -8,6 +8,9 @@ from j1.errors.exceptions import (
     InvalidIdentifierError,
     J1Error,
     PathTraversalError,
+    ProfileError,
+    ProfileLoadError,
+    ProfileNotFoundError,
     WorkspaceError,
 )
 
@@ -21,5 +24,8 @@ __all__ = [
     "InvalidIdentifierError",
     "J1Error",
     "PathTraversalError",
+    "ProfileError",
+    "ProfileLoadError",
+    "ProfileNotFoundError",
     "WorkspaceError",
 ]

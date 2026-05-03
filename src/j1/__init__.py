@@ -38,6 +38,9 @@ from j1.errors.exceptions import (
     InvalidIdentifierError,
     J1Error,
     PathTraversalError,
+    ProfileError,
+    ProfileLoadError,
+    ProfileNotFoundError,
     WorkspaceError,
 )
 from j1.intake.registry import JsonSourceRegistry, SourceRegistry
@@ -176,6 +179,12 @@ from j1.processing.results import (
     ReviewItemResult,
 )
 from j1.processing.service import ProcessingService
+from j1.profiles import (
+    DEFAULT_PROFILE_ID,
+    Profile,
+    ProfileLoader,
+    bundled_profiles_dir,
+)
 from j1.projects.context import ProjectContext
 from j1.review.models import ReviewItem
 from j1.review.queue import (
@@ -225,6 +234,7 @@ __all__ = [
     "CompilerConfigError",
     "CompilerExecutionError",
     "DEFAULT_OUTPUT_MAPPING",
+    "DEFAULT_PROFILE_ID",
     "ExternalKnowledgeCompiler",
     "SubprocessCompilerAdapter",
     "ArtifactActivityResult",
@@ -296,6 +306,11 @@ __all__ = [
     "ModelResponse",
     "PathTraversalError",
     "PrepareWorkspaceInput",
+    "Profile",
+    "ProfileError",
+    "ProfileLoadError",
+    "ProfileLoader",
+    "ProfileNotFoundError",
     "PrepareWorkspaceResult",
     "ProcessingActivities",
     "ProcessingActivityResult",
@@ -348,6 +363,7 @@ __all__ = [
     "WorkspaceResolver",
     "WriteAuditInput",
     "WriteAuditResult",
+    "bundled_profiles_dir",
     "build_client",
     "build_worker",
     "load_temporal_settings",

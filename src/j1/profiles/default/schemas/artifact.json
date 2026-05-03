@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Generic artifact",
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string" },
+    "content": { "type": "object" }
+  },
+  "required": ["kind"]
+}

@@ -45,3 +45,15 @@ class CompilerConfigError(J1Error):
 
 class CompilerExecutionError(J1Error):
     pass
+
+
+class ProfileError(J1Error):
+    pass
+
+
+class ProfileNotFoundError(ProfileError):
+    pass
+
+
+class ProfileLoadError(ProfileError):
+    pass
