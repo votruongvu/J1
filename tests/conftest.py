@@ -4,10 +4,15 @@ from pathlib import Path
 
 import pytest
 
+from j1.artifacts.registry import JsonArtifactRegistry
+from j1.audit.recorder import DefaultAuditRecorder
 from j1.audit.sink import JsonlAuditSink
 from j1.config.settings import Settings
+from j1.cost.recorder import DefaultCostRecorder
+from j1.cost.sink import JsonlCostSink
 from j1.intake.registry import JsonSourceRegistry
 from j1.intake.service import DocumentIntakeService
+from j1.processing.service import ProcessingService
 from j1.projects.context import ProjectContext
 from j1.workspace.resolver import WorkspaceResolver
 
@@ -43,8 +48,18 @@ def registry(workspace: WorkspaceResolver) -> JsonSourceRegistry:
 
 
 @pytest.fixture
+def artifact_registry(workspace: WorkspaceResolver) -> JsonArtifactRegistry:
+    return JsonArtifactRegistry(workspace)
+
+
+@pytest.fixture
 def audit_sink(workspace: WorkspaceResolver) -> JsonlAuditSink:
     return JsonlAuditSink(workspace)
+
+
+@pytest.fixture
+def cost_sink(workspace: WorkspaceResolver) -> JsonlCostSink:
+    return JsonlCostSink(workspace)
 
 
 @pytest.fixture
@@ -59,6 +74,16 @@ def id_factory():
 
 
 @pytest.fixture
+def audit_recorder(audit_sink, fixed_clock, id_factory) -> DefaultAuditRecorder:
+    return DefaultAuditRecorder(audit_sink, clock=fixed_clock, id_factory=id_factory)
+
+
+@pytest.fixture
+def cost_recorder(cost_sink, fixed_clock, id_factory) -> DefaultCostRecorder:
+    return DefaultCostRecorder(cost_sink, clock=fixed_clock, id_factory=id_factory)
+
+
+@pytest.fixture
 def intake_service(
     workspace: WorkspaceResolver,
     registry: JsonSourceRegistry,
@@ -70,6 +95,25 @@ def intake_service(
         workspace=workspace,
         registry=registry,
         audit_sink=audit_sink,
+        clock=fixed_clock,
+        id_factory=id_factory,
+    )
+
+
+@pytest.fixture
+def processing_service(
+    workspace: WorkspaceResolver,
+    artifact_registry: JsonArtifactRegistry,
+    audit_recorder: DefaultAuditRecorder,
+    cost_recorder: DefaultCostRecorder,
+    fixed_clock,
+    id_factory,
+) -> ProcessingService:
+    return ProcessingService(
+        workspace=workspace,
+        artifact_registry=artifact_registry,
+        audit=audit_recorder,
+        cost=cost_recorder,
         clock=fixed_clock,
         id_factory=id_factory,
     )
