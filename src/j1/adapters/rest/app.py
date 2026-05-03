@@ -17,6 +17,12 @@ from fastapi.responses import JSONResponse
 from temporalio.exceptions import ApplicationError
 
 from j1.adapters.rest.envelope import envelope, error_envelope, error_response
+from j1.adapters.rest.events import (
+    publish_answer_generated,
+    publish_document_ingestion_started,
+    publish_document_uploaded,
+    publish_query_completed,
+)
 from j1.adapters.rest.security import (
     SecurityPolicy,
     authenticate_request,
@@ -76,6 +82,7 @@ from j1.integration.dto import (
     ProjectIngestionRequestDTO,
     ReviewDecisionRequestDTO,
 )
+from j1.integration.events import ApplicationEventBus
 from j1.integration.security import (
     ANONYMOUS_CONTEXT,
     Authenticator,
@@ -127,6 +134,7 @@ def create_rest_api(
     workspace: WorkspaceResolver | None = None,
     authenticator: Authenticator | None = None,
     anonymous_paths: frozenset[str] | None = None,
+    event_bus: ApplicationEventBus | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -410,6 +418,7 @@ def create_rest_api(
         actor: str = Form("system"),
         correlation_id: str | None = Form(default=None),
         ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         try:
             dto = facade.ingestion.register_document(
@@ -425,12 +434,24 @@ def create_rest_api(
                 ctx, exc.existing_document_id
             )
             record = _document_record(existing)
+            publish_document_uploaded(
+                event_bus, security=security, request_id=_req_id(request),
+                tenant_id=ctx.tenant_id, document_id=existing.document_id,
+                checksum=existing.checksum, file_size=existing.file_size,
+                mime_type=existing.mime_type, duplicate=True,
+            )
             return envelope(
                 record.model_dump(by_alias=True),
                 _req_id(request),
                 meta={"duplicate": True},
             )
         record = _document_record(dto)
+        publish_document_uploaded(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, document_id=dto.document_id,
+            checksum=dto.checksum, file_size=dto.file_size,
+            mime_type=dto.mime_type, duplicate=False,
+        )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
     @app.get(
@@ -465,10 +486,16 @@ def create_rest_api(
         body: IngestRequest,
         ctx: ProjectContext = Depends(get_ctx),
         starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         # Verify the document exists before starting work.
         facade.source_lookup.get_source(ctx, document_id)
         job_id = await starter(ctx, document_id, body)
+        publish_document_ingestion_started(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, job_id=job_id,
+            document_id=document_id, project_wide=False,
+        )
         record = JobStartRecord(
             job_id=job_id, document_id=document_id, status="running"
         )
@@ -555,6 +582,7 @@ def create_rest_api(
         body: ProjectIngestionRequest,
         ctx: ProjectContext = Depends(get_ctx),
         control=Depends(require_job_control),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         result = await control.start_project_job(
             ctx,
@@ -569,6 +597,11 @@ def create_rest_api(
                 actor=body.actor,
                 correlation_id=body.correlation_id,
             ),
+        )
+        publish_document_ingestion_started(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, job_id=result.job_id,
+            document_id=None, project_wide=True,
         )
         record = JobActionRecord(job_id=result.job_id, action=result.action)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
@@ -673,12 +706,18 @@ def create_rest_api(
         body: SearchRequest,
         ctx: ProjectContext = Depends(get_ctx),
         search_port=Depends(require_search),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         hits = search_port.search(
             ctx,
             body.query,
             artifact_types=list(body.artifact_types) or None,
             max_results=body.max_results,
+        )
+        publish_query_completed(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, query=body.query,
+            result_count=len(hits), surface="search",
         )
         record = SearchResultRecord(
             query=body.query,
@@ -713,12 +752,18 @@ def create_rest_api(
         body: RetrieveRequest,
         ctx: ProjectContext = Depends(get_ctx),
         search_port=Depends(require_search),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         hits = search_port.search(
             ctx,
             body.query,
             artifact_types=list(body.artifact_types) or None,
             max_results=body.max_blocks,
+        )
+        publish_query_completed(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, query=body.query,
+            result_count=len(hits), surface="retrieve",
         )
         # Hits already carry the indexed text — that's the block body.
         blocks: list[ContextBlockRecord] = [
@@ -749,6 +794,7 @@ def create_rest_api(
         body: AnswerRequest,
         ctx: ProjectContext = Depends(get_ctx),
         answer_port=Depends(require_answer),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         dto = answer_port.answer(
             ctx,
@@ -758,6 +804,12 @@ def create_rest_api(
                 max_results=body.max_results,
                 artifact_types=list(body.artifact_types),
             ),
+        )
+        publish_answer_generated(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, question=body.question,
+            mode_used=dto.mode_used, citation_count=len(dto.sources),
+            confidence=dto.confidence, review_required=dto.review_required,
         )
         record = AnswerRecord(
             question=body.question,

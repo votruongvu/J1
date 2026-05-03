@@ -316,7 +316,31 @@ The route surface, scope catalog, and error envelopes don't change.
 
 ---
 
-## 11. Constraints honoured
+## 11. Bridge to webhooks / CloudEvents
+
+The REST adapter accepts an optional `event_bus: ApplicationEventBus`.
+When wired, protected handlers (`POST /documents`, `POST /documents/{id}/ingest`,
+`POST /ingestion-jobs`, `POST /search`, `POST /retrieve`, `POST /answer`)
+publish an `ApplicationEvent` after the operation succeeds, carrying:
+
+- `actor` = `SecurityContext.subject` (or `None` for anonymous calls)
+- `auth_type` = `"api_key"` / `"jwt"` / `"anonymous"`
+- `tenant_id` from the project context
+- `correlation_id` = the `X-Request-Id` round-tripped on the response
+
+Those values flow through to the CloudEvents payload as the
+`kbactor` / `kbauthtype` extension attributes — receivers can prove
+which authenticated identity caused a webhook to fire. See
+[webhooks.md](webhooks.md) for the wire format.
+
+The bridge lives in
+[`j1.adapters.rest.events`](../src/j1/adapters/rest/events.py); it traps
+publication failures so a misbehaving bus / subscriber cannot break an
+HTTP response.
+
+---
+
+## 12. Constraints honoured
 
 - **No domain-specific naming.** Scopes are `kb:*`; nothing in the
   layer references a customer or vertical.
