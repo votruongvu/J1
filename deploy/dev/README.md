@@ -1,8 +1,17 @@
 # Local development with Docker
 
 A minimal Docker Compose stack for running the J1 framework locally.
-Brings up a REST API, a Temporal worker, a Temporal server, and the
-Temporal UI on a single laptop with no other infrastructure required.
+Brings up a REST API, a Temporal worker, a Temporal server (with
+Postgres for its own storage), and the Temporal web UI on a single
+laptop.
+
+> **About Postgres.** It's here **only as Temporal's storage backend**
+> — Temporal's official `auto-setup` image only supports
+> mysql8 / postgres12 / postgres12_pgx / cassandra. The J1 framework
+> itself does **not** use a relational database; J1 state lives in
+> flat-file JSON registries + per-project SQLite FTS5 under
+> `J1_DATA_ROOT`. The Postgres container's life is fully internal to
+> Temporal.
 
 This stack is **for development only** — not a production deployment.
 See [docs/architecture.md](../../docs/architecture.md) for the full
@@ -38,12 +47,13 @@ schema init). Subsequent runs are fast.
 
 Services that come up:
 
-| Service          | URL / Port                          | What it is |
-|------------------|-------------------------------------|------------|
-| `api`            | http://localhost:8000               | J1 REST API (`python -m deploy.dev.api`) |
-| `worker`         | (no port — connects to Temporal)    | J1 Temporal worker (`python -m deploy.dev.worker`) |
-| `temporal`       | localhost:7233 (gRPC)               | Temporal server with SQLite persistence |
-| `temporal-ui`    | http://localhost:8080               | Browser UI for Temporal |
+| Service        | URL / Port                            | What it is |
+|----------------|---------------------------------------|------------|
+| `api`          | http://localhost:8000                 | J1 REST API (`python -m deploy.dev.api`) |
+| `worker`       | (no port — connects to Temporal)      | J1 Temporal worker (`python -m deploy.dev.worker`) |
+| `temporal`     | localhost:7233 (gRPC)                 | Temporal server (`temporalio/auto-setup`) |
+| `temporal-ui`  | http://localhost:8080                 | Temporal web UI |
+| `postgresql`   | (no exposed port; Temporal-internal)  | Temporal's storage — **not** used by J1 |
 
 ---
 
@@ -51,12 +61,12 @@ Services that come up:
 
 The framework is library-only and the local stack mirrors that minimalism. These services were considered and deliberately omitted:
 
-| Service | Why omitted |
+| Service | Status |
 |---|---|
-| **PostgreSQL** | The framework uses flat-file JSON registries (`JsonSourceRegistry`, `JsonArtifactRegistry`, `JsonReviewQueue`) and per-project SQLite FTS5 for search. There is no relational store. Adding Postgres would require a code change to make J1 use it. |
-| **Redis** | No caching layer, no session store, no distributed-lock requirement. Temporal handles workflow state + retries; webhooks have their own `WebhookDeliveryStore`. Redis is unused. |
-| **MinIO / S3** | Workspace state lives on disk under `J1_DATA_ROOT`, mounted as the named Docker volume `j1_workspace`. The codebase doesn't use object storage directly. |
-| **Production-grade Temporal** (Cassandra / Postgres backing, ES for search) | Overkill for laptop use. The bundled `temporalio/auto-setup` image with SQLite persistence is enough for a developer to see workflows execute end-to-end. |
+| **PostgreSQL** | Present **only as Temporal's storage**. J1 itself doesn't use it — J1 state stays on disk in JSON + SQLite. Could be omitted by switching Temporal to MySQL or Cassandra; Postgres is the lightest of the supported drivers. |
+| **Redis** | Omitted. No caching layer, no session store, no distributed-lock requirement. Temporal handles workflow state + retries; webhooks have their own `WebhookDeliveryStore`. |
+| **MinIO / S3** | Omitted. Workspace state lives on disk under `J1_DATA_ROOT`, mounted as the named Docker volume `j1_workspace`. The codebase doesn't use object storage. |
+| **Production-grade Temporal** (Cassandra backing, Elasticsearch for advanced search) | Omitted. The `auto-setup` image with Postgres is overkill-light — fine for laptop use. Production deployments swap the storage driver and add ES per Temporal's own deployment guide. |
 
 If a deployment needs any of these, add them in a separate
 `deploy/<env>/docker-compose.yml` (e.g. `deploy/staging/`) — keeping

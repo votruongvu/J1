@@ -52,27 +52,64 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "deploy.dev.worker"]
 
-  temporal:
-    # `auto-setup` includes a self-contained development server with
-    # SQLite persistence baked in. Suitable for laptop use; not for
-    # production. Pin a minor version for reproducibility.
-    image: temporalio/auto-setup:1.24
-    container_name: j1-temporal
+  # Temporal's own storage. Postgres is here ONLY for Temporal — the
+  # J1 framework itself does NOT use a relational database (it uses
+  # flat-file JSON registries + per-project SQLite FTS5 under
+  # `J1_DATA_ROOT`). Temporal's auto-setup image only supports
+  # mysql8 / postgres12 / postgres12_pgx / cassandra; postgres is
+  # the lightest and most familiar of those.
+  postgresql:
+    image: postgres:15-alpine
+    container_name: j1-postgres
     environment:
-      - DB=sqlite
-      - SKIP_DEFAULT_NAMESPACE_CREATION=false
-      - DEFAULT_NAMESPACE=default
-    ports:
-      - "7233:7233"
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - j1_postgres:/var/lib/postgresql/data
     networks:
       - j1-net
     healthcheck:
-      # `tctl --address temporal:7233 cluster health` is the canonical
-      # check; embedded curl works against the gRPC port too.
-      test: ["CMD", "tctl", "--address", "temporal:7233", "workflow", "list"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
       timeout: 5s
       retries: 10
+
+  temporal:
+    # The official auto-setup image: bundles the server + the
+    # admin-tools CLI + schema initialisation. On first boot it
+    # creates the Temporal schema in Postgres automatically.
+    image: temporalio/auto-setup:1.24.2
+    container_name: j1-temporal
+    environment:
+      - DB=postgres12_pgx
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgresql
+      - DEFAULT_NAMESPACE=default
+      - SKIP_DEFAULT_NAMESPACE_CREATION=false
+    ports:
+      - "7233:7233"      # gRPC (frontend)
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    networks:
+      - j1-net
+    healthcheck:
+      # `temporal operator cluster health` is the modern equivalent
+      # of `tctl cluster health`. Probes the local gRPC frontend.
+      test:
+        - "CMD"
+        - "temporal"
+        - "operator"
+        - "cluster"
+        - "health"
+        - "--address"
+        - "127.0.0.1:7233"
+      interval: 10s
+      timeout: 5s
+      retries: 15
       start_period: 30s
 
   temporal-ui:
@@ -94,4 +131,5 @@ networks:
     driver: bridge
 
 volumes:
-  j1_workspace:
+  j1_workspace:    # framework state (per-project JSON registries, SQLite FTS5)
+  j1_postgres:     # Temporal's own storage — not used by J1 itself
