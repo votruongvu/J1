@@ -1,3 +1,4 @@
+from j1.api import ServiceContainer, build_default_container, create_api
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import (
     ArtifactNotFoundError,
@@ -497,6 +498,7 @@ __all__ = [
     "SearchIndexer",
     "SearchIndexerError",
     "SqliteSearchIndexer",
+    "ServiceContainer",
     "Settings",
     "SkippedDocument",
     "SourceDocument",
@@ -522,6 +524,8 @@ __all__ = [
     "WriteAuditInput",
     "WriteAuditResult",
     "build_client",
+    "build_default_container",
+    "create_api",
     "bundled_profiles_dir",
     "confidence_level_from_score",
     "build_worker",
