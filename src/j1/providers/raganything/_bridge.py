@@ -110,12 +110,27 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             },
         )
 
-    try:
-        asyncio.run(rag.process_document_complete(
+    async def _run_compile():
+        # `_ensure_lightrag_initialized` returns {"success": False, "error": ...}
+        # on failure WITHOUT raising — and `process_document_complete`
+        # then proceeds with `self.lightrag = None`, which blows up
+        # later as `'NoneType' object has no attribute 'ainsert'`.
+        # Surface the real init error here instead of letting the
+        # downstream AttributeError mask it.
+        init = await rag._ensure_lightrag_initialized()
+        if isinstance(init, dict) and not init.get("success", True):
+            raise ProviderUnavailable(
+                "RAGAnything failed to initialize LightRAG: "
+                f"{init.get('error', 'unknown error')}"
+            )
+        await rag.process_document_complete(
             file_path=str(source_path),
             output_dir=str(output_dir),
             parse_method=request.settings.parse_method,
-        ))
+        )
+
+    try:
+        asyncio.run(_run_compile())
     except RuntimeError as exc:
         # "asyncio.run() cannot be called from a running event loop"
         # is the most likely RuntimeError here.
@@ -278,7 +293,7 @@ def _build_rag_instance(
         kwargs["config"] = config
     kwargs["llm_model_func"] = _make_text_callable(text_client)
     if embedding_client is not None:
-        kwargs["embedding_func"] = _make_embedding_callable(embedding_client)
+        kwargs["embedding_func"] = _make_embedding_func(embedding_client)
     if vision_client is not None:
         kwargs["vision_model_func"] = _make_vision_callable(vision_client)
 
@@ -327,41 +342,67 @@ def _build_rag_config(raganything_mod, settings):
 
 
 def _make_text_callable(text_client) -> Callable[..., Any]:
-    """RAGAnything calls llm_model_func(prompt, **kwargs) → str.
+    """RAGAnything (via LightRAG) `await`s llm_model_func(prompt, **kw) → str.
 
-    We adapt J1's `TextLLMClient.generate(prompt) → (text, usage)`
-    by returning just the text. Token usage is dropped at the vendor
-    boundary — RAGAnything doesn't surface it back to us.
+    LightRAG awaits the result, so the wrapper has to be `async`.
+    Underlying `TextLLMClient.generate` is synchronous, so we run it
+    on a worker thread to keep the event loop free. Token usage is
+    dropped at the vendor boundary — RAGAnything doesn't surface it.
     """
 
-    def _llm_callable(prompt: str, *args, **kwargs) -> str:
-        text, _usage = text_client.generate(prompt)
+    async def _llm_callable(prompt: str, *args, **kwargs) -> str:
+        text, _usage = await asyncio.to_thread(text_client.generate, prompt)
         return text
 
     return _llm_callable
 
 
 def _make_vision_callable(vision_client) -> Callable[..., Any]:
-    """RAGAnything calls vision_model_func(prompt, image_data, **kw) → str."""
+    """RAGAnything `await`s vision_model_func(prompt, image_data, **kw) → str."""
 
-    def _vision_callable(prompt: str, image_data: bytes = b"",
-                         *args, **kwargs) -> str:
-        text, _usage = vision_client.analyze_image(image_data, prompt=prompt)
+    async def _vision_callable(prompt: str, image_data: bytes = b"",
+                               *args, **kwargs) -> str:
+        text, _usage = await asyncio.to_thread(
+            vision_client.analyze_image, image_data, prompt=prompt,
+        )
         return text
 
     return _vision_callable
 
 
-def _make_embedding_callable(embedding_client) -> Callable[..., Any]:
-    """RAGAnything calls embedding_func(texts) → list[list[float]]."""
+def _make_embedding_func(embedding_client):
+    """Wrap an `EmbeddingClient` in `lightrag.utils.EmbeddingFunc`.
 
-    def _embedding_callable(texts, *args, **kwargs):
+    LightRAG does NOT accept a plain callable here — it accesses
+    `.embedding_dim` / `.max_token_size` / `.func` on this object
+    during init (see `lightrag.lightrag.LightRAG.__post_init__`).
+    Passing a plain callable causes init to silently fail and
+    `RAGAnything.lightrag` to stay `None`, surfacing later as
+    `'NoneType' object has no attribute 'ainsert'`. The wrapper's
+    inner `func` is awaited by LightRAG, so it must be async.
+    """
+    try:
+        from lightrag.utils import EmbeddingFunc
+    except ImportError as exc:
+        raise ProviderUnavailable(
+            "RAGAnything requires `lightrag` to be importable for "
+            "embedding wrapping (lightrag.utils.EmbeddingFunc). "
+            "Install with: pip install j1[raganything]"
+        ) from exc
+
+    async def _embedding_callable(texts, *args, **kwargs):
         if isinstance(texts, str):
             texts = [texts]
-        vectors, _usage = embedding_client.embed_batch(texts)
+        vectors, _usage = await asyncio.to_thread(
+            embedding_client.embed_batch, list(texts),
+        )
         return vectors
 
-    return _embedding_callable
+    return EmbeddingFunc(
+        embedding_dim=embedding_client.dimension(),
+        func=_embedding_callable,
+        max_token_size=embedding_client.max_tokens(),
+    )
 
 
 # ---- LibreOffice pre-conversion (broad format coverage) ------------

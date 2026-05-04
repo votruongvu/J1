@@ -57,6 +57,13 @@ class _FakeEmbed:
     def dimension(self) -> int:
         return 1024
 
+    def max_tokens(self) -> int:
+        return 8192
+
+    def embed_batch(self, texts):
+        texts = list(texts)
+        return ([[0.0] * 1024] * len(texts), None)
+
 
 def _registry() -> LLMProviderRegistry:
     reg = LLMProviderRegistry()
@@ -523,6 +530,9 @@ def _install_fake_raganything(monkeypatch, *, captured: dict):
     class _FakeRAG:
         def __init__(self, **kwargs):
             captured["rag_kwargs"] = kwargs
+
+        async def _ensure_lightrag_initialized(self):
+            return {"success": True}
 
         async def process_document_complete(
             self, *, file_path, output_dir, parse_method,

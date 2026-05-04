@@ -313,6 +313,9 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
     class _FakeRAG:
         def __init__(self, **kwargs): pass
 
+        async def _ensure_lightrag_initialized(self):
+            return {"success": True}
+
         async def process_document_complete(
             self, *, file_path, output_dir, parse_method,
         ):
@@ -360,6 +363,8 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
 
     class _FakeEmbed:
         def embed_batch(self, texts): return ([[0.0] * 8] * len(texts), None)
+        def dimension(self): return 8
+        def max_tokens(self): return 512
 
     from j1.projects.context import ProjectContext
 
@@ -404,6 +409,9 @@ def test_default_compile_passes_through_native_pdf_unchanged(
     class _FakeRAG:
         def __init__(self, **kwargs): pass
 
+        async def _ensure_lightrag_initialized(self):
+            return {"success": True}
+
         async def process_document_complete(
             self, *, file_path, output_dir, parse_method,
         ):
@@ -443,6 +451,8 @@ def test_default_compile_passes_through_native_pdf_unchanged(
 
     class _FakeEmbed:
         def embed_batch(self, texts): return ([[0.0] * 8] * len(texts), None)
+        def dimension(self): return 8
+        def max_tokens(self): return 512
 
     from j1.projects.context import ProjectContext
 
@@ -461,3 +471,118 @@ def test_default_compile_passes_through_native_pdf_unchanged(
     assert captured["compile_file_path"].endswith("doc-1.pdf")
     from j1.processing.results import ResultStatus
     assert result.status is ResultStatus.SUCCEEDED
+
+
+# ---- Regression: LightRAG init failure surfaces as ProviderUnavailable -
+
+
+def test_default_compile_surfaces_lightrag_init_failure_as_provider_unavailable(
+    tmp_path, monkeypatch,
+):
+    """RAGAnything's `_ensure_lightrag_initialized` returns
+    `{"success": False, "error": ...}` on failure WITHOUT raising,
+    then `process_document_complete` proceeds with `self.lightrag = None`
+    and crashes downstream as `'NoneType' object has no attribute 'ainsert'`.
+    The bridge must intercept the init result and raise a clear
+    `ProviderUnavailable` instead, so operators see the real cause."""
+    import sys
+    import types
+
+    from j1.providers.raganything._bridge import default_compile
+    from j1.providers.raganything.compiler import RAGAnythingCompileRequest
+
+    class _FakeConfig:
+        def __init__(self, **kwargs): pass
+
+    class _FakeRAG:
+        def __init__(self, **kwargs): pass
+
+        async def _ensure_lightrag_initialized(self):
+            return {"success": False, "error": "embedding_func must be provided"}
+
+        async def process_document_complete(self, **_):
+            raise AssertionError(
+                "process_document_complete should NOT be called when init fails"
+            )
+
+    fake_mod = types.ModuleType("raganything")
+    fake_mod.RAGAnything = _FakeRAG
+    fake_mod.RAGAnythingConfig = _FakeConfig
+    monkeypatch.setitem(sys.modules, "raganything", fake_mod)
+
+    monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
+    raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "doc-1.pdf").write_bytes(b"%PDF-1.4 native pdf")
+
+    from j1.projects.context import ProjectContext
+
+    class _FakeText:
+        def generate(self, prompt): return ("ok", None)
+
+    class _FakeEmbed:
+        def embed_batch(self, texts): return ([[0.0] * 8] * len(texts), None)
+        def dimension(self): return 8
+        def max_tokens(self): return 512
+
+    settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
+    })
+    request = RAGAnythingCompileRequest(
+        ctx=ProjectContext(tenant_id="acme", project_id="alpha"),
+        document_id="doc-1",
+        settings=settings,
+        text_client=_FakeText(),
+        vision_client=None,
+        embedding_client=_FakeEmbed(),
+    )
+
+    with pytest.raises(ProviderUnavailable, match="embedding_func must be provided"):
+        default_compile(request)
+
+
+# ---- Regression: embedding wrapper has the LightRAG-required shape ----
+
+
+def test_make_embedding_func_returns_lightrag_embeddingfunc_with_dim_and_max_tokens():
+    """LightRAG's `LightRAG.__post_init__` accesses `.embedding_dim`,
+    `.max_token_size`, and `.func` on the `embedding_func` argument.
+    Passing a plain callable causes init to silently fail and the
+    AttributeError-on-None downstream. Verify our wrapper exposes the
+    full `lightrag.utils.EmbeddingFunc` shape and forwards `dimension()` /
+    `max_tokens()` from the J1 client."""
+    from lightrag.utils import EmbeddingFunc
+
+    from j1.providers.raganything._bridge import _make_embedding_func
+
+    class _FakeEmbed:
+        def embed_batch(self, texts): return ([[0.1] * 8] * len(texts), None)
+        def dimension(self): return 8
+        def max_tokens(self): return 4096
+
+    wrapped = _make_embedding_func(_FakeEmbed())
+    assert isinstance(wrapped, EmbeddingFunc)
+    assert wrapped.embedding_dim == 8
+    assert wrapped.max_token_size == 4096
+    assert callable(wrapped.func)
+
+
+def test_make_text_callable_returns_async_callable_that_unwraps_usage():
+    """LightRAG `await`s the llm_model_func — the wrapper must be async,
+    must invoke `text_client.generate(prompt)`, and must drop the usage
+    half of the (text, usage) tuple."""
+    import asyncio
+
+    from j1.providers.raganything._bridge import _make_text_callable
+
+    seen = []
+
+    class _FakeText:
+        def generate(self, prompt):
+            seen.append(prompt)
+            return ("hello back", {"input_tokens": 1})
+
+    callable_ = _make_text_callable(_FakeText())
+    result = asyncio.run(callable_("hi there"))
+    assert result == "hello back"
+    assert seen == ["hi there"]
