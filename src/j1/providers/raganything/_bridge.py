@@ -63,6 +63,16 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+# Plain-text extensions where MinerU's parse path is actively harmful.
+# `MineruParser.parse_text_file` (raganything ≤ current) renders the text
+# to a PDF via reportlab and then runs the full PyTorch model stack
+# (layout / OCR / formula / table) on the rendered PDF — pinning every
+# CPU core for tens of seconds even on a 10-character file. For these
+# extensions the bridge reads the bytes directly and feeds them to
+# LightRAG, skipping mineru entirely.
+_NATIVE_TEXT_EXTENSIONS = frozenset({".txt", ".md", ".markdown"})
+
+
 class _LibreOfficeConversionError(RuntimeError):
     """Raised when soffice subprocess fails for a known runtime reason
     (non-zero exit, no output produced, timeout). Caught at the
@@ -123,6 +133,16 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
                 "RAGAnything failed to initialize LightRAG: "
                 f"{init.get('error', 'unknown error')}"
             )
+
+        if _is_plain_text(source_path):
+            await _insert_plain_text_directly(
+                rag=rag,
+                source_path=source_path,
+                document_id=request.document_id,
+                output_dir=output_dir,
+            )
+            return
+
         await rag.process_document_complete(
             file_path=str(source_path),
             output_dir=str(output_dir),
@@ -403,6 +423,61 @@ def _make_embedding_func(embedding_client):
         func=_embedding_callable,
         max_token_size=embedding_client.max_tokens(),
     )
+
+
+# ---- Plain-text fast path (skip mineru's PDF-render-then-OCR loop) -
+
+
+def _is_plain_text(source_path: Path) -> bool:
+    return source_path.suffix.lower() in _NATIVE_TEXT_EXTENSIONS
+
+
+async def _insert_plain_text_directly(
+    *,
+    rag,
+    source_path: Path,
+    document_id: str,
+    output_dir: Path,
+) -> None:
+    """Read `source_path` and insert its text directly into LightRAG.
+
+    Bypasses `RAGAnything.process_document_complete` entirely for plain
+    text — mineru's text path renders the file to a PDF and runs the
+    full PyTorch model pipeline on the rendered output, which pegs all
+    CPU cores even on a 10-byte file. Reading the bytes ourselves and
+    handing them to `lightrag.ainsert` is functionally equivalent for
+    plain text (no images / tables / formulas to extract) and orders
+    of magnitude cheaper.
+
+    Also writes the text into `output_dir` so the existing draft-walker
+    (`_drafts_from_output_dir`) discovers it without special-casing.
+    """
+    text = source_path.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        # Mirror raganything's own behaviour: skip the insert entirely
+        # for empty / whitespace-only documents (it would otherwise
+        # produce a chunk with no content and confuse retrieval).
+        return
+
+    await rag.lightrag.ainsert(
+        input=text,
+        file_paths=str(source_path),
+        ids=document_id,
+    )
+
+    # Best-effort doc-status bookkeeping — keeps RAGAnything's view of
+    # the document consistent with what `process_document_complete`
+    # would have left behind. Failure here is non-fatal.
+    mark = getattr(rag, "_mark_multimodal_processing_complete", None)
+    if mark is not None:
+        try:
+            await mark(document_id)
+        except Exception:  # noqa: BLE001 — bookkeeping must not fail compile
+            _log.debug("doc-status bookkeeping failed (non-fatal)", exc_info=True)
+
+    # Persist the text so the standard output-dir draft walker picks it up.
+    out_path = output_dir / f"{document_id}.md"
+    out_path.write_text(text, encoding="utf-8")
 
 
 # ---- LibreOffice pre-conversion (broad format coverage) ------------

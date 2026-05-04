@@ -567,6 +567,164 @@ def test_make_embedding_func_returns_lightrag_embeddingfunc_with_dim_and_max_tok
     assert callable(wrapped.func)
 
 
+# ---- Regression: plain-text fast path bypasses mineru entirely --------
+
+
+def test_default_compile_short_circuits_plain_text_to_lightrag_ainsert(
+    tmp_path, monkeypatch,
+):
+    """`.txt` files MUST NOT go through `process_document_complete` —
+    mineru renders text → PDF → runs the full PyTorch model pipeline
+    on the result, which pegs every CPU core even on a 10-byte file.
+    The bridge reads the text and calls `lightrag.ainsert` directly."""
+    import sys
+    import types
+
+    from j1.providers.raganything._bridge import default_compile
+    from j1.providers.raganything.compiler import RAGAnythingCompileRequest
+
+    captured: dict = {"ainsert_calls": [], "process_called": False}
+
+    class _FakeLightRAG:
+        async def ainsert(self, *, input, file_paths=None, ids=None, **_):
+            captured["ainsert_calls"].append(
+                {"input": input, "file_paths": file_paths, "ids": ids},
+            )
+
+    class _FakeConfig:
+        def __init__(self, **_): pass
+
+    class _FakeRAG:
+        def __init__(self, **_):
+            self.lightrag = _FakeLightRAG()
+
+        async def _ensure_lightrag_initialized(self):
+            return {"success": True}
+
+        async def process_document_complete(self, **_):
+            captured["process_called"] = True
+
+    fake_mod = types.ModuleType("raganything")
+    fake_mod.RAGAnything = _FakeRAG
+    fake_mod.RAGAnythingConfig = _FakeConfig
+    monkeypatch.setitem(sys.modules, "raganything", fake_mod)
+
+    monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
+    raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
+    raw_dir.mkdir(parents=True)
+    txt_path = raw_dir / "doc-1.txt"
+    txt_path.write_text("hello world", encoding="utf-8")
+
+    from j1.projects.context import ProjectContext
+
+    class _FakeText:
+        def generate(self, prompt): return ("ok", None)
+
+    class _FakeEmbed:
+        def embed_batch(self, texts): return ([[0.0] * 8] * len(texts), None)
+        def dimension(self): return 8
+        def max_tokens(self): return 512
+
+    settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
+    })
+    request = RAGAnythingCompileRequest(
+        ctx=ProjectContext(tenant_id="acme", project_id="alpha"),
+        document_id="doc-1",
+        settings=settings,
+        text_client=_FakeText(),
+        vision_client=None,
+        embedding_client=_FakeEmbed(),
+    )
+
+    result = default_compile(request)
+
+    # mineru pathway must be untouched.
+    assert captured["process_called"] is False, (
+        "process_document_complete was called for a .txt file — "
+        "the plain-text fast path didn't fire"
+    )
+    # ainsert was called with the raw text and J1's document_id.
+    assert len(captured["ainsert_calls"]) == 1
+    call = captured["ainsert_calls"][0]
+    assert call["input"] == "hello world"
+    assert call["ids"] == "doc-1"
+    assert call["file_paths"].endswith("doc-1.txt")
+    # Compile reports success and emits a draft from the output dir.
+    from j1.processing.results import ResultStatus
+    assert result.status is ResultStatus.SUCCEEDED
+    assert any(d.content == b"hello world" for d in result.drafts)
+
+
+def test_default_compile_skips_ainsert_for_empty_text_file(
+    tmp_path, monkeypatch,
+):
+    """Empty / whitespace-only files must not produce a no-op LightRAG
+    chunk — mirror raganything's own behaviour and skip the insert."""
+    import sys
+    import types
+
+    from j1.providers.raganything._bridge import default_compile
+    from j1.providers.raganything.compiler import RAGAnythingCompileRequest
+
+    ainsert_calls: list = []
+
+    class _FakeLightRAG:
+        async def ainsert(self, **kwargs):
+            ainsert_calls.append(kwargs)
+
+    class _FakeConfig:
+        def __init__(self, **_): pass
+
+    class _FakeRAG:
+        def __init__(self, **_):
+            self.lightrag = _FakeLightRAG()
+
+        async def _ensure_lightrag_initialized(self):
+            return {"success": True}
+
+        async def process_document_complete(self, **_):
+            raise AssertionError("must not be called for plain text")
+
+    fake_mod = types.ModuleType("raganything")
+    fake_mod.RAGAnything = _FakeRAG
+    fake_mod.RAGAnythingConfig = _FakeConfig
+    monkeypatch.setitem(sys.modules, "raganything", fake_mod)
+
+    monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
+    raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "doc-1.md").write_text("   \n  \t\n", encoding="utf-8")
+
+    from j1.projects.context import ProjectContext
+
+    class _FakeText:
+        def generate(self, prompt): return ("", None)
+
+    class _FakeEmbed:
+        def embed_batch(self, texts): return ([[0.0]] * len(list(texts)), None)
+        def dimension(self): return 1
+        def max_tokens(self): return 4
+
+    settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
+    })
+    request = RAGAnythingCompileRequest(
+        ctx=ProjectContext(tenant_id="acme", project_id="alpha"),
+        document_id="doc-1",
+        settings=settings,
+        text_client=_FakeText(),
+        vision_client=None,
+        embedding_client=_FakeEmbed(),
+    )
+
+    result = default_compile(request)
+
+    assert ainsert_calls == [], "empty file produced an ainsert call"
+    from j1.processing.results import ResultStatus
+    assert result.status is ResultStatus.SUCCEEDED
+
+
 def test_make_text_callable_returns_async_callable_that_unwraps_usage():
     """LightRAG `await`s the llm_model_func — the wrapper must be async,
     must invoke `text_client.generate(prompt)`, and must drop the usage
