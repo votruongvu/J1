@@ -160,6 +160,9 @@ Loader: [`src/j1/providers/raganything/settings.py`](../../src/j1/providers/raga
 | `J1_RAGANYTHING_COMPILER_PROCESSOR` | No | _(unset)_ | RAGAnything compiler | Override the default Python bridge with `module.path:callable_name`. The class-loader allowlist must accept the module prefix. | Bypasses the default `_bridge.py`. |
 | `J1_RAGANYTHING_GRAPH_PROCESSOR` | No | _(unset)_ | RAGAnything graph builder | Override hook for the graph stage (same format). |  |
 | `J1_RAGANYTHING_RETRIEVAL_PROCESSOR` | No | _(unset)_ | RAGAnything query provider | Override hook for retrieval (same format). |  |
+| `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS` | No | `.doc,.xls,.ppt,.rtf,.odt,.ods,.odp,.pages,.numbers,.key,.wps` | RAGAnything compiler bridge | Comma-separated list of file extensions (with or without leading dot, case-insensitive) for which the bridge pre-converts to PDF via `soffice --headless --convert-to pdf` before handing the document to raganything. Covers legacy / non-OOXML formats raganything's native parsers can't read. | Set to empty (`J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS=`) to disable conversion entirely. The conversion requires the LibreOffice headless binary (see next row). |
+| `J1_RAGANYTHING_LIBREOFFICE_BINARY` | No | `soffice` | RAGAnything compiler bridge | Name or absolute path of the LibreOffice headless binary. Resolved via `$PATH`. Some distros ship `libreoffice` as the user-facing alias. | When the binary isn't found, the bridge raises `ProviderUnavailable` with an actionable message. |
+| `J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS` | No | `120` | RAGAnything compiler bridge | Per-conversion timeout. LibreOffice can be slow on first launch (font cache rebuild). | Must be > 0; non-numeric values fail at startup. |
 
 See also: [`docs/providers.md`](../providers.md) § 2 (RAGAnything section).
 

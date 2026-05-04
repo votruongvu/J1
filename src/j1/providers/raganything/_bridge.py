@@ -38,6 +38,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import subprocess
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from pathlib import Path
@@ -55,8 +58,17 @@ if TYPE_CHECKING:
     from j1.providers.raganything.compiler import RAGAnythingCompileRequest
     from j1.providers.raganything.graph import RAGAnythingGraphRequest
     from j1.providers.raganything.retrieval import RAGAnythingQueryRequest
+    from j1.providers.raganything.settings import RAGAnythingSettings
 
 _log = logging.getLogger(__name__)
+
+
+class _LibreOfficeConversionError(RuntimeError):
+    """Raised when soffice subprocess fails for a known runtime reason
+    (non-zero exit, no output produced, timeout). Caught at the
+    `default_compile` boundary and surfaced as a FAILED result.
+    Distinct from `ProviderUnavailable`, which is reserved for the
+    "binary not installed" infrastructure case."""
 
 
 # ---- Public entry points -------------------------------------------
@@ -66,10 +78,38 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     """Run a real RAGAnything compile against `request.document_id`.
 
     Reads the source file from the project's `raw/` workspace area,
-    drives `RAGAnything.process_document_complete()` to a temp output
-    dir, and walks the output for ArtifactDrafts.
+    optionally pre-converts legacy / non-OOXML formats to PDF via
+    LibreOffice (so raganything's PDF parser can pick up where
+    mineru's pure-Python format readers can't), then drives
+    `RAGAnything.process_document_complete()` to a temp output dir
+    and walks the output for ArtifactDrafts.
     """
     rag, output_dir, source_path = _prepare_compile(request)
+
+    # Pre-conversion: legacy/non-OOXML → PDF via LibreOffice headless.
+    # The conversion is no-op (passthrough) for formats raganything
+    # parses natively. Errors during conversion surface as a FAILED
+    # result rather than a raise, so the workflow's retry / review
+    # paths handle them uniformly with other compile failures.
+    converted_path: Path | None = None
+    try:
+        if _needs_pdf_conversion(source_path, request.settings):
+            converted_path = _convert_to_pdf(source_path, request.settings)
+            source_path = converted_path
+    except ProviderUnavailable:
+        raise
+    except _LibreOfficeConversionError as exc:
+        return ArtifactProcessingResult(
+            status=ResultStatus.FAILED,
+            error=str(exc),
+            message="LibreOffice conversion failed",
+            metadata={
+                "provider": "raganything",
+                "stage": "preconvert",
+                "source_extension": source_path.suffix,
+            },
+        )
+
     try:
         asyncio.run(rag.process_document_complete(
             file_path=str(source_path),
@@ -87,6 +127,17 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
                 "process_document_complete on the existing loop."
             ) from exc
         raise
+    finally:
+        # Best-effort cleanup of the converted intermediate; raganything
+        # has already consumed it by this point. Failure to clean up
+        # is non-fatal — the temp directory will get reaped eventually.
+        if converted_path is not None:
+            try:
+                converted_path.unlink(missing_ok=True)
+                # Also try to remove the parent (created via mkdtemp)
+                converted_path.parent.rmdir()
+            except OSError:
+                pass
 
     drafts = _drafts_from_output_dir(
         output_dir, document_id=request.document_id, kind="compiled.text",
@@ -311,6 +362,117 @@ def _make_embedding_callable(embedding_client) -> Callable[..., Any]:
         return vectors
 
     return _embedding_callable
+
+
+# ---- LibreOffice pre-conversion (broad format coverage) ------------
+#
+# RAGAnything / mineru parses PDF + modern OOXML (.docx/.xlsx/.pptx)
+# + images natively. Legacy binary office formats (Word 97-2003 .doc,
+# Excel 97-2003 .xls, PowerPoint 97-2003 .ppt), OpenDocument
+# (.odt/.ods/.odp), Rich Text (.rtf), Apple iWork (.pages/.numbers/
+# .key), and Microsoft Works (.wps) are NOT in mineru's parser
+# coverage. For those, we shell out to `soffice --headless
+# --convert-to pdf` to produce a PDF that raganything can then
+# process via its standard pipeline.
+#
+# The set of "needs conversion" extensions is configured per
+# `RAGAnythingSettings.pdf_convert_extensions` (env-driven). Setting
+# the env var to empty disables conversion entirely.
+
+
+def _needs_pdf_conversion(
+    source_path: Path, settings: "RAGAnythingSettings",
+) -> bool:
+    """Return True iff this source's extension is on the
+    per-deployment "convert before raganything" list."""
+    if not settings.pdf_convert_extensions:
+        return False
+    return source_path.suffix.lower() in settings.pdf_convert_extensions
+
+
+def _convert_to_pdf(
+    source_path: Path, settings: "RAGAnythingSettings",
+) -> Path:
+    """Run `soffice --headless --convert-to pdf` against `source_path`.
+
+    Returns the path to the produced PDF (lives in a fresh temp dir
+    under the system tempdir; caller is responsible for cleanup).
+    Raises:
+      * `ProviderUnavailable` when the LibreOffice binary isn't on
+        $PATH (operator-actionable: install libreoffice or override
+        the compiler hook).
+      * `_LibreOfficeConversionError` for runtime failures
+        (non-zero exit, no output PDF produced, timeout). These are
+        caught at the `default_compile` boundary and surfaced as a
+        FAILED `ArtifactProcessingResult`.
+    """
+    binary = shutil.which(settings.libreoffice_binary)
+    if binary is None:
+        raise ProviderUnavailable(
+            f"LibreOffice headless binary {settings.libreoffice_binary!r} "
+            f"not found on $PATH — required to pre-convert "
+            f"{source_path.suffix!r} files for raganything. Install "
+            f"libreoffice (e.g. `apt-get install libreoffice-core "
+            f"libreoffice-writer`), set "
+            f"J1_RAGANYTHING_LIBREOFFICE_BINARY to the absolute path, "
+            f"shrink J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS to exclude "
+            f"this format, or override the whole compile step via "
+            f"J1_RAGANYTHING_COMPILER_PROCESSOR."
+        )
+
+    # mkdtemp (NOT TemporaryDirectory) — caller cleans up; soffice
+    # writes the PDF here and we hand the path back without holding
+    # an open context manager.
+    tmpdir = Path(tempfile.mkdtemp(prefix="j1-soffice-"))
+    argv = [
+        binary,
+        "--headless",
+        "--convert-to", "pdf",
+        "--outdir", str(tmpdir),
+        str(source_path),
+    ]
+
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            check=False,
+            timeout=settings.libreoffice_timeout_seconds,
+            # No shell=True — argv is fully composed.
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Best-effort cleanup before re-raising as a conversion error.
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise _LibreOfficeConversionError(
+            f"LibreOffice conversion of {source_path.name!r} timed out "
+            f"after {settings.libreoffice_timeout_seconds}s. Increase "
+            f"J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS or investigate "
+            f"the source document."
+        ) from exc
+    except OSError as exc:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise _LibreOfficeConversionError(
+            f"LibreOffice invocation failed at the OS level: {exc}"
+        ) from exc
+
+    if completed.returncode != 0:
+        stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise _LibreOfficeConversionError(
+            f"LibreOffice exited {completed.returncode} converting "
+            f"{source_path.name!r}: {stderr[:512]}"
+        )
+
+    # soffice writes "<source-stem>.pdf" into --outdir.
+    pdf_path = tmpdir / f"{source_path.stem}.pdf"
+    if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+        stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise _LibreOfficeConversionError(
+            f"LibreOffice produced no output for {source_path.name!r}. "
+            f"stderr: {stderr[:512]}"
+        )
+    return pdf_path
 
 
 # ---- Output normalisation: vendor files → ArtifactDrafts -----------

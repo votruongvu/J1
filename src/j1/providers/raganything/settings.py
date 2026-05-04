@@ -23,10 +23,42 @@ ENV_RAGANYTHING_PARSE_METHOD = "J1_RAGANYTHING_PARSE_METHOD"
 ENV_RAGANYTHING_COMPILER = "J1_RAGANYTHING_COMPILER_PROCESSOR"
 ENV_RAGANYTHING_GRAPH = "J1_RAGANYTHING_GRAPH_PROCESSOR"
 ENV_RAGANYTHING_RETRIEVAL = "J1_RAGANYTHING_RETRIEVAL_PROCESSOR"
+ENV_RAGANYTHING_PDF_CONVERT_EXTENSIONS = "J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS"
+ENV_RAGANYTHING_LIBREOFFICE_BINARY = "J1_RAGANYTHING_LIBREOFFICE_BINARY"
+ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT = "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS"
 
 DEFAULT_MODE = "local"
 DEFAULT_WORKDIR = "./data/raganything"
 DEFAULT_PARSE_METHOD = "auto"
+DEFAULT_LIBREOFFICE_BINARY = "soffice"
+DEFAULT_LIBREOFFICE_TIMEOUT = 120.0  # seconds — soffice can be slow on first launch
+
+# Document formats RAGAnything / mineru cannot parse natively (the
+# pure-Python parsers it ships handle modern OOXML + PDF + images,
+# but not the legacy binary office formats or several open / vendor
+# alternatives). For these, the bridge pre-converts to PDF via
+# `soffice --headless --convert-to pdf` and feeds the result to
+# raganything.
+#
+# Conservative default — covers the common "Word 97 / Excel 97 /
+# PowerPoint 97 / OpenDocument / RTF / iWork" gap. Add or remove
+# extensions via `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS`. Set to an
+# empty value to disable conversion entirely.
+DEFAULT_PDF_CONVERT_EXTENSIONS: tuple[str, ...] = (
+    # Microsoft Office 97-2003 binary formats (raganything's parsers
+    # don't reach these; they require LibreOffice / antiword / similar).
+    ".doc", ".xls", ".ppt",
+    # Rich Text — broadly supported by LibreOffice; raganything's
+    # `python-docx` doesn't accept it.
+    ".rtf",
+    # OpenDocument family — LibreOffice's native formats; raganything
+    # has no OOO/ODF parser.
+    ".odt", ".ods", ".odp",
+    # Apple iWork — LibreOffice has limited but functional support.
+    ".pages", ".numbers", ".key",
+    # Microsoft Works — legacy.
+    ".wps",
+)
 
 
 @dataclass(frozen=True)
@@ -57,6 +89,18 @@ class RAGAnythingSettings:
     compiler_processor: str | None = None
     graph_processor: str | None = None
     retrieval_processor: str | None = None
+    # File extensions (lowercase, including the leading dot) for which
+    # the bridge will pre-convert to PDF via LibreOffice before handing
+    # the document to raganything. Leave empty (set
+    # `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS=`) to disable conversion.
+    pdf_convert_extensions: tuple[str, ...] = DEFAULT_PDF_CONVERT_EXTENSIONS
+    # LibreOffice headless binary name or absolute path. Default
+    # "soffice"; some distros use "libreoffice" as the user-facing
+    # symlink. The bridge resolves via `shutil.which`.
+    libreoffice_binary: str = DEFAULT_LIBREOFFICE_BINARY
+    # Per-conversion timeout (seconds). LibreOffice can be slow on
+    # first launch (font cache rebuild) — keep generous.
+    libreoffice_timeout_seconds: float = DEFAULT_LIBREOFFICE_TIMEOUT
 
 
 def load_raganything_settings(
@@ -75,4 +119,49 @@ def load_raganything_settings(
         compiler_processor=source.get(ENV_RAGANYTHING_COMPILER) or None,
         graph_processor=source.get(ENV_RAGANYTHING_GRAPH) or None,
         retrieval_processor=source.get(ENV_RAGANYTHING_RETRIEVAL) or None,
+        pdf_convert_extensions=_parse_extensions(
+            source.get(ENV_RAGANYTHING_PDF_CONVERT_EXTENSIONS),
+        ),
+        libreoffice_binary=(
+            source.get(ENV_RAGANYTHING_LIBREOFFICE_BINARY)
+            or DEFAULT_LIBREOFFICE_BINARY
+        ),
+        libreoffice_timeout_seconds=_parse_timeout(
+            source.get(ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT),
+        ),
     )
+
+
+def _parse_extensions(raw: str | None) -> tuple[str, ...]:
+    """Parse a comma-separated extension list into a normalised tuple.
+
+    `None`              → bundled default set.
+    `""` / whitespace   → empty (conversion disabled).
+    Otherwise           → each comma-separated entry, lowercased, with
+                          a leading dot ensured.
+    """
+    if raw is None:
+        return DEFAULT_PDF_CONVERT_EXTENSIONS
+    cleaned = [e.strip() for e in raw.split(",") if e.strip()]
+    if not cleaned:
+        return ()
+    return tuple(
+        ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+        for ext in cleaned
+    )
+
+
+def _parse_timeout(raw: str | None) -> float:
+    if not raw:
+        return DEFAULT_LIBREOFFICE_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT} must be a number, got {raw!r}"
+        ) from exc
+    if value <= 0:
+        raise ValueError(
+            f"{ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT} must be > 0, got {value}"
+        )
+    return value

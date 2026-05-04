@@ -258,6 +258,53 @@ raises `ProviderUnavailable` with a hint to use path B or C.
 Required env: `J1_DATA_ROOT` (so the bridge can find the project's
 `raw/` source files).
 
+##### Broad document-format coverage (LibreOffice pre-conversion)
+
+RAGAnything / mineru parses **PDF**, **modern OOXML** (`.docx`,
+`.xlsx`, `.pptx`), and **images** natively via pure-Python parsers.
+Anything else — legacy Office 97-2003 (`.doc`, `.xls`, `.ppt`),
+OpenDocument (`.odt`, `.ods`, `.odp`), Rich Text (`.rtf`), Apple
+iWork (`.pages`, `.numbers`, `.key`), Microsoft Works (`.wps`) —
+isn't in mineru's parser coverage and would surface as a compile
+failure.
+
+To support those formats, the default bridge **pre-converts to
+PDF** via `soffice --headless --convert-to pdf <source>` before
+handing the document to raganything. The conversion is no-op
+(passthrough) for any format raganything parses natively — the
+bridge only invokes LibreOffice when the source's extension is on
+the configured convert list.
+
+Configuration:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS` | `.doc,.xls,.ppt,.rtf,.odt,.ods,.odp,.pages,.numbers,.key,.wps` | Comma-separated extensions (with or without leading dot, case-insensitive) that trigger pre-conversion. Empty value disables conversion entirely. |
+| `J1_RAGANYTHING_LIBREOFFICE_BINARY` | `soffice` | Binary name or absolute path; resolved via `$PATH`. |
+| `J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS` | `120` | Per-conversion wall-clock timeout. |
+
+The bundled dev image installs `libreoffice-core` and
+`libreoffice-writer` (see [`deploy/dev/Dockerfile`](../deploy/dev/Dockerfile))
+so the conversion works out of the box. Production deployments
+should install the same packages — or set
+`J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS=` to opt out and lose
+multi-format coverage.
+
+Failure modes:
+
+- **Binary not on `$PATH`** → `ProviderUnavailable` at the first
+  legacy-format compile. The error message lists every escape
+  hatch (install LibreOffice; set
+  `J1_RAGANYTHING_LIBREOFFICE_BINARY` to an absolute path; shrink
+  `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS`; override the whole
+  compile via `J1_RAGANYTHING_COMPILER_PROCESSOR`).
+- **soffice non-zero exit / no output / timeout** →
+  `ArtifactProcessingResult(status=FAILED, error=…, metadata={"stage": "preconvert"})`.
+  The workflow's standard retry / review path handles it like any
+  other compile failure.
+- **Native format (`.pdf`, `.docx`, etc.)** → bridge skips
+  LibreOffice entirely; subprocess is never invoked.
+
 #### B) Env-driven processor hooks (override the default bridge)
 
 When the deployment has its own integration logic — different vendor
