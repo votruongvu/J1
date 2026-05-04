@@ -33,6 +33,7 @@ documents → intake → compile → enrich → graph → index → query → an
 | MCP status | [docs/mcp-status.md](docs/mcp-status.md) |
 | **Provider layer + composition root** (LLM roles, optional RAGAnything / Graphify) | [docs/providers.md](docs/providers.md) |
 | Environment-variable reference (every `J1_*` var) | [docs/configuration/environment.md](docs/configuration/environment.md) |
+| **Integrating a new project** (sources, providers, domain policies, evaluators — end-to-end) | [docs/integration-guide.md](docs/integration-guide.md) |
 | **Extension model overview** (5-layer map, 12 contracts, generic workflow shape) | [docs/extension/overview.md](docs/extension/overview.md) |
 | Adapter contracts and canonical primitives | [docs/extension/contracts.md](docs/extension/contracts.md) |
 | Adapter manifests and the capability registry | [docs/extension/manifest-and-registry.md](docs/extension/manifest-and-registry.md) |
