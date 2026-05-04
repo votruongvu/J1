@@ -117,6 +117,14 @@ multiple processes against the same project are not supported.
 
 ---
 
+> **Provider layer + composition root.** Concrete implementations of
+> the Protocols below — and the LLM role abstraction that backs them —
+> are documented in [providers.md](providers.md). RAGAnything is the
+> default compiler / graph / retrieval provider; Graphify is an
+> optional alternative graph provider; LLM clients are configured per
+> role (text / vision / embedding) for OpenAI-compatible OR LangChain
+> backends.
+
 ## 5. Processing contracts
 
 [`j1.processing.contracts`](../src/j1/processing/contracts.py)

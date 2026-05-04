@@ -1,0 +1,103 @@
+"""RAGAnything-backed `GraphBuilder`.
+
+Same construction pattern as the compiler: `from_default()` lazy-
+imports the vendor library; tests inject a callable directly.
+"""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from j1.llm.registry import LLM_ROLE_TEXT, LLMProviderRegistry
+from j1.processing.results import ArtifactProcessingResult, ResultStatus
+from j1.projects.context import ProjectContext
+from j1.providers.errors import ProviderUnavailable
+from j1.providers.raganything.compiler import PROVIDER_NAME
+from j1.providers.raganything.settings import RAGAnythingSettings
+
+
+@dataclass(frozen=True)
+class RAGAnythingGraphRequest:
+    ctx: ProjectContext
+    artifact_ids: list[str]
+    settings: RAGAnythingSettings
+    text_client: Any
+    embedding_client: Any | None
+
+
+GraphCallable = Callable[[RAGAnythingGraphRequest], ArtifactProcessingResult]
+
+
+class RAGAnythingGraphBuilder:
+    kind: str = PROVIDER_NAME
+
+    def __init__(
+        self,
+        *,
+        llm_registry: LLMProviderRegistry,
+        settings: RAGAnythingSettings,
+        graph_callable: GraphCallable,
+    ) -> None:
+        self._llm_registry = llm_registry
+        self._settings = settings
+        self._graph_callable = graph_callable
+
+    @classmethod
+    def from_default(
+        cls,
+        *,
+        llm_registry: LLMProviderRegistry,
+        settings: RAGAnythingSettings,
+    ) -> "RAGAnythingGraphBuilder":
+        graph_callable: GraphCallable
+        if settings.graph_processor:
+            from j1.llm.classloader import resolve_callable
+            graph_callable = resolve_callable(settings.graph_processor)
+        else:
+            graph_callable = _build_default_graph_callable()
+        return cls(
+            llm_registry=llm_registry,
+            settings=settings,
+            graph_callable=graph_callable,
+        )
+
+    def build(
+        self, ctx: ProjectContext, artifact_ids: list[str],
+    ) -> ArtifactProcessingResult:
+        request = RAGAnythingGraphRequest(
+            ctx=ctx,
+            artifact_ids=list(artifact_ids),
+            settings=self._settings,
+            text_client=self._llm_registry.text(),
+            embedding_client=self._llm_registry.try_embedding(),
+        )
+        try:
+            return self._graph_callable(request)
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            return ArtifactProcessingResult(
+                status=ResultStatus.FAILED,
+                error=str(exc),
+                message=type(exc).__name__,
+                drafts=[],
+                metadata={"provider": PROVIDER_NAME},
+            )
+
+
+def _build_default_graph_callable() -> GraphCallable:
+    def _delegate(request: RAGAnythingGraphRequest) -> ArtifactProcessingResult:
+        try:
+            import raganything  # noqa: F401
+        except ImportError as exc:
+            raise ProviderUnavailable(
+                "RAGAnything graph builder requires the `raganything` package. "
+                "Install with: pip install raganything"
+            ) from exc
+        raise ProviderUnavailable(
+            "RAGAnything graph build() is not yet wired in this build. "
+            "Provide a custom `graph_callable` to RAGAnythingGraphBuilder(...) "
+            "until the default integration ships, or override the adapter."
+        )
+
+    return _delegate

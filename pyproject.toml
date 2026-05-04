@@ -18,6 +18,29 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.24"]
 
+# Optional vendor integrations. Install only what you use:
+#   pip install j1[raganything]
+#   pip install j1[graphify]
+#   pip install j1[langchain]
+#   pip install j1[langchain-openai]
+#   pip install j1[all-providers]
+#
+# `langchain-*` extras pull a single concrete LangChain vendor package;
+# the `langchain` extra is just `langchain-core` (the runtime base).
+# Pick whichever vendor packages your deployment actually instantiates.
+raganything = ["raganything"]
+graphify = ["graphify"]
+langchain = ["langchain-core>=0.2"]
+langchain-openai = ["langchain-core>=0.2", "langchain-openai>=0.1"]
+langchain-anthropic = ["langchain-core>=0.2", "langchain-anthropic>=0.1"]
+langchain-google = ["langchain-core>=0.2", "langchain-google-genai>=1.0"]
+langchain-ollama = ["langchain-core>=0.2", "langchain-ollama>=0.1"]
+all-providers = [
+    "raganything",
+    "graphify",
+    "langchain-core>=0.2",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/j1"]
 

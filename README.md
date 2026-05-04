@@ -30,6 +30,7 @@ documents → intake → compile → enrich → graph → index → query → an
 | Queue / event broker (AsyncAPI 3.0) | [docs/event-integration.md](docs/event-integration.md) |
 | Bulk import / export (NDJSON) | [docs/bulk.md](docs/bulk.md) |
 | MCP status | [docs/mcp-status.md](docs/mcp-status.md) |
+| **Provider layer + composition root** (LLM roles, RAGAnything, Graphify) | [docs/providers.md](docs/providers.md) |
 | Operational issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | **Local Docker stack** (API + worker + Temporal + UI) | [deploy/dev/README.md](deploy/dev/README.md) |
 
