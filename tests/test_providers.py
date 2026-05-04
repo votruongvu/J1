@@ -130,9 +130,39 @@ def test_compiler_uses_injected_callable():
     assert seen[0].vision_client is None  # not registered in this fixture
 
 
-def test_compiler_default_path_raises_when_raganything_missing():
+def _simulate_raganything_missing(monkeypatch):
+    """Make `import raganything` (anywhere) raise `ImportError`.
+
+    The `[raganything]` extra is now installed in the framework's own
+    Docker image + recommended local-dev install, so `raganything` is
+    actually present in the test environment. To verify the bridge's
+    missing-package error path, we have to force the import to fail.
+
+    Patches `builtins.__import__` for the duration of the test, plus
+    deletes any cached `raganything` modules so the bridge's
+    `import raganything` re-runs the import and hits our hook.
+    """
+    import builtins
+    import sys
+
+    monkeypatch.delitem(sys.modules, "raganything", raising=False)
+    for mod_name in [m for m in sys.modules if m.startswith("raganything.")]:
+        monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "raganything" or name.startswith("raganything."):
+            raise ImportError(f"test: simulating missing {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+
+
+def test_compiler_default_path_raises_when_raganything_missing(monkeypatch):
     """Without the `raganything` package installed, the real bridge
     raises `ProviderUnavailable` with an actionable pip-install hint."""
+    _simulate_raganything_missing(monkeypatch)
     compiler = RAGAnythingCompiler.from_default(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(),
@@ -208,7 +238,8 @@ def test_graph_builder_uses_injected_callable():
     assert result.status is ResultStatus.SUCCEEDED
 
 
-def test_graph_builder_default_path_raises_when_raganything_missing():
+def test_graph_builder_default_path_raises_when_raganything_missing(monkeypatch):
+    _simulate_raganything_missing(monkeypatch)
     builder = RAGAnythingGraphBuilder.from_default(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(),
@@ -237,7 +268,8 @@ def test_query_provider_uses_injected_callable():
     assert result.answer == "answer to: what is x?"
 
 
-def test_query_provider_default_path_raises_when_raganything_missing():
+def test_query_provider_default_path_raises_when_raganything_missing(monkeypatch):
+    _simulate_raganything_missing(monkeypatch)
     provider = RAGAnythingQueryProvider.from_default(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(),
@@ -278,9 +310,37 @@ def test_graphify_default_cli_path_raises_when_binary_missing(monkeypatch):
         builder.build(_ctx(), ["a-1"])
 
 
-def test_graphify_python_mode_raises_when_module_missing():
+def _simulate_graphify_missing(monkeypatch):
+    """Make `import graphify` raise `ImportError` for the duration
+    of one test.
+
+    The `[all-providers]` extra now pulls the `graphifyy` PyPI
+    distribution (which provides the `graphify` import name + CLI),
+    so the module is actually present in the test environment. To
+    verify the bridge's missing-package error path, force the
+    import to fail.
+    """
+    import builtins
+    import sys
+
+    monkeypatch.delitem(sys.modules, "graphify", raising=False)
+    for mod_name in [m for m in sys.modules if m.startswith("graphify.")]:
+        monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "graphify" or name.startswith("graphify."):
+            raise ImportError(f"test: simulating missing {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+
+
+def test_graphify_python_mode_raises_when_module_missing(monkeypatch):
     """`mode=python` raises with a pip-install hint when the package
     isn't on sys.path."""
+    _simulate_graphify_missing(monkeypatch)
     builder = GraphifyGraphBuilder.from_default(
         settings=GraphifySettings(mode="python"),
     )

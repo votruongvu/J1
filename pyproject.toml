@@ -16,7 +16,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Test deps. `pytest` for the suite; `httpx` for FastAPI's TestClient.
 dev = ["pytest>=8.0", "httpx>=0.24"]
+
+# Local-dev ASGI server. Required by `python -m deploy.dev.api`
+# (the bundled FastAPI launcher) and by anyone running the dev
+# stack via `docker compose -f deploy/dev/docker-compose.yml up`.
+# Production deployments wire their own ASGI host (uvicorn /
+# hypercorn / gunicorn-uvicorn / etc.) and do not need this extra.
+dev-server = ["uvicorn>=0.27"]
 
 # Optional vendor integrations. Install only what you use:
 #   pip install j1[raganything]
@@ -29,16 +37,39 @@ dev = ["pytest>=8.0", "httpx>=0.24"]
 # the `langchain` extra is just `langchain-core` (the runtime base).
 # Pick whichever vendor packages your deployment actually instantiates.
 raganything = ["raganything"]
-graphify = ["graphify"]
+
+# Graphify is published on PyPI as `graphifyy` (double-y). The
+# distribution provides BOTH:
+#   * a Python module imported as `graphify` (single-y) — used by
+#     the bridge in `j1.providers.graphify` when
+#     `J1_GRAPHIFY_MODE=python`;
+#   * a CLI binary called `graphify` (single-y) — used by the
+#     default `J1_GRAPHIFY_MODE=cli` (subprocess) path.
+# Other `graphify*` packages on PyPI are unrelated; pin the
+# `graphifyy` distribution explicitly.
+graphify = ["graphifyy>=0.7"]
+
 langchain = ["langchain-core>=0.2"]
 langchain-openai = ["langchain-core>=0.2", "langchain-openai>=0.1"]
 langchain-anthropic = ["langchain-core>=0.2", "langchain-anthropic>=0.1"]
 langchain-google = ["langchain-core>=0.2", "langchain-google-genai>=1.0"]
 langchain-ollama = ["langchain-core>=0.2", "langchain-ollama>=0.1"]
+# Pulls every vendor adapter the framework supports out of the box.
+# Use this when you want a single image / venv that can switch
+# between providers via env config (`J1_DEFAULT_COMPILER`,
+# `J1_TEXT_LLM_PROVIDER=langchain`, etc.) at runtime without
+# rebuilding. Heavy: raganything alone pulls torch + transformers +
+# mineru + opencv (~700MB on disk); graphify pulls 20+ tree-sitter
+# language grammars. For lean deployments install only the specific
+# vendors you actually use.
 all-providers = [
     "raganything",
-    "graphify",
+    "graphifyy>=0.7",       # provides the `graphify` import + CLI
     "langchain-core>=0.2",
+    "langchain-openai>=0.1",
+    "langchain-anthropic>=0.1",
+    "langchain-google-genai>=1.0",
+    "langchain-ollama>=0.1",
 ]
 
 [tool.hatch.build.targets.wheel]

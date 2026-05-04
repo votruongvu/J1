@@ -170,17 +170,29 @@ artifacts. Inspect the resulting `compiled.text` artifact with
 
 To run real processing instead of mocks:
 
-1. Install vendor extras: `pip install -e ".[raganything]"`.
+1. The bundled image ([`Dockerfile`](Dockerfile)) already installs
+   `j1[raganything]` so the vendor adapter is present out of the
+   box. (If you trimmed that extra to slim the image, install it
+   into the running container or rebuild after restoring the
+   `[dev,raganything]` extras spec.)
 2. In `.env`, set `J1_DEFAULT_COMPILER=raganything` (and the same
    for `_GRAPH_PROVIDER` / `_RETRIEVAL_PROVIDER`).
 3. Configure LLM credentials: `J1_TEXT_LLM_*` and `J1_EMBEDDING_*`
    (and `J1_VISION_LLM_*` if visual enrichment is on).
-4. Restart the stack.
+4. Restart the stack:
+
+   ```bash
+   docker compose -f deploy/dev/docker-compose.yml down
+   docker compose -f deploy/dev/docker-compose.yml up --build
+   ```
 
 The same `worker.py` / `bootstrap_from_env()` path serves both
-modes — no fork required for the common case. For deeply custom
-deployments (custom enricher maps, hand-injected processor maps,
-non-mock + non-RAGAnything providers), forking
+modes — no fork required for the common case. The image carries
+the optional adapter so a deployment can flip the env var and
+restart without a rebuild.
+
+For deeply custom deployments (custom enricher maps, hand-injected
+processor maps, providers other than mock / raganything), forking
 [`worker.py`](worker.py) and passing your own maps to
 [`build_worker_spec`](_wiring.py) is still the recommended path.
 
