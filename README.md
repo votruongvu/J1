@@ -33,6 +33,10 @@ documents → intake → compile → enrich → graph → index → query → an
 | MCP status | [docs/mcp-status.md](docs/mcp-status.md) |
 | **Provider layer + composition root** (LLM roles, optional RAGAnything / Graphify) | [docs/providers.md](docs/providers.md) |
 | Environment-variable reference (every `J1_*` var) | [docs/configuration/environment.md](docs/configuration/environment.md) |
+| **Extension model overview** (5-layer map, 12 contracts, generic workflow shape) | [docs/extension/overview.md](docs/extension/overview.md) |
+| Adapter contracts and canonical primitives | [docs/extension/contracts.md](docs/extension/contracts.md) |
+| Adapter manifests and the capability registry | [docs/extension/manifest-and-registry.md](docs/extension/manifest-and-registry.md) |
+| Adapter conformance tests | [docs/extension/conformance-tests.md](docs/extension/conformance-tests.md) |
 | Adding a provider (compiler / graph / retrieval / LLM) | [docs/extension/add-a-provider.md](docs/extension/add-a-provider.md) |
 | Domain-module isolation (building on top of J1) | [docs/extension/domain-module-isolation.md](docs/extension/domain-module-isolation.md) |
 | Temporal operations | [docs/operations/temporal.md](docs/operations/temporal.md) |

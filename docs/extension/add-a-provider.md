@@ -7,6 +7,26 @@ The framework's defining principle: **vendor SDKs stay behind
 providers; the core never imports them**. This guide shows how to
 honour that across each provider type.
 
+> **Two surfaces.** J1 exposes both:
+>
+> - The **legacy core protocols** in
+>   [`src/j1/processing/contracts.py`](../../src/j1/processing/contracts.py)
+>   and [`src/j1/llm/clients.py`](../../src/j1/llm/clients.py), which
+>   are wired into the bundled workflows + bootstrap. Use these when
+>   integrating with the existing pipeline.
+> - The **uniform extension contracts** in
+>   [`j1.extension.contracts`](../../src/j1/extension/contracts.py),
+>   which are `@runtime_checkable` Protocols that adapt to a
+>   manifest + capability-registry style of registration. Use these
+>   when you want isinstance-checkable contracts, conformance
+>   harnesses, or to publish your adapter for downstream reuse.
+>
+> Implementations satisfying one surface satisfy the other when the
+> shapes match (`KnowledgeCompiler` ↔ `CompilerAdapter`,
+> `EnrichmentProcessor` ↔ `EnrichmentAdapter`, `GraphBuilder` ↔
+> `GraphAdapter`). For the bigger picture see
+> [`docs/extension/overview.md`](overview.md).
+
 > RAGAnything and Graphify are **examples** of provider integrations,
 > not core identity. The same recipe applies to any vendor /
 > in-house compiler, graph builder, or LLM you want to wire in.

@@ -77,10 +77,15 @@ Vendor SDKs and external tools live behind providers. They must:
 
 For the full recipe see
 [`docs/extension/add-a-provider.md`](docs/extension/add-a-provider.md).
+For the broader extension model — contracts, manifests, registry,
+and conformance harnesses — see
+[`docs/extension/overview.md`](docs/extension/overview.md).
 
 > RAGAnything and Graphify are reference provider implementations —
 > they are not core identity. The same rules apply to any provider
-> you add.
+> you add. Adapters that target the uniform extension surface
+> (`j1.extension.contracts`) MUST come with conformance tests
+> (see [`docs/extension/conformance-tests.md`](docs/extension/conformance-tests.md)).
 
 ---
 

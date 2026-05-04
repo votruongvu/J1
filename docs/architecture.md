@@ -9,6 +9,14 @@
 > the canonical `J1_*` env-var reference;
 > [operations/temporal.md](operations/temporal.md) for worker
 > setup, signals, and recovery;
+> [extension/overview.md](extension/overview.md) for the 5-layer
+> extension model, the 12 contracts, and the generic workflow shape;
+> [extension/contracts.md](extension/contracts.md) for the contracts
+> and canonical primitives reference;
+> [extension/manifest-and-registry.md](extension/manifest-and-registry.md)
+> for the manifest schema + capability registry;
+> [extension/conformance-tests.md](extension/conformance-tests.md)
+> for the shared adapter test harnesses;
 > [extension/add-a-provider.md](extension/add-a-provider.md) for
 > plugging in a new compiler / graph / retrieval / LLM provider;
 > [extension/domain-module-isolation.md](extension/domain-module-isolation.md)

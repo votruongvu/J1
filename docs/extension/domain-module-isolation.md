@@ -220,6 +220,13 @@ isolation line:
   package — see [`add-a-provider.md`](add-a-provider.md)).
 - **Add an enricher** by implementing `EnrichmentProcessor` in your
   domain module and registering it in your worker's processor map.
+- **Add a `DomainPolicy`** (extension surface) — implement
+  [`j1.extension.contracts.DomainPolicy`](../../src/j1/extension/contracts.py)
+  and register it in the
+  [`CapabilityRegistry`](../../src/j1/extension/registry.py). The
+  three hooks (`should_index` / `requires_review` / `redact`) cover
+  the common indexing-filter / review-gate / output-redaction needs
+  without core code changes.
 - **Add a profile** with vertical-specific taxonomy / prompts /
   report templates.
 - **Add an LLM client** under `j1.llm.<vendor>/` (or in your own
