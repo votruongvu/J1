@@ -22,7 +22,8 @@ documents → intake → compile → enrich → graph → index → query → an
 
 | Topic | Doc |
 |---|---|
-| **Full architecture (18 sections)** | [docs/architecture.md](docs/architecture.md) |
+| **Start here — developer onboarding** (zero → first workflow) | [docs/development/onboarding.md](docs/development/onboarding.md) |
+| **Full architecture** | [docs/architecture.md](docs/architecture.md) |
 | External integration map (REST + webhook + queue + bulk) | [docs/external-integration-architecture.md](docs/external-integration-architecture.md) |
 | REST API + SSE streaming | [docs/rest-api.md](docs/rest-api.md) |
 | Auth + scopes | [docs/security.md](docs/security.md) |
@@ -30,9 +31,14 @@ documents → intake → compile → enrich → graph → index → query → an
 | Queue / event broker (AsyncAPI 3.0) | [docs/event-integration.md](docs/event-integration.md) |
 | Bulk import / export (NDJSON) | [docs/bulk.md](docs/bulk.md) |
 | MCP status | [docs/mcp-status.md](docs/mcp-status.md) |
-| **Provider layer + composition root** (LLM roles, RAGAnything, Graphify) | [docs/providers.md](docs/providers.md) |
+| **Provider layer + composition root** (LLM roles, optional RAGAnything / Graphify) | [docs/providers.md](docs/providers.md) |
+| Environment-variable reference (every `J1_*` var) | [docs/configuration/environment.md](docs/configuration/environment.md) |
+| Adding a provider (compiler / graph / retrieval / LLM) | [docs/extension/add-a-provider.md](docs/extension/add-a-provider.md) |
+| Domain-module isolation (building on top of J1) | [docs/extension/domain-module-isolation.md](docs/extension/domain-module-isolation.md) |
+| Temporal operations | [docs/operations/temporal.md](docs/operations/temporal.md) |
 | Operational issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | **Local Docker stack** (API + worker + Temporal + UI) | [deploy/dev/README.md](deploy/dev/README.md) |
+| Contributor guide | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ---
 
@@ -167,7 +173,19 @@ it. Hit `/capabilities` to see what's on.
 
 ## License & status
 
-See repository LICENSE. The framework's public surface is stable for
-the modules listed in [`src/j1/__init__.py`](src/j1/__init__.py). Items
-flagged "deferred" or "limitation" in the per-area docs are
-intentional gaps — see those docs for the rationale and recipe.
+License is currently **unspecified** — no LICENSE file ships with
+the repository. Treat redistribution and external use as undecided
+until the maintainers publish licensing intent.
+
+The framework's public surface is stable for the modules listed in
+[`src/j1/__init__.py`](src/j1/__init__.py). Items flagged "deferred"
+or "limitation" in the per-area docs are intentional gaps — see
+those docs for the rationale and recipe.
+
+Provider integrations such as RAGAnything and Graphify are
+**optional vendor adapters** packaged behind the framework's
+provider boundary, not part of the J1 core identity. The same is
+true of the LLM clients (OpenAI-compatible HTTP, LangChain) — they
+implement role-specific protocols and can be swapped without
+touching core code. See [docs/providers.md](docs/providers.md) and
+[docs/extension/add-a-provider.md](docs/extension/add-a-provider.md).

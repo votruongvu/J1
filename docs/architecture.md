@@ -3,6 +3,16 @@
 > Companion docs:
 > [external-integration-architecture.md](external-integration-architecture.md)
 > for the REST/SSE/webhook/queue/bulk surface map;
+> [providers.md](providers.md) for the LLM role abstraction +
+> optional RAGAnything / Graphify integrations;
+> [configuration/environment.md](configuration/environment.md) for
+> the canonical `J1_*` env-var reference;
+> [operations/temporal.md](operations/temporal.md) for worker
+> setup, signals, and recovery;
+> [extension/add-a-provider.md](extension/add-a-provider.md) for
+> plugging in a new compiler / graph / retrieval / LLM provider;
+> [extension/domain-module-isolation.md](extension/domain-module-isolation.md)
+> for what belongs outside the J1 core;
 > [troubleshooting.md](troubleshooting.md) for operational
 > issues.
 
@@ -87,6 +97,18 @@ to snapshot.
 
 ## 4. Document intake
 
+> **Terminology.** Three closely-named concepts — keep them
+> distinct:
+> - **Intake** is *registering* a raw file into a project: hash,
+>   dedup, write to `raw/`, audit. No processing yet.
+> - **Compile** is one of the pipeline stages — turning a
+>   registered raw document into compiled artifacts via a
+>   `KnowledgeCompiler`.
+> - **Ingestion job** is the workflow-level concept exposed via
+>   the REST surface (`POST /ingestion-jobs`) and the Temporal
+>   workflow that drives intake → compile → enrich → graph →
+>   index for a project or a single document.
+
 [`DocumentIntakeService`](../src/j1/intake/service.py) registers a
 document into a project. Two entry points:
 
@@ -117,13 +139,18 @@ multiple processes against the same project are not supported.
 
 ---
 
-> **Provider layer + composition root.** Concrete implementations of
-> the Protocols below — and the LLM role abstraction that backs them —
-> are documented in [providers.md](providers.md). RAGAnything is the
-> default compiler / graph / retrieval provider; Graphify is an
-> optional alternative graph provider; LLM clients are configured per
-> role (text / vision / embedding) for OpenAI-compatible OR LangChain
-> backends.
+> **Provider layer + composition root.** Every Protocol below is a
+> swappable boundary — the framework selects implementations by
+> `kind` string at composition time. The framework currently ships
+> two **optional** vendor integrations (RAGAnything as the default
+> selection for compiler / graph / retrieval; Graphify as an
+> alternative graph provider) plus two LLM client implementations
+> (OpenAI-compatible HTTP and LangChain) — none of them is part of
+> J1 core identity. To plug in a different vendor / in-house
+> implementation, follow the recipe in
+> [extension/add-a-provider.md](extension/add-a-provider.md). For
+> day-to-day configuration of the bundled providers, see
+> [providers.md](providers.md).
 
 ## 5. Processing contracts
 
@@ -651,7 +678,7 @@ tests/
 ### Run
 
 ```bash
-.venv/bin/pytest                    # full suite (~4s, currently 908 tests)
+.venv/bin/pytest                    # full suite (hermetic, runs in seconds)
 .venv/bin/pytest tests/test_e2e_processing_flow.py -v
 .venv/bin/pytest tests/test_external_integration_consistency.py -v
 .venv/bin/pytest --durations=10

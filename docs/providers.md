@@ -7,6 +7,17 @@ unchanged — this document describes the **composition root** that
 constructs the providers and the **LLM role abstraction** they
 consume.
 
+> **Optional integrations.** RAGAnything and Graphify are bundled
+> as **optional vendor integrations** packaged behind the framework's
+> provider boundary. They are reference implementations of the
+> compiler / graph / retrieval Protocols, not core J1 identity. The
+> same is true of the LangChain LLM adapter and the OpenAI-compatible
+> HTTP clients — they implement role-specific protocols and are
+> swappable. To wire your own implementation see
+> [extension/add-a-provider.md](extension/add-a-provider.md). For
+> the canonical list of `J1_*` env vars these providers consume, see
+> [configuration/environment.md](configuration/environment.md).
+
 ```
                   ┌──────────────────────────────────┐
                   │  j1.compose.Bootstrap            │
@@ -28,10 +39,28 @@ fakes for tests).
 
 ## 1. LLM provider layer
 
-Three roles ship: text, vision, embedding. Each is a small Protocol
-in [`j1.llm.clients`](../src/j1/llm/clients.py); concrete clients live
-under [`j1.llm.openai_compat`](../src/j1/llm/openai_compat.py) and
-[`j1.llm.langchain_adapter`](../src/j1/llm/langchain_adapter.py).
+Three roles ship: **text**, **vision**, **embedding** — each a
+distinct, swappable client with its own Protocol in
+[`j1.llm.clients`](../src/j1/llm/clients.py). Roles are scoped per
+use:
+
+- **Text** — used by the RAGAnything compiler / graph / retrieval,
+  enrichment cleanup, and answer synthesis.
+- **Vision** — used only by visual enrichment (images, diagrams,
+  scanned pages). Not constructed unless visual enrichment is on.
+- **Embedding** — used by RAGAnything chunk indexing and vector
+  retrieval. Required when RAGAnything (or any embedding-using
+  provider) is selected.
+
+Each role is configured **independently** via its own `J1_*` env
+vars — a deployment is free to mix providers across roles (e.g.
+text via OpenAI-compatible HTTP, embeddings via LangChain, vision
+omitted entirely). Two concrete client implementations ship under
+[`j1.llm.openai_compat`](../src/j1/llm/openai_compat.py) and
+[`j1.llm.langchain_adapter`](../src/j1/llm/langchain_adapter.py);
+both are optional in the sense that the framework only constructs
+the role you've configured. To wire a brand-new client, see
+[extension/add-a-provider.md § 6](extension/add-a-provider.md).
 
 ### Roles
 
@@ -178,7 +207,15 @@ composition root based on the `J1_DEFAULT_*` selection env vars.
 | `J1_DEFAULT_GRAPH_PROVIDER` | `raganything` | `raganything`, `graphify` (optional) |
 | `J1_DEFAULT_RETRIEVAL_PROVIDER` | `raganything` | `raganything` |
 
-### RAGAnything (default)
+### RAGAnything (optional — default selection)
+
+RAGAnything is one bundled implementation of the compiler / graph /
+retrieval Protocols. It is wired as the **default selection** via
+`J1_DEFAULT_COMPILER=raganything` (etc.) so a deployment that just
+installs `j1[raganything]` gets a working pipeline. It is **not**
+the only option, and the framework does not depend on its presence
+— pick a different `kind` via the env vars in § 2 above to swap it
+out.
 
 Implements all three Protocols:
 
@@ -271,9 +308,9 @@ compiler = RAGAnythingCompiler(
 The framework's own hermetic test suite uses path C; most production
 deployments use path A; complex deployments override with path B.
 
-### Graphify (optional alternative)
+### Graphify (optional — alternative graph provider)
 
-Optional alternative graph provider. Off by default. To enable + select:
+A second bundled graph-builder implementation, off by default. To enable + select:
 
 ```bash
 J1_GRAPHIFY_ENABLED=true

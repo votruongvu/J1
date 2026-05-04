@@ -5,6 +5,14 @@ Brings up a REST API, a Temporal worker, a Temporal server (with
 Postgres for its own storage), and the Temporal web UI on a single
 laptop.
 
+> **First time?** Read [`docs/development/onboarding.md`](../../docs/development/onboarding.md)
+> first — it walks the full path from install through first
+> workflow trigger and points back here when you reach the Docker
+> step. For the canonical list of `J1_*` environment variables see
+> [`docs/configuration/environment.md`](../../docs/configuration/environment.md).
+> For Temporal-specific operations (signals, recovery, scaling
+> workers) see [`docs/operations/temporal.md`](../../docs/operations/temporal.md).
+
 > **About Postgres.** It's here **only as Temporal's storage backend**
 > — Temporal's official `auto-setup` image only supports
 > mysql8 / postgres12 / postgres12_pgx / cassandra. The J1 framework
@@ -193,12 +201,16 @@ Every variable lives in [`.env.example`](../../.env.example). Highlights:
 | `J1_WEBHOOK_SUBSCRIPTIONS` / `J1_WEBHOOK_SUBSCRIPTIONS_FILE` | unset | No webhook delivery by default |
 | `J1_EVENT_PUBLISHER_TYPE` | `noop` | Set to `bus` to fan events into the in-process `ApplicationEventBus` |
 
-The exhaustive reference for each variable group is in the per-area
-docs:
+The single-page environment-variable reference (every `J1_*` var,
+grouped by section, with defaults and required-by-when notes) is at
+[docs/configuration/environment.md](../../docs/configuration/environment.md).
+Per-area context lives in:
 
-- [docs/security.md § 7](../../docs/security.md)
-- [docs/webhooks.md § 6](../../docs/webhooks.md)
-- [docs/event-integration.md § 5](../../docs/event-integration.md)
+- [docs/security.md](../../docs/security.md) — auth specifics
+- [docs/webhooks.md](../../docs/webhooks.md) — webhook delivery
+- [docs/event-integration.md](../../docs/event-integration.md) — event publisher / AsyncAPI
+- [docs/providers.md](../../docs/providers.md) — RAGAnything / Graphify / LLM roles
+- [docs/operations/temporal.md](../../docs/operations/temporal.md) — Temporal worker operations
 
 ---
 
