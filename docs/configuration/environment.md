@@ -69,7 +69,7 @@ Loader: [`src/j1/integration/security/settings.py`](../../src/j1/integration/sec
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_AUTH_REQUIRED` | No | `false` | Security loader | Boolean — when truthy, the deployment SHOULD wire an authenticator and reject anonymous requests. **NEEDS VERIFICATION** — confirm whether unsetting this and constructing `create_rest_api(authenticator=None)` collapses to anonymous mode or refuses startup. |  |
+| `J1_AUTH_REQUIRED` | No | `false` | Security loader (`SecuritySettings.auth_required`) | Advisory boolean — surfaced on `SecuritySettings.auth_required` for deployment glue to consult. The framework itself does not enforce it: anonymous mode is determined entirely by whether an `authenticator=` is passed to `create_rest_api(...)`. Set this when your composition root needs to gate "did the operator intend to require auth?" before wiring an authenticator. |  |
 | `J1_AUTH_API_KEYS` | No | _(unset)_ | API-key authenticator | Inline JSON object keyed by token: `{"<token>":{"subject":...,"tenant_id":...,"scopes":[...]}}`. | **Secret** — never commit. Mutually exclusive with `J1_AUTH_API_KEYS_FILE`. |
 | `J1_AUTH_API_KEYS_FILE` | No | _(unset)_ | API-key authenticator | Filesystem path to a JSON file with the same shape as `J1_AUTH_API_KEYS`. Designed for secret-manager mounts. | Mutually exclusive with `J1_AUTH_API_KEYS`. |
 | `J1_AUTH_JWT_ENABLED` | No | `false` | JWT authenticator | Boolean — flag to indicate the deployment intends to wire `JwtAuthenticator`. The verifier callable itself is still injected programmatically. |  |
@@ -236,8 +236,8 @@ Loader: [`src/j1/integration/events/settings.py`](../../src/j1/integration/event
 | `J1_WEBHOOK_ENABLED` | No | `false` | Webhook subscriber | Boolean — gate for the webhook delivery subsystem. |  |
 | `J1_WEBHOOK_SUBSCRIPTIONS` | No | _(unset)_ | Subscription registry | Inline JSON list of subscription specs. | Mutually exclusive with `J1_WEBHOOK_SUBSCRIPTIONS_FILE`. **Secret** — subscriptions include shared HMAC keys. |
 | `J1_WEBHOOK_SUBSCRIPTIONS_FILE` | No | _(unset)_ | Subscription registry | Filesystem path to a JSON file with the same shape. | Designed for secret-manager mounts. |
-| `J1_WEBHOOK_DEFAULT_TIMEOUT_SECONDS` | No | _(see settings)_ | Webhook delivery service | Default per-attempt HTTP timeout for outbound webhook posts. | **NEEDS VERIFICATION** — exact default lives in `src/j1/integration/events/settings.py`; check before relying on a number. |
-| `J1_WEBHOOK_DEFAULT_MAX_ATTEMPTS` | No | _(see settings)_ | Webhook delivery service | Default retry-attempt cap before a delivery is marked failed. | **NEEDS VERIFICATION** — same as above. |
+| `J1_WEBHOOK_DEFAULT_TIMEOUT_SECONDS` | No | `10.0` | Webhook delivery service | Default per-attempt HTTP timeout for outbound webhook posts. | Per-subscription `timeout_seconds` overrides this default. |
+| `J1_WEBHOOK_DEFAULT_MAX_ATTEMPTS` | No | `5` | Webhook delivery service | Default retry-attempt cap before a delivery is marked failed. | Per-subscription `retry_max_attempts` overrides this default. The retry loop also uses fixed defaults from the same module: initial delay `1.0s`, backoff factor `2.0`, max delay `60.0s` (per-subscription override fields: `retry_initial_delay_seconds`, `retry_backoff`, `retry_max_delay_seconds`). |
 
 See also: [`docs/webhooks.md`](../webhooks.md).
 

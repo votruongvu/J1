@@ -25,7 +25,35 @@ honour that across each provider type.
 | Vision LLM client | `VisionLLMClient` | `src/j1/llm/<vendor>.py` | OpenAI-compat, LangChain |
 | Embedding client | `EmbeddingClient` | `src/j1/llm/<vendor>.py` | OpenAI-compat, LangChain |
 | Enrichment processor | `EnrichmentProcessor` | `src/j1/enrichers.py` (or a new module) | 9 built-in `_StructuredEnricher` subclasses |
-| Model provider (legacy) | `ModelProvider` | n/a | _(superseded by the `*LLMClient` roles for new work; **NEEDS VERIFICATION** for whether the protocol is still consumed)_ |
+| Generic model provider | `ModelProvider` | (consumed by enrichers + cost router; no concrete impl ships) | None bundled — implementations are deployment-supplied |
+
+**`ModelProvider` vs the LLM role clients — when to use which.** Both
+shapes are current:
+
+- **Role clients** (`TextLLMClient` / `VisionLLMClient` /
+  `EmbeddingClient` from [`src/j1/llm/clients.py`](../../src/j1/llm/clients.py))
+  carry role-specific signatures (`generate(prompt, …)`,
+  `analyze_image(bytes, …)`, `embed_batch(texts) → vectors`). Use these
+  whenever you're plugging an LLM behind one of the three named
+  roles — they integrate with `LLMProviderRegistry`, the bootstrap
+  validation, and the OpenAI-compat / LangChain bridges.
+- **`ModelProvider`** ([`src/j1/processing/contracts.py`](../../src/j1/processing/contracts.py))
+  is the generic, single-method `complete(ctx, prompt, *, model=None, …)
+  → ModelResponse` Protocol used by:
+  - [`_StructuredEnricher`](../../src/j1/enrichers.py) — its optional
+    `model: ModelProvider | None` parameter,
+  - [`ModelRouter`](../../src/j1/cost/router.py) — its
+    `Mapping[str, ModelProvider]` registry keyed by `TaskCategory`,
+  - and as a forward-looking integration point flagged in
+    [`adapters/rest/app.py`](../../src/j1/adapters/rest/app.py) and
+    [`integration/streaming/service.py`](../../src/j1/integration/streaming/service.py).
+  Use `ModelProvider` when you're wiring a router-style abstraction
+  over multiple LLMs (cost-aware routing per task category) or when
+  the consumer is the enricher's optional model slot.
+
+A deployment is free to wrap a single LLM behind both surfaces (a
+`TextLLMClient` for the bootstrap + a thin `ModelProvider` shim for
+the router) — the framework never collapses them.
 
 For the protocols themselves, read
 [`src/j1/processing/contracts.py`](../../src/j1/processing/contracts.py)

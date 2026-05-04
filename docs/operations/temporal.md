@@ -93,42 +93,93 @@ default activity classes, then enters Temporal's worker run loop.
 
 ### 3.2 Production worker shape
 
-A production worker typically wires its own processor maps:
+`WorkerSpec` is a frozen dataclass with **two** fields — the
+workflow types and the flat activity callable list:
+
+```python
+@dataclass(frozen=True)
+class WorkerSpec:
+    workflows: Sequence[type] = ()
+    activities: Sequence[Callable] = ()
+```
+
+Concurrency and the activity executor are passed at *worker
+construction time*, not on `WorkerSpec`:
+
+```python
+build_worker(client, settings, spec, *,
+             activity_executor=None, max_concurrent_activities=None) -> Worker
+run_worker(client, settings, spec, *,
+           activity_executor=None, max_concurrent_activities=None) -> None
+```
+
+> **All shipped J1 activities are synchronous** (regular `def`, not
+> `async def`). The Temporal SDK requires an `activity_executor`
+> (typically a `concurrent.futures.ThreadPoolExecutor`) when sync
+> activities are registered — pass one or the worker raises at
+> startup.
+
+A production worker typically follows the same shape as
+[`deploy/dev/_wiring.py::build_worker_spec`](../../deploy/dev/_wiring.py)
+— wire the activity classes, collect their `.all_activities()`
+callables, and hand them to `WorkerSpec`:
 
 ```python
 import asyncio
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 from j1 import (
-    Bootstrap, ProjectProcessingWorkflow, DocumentProcessingWorkflow,
-    WorkerSpec, build_client, run_worker, load_temporal_settings,
+    AccountingActivities, DocumentProcessingWorkflow,
+    KnowledgeProcessingActivities, ProcessingActivities,
+    ProjectActivities, ProjectLifecycleActivities,
+    ProjectProcessingWorkflow, ReviewActivities, SearchActivities,
+    WorkerSpec, build_client, load_temporal_settings, run_worker,
 )
+# ... plus your wired-up registries, services, and processor maps
 
 async def main():
-    boot = Bootstrap.from_env().build()           # validates env + LLMs + providers
     temporal = load_temporal_settings()
     client = await build_client(temporal)
 
+    activities: list = []
+    activities += ProjectLifecycleActivities(...).all_activities()
+    activities += ProjectActivities(...).all_activities()
+    activities += AccountingActivities(...).all_activities()
+    activities += SearchActivities(indexers={...}).all_activities()
+    activities += ReviewActivities(...).all_activities()
+    activities += ProcessingActivities(
+        compilers={...}, enrichers={...}, graph_builders={...},
+        indexers={...}, query_providers={...},
+        ...
+    ).all_activities()
+    activities += KnowledgeProcessingActivities(
+        compilers={...}, enrichers={...}, graph_builders={...},
+        ...
+    ).all_activities()
+
     spec = WorkerSpec(
         workflows=[ProjectProcessingWorkflow, DocumentProcessingWorkflow],
-        activities=[
-            *boot.processing_activities.all_activities(),
-            *boot.lifecycle_activities.all_activities(),
-            # ...
-        ],
-        max_concurrent_activities=int(
-            os.environ.get("J1_WORKER_MAX_CONCURRENT_ACTIVITIES", "5"),
-        ),
+        activities=activities,
     )
-    await run_worker(client, temporal, spec)
+
+    max_conc = int(os.environ.get("J1_WORKER_MAX_CONCURRENT_ACTIVITIES", "5"))
+    with ThreadPoolExecutor(max_workers=max_conc) as executor:
+        await run_worker(
+            client, temporal, spec,
+            activity_executor=executor,
+            max_concurrent_activities=max_conc,
+        )
 
 asyncio.run(main())
 ```
 
-> **NEEDS VERIFICATION** — the exact `WorkerSpec` constructor
-> parameters, including which activities to register, depend on the
-> deployment's bootstrap. Confirm against
-> [`src/j1/orchestration/temporal/worker.py`](../../src/j1/orchestration/temporal/worker.py)
-> + [`deploy/dev/_wiring.py`](../../deploy/dev/_wiring.py) before
-> copying.
+For the full reference wiring (registries, services, audit/cost
+sinks, intake) consult
+[`deploy/dev/_wiring.py`](../../deploy/dev/_wiring.py) — its
+`build_worker_spec(workspace, *, compilers=, enrichers=, graph_builders=, indexers=, query_providers=)`
+helper takes empty processor maps by default. Real deployments pass
+their own (vendor-specific) processor maps in.
 
 ### 3.3 Scaling workers
 
@@ -226,12 +277,33 @@ For the full architecture see
 | Non-retryable errors | `DocumentNotFoundError`, unknown processor `kind` (raises Temporal `ApplicationError(non_retryable=True)`) | Add new types in your activity wrappers |
 | Workflow execution timeout | _(Temporal default — unset by J1)_ | Pass via `client.start_workflow(..., execution_timeout=...)` |
 | Activity start-to-close timeout | _(per-activity; defined in payload schemas)_ | Override at registration |
-| Heartbeat | _(used by long-running activities — see `j1.heartbeat`)_ | NEEDS VERIFICATION — confirm which activities heartbeat |
+| Heartbeat | **Not emitted automatically by any shipped activity** | Long-running custom activities should call [`j1.heartbeat()`](../../src/j1/heartbeat.py) periodically — see below |
 
 Definitions live in
 [`src/j1/orchestration/temporal/retries.py`](../../src/j1/orchestration/temporal/retries.py).
 Override per-activity if a stage needs different behaviour (e.g.
 graph build is expensive — give it more headroom).
+
+**Heartbeat helper.** [`j1.heartbeat`](../../src/j1/heartbeat.py)
+exposes a single thin wrapper around `temporalio.activity.heartbeat`:
+
+```python
+from j1 import heartbeat
+
+def my_long_running_activity(input):
+    for chunk in iterate_corpus(input):
+        process(chunk)
+        heartbeat({"chunk": chunk.id})    # safe outside an activity context
+```
+
+The helper is a no-op outside an activity context (so unit tests
+that call the activity function directly don't blow up). The
+shipped activities (`compile`, `enrich`, `build_graph`, `index`,
+`query`, lifecycle, accounting, review, search) **do not heartbeat
+themselves** — they're treated as bounded units of work. If you
+write a custom activity that may exceed the configured
+start-to-close timeout, call `heartbeat()` inside its loop and set
+the activity's `heartbeat_timeout` accordingly when registering.
 
 ---
 
@@ -321,7 +393,7 @@ status = await handle.query("get_status")
 | `Unknown processor kind` | Activity received a `kind` not registered in the worker's processor map — verify the worker's `compilers=` / `enrichers=` / `graph_builders=` parameter |
 | Workflow stuck in `WAITING_FOR_BUDGET_APPROVAL` | Check cost log + send `approve_budget` (or `reject_budget`) via Temporal client / REST |
 | Workflow stuck in `WAITING_FOR_REVIEW` | Reviewer hasn't acted — see `GET /reviews` + `POST /reviews/{id}/decision` |
-| Activity heartbeat timeout | NEEDS VERIFICATION — confirm activity heartbeat configuration |
+| Activity heartbeat timeout | A custom activity exceeded its `start_to_close_timeout` without heartbeating — call `j1.heartbeat()` periodically inside the activity and set `heartbeat_timeout` when registering. Shipped activities do not heartbeat. |
 | Web UI shows the workflow as `Failed` with `BusinessRejection` | Workflow ended in `FAILED_FINAL` state (terminal business rejection); investigate the upstream cause via the audit log + activity attempt history |
 
 For REST-side issues see [`docs/troubleshooting.md`](../troubleshooting.md).
