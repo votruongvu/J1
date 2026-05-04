@@ -544,6 +544,35 @@ def test_default_compile_surfaces_lightrag_init_failure_as_provider_unavailable(
 # ---- Regression: embedding wrapper has the LightRAG-required shape ----
 
 
+def test_make_embedding_func_inner_callable_returns_numpy_array():
+    """LightRAG's `EmbeddingFunc.__call__` reads `result.size` to
+    validate vector count — a Python `list[list[float]]` raises
+    `AttributeError: 'list' object has no attribute 'size'`. Our
+    wrapper must return an ndarray shaped (n_texts, dim).
+    Regression test for the LightRAG-AttributeError seen in prod."""
+    import asyncio
+
+    import numpy as np
+
+    from j1.providers.raganything._bridge import _make_embedding_func
+
+    class _FakeEmbed:
+        def embed_batch(self, texts):
+            return ([[0.1, 0.2, 0.3, 0.4]] * len(list(texts)), None)
+        def dimension(self): return 4
+        def max_tokens(self): return 256
+
+    wrapped = _make_embedding_func(_FakeEmbed())
+    result = asyncio.run(wrapped.func(["hi", "there", "y'all"]))
+    assert isinstance(result, np.ndarray), (
+        f"expected numpy ndarray (LightRAG reads .size on it), got {type(result).__name__}"
+    )
+    assert result.dtype == np.float32
+    assert result.shape == (3, 4)
+    # And it satisfies LightRAG's modulo check: size % embedding_dim == 0.
+    assert result.size % 4 == 0
+
+
 def test_make_embedding_func_returns_lightrag_embeddingfunc_with_dim_and_max_tokens():
     """LightRAG's `LightRAG.__post_init__` accesses `.embedding_dim`,
     `.max_token_size`, and `.func` on the `embedding_func` argument.

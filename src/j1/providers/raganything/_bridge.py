@@ -400,6 +400,13 @@ def _make_embedding_func(embedding_client):
     `RAGAnything.lightrag` to stay `None`, surfacing later as
     `'NoneType' object has no attribute 'ainsert'`. The wrapper's
     inner `func` is awaited by LightRAG, so it must be async.
+
+    LightRAG ALSO expects the awaited result to be a numpy
+    `ndarray` — `lightrag.utils.EmbeddingFunc.__call__` reads
+    `result.size` and computes `result.size % embedding_dim` to
+    validate vector count. A Python `list[list[float]]` raises
+    `AttributeError: 'list' object has no attribute 'size'`. We
+    convert here.
     """
     try:
         from lightrag.utils import EmbeddingFunc
@@ -410,13 +417,17 @@ def _make_embedding_func(embedding_client):
             "Install with: pip install j1[raganything]"
         ) from exc
 
+    # numpy arrives as a transitive dependency of lightrag (and torch /
+    # transformers) — safe to import unconditionally inside this branch.
+    import numpy as np
+
     async def _embedding_callable(texts, *args, **kwargs):
         if isinstance(texts, str):
             texts = [texts]
         vectors, _usage = await asyncio.to_thread(
             embedding_client.embed_batch, list(texts),
         )
-        return vectors
+        return np.asarray(vectors, dtype=np.float32)
 
     return EmbeddingFunc(
         embedding_dim=embedding_client.dimension(),
