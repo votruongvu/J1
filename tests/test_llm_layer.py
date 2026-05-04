@@ -589,3 +589,123 @@ def test_langchain_from_settings_propagates_pip_install_hint_when_module_missing
             provider="langchain",
             provider_config={"class": "langchain_definitely_not_a_real_pkg:M"},
         ))
+
+
+# ---- base_url normalisation -------------------------------------------
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # Idempotent on a correctly-shaped URL.
+    ("https://api.openai.com/v1", "https://api.openai.com/v1"),
+    # Strip a trailing slash.
+    ("https://api.openai.com/v1/", "https://api.openai.com/v1"),
+    # Strip an accidentally-pasted full chat URL — the most common
+    # operator footgun ("I copied the example from the OpenAI docs").
+    ("https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1"),
+    # Same with trailing slash.
+    ("https://api.openai.com/v1/chat/completions/", "https://api.openai.com/v1"),
+    # Embeddings leaf.
+    ("https://api.openai.com/v1/embeddings", "https://api.openai.com/v1"),
+    # /completions (legacy) and /responses (new Responses API) — both stripped.
+    ("https://api.openai.com/v1/completions", "https://api.openai.com/v1"),
+    ("https://api.openai.com/v1/responses", "https://api.openai.com/v1"),
+    # Whitespace tolerance — env-var values often pick up leading/trailing space.
+    ("  https://api.openai.com/v1  ", "https://api.openai.com/v1"),
+    # Self-hosted endpoints without `/v1` are passed through (we don't
+    # auto-add — vendor-dependent).
+    ("http://vllm-host:8000", "http://vllm-host:8000"),
+])
+def test_normalize_base_url(raw, expected):
+    from j1.llm.openai_compat import _normalize_base_url
+    assert _normalize_base_url(raw) == expected
+
+
+def test_text_client_strips_full_chat_url_at_construction(monkeypatch):
+    """Operator pastes the full `…/chat/completions` URL into `base_url`
+    by mistake. Without normalisation this produces a request to
+    `…/chat/completions/chat/completions` and 404s. We strip the
+    leaf so the actual request lands on the right endpoint."""
+    calls = _stub_httpx(monkeypatch, response_json={
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {},
+    })
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://api.example.com/v1/chat/completions",
+        api_key="k",
+        model="m",
+    ))
+    client.generate("hi")
+    assert calls[0]["url"] == "https://api.example.com/v1/chat/completions", (
+        f"expected suffix to be stripped at construction, got URL: {calls[0]['url']!r}"
+    )
+
+
+def test_embedding_client_strips_full_embeddings_url_at_construction(monkeypatch):
+    """Same shape as the text-client test but for the embeddings leaf."""
+    calls = _stub_httpx(monkeypatch, response_json={
+        "data": [{"embedding": [0.1, 0.2]}],
+        "usage": {"prompt_tokens": 1},
+    })
+    client = OpenAICompatEmbeddingClient(EmbeddingSettings(
+        provider="openai_compat",
+        base_url="https://api.example.com/v1/embeddings/",
+        api_key="k",
+        model="m",
+        dimension=2,
+    ))
+    client.embed_text("hi")
+    assert calls[0]["url"] == "https://api.example.com/v1/embeddings"
+
+
+# ---- 404 error message guides operator to the misconfiguration --------
+
+
+def test_404_error_message_includes_url_and_base_url_hint(monkeypatch):
+    """A 404 from the upstream endpoint must surface enough context that
+    the operator can fix their config without reading the framework
+    source — the constructed URL, the originally-configured base_url,
+    and a hint about the most common cause (missing `/v1` or
+    non-OpenAI-compatible endpoint)."""
+    _stub_httpx(monkeypatch, response_json={"error": "not found"}, status_code=404)
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://api.example.com",  # missing /v1 — the bug
+        api_key="k",
+        model="m",
+    ))
+    with pytest.raises(LLMProviderUnavailable) as excinfo:
+        client.generate("hi")
+    msg = str(excinfo.value)
+
+    # The constructed URL must be in the message — that's the
+    # single most important piece of info for debugging.
+    assert "https://api.example.com/chat/completions" in msg
+    # The user's originally-configured base_url is also surfaced
+    # so they can spot the typo / missing segment.
+    assert "https://api.example.com" in msg
+    # And there's a hint about the version segment.
+    assert "/v1" in msg or "version segment" in msg
+
+
+def test_non_404_4xx_still_raises_clean_error(monkeypatch):
+    """The 404-specific hint must not bleed into other 4xx codes —
+    a 401 (auth failure) shouldn't suggest the URL is wrong."""
+    _stub_httpx(
+        monkeypatch,
+        response_json={"error": "invalid api key"},
+        status_code=401,
+    )
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://api.example.com/v1",
+        api_key="bad",
+        model="m",
+    ))
+    with pytest.raises(LLMProviderUnavailable) as excinfo:
+        client.generate("hi")
+    msg = str(excinfo.value)
+    assert "HTTP 401" in msg
+    assert "https://api.example.com/v1/chat/completions" in msg
+    # The version-segment hint is reserved for 404s.
+    assert "Common causes" not in msg

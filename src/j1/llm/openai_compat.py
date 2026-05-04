@@ -33,6 +33,43 @@ from j1.llm.settings import (
 
 _USER_AGENT = "j1-llm/0.1"
 
+# Path suffixes the OpenAI-compatible REST surface defines as leaves.
+# A correctly-configured `base_url` ends BEFORE any of these (e.g.
+# `https://api.openai.com/v1`). Users routinely paste the full
+# endpoint URL into `base_url` instead, which then double-appends to
+# `https://api.openai.com/v1/chat/completions/chat/completions` and
+# 404s. We strip these suffixes defensively.
+_LEAF_PATH_SUFFIXES: tuple[str, ...] = (
+    "/chat/completions",
+    "/completions",
+    "/embeddings",
+    "/responses",
+)
+
+
+def _normalize_base_url(raw: str) -> str:
+    """Trim trailing slashes and accidental leaf-path suffixes.
+
+    Examples:
+        ``https://api.openai.com/v1``                       → unchanged
+        ``https://api.openai.com/v1/``                      → ``…/v1``
+        ``https://api.openai.com/v1/chat/completions``      → ``…/v1``
+        ``https://api.openai.com/v1/embeddings/``           → ``…/v1``
+
+    Does NOT auto-add ``/v1`` — that's vendor-dependent (vLLM /
+    Ollama / DashScope all expect it included in `base_url`; some
+    self-hosted endpoints don't have a version segment at all).
+    Misconfiguration of the version segment surfaces as a clear
+    HTTP-404 error message that names the URL we tried.
+    """
+    cleaned = (raw or "").strip().rstrip("/")
+    for suffix in _LEAF_PATH_SUFFIXES:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)].rstrip("/")
+            # Only one leaf suffix is meaningful; stop after the first match.
+            break
+    return cleaned
+
 
 class _BaseOpenAICompatClient:
     """Shared HTTP plumbing for the three role-specific subclasses."""
@@ -46,7 +83,11 @@ class _BaseOpenAICompatClient:
             raise LLMConfigError(
                 f"{type(self).__name__} requires a model"
             )
+        # Cache the normalised URL so the per-request hot path is just
+        # a string concat. The original setting is preserved on
+        # `settings.base_url` for diagnostic / round-trip reporting.
         self._settings = settings
+        self._base_url = _normalize_base_url(settings.base_url)
 
     @property
     def provider(self) -> str:
@@ -67,7 +108,7 @@ class _BaseOpenAICompatClient:
                 "add httpx to your environment"
             ) from exc
 
-        url = self._settings.base_url.rstrip("/") + path
+        url = self._base_url + path
         headers = {
             "Content-Type": "application/json",
             "User-Agent": _USER_AGENT,
@@ -98,17 +139,49 @@ class _BaseOpenAICompatClient:
                 last_exc = RuntimeError(f"http {response.status_code}")
                 continue
             if response.status_code >= 400:
-                # Body may carry a useful error message — surface only
-                # the upstream-supplied text, never our own headers.
-                detail = (response.text or "")[:500]
                 raise LLMProviderUnavailable(
-                    f"{self._settings.provider} returned HTTP "
-                    f"{response.status_code}: {detail}"
+                    self._format_http_error(
+                        status_code=response.status_code,
+                        url=url,
+                        body_text=response.text or "",
+                    )
                 )
             return response.json()
         raise LLMProviderUnavailable(  # pragma: no cover — defensive
             f"{self._settings.provider} call to {url} failed: {last_exc}"
         )
+
+    def _format_http_error(
+        self, *, status_code: int, url: str, body_text: str,
+    ) -> str:
+        """Build the LLMProviderUnavailable message for a failed HTTP call.
+
+        Always includes the constructed URL so misconfigured base_urls
+        are visible at a glance. For 404 specifically, adds a hint
+        about the most common cause — `base_url` missing the `/v1`
+        segment, or pointing at a non-OpenAI-compatible endpoint.
+        Body excerpt is truncated to keep upstream error pages from
+        flooding logs / surfacing as huge tracebacks.
+        """
+        detail = body_text[:500]
+        message = (
+            f"{self._settings.provider} returned HTTP {status_code} for "
+            f"{url}: {detail}"
+        )
+        if status_code == 404:
+            message += (
+                " | Common causes: (1) `base_url` is missing the version "
+                "segment most OpenAI-compatible providers expect — e.g. "
+                "OpenAI / vLLM / Together / DashScope all require the "
+                "`/v1` (or vendor-specific equivalent) included in the "
+                "configured base_url. (2) The endpoint isn't actually "
+                "OpenAI-compatible (it doesn't expose `/chat/completions` "
+                "or `/embeddings`). Verify by curling "
+                f"`{url}` directly. The configured base_url was: "
+                f"{self._settings.base_url!r} (normalised to "
+                f"{self._base_url!r})."
+            )
+        return message
 
 
 # ---- Text ----------------------------------------------------------
