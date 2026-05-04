@@ -5,10 +5,13 @@ Run via:
     python -m deploy.dev.api
 
 The container's CMD wraps this. NOT a production deployment — see
-`docs/architecture.md` § 17 for the full wiring story. This script
-exists to give developers a runnable HTTP surface backed by the
-filesystem; pluggable processors (model providers, real compilers,
-etc.) are explicitly not wired here.
+`docs/architecture.md` § 17 for the full wiring story. Calls
+`bootstrap_from_env()` so the API can:
+
+  * Default omitted `compilerKind` request fields to
+    `J1_DEFAULT_COMPILER`.
+  * Reject unknown processor kinds at the API boundary with a clear
+    400 instead of letting them surface as workflow failures later.
 """
 
 import contextlib
@@ -30,11 +33,14 @@ from j1 import (
     ProjectScope,
     TemporalJobControlService,
     TemporalJobStatusService,
+    bootstrap_from_env,
     build_client,
+    capabilities_from_bootstrap,
     create_rest_api,
     load_temporal_settings,
 )
 from j1.integration.services import ApplicationFacade
+from j1.search.indexer import SqliteSearchIndexer
 
 _log = logging.getLogger("j1.dev.api")
 
@@ -113,12 +119,27 @@ def _build_app():
         )
         return workflow_id
 
+    # Compose the env-declared providers so the API can default
+    # `compilerKind` and validate unknown kinds. The same `boot`
+    # value is what `worker.py` consumes — keeping API + worker on
+    # one bootstrap means clients that omit `compilerKind` get the
+    # selection the worker actually wired.
+    boot = bootstrap_from_env()
+    capabilities = capabilities_from_bootstrap(
+        boot,
+        # The dev worker always wires the SQLite indexer under its
+        # canonical kind. Surface that here so `indexerKind` (when
+        # supplied) is validated.
+        indexer_kinds=frozenset({SqliteSearchIndexer.kind}),
+    )
+
     app = create_rest_api(
         facade_with_temporal,
         authenticator=maybe_build_authenticator(),
         workspace=workspace,
         event_bus=ApplicationEventBus(),
         job_starter=_start_project_workflow,
+        processing_capabilities=capabilities,
         version=os.environ.get("J1_API_VERSION", "0.0.1-dev"),
     )
 

@@ -126,11 +126,14 @@ curl -X POST http://localhost:8000/documents \
   -F "file=@/tmp/sample.txt"
 
 # 3. Start a project-wide ingestion workflow
+#    Note: `compilerKind` is OPTIONAL — when omitted, the API
+#    falls back to the bootstrap's `J1_DEFAULT_COMPILER` selection
+#    (which is `mock` per .env.example). Sending an unregistered
+#    `compilerKind` value is rejected at the API boundary with 400.
 curl -X POST http://localhost:8000/ingestion-jobs \
   -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
   -H "Content-Type: application/json" \
   -d '{
-    "compilerKind": "mock",
     "actor": "local-dev",
     "correlationId": "demo-1"
   }'

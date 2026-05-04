@@ -38,7 +38,11 @@ class DocumentStatusRecord(CamelModel):
 
 
 class IngestRequest(CamelModel):
-    compiler_kind: str
+    # `compilerKind` is optional. When omitted, the REST adapter falls
+    # back to the runtime's default compiler (`J1_DEFAULT_COMPILER`)
+    # if `processing_capabilities=` was passed to `create_rest_api`.
+    # Otherwise the request is rejected with `INVALID_ARGUMENT`.
+    compiler_kind: str | None = None
     enricher_kind: str | None = None
     graph_builder_kind: str | None = None
     indexer_kind: str | None = None
@@ -238,7 +242,9 @@ class ProjectRecord(CamelModel):
 
 
 class ProjectIngestionRequest(CamelModel):
-    compiler_kind: str = Field(min_length=1)
+    # `compilerKind` is optional. See `IngestRequest` above for the
+    # default-resolution + validation contract.
+    compiler_kind: str | None = None
     enricher_kind: str | None = None
     graph_builder_kind: str | None = None
     indexer_kind: str | None = None

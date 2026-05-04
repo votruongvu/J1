@@ -37,6 +37,7 @@ app = create_rest_api(
     facade,
     workspace=WorkspaceResolver(load_settings()),  # required for /events
     job_starter=my_job_starter,                    # required for /documents/{id}/ingest
+    processing_capabilities=capabilities,          # see § 1.1 below — optional but strongly recommended
     version="1.2.0",
 )
 ```
@@ -55,8 +56,47 @@ gracefully:
 | `facade.review=None`      | `GET /reviews`, `POST /reviews/{id}/decision`   | `503`     |
 | `job_starter=None`        | `POST /documents/{documentId}/ingest`           | `503`     |
 | `workspace=None`          | `GET /ingestion-jobs/{jobId}/events`            | `503`     |
+| `processing_capabilities=None` | `compilerKind` request field is required + not validated against registered kinds (see § 1.1) | — |
 
 `/capabilities` advertises which endpoints the deployment has wired up.
+
+### 1.1 Processing capabilities (recommended)
+
+`create_rest_api` accepts an optional `processing_capabilities`
+argument — a [`ProcessingCapabilities`](../src/j1/integration/dto.py)
+DTO describing which processor `kind`s the runtime accepts. When
+supplied, the API:
+
+  * **Defaults** an omitted `compilerKind` request field to
+    `default_compiler_kind` so simple clients can omit it entirely.
+  * **Validates** `compilerKind` / `graphBuilderKind` /
+    `enricherKind` / `indexerKind` against the registered set,
+    rejecting unknown values with `400 INVALID_ARGUMENT` (instead
+    of letting them surface as a workflow `UnknownProcessorError`
+    seconds later).
+
+Most deployments that use J1's bootstrap should pass
+`capabilities_from_bootstrap(boot)`:
+
+```python
+from j1 import bootstrap_from_env, capabilities_from_bootstrap, create_rest_api
+from j1.search.indexer import SqliteSearchIndexer
+
+boot = bootstrap_from_env()
+capabilities = capabilities_from_bootstrap(
+    boot,
+    # Bootstrap only manages compiler / graph / retrieval. Pass the
+    # other roles your worker wires (typically the SQLite indexer
+    # and any custom enrichers) so the API can validate them too.
+    indexer_kinds=frozenset({SqliteSearchIndexer.kind}),
+    enricher_kinds=frozenset({"my-enricher"}),
+)
+app = create_rest_api(facade, processing_capabilities=capabilities, ...)
+```
+
+When `processing_capabilities` is omitted, the API stays backward-
+compatible: clients MUST send `compilerKind`, and any value is
+forwarded to the workflow without validation.
 
 ---
 

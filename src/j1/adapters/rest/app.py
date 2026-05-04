@@ -89,6 +89,7 @@ from j1.integration.dto import (
     AnswerRequestDTO,
     EventDTO,
     FeedbackDTO,
+    ProcessingCapabilities,
     ProjectCreateRequestDTO,
     ProjectIngestionRequestDTO,
     ReviewDecisionRequestDTO,
@@ -152,6 +153,7 @@ def create_rest_api(
     event_bus: ApplicationEventBus | None = None,
     bulk_export: BulkExportService | None = None,
     bulk_import: BulkImportService | None = None,
+    processing_capabilities: ProcessingCapabilities | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -164,6 +166,19 @@ def create_rest_api(
       * `workspace=None`     → retrieve endpoint omits artifact text content
       * `facade.search=None` / `.answer=None` / `.job_status=None` → those
         endpoints return 503 too
+
+    `processing_capabilities` (when supplied — typically constructed
+    from `BootstrapResult.to_processing_capabilities()`) lets the API:
+      * Default an omitted `compilerKind` request field to the
+        runtime's `J1_DEFAULT_COMPILER` selection so simple clients
+        can omit it.
+      * Reject unknown `compilerKind` / `graphBuilderKind` /
+        `enricherKind` / `indexerKind` values at the API boundary
+        with a clear `INVALID_ARGUMENT` 400, instead of letting them
+        surface as a workflow `UnknownProcessorError` 5 seconds later.
+      When omitted, validation + defaulting are skipped — callers
+      MUST then provide `compilerKind` explicitly (or the request
+      fails downstream as before).
     """
     app = FastAPI(
         title=api_title,
@@ -314,6 +329,63 @@ def create_rest_api(
         )
 
     # ---- Dependencies ------------------------------------------------
+
+    def _resolve_compiler_kind(provided: str | None) -> str:
+        """Resolve + validate `compilerKind` against the runtime.
+
+        Three rules:
+          1. If the caller provided a value AND `processing_capabilities`
+             knows the registered set AND the value isn't in it → 400.
+          2. If the caller omitted the value AND `processing_capabilities`
+             carries a default → use the default.
+          3. If the caller omitted the value AND no default is
+             configured → 400 with a clear message naming the field.
+        """
+        caps = processing_capabilities
+        if provided is not None:
+            value = provided.strip()
+            if not value:
+                raise ValueError("compilerKind must be a non-empty string")
+            if caps is not None and caps.compiler_kinds:
+                if value not in caps.compiler_kinds:
+                    raise ValueError(
+                        f"unknown compilerKind {value!r}; the worker has "
+                        f"registered: {sorted(caps.compiler_kinds)}"
+                    )
+            return value
+        # Not provided — fall back to default.
+        if caps is not None and caps.default_compiler_kind:
+            return caps.default_compiler_kind
+        raise ValueError(
+            "compilerKind is required (the runtime did not configure a "
+            "default — pass `processing_capabilities=` to create_rest_api "
+            "with `default_compiler_kind=` set, or include `compilerKind` "
+            "in the request body)."
+        )
+
+    def _validate_optional_processor_kind(
+        provided: str | None,
+        registered: frozenset[str],
+        field_name: str,
+    ) -> str | None:
+        """Validate an optional processor-kind field.
+
+        Unlike `_resolve_compiler_kind`, optional fields are NOT
+        defaulted — `None` means "skip the stage". Validation only
+        kicks in when the caller actually supplied a value AND the
+        runtime has at least one registered kind for the role.
+        """
+        if provided is None:
+            return None
+        value = provided.strip()
+        if not value:
+            return None
+        if registered and value not in registered:
+            raise ValueError(
+                f"unknown {field_name} {value!r}; the worker has "
+                f"registered: {sorted(registered)}"
+            )
+        return value
 
     def get_ctx(request: Request) -> ProjectContext:
         return resolver(request)
@@ -516,6 +588,28 @@ def create_rest_api(
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        # Resolve / validate processor kinds at the boundary; mutate
+        # the body so the deployment-supplied job_starter sees the
+        # resolved values rather than re-implementing this logic.
+        body.compiler_kind = _resolve_compiler_kind(body.compiler_kind)
+        body.graph_builder_kind = _validate_optional_processor_kind(
+            body.graph_builder_kind,
+            (processing_capabilities.graph_builder_kinds
+             if processing_capabilities else frozenset()),
+            "graphBuilderKind",
+        )
+        body.enricher_kind = _validate_optional_processor_kind(
+            body.enricher_kind,
+            (processing_capabilities.enricher_kinds
+             if processing_capabilities else frozenset()),
+            "enricherKind",
+        )
+        body.indexer_kind = _validate_optional_processor_kind(
+            body.indexer_kind,
+            (processing_capabilities.indexer_kinds
+             if processing_capabilities else frozenset()),
+            "indexerKind",
+        )
         # Verify the document exists before starting work.
         facade.source_lookup.get_source(ctx, document_id)
         job_id = await starter(ctx, document_id, body)
@@ -612,13 +706,35 @@ def create_rest_api(
         control=Depends(require_job_control),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        # Resolve / validate processor kinds at the API boundary so a
+        # bad value surfaces as a 400 here instead of a workflow
+        # failure 5s later.
+        compiler_kind = _resolve_compiler_kind(body.compiler_kind)
+        graph_builder_kind = _validate_optional_processor_kind(
+            body.graph_builder_kind,
+            (processing_capabilities.graph_builder_kinds
+             if processing_capabilities else frozenset()),
+            "graphBuilderKind",
+        )
+        enricher_kind = _validate_optional_processor_kind(
+            body.enricher_kind,
+            (processing_capabilities.enricher_kinds
+             if processing_capabilities else frozenset()),
+            "enricherKind",
+        )
+        indexer_kind = _validate_optional_processor_kind(
+            body.indexer_kind,
+            (processing_capabilities.indexer_kinds
+             if processing_capabilities else frozenset()),
+            "indexerKind",
+        )
         result = await control.start_project_job(
             ctx,
             ProjectIngestionRequestDTO(
-                compiler_kind=body.compiler_kind,
-                enricher_kind=body.enricher_kind,
-                graph_builder_kind=body.graph_builder_kind,
-                indexer_kind=body.indexer_kind,
+                compiler_kind=compiler_kind,
+                enricher_kind=enricher_kind,
+                graph_builder_kind=graph_builder_kind,
+                indexer_kind=indexer_kind,
                 budget_limit_amount=body.budget_limit_amount,
                 budget_currency=body.budget_currency,
                 review_after=list(body.review_after),

@@ -12,6 +12,7 @@ from j1.integration.dto import (
     GraphPathDTO,
     JobActionResultDTO,
     JobStatusDTO,
+    ProcessingCapabilities,
     ProjectCreateRequestDTO,
     ProjectDTO,
     ProjectIngestionRequestDTO,
@@ -19,6 +20,7 @@ from j1.integration.dto import (
     ReviewDecisionResultDTO,
     ReviewItemDTO,
     SearchHitDTO,
+    capabilities_from_bootstrap,
 )
 from j1.integration.feedback import (
     FEEDBACK_FILENAME,
@@ -283,6 +285,8 @@ __all__ = [
     "PUBLISHER_TYPE_MEMORY",
     "PUBLISHER_TYPE_NOOP",
     "PublishedEnvelope",
+    "ProcessingCapabilities",
+    "capabilities_from_bootstrap",
     "ProjectAdminPort",
     "ProjectAdminService",
     "ProjectCreateRequestDTO",

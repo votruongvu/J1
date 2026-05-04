@@ -366,13 +366,22 @@ def test_post_ingest_without_starter_returns_503(application_facade, ctx, regist
 
 
 def test_post_ingest_validates_required_field(client):
-    """Pydantic validation: missing `compilerKind` is rejected."""
+    """Without `processing_capabilities` AND no `compilerKind` in the
+    body, the request is rejected with 400 INVALID_ARGUMENT.
+
+    The schema treats `compilerKind` as optional now; the handler
+    enforces presence (or default-resolution) so the error message
+    can name the field clearly.
+    """
     response = client.post(
         "/documents/doc-x/ingest",
-        json={},  # missing compilerKind
+        json={},  # missing compilerKind, no default registered
         headers=_headers(),
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_ARGUMENT"
+    assert "compilerKind" in body["error"]["message"]
 
 
 # ---- Ingestion jobs / events ---------------------------------------
@@ -821,10 +830,15 @@ def test_post_ingestion_job_starts_workflow(client, mock_temporal):
 
 
 def test_post_ingestion_job_validates_required_field(client):
+    """Same as `test_post_ingest_validates_required_field` for the
+    project-wide endpoint."""
     response = client.post(
         "/ingestion-jobs", json={}, headers=_headers()
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_ARGUMENT"
+    assert "compilerKind" in body["error"]["message"]
 
 
 @pytest.mark.parametrize("action", ["pause", "resume", "cancel"])

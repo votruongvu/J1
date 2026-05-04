@@ -375,6 +375,37 @@ J1's bundled Temporal workflows already dispatch by `kind` (see
   `graph_builders={…}`, `indexers={…}`, `query_providers={…}`)
   passed into `ProcessingActivities` / `KnowledgeProcessingActivities`
   in your worker entrypoint.
+
+#### API ↔ worker capability alignment
+
+Pass a [`ProcessingCapabilities`](../src/j1/integration/dto.py)
+to `create_rest_api(processing_capabilities=...)` so the API can:
+
+- **Default** an omitted `compilerKind` request field to the
+  bootstrap's `J1_DEFAULT_COMPILER` selection.
+- **Reject** unknown `compilerKind` / `graphBuilderKind` /
+  `enricherKind` / `indexerKind` values at the API boundary
+  (`400 INVALID_ARGUMENT`) instead of letting them surface as a
+  workflow `UnknownProcessorError` seconds later.
+
+The typical wiring uses `capabilities_from_bootstrap(boot)`:
+
+```python
+from j1 import bootstrap_from_env, capabilities_from_bootstrap, create_rest_api
+from j1.search.indexer import SqliteSearchIndexer
+
+boot = bootstrap_from_env()
+capabilities = capabilities_from_bootstrap(
+    boot,
+    indexer_kinds=frozenset({SqliteSearchIndexer.kind}),
+    enricher_kinds=frozenset({"my-enricher"}),  # whatever your worker wires
+)
+app = create_rest_api(facade, processing_capabilities=capabilities, ...)
+```
+
+Without this wiring the API stays backwards-compatible: clients
+MUST send `compilerKind` and any value is forwarded to the
+workflow without validation.
 - The `J1_DEFAULT_COMPILER` / `J1_DEFAULT_GRAPH_PROVIDER` /
   `J1_DEFAULT_RETRIEVAL_PROVIDER` env vars to select which
   registered processor is the default.
