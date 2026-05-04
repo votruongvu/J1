@@ -71,18 +71,24 @@ class GraphifyGraphBuilder:
 
 
 def _build_default_graph_callable() -> GraphCallable:
+    """Real default boundary — drives Graphify via CLI subprocess
+    or Python-package import (selected by `J1_GRAPHIFY_MODE`).
+
+    Default mode is `cli`: invokes `J1_GRAPHIFY_COMMAND` (default
+    `graphify`) as a subprocess, parses its JSON output, returns
+    canonical `ArtifactDraft`s. See
+    `j1.providers.graphify._bridge` for the full integration.
+
+    Raises `ProviderUnavailable` only when:
+      * `mode=cli` and the binary isn't on $PATH
+      * `mode=python` and the `graphify` package isn't installed
+      * an unsupported mode value is supplied
+      * the vendor's API shape doesn't match (actionable: override
+        via J1_GRAPHIFY_GRAPH_PROCESSOR)
+    """
+
     def _delegate(request: GraphifyGraphRequest) -> ArtifactProcessingResult:
-        try:
-            import graphify  # noqa: F401
-        except ImportError as exc:
-            raise ProviderUnavailable(
-                "Graphify provider requires the `graphify` package. "
-                "Install with: pip install graphify"
-            ) from exc
-        raise ProviderUnavailable(
-            "Graphify build() is not yet wired in this build. Provide a "
-            "custom `graph_callable` to GraphifyGraphBuilder(...) until "
-            "the default integration ships, or override the adapter."
-        )
+        from j1.providers.graphify._bridge import default_build_graph
+        return default_build_graph(request)
 
     return _delegate

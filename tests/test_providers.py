@@ -130,15 +130,14 @@ def test_compiler_uses_injected_callable():
     assert seen[0].vision_client is None  # not registered in this fixture
 
 
-def test_compiler_default_path_raises_provider_unavailable():
-    """Without a custom callable, the default path tries to import
-    `raganything` and raises `ProviderUnavailable` (we don't have it
-    installed in the framework's hermetic test env)."""
+def test_compiler_default_path_raises_when_raganything_missing():
+    """Without the `raganything` package installed, the real bridge
+    raises `ProviderUnavailable` with an actionable pip-install hint."""
     compiler = RAGAnythingCompiler.from_default(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(),
     )
-    with pytest.raises(ProviderUnavailable):
+    with pytest.raises(ProviderUnavailable, match="pip install"):
         compiler.compile(_ctx(), document_id="doc-1")
 
 
@@ -209,12 +208,12 @@ def test_graph_builder_uses_injected_callable():
     assert result.status is ResultStatus.SUCCEEDED
 
 
-def test_graph_builder_default_path_raises_provider_unavailable():
+def test_graph_builder_default_path_raises_when_raganything_missing():
     builder = RAGAnythingGraphBuilder.from_default(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(),
     )
-    with pytest.raises(ProviderUnavailable):
+    with pytest.raises(ProviderUnavailable, match="pip install"):
         builder.build(_ctx(), ["a-1"])
 
 
@@ -238,12 +237,12 @@ def test_query_provider_uses_injected_callable():
     assert result.answer == "answer to: what is x?"
 
 
-def test_query_provider_default_path_raises_provider_unavailable():
+def test_query_provider_default_path_raises_when_raganything_missing():
     provider = RAGAnythingQueryProvider.from_default(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(),
     )
-    with pytest.raises(ProviderUnavailable):
+    with pytest.raises(ProviderUnavailable, match="pip install"):
         provider.query(_ctx(), "what is x?")
 
 
@@ -267,9 +266,33 @@ def test_graphify_settings_enabled():
     assert s.command == "/usr/local/bin/graphify-cli"
 
 
-def test_graphify_default_path_raises_provider_unavailable():
-    builder = GraphifyGraphBuilder.from_default(settings=GraphifySettings())
-    with pytest.raises(ProviderUnavailable):
+def test_graphify_default_cli_path_raises_when_binary_missing(monkeypatch):
+    """`mode=cli` (default) raises with an actionable message when
+    `J1_GRAPHIFY_COMMAND` isn't on $PATH."""
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    builder = GraphifyGraphBuilder.from_default(
+        settings=GraphifySettings(command="definitely-not-installed-xyz"),
+    )
+    with pytest.raises(ProviderUnavailable, match="not found on \\$PATH"):
+        builder.build(_ctx(), ["a-1"])
+
+
+def test_graphify_python_mode_raises_when_module_missing():
+    """`mode=python` raises with a pip-install hint when the package
+    isn't on sys.path."""
+    builder = GraphifyGraphBuilder.from_default(
+        settings=GraphifySettings(mode="python"),
+    )
+    with pytest.raises(ProviderUnavailable, match="pip install"):
+        builder.build(_ctx(), ["a-1"])
+
+
+def test_graphify_unknown_mode_raises_clearly():
+    builder = GraphifyGraphBuilder.from_default(
+        settings=GraphifySettings(mode="rest-api"),
+    )
+    with pytest.raises(ProviderUnavailable, match="Unknown Graphify mode"):
         builder.build(_ctx(), ["a-1"])
 
 
@@ -415,3 +438,243 @@ def test_settings_loaders_pick_up_processor_env_vars():
         "J1_GRAPHIFY_GRAPH_PROCESSOR": "mypkg:gfy",
     })
     assert g.graph_processor == "mypkg:gfy"
+
+
+# ---- Positive boundary tests: from_default reaches the real vendor --
+# These tests prove the real default path actually drives the vendor
+# entry point — they mock ONLY at the vendor module boundary
+# (sys.modules / subprocess.run), not the adapter callable.
+
+
+def _install_fake_raganything(monkeypatch, *, captured: dict):
+    """Inject a fake `raganything` module at sys.modules level.
+
+    Records the constructor kwargs and what process_document_complete /
+    aquery were called with. Writes one fake output file when the
+    compile path runs so the bridge has something to walk.
+    """
+    import sys
+    import types
+
+    class _FakeConfig:
+        def __init__(self, **kwargs):
+            captured["config_kwargs"] = kwargs
+
+    class _FakeRAG:
+        def __init__(self, **kwargs):
+            captured["rag_kwargs"] = kwargs
+
+        async def process_document_complete(
+            self, *, file_path, output_dir, parse_method,
+        ):
+            captured["compile_call"] = {
+                "file_path": file_path,
+                "output_dir": output_dir,
+                "parse_method": parse_method,
+            }
+            from pathlib import Path
+            out = Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "parsed.md").write_text("# parsed by fake raganything")
+            (out / "metadata.json").write_text('{"source": "fake"}')
+
+        async def aquery(self, question, mode="hybrid"):
+            captured["query_call"] = {"question": question, "mode": mode}
+            return f"vendor-answer to: {question}"
+
+    fake_mod = types.ModuleType("raganything")
+    fake_mod.RAGAnything = _FakeRAG
+    fake_mod.RAGAnythingConfig = _FakeConfig
+    monkeypatch.setitem(sys.modules, "raganything", fake_mod)
+
+    # Make sure the bridge re-imports a clean state — the bridge itself
+    # may have been imported earlier by other tests.
+    import j1.providers.raganything._bridge as bridge_mod
+    return bridge_mod
+
+
+def test_compiler_default_path_invokes_real_raganything_when_installed(
+    monkeypatch, tmp_path,
+):
+    """from_default() → bridge → vendor `RAGAnything.process_document_complete`.
+
+    Proves the real default path reaches the vendor boundary; only the
+    vendor module itself is replaced.
+    """
+    captured: dict = {}
+    _install_fake_raganything(monkeypatch, captured=captured)
+
+    # Workspace + raw source file the bridge will look for.
+    monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
+    raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
+    raw_dir.mkdir(parents=True)
+    source_file = raw_dir / "doc-1.pdf"
+    source_file.write_bytes(b"%PDF-fake")
+
+    workdir = tmp_path / "rag-workdir"
+    compiler = RAGAnythingCompiler.from_default(
+        llm_registry=_registry(),
+        settings=RAGAnythingSettings(workdir=str(workdir)),
+    )
+    result = compiler.compile(_ctx(), document_id="doc-1")
+
+    assert result.status is ResultStatus.SUCCEEDED, result.error
+    # Vendor was actually invoked through the real bridge.
+    assert "rag_kwargs" in captured
+    assert "llm_model_func" in captured["rag_kwargs"]
+    assert "embedding_func" in captured["rag_kwargs"]
+    assert captured["compile_call"]["file_path"] == str(source_file)
+    assert captured["compile_call"]["parse_method"] == "auto"
+    # Bridge walked the output dir → drafts.
+    assert len(result.drafts) == 2
+    kinds = {d.kind for d in result.drafts}
+    assert "compiled.text" in kinds
+    assert "compiled.text.metadata" in kinds
+
+
+def test_query_provider_default_path_invokes_real_aquery_when_installed(
+    monkeypatch,
+):
+    """from_default() → bridge → vendor `RAGAnything.aquery`."""
+    captured: dict = {}
+    _install_fake_raganything(monkeypatch, captured=captured)
+
+    provider = RAGAnythingQueryProvider.from_default(
+        llm_registry=_registry(),
+        settings=RAGAnythingSettings(),
+    )
+    result = provider.query(_ctx(), "what is x?")
+
+    assert result.status is ResultStatus.SUCCEEDED, result.error
+    assert captured["query_call"]["question"] == "what is x?"
+    assert captured["query_call"]["mode"] == "hybrid"
+    assert result.answer == "vendor-answer to: what is x?"
+
+
+def test_graph_builder_default_path_invokes_real_storage_walk_when_installed(
+    monkeypatch, tmp_path,
+):
+    """from_default() → bridge → walks RAGAnything storage dir for graph files."""
+    captured: dict = {}
+    _install_fake_raganything(monkeypatch, captured=captured)
+
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    (storage / "graph_chunk_entity_relation.json").write_text(
+        '{"nodes": [{"id": "n1"}], "edges": []}',
+    )
+    (storage / "kv_store_full_docs.json").write_text('{"doc-1": "..."}')
+
+    builder = RAGAnythingGraphBuilder.from_default(
+        llm_registry=_registry(),
+        settings=RAGAnythingSettings(
+            workdir=str(tmp_path), storage_dir=str(storage),
+        ),
+    )
+    result = builder.build(_ctx(), ["a-1"])
+
+    assert result.status is ResultStatus.SUCCEEDED, result.error
+    # Vendor instance was constructed (proves real bridge path was taken).
+    assert "rag_kwargs" in captured
+    # Bridge walked the storage dir and surfaced graph artifacts.
+    assert len(result.drafts) >= 1
+    assert all(d.kind == "graph_json" for d in result.drafts)
+    filenames = {d.metadata.get("filename") for d in result.drafts}
+    assert "graph_chunk_entity_relation.json" in filenames
+
+
+def test_graphify_cli_default_path_invokes_subprocess_when_binary_present(
+    monkeypatch, tmp_path,
+):
+    """from_default() → bridge → runs the CLI subprocess.
+
+    Mocks `shutil.which` (binary discovery) and `subprocess.run` only.
+    The bridge composes argv, writes input.json, and parses output.json
+    for real.
+    """
+    import json as _json
+    import subprocess
+    from types import SimpleNamespace
+    import j1.providers.graphify._bridge as gbridge
+
+    captured: dict = {}
+    monkeypatch.setattr(gbridge.shutil, "which", lambda _name: "/usr/bin/graphify-fake")
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["kwargs"] = kwargs
+        # Find the --output path from argv and write a real JSON file.
+        out_idx = argv.index("--output") + 1
+        out_path = Path(argv[out_idx])
+        out_path.write_text(_json.dumps({
+            "nodes": [{"id": "n1"}, {"id": "n2"}],
+            "edges": [{"src": "n1", "dst": "n2"}],
+        }))
+        # Verify the bridge actually wrote the input file too.
+        in_idx = argv.index("--input") + 1
+        in_payload = _json.loads(Path(argv[in_idx]).read_text())
+        captured["input_payload"] = in_payload
+        return SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    from pathlib import Path
+    workdir = tmp_path / "graphify-work"
+    builder = GraphifyGraphBuilder.from_default(
+        settings=GraphifySettings(
+            enabled=True, mode="cli",
+            command="/usr/bin/graphify-fake", workdir=str(workdir),
+        ),
+    )
+    result = builder.build(_ctx(), ["a-1", "a-2"])
+
+    assert result.status is ResultStatus.SUCCEEDED, result.error
+    # Subprocess WAS called.
+    assert captured["argv"][0] == "/usr/bin/graphify-fake"
+    assert "--input" in captured["argv"]
+    assert "--output" in captured["argv"]
+    assert "--workdir" in captured["argv"]
+    # Input JSON had the canonical payload.
+    assert captured["input_payload"] == {
+        "tenant_id": "acme", "project_id": "alpha",
+        "artifact_ids": ["a-1", "a-2"],
+    }
+    # Bridge produced exactly one graph_json draft from output.json.
+    assert len(result.drafts) == 1
+    assert result.drafts[0].kind == "graph_json"
+    payload = _json.loads(result.drafts[0].content)
+    assert payload["nodes"] == [{"id": "n1"}, {"id": "n2"}]
+
+
+def test_graphify_python_default_path_invokes_vendor_when_installed(monkeypatch):
+    """from_default(mode=python) → bridge → vendor `graphify.build_graph`."""
+    import sys
+    import types
+
+    captured: dict = {}
+
+    def fake_build_graph(payload):
+        captured["payload"] = payload
+        return {
+            "nodes": [{"id": "x"}],
+            "edges": [{"src": "x", "dst": "x"}],
+        }
+
+    fake_mod = types.ModuleType("graphify")
+    fake_mod.build_graph = fake_build_graph
+    monkeypatch.setitem(sys.modules, "graphify", fake_mod)
+
+    builder = GraphifyGraphBuilder.from_default(
+        settings=GraphifySettings(
+            enabled=True, mode="python", workdir="/tmp/gf-test",
+        ),
+    )
+    result = builder.build(_ctx(), ["a-1"])
+
+    assert result.status is ResultStatus.SUCCEEDED, result.error
+    assert captured["payload"] == {
+        "tenant_id": "acme", "project_id": "alpha",
+        "artifact_ids": ["a-1"], "workdir": "/tmp/gf-test",
+    }
+    assert len(result.drafts) == 1
+    assert result.drafts[0].kind == "graph_json"

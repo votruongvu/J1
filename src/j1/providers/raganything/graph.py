@@ -86,18 +86,17 @@ class RAGAnythingGraphBuilder:
 
 
 def _build_default_graph_callable() -> GraphCallable:
+    """Real default boundary — collects RAGAnything's graph artifacts.
+
+    RAGAnything builds the knowledge graph as a side-effect of
+    `process_document_complete()`. This callable scans the
+    storage_dir for graph-shaped output files (graph_*.json, entity-
+    relation files, etc.) and surfaces them as `graph_json`
+    `ArtifactDraft`s.
+    """
+
     def _delegate(request: RAGAnythingGraphRequest) -> ArtifactProcessingResult:
-        try:
-            import raganything  # noqa: F401
-        except ImportError as exc:
-            raise ProviderUnavailable(
-                "RAGAnything graph builder requires the `raganything` package. "
-                "Install with: pip install raganything"
-            ) from exc
-        raise ProviderUnavailable(
-            "RAGAnything graph build() is not yet wired in this build. "
-            "Provide a custom `graph_callable` to RAGAnythingGraphBuilder(...) "
-            "until the default integration ships, or override the adapter."
-        )
+        from j1.providers.raganything._bridge import default_build_graph
+        return default_build_graph(request)
 
     return _delegate

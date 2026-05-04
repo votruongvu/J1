@@ -92,18 +92,14 @@ class RAGAnythingQueryProvider:
 
 
 def _build_default_query_callable() -> QueryCallable:
+    """Real default boundary — drives RAGAnything's `aquery`.
+
+    Calls `RAGAnything(...).aquery(question, mode="hybrid")` via
+    `asyncio.run`. Returns J1 canonical `QueryResult`.
+    """
+
     def _delegate(request: RAGAnythingQueryRequest) -> QueryResult:
-        try:
-            import raganything  # noqa: F401
-        except ImportError as exc:
-            raise ProviderUnavailable(
-                "RAGAnything retrieval requires the `raganything` package. "
-                "Install with: pip install raganything"
-            ) from exc
-        raise ProviderUnavailable(
-            "RAGAnything query() is not yet wired in this build. Provide a "
-            "custom `query_callable` to RAGAnythingQueryProvider(...) until "
-            "the default integration ships, or override the adapter."
-        )
+        from j1.providers.raganything._bridge import default_query
+        return default_query(request)
 
     return _delegate

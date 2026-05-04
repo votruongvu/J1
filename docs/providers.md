@@ -186,9 +186,45 @@ Implements all three Protocols:
 - `GraphBuilder` → [`RAGAnythingGraphBuilder`](../src/j1/providers/raganything/graph.py)
 - `QueryProvider` → [`RAGAnythingQueryProvider`](../src/j1/providers/raganything/retrieval.py)
 
-Two construction paths — pick the one that fits:
+Three construction paths — pick the one that fits:
 
-#### A) Env-driven processor hooks (recommended)
+#### A) Default bundled bridge (just install)
+
+```bash
+pip install j1[raganything]
+```
+
+That's it. With no processor hook configured, `from_default()` reaches
+the bundled bridge in
+[`j1.providers.raganything._bridge`](../src/j1/providers/raganything/_bridge.py),
+which:
+- Lazy-imports `raganything` (`ProviderUnavailable` with pip-install
+  hint when missing).
+- Constructs `RAGAnything(config=RAGAnythingConfig(...), llm_model_func,
+  vision_model_func, embedding_func)` with adapters that translate
+  J1's `TextLLMClient` / `VisionLLMClient` / `EmbeddingClient` into
+  the `(prompt, **kwargs) -> str` and `(texts) -> list[list[float]]`
+  shapes the vendor expects.
+- Drives `process_document_complete(file_path, output_dir,
+  parse_method="auto")` (compile / graph) or `aquery(question,
+  mode="hybrid")` (retrieval).
+- Walks the output / storage directory and emits one `ArtifactDraft`
+  per file produced. The compile path tags `.json` outputs as
+  `compiled.text.metadata`, `.md`/`.txt` as `compiled.text`, image
+  outputs as `compiled.text.image`. The graph path surfaces
+  `graph_chunk_entity_relation.json` and friends as `graph_json`.
+
+The async API is driven via `asyncio.run`; if the framework is itself
+running inside a live event loop (e.g. a custom worker), the bridge
+raises `ProviderUnavailable` with a hint to use path B or C.
+
+Required env: `J1_DATA_ROOT` (so the bridge can find the project's
+`raw/` source files).
+
+#### B) Env-driven processor hooks (override the default bridge)
+
+When the deployment has its own integration logic — different vendor
+version, custom LightRAG storage, an in-process async runner, …
 
 ```bash
 pip install j1[raganything]
@@ -216,7 +252,7 @@ import j1
 j1.register_trusted_prefix("mypkg")
 ```
 
-#### B) Constructor-injected callable (test / advanced)
+#### C) Constructor-injected callable (tests / full programmatic control)
 
 ```python
 from j1 import RAGAnythingCompiler, RAGAnythingSettings, LLMProviderRegistry
@@ -232,10 +268,8 @@ compiler = RAGAnythingCompiler(
 )
 ```
 
-If neither hook nor injected callable is supplied, calling
-`compile()` / `build()` / `query()` raises `ProviderUnavailable`
-with a message naming both options. The framework's own hermetic
-test suite uses path B; production deployments typically use path A.
+The framework's own hermetic test suite uses path C; most production
+deployments use path A; complex deployments override with path B.
 
 ### Graphify (optional alternative)
 
@@ -248,6 +282,61 @@ J1_DEFAULT_GRAPH_PROVIDER=graphify
 
 Selecting Graphify without enabling it raises a clear startup error
 naming both env vars.
+
+The default bridge (in
+[`j1.providers.graphify._bridge`](../src/j1/providers/graphify/_bridge.py))
+supports two integration modes; pick via `J1_GRAPHIFY_MODE`:
+
+#### Mode `cli` (default)
+
+Spawns the Graphify binary as a subprocess. The bridge writes a
+JSON input file (`{tenant_id, project_id, artifact_ids}`) to a
+temp dir under `J1_GRAPHIFY_WORKDIR` and invokes:
+
+```
+$J1_GRAPHIFY_COMMAND \
+    --input  <tmp>/input.json  \
+    --output <tmp>/output.json \
+    --workdir $J1_GRAPHIFY_WORKDIR
+```
+
+The output JSON is parsed into a single `graph_json` `ArtifactDraft`
+preserving the input artifact IDs as `source_artifact_ids`.
+
+```bash
+J1_GRAPHIFY_MODE=cli                       # default
+J1_GRAPHIFY_COMMAND=graphify               # or absolute path
+J1_GRAPHIFY_WORKDIR=./data/graphify
+```
+
+`ProviderUnavailable` is raised (with an actionable message) if the
+binary isn't on `$PATH`. Non-zero exits become `FAILED`
+`ArtifactProcessingResult`s carrying the captured stderr (truncated
+to 4 KB). No `shell=True`, no string interpolation into the command —
+argv is fully composed from validated inputs.
+
+#### Mode `python`
+
+Lazy-imports a `graphify` Python package and looks for either a
+top-level `build_graph` callable or a `Graphify` class with a
+`build` / `build_graph` method. The bridge passes
+`{tenant_id, project_id, artifact_ids, workdir}` as the payload and
+expects a dict back with `nodes` / `edges` keys.
+
+```bash
+J1_GRAPHIFY_MODE=python
+```
+
+`ProviderUnavailable` (with pip-install hint) when the package is
+missing; `FAILED` result when the vendor returns a non-dict.
+
+#### Mode override: processor hook
+
+Like RAGAnything, you can bypass the bridge entirely:
+
+```bash
+J1_GRAPHIFY_GRAPH_PROCESSOR=mypkg.processors:graphify_build
+```
 
 ---
 

@@ -123,32 +123,25 @@ class RAGAnythingCompiler:
 
 
 def _build_default_compile_callable() -> CompileCallable:
-    """Return a callable that delegates to the `raganything` library.
+    """Real default boundary to the `raganything` library.
 
-    Lazy-imports the vendor library on the first call. If the import
-    fails, raises `ProviderUnavailable` with the install hint — the
-    framework's own test suite never triggers this path.
+    Delegates to `j1.providers.raganything._bridge.default_compile`,
+    which lazy-imports the vendor package + drives its public
+    `RAGAnything.process_document_complete()` API + normalises the
+    output directory into J1 `ArtifactDraft`s.
+
+    Raises `ProviderUnavailable` only when:
+      * the `raganything` package isn't installed (actionable: pip install)
+      * the vendor API shape doesn't match (actionable: names the
+        missing symbol + points at the J1_RAGANYTHING_*_PROCESSOR
+        override seam)
+      * the document's source file isn't found in the workspace
+      * a runtime constraint prevents the call (e.g. running event
+        loop conflict)
     """
 
     def _delegate(request: RAGAnythingCompileRequest) -> ArtifactProcessingResult:
-        try:
-            import raganything  # noqa: F401
-        except ImportError as exc:
-            raise ProviderUnavailable(
-                "RAGAnything compiler requires the `raganything` package. "
-                "Install with: pip install raganything"
-            ) from exc
-
-        # The integration glue between J1 canonical inputs and
-        # RAGAnything's call surface lives here. Today this is a
-        # documented stub — the framework provides the seam, the
-        # deployment fills in the vendor-specific orchestration.
-        # See docs/architecture.md § "RAGAnything integration" and
-        # docs/troubleshooting.md.
-        raise ProviderUnavailable(
-            "RAGAnything compile() is not yet wired in this build. Provide "
-            "a custom `compile_callable` to RAGAnythingCompiler(...) until "
-            "the default integration ships, or override the adapter."
-        )
+        from j1.providers.raganything._bridge import default_compile
+        return default_compile(request)
 
     return _delegate
