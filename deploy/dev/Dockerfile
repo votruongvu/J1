@@ -9,9 +9,12 @@ FROM python:3.13-slim
 
 # Build deps for any C extensions in dependencies (PyYAML, sqlite3 is
 # already in the stdlib build for python:3.13-slim with FTS5).
+# libxcb1 is required by MinerU's hybrid-auto-engine (Qt/OpenCV dep);
+# without it parse_method="auto" raises ImportError: libxcb.so.1.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
+        libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

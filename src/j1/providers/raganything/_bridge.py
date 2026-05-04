@@ -15,7 +15,7 @@ Targeted vendor surface (HKUDS/RAGAnything 1.x):
       vision_model_func=<callable(prompt, image_data, **kw) -> str>,
       embedding_func=<callable(texts) -> list[list[float]]>,
   )
-  await rag.process_document_complete(file_path=..., output_dir=..., parse_method="auto")
+  await rag.process_document_complete(file_path=..., output_dir=..., parse_method=settings.parse_method)
   result = await rag.aquery("question", mode="hybrid")
 
 Defensiveness:
@@ -74,7 +74,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
         asyncio.run(rag.process_document_complete(
             file_path=str(source_path),
             output_dir=str(output_dir),
-            parse_method="auto",
+            parse_method=request.settings.parse_method,
         ))
     except RuntimeError as exc:
         # "asyncio.run() cannot be called from a running event loop"

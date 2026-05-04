@@ -36,6 +36,13 @@ dev-server = ["uvicorn>=0.27"]
 # `langchain-*` extras pull a single concrete LangChain vendor package;
 # the `langchain` extra is just `langchain-core` (the runtime base).
 # Pick whichever vendor packages your deployment actually instantiates.
+# Heavy: pulls torch + transformers + mineru + opencv (~700MB).
+# MinerU's default parse_method="auto" (hybrid-auto-engine) additionally
+# requires the `libxcb1` system library (OpenCV/Qt dep). Install it with:
+#   apt-get install -y libxcb1          # Debian/Ubuntu/Docker
+#   dnf install -y libxcb               # Fedora/RHEL
+# Alternatively, set J1_RAGANYTHING_PARSE_METHOD=vlm-http-client to use
+# the remote VLM path, which needs no local torch or libxcb.
 raganything = ["raganything"]
 
 # Graphify is published on PyPI as `graphifyy` (double-y). The
@@ -59,7 +66,10 @@ langchain-ollama = ["langchain-core>=0.2", "langchain-ollama>=0.1"]
 # between providers via env config (`J1_DEFAULT_COMPILER`,
 # `J1_TEXT_LLM_PROVIDER=langchain`, etc.) at runtime without
 # rebuilding. Heavy: raganything alone pulls torch + transformers +
-# mineru + opencv (~700MB on disk); graphify pulls 20+ tree-sitter
+# mineru + opencv (~700MB on disk); its hybrid-auto-engine also
+# requires the `libxcb1` system library — set
+# J1_RAGANYTHING_PARSE_METHOD=vlm-http-client if you only have VLM
+# API access and no local GPU. graphify pulls 20+ tree-sitter
 # language grammars. For lean deployments install only the specific
 # vendors you actually use.
 all-providers = [
