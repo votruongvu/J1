@@ -282,3 +282,105 @@ def test_bootstrap_from_env_returns_result(monkeypatch):
     # error, asserting the entrypoint actually executes.
     with pytest.raises(ConfigError, match="text"):
         bootstrap_from_env()
+
+
+# ---- Mock-selection (zero-credentials smoke path) ------------------
+
+
+def test_bootstrap_mock_selection_registers_all_three_without_llm():
+    """`J1_DEFAULT_*=mock` everywhere should boot with no LLM credentials.
+
+    This is the configuration the bundled `.env.example` ships with —
+    it lets the dev Docker stack run a complete workflow end-to-end
+    without forcing the developer to provision an LLM endpoint.
+    """
+    env = {
+        "J1_DEFAULT_COMPILER": "mock",
+        "J1_DEFAULT_GRAPH_PROVIDER": "mock",
+        "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
+        "J1_ENRICH_ENABLED": "false",
+    }
+    # No LLM registry needed — bootstrap with an empty registry.
+    result = Bootstrap(env=env, llm_registry=LLMProviderRegistry()).build()
+
+    assert result.selection.compiler == "mock"
+    assert result.selection.graph == "mock"
+    assert result.selection.retrieval == "mock"
+    assert "mock" in result.compilers
+    assert "mock" in result.graph_builders
+    assert "mock" in result.retrieval_providers
+
+
+def test_bootstrap_mock_compiler_carries_correct_kind():
+    env = {
+        "J1_DEFAULT_COMPILER": "mock",
+        "J1_DEFAULT_GRAPH_PROVIDER": "mock",
+        "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
+        "J1_ENRICH_ENABLED": "false",
+    }
+    result = Bootstrap(env=env, llm_registry=LLMProviderRegistry()).build()
+    assert result.compilers["mock"].kind == "mock"
+    assert result.graph_builders["mock"].kind == "mock"
+    assert result.retrieval_providers["mock"].kind == "mock"
+
+
+def test_bootstrap_mock_compiler_runs_against_real_processing_service(tmp_path):
+    """Sanity: the bootstrapped mock compiler can actually execute.
+
+    Proves the dev-stack default produces a real successful workflow
+    end-to-end (not just "starts up without error").
+    """
+    from j1.processing.results import ResultStatus
+    from j1.projects.context import ProjectContext
+
+    env = {
+        "J1_DEFAULT_COMPILER": "mock",
+        "J1_DEFAULT_GRAPH_PROVIDER": "mock",
+        "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
+        "J1_ENRICH_ENABLED": "false",
+    }
+    result = Bootstrap(env=env, llm_registry=LLMProviderRegistry()).build()
+    compiler = result.compilers["mock"]
+
+    ctx = ProjectContext(tenant_id="acme", project_id="alpha")
+    out = compiler.compile(ctx, document_id="doc-1")
+    assert out.status is ResultStatus.SUCCEEDED
+    assert len(out.drafts) == 1
+    assert out.drafts[0].kind == "compiled.text"
+
+
+def test_bootstrap_mixed_selection_mock_compiler_raganything_graph():
+    """Selections are independent — mocking the compiler while keeping
+    a real graph provider must work (and the real provider's LLM
+    requirements still apply)."""
+    env = {
+        "J1_DEFAULT_COMPILER": "mock",
+        "J1_DEFAULT_GRAPH_PROVIDER": "raganything",
+        "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
+        "J1_ENRICH_ENABLED": "false",
+    }
+    # raganything graph still demands text+embedding LLM.
+    result = Bootstrap(env=env, llm_registry=_full_registry()).build()
+    assert "mock" in result.compilers
+    assert "raganything" in result.graph_builders
+    assert "mock" in result.retrieval_providers
+
+
+def test_bootstrap_mock_compiler_alone_does_not_satisfy_raganything_retrieval():
+    """`mock` doesn't auto-fill other roles — selecting raganything for
+    a different stage still needs LLM credentials."""
+    env = {
+        "J1_DEFAULT_COMPILER": "mock",
+        "J1_DEFAULT_GRAPH_PROVIDER": "mock",
+        "J1_DEFAULT_RETRIEVAL_PROVIDER": "raganything",
+        "J1_ENRICH_ENABLED": "false",
+    }
+    with pytest.raises(ConfigError, match="text"):
+        Bootstrap(env=env, llm_registry=LLMProviderRegistry()).build()
+
+
+def test_bootstrap_unknown_compiler_error_lists_mock_as_option():
+    """Error message helps operators discover the smoke-mode option."""
+    env = {"J1_DEFAULT_COMPILER": "totally-fake", "J1_ENRICH_ENABLED": "false"}
+    with pytest.raises(ConfigError, match="mock"):
+        Bootstrap(env=env, llm_registry=_full_registry()).build()

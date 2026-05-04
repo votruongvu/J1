@@ -63,6 +63,18 @@ from j1.providers.raganything import (
     load_raganything_settings,
 )
 
+# The composition root is the one place in core allowed to import the
+# extension layer's reference (mock) adapters — so deployments can
+# select `J1_DEFAULT_*=mock` to bring up a deterministic smoke pipeline
+# without external dependencies. The static guard
+# `tests/extension/test_guards.py::test_core_does_not_import_extension`
+# explicitly allowlists this single import path.
+from j1.extension.mocks import (
+    MockCompilerAdapter,
+    MockGraphAdapter,
+    MockRetrievalAdapter,
+)
+
 
 # ---- Selection + enrichment env vars ---------------------------------
 
@@ -80,6 +92,12 @@ ENV_ENRICH_SCANNED_PAGES = "J1_ENRICH_SCANNED_PAGES"
 DEFAULT_COMPILER = "raganything"
 DEFAULT_GRAPH = "raganything"
 DEFAULT_RETRIEVAL = "raganything"
+
+# Reference / smoke selection — wires the bundled deterministic mock
+# adapters under `kind="mock"`. No vendor dependencies; no LLM
+# credentials required; produces deterministic output suitable for
+# end-to-end smoke tests + the bundled dev Docker stack.
+MOCK_NAME = "mock"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -213,14 +231,18 @@ class Bootstrap:
         graph_builders: dict[str, object] = {}
         retrieval_providers: dict[str, object] = {}
 
-        # RAGAnything is the only built-in compiler / retrieval today.
+        # ---- Compiler selection --------------------------------------
         if selection.compiler == RAGANYTHING_NAME:
             _validate_raganything_llm(llm_registry, "compiler")
             compilers[RAGANYTHING_NAME] = RAGAnythingCompiler.from_default(
                 llm_registry=llm_registry,
                 settings=raganything_settings,
             )
+        elif selection.compiler == MOCK_NAME:
+            # No LLM validation: the mock adapter is self-contained.
+            compilers[MOCK_NAME] = MockCompilerAdapter()
 
+        # ---- Graph-provider selection --------------------------------
         if selection.graph == RAGANYTHING_NAME:
             _validate_raganything_llm(llm_registry, "graph builder")
             graph_builders[RAGANYTHING_NAME] = RAGAnythingGraphBuilder.from_default(
@@ -237,30 +259,42 @@ class Bootstrap:
             graph_builders[GRAPHIFY_NAME] = GraphifyGraphBuilder.from_default(
                 settings=graphify_settings,
             )
+        elif selection.graph == MOCK_NAME:
+            graph_builders[MOCK_NAME] = MockGraphAdapter()
         else:
             raise ConfigError(
                 f"{ENV_DEFAULT_GRAPH}={selection.graph!r} is not a registered "
                 f"graph provider. Built-in providers: raganything (default), "
-                f"graphify (optional via J1_GRAPHIFY_ENABLED=true)."
+                f"graphify (optional via J1_GRAPHIFY_ENABLED=true), "
+                f"mock (smoke / dev)."
             )
 
+        # ---- Retrieval-provider selection ----------------------------
         if selection.retrieval == RAGANYTHING_NAME:
             _validate_raganything_llm(llm_registry, "retrieval")
             retrieval_providers[RAGANYTHING_NAME] = RAGAnythingQueryProvider.from_default(
                 llm_registry=llm_registry,
                 settings=raganything_settings,
             )
+        elif selection.retrieval == MOCK_NAME:
+            # Empty corpus — the mock returns no evidence rather than
+            # fabricating answers. Deployments wanting a populated
+            # smoke corpus can register their own MockRetrievalAdapter
+            # outside the bootstrap.
+            retrieval_providers[MOCK_NAME] = MockRetrievalAdapter(corpus=[])
 
-        # Selected provider must end up in its registry.
+        # ---- Selection must end up in its registry -------------------
         if selection.compiler not in compilers:
             raise ConfigError(
                 f"{ENV_DEFAULT_COMPILER}={selection.compiler!r} is not a registered "
-                f"compiler provider. Built-in providers: raganything (default)."
+                f"compiler provider. Built-in providers: raganything (default), "
+                f"mock (smoke / dev)."
             )
         if selection.retrieval not in retrieval_providers:
             raise ConfigError(
                 f"{ENV_DEFAULT_RETRIEVAL}={selection.retrieval!r} is not a registered "
-                f"retrieval provider. Built-in providers: raganything (default)."
+                f"retrieval provider. Built-in providers: raganything (default), "
+                f"mock (smoke / dev)."
             )
 
         # Visual-enrichment validation is independent of which provider

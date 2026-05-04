@@ -4,16 +4,16 @@ Run via:
 
     python -m deploy.dev.worker
 
-The container's CMD wraps this. Registers the framework's two
-shipped workflows (`ProjectProcessingWorkflow`,
-`DocumentProcessingWorkflow`) and every activity class whose
-constructor doesn't need a vendor-specific processor.
+The container's CMD wraps this. Calls `bootstrap_from_env()` so the
+selection env vars (`J1_DEFAULT_COMPILER`, `J1_DEFAULT_GRAPH_PROVIDER`,
+`J1_DEFAULT_RETRIEVAL_PROVIDER`) actually take effect — the dev
+stack defaults to `mock` for all three, which wires the bundled
+deterministic mock adapters and lets a brand-new `docker compose up`
+run a complete workflow end-to-end with no vendor credentials.
 
-Pluggable processor maps (compilers, enrichers, graph builders) are
-intentionally empty — the dev stack confirms the worker loop runs and
-workflows are dispatched. Real processor wiring is deployment-
-specific (model providers, external compiler binaries, etc.) and
-goes in a separate worker entrypoint forked from this file.
+Switch any selection to `raganything` (and provide
+`J1_TEXT_LLM_*` / `J1_EMBEDDING_*` credentials) to drive real
+processing through the same entrypoint.
 """
 
 import asyncio
@@ -24,7 +24,12 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from deploy.dev._wiring import build_settings, build_workspace, build_worker_spec
-from j1 import build_client, load_temporal_settings, run_worker
+from j1 import (
+    bootstrap_from_env,
+    build_client,
+    load_temporal_settings,
+    run_worker,
+)
 
 _log = logging.getLogger("j1.dev.worker")
 
@@ -34,13 +39,27 @@ async def _run() -> None:
     workspace = build_workspace(settings)
     temporal_settings = load_temporal_settings()
 
+    # Compose the env-declared providers. With the bundled
+    # `.env.example` this produces a registry of mock adapters
+    # so the entire pipeline runs end-to-end out of the box.
+    boot = bootstrap_from_env()
+    _log.info(
+        "bootstrap selection: compiler=%s graph=%s retrieval=%s",
+        boot.selection.compiler, boot.selection.graph, boot.selection.retrieval,
+    )
+
     _log.info(
         "connecting to Temporal target=%s namespace=%s task_queue=%s",
         temporal_settings.target, temporal_settings.namespace,
         temporal_settings.task_queue,
     )
     client = await build_client(temporal_settings)
-    spec = build_worker_spec(workspace)
+    spec = build_worker_spec(
+        workspace,
+        compilers=boot.compilers,
+        graph_builders=boot.graph_builders,
+        query_providers=boot.retrieval_providers,
+    )
 
     # Every J1 activity is synchronous; the Temporal SDK requires
     # a ThreadPoolExecutor to dispatch sync activities. Size it to

@@ -187,9 +187,9 @@ Loader: [`src/j1/compose/bootstrap.py`](../../src/j1/compose/bootstrap.py)
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_DEFAULT_COMPILER` | No | `raganything` | Bootstrap | Name of the registered compiler used by default. | Unknown values raise `ConfigError` listing the registered providers. |
-| `J1_DEFAULT_GRAPH_PROVIDER` | No | `raganything` | Bootstrap | Default graph builder. | Selecting `graphify` requires `J1_GRAPHIFY_ENABLED=true`. |
-| `J1_DEFAULT_RETRIEVAL_PROVIDER` | No | `raganything` | Bootstrap | Default retrieval / query provider. |  |
+| `J1_DEFAULT_COMPILER` | No | `raganything` | Bootstrap | Name of the registered compiler used by default. Built-in values: `raganything`, `mock`. | The bundled `.env.example` ships with `mock` so the dev stack runs end-to-end without LLM credentials; flip to `raganything` once an LLM endpoint is configured. Unknown values raise `ConfigError` listing the registered providers. |
+| `J1_DEFAULT_GRAPH_PROVIDER` | No | `raganything` | Bootstrap | Default graph builder. Built-in values: `raganything`, `graphify`, `mock`. | Selecting `graphify` requires `J1_GRAPHIFY_ENABLED=true`. The `.env.example` ships with `mock`. |
+| `J1_DEFAULT_RETRIEVAL_PROVIDER` | No | `raganything` | Bootstrap | Default retrieval / query provider. Built-in values: `raganything`, `mock`. | The `mock` retriever has an empty corpus — it returns `RetrievalResult(evidences=[])` rather than fabricating answers. |
 
 ---
 

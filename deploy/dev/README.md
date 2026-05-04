@@ -130,7 +130,7 @@ curl -X POST http://localhost:8000/ingestion-jobs \
   -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
   -H "Content-Type: application/json" \
   -d '{
-    "compilerKind": "stub.compiler",
+    "compilerKind": "mock",
     "actor": "local-dev",
     "correlationId": "demo-1"
   }'
@@ -156,16 +156,30 @@ Response:
      -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha"
    ```
 
-The dev stack registers **no** real `KnowledgeCompiler` /
-`EnrichmentProcessor` implementations — the workflow may complete
-with `status=failed` because `stub.compiler` isn't a registered
-processor kind. That's expected for the dev stack: it confirms the
-plumbing (API → Temporal → worker → activities) end-to-end without
-forcing a vendor-specific processor on the developer.
+With the bundled `.env.example` defaults, the dev worker runs
+`bootstrap_from_env()` and wires the framework's bundled mock
+adapters under `kind="mock"` for compiler / graph / retrieval. The
+`POST /ingestion-jobs` call above produces a deterministic
+end-to-end success: API → Temporal → worker → activities → mock
+compiler → mock graph builder → SQLite indexer → workspace
+artifacts. Inspect the resulting `compiled.text` artifact with
+`GET /artifacts/{artifactId}`.
 
-To run real processing, fork [`worker.py`](worker.py) and pass
-non-empty `compilers=` / `enrichers=` / `graph_builders=` maps to
-[`build_worker_spec`](_wiring.py).
+To run real processing instead of mocks:
+
+1. Install vendor extras: `pip install -e ".[raganything]"`.
+2. In `.env`, set `J1_DEFAULT_COMPILER=raganything` (and the same
+   for `_GRAPH_PROVIDER` / `_RETRIEVAL_PROVIDER`).
+3. Configure LLM credentials: `J1_TEXT_LLM_*` and `J1_EMBEDDING_*`
+   (and `J1_VISION_LLM_*` if visual enrichment is on).
+4. Restart the stack.
+
+The same `worker.py` / `bootstrap_from_env()` path serves both
+modes — no fork required for the common case. For deeply custom
+deployments (custom enricher maps, hand-injected processor maps,
+non-mock + non-RAGAnything providers), forking
+[`worker.py`](worker.py) and passing your own maps to
+[`build_worker_spec`](_wiring.py) is still the recommended path.
 
 ---
 

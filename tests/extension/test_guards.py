@@ -115,19 +115,36 @@ def test_core_does_not_import_extension():
 
     Any core module importing `j1.extension.*` would create a
     coupling that defeats the whole point of the extension layer.
+
+    One **explicit, single-purpose** exception: the composition root
+    (`j1.compose.bootstrap`) is allowed to import the bundled mock
+    adapters from `j1.extension.mocks` so deployments can select
+    `J1_DEFAULT_*=mock` to bring up a deterministic smoke pipeline
+    with zero vendor dependencies. The composition root is the one
+    place in core where wiring extension-layer reference adapters as
+    runnable defaults is legitimate. No other core module may do
+    this; no other path under `j1.extension.*` may be imported from
+    core.
     """
-    offenders: list[tuple[Path, str]] = []
+    # (importing module, imported module) pairs that the rule allows.
+    ALLOWED = {
+        ("compose/bootstrap.py", "j1.extension.mocks"),
+    }
+    offenders: list[tuple[str, str]] = []
     for path in _python_files(SRC_ROOT):
-        # Skip the extension layer itself + the public top-level
-        # `__init__` (which is allowed to expose a small extension
-        # surface IF maintainers ever decide to re-export from it).
+        # Skip the extension layer itself.
         if "extension" in path.parts:
             continue
+        rel = str(path.relative_to(SRC_ROOT))
         for module in _imports(path):
             if module == "j1.extension" or module.startswith("j1.extension."):
-                offenders.append((path.relative_to(SRC_ROOT), module))
+                if (rel, module) in ALLOWED:
+                    continue
+                offenders.append((rel, module))
     assert not offenders, (
-        f"Core modules import the extension layer (forbidden): {offenders!r}"
+        f"Core modules import the extension layer (forbidden): {offenders!r}. "
+        f"If you have a legitimate composition-root use case, document it "
+        f"and add the (path, module) pair to ALLOWED in this test."
     )
 
 
