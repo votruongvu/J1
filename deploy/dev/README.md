@@ -53,6 +53,23 @@ docker compose -f deploy/dev/docker-compose.yml up --build
 The first run takes a couple of minutes (image build + Temporal
 schema init). Subsequent runs are fast.
 
+> **First build downloads ~2.4 GB of MinerU model weights.** RAGAnything's
+> default `parse_method=auto` drives MinerU's hybrid-auto VLM
+> (`opendatalab/MinerU2.5-Pro-2604-1.2B`), and the Dockerfile pre-caches
+> it at build time so the first document compile doesn't stall for
+> ~50 s waiting on a HuggingFace download. Override via:
+>
+> ```bash
+> # all (≈5 GB): also include pipeline sub-models — fully air-gapped
+> docker compose -f deploy/dev/docker-compose.yml build \
+>   --build-arg J1_PRECACHE_MINERU_MODELS=all worker
+>
+> # none (~2.4 GB lighter image): skip precache. First compile pays
+> # the download cost; useful for CI images or remote-VLM deployments.
+> docker compose -f deploy/dev/docker-compose.yml build \
+>   --build-arg J1_PRECACHE_MINERU_MODELS=none worker
+> ```
+
 Services that come up:
 
 | Service        | URL / Port                            | What it is |

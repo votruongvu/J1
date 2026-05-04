@@ -133,6 +133,66 @@ COPY src/ /app/src/
 RUN pip install --upgrade pip \
     && pip install -e ".[dev,dev-server,all-providers]"
 
+# ---- Pre-cache MinerU model weights ---------------------------------
+# RAGAnything's `parse_method=auto` (the default) drives MinerU's
+# hybrid-auto backend, which on first call downloads:
+#   * VLM       ≈ 2.4 GB, the `opendatalab/MinerU2.5-Pro-2604-1.2B`
+#                 1.2B-parameter vision-language model (13 files
+#                 fetched from HuggingFace).
+#   * pipeline  ≈ 3 GB, eight sub-model snapshots from
+#                 `opendatalab/PDF-Extract-Kit-1.0` (layout, MFR,
+#                 OCR, table classification / recognition,
+#                 orientation classification, formula recognition).
+#
+# Without precaching, the FIRST document a freshly-started worker
+# compiles pays the full download + load latency — typically ~50 s
+# downloading the VLM + ~50 s loading it + a few seconds per
+# pipeline sub-model. Subsequent docs reuse the cache. We absorb
+# that cost at build time so first-doc latency is predictable.
+#
+# `mineru-models-download` is mineru's own CLI — it pulls the
+# weights via `huggingface_hub.snapshot_download` (honouring the
+# same env vars the runtime uses) AND writes `~/mineru.json` so the
+# runtime CLI knows where to find them.
+#
+# Build arg `J1_PRECACHE_MINERU_MODELS` controls scope:
+#   vlm   (default) — VLM only. ~2.4 GB image growth. Eliminates
+#                     the dominant stall (the 50 s VLM download).
+#                     Pipeline sub-models still download lazily on
+#                     first PDF, but each is small (50–300 MB) and
+#                     loads in seconds.
+#   all             — VLM + every pipeline sub-model. ~5 GB image
+#                     growth. Zero model downloads at runtime.
+#                     Pick this for fully air-gapped deployments
+#                     or when first-doc latency must be minimal.
+#   none            — Skip precaching entirely. Image stays slim
+#                     (~1 GB lighter); first-doc compile pays full
+#                     download cost. Pick this for CI images that
+#                     never compile, or for `parse_method=
+#                     vlm-http-client` / `none` deployments that
+#                     hit a remote VLM endpoint.
+#
+# Override at build time:
+#   docker compose build --build-arg J1_PRECACHE_MINERU_MODELS=all worker
+#
+# Cache location: `HF_HOME` is pinned so both the build-time
+# download and the runtime lookup land in the same directory.
+ARG J1_PRECACHE_MINERU_MODELS=vlm
+ENV HF_HOME=/opt/huggingface
+RUN case "$J1_PRECACHE_MINERU_MODELS" in \
+        none) \
+            echo "[J1] skipping MinerU model precache (J1_PRECACHE_MINERU_MODELS=none)" ;; \
+        vlm) \
+            echo "[J1] precaching MinerU VLM model (~2.4 GB)..." \
+            && mineru-models-download -s huggingface -m vlm ;; \
+        all) \
+            echo "[J1] precaching ALL MinerU models (VLM + pipeline, ~5 GB)..." \
+            && mineru-models-download -s huggingface -m all ;; \
+        *) \
+            echo "[J1] ERROR: J1_PRECACHE_MINERU_MODELS must be one of: none|vlm|all (got: $J1_PRECACHE_MINERU_MODELS)" >&2 \
+            && exit 1 ;; \
+    esac
+
 # Bring the dev entrypoint scripts in.
 COPY deploy/ /app/deploy/
 
