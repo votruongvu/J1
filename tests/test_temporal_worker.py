@@ -102,3 +102,79 @@ def test_build_worker_omits_optional_kwargs_by_default():
         # Optional fields are absent — let the SDK use its defaults.
         assert "activity_executor" not in kwargs
         assert "max_concurrent_activities" not in kwargs
+
+
+# ---- Workflow-runner / sandbox -------------------------------------
+
+
+def test_build_worker_supplies_default_workflow_runner():
+    """The sandbox runner is always wired so heavy transitive deps
+    (FastAPI/anyio/sniffio/openai/raganything/...) don't crash
+    workflow validation. See `default_workflow_runner` for the
+    passthrough list."""
+    from j1.orchestration.temporal.worker import (
+        default_workflow_runner,
+    )
+    from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
+
+    spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
+    settings = TemporalSettings()
+
+    with patch("j1.orchestration.temporal.worker.Worker") as worker_cls:
+        build_worker(client=object(), settings=settings, spec=spec)
+        runner = worker_cls.call_args.kwargs["workflow_runner"]
+        assert isinstance(runner, SandboxedWorkflowRunner)
+
+
+def test_build_worker_accepts_custom_workflow_runner():
+    """Deployments can override the runner — e.g. UnsandboxedWorkflowRunner
+    when they explicitly opt out of sandboxing."""
+    from temporalio.worker import UnsandboxedWorkflowRunner
+
+    spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
+    settings = TemporalSettings()
+    custom = UnsandboxedWorkflowRunner()
+
+    with patch("j1.orchestration.temporal.worker.Worker") as worker_cls:
+        build_worker(
+            client=object(), settings=settings, spec=spec,
+            workflow_runner=custom,
+        )
+        assert worker_cls.call_args.kwargs["workflow_runner"] is custom
+
+
+def test_default_runner_validates_shipped_workflows():
+    """Regression: J1's bundled workflows must pass sandbox validation
+    against the default runner.
+
+    The failure mode this guards against: when `[all-providers]` is
+    installed, `j1/__init__.py` transitively imports FastAPI/anyio/
+    sniffio/openai/raganything/etc. The sandbox refuses to proxy
+    `sniffio._impl._ThreadLocal(threading.local)` and other low-level
+    tricks at module load. The `default_workflow_runner` passthroughs
+    those modules so the bundled workflows validate cleanly. If this
+    test ever fails, either:
+      * a new transitive dep needs adding to
+        `_DEFAULT_PASSTHROUGH_MODULES` in `worker.py`, or
+      * the workflow itself imports something it shouldn't.
+    """
+    import asyncio
+
+    from j1 import (
+        DocumentProcessingWorkflow,
+        ProjectProcessingWorkflow,
+    )
+    from j1.orchestration.temporal.worker import default_workflow_runner
+    from temporalio.workflow import _Definition
+
+    runner = default_workflow_runner()
+
+    async def go() -> None:
+        for wf in (ProjectProcessingWorkflow, DocumentProcessingWorkflow):
+            defn = _Definition.must_from_class(wf)
+            # `prepare_workflow` is the validator that fires inside
+            # Temporal's `_WorkflowWorker.__init__`. If it raises,
+            # the worker can't start.
+            runner.prepare_workflow(defn)
+
+    asyncio.run(go())
