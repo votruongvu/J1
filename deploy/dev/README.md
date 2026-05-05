@@ -96,6 +96,7 @@ Services that come up:
 | `worker`       | (no port — connects to Temporal)      | J1 Temporal worker (`python -m deploy.dev.worker`) |
 | `frontend`     | http://localhost:8081                 | J1 Execution Console SPA (nginx + Vite-built bundle, proxies `/api/*` to the api service) |
 | `temporal`     | localhost:7233 (gRPC)                 | Temporal server (`temporalio/auto-setup`) |
+| `temporal-init`| (one-shot — exits after first run)    | Registers `J1IngestStage` / `J1IngestMode` search attributes; `api` and `worker` block on this completing |
 | `temporal-ui`  | http://localhost:8080                 | Temporal web UI |
 | `postgresql`   | (no exposed port; Temporal-internal)  | Temporal's storage — **not** used by J1 |
 
@@ -137,6 +138,31 @@ The framework is library-only and the local stack mirrors that minimalism. These
 If a deployment needs any of these, add them in a separate
 `deploy/<env>/docker-compose.yml` (e.g. `deploy/staging/`) — keeping
 the dev stack minimal is by design.
+
+### Temporal search attributes (automated)
+
+The workflow upserts two custom search attributes — `J1IngestStage`
+and `J1IngestMode` — so operators can filter the Temporal UI's
+workflow list by stage / mode. Temporal **rejects upserts for
+attributes that aren't registered with the cluster**, so the dev
+stack ships a one-shot `temporal-init` service that registers both
+on first boot. `api` and `worker` use `depends_on: condition:
+service_completed_successfully` against `temporal-init`, so the
+order is `temporal → temporal-init → api / worker`. This means
+`J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED` defaults to `true` in the
+dev stack — no manual `tctl` step required.
+
+If you point the framework at a Temporal cluster you manage yourself
+(staging / prod), register the attributes there first:
+
+```bash
+temporal operator search-attribute create \
+  --namespace default --name J1IngestStage --type Keyword
+temporal operator search-attribute create \
+  --namespace default --name J1IngestMode --type Keyword
+```
+
+…or leave `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=false` until you do.
 
 ---
 
