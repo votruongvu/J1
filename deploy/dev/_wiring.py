@@ -59,6 +59,12 @@ from j1 import (
     WorkspaceResolver,
     load_security_settings,
 )
+from j1.runs import (
+    AuditProgressReporter,
+    IngestionRunStore,
+    JsonlIngestionRunStore,
+    ProgressReporter,
+)
 
 DEFAULT_PROFILE_ID = "default"
 
@@ -130,6 +136,33 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
         project_admin=ProjectAdminService(workspace),
         cost_summary=CostSummaryService(CostAggregator(workspace)),
         review=ReviewService(reviews, review_activities),
+    )
+
+
+def build_run_progress_surface(
+    workspace: WorkspaceResolver,
+) -> tuple[IngestionRunStore, ProgressReporter]:
+    """Build the dependencies the user-facing `/ingestion-runs/*` surface
+    needs. Returns the run store + an audit-backed progress reporter.
+
+    Both are lightweight (JSONL files under the workspace's audit
+    area), reused by `api.py` to power:
+
+      * `POST /ingestion-runs`                      — run record + progress events
+      * `GET  /ingestion-runs`                      — list view
+      * `GET  /ingestion-runs/{id}`                 — status snapshot
+      * `GET  /ingestion-runs/{id}/plan`            — execution plan
+      * `POST /ingestion-runs/{id}/confirm`         — plan.confirmed event
+      * `GET  /ingestion-runs/{id}/events[/stream]` — historical + live events
+
+    Without these wired, the REST adapter degrades each `/ingestion-runs/*`
+    handler to 503 with `ingestion-run store not configured`. The dev
+    stack always wires them — production deployments should too unless
+    they intentionally don't expose the surface."""
+    audit_recorder = DefaultAuditRecorder(JsonlAuditSink(workspace))
+    return (
+        JsonlIngestionRunStore(workspace),
+        AuditProgressReporter(audit_recorder),
     )
 
 

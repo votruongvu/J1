@@ -22,6 +22,7 @@ import uvicorn
 
 from deploy.dev._wiring import (
     build_application_facade,
+    build_run_progress_surface,
     build_settings,
     build_workspace,
     maybe_build_authenticator,
@@ -49,6 +50,11 @@ def _build_app():
     settings = build_settings()
     workspace = build_workspace(settings)
     facade = build_application_facade(workspace)
+    # The user-facing `/ingestion-runs/*` surface needs an
+    # `IngestionRunStore` + `ProgressReporter`; without them every
+    # endpoint there 503s with "ingestion-run store not configured".
+    # Both are JSONL-backed under the workspace's audit area.
+    run_store, progress_reporter = build_run_progress_surface(workspace)
     temporal_settings = load_temporal_settings()
 
     # The Temporal client is constructed once inside the FastAPI
@@ -140,6 +146,18 @@ def _build_app():
         event_bus=ApplicationEventBus(),
         job_starter=_start_project_workflow,
         processing_capabilities=capabilities,
+        # User-facing ingestion-runs surface — without these the
+        # frontend's All Runs page, run detail, and SSE timeline all
+        # 503. Wiring them is cheap (JSONL files under the workspace
+        # audit area).
+        ingestion_run_store=run_store,
+        progress_reporter=progress_reporter,
+        # `confirm_handler` intentionally left None — no workflow in
+        # the dev stack listens for the confirm signal yet, so the
+        # endpoint just flips status and emits `plan.confirmed`.
+        # When a workflow with a `confirm_run` signal ships, plug a
+        # handler here that calls `client.get_workflow_handle(...).
+        # signal(...)`.
         version=os.environ.get("J1_API_VERSION", "0.0.1-dev"),
     )
 
