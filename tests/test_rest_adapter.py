@@ -1056,3 +1056,52 @@ def test_answer_response_includes_graph_paths_field(
     # Field must always be present (even if empty) so consumers can rely on it.
     assert "graphPaths" in data
     assert isinstance(data["graphPaths"], list)
+
+
+# ---- OpenAPI / Swagger UI surface ---------------------------------
+
+
+def test_openapi_documents_x_tenant_id_header_per_endpoint(client):
+    """`X-Tenant-Id` was previously read from `request.headers` only,
+    so Swagger UI had no input field for it and operators couldn't
+    test the API. Header-typed dependency parameters now expose it
+    on every operation that uses `get_ctx` / `get_tenant`."""
+    spec = client.get("/openapi.json").json()
+    # Pick an endpoint that uses get_ctx.
+    op = spec["paths"]["/documents"]["post"]
+    header_params = [
+        p for p in op.get("parameters", [])
+        if p.get("in") == "header" and p.get("name") == "X-Tenant-Id"
+    ]
+    assert header_params, (
+        f"X-Tenant-Id header not advertised on POST /documents. "
+        f"parameters={op.get('parameters')}"
+    )
+    # And it carries a description so Swagger renders helpful tooltip.
+    assert header_params[0].get("description"), (
+        "X-Tenant-Id header parameter must have a description"
+    )
+
+
+def test_openapi_documents_x_project_id_header_per_endpoint(client):
+    """Same regression as X-Tenant-Id, but for the project header."""
+    spec = client.get("/openapi.json").json()
+    op = spec["paths"]["/documents"]["post"]
+    header_params = [
+        p for p in op.get("parameters", [])
+        if p.get("in") == "header" and p.get("name") == "X-Project-Id"
+    ]
+    assert header_params, "X-Project-Id header must be advertised"
+
+
+def test_openapi_does_not_advertise_security_when_auth_disabled(client):
+    """Auth disabled (default fixture) → no Authorize button in
+    Swagger. Avoids confusing operators with a credential prompt
+    they don't need."""
+    spec = client.get("/openapi.json").json()
+    components = spec.get("components", {})
+    # Either no securitySchemes at all, or empty.
+    assert not components.get("securitySchemes"), (
+        f"unexpected security schemes in anonymous mode: "
+        f"{components.get('securitySchemes')}"
+    )

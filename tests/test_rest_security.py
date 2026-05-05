@@ -409,3 +409,60 @@ def test_security_context_carries_request_id(
     # Round-trip via X-Request-Id header is the observable proof.
     assert REQUEST_ID_HEADER in response.headers
     assert response.json()["requestId"] == response.headers[REQUEST_ID_HEADER]
+
+
+# ---- OpenAPI / Swagger UI: Authorize button --------------------------
+
+
+def test_openapi_advertises_bearer_and_api_key_when_auth_enabled(secure_client):
+    """When `authenticator=` is set, the OpenAPI document must
+    declare the Bearer + API-key security schemes so Swagger UI
+    renders the Authorize button. Without these schemes the
+    operator can't test protected endpoints from the docs page."""
+    spec = secure_client.get("/openapi.json").json()
+    schemes = spec.get("components", {}).get("securitySchemes", {})
+    assert "bearer" in schemes, f"bearer scheme missing from {schemes}"
+    assert "api_key" in schemes, f"api_key scheme missing from {schemes}"
+    bearer = schemes["bearer"]
+    assert bearer["type"] == "http"
+    assert bearer["scheme"] == "bearer"
+    assert bearer.get("description"), "bearer scheme needs description"
+    api_key = schemes["api_key"]
+    assert api_key["type"] == "apiKey"
+    assert api_key["in"] == "header"
+    assert api_key["name"] == "X-API-Key"
+
+
+def test_openapi_marks_anonymous_paths_as_unauthenticated(secure_client):
+    """`/health` and `/version` are exempt from auth even when
+    `authenticator=` is set. Their OpenAPI operations must carry an
+    empty `security: []` so Swagger UI doesn't pretend they need a
+    credential."""
+    spec = secure_client.get("/openapi.json").json()
+    health = spec["paths"]["/health"]["get"]
+    version = spec["paths"]["/version"]["get"]
+    assert health.get("security") == [], (
+        f"/health must override security to []; got {health.get('security')}"
+    )
+    assert version.get("security") == [], (
+        f"/version must override security to []; got {version.get('security')}"
+    )
+
+
+def test_openapi_protected_paths_inherit_global_security(secure_client):
+    """Protected operations don't carry their own `security` (they
+    inherit from the document-level `security` array). Swagger
+    renders the lock icon based on the global default."""
+    spec = secure_client.get("/openapi.json").json()
+    # Global security advertises both schemes — operator can pick either.
+    global_security = spec.get("security")
+    assert global_security == [{"bearer": []}, {"api_key": []}], (
+        f"unexpected global security: {global_security}"
+    )
+    # A representative protected endpoint must NOT override security
+    # (no per-op security key → inherits global).
+    documents_post = spec["paths"]["/documents"]["post"]
+    assert "security" not in documents_post or documents_post["security"] != [], (
+        f"/documents POST must inherit global security; "
+        f"got per-op override: {documents_post.get('security')}"
+    )

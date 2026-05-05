@@ -8,6 +8,7 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -24,6 +25,7 @@ from j1.adapters.rest.events import (
     publish_query_completed,
 )
 from j1.adapters.rest.security import (
+    API_KEY_HEADER,
     SecurityPolicy,
     authenticate_request,
     require_scope as _require_scope,
@@ -142,6 +144,79 @@ def _default_context_resolver(request: Request) -> ProjectContext:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _install_openapi_security(
+    app: FastAPI,
+    *,
+    anonymous_paths: frozenset[str],
+) -> None:
+    """Install Bearer + API-key security schemes on the OpenAPI doc.
+
+    Auth is enforced by `_security_middleware`, not by FastAPI's
+    dependency machinery — so we customise the OpenAPI document
+    directly rather than declaring dependencies on every route.
+    Effects in Swagger UI:
+
+      * "Authorize" button appears top-right.
+      * Each non-anonymous operation shows a lock icon and applies
+        the chosen scheme on `Try it out` requests.
+      * Anonymous paths (`/health` / `/version`) keep their `security: []`
+        marker so Swagger doesn't pretend they need auth.
+
+    Implementation: we wrap `app.openapi` (the bound method) in a
+    function that post-processes the schema. Reassigning to
+    `app.openapi` works as a Python instance-attribute override, but
+    FastAPI's setup-time route closure for `/openapi.json` resolves
+    `self.openapi` at request time too, so the wrapper takes effect
+    on every spec fetch."""
+    bearer_scheme = {
+        "type": "http",
+        "scheme": "bearer",
+        "description": (
+            "Bearer token. Sent as `Authorization: Bearer <token>`. "
+            "Configured via `J1_AUTH_API_KEYS` (or "
+            "`J1_AUTH_API_KEYS_FILE`)."
+        ),
+    }
+    api_key_scheme = {
+        "type": "apiKey",
+        "in": "header",
+        "name": API_KEY_HEADER,
+        "description": (
+            "Opaque API key. Alternative to Bearer for clients that "
+            "can't easily set the Authorization header."
+        ),
+    }
+    # Capture the original openapi-generation method up front. Storing
+    # the bound method (rather than calling `app.openapi` at wrap time)
+    # avoids any lookup ambiguity later — we always have a known-good
+    # generator to defer to.
+    _original_openapi = app.openapi
+
+    def _custom_openapi() -> dict[str, object]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = _original_openapi()
+        components = schema.setdefault("components", {})
+        security_schemes = components.setdefault("securitySchemes", {})
+        security_schemes["bearer"] = bearer_scheme
+        security_schemes["api_key"] = api_key_scheme
+
+        # Apply security globally, then strip it on anonymous paths.
+        # Either scheme satisfies — Swagger renders both as choices.
+        global_security = [{"bearer": []}, {"api_key": []}]
+        schema["security"] = global_security
+        paths = schema.get("paths", {})
+        for path, operations in paths.items():
+            if path in anonymous_paths:
+                for op in operations.values():
+                    if isinstance(op, dict):
+                        op["security"] = []
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = _custom_openapi  # type: ignore[method-assign]
+
+
 def create_rest_api(
     facade: ApplicationFacade,
     *,
@@ -212,6 +287,16 @@ def create_rest_api(
             else frozenset({"/health", "/version"})
         ),
     )
+
+    # ---- OpenAPI / Swagger UI auth ----------------------------------
+    # When authentication is enabled, declare the supported credential
+    # schemes on the OpenAPI document so Swagger renders the
+    # "Authorize" button and operators can paste a Bearer token /
+    # API key once and have it sent on every test request. The
+    # schemes are documentation-only — actual credential extraction
+    # happens in `_security_middleware` below.
+    if policy.enabled:
+        _install_openapi_security(app, anonymous_paths=policy.anonymous_paths)
 
     # ---- Middleware --------------------------------------------------
     # Registration order matters: the last-registered middleware is the
@@ -387,10 +472,45 @@ def create_rest_api(
             )
         return value
 
-    def get_ctx(request: Request) -> ProjectContext:
+    # Header-typed parameters surface in OpenAPI / Swagger UI as
+    # editable per-endpoint inputs, so operators can test the API
+    # interactively. The actual extraction logic still goes through
+    # the (pluggable) `resolver`, so a deployment that overrides
+    # `context_resolver=` keeps full control over how tenant /
+    # project are resolved (e.g. from a JWT). The Header() bindings
+    # here are documentation only.
+    def get_ctx(
+        request: Request,
+        x_tenant_id: str | None = Header(  # noqa: ARG001 — declared for OpenAPI; runtime read by `resolver`
+            None,
+            alias=TENANT_HEADER,
+            description=(
+                "Tenant identifier. Required for all tenant-scoped "
+                "endpoints. The default resolver reads it from this "
+                "header; deployments using `context_resolver=` may "
+                "ignore it."
+            ),
+        ),
+        x_project_id: str | None = Header(  # noqa: ARG001 — declared for OpenAPI
+            None,
+            alias=PROJECT_HEADER,
+            description=(
+                "Project identifier within the tenant. Required for "
+                "endpoints that operate on a single project. The "
+                "default resolver reads it from this header."
+            ),
+        ),
+    ) -> ProjectContext:
         return resolver(request)
 
-    def get_tenant(request: Request) -> str:
+    def get_tenant(
+        request: Request,
+        x_tenant_id: str | None = Header(  # noqa: ARG001 — declared for OpenAPI
+            None,
+            alias=TENANT_HEADER,
+            description="Tenant identifier — required.",
+        ),
+    ) -> str:
         tenant_id = request.headers.get(TENANT_HEADER)
         if not tenant_id:
             raise HTTPException(
