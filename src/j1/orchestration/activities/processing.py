@@ -74,6 +74,14 @@ class ProcessingActivities:
         ctx = input.scope.to_context()
         compiler = self._lookup(self._compilers, input.processor_kind, "compiler")
         document = self._sources.get(ctx, input.document_id)
+        # Phase A.4: heartbeat at activity start so a configured
+        # `heartbeat_timeout` can fire if the underlying compile call
+        # (typically mineru / raganything, can take minutes for PDFs)
+        # hangs. The compiler call itself is synchronous, so we can't
+        # heartbeat mid-compile here — but the start-and-finish
+        # heartbeats let the worker prove liveness on either side.
+        # Best-effort: outside a Temporal worker the call is a no-op.
+        _safe_heartbeat({"stage": "compile", "document_id": input.document_id})
         result = self._processing.compile(
             ctx,
             compiler,
@@ -81,6 +89,11 @@ class ProcessingActivities:
             actor=input.actor,
             correlation_id=input.correlation_id,
         )
+        _safe_heartbeat({
+            "stage": "compile",
+            "document_id": input.document_id,
+            "status": result.status.value,
+        })
         return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_ENRICH)
@@ -103,6 +116,10 @@ class ProcessingActivities:
         builder = self._lookup(
             self._graph_builders, input.processor_kind, "graph_builder"
         )
+        _safe_heartbeat({
+            "stage": "build_graph",
+            "artifact_count": len(input.artifact_ids),
+        })
         result = self._processing.build_graph(
             ctx,
             builder,
@@ -110,6 +127,11 @@ class ProcessingActivities:
             actor=input.actor,
             correlation_id=input.correlation_id,
         )
+        _safe_heartbeat({
+            "stage": "build_graph",
+            "artifact_count": len(input.artifact_ids),
+            "status": result.status.value,
+        })
         return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_INDEX)
@@ -149,6 +171,19 @@ class ProcessingActivities:
             raise UnknownProcessorError(
                 f"no {role} registered for kind {kind!r}"
             ) from exc
+
+
+def _safe_heartbeat(details: dict[str, object]) -> None:
+    """Emit an `activity.heartbeat` if we're inside a Temporal worker.
+
+    Outside a worker (e.g. unit tests calling the activity method
+    directly), the SDK raises `RuntimeError`. Heartbeats are
+    visibility, never correctness, so silently degrade. Details are
+    deliberately small structured fields — never document content."""
+    try:
+        activity.heartbeat(details)
+    except Exception:  # noqa: BLE001 — visibility never blocks ingest
+        pass
 
 
 def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult:

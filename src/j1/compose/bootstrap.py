@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from j1.errors.exceptions import ConfigError
 from j1.llm import (
     LLM_ROLE_EMBEDDING,
+    LLM_ROLE_FAST,
     LLM_ROLE_TEXT,
     LLM_ROLE_VISION,
     LLMConfigError,
@@ -374,6 +375,20 @@ def _build_llm_registry(settings: LLMSettings) -> LLMProviderRegistry:
     )
     if embedding_client is not None:
         registry.register(LLM_ROLE_EMBEDDING, embedding_client)
+
+    # Phase B: optional FAST role. Same OpenAI-compat client as text
+    # — only the `model` differs in typical deployments. When
+    # `settings.fast` is None or unconfigured, we silently skip
+    # registration. Consumers (`registry.try_fast()`) handle the
+    # absence; the planner falls back to deterministic-only.
+    if settings.fast is not None:
+        fast_client = _build_role_client(
+            settings=settings.fast, role="fast",
+            openai_factory=OpenAICompatTextLLMClient,
+            langchain_factory=LangChainTextLLMClient.from_settings,
+        )
+        if fast_client is not None:
+            registry.register(LLM_ROLE_FAST, fast_client)
 
     return registry
 

@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import pytest
 from temporalio import workflow
+from temporalio.exceptions import ApplicationError
 
 from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
@@ -13,6 +14,8 @@ from j1.orchestration.activities.payloads import (
     ValidateContextResult,
 )
 from j1.orchestration.workflows.project_processing import (
+    ERROR_TYPE_REQUIRED_STEP_FAILED,
+    ERROR_TYPE_UNEXPECTED_ERROR,
     GATE_AFTER_COMPILE,
     GATE_AFTER_ENRICH,
     GATE_AFTER_INDEX,
@@ -253,7 +256,10 @@ def test_run_completes_full_pipeline(monkeypatch):
     assert sorted(result.artifact_ids) == ["art-c1", "art-e1", "art-g1"]
 
 
-def test_validate_failure_marks_failed_final(monkeypatch):
+def test_validate_failure_raises_application_error_and_marks_failed_final(monkeypatch):
+    """Phase A regression: validation failure must surface as Temporal
+    `ApplicationError` (workflow Failed in UI), not a returned result
+    with `state="failed_final"` (workflow Completed in UI)."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -265,12 +271,18 @@ def test_validate_failure_marks_failed_final(monkeypatch):
     _patch_workflow_runtime(monkeypatch, exec_handler=handler)
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
-    result = asyncio.run(wf.run(request))
-    assert result.state == WorkflowState.FAILED_FINAL.value
-    assert "bad scope" in (result.error or "")
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
+    assert excinfo.value.non_retryable is True
+    assert "bad scope" in str(excinfo.value)
+    # State is still recorded on the instance for `get_status` queries.
+    assert wf._state == WorkflowState.FAILED_FINAL
 
 
-def test_compile_failure_marks_failed_final(monkeypatch):
+def test_compile_failure_raises_application_error_and_marks_failed_final(monkeypatch):
+    """Phase A regression: compile FAILED must propagate as a Temporal
+    workflow failure, not a returned result the caller might miss."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -288,12 +300,18 @@ def test_compile_failure_marks_failed_final(monkeypatch):
     _patch_workflow_runtime(monkeypatch, exec_handler=handler)
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
-    result = asyncio.run(wf.run(request))
-    assert result.state == WorkflowState.FAILED_FINAL.value
-    assert "compiler crashed" in (result.error or "")
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
+    assert "compiler crashed" in str(excinfo.value)
+    assert wf._state == WorkflowState.FAILED_FINAL
 
 
-def test_unexpected_exception_marks_failed_recoverable(monkeypatch):
+def test_unexpected_exception_raises_application_error_and_marks_failed_recoverable(monkeypatch):
+    """Phase A regression: unexpected exceptions are wrapped in a
+    typed `ApplicationError` so Temporal UI shows a clean failure
+    type — but `non_retryable` stays False to preserve the
+    historical "transient infrastructure" classification."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -307,9 +325,12 @@ def test_unexpected_exception_marks_failed_recoverable(monkeypatch):
     _patch_workflow_runtime(monkeypatch, exec_handler=handler)
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
-    result = asyncio.run(wf.run(request))
-    assert result.state == WorkflowState.FAILED_RECOVERABLE.value
-    assert "transient db blip" in (result.error or "")
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert excinfo.value.type == ERROR_TYPE_UNEXPECTED_ERROR
+    assert excinfo.value.non_retryable is False
+    assert "transient db blip" in str(excinfo.value)
+    assert wf._state == WorkflowState.FAILED_RECOVERABLE
 
 
 def test_cancel_before_processing_returns_cancelled(monkeypatch):
@@ -408,9 +429,11 @@ def test_budget_rejection_path(monkeypatch):
         compiler_kind="c",
         budget_limit_amount="10.00",
     )
-    result = asyncio.run(wf.run(request))
-    assert result.state == WorkflowState.FAILED_FINAL.value
-    assert "budget rejected" in (result.error or "")
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
+    assert "budget rejected" in str(excinfo.value)
+    assert wf._state == WorkflowState.FAILED_FINAL
 
 
 def test_review_approval_path(monkeypatch):
@@ -477,9 +500,11 @@ def test_review_rejection_path(monkeypatch):
         compiler_kind="c",
         review_after=(GATE_AFTER_COMPILE,),
     )
-    result = asyncio.run(wf.run(request))
-    assert result.state == WorkflowState.FAILED_FINAL.value
-    assert "review rejected" in (result.error or "")
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
+    assert "review rejected" in str(excinfo.value)
+    assert wf._state == WorkflowState.FAILED_FINAL
 
 
 def test_pause_then_resume_during_run(monkeypatch):
@@ -711,6 +736,11 @@ def test_budget_check_runs_before_compile(monkeypatch):
 
 
 def test_failure_reason_in_status(monkeypatch):
+    """`get_status` query must remain readable even after the workflow
+    raises — Temporal serves queries against the workflow's recorded
+    state independently of whether `run()` exited cleanly. Phase A
+    contract: the workflow records state THEN raises, so this query
+    still works."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -722,7 +752,8 @@ def test_failure_reason_in_status(monkeypatch):
     _patch_workflow_runtime(monkeypatch, exec_handler=handler)
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
-    asyncio.run(wf.run(request))
+    with pytest.raises(ApplicationError):
+        asyncio.run(wf.run(request))
 
     s = wf.get_status()
     assert s.state == WorkflowState.FAILED_FINAL.value

@@ -48,3 +48,45 @@ def test_max_below_initial_rejected():
 def test_negative_attempts_rejected():
     with pytest.raises(ConfigError):
         RetryPolicySpec(maximum_attempts=-1)
+
+
+# ---- Phase A: DEFAULT_RETRY now classifies known-deterministic
+# failures as non-retryable so they don't burn the 5-attempt budget
+# before the real cause surfaces.
+
+
+def test_default_retry_excludes_required_step_failed_from_retry():
+    """`J1_INGEST_REQUIRED_STEP_FAILED` is the type the workflow raises
+    when a required ingestion step (compile / index / etc.) failed.
+    Retrying it is meaningless — the step's input is unchanged."""
+    policy = DEFAULT_RETRY.to_temporal()
+    assert "J1_INGEST_REQUIRED_STEP_FAILED" in policy.non_retryable_error_types
+
+
+def test_default_retry_excludes_lookup_errors_from_retry():
+    """Missing document / artifact / processor kind = caller bug.
+    Retrying re-fails identically; surface the cause immediately."""
+    policy = DEFAULT_RETRY.to_temporal()
+    for name in ("DocumentNotFoundError", "UnknownProcessorError"):
+        assert name in policy.non_retryable_error_types
+
+
+def test_default_retry_excludes_validation_and_config_errors():
+    """Operator-reachable bugs (config typo, schema validation
+    failure) are deterministic — retry doesn't help."""
+    policy = DEFAULT_RETRY.to_temporal()
+    for name in ("ConfigError", "ValidationError", "LLMConfigError"):
+        assert name in policy.non_retryable_error_types
+
+
+def test_default_retry_keeps_provider_and_network_errors_retryable():
+    """Counter-test: transient errors (provider 5xx, connection
+    blips) MUST stay retryable so we don't lose resilience."""
+    policy = DEFAULT_RETRY.to_temporal()
+    for transient_name in (
+        "ConnectionError",
+        "TimeoutError",
+        "ProviderUnavailable",
+        "HTTPError",
+    ):
+        assert transient_name not in policy.non_retryable_error_types

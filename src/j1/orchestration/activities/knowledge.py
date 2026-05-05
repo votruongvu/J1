@@ -14,6 +14,7 @@ from j1.cost.recorder import CostRecorder
 from j1.errors.exceptions import DocumentNotFoundError
 from j1.intake.registry import SourceRegistry
 from j1.jobs.status import ProcessingStatus, ReviewStatus
+from j1.orchestration.errors import ERROR_TYPE_LOOKUP_FAILED
 from j1.orchestration.activities.payloads import (
     ArtifactEnrichmentInput,
     ArtifactEnrichmentResult,
@@ -110,7 +111,11 @@ class KnowledgeProcessingActivities:
         try:
             self._sources.get(ctx, input.document_id)
         except DocumentNotFoundError as exc:
-            raise ApplicationError(str(exc), non_retryable=True) from exc
+            raise ApplicationError(
+                str(exc),
+                type=ERROR_TYPE_LOOKUP_FAILED,
+                non_retryable=True,
+            ) from exc
 
         try:
             result = compiler.compile(ctx, input.document_id)
@@ -184,7 +189,11 @@ class KnowledgeProcessingActivities:
         try:
             self._artifacts.get(ctx, input.artifact_id)
         except Exception as exc:
-            raise ApplicationError(str(exc), non_retryable=True) from exc
+            raise ApplicationError(
+                str(exc),
+                type=ERROR_TYPE_LOOKUP_FAILED,
+                non_retryable=True,
+            ) from exc
 
         try:
             result = processor.enrich(ctx, input.artifact_id)
@@ -446,7 +455,9 @@ class KnowledgeProcessingActivities:
             return registry[kind]
         except KeyError as exc:
             raise ApplicationError(
-                f"unknown {role} kind: {kind!r}", non_retryable=True
+                f"unknown {role} kind: {kind!r}",
+                type=ERROR_TYPE_LOOKUP_FAILED,
+                non_retryable=True,
             ) from exc
 
 

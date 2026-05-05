@@ -61,6 +61,19 @@ ENV_EMBEDDING_TIMEOUT = "J1_EMBEDDING_TIMEOUT_SECONDS"
 ENV_EMBEDDING_MAX_RETRIES = "J1_EMBEDDING_MAX_RETRIES"
 ENV_EMBEDDING_LANGCHAIN_CONFIG = "J1_EMBEDDING_LANGCHAIN_CONFIG"
 
+# Fast role (Phase B). Optional — used by the planner for short
+# structured tasks. Same env-var shape as text so deployments can
+# reuse base_url + api_key with just a different model.
+ENV_FAST_PROVIDER = "J1_FAST_LLM_PROVIDER"
+ENV_FAST_BASE_URL = "J1_FAST_LLM_BASE_URL"
+ENV_FAST_API_KEY = "J1_FAST_LLM_API_KEY"
+ENV_FAST_MODEL = "J1_FAST_LLM_MODEL"
+ENV_FAST_TIMEOUT = "J1_FAST_LLM_TIMEOUT_SECONDS"
+ENV_FAST_MAX_RETRIES = "J1_FAST_LLM_MAX_RETRIES"
+ENV_FAST_TEMPERATURE = "J1_FAST_LLM_TEMPERATURE"
+ENV_FAST_MAX_OUTPUT_TOKENS = "J1_FAST_LLM_MAX_OUTPUT_TOKENS"
+ENV_FAST_LANGCHAIN_CONFIG = "J1_FAST_LLM_LANGCHAIN_CONFIG"
+
 
 # ---- Settings -------------------------------------------------------
 
@@ -114,11 +127,28 @@ class EmbeddingSettings(_CommonLLMSettings):
 
 
 @dataclass(frozen=True)
+class FastLLMSettings(_CommonLLMSettings):
+    """FAST role — same shape as text but tighter defaults.
+
+    Phase B: consumed only by the adaptive ingestion planner for
+    short structured tasks. Lower default temperature (deterministic
+    classification) and tighter timeout reflect the fast-and-cheap
+    intent. Optional: when `is_configured=False`, the planner falls
+    back to deterministic-only operation (no LLM hint)."""
+
+    temperature: float = 0.0
+    max_output_tokens: int = 512
+
+
+@dataclass(frozen=True)
 class LLMSettings:
-    """Aggregate of the three role settings + cross-cutting validators."""
+    """Aggregate of the role settings + cross-cutting validators."""
     text: TextLLMSettings
     vision: VisionLLMSettings
     embedding: EmbeddingSettings
+    # Phase B: optional. `fast.is_configured` may be False and the
+    # rest of the framework still works.
+    fast: FastLLMSettings | None = None
 
 
 # ---- Loaders --------------------------------------------------------
@@ -136,6 +166,7 @@ def load_llm_settings(env: Mapping[str, str] | None = None) -> LLMSettings:
         text=_load_text_settings(source),
         vision=_load_vision_settings(source),
         embedding=_load_embedding_settings(source),
+        fast=_load_fast_settings(source),
     )
 
 
@@ -166,6 +197,28 @@ def _load_vision_settings(env: Mapping[str, str]) -> VisionLLMSettings:
         provider_config=_json(env, ENV_VISION_LANGCHAIN_CONFIG),
         temperature=_float(env, ENV_VISION_TEMPERATURE, 0.1),
         max_output_tokens=_int(env, ENV_VISION_MAX_OUTPUT_TOKENS, 4096),
+    )
+
+
+def _load_fast_settings(env: Mapping[str, str]) -> FastLLMSettings:
+    """Phase B FAST-role loader.
+
+    Mirrors `_load_text_settings` shape so the same provider can serve
+    fast and text with just a different model. Returns a settings
+    object even when no env vars are set — `FastLLMSettings.is_configured`
+    is False in that case (no `base_url` / `model` → planner will
+    skip the LLM-fallback path)."""
+    provider = _provider(env, ENV_FAST_PROVIDER, PROVIDER_OPENAI_COMPAT)
+    return FastLLMSettings(
+        provider=provider,
+        base_url=_str(env, ENV_FAST_BASE_URL),
+        api_key=_str(env, ENV_FAST_API_KEY),
+        model=_str(env, ENV_FAST_MODEL),
+        timeout_seconds=_float(env, ENV_FAST_TIMEOUT, 15.0),
+        max_retries=_int(env, ENV_FAST_MAX_RETRIES, 1),
+        provider_config=_json(env, ENV_FAST_LANGCHAIN_CONFIG),
+        temperature=_float(env, ENV_FAST_TEMPERATURE, 0.0),
+        max_output_tokens=_int(env, ENV_FAST_MAX_OUTPUT_TOKENS, 512),
     )
 
 

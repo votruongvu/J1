@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from j1.orchestration.activities.payloads import (
@@ -13,6 +14,7 @@ with workflow.unsafe.imports_passed_through():
         ProjectScope,
     )
     from j1.orchestration.activities.processing import ProcessingActivities
+    from j1.orchestration.errors import ERROR_TYPE_REQUIRED_STEP_FAILED
     from j1.orchestration.temporal.retries import DEFAULT_RETRY
 
 DEFAULT_ACTIVITY_TIMEOUT = timedelta(minutes=10)
@@ -59,11 +61,17 @@ class DocumentProcessingWorkflow:
         )
 
         if compile_result.status != "succeeded":
-            return DocumentProcessingResult(
-                status=compile_result.status,
-                document_id=request.document_id,
-                artifact_ids=list(compile_result.artifact_ids),
-                error=compile_result.error,
+            # Phase A: previously this returned a result with
+            # `status="failed"`, leaving Temporal UI showing
+            # "Completed" for a workflow whose required compile step
+            # failed. Raise instead so Temporal sees the workflow as
+            # Failed. The error string carries the original message so
+            # operators / status queries can still surface the cause.
+            raise ApplicationError(
+                f"compile failed for document {request.document_id}: "
+                f"{compile_result.error or 'unspecified'}",
+                type=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                non_retryable=True,
             )
 
         produced_ids: list[str] = list(compile_result.artifact_ids)
@@ -86,11 +94,14 @@ class DocumentProcessingWorkflow:
                     )
                 )
                 if enrich_result.status != "succeeded":
-                    return DocumentProcessingResult(
-                        status=enrich_result.status,
-                        document_id=request.document_id,
-                        artifact_ids=produced_ids,
-                        error=enrich_result.error,
+                    # Caller explicitly opted into enrichment via
+                    # `enricher_kind`; treat its failure as a
+                    # workflow-level failure (raise → Temporal Failed).
+                    raise ApplicationError(
+                        f"enrich failed for artifact {artifact_id}: "
+                        f"{enrich_result.error or 'unspecified'}",
+                        type=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                        non_retryable=True,
                     )
                 enriched_ids.extend(enrich_result.artifact_ids)
             produced_ids = produced_ids + enriched_ids
@@ -111,11 +122,11 @@ class DocumentProcessingWorkflow:
                 )
             )
             if index_result.status != "succeeded":
-                return DocumentProcessingResult(
-                    status=index_result.status,
-                    document_id=request.document_id,
-                    artifact_ids=produced_ids,
-                    error=index_result.error,
+                raise ApplicationError(
+                    f"index failed for document {request.document_id}: "
+                    f"{index_result.error or 'unspecified'}",
+                    type=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                    non_retryable=True,
                 )
 
         return DocumentProcessingResult(
