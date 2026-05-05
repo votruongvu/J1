@@ -129,10 +129,81 @@ def test_safe_heartbeat_silently_no_ops_outside_worker():
 # ---- Search attributes -----------------------------------------------
 
 
-def test_workflow_sets_search_attribute_on_completion(monkeypatch):
-    """The workflow must announce its lifecycle stage via
-    `upsert_search_attributes` so operators can filter active /
-    failed / completed workflows in the Temporal UI."""
+def test_workflow_sets_search_attribute_on_completion_when_enabled(monkeypatch):
+    """When `request.search_attributes_enabled=True`, the workflow
+    announces its lifecycle stage via `upsert_search_attributes` so
+    operators can filter active / failed / completed workflows in
+    the Temporal UI. The flag is opt-in because the cluster rejects
+    upserts for unregistered attributes."""
+    captured_sa = _capture_search_attributes(monkeypatch)
+    _patch_workflow_runtime(
+        monkeypatch,
+        exec_handler=lambda m, p, k: (
+            ValidateContextResult(valid=True)
+            if _activity_name(m).endswith("validate_context")
+            else (
+                ["doc-1"]
+                if _activity_name(m).endswith("list_pending_documents")
+                else (
+                    ArtifactActivityResult(status="succeeded", artifact_ids=["art-1"])
+                    if _activity_name(m).endswith("compile")
+                    else None
+                )
+            )
+        ),
+    )
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        search_attributes_enabled=True,
+    )
+    asyncio.run(wf.run(request))
+
+    keys_set = {sa["key"] for sa in captured_sa if sa["key"]}
+    assert "J1IngestStage" in keys_set, (
+        f"workflow must set J1IngestStage when enabled; saw {keys_set}"
+    )
+
+
+def test_workflow_sets_search_attribute_on_failure_when_enabled(monkeypatch):
+    """Failure must also update the search attribute when enabled —
+    a workflow that fails silently (no stage update) defeats the
+    visibility contract."""
+    captured_sa = _capture_search_attributes(monkeypatch)
+    _patch_workflow_runtime(
+        monkeypatch,
+        exec_handler=lambda m, p, k: (
+            ValidateContextResult(valid=False, message="bad scope")
+            if _activity_name(m).endswith("validate_context")
+            else None
+        ),
+    )
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        search_attributes_enabled=True,
+    )
+    with pytest.raises(ApplicationError):
+        asyncio.run(wf.run(request))
+
+    failure_signals = [
+        sa for sa in captured_sa
+        if sa["key"] == "J1IngestStage" and "fail" in (sa.get("value") or "").lower()
+    ]
+    assert failure_signals, (
+        f"failure path must update J1IngestStage to a failed value; saw {captured_sa}"
+    )
+
+
+def test_workflow_does_not_call_upsert_when_search_attributes_disabled(monkeypatch):
+    """Default `search_attributes_enabled=False` means the workflow
+    NEVER calls `upsert_search_attributes`. Critical regression: the
+    Temporal cluster rejects upserts for unregistered attributes at
+    activation-completion time, and that rejection is unrecoverable
+    by a try/except in the workflow body. Default-off prevents the
+    crash for deployments that haven't registered the attributes."""
     captured_sa = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(
         monkeypatch,
@@ -152,47 +223,24 @@ def test_workflow_sets_search_attribute_on_completion(monkeypatch):
     )
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
+    # Default field value is False — no flag passed.
     asyncio.run(wf.run(request))
 
-    keys_set = {sa["key"] for sa in captured_sa if sa["key"]}
-    assert "J1IngestStage" in keys_set, (
-        f"workflow must set J1IngestStage; saw {keys_set}"
+    assert captured_sa == [], (
+        f"search-attribute upserts must NOT happen when disabled; saw {captured_sa}"
     )
 
 
-def test_workflow_sets_search_attribute_on_failure(monkeypatch):
-    """Failure must update the search attribute too — a workflow
-    that fails silently (no stage update) defeats the visibility
-    visibility contract."""
-    captured_sa = _capture_search_attributes(monkeypatch)
-    _patch_workflow_runtime(
-        monkeypatch,
-        exec_handler=lambda m, p, k: (
-            ValidateContextResult(valid=False, message="bad scope")
-            if _activity_name(m).endswith("validate_context")
-            else None
-        ),
-    )
-    wf = ProjectProcessingWorkflow()
-    request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
-    with pytest.raises(ApplicationError):
-        asyncio.run(wf.run(request))
-
-    failure_signals = [
-        sa for sa in captured_sa
-        if sa["key"] == "J1IngestStage" and "fail" in (sa.get("value") or "").lower()
-    ]
-    assert failure_signals, (
-        f"failure path must update J1IngestStage to a failed value; saw {captured_sa}"
-    )
-
-
-def test_search_attribute_upsert_failure_does_not_block_workflow(monkeypatch):
-    """If the namespace doesn't have the search attributes registered,
-    the upsert raises. The workflow MUST tolerate this — visibility
-    is best-effort."""
+def test_search_attribute_upsert_synchronous_failure_does_not_block_workflow(
+    monkeypatch,
+):
+    """When the operator HAS opted in but the upsert call still
+    raises synchronously (a synchronous SDK error, not the deferred
+    server-side rejection), the workflow must tolerate it. Server-
+    side rejections aren't catchable in the workflow body — that's
+    why the opt-in flag exists — but synchronous SDK errors are."""
     def _bad_upsert(_updates):
-        raise RuntimeError("search attribute 'J1IngestStage' is not registered")
+        raise RuntimeError("synchronous SDK error")
 
     monkeypatch.setattr(workflow, "upsert_search_attributes", _bad_upsert)
     _patch_workflow_runtime(
@@ -212,9 +260,13 @@ def test_search_attribute_upsert_failure_does_not_block_workflow(monkeypatch):
         ),
     )
     wf = ProjectProcessingWorkflow()
-    request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
-    # Should NOT raise — workflow continues even though every search-
-    # attribute upsert fails.
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        search_attributes_enabled=True,  # opt-in but the call still raises
+    )
+    # Should NOT raise — synchronous failures in the upsert path are
+    # caught and the workflow continues.
     result = asyncio.run(wf.run(request))
     assert result.state == "completed"
 
