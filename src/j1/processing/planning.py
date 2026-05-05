@@ -20,13 +20,46 @@ from j1.processing.profiling import DocumentProfile
 from j1.processing.status import StepSource
 
 __all__ = [
+    "COST_TIER_HIGH",
+    "COST_TIER_LOW",
+    "COST_TIER_MEDIUM",
+    "COST_TIER_NONE",
     "DefaultIngestPlanner",
+    "EXECUTION_DECISION_CONDITIONAL",
+    "EXECUTION_DECISION_RUN",
+    "EXECUTION_DECISION_SKIP",
     "IngestMode",
     "IngestPlan",
     "IngestPlanner",
     "IngestPolicy",
     "PlannedStep",
+    "RISK_LEVEL_HIGH",
+    "RISK_LEVEL_LOW",
+    "RISK_LEVEL_MEDIUM",
 ]
+
+
+# Execution-plan decisions surfaced to the frontend. Plain strings
+# (rather than a StrEnum) so the JSON payload round-trips cleanly
+# through audit JSONL without enum/string ambiguity. Mirrored in
+# `j1.runs.models` for the REST/SSE consumer side.
+EXECUTION_DECISION_RUN = "RUN"
+EXECUTION_DECISION_SKIP = "SKIP"
+EXECUTION_DECISION_CONDITIONAL = "CONDITIONAL"
+
+# Coarse cost tiers shown to operators in the plan summary. Refined
+# numeric estimates are out of scope; this is a UX-bucket field.
+COST_TIER_NONE = "NONE"
+COST_TIER_LOW = "LOW"
+COST_TIER_MEDIUM = "MEDIUM"
+COST_TIER_HIGH = "HIGH"
+
+# Risk levels for surfacing "this step might lose information" hints
+# (e.g. text_only policy on a scanned PDF → graph step skipped with
+# `risk_level=high`).
+RISK_LEVEL_LOW = "low"
+RISK_LEVEL_MEDIUM = "medium"
+RISK_LEVEL_HIGH = "high"
 
 
 # Step names — the same strings the workflow uses for `StepResult.step`
@@ -114,23 +147,41 @@ def steps_for_mode(mode: IngestMode) -> frozenset[str]:
 class PlannedStep:
     """A single gate in the ingest plan.
 
-    `enabled=True` means the workflow MUST attempt the step.
-    `enabled=False` means the workflow MUST skip it and record a
-    SKIPPED `StepResult` carrying this `reason`.
+    Two views of the same record:
 
-    `required=True` means the step's failure is workflow-fatal under
-    `fail_fast` policy; `required=False` permits PARTIAL_COMPLETED
-    under `continue_optional`.
+      * **Workflow gate** — `enabled` / `required` / `source` /
+        `reason`. The workflow consults these to decide whether to
+        attempt the step and how to react on failure.
+      * **Frontend execution-plan item** — `decision` / `stage` /
+        `step_id` / `expected_engine` / `expected_provider` /
+        `estimated_cost_tier` / `risk_level` / `warning` /
+        `dependency_step_ids` / `metadata`. The UI renders these on
+        the plan-review screen.
 
-    `source` records who decided — operators reading the plan can
-    answer "why is graph disabled?" with one of: caller, planner,
-    policy, default, config."""
+    Both views travel together so the planner emits one source of
+    truth. The workflow only reads the gate fields; the API serialiser
+    reads everything.
+
+    Field hygiene: all strings are short operational values. `metadata`
+    is a small structured dict — never document content."""
 
     name: str
     enabled: bool
     required: bool
     source: StepSource
     reason: str | None = None
+    # ---- Frontend execution-plan view (defaults preserve existing
+    # planner output for callers that don't consume them yet). ----
+    step_id: str = ""           # "compile" / "enrich" / etc; defaults to `name`
+    stage: str = ""              # canonical stage label (e.g. "COMPILE")
+    decision: str = EXECUTION_DECISION_RUN
+    dependency_step_ids: tuple[str, ...] = ()
+    estimated_cost_tier: str = COST_TIER_NONE
+    expected_engine: str | None = None
+    expected_provider: str | None = None
+    risk_level: str = RISK_LEVEL_LOW
+    warning: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -262,12 +313,13 @@ class DefaultIngestPlanner(IngestPlanner):
 
             # Caller override: highest priority.
             if name in overrides:
-                steps.append(PlannedStep(
+                steps.append(_build_planned_step(
                     name=name,
                     enabled=overrides[name],
                     required=overrides[name],
                     source=StepSource.CALLER,
                     reason=None if overrides[name] else "caller disabled this step",
+                    mode=mode,
                 ))
                 continue
 
@@ -277,7 +329,7 @@ class DefaultIngestPlanner(IngestPlanner):
             # when enabled (so a `continue_optional` policy can let
             # them fail without failing the workflow).
             required = enabled and name in (STEP_COMPILE, STEP_INDEX)
-            steps.append(PlannedStep(
+            steps.append(_build_planned_step(
                 name=name,
                 enabled=enabled,
                 required=required,
@@ -286,6 +338,7 @@ class DefaultIngestPlanner(IngestPlanner):
                     None if enabled
                     else _skip_reason(name, mode, profile)
                 ),
+                mode=mode,
             ))
 
         # Step 3: confidence + cost level.
@@ -397,6 +450,92 @@ class DefaultIngestPlanner(IngestPlanner):
         ):
             return "medium"
         return "high"
+
+
+# Mapping from step name to canonical UI labels. Defined here so the
+# planner stays the single source of truth for what each stage is
+# called in the execution-plan view.
+_STAGE_LABEL: dict[str, str] = {
+    STEP_COMPILE: "COMPILE",
+    STEP_ENRICH: "ENRICH",
+    STEP_GRAPH: "GRAPH",
+    STEP_INDEX: "INDEX",
+}
+
+# Per-step cost tier. Matches the coarse buckets shown in the plan
+# UI; absolute spend tracking lives in the cost-recorder subsystem.
+_STEP_COST_TIER: dict[str, str] = {
+    STEP_COMPILE: COST_TIER_MEDIUM,   # mineru / vendor parse
+    STEP_ENRICH: COST_TIER_MEDIUM,    # vision LLM calls
+    STEP_GRAPH: COST_TIER_HIGH,       # entity/relation extraction LLM calls
+    STEP_INDEX: COST_TIER_LOW,        # local embedding, vector index write
+}
+
+# Cross-step dependencies. Compile must run first; everything else
+# depends on its artifacts. Index is global — it consumes whatever
+# enrich and graph produced.
+_STEP_DEPS: dict[str, tuple[str, ...]] = {
+    STEP_COMPILE: (),
+    STEP_ENRICH: (STEP_COMPILE,),
+    STEP_GRAPH: (STEP_COMPILE, STEP_ENRICH),
+    STEP_INDEX: (STEP_COMPILE,),
+}
+
+
+def _build_planned_step(
+    *,
+    name: str,
+    enabled: bool,
+    required: bool,
+    source: StepSource,
+    reason: str | None,
+    mode: IngestMode,
+) -> PlannedStep:
+    """Construct a `PlannedStep` populated with both the workflow-gate
+    fields and the frontend execution-plan fields. Centralised so the
+    UI-facing metadata (stage label, cost tier, dependencies) stays
+    in sync with the gate decision."""
+    decision = (
+        EXECUTION_DECISION_RUN if enabled else EXECUTION_DECISION_SKIP
+    )
+    return PlannedStep(
+        name=name,
+        enabled=enabled,
+        required=required,
+        source=source,
+        reason=reason,
+        step_id=name,
+        stage=_STAGE_LABEL.get(name, name.upper()),
+        decision=decision,
+        dependency_step_ids=_STEP_DEPS.get(name, ()),
+        estimated_cost_tier=_STEP_COST_TIER.get(name, COST_TIER_NONE),
+        risk_level=_risk_level_for_skip(name, enabled, mode),
+    )
+
+
+def _risk_level_for_skip(
+    step: str, enabled: bool, mode: IngestMode,
+) -> str:
+    """Tag the operational risk of skipping a given step.
+
+    Skipping `graph` is low-risk (it's an optional augmentation).
+    Skipping `enrich` is medium for table/multimodal modes (loses
+    structured data). Skipping `compile` would be catastrophic, but
+    the planner never emits that — defensive default = high."""
+    if enabled:
+        return RISK_LEVEL_LOW
+    if step == STEP_COMPILE:
+        return RISK_LEVEL_HIGH
+    if step == STEP_ENRICH and mode in (
+        IngestMode.TABLE_AWARE,
+        IngestMode.MULTIMODAL_LIGHT,
+        IngestMode.MULTIMODAL_FULL,
+    ):
+        return RISK_LEVEL_MEDIUM
+    if step == STEP_INDEX:
+        # Skipping index breaks searchability.
+        return RISK_LEVEL_HIGH
+    return RISK_LEVEL_LOW
 
 
 def _skip_reason(step: str, mode: IngestMode, profile: DocumentProfile) -> str:

@@ -82,6 +82,107 @@ class JobEventsRecord(CamelModel):
     events: list[JobEventRecord]
 
 
+# ---- Ingestion-run progress surface (frontend-facing) ----------------
+
+
+class IngestionRunRecord(CamelModel):
+    """One ingestion-run summary, as the frontend consumes it.
+
+    `status` is one of `RunStatus` (see `j1.runs.models.RunStatus`).
+    `progressPercent` is the most recently reported overall progress.
+    `currentStage` / `currentStep` track the in-flight stage and
+    step. Terminal runs carry `completedAt`, `failureCode`, and
+    `failureMessage`."""
+
+    run_id: str
+    document_id: str
+    workflow_id: str
+    workflow_run_id: str | None = None
+    status: str
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    workspace_id: str | None = None
+    current_stage: str | None = None
+    current_step: str | None = None
+    progress_percent: int = 0
+    failure_code: str | None = None
+    failure_message: str | None = None
+    warning_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionPlanStep(CamelModel):
+    """One step in the execution plan as shown on the plan-review UI."""
+
+    step_id: str
+    stage: str
+    name: str
+    decision: str  # RUN / SKIP / CONDITIONAL
+    reason: str | None = None
+    required: bool = False
+    source: str
+    dependency_step_ids: list[str] = Field(default_factory=list)
+    estimated_cost_tier: str = "NONE"
+    expected_engine: str | None = None
+    expected_provider: str | None = None
+    risk_level: str = "low"
+    warning: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionPlanRecord(CamelModel):
+    """Full execution-plan view: profile + per-step decisions +
+    operator-tunable knobs (mode, policy, FAST-LLM usage)."""
+
+    run_id: str
+    document_id: str
+    mode: str
+    policy: str
+    confidence: float
+    estimated_cost_level: str
+    fast_llm_used: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    steps: list[ExecutionPlanStep]
+    profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProgressEventRecord(CamelModel):
+    """Frontend representation of a single progress event.
+
+    Compatible with the `event_type` taxonomy from
+    `j1.runs.reporter` (action constants stripped of the
+    `j1.progress.` prefix). Field names mirror what the SSE stream
+    emits — clients can use the same parser for both `GET …/events`
+    and `GET …/events/stream`."""
+
+    event_id: str
+    run_id: str
+    event_type: str
+    timestamp: datetime
+    severity: str = "INFO"
+    stage: str | None = None
+    step: str | None = None
+    status: str | None = None
+    progress_percent: int | None = None
+    current: int | None = None
+    total: int | None = None
+    message: str | None = None
+    engine: str | None = None
+    provider: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProgressEventsRecord(CamelModel):
+    run_id: str
+    events: list[ProgressEventRecord]
+
+
+class IngestionRunConfirmRecord(CamelModel):
+    run_id: str
+    status: str
+
+
 # ---- Search / retrieve / answer --------------------------------------
 
 

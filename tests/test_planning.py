@@ -304,3 +304,70 @@ def test_confidence_is_low_when_no_signals_known(planner):
     plan = planner.plan(profile, policy=IngestPolicy.AUTO,
                         available_steps=_ALL_STEPS)
     assert 0.49 <= plan.confidence <= 0.6
+
+
+# ---- Execution-plan extensions (frontend-facing fields) -----------
+
+
+def test_planned_step_carries_execution_plan_metadata(planner):
+    """Each step in the plan must include the frontend-facing fields:
+    `step_id`, `stage`, `decision` (RUN/SKIP), `dependency_step_ids`,
+    `estimated_cost_tier`, `risk_level`. These power the plan-review UI."""
+    profile = _profile()
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    compile_step = plan.step(STEP_COMPILE)
+    assert compile_step is not None
+    assert compile_step.step_id == "compile"
+    assert compile_step.stage == "COMPILE"
+    assert compile_step.decision == "RUN"
+    assert compile_step.estimated_cost_tier in {"NONE", "LOW", "MEDIUM", "HIGH"}
+    assert compile_step.risk_level in {"low", "medium", "high"}
+
+
+def test_skipped_step_decision_is_skip_with_reason(planner):
+    """A skipped step must carry decision=SKIP and a non-empty reason
+    so the UI can show 'why didn't this run?' without inferring from
+    the absence of an entry."""
+    profile = _profile()
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    graph_step = plan.step(STEP_GRAPH)
+    assert graph_step is not None
+    assert graph_step.decision == "SKIP"
+    assert graph_step.reason and len(graph_step.reason) > 0
+
+
+def test_compile_step_has_no_dependencies():
+    """`compile` is the first stage — its dependency list MUST be
+    empty so the frontend can render the dependency graph without
+    looping back through enrich/graph."""
+    from j1.processing.planning import _STEP_DEPS  # type: ignore
+
+    assert _STEP_DEPS[STEP_COMPILE] == ()
+
+
+def test_dependent_steps_list_compile_as_dependency():
+    """enrich / graph / index all depend on compile (artifacts).
+    Render-time guard against accidental dependency tree breakage."""
+    from j1.processing.planning import _STEP_DEPS  # type: ignore
+
+    for stage in (STEP_ENRICH, STEP_GRAPH, STEP_INDEX):
+        assert STEP_COMPILE in _STEP_DEPS[stage]
+
+
+def test_skipping_index_marks_high_risk(planner):
+    """Skipping `index` would break searchability — that's a
+    high-risk decision regardless of policy. The risk_level field
+    is the one the UI uses to highlight dangerous skips."""
+    profile = _profile(extension=".txt", text_extractable_ratio=1.0)
+    plan = planner.plan(
+        profile,
+        policy=IngestPolicy.AUTO,
+        available_steps=_ALL_STEPS,
+        caller_overrides={STEP_INDEX: False},
+    )
+    index_step = plan.step(STEP_INDEX)
+    assert index_step is not None
+    assert index_step.enabled is False
+    assert index_step.risk_level == "high"

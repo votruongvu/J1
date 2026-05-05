@@ -22,7 +22,9 @@
 > [extension/domain-module-isolation.md](extension/domain-module-isolation.md)
 > for what belongs outside the J1 core;
 > [troubleshooting.md](troubleshooting.md) for operational
-> issues.
+> issues;
+> [ingestion-progress.md](ingestion-progress.md) for the user-facing
+> ingestion-run + progress-event + SSE-stream surface.
 
 ---
 
