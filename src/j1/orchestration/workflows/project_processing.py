@@ -115,6 +115,18 @@ class ProjectProcessingRequest:
     planner_enabled: bool = False
     # Policy fed to the planner. Only consulted when `planner_enabled`.
     policy: IngestPolicy = IngestPolicy.AUTO
+    # Temporal search-attribute upserts. Default OFF because the
+    # cluster rejects upserts for attributes that aren't registered
+    # with the namespace, and the rejection happens at workflow-
+    # activation completion (server-side) — the SDK's exception
+    # surfaces AFTER the workflow code returns, so a try/except in
+    # the workflow can't catch it. Operators who want this signal
+    # must (1) register the attributes via
+    # `temporal operator search-attribute create --name J1IngestStage
+    # --type Keyword` (and the same for J1IngestMode), and (2) flip
+    # this flag to True. Until then the workflow silently skips the
+    # upsert calls.
+    search_attributes_enabled: bool = False
     # Continue-as-new control. Both default to 0 (disabled).
     continue_as_new_after_documents: int = 0
     history_event_threshold: int = 0
@@ -200,6 +212,12 @@ class ProjectProcessingWorkflow:
         # search-attribute updates don't have to dig into `request`
         # every call. Populated on first `_log_step()` and reused.
         self._scope_log_context: dict[str, str] = {}
+        # Mirrors `request.search_attributes_enabled` once `run()` is
+        # called. Default False matches the request default; only
+        # flips True when the operator has registered the attributes
+        # with the Temporal namespace AND explicitly opted in via the
+        # request flag.
+        self._search_attributes_enabled: bool = False
 
     @workflow.run
     async def run(
@@ -215,6 +233,7 @@ class ProjectProcessingWorkflow:
         self._completed_operations = list(request.completed_operations)
         self._produced_artifact_ids = list(request.produced_artifact_ids)
         self._documents_completed = request.documents_completed
+        self._search_attributes_enabled = request.search_attributes_enabled
 
         # Announce workflow start with the operationally interesting
         # context — what's enabled, who asked. Lets operators filter
@@ -518,25 +537,34 @@ class ProjectProcessingWorkflow:
         ))
 
     def _set_search_attribute(self, name: str, value: str) -> None:
-        """Best-effort search-attribute upsert.
+        """Opt-in search-attribute upsert.
 
-        Search attributes must be pre-registered with the Temporal
-        namespace (via `temporal operator search-attribute create`).
-        If they're not — the typical state in fresh dev clusters — the
-        upsert raises. Catch and continue: visibility is a nice-to-have,
-        not a correctness requirement.
+        Default OFF (`request.search_attributes_enabled=False`). The
+        Temporal cluster rejects upserts for attributes that aren't
+        registered with the namespace, and the rejection happens at
+        workflow-activation completion — the SDK's exception surfaces
+        AFTER this method returns, so a try/except here can't catch
+        it. The clean alternative is to NOT issue the upsert unless
+        the operator has explicitly registered the attributes and
+        flipped `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` (which
+        the deployment passes through to `request.search_attributes_enabled`).
 
         Uses the typed `SearchAttributeKey` API (the dict form is
         deprecated as of Temporal Python SDK 1.x). All J1 ingestion
         attributes are `keyword` type (lower-cardinality, exact-match
-        filterable in the UI)."""
+        filterable in the UI). Inner try/except is kept as a final
+        guardrail for unit tests and other non-Temporal-runtime
+        scenarios where the upsert call itself raises synchronously."""
+        if not self._search_attributes_enabled:
+            return
         try:
             from temporalio.common import SearchAttributeKey
             key = SearchAttributeKey.for_keyword(name)
             workflow.upsert_search_attributes([key.value_set(value)])
-        except Exception:  # noqa: BLE001 — visibility never blocks ingest
-            # Intentionally silent. Operators who want this signal can
-            # register the attributes; everyone else gets no spam.
+        except Exception:  # noqa: BLE001 — synchronous failures are non-fatal
+            # Intentionally silent. Server-side rejection (unregistered
+            # attribute) bypasses this handler — that's why the opt-in
+            # flag above exists.
             pass
 
     # ---- Pipeline phases ---------------------------------------------------
