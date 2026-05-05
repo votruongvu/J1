@@ -61,9 +61,9 @@ ENV_EMBEDDING_TIMEOUT = "J1_EMBEDDING_TIMEOUT_SECONDS"
 ENV_EMBEDDING_MAX_RETRIES = "J1_EMBEDDING_MAX_RETRIES"
 ENV_EMBEDDING_LANGCHAIN_CONFIG = "J1_EMBEDDING_LANGCHAIN_CONFIG"
 
-# Fast role (Phase B). Optional — used by the planner for short
-# structured tasks. Same env-var shape as text so deployments can
-# reuse base_url + api_key with just a different model.
+# Fast role. Optional — used by the adaptive ingestion planner for
+# short structured tasks. Same env-var shape as text so deployments
+# can reuse base_url + api_key with just a different model.
 ENV_FAST_PROVIDER = "J1_FAST_LLM_PROVIDER"
 ENV_FAST_BASE_URL = "J1_FAST_LLM_BASE_URL"
 ENV_FAST_API_KEY = "J1_FAST_LLM_API_KEY"
@@ -130,11 +130,12 @@ class EmbeddingSettings(_CommonLLMSettings):
 class FastLLMSettings(_CommonLLMSettings):
     """FAST role — same shape as text but tighter defaults.
 
-    Phase B: consumed only by the adaptive ingestion planner for
-    short structured tasks. Lower default temperature (deterministic
-    classification) and tighter timeout reflect the fast-and-cheap
-    intent. Optional: when `is_configured=False`, the planner falls
-    back to deterministic-only operation (no LLM hint)."""
+    Consumed by the adaptive ingestion planner for short structured
+    tasks (document classification, mode selection, light metadata).
+    Lower default temperature (deterministic classification) and
+    tighter timeout reflect the fast-and-cheap intent. Optional:
+    when `is_configured=False`, the planner falls back to
+    deterministic-only operation (no LLM hint)."""
 
     temperature: float = 0.0
     max_output_tokens: int = 512
@@ -146,8 +147,9 @@ class LLMSettings:
     text: TextLLMSettings
     vision: VisionLLMSettings
     embedding: EmbeddingSettings
-    # Phase B: optional. `fast.is_configured` may be False and the
-    # rest of the framework still works.
+    # Optional fast role for the adaptive ingestion planner.
+    # `fast.is_configured` may be False and the rest of the framework
+    # still works (deterministic-only planning).
     fast: FastLLMSettings | None = None
 
 
@@ -201,7 +203,7 @@ def _load_vision_settings(env: Mapping[str, str]) -> VisionLLMSettings:
 
 
 def _load_fast_settings(env: Mapping[str, str]) -> FastLLMSettings:
-    """Phase B FAST-role loader.
+    """Load FAST role settings from env.
 
     Mirrors `_load_text_settings` shape so the same provider can serve
     fast and text with just a different model. Returns a settings

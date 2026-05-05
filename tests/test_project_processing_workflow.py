@@ -257,9 +257,11 @@ def test_run_completes_full_pipeline(monkeypatch):
 
 
 def test_validate_failure_raises_application_error_and_marks_failed_final(monkeypatch):
-    """Phase A regression: validation failure must surface as Temporal
-    `ApplicationError` (workflow Failed in UI), not a returned result
-    with `state="failed_final"` (workflow Completed in UI)."""
+    """Validation failure must surface as Temporal `ApplicationError`
+    (workflow Failed in UI), not a returned result with
+    `state="failed_final"` (workflow Completed in UI). Regression
+    against the false-success bug where the workflow swallowed
+    failures and returned them encoded in a status field."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -281,8 +283,9 @@ def test_validate_failure_raises_application_error_and_marks_failed_final(monkey
 
 
 def test_compile_failure_raises_application_error_and_marks_failed_final(monkeypatch):
-    """Phase A regression: compile FAILED must propagate as a Temporal
-    workflow failure, not a returned result the caller might miss."""
+    """Compile FAILED must propagate as a Temporal workflow failure,
+    not a returned result the caller might miss. Regression against
+    the false-success bug."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -308,10 +311,11 @@ def test_compile_failure_raises_application_error_and_marks_failed_final(monkeyp
 
 
 def test_unexpected_exception_raises_application_error_and_marks_failed_recoverable(monkeypatch):
-    """Phase A regression: unexpected exceptions are wrapped in a
-    typed `ApplicationError` so Temporal UI shows a clean failure
-    type — but `non_retryable` stays False to preserve the
-    historical "transient infrastructure" classification."""
+    """Unexpected exceptions are wrapped in a typed `ApplicationError`
+    so Temporal UI shows a clean failure type — but `non_retryable`
+    stays False to preserve the "transient infrastructure"
+    classification (parent workflows / operators may legitimately
+    retry these)."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -738,9 +742,9 @@ def test_budget_check_runs_before_compile(monkeypatch):
 def test_failure_reason_in_status(monkeypatch):
     """`get_status` query must remain readable even after the workflow
     raises — Temporal serves queries against the workflow's recorded
-    state independently of whether `run()` exited cleanly. Phase A
-    contract: the workflow records state THEN raises, so this query
-    still works."""
+    state independently of whether `run()` exited cleanly. The
+    workflow records state THEN raises, so this query still works
+    after a failure."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):

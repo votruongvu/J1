@@ -68,13 +68,13 @@ GATE_AFTER_INDEX = "after_index"
 
 DEFAULT_ACTIVITY_TIMEOUT = timedelta(minutes=10)
 SHORT_ACTIVITY_TIMEOUT = timedelta(seconds=30)
-# Phase A.4: long-running activities (compile, build_graph) emit a
-# heartbeat at start and finish. The activity is considered hung if
-# no heartbeat arrives within this window — Temporal then fails the
-# attempt with a heartbeat-timeout, retried per the activity's retry
-# policy. Generous compared to the default heartbeat cadence so a
-# slow but progressing activity (e.g. mineru loading 2.4 GB of model
-# weights on first call) doesn't get killed.
+# Long-running activities (compile, build_graph) emit a heartbeat at
+# start and finish. The activity is considered hung if no heartbeat
+# arrives within this window — Temporal then fails the attempt with
+# a heartbeat-timeout, retried per the activity's retry policy.
+# Generous compared to the default heartbeat cadence so a slow but
+# progressing activity (e.g. mineru loading 2.4 GB of model weights
+# on first call) doesn't get killed.
 HEARTBEAT_TIMEOUT = timedelta(minutes=2)
 
 OPERATION_VALIDATE = "validate"
@@ -105,12 +105,13 @@ class ProjectProcessingRequest:
     # behaviour. `continue_optional` permits PARTIAL_COMPLETED when
     # optional steps fail; `best_effort` permits it for required steps.
     failure_policy: FailurePolicy = FailurePolicy.FAIL_FAST
-    # Phase B: adaptive planning. When False (default), the workflow
-    # uses the legacy "kind is None → skip" gate logic and behaves
-    # exactly as before Phase B. When True, each document is profiled
-    # and run through `DefaultIngestPlanner`; the resulting `IngestPlan`
-    # decides which configured stages to actually attempt. Caller-
-    # supplied kinds always override planner decisions (caller wins).
+    # Adaptive ingestion planning toggle. When False (default), the
+    # workflow uses the "kind is None → skip" gate logic and behaves
+    # exactly as it did before adaptive planning landed. When True,
+    # each document is profiled and run through `DefaultIngestPlanner`;
+    # the resulting `IngestPlan` decides which configured stages to
+    # actually attempt. Caller-supplied kinds always override planner
+    # decisions (caller wins).
     planner_enabled: bool = False
     # Policy fed to the planner. Only consulted when `planner_enabled`.
     policy: IngestPolicy = IngestPolicy.AUTO
@@ -131,13 +132,14 @@ class ProjectProcessingResult:
     documents_total: int = 0
     documents_completed: int = 0
     error: str | None = None
-    # Phase A additions. `final_status` is the workflow's outcome from
-    # an operator's point of view and is the field tests should assert
-    # on (`state` reflects the lower-level `WorkflowState`). Both are
-    # populated; they're consistent but not redundant — `state` may be
+    # `final_status` is the workflow's outcome from an operator's
+    # point of view and is the field tests should assert on (`state`
+    # reflects the lower-level `WorkflowState`). Both are populated;
+    # they're consistent but not redundant — `state` may be
     # `failed_final` (terminal-business) vs `failed_recoverable`
     # (unexpected exception), while `final_status` collapses both to
-    # `FinalStatus.FAILED`.
+    # `FinalStatus.FAILED`. `step_results` is the per-stage audit:
+    # what ran, what was skipped (with reason + source), what failed.
     final_status: FinalStatus = FinalStatus.FAILED
     step_results: list[StepResult] = field(default_factory=list)
 
@@ -155,7 +157,7 @@ class WorkflowStatus:
     review_gate: str | None = None
     budget_approval_required: bool = False
     error: str | None = None
-    # Phase A.5: per-stage records visible to the get_status query so
+    # Per-stage records visible to the get_status query so
     # `GET /ingestion-jobs/{id}` can surface "what ran / was skipped /
     # failed" without waiting for workflow completion.
     step_results: list[StepResult] = field(default_factory=list)
@@ -188,13 +190,13 @@ class ProjectProcessingWorkflow:
         self._documents_completed: int = 0
         self._produced_artifact_ids: list[str] = []
         self._error: str | None = None
-        # Phase A: per-stage records aggregated into the workflow's
-        # final result so operators / status endpoints / audit logs can
+        # Per-stage records aggregated into the workflow's final
+        # result so operators / status endpoints / audit logs can
         # answer "what ran, what was skipped, what failed, why" without
-        # re-reading workflow history. Recording sites live next to
-        # each stage call (Phase A.5); A.1 only declares the slot.
+        # re-reading workflow history. Recording sites are colocated
+        # with each stage call.
         self._step_results: list[StepResult] = []
-        # Phase A.4: cached scope identifiers so structured-log lines /
+        # Cached scope identifiers so structured-log lines /
         # search-attribute updates don't have to dig into `request`
         # every call. Populated on first `_log_step()` and reused.
         self._scope_log_context: dict[str, str] = {}
@@ -214,10 +216,10 @@ class ProjectProcessingWorkflow:
         self._produced_artifact_ids = list(request.produced_artifact_ids)
         self._documents_completed = request.documents_completed
 
-        # Phase A.4: announce workflow start with the operationally
-        # interesting context — what's enabled, who asked. Lets
-        # operators filter logs / Temporal UI without opening the
-        # workflow input payload.
+        # Announce workflow start with the operationally interesting
+        # context — what's enabled, who asked. Lets operators filter
+        # logs / Temporal UI without opening the workflow input
+        # payload.
         self._log_step(
             request,
             event="ingestion.workflow.started",
@@ -296,9 +298,10 @@ class ProjectProcessingWorkflow:
             # required-step failure, etc.). Record the recoverable state
             # for `get_status` queries, run finalization for cleanup,
             # then raise so Temporal sees the workflow as Failed (not
-            # Completed). Phase A core fix: previously this branch
-            # *returned* a result, leaving Temporal UI showing
-            # "Completed" for a workflow that internally failed.
+            # Completed). Earlier versions of this branch *returned* a
+            # result with `state="failed_final"`, leaving Temporal UI
+            # showing "Completed" for a workflow that internally
+            # failed — the false-success bug this raise fixes.
             self._state = WorkflowState.FAILED_FINAL
             self._error = str(exc)
             self._log_step(
@@ -375,10 +378,11 @@ class ProjectProcessingWorkflow:
         """Map the internal `WorkflowState` to the operator-facing
         `FinalStatus`. PARTIAL_COMPLETED requires *both* (a) all
         required steps succeeded and (b) at least one optional step
-        failed — neither condition can be true today (no per-step
-        required/optional taxonomy yet, no step-level recording yet),
-        so the mapping is straightforward in Phase A.1. Phase A.2
-        wires the optional-failure path."""
+        failed — but neither condition can be true today: every
+        enabled step still raises on failure (`fail_fast`), so the
+        mapping is straightforward. The optional-failure path is
+        ready to wire whenever `FailurePolicy.CONTINUE_OPTIONAL`
+        gets a real consumer."""
         if self._state == WorkflowState.COMPLETED:
             return FinalStatus.COMPLETED
         if self._state == WorkflowState.CANCELLED:
@@ -406,7 +410,7 @@ class ProjectProcessingWorkflow:
         self._completed_operations.append(op)
         self._current_operation = None
 
-    # ---- Phase A.4: structured logging + search attributes ------------
+    # ---- Structured logging + Temporal search attributes -------------
 
     def _scope_context(self, request: ProjectProcessingRequest) -> dict[str, str]:
         """Build the standard log-context dict for this run. Cached after
@@ -488,10 +492,12 @@ class ProjectProcessingWorkflow:
     ) -> None:
         """Append a StepResult to the workflow's per-stage record.
 
-        Source defaults follow Phase A semantics (caller-supplied
-        kinds → `CALLER`; defaults from capabilities → `DEFAULT`;
-        config-disabled → `CONFIG`). Phase B will add `PLANNER`/
-        `POLICY` sources without changing this helper's signature."""
+        Source defaults: caller-supplied kinds → `CALLER`; defaults
+        from capabilities → `DEFAULT`; config-disabled → `CONFIG`.
+        When the planner is enabled, `_stage_enabled` substitutes
+        `PLANNER` / `POLICY` for stages whose decision was made by
+        the plan rather than the caller — the helper signature is
+        unchanged."""
         try:
             now = workflow.now()
         except Exception:  # noqa: BLE001 — outside Temporal runtime
@@ -599,8 +605,10 @@ class ProjectProcessingWorkflow:
 
         # Available steps reflect what the deployment has registered;
         # for now infer from caller-supplied kinds + always include
-        # compile (mandatory in the legacy model). Phase B+ may pass
-        # this in via ProcessingCapabilities.
+        # compile (mandatory in the legacy model). A future change can
+        # pass this in via `ProcessingCapabilities` so the planner
+        # sees the full registered set, not just what the caller
+        # picked.
         available_steps = frozenset({STEP_COMPILE})
         if request.enricher_kind:
             available_steps |= {STEP_ENRICH}
@@ -649,8 +657,10 @@ class ProjectProcessingWorkflow:
     async def _process_document(
         self, request: ProjectProcessingRequest, document_id: str
     ) -> None:
-        # Phase B: when planner is enabled, build the plan up-front so
-        # every stage gate consults the same authoritative decision.
+        # When adaptive planning is enabled, build the plan up-front
+        # so every stage gate consults the same authoritative
+        # decision. When disabled, `plan` stays None and the gate
+        # helpers fall back to caller-driven (legacy) behaviour.
         plan: IngestPlan | None = None
         if request.planner_enabled:
             plan = await self._build_plan(request, document_id)
@@ -756,8 +766,10 @@ class ProjectProcessingWorkflow:
                     self._record_step(
                         step="enrich",
                         status=StepStatus.FAILED,
-                        # Caller asked for this enricher → required
-                        # (Phase B may relax for planner-driven optional).
+                        # Caller asked for this enricher → required.
+                        # (A future planner-driven mode may emit
+                        # `required=False` for planner-enabled enrich
+                        # so `continue_optional` can let it fail.)
                         required=True,
                         source=StepSource.CALLER,
                         reason=enrich_result.error or "enrich activity returned non-succeeded status",
@@ -1096,8 +1108,8 @@ class ProjectProcessingWorkflow:
 
     @workflow.query
     def get_status(self) -> WorkflowStatus:
-        # Phase A.5: surface step_results so the status endpoint can
-        # show "what ran / was skipped / failed" without waiting for
+        # Surface step_results so the status endpoint can show
+        # "what ran / was skipped / failed" without waiting for
         # workflow completion. `final_status` is None while the
         # workflow is in progress; populated only on terminal exit.
         final_status = (

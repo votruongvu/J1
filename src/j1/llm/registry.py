@@ -17,13 +17,14 @@ from j1.llm.errors import LLMConfigError, LLMRoleNotRegistered
 LLM_ROLE_TEXT = "text"
 LLM_ROLE_VISION = "vision"
 LLM_ROLE_EMBEDDING = "embedding"
-# Phase B: cheap / structured-output role for the planner and other
-# short, deterministic tasks (document classification, light metadata,
-# heading normalisation). Implementations are free to point this at
-# the same provider/base_url as `text` with just a different model.
-# `LLM_ROLE_FAST` is OPTIONAL — deterministic planning works without
-# it; consumers must call `try_fast()` rather than `fast()` so missing
-# config is a no-op rather than a startup failure.
+# Cheap / structured-output role for the adaptive ingestion planner
+# and other short, deterministic tasks (document classification,
+# light metadata, heading normalisation). Implementations are free
+# to point this at the same provider/base_url as `text` with just a
+# different model. `LLM_ROLE_FAST` is OPTIONAL — deterministic
+# planning works without it; consumers must call `try_fast()` rather
+# than `fast()` so missing config is a no-op rather than a startup
+# failure.
 LLM_ROLE_FAST = "fast"
 
 KNOWN_ROLES: frozenset[str] = frozenset(

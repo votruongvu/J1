@@ -1,4 +1,6 @@
-"""Phase A regression tests: ingestion failures must surface as Temporal
+"""Workflow-failure-propagation regression tests.
+
+Pin the contract: ingestion failures must surface as Temporal
 workflow failures (not as Completed-with-an-error-string-inside).
 
 Each test exercises a specific failure path through
@@ -182,7 +184,7 @@ def test_project_unexpected_exception_wrapped_as_application_error(monkeypatch):
 def test_project_success_returns_final_status_completed(monkeypatch):
     """Sanity check: when nothing fails, the workflow returns a result
     whose `final_status` is COMPLETED. Tests that assert correctness
-    after Phase A should look at `final_status`, not just `state`."""
+    should look at `final_status`, not just `state`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -239,9 +241,9 @@ def test_project_cancellation_returns_final_status_cancelled(monkeypatch):
 
 
 def test_document_workflow_compile_failure_raises_application_error(monkeypatch):
-    """`DocumentProcessingWorkflow` has the same Phase A contract — a
-    failed compile must raise, not return a result with
-    `status="failed"`."""
+    """`DocumentProcessingWorkflow` has the same failure-propagation
+    contract as the project-level workflow — a failed compile must
+    raise, not return a result with `status="failed"`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("compile"):
@@ -266,8 +268,9 @@ def test_document_workflow_compile_failure_raises_application_error(monkeypatch)
 def test_document_workflow_caller_specified_enrich_failure_raises(monkeypatch):
     """If the caller explicitly supplied `enricher_kind`, enrichment
     is treated as required — its failure must surface as a workflow
-    failure. (Phase B may later relax this for planner-driven
-    optional steps; in Phase A every enabled step is required.)"""
+    failure. (A future planner-driven mode may emit `required=False`
+    for planner-enabled enrich so `continue_optional` policy can let
+    it fail; today every enabled step is required.)"""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("compile"):

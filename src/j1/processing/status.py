@@ -57,7 +57,8 @@ class FinalStatus(StrEnum):
       * `COMPLETED` is reported ONLY when every required enabled step
         completed successfully. A workflow that internally failed a
         required step but caught the exception MUST NOT report
-        `COMPLETED` — that's the false-success bug Phase A fixes.
+        `COMPLETED` — that's the false-success bug this enum exists
+        to make impossible to express.
       * `PARTIAL_COMPLETED` is reserved for the case where every
         required step succeeded AND at least one optional step failed
         AND the configured failure policy allows continuation.

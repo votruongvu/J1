@@ -1,9 +1,10 @@
-"""Phase B regression tests: `DefaultIngestPlanner` decision matrix.
+"""`DefaultIngestPlanner` decision-matrix regression tests.
 
 Each test pins one policy × profile-shape combination so the planner's
 decisions are auditable without reading the implementation. The tests
 also exercise the caller-override precedence rule (caller wins over
-planner) — the contract Phase B promises operators."""
+planner) — the contract adaptive ingestion planning promises
+operators."""
 
 from __future__ import annotations
 

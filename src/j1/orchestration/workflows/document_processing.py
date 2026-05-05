@@ -61,12 +61,12 @@ class DocumentProcessingWorkflow:
         )
 
         if compile_result.status != "succeeded":
-            # Phase A: previously this returned a result with
-            # `status="failed"`, leaving Temporal UI showing
-            # "Completed" for a workflow whose required compile step
-            # failed. Raise instead so Temporal sees the workflow as
-            # Failed. The error string carries the original message so
-            # operators / status queries can still surface the cause.
+            # Earlier versions returned a result with `status="failed"`,
+            # leaving Temporal UI showing "Completed" for a workflow
+            # whose required compile step failed. Raise instead so
+            # Temporal sees the workflow as Failed. The error string
+            # carries the original message so operators / status
+            # queries can still surface the cause.
             raise ApplicationError(
                 f"compile failed for document {request.document_id}: "
                 f"{compile_result.error or 'unspecified'}",

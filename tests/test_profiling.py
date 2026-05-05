@@ -1,4 +1,4 @@
-"""Phase B regression tests: `DeterministicDocumentProfiler`.
+"""`DeterministicDocumentProfiler` regression tests.
 
 The profiler must be cheap, side-effect free, and degrade gracefully
 when optional dependencies (pypdf) are absent or when the input is

@@ -74,7 +74,7 @@ class ProcessingActivities:
         ctx = input.scope.to_context()
         compiler = self._lookup(self._compilers, input.processor_kind, "compiler")
         document = self._sources.get(ctx, input.document_id)
-        # Phase A.4: heartbeat at activity start so a configured
+        # Heartbeat at activity start so a configured
         # `heartbeat_timeout` can fire if the underlying compile call
         # (typically mineru / raganything, can take minutes for PDFs)
         # hangs. The compiler call itself is synchronous, so we can't

@@ -201,12 +201,20 @@ ship:
   — full pipeline. Validates the project, lists pending documents,
   runs compile per document, optionally enriches / builds graph /
   indexes, supports pause / resume / cancel signals, budget-approval
-  gate, and human-review gates after any stage. State machine:
+  gate, and human-review gates after any stage. Internal state machine
+  (visible via `get_status` query):
 
   ```
   RUNNING → (PAUSED | WAITING_FOR_BUDGET_APPROVAL | WAITING_FOR_REVIEW)
          → COMPLETED | CANCELLED | FAILED_RECOVERABLE | FAILED_FINAL
   ```
+
+  Operator-facing `final_status` (on the workflow's return value):
+  `COMPLETED | PARTIAL_COMPLETED | FAILED | CANCELLED | TIMED_OUT`.
+  When the internal state ends in either FAILED_* the workflow
+  **raises** `ApplicationError` so Temporal sees the run as Failed
+  in the UI — it does not return a result with a failure-encoded
+  status field.
 
 - [`DocumentProcessingWorkflow`](../src/j1/orchestration/workflows/document_processing.py)
   — single-document path: compile → enrich → index. No gates, no
@@ -223,6 +231,52 @@ enough for Temporal's internal payload limits and means a
 continue-as-new restart can carry the *summary* state forward without
 streaming megabytes.
 
+**Workflow-failure propagation:** when a required step fails, the
+workflow raises
+[`temporalio.exceptions.ApplicationError`](https://python.temporal.io/temporalio.exceptions.ApplicationError.html)
+with a stable `type` (`J1_INGEST_REQUIRED_STEP_FAILED` for business
+failures, `J1_INGEST_UNEXPECTED_ERROR` for wrapped exceptions, and
+`J1_INGEST_LOOKUP_FAILED` for missing entities). Temporal sees the
+workflow as **Failed** in the UI — never as Completed-with-an-error-
+string-inside. The error types are stable: dashboards and alerts
+can filter on them without parsing message text. Internal
+`WorkflowState` (FAILED_FINAL vs. FAILED_RECOVERABLE) is still
+recorded for the `get_status` query, but the operator-facing
+`FinalStatus` collapses both to `FAILED`.
+
+**FinalStatus and per-step accounting:** every workflow run produces
+a [`ProjectProcessingResult`](../src/j1/orchestration/workflows/project_processing.py)
+with:
+
+- `final_status` — `COMPLETED | PARTIAL_COMPLETED | FAILED |
+  CANCELLED | TIMED_OUT`. The field tests and operators should
+  assert on. `COMPLETED` means *every required enabled step succeeded*
+  — never just "the workflow exited cleanly".
+- `step_results` — one
+  [`StepResult`](../src/j1/processing/step_result.py) per stage with
+  `status`, `required`, `source` (caller / planner / policy / default
+  / config), optional `reason` for skips, and optional
+  [`StepError`](../src/j1/processing/step_result.py) for failures.
+  Skipped stages always carry a reason — operators don't have to
+  read the request payload to answer "why didn't graph run?".
+- `state` — the lower-level `WorkflowState` for callers that need
+  the business-vs-unexpected distinction.
+
+**Visibility:** the workflow emits
+[structured logs](../src/j1/orchestration/workflows/project_processing.py)
+via `workflow.logger` at every lifecycle transition (started /
+completed / cancelled / failed) with operationally safe context
+(`tenant_id`, `project_id`, `compiler_kind`, etc. — never document
+content). It also publishes a typed search attribute `J1IngestStage`
+that tracks the active stage so the Temporal UI can group / filter
+running workflows. When adaptive planning is enabled, `J1IngestMode`
+exposes the chosen mode. Search-attribute upserts are best-effort:
+deployments that haven't registered the keys with the namespace just
+get no signal (no error). Long-running activities (compile,
+build_graph) heartbeat at start / finish, governed by `HEARTBEAT_TIMEOUT`
+(2 minutes) so a stalled vendor call surfaces as a timeout instead
+of consuming the full activity start-to-close budget.
+
 **Signals available on `ProjectProcessingWorkflow`:**
 
 | Signal | Effect |
@@ -237,9 +291,20 @@ streaming megabytes.
 
 **Retry policy:** `DEFAULT_RETRY = RetryPolicySpec(initial=1s,
 backoff=2.0, max_interval=60s, max_attempts=5)`, applied to every
-activity unless overridden. `DocumentNotFoundError` and unknown
-processor kinds raise non-retryable `ApplicationError` so a typo doesn't
-loop forever.
+activity unless overridden. The non-retryable list classifies every
+deterministic-by-nature failure so a typo doesn't loop forever:
+
+- `J1_INGEST_REQUIRED_STEP_FAILED` — required compile / index / etc.
+  reported failure
+- `ConfigError` / `ValidationError` / `LLMConfigError` — operator-
+  reachable bugs
+- `DocumentNotFoundError` / `UnknownProcessorError` — caller named
+  something that doesn't exist
+
+Provider 5xx, network blips, and other transient classes stay
+retryable — see
+[`temporal/retries.py`](../src/j1/orchestration/temporal/retries.py)
+for the full list.
 
 ---
 
@@ -254,6 +319,7 @@ and group by lifecycle role:
 | `ProjectLifecycleActivities` | `validate_project`, `prepare_workspace`, `register_documents`, `finalize_processing` |
 | `KnowledgeProcessingActivities` | `run_knowledge_compilation`, `register_compiled_artifacts`, `run_artifact_enrichment`, `prepare_graph_corpus`, `run_graph_build`, `register_graph_artifacts` |
 | `ProcessingActivities` | Generic dispatcher: `compile`, `enrich`, `build_graph`, `index`, `query`. Uses the `kind` attribute on each Protocol to look up the right backend. |
+| `ProfilingActivities` | `profile_document` — cheap deterministic profile (extension, MIME, size, page count). Used by the adaptive planner; only registered when adaptive planning is enabled. |
 | `ProjectActivities` | `validate_context`, `list_pending_documents`, `compute_spend`, `finalize` |
 | `SearchActivities` | `build_search_index` |
 | `ReviewActivities` | `create_review_items`, `apply_review_decision` |
@@ -269,7 +335,89 @@ under one module so the wire shape is auditable in one place.
 
 ---
 
-## 8. Knowledge compiler connector
+## 8. Adaptive ingestion planning
+
+A clean text PDF and a 200-page scanned multimodal PDF should not
+cost the same to process. Adaptive ingestion planning splits "what
+does this document look like?" from "what should we do about it?"
+and runs only the stages a given document actually benefits from.
+
+**Off by default.** When `J1_INGEST_PLANNER_ENABLED=false` (default)
+the workflow uses the legacy "kind is None → skip" gate logic and
+behaves exactly as before. Enabling the planner is opt-in per
+deployment and per-job (`ProjectProcessingRequest.planner_enabled`).
+
+### 8.1 Profile
+
+[`DocumentProfile`](../src/j1/processing/profiling.py) captures cheap
+signals about the document — extension, MIME, file size, page count,
+and three-state booleans for `has_images` / `has_tables` /
+`has_scanned_pages` (`True` / `False` / `None`-for-unknown). The
+[`DeterministicDocumentProfiler`](../src/j1/processing/profiling.py)
+runs sub-second: stdlib `mimetypes`, `os.stat`, optional `pypdf` for
+page counts. It explicitly does NOT invoke MinerU / RAGAnything / any
+LLM — profiling must be cheap enough to run on every document. Profile
+failures degrade to warnings; only file-not-found raises.
+
+### 8.2 Plan
+
+[`DefaultIngestPlanner`](../src/j1/processing/planning.py) consumes
+a profile + an `IngestPolicy` + the available steps and emits an
+[`IngestPlan`](../src/j1/processing/planning.py): mode, per-step
+decisions (`enabled`, `required`, `source`, `reason`), confidence,
+and a coarse `estimated_cost_level`.
+
+**Policies** bias the planner:
+
+| Policy | Bias |
+|---|---|
+| `auto` | Planner decides from the profile alone |
+| `cost_saving` | Prefer skipping; only enable expensive stages when the profile demands it |
+| `balanced` | Production default (currently identical to `auto`; distinct constant so deployments can rebind) |
+| `high_accuracy` | Conservative — when uncertain, enable more (e.g. graph for unknown profiles) |
+| `force_full` | Enable every configured stage |
+| `text_only` | Force compile + index only; record warnings for tables / images / scanned pages so the trade-off is auditable |
+
+**Modes** are pure data — descriptive labels mapped to a frozenset of
+enabled steps:
+
+`TEXT_ONLY`, `TEXT_WITH_LIGHT_ENRICHMENT`, `TABLE_AWARE`,
+`MULTIMODAL_LIGHT`, `MULTIMODAL_FULL`, `GRAPH_AWARE`,
+`FULL_DIAGNOSTIC`.
+
+### 8.3 Step source precedence
+
+Caller-supplied `compilerKind` / `enricherKind` / `graphBuilderKind` /
+`indexerKind` always win over the planner. The recorded `StepResult`
+carries `source=CALLER` so audit logs explain which decisions came
+from the operator vs. the planner. Order of precedence (highest
+first):
+
+1. **Caller** — explicit kind on the ingest request.
+2. **Planner** — adaptive planner's mode-driven decision.
+3. **Policy** — global / per-job ingest policy override.
+4. **Default** — capability default (no caller, no planner).
+5. **Config** — operator-set deployment config (e.g. enrichment
+   disabled).
+
+### 8.4 FAST LLM role
+
+The optional [`LLM_ROLE_FAST`](../src/j1/llm/registry.py) role
+covers cheap, structured tasks (document classification, mode
+selection, light metadata, heading normalisation). It reuses the
+existing OpenAI-compat client class — adding the role does NOT
+introduce a separate adapter. Typical setups point both
+`J1_TEXT_LLM_BASE_URL` and `J1_FAST_LLM_BASE_URL` at the same endpoint
+with just a different `J1_FAST_LLM_MODEL`.
+
+The FAST role is OPTIONAL: deterministic planning works without it.
+When `J1_FAST_LLM_*` is unconfigured the planner skips its LLM-
+fallback path entirely. Consumers must call `try_fast()` rather than
+`fast()` so missing config is a no-op rather than a startup failure.
+
+---
+
+## 9. Knowledge compiler connector
 
 External compilers — typically a binary, microservice, or in-process
 library — are wrapped via
@@ -294,7 +442,7 @@ APIs — that responsibility belongs to whatever the adapter wraps.
 
 ---
 
-## 9. Enrichment pipeline
+## 10. Enrichment pipeline
 
 [`j1.enrichers`](../src/j1/enrichers.py) ships 9 built-in
 `_StructuredEnricher` subclasses. Each implements the
@@ -317,7 +465,7 @@ want to register them all.
 
 ---
 
-## 10. Graph builder connector
+## 11. Graph builder connector
 
 [`ExternalGraphBuilder`](../src/j1/connectors/graph/connector.py)
 wraps an external graph-construction tool the same way the compiler
@@ -345,7 +493,7 @@ traversal (limited; see § Limitations).
 
 ---
 
-## 11. Search indexing
+## 12. Search indexing
 
 [`SqliteSearchIndexer`](../src/j1/search/indexer.py) implements the
 `SearchIndexer` Protocol on top of SQLite FTS5. One database file per
@@ -369,7 +517,7 @@ support, raising `SearchIndexerError` early if not.
 
 ---
 
-## 12. Hybrid query engine
+## 13. Hybrid query engine
 
 [`HybridQueryEngine`](../src/j1/query/engine.py) is the front door
 for retrieval. It composes five
@@ -404,7 +552,7 @@ a localised change that doesn't ripple.
 
 ---
 
-## 13. Cost control
+## 14. Cost control
 
 [`j1.cost`](../src/j1/cost/) splits cost concerns into focused
 modules:
@@ -438,7 +586,7 @@ on demand.
 
 ---
 
-## 14. Human review
+## 15. Human review
 
 [`j1.review`](../src/j1/review/) is the framework's gate for
 human-in-the-loop decisions.
@@ -466,7 +614,7 @@ workflow enters `WAITING_FOR_REVIEW` and only resumes after the
 
 ---
 
-## 15. Audit logging
+## 16. Audit logging
 
 [`j1.audit`](../src/j1/audit/) is the framework's append-only audit
 trail.
@@ -495,7 +643,7 @@ JSONL files and serve different consumers.
 
 ---
 
-## 16. Profile system
+## 17. Profile system
 
 A profile is a directory of YAML / JSON / Markdown files that
 configures domain-specific behaviour without changing code.
@@ -528,7 +676,7 @@ own tests use `default`.
 
 ---
 
-## 17. Local development
+## 18. Local development
 
 ### Prerequisites
 
@@ -634,7 +782,7 @@ strict = true
 
 ---
 
-## 18. Testing strategy
+## 19. Testing strategy
 
 ### Composition
 

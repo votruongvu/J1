@@ -231,7 +231,9 @@ client imports.
 
 ### 5.1 `ProjectProcessingWorkflow`
 
-The full project pipeline. State machine:
+The full project pipeline. Internal state machine (visible via the
+`get_status` query — distinct from the operator-facing `final_status`
+on the workflow's return value):
 
 ```
 RUNNING ──┬─► PAUSED ──► RUNNING                          (pause / resume signal)
@@ -239,24 +241,74 @@ RUNNING ──┬─► PAUSED ──► RUNNING                          (pause
           │                            └──► CANCELLED      (reject_budget / cancel signal)
           ├─► WAITING_FOR_REVIEW ──► RUNNING               (approve_review signal)
           │                    └──► CANCELLED              (reject_review / cancel signal)
-          ├─► COMPLETED
-          ├─► CANCELLED
-          ├─► FAILED_RECOVERABLE
-          └─► FAILED_FINAL
+          ├─► COMPLETED                                    (returns ProjectProcessingResult)
+          ├─► CANCELLED                                    (returns ProjectProcessingResult)
+          ├─► FAILED_RECOVERABLE                           (raises ApplicationError, type=J1_INGEST_UNEXPECTED_ERROR)
+          └─► FAILED_FINAL                                 (raises ApplicationError, type=J1_INGEST_REQUIRED_STEP_FAILED)
 ```
+
+**Failure-propagation contract.** When the internal state ends in
+either `FAILED_*`, the workflow **raises** `temporalio.exceptions.
+ApplicationError` so Temporal sees the run as **Failed** in the UI.
+It does NOT return a result with a failure-encoded status field. The
+recorded internal state is still readable via the `get_status`
+query — the `_BusinessRejection` distinction is preserved for
+callers that care, but operators just see Failed.
+
+Error types raised:
+
+| `ApplicationError.type` | When | Retryable |
+|---|---|---|
+| `J1_INGEST_REQUIRED_STEP_FAILED` | Required step (validate / compile / enrich-when-explicit / graph-when-explicit / index) reported `status="failed"` | No |
+| `J1_INGEST_UNEXPECTED_ERROR` | Unexpected exception escaped the workflow's stage handlers | Yes (parent workflow / operator may retry) |
+| `J1_INGEST_LOOKUP_FAILED` | Activity-level: missing document / artifact / processor kind | No |
 
 Stages:
 
 1. Validate the project context.
 2. List pending documents.
-3. Compile each (with optional review gate after).
-4. Enrich each (with optional review gate after).
-5. Build the graph (with optional review gate after).
-6. Build the search index (with optional review gate after).
-7. Finalize.
+3. (Optional, when adaptive planning is enabled) Profile each
+   document and build an `IngestPlan`. See
+   [architecture § 8](../architecture.md#8-adaptive-ingestion-planning).
+4. Compile each (with optional review gate after).
+5. Enrich each (with optional review gate after).
+6. Build the graph (with optional review gate after).
+7. Build the search index (with optional review gate after).
+8. Finalize.
 
 Budget gates fire whenever recorded spend approaches a configured
 ceiling; the workflow pauses and waits for `approve_budget`.
+
+**Per-stage accounting.** Every stage produces a `StepResult` on the
+returned `ProjectProcessingResult.step_results` (and on the
+`get_status` query response). Each entry carries `status`, `required`,
+`source` (caller / planner / policy / default / config), and an
+optional `reason` for skips and `error` for failures — operators
+don't need to dig into activity-attempt history to answer "what ran,
+what was skipped, what failed, why?".
+
+**Visibility.** The workflow emits structured `workflow.logger`
+events at every lifecycle transition with operationally safe
+context (`tenant_id`, `project_id`, `compiler_kind`, etc. — never
+document content). It also publishes typed search attributes:
+
+| Search attribute | Updates on |
+|---|---|
+| `J1IngestStage` | Each stage start, completion, and terminal exit (`completed` / `cancelled` / `failed`). |
+| `J1IngestMode` | Set once per document when adaptive planning is enabled, to the chosen ingest mode (e.g. `text_only`). |
+
+Search-attribute upserts are best-effort: deployments that haven't
+registered the keys with the namespace silently get no signal (no
+error). Register them with:
+
+```bash
+temporal operator search-attribute create \
+  --namespace default \
+  --name J1IngestStage --type Keyword
+temporal operator search-attribute create \
+  --namespace default \
+  --name J1IngestMode --type Keyword
+```
 
 ### 5.2 `DocumentProcessingWorkflow`
 
@@ -274,10 +326,11 @@ For the full architecture see
 | Concern | Default | Configurable |
 |---|---|---|
 | Activity retry policy | `RetryPolicySpec(initial=1s, backoff=2.0, max_interval=60s, max_attempts=5)` | Per-activity override |
-| Non-retryable errors | `DocumentNotFoundError`, unknown processor `kind` (raises Temporal `ApplicationError(non_retryable=True)`) | Add new types in your activity wrappers |
+| Non-retryable errors | `J1_INGEST_REQUIRED_STEP_FAILED`, `J1_INGEST_LOOKUP_FAILED`, `ConfigError`, `ValidationError`, `LLMConfigError`, `DocumentNotFoundError`, `UnknownProcessorError` (full list in [`retries.py`](../../src/j1/orchestration/temporal/retries.py)) | Add new types in your activity wrappers |
 | Workflow execution timeout | _(Temporal default — unset by J1)_ | Pass via `client.start_workflow(..., execution_timeout=...)` |
-| Activity start-to-close timeout | _(per-activity; defined in payload schemas)_ | Override at registration |
-| Heartbeat | **Not emitted automatically by any shipped activity** | Long-running custom activities should call [`j1.heartbeat()`](../../src/j1/heartbeat.py) periodically — see below |
+| Activity start-to-close timeout | `DEFAULT_ACTIVITY_TIMEOUT=10m` for compile / enrich / graph / index; `SHORT_ACTIVITY_TIMEOUT=30s` for validate / list / spend / finalize / profile | Override at registration |
+| Activity heartbeat timeout | `HEARTBEAT_TIMEOUT=2m` on `compile` and `build_graph` (the long-running stages); unset on others | Override at registration |
+| Heartbeat | `compile` and `build_graph` heartbeat at start and finish via `_safe_heartbeat()`; longer custom stages should call [`j1.heartbeat()`](../../src/j1/heartbeat.py) periodically | Add to your activity body |
 
 Definitions live in
 [`src/j1/orchestration/temporal/retries.py`](../../src/j1/orchestration/temporal/retries.py).
@@ -297,13 +350,17 @@ def my_long_running_activity(input):
 ```
 
 The helper is a no-op outside an activity context (so unit tests
-that call the activity function directly don't blow up). The
-shipped activities (`compile`, `enrich`, `build_graph`, `index`,
-`query`, lifecycle, accounting, review, search) **do not heartbeat
-themselves** — they're treated as bounded units of work. If you
-write a custom activity that may exceed the configured
-start-to-close timeout, call `heartbeat()` inside its loop and set
-the activity's `heartbeat_timeout` accordingly when registering.
+that call the activity function directly don't blow up). The two
+long-running shipped activities — `compile` and `build_graph` —
+heartbeat at start and finish (via `_safe_heartbeat()` in
+[`activities/processing.py`](../../src/j1/orchestration/activities/processing.py)),
+and the workflow declares `heartbeat_timeout=2m` for them. The
+remaining shipped activities (`enrich`, `index`, `query`,
+`profile_document`, lifecycle, accounting, review, search) are
+short-lived and treated as bounded units of work. If you write a
+custom activity that may exceed the configured start-to-close
+timeout, call `heartbeat()` inside its loop and set the activity's
+`heartbeat_timeout` accordingly when registering.
 
 ---
 
@@ -319,9 +376,20 @@ the activity's `heartbeat_timeout` accordingly when registering.
 | `approve_budget` / `reject_budget` | Resolves the `WAITING_FOR_BUDGET_APPROVAL` gate. |
 | `approve_review` / `reject_review` | Resolves the `WAITING_FOR_REVIEW` gate. |
 
-Query: `get_status` returns the current `WorkflowStatus`
-(`state`, `documents_total`, `documents_completed`, `error`,
-`produced_artifact_ids`, …).
+Query: `get_status` returns the current `WorkflowStatus`. Fields:
+
+| Field | Meaning |
+|---|---|
+| `state` | Lower-level internal state (RUNNING / FAILED_FINAL / etc.) |
+| `final_status` | Operator-facing outcome (`COMPLETED` / `PARTIAL_COMPLETED` / `FAILED` / `CANCELLED` / `TIMED_OUT`) — `None` while running, populated only on terminal exit |
+| `current_operation` / `pending_operation` | Stage in flight |
+| `completed_operations` | What's already finished |
+| `documents_total` / `documents_completed` | Progress counters |
+| `produced_artifact_ids` | Artifacts created so far |
+| `step_results` | Per-stage `StepResult` entries (status, required, source, reason, error) — assert on these in tests rather than `state` for the operator-relevant truth |
+| `review_required` / `review_gate` | Set when paused at a review gate |
+| `budget_approval_required` | Set when paused at a budget gate |
+| `error` | Failure summary string |
 
 Send signals via the Temporal client:
 
@@ -389,12 +457,14 @@ status = await handle.query("get_status")
 |---|---|
 | Workflow accepted but never runs | Worker isn't on the same task queue — verify `J1_TEMPORAL_TASK_QUEUE` matches between API + worker |
 | Worker logs `connection refused` | Check `J1_TEMPORAL_TARGET` — from inside Docker use the service DNS name (`temporal:7233`), not `localhost` |
-| `ApplicationError(non_retryable=True)` for `DocumentNotFoundError` | Document ID typo or wrong tenant / project — check the registry |
-| `Unknown processor kind` | Activity received a `kind` not registered in the worker's processor map — verify the worker's `compilers=` / `enrichers=` / `graph_builders=` parameter |
+| `ApplicationError(type=J1_INGEST_LOOKUP_FAILED, non_retryable=True)` | Document / artifact / processor-kind ID not found — check the registry. Caller-side bug; not retryable. |
+| `ApplicationError(type=J1_INGEST_REQUIRED_STEP_FAILED, non_retryable=True)` | A required ingestion step (compile / index / etc.) failed. Drill into the activity's attempt history for the underlying cause; the workflow's `step_results` (via `get_status`) names the failed stage. |
+| `ApplicationError(type=J1_INGEST_UNEXPECTED_ERROR, non_retryable=False)` | Unexpected exception escaped the workflow's stage handlers. Check the audit log + the original exception class named in the message. Retryable — a parent workflow / operator may legitimately retry. |
 | Workflow stuck in `WAITING_FOR_BUDGET_APPROVAL` | Check cost log + send `approve_budget` (or `reject_budget`) via Temporal client / REST |
 | Workflow stuck in `WAITING_FOR_REVIEW` | Reviewer hasn't acted — see `GET /reviews` + `POST /reviews/{id}/decision` |
-| Activity heartbeat timeout | A custom activity exceeded its `start_to_close_timeout` without heartbeating — call `j1.heartbeat()` periodically inside the activity and set `heartbeat_timeout` when registering. Shipped activities do not heartbeat. |
-| Web UI shows the workflow as `Failed` with `BusinessRejection` | Workflow ended in `FAILED_FINAL` state (terminal business rejection); investigate the upstream cause via the audit log + activity attempt history |
+| Activity heartbeat timeout on `compile` / `build_graph` | The vendor call (typically mineru / raganything) hung longer than `HEARTBEAT_TIMEOUT=2m`. Investigate the parser logs; first-call mineru downloads can be slow on a fresh container — pre-cache via `J1_PRECACHE_MINERU_MODELS=vlm` or `=all` in the dev Dockerfile. |
+| Activity heartbeat timeout on a custom activity | Your activity exceeded its `start_to_close_timeout` without heartbeating — call `j1.heartbeat()` periodically inside the activity body and set `heartbeat_timeout` when registering. |
+| Web UI shows workflow as `Failed` with `J1_INGEST_*` type | The new failure-propagation contract: a required step actually failed. Read `get_status().step_results` to find which stage and why; the audit log carries the same data with full payloads. |
 
 For REST-side issues see [`docs/troubleshooting.md`](../troubleshooting.md).
 
@@ -402,8 +472,8 @@ For REST-side issues see [`docs/troubleshooting.md`](../troubleshooting.md).
 
 ## 11. Cross-references
 
-- [`docs/architecture.md`](../architecture.md) §§ 6–7 — workflow + activity surface
-- [`docs/configuration/environment.md`](../configuration/environment.md) §§ 2, 14 — Temporal + worker env vars
+- [`docs/architecture.md`](../architecture.md) §§ 6–8 — workflow + activity surface, adaptive ingestion planning
+- [`docs/configuration/environment.md`](../configuration/environment.md) §§ 2, 16 — Temporal + worker env vars; § 8 FAST LLM role; § 9 adaptive planning toggles
 - [`docs/development/onboarding.md`](../development/onboarding.md) — local stack quickstart
 - [`deploy/dev/README.md`](../../deploy/dev/README.md) — Docker compose walkthrough
 - [`src/j1/orchestration/temporal/`](../../src/j1/orchestration/temporal/) — client + worker + retry primitives

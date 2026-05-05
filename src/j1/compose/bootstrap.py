@@ -376,8 +376,8 @@ def _build_llm_registry(settings: LLMSettings) -> LLMProviderRegistry:
     if embedding_client is not None:
         registry.register(LLM_ROLE_EMBEDDING, embedding_client)
 
-    # Phase B: optional FAST role. Same OpenAI-compat client as text
-    # — only the `model` differs in typical deployments. When
+    # Optional FAST role. Same OpenAI-compat client as text — only
+    # the `model` differs in typical deployments. When
     # `settings.fast` is None or unconfigured, we silently skip
     # registration. Consumers (`registry.try_fast()`) handle the
     # absence; the planner falls back to deterministic-only.

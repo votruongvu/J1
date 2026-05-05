@@ -1,4 +1,4 @@
-"""Phase A.5 regression tests: workflow records `StepResult` per stage.
+"""Per-stage `StepResult` recording regression tests.
 
 The contract: every enabled stage produces a `StepResult` with
 status=COMPLETED or FAILED; every caller-disabled stage produces a

@@ -147,7 +147,58 @@ embeddings (RAGAnything always does). See also:
 
 ---
 
-## 8. RAGAnything provider
+## 8. FAST LLM role (optional)
+
+Loader: [`src/j1/llm/settings.py`](../../src/j1/llm/settings.py)
+
+Optional role for the adaptive ingestion planner and similar short,
+deterministic tasks (document classification, mode selection, light
+metadata, heading normalisation). Reuses the same OpenAI-compat
+client class as the text role — typical setups point both
+`J1_TEXT_LLM_BASE_URL` and `J1_FAST_LLM_BASE_URL` at the same
+endpoint with just a different `J1_FAST_LLM_MODEL`. When the FAST
+role is unconfigured the planner skips its LLM-fallback path
+entirely; deterministic-only planning keeps working.
+
+| Name | Required | Default | Used by | Description |
+|---|---|---|---|---|
+| `J1_FAST_LLM_PROVIDER` | No | `openai_compat` | FAST LLM client factory | `openai_compat` or `langchain`. |
+| `J1_FAST_LLM_BASE_URL` | When `openai_compat` | _(unset)_ | OpenAI-compat FAST client | HTTP base URL. |
+| `J1_FAST_LLM_API_KEY` | When provider needs it | _(unset)_ | FAST LLM client | **Secret.** |
+| `J1_FAST_LLM_MODEL` | When `openai_compat` | _(unset)_ | OpenAI-compat FAST client | Cheap / structured-output model identifier. |
+| `J1_FAST_LLM_TIMEOUT_SECONDS` | No | `15` | FAST LLM client | Tighter than text — FAST role is for fast structured tasks. |
+| `J1_FAST_LLM_MAX_RETRIES` | No | `1` | FAST LLM client | Tight retry budget — failures fall back to deterministic-only planning. |
+| `J1_FAST_LLM_TEMPERATURE` | No | `0.0` | FAST LLM client | Defaults to deterministic; the role exists for classification, not creative generation. |
+| `J1_FAST_LLM_MAX_OUTPUT_TOKENS` | No | `512` | FAST LLM client | Tighter than text — FAST role outputs short structured responses. |
+| `J1_FAST_LLM_LANGCHAIN_CONFIG` | When `langchain` | `{}` | LangChain FAST adapter | JSON object; same rules as the text equivalent. **Secret.** |
+
+Optional. Leave every variable unset to disable the FAST role —
+deterministic planning works without it.
+
+---
+
+## 9. Adaptive ingestion planning (optional)
+
+Loader: planner reads these via `ProjectProcessingRequest` /
+[`bootstrap.py`](../../src/j1/compose/bootstrap.py); off by default
+to preserve legacy ingestion behaviour exactly.
+
+| Name | Required | Default | Used by | Description |
+|---|---|---|---|---|
+| `J1_INGEST_PLANNER_ENABLED` | No | `false` | Workflow request defaults | When `true`, each document is profiled and run through `DefaultIngestPlanner`; the resulting `IngestPlan` decides which configured stages to attempt. Caller-supplied `compilerKind` / `enricherKind` / `graphBuilderKind` / `indexerKind` always override planner decisions. |
+| `J1_INGEST_DEFAULT_POLICY` | No | `auto` | Workflow request defaults | One of `auto`, `cost_saving`, `balanced`, `high_accuracy`, `force_full`, `text_only`. Per-job `policy` field on the ingest request overrides this. |
+
+When `J1_INGEST_PLANNER_ENABLED=false` (default), the workflow uses
+the same gate logic it always has: a stage runs if and only if its
+corresponding `*_kind` field is set on the ingest request. The
+planner-disabled path also benefits from the
+[failure-propagation contract](../architecture.md#6-temporal-orchestration):
+required-step failures raise `ApplicationError` instead of silently
+returning a result with a failure-encoded status field.
+
+---
+
+## 10. RAGAnything provider
 
 Loader: [`src/j1/providers/raganything/settings.py`](../../src/j1/providers/raganything/settings.py)
 
@@ -168,7 +219,7 @@ See also: [`docs/providers.md`](../providers.md) § 2 (RAGAnything section).
 
 ---
 
-## 9. Graphify provider
+## 11. Graphify provider
 
 Loader: [`src/j1/providers/graphify/settings.py`](../../src/j1/providers/graphify/settings.py)
 
@@ -184,7 +235,7 @@ See also: [`docs/providers.md`](../providers.md) § 2 (Graphify section).
 
 ---
 
-## 10. Provider selection
+## 12. Provider selection
 
 Loader: [`src/j1/compose/bootstrap.py`](../../src/j1/compose/bootstrap.py)
 
@@ -196,7 +247,7 @@ Loader: [`src/j1/compose/bootstrap.py`](../../src/j1/compose/bootstrap.py)
 
 ---
 
-## 11. Enrichment toggles
+## 13. Enrichment toggles
 
 Loader: [`src/j1/compose/bootstrap.py`](../../src/j1/compose/bootstrap.py)
 
@@ -215,7 +266,7 @@ actionable message naming the missing env vars.
 
 ---
 
-## 12. Events / publisher
+## 14. Events / publisher
 
 Loader: [`src/j1/integration/events/publisher_settings.py`](../../src/j1/integration/events/publisher_settings.py)
 
@@ -230,7 +281,7 @@ See also: [`docs/event-integration.md`](../event-integration.md).
 
 ---
 
-## 13. Webhooks
+## 15. Webhooks
 
 Loader: [`src/j1/integration/events/settings.py`](../../src/j1/integration/events/settings.py)
 
@@ -246,7 +297,7 @@ See also: [`docs/webhooks.md`](../webhooks.md).
 
 ---
 
-## 14. Worker runtime
+## 16. Worker runtime
 
 Worker behaviour is configured at construction time via `WorkerSpec`
 and the Temporal env vars (§ 2). Two convenience env vars are read
@@ -261,7 +312,7 @@ See also: [`docs/operations/temporal.md`](../operations/temporal.md).
 
 ---
 
-## 15. Development / testing
+## 17. Development / testing
 
 The test suite is hermetic — it injects env values via fixtures and
 does not require any `J1_*` variables to be set. Common
@@ -274,7 +325,7 @@ non-framework variables:
 
 ---
 
-## 16. Index by use case
+## 18. Index by use case
 
 | If you want to … | Set at minimum |
 |---|---|
@@ -284,12 +335,13 @@ non-framework variables:
 | Start a Temporal worker | `J1_DATA_ROOT`, `J1_TEMPORAL_TARGET`, `J1_TEMPORAL_NAMESPACE`, `J1_TEMPORAL_TASK_QUEUE` |
 | Drive a real LLM-backed pipeline | The variables above + `J1_TEXT_LLM_*` + `J1_EMBEDDING_*` (+ `J1_VISION_LLM_*` if visual enrichment is on) |
 | Use Graphify instead of the default graph provider | `J1_GRAPHIFY_ENABLED=true` + `J1_DEFAULT_GRAPH_PROVIDER=graphify` (+ `J1_GRAPHIFY_COMMAND` if not on `PATH`) |
+| Enable adaptive ingestion planning | `J1_INGEST_PLANNER_ENABLED=true` (+ `J1_INGEST_DEFAULT_POLICY` to bias the planner; + `J1_FAST_LLM_*` for the optional LLM-fallback path) |
 | Require API authentication | Either `J1_AUTH_API_KEYS` or `J1_AUTH_API_KEYS_FILE` (and pass an `authenticator=` to `create_rest_api`) |
 | Deliver events to webhooks | `J1_WEBHOOK_ENABLED=true` + `J1_WEBHOOK_SUBSCRIPTIONS[_FILE]` + `J1_EVENT_PUBLISHER_TYPE=bus` |
 
 ---
 
-## 17. Cross-references
+## 19. Cross-references
 
 - [`README.md`](../../README.md) — install + first-run quickstart
 - [`docs/development/onboarding.md`](../development/onboarding.md) — sequenced "from zero to first query"

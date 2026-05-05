@@ -1,4 +1,4 @@
-"""Phase B.5 regression tests: FAST LLM role plumbing.
+"""FAST LLM role plumbing regression tests.
 
 The FAST role reuses the existing OpenAI-compat client class — the
 contract is "add the role, no new adapter". These tests pin that:
@@ -108,7 +108,8 @@ def test_bootstrap_registers_fast_when_configured(monkeypatch):
     text_client = registry.try_text()
     assert type(fast_client) is type(text_client), (
         "FAST and TEXT must reuse the same OpenAI-compat client class — "
-        "Phase B.5 explicitly avoids creating a new FastLLMAdapter"
+        "the FAST role explicitly reuses the OpenAI-compat client "
+        "rather than introducing a separate FastLLMAdapter"
     )
 
 

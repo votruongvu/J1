@@ -50,9 +50,9 @@ def test_negative_attempts_rejected():
         RetryPolicySpec(maximum_attempts=-1)
 
 
-# ---- Phase A: DEFAULT_RETRY now classifies known-deterministic
-# failures as non-retryable so they don't burn the 5-attempt budget
-# before the real cause surfaces.
+# ---- DEFAULT_RETRY classifies known-deterministic failures as
+# non-retryable so they don't burn the 5-attempt budget before the
+# real cause surfaces.
 
 
 def test_default_retry_excludes_required_step_failed_from_retry():

@@ -1,4 +1,4 @@
-"""Phase B.4 regression tests: planner-driven workflow execution.
+"""Planner-driven workflow-execution regression tests.
 
 Pin two contracts:
   1. `planner_enabled=False` (default) preserves legacy behaviour
@@ -247,8 +247,8 @@ def test_planner_enabled_records_plan_creation_log_event(monkeypatch):
 def test_planner_failure_is_surfaced_as_workflow_failure(monkeypatch):
     """If the profiling activity fails (file gone, pypdf crash that
     we can't recover from), it must propagate as a workflow failure,
-    not silently disable the planner. Phase A semantics apply: a
-    failure in the planner step is workflow-fatal."""
+    not silently disable the planner. Workflow-failure-propagation
+    semantics apply: a failure in the planner step is workflow-fatal."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):

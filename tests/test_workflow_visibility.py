@@ -1,4 +1,4 @@
-"""Phase A.4 regression tests: workflow / activity visibility surface.
+"""Workflow / activity visibility regression tests.
 
 Covers:
   * `workflow.logger` structured events at lifecycle transitions.
@@ -163,7 +163,7 @@ def test_workflow_sets_search_attribute_on_completion(monkeypatch):
 def test_workflow_sets_search_attribute_on_failure(monkeypatch):
     """Failure must update the search attribute too — a workflow
     that fails silently (no stage update) defeats the visibility
-    contract Phase A.4 introduces."""
+    visibility contract."""
     captured_sa = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(
         monkeypatch,
