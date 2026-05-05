@@ -486,7 +486,8 @@ status = await handle.query("get_status")
 | Workflow stuck in `WAITING_FOR_REVIEW` | Reviewer hasn't acted — see `GET /reviews` + `POST /reviews/{id}/decision` |
 | Activity heartbeat timeout on `compile` / `build_graph` | The vendor call (typically mineru / raganything) hung longer than `HEARTBEAT_TIMEOUT=2m`. Investigate the parser logs; first-call mineru downloads can be slow on a fresh container — pre-cache via `J1_PRECACHE_MINERU_MODELS=vlm` or `=all` in the dev Dockerfile. |
 | Activity heartbeat timeout on a custom activity | Your activity exceeded its `start_to_close_timeout` without heartbeating — call `j1.heartbeat()` periodically inside the activity body and set `heartbeat_timeout` when registering. |
-| Web UI shows workflow as `Failed` with `J1_INGEST_*` type | The new failure-propagation contract: a required step actually failed. Read `get_status().step_results` to find which stage and why; the audit log carries the same data with full payloads. |
+| Web UI shows workflow as `Failed` with `J1_INGEST_*` type | The failure-propagation contract: a required step actually failed. Read `get_status().step_results` to find which stage and why; the audit log carries the same data with full payloads. |
+| `BadSearchAttributes: Namespace … has no mapping defined for search attribute J1IngestStage` (or `J1IngestMode`) | Search attribute upserts are enabled but the namespace doesn't know about the keys. Either register them with `temporal operator search-attribute create --namespace … --name J1IngestStage --type Keyword` (and the same for `J1IngestMode`), or set `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=false` to disable upserts entirely. The error happens at activation completion (server-side) — the worker can't recover from it without one of those two changes. |
 
 For REST-side issues see [`docs/troubleshooting.md`](../troubleshooting.md).
 

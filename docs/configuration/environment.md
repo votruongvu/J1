@@ -187,6 +187,7 @@ to preserve legacy ingestion behaviour exactly.
 |---|---|---|---|---|
 | `J1_INGEST_PLANNER_ENABLED` | No | `false` | Workflow request defaults | When `true`, each document is profiled and run through `DefaultIngestPlanner`; the resulting `IngestPlan` decides which configured stages to attempt. Caller-supplied `compilerKind` / `enricherKind` / `graphBuilderKind` / `indexerKind` always override planner decisions. |
 | `J1_INGEST_DEFAULT_POLICY` | No | `auto` | Workflow request defaults | One of `auto`, `cost_saving`, `balanced`, `high_accuracy`, `force_full`, `text_only`. Per-job `policy` field on the ingest request overrides this. |
+| `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED` | No | `false` | Workflow request defaults | When `true`, the workflow upserts `J1IngestStage` (and `J1IngestMode` when adaptive planning is on) so operators can filter workflows by stage / mode in the Temporal UI. **Pre-register the attributes first** (see [`docs/operations/temporal.md`](../operations/temporal.md) § 5.1) — the Temporal cluster rejects upserts for unregistered attributes at activation completion, and the worker can't recover from it. |
 
 When `J1_INGEST_PLANNER_ENABLED=false` (default), the workflow uses
 the same gate logic it always has: a stage runs if and only if its
