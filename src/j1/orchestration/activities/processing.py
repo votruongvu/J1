@@ -4,6 +4,7 @@ from temporalio import activity
 
 from j1.artifacts.registry import ArtifactRegistry
 from j1.intake.registry import SourceRegistry
+from j1.runs.reporter import ProgressReporter
 from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     CompileActivityInput,
@@ -50,6 +51,7 @@ class ProcessingActivities:
         graph_builders: Mapping[str, GraphBuilder] | None = None,
         indexers: Mapping[str, SearchIndexer] | None = None,
         query_providers: Mapping[str, QueryProvider] | None = None,
+        progress_reporter: ProgressReporter | None = None,
     ) -> None:
         self._processing = processing
         self._sources = sources
@@ -59,6 +61,11 @@ class ProcessingActivities:
         self._graph_builders = dict(graph_builders or {})
         self._indexers = dict(indexers or {})
         self._query_providers = dict(query_providers or {})
+        # User-facing progress events. Optional — when None, the
+        # framework runs exactly as before (no progress events
+        # emitted). Bootstrap wires a CompositeProgressReporter
+        # that fans out to audit + Temporal heartbeat.
+        self._reporter = progress_reporter
 
     def all_activities(self) -> list:
         return [
@@ -82,18 +89,31 @@ class ProcessingActivities:
         # heartbeats let the worker prove liveness on either side.
         # Best-effort: outside a Temporal worker the call is a no-op.
         _safe_heartbeat({"stage": "compile", "document_id": input.document_id})
-        result = self._processing.compile(
-            ctx,
-            compiler,
-            document,
-            actor=input.actor,
-            correlation_id=input.correlation_id,
+        self._report_step_start(
+            ctx, input, stage="COMPILE", step="compile",
+            engine=input.processor_kind,
         )
+        try:
+            result = self._processing.compile(
+                ctx,
+                compiler,
+                document,
+                actor=input.actor,
+                correlation_id=input.correlation_id,
+            )
+        except Exception as exc:
+            self._report_step_failure(
+                ctx, input, stage="COMPILE", step="compile", exc=exc,
+            )
+            raise
         _safe_heartbeat({
             "stage": "compile",
             "document_id": input.document_id,
             "status": result.status.value,
         })
+        self._report_step_outcome(
+            ctx, input, stage="COMPILE", step="compile", result=result,
+        )
         return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_ENRICH)
@@ -101,12 +121,25 @@ class ProcessingActivities:
         ctx = input.scope.to_context()
         processor = self._lookup(self._enrichers, input.processor_kind, "enricher")
         artifact = self._artifacts.get(ctx, input.artifact_id)
-        result = self._processing.enrich(
-            ctx,
-            processor,
-            artifact,
-            actor=input.actor,
-            correlation_id=input.correlation_id,
+        self._report_step_start(
+            ctx, input, stage="ENRICH", step="enrich",
+            engine=input.processor_kind,
+        )
+        try:
+            result = self._processing.enrich(
+                ctx,
+                processor,
+                artifact,
+                actor=input.actor,
+                correlation_id=input.correlation_id,
+            )
+        except Exception as exc:
+            self._report_step_failure(
+                ctx, input, stage="ENRICH", step="enrich", exc=exc,
+            )
+            raise
+        self._report_step_outcome(
+            ctx, input, stage="ENRICH", step="enrich", result=result,
         )
         return _artifact_result(result)
 
@@ -120,30 +153,56 @@ class ProcessingActivities:
             "stage": "build_graph",
             "artifact_count": len(input.artifact_ids),
         })
-        result = self._processing.build_graph(
-            ctx,
-            builder,
-            list(input.artifact_ids),
-            actor=input.actor,
-            correlation_id=input.correlation_id,
+        self._report_step_start(
+            ctx, input, stage="GRAPH", step="build_graph",
+            engine=input.processor_kind,
         )
+        try:
+            result = self._processing.build_graph(
+                ctx,
+                builder,
+                list(input.artifact_ids),
+                actor=input.actor,
+                correlation_id=input.correlation_id,
+            )
+        except Exception as exc:
+            self._report_step_failure(
+                ctx, input, stage="GRAPH", step="build_graph", exc=exc,
+            )
+            raise
         _safe_heartbeat({
             "stage": "build_graph",
             "artifact_count": len(input.artifact_ids),
             "status": result.status.value,
         })
+        self._report_step_outcome(
+            ctx, input, stage="GRAPH", step="build_graph", result=result,
+        )
         return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_INDEX)
     def index(self, input: IndexActivityInput) -> ProcessingActivityResult:
         ctx = input.scope.to_context()
         indexer = self._lookup(self._indexers, input.processor_kind, "indexer")
-        result = self._processing.index(
-            ctx,
-            indexer,
-            list(input.artifact_ids),
-            actor=input.actor,
-            correlation_id=input.correlation_id,
+        self._report_step_start(
+            ctx, input, stage="INDEX", step="index",
+            engine=input.processor_kind,
+        )
+        try:
+            result = self._processing.index(
+                ctx,
+                indexer,
+                list(input.artifact_ids),
+                actor=input.actor,
+                correlation_id=input.correlation_id,
+            )
+        except Exception as exc:
+            self._report_step_failure(
+                ctx, input, stage="INDEX", step="index", exc=exc,
+            )
+            raise
+        self._report_step_outcome(
+            ctx, input, stage="INDEX", step="index", result=result,
         )
         return _processing_result(result)
 
@@ -153,6 +212,8 @@ class ProcessingActivities:
         provider = self._lookup(
             self._query_providers, input.processor_kind, "query_provider"
         )
+        # Query is intentionally NOT wrapped in progress events —
+        # it's a read path, not part of the ingestion timeline.
         result = self._processing.query(
             ctx,
             provider,
@@ -162,6 +223,91 @@ class ProcessingActivities:
             correlation_id=input.correlation_id,
         )
         return _query_result(result)
+
+    # ---- Progress-reporter integration -------------------------
+
+    def _report_step_start(
+        self, ctx, input, *, stage: str, step: str, engine: str | None,
+    ) -> None:
+        """Emit `step.started` if a reporter is configured AND the
+        caller supplied a `correlation_id` (which by convention
+        equals `run_id`). No-op otherwise — keeps existing behaviour
+        for deployments that don't opt into the progress surface."""
+        if self._reporter is None or not input.correlation_id:
+            return
+        try:
+            self._reporter.report_step_started(
+                ctx, run_id=input.correlation_id,
+                stage=stage, step=step,
+                engine=engine, actor=input.actor or "system",
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks ingest
+            pass
+
+    def _report_step_outcome(
+        self, ctx, input, *, stage: str, step: str, result,
+    ) -> None:
+        """Emit `step.completed`, `step.skipped`, or `step.failed`
+        based on the activity result's `status`. `result.status` is
+        a `ResultStatus` (SUCCEEDED / FAILED / SKIPPED)."""
+        if self._reporter is None or not input.correlation_id:
+            return
+        try:
+            status_value = (
+                result.status.value if hasattr(result.status, "value")
+                else str(result.status)
+            )
+            artifact_count = len(getattr(result, "artifacts", []) or [])
+            if status_value == "succeeded":
+                self._reporter.report_step_completed(
+                    ctx, run_id=input.correlation_id,
+                    stage=stage, step=step,
+                    artifact_count=artifact_count,
+                    actor=input.actor or "system",
+                )
+            elif status_value == "skipped":
+                self._reporter.report_step_skipped(
+                    ctx, run_id=input.correlation_id,
+                    stage=stage, step=step,
+                    reason=result.message or result.error or "skipped by service",
+                    actor=input.actor or "system",
+                )
+            else:
+                # status_value == "failed" — service-level failure
+                # (vendor returned non-success). Surface as
+                # `step.failed`. The workflow-level fail-fast then
+                # converts this into a workflow ApplicationError.
+                self._reporter.report_step_failed(
+                    ctx, run_id=input.correlation_id,
+                    stage=stage, step=step,
+                    error_type="ActivityFailure",
+                    error_message=result.error or "activity returned non-succeeded status",
+                    retryable=False,
+                    actor=input.actor or "system",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _report_step_failure(
+        self, ctx, input, *, stage: str, step: str, exc: Exception,
+    ) -> None:
+        """Emit `step.failed` for an unhandled exception path before
+        re-raising. Critical: the reporter MUST NOT swallow the
+        exception — the failure-propagation contract requires the
+        workflow to see it."""
+        if self._reporter is None or not input.correlation_id:
+            return
+        try:
+            self._reporter.report_step_failed(
+                ctx, run_id=input.correlation_id,
+                stage=stage, step=step,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                retryable=False,
+                actor=input.actor or "system",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _lookup(registry: dict, kind: str, role: str):

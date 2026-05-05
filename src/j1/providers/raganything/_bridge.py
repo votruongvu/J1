@@ -149,8 +149,21 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             parse_method=request.settings.parse_method,
         )
 
+    # When the caller supplied a `progress_reporter` + `run_id`,
+    # attach the MinerU log-handler so vendor progress lines
+    # (`[MinerU] Layout Preparation: 80% | 35/44`, etc.) become
+    # structured `step.progress` events for the user-facing UI.
+    # The handler is removed on context exit, so the rest of the
+    # process's logging stays clean. When either field is absent
+    # — the typical path for callers that haven't opted into the
+    # runs surface — `attach_mineru_progress_handler` is a no-op.
+    from j1.providers.raganything._log_bridge import attach_mineru_progress_handler
+
     try:
-        asyncio.run(_run_compile())
+        with attach_mineru_progress_handler(
+            request.progress_reporter, request.ctx, request.run_id or "",
+        ):
+            asyncio.run(_run_compile())
     except RuntimeError as exc:
         # "asyncio.run() cannot be called from a running event loop"
         # is the most likely RuntimeError here.

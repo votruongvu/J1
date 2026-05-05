@@ -61,6 +61,28 @@ from j1.runs.reporter import (
 )
 from j1.runs.store import IngestionRunStore, JsonlIngestionRunStore
 
+
+def build_default_progress_reporter(audit_recorder) -> "ProgressReporter":
+    """Standard composite reporter for production deployments.
+
+    Fans out to:
+      * `AuditProgressReporter` — writes through the deployment's
+        `AuditRecorder`, persisting events into the workspace audit
+        log (where the `/ingestion-runs/{id}/events` endpoint reads
+        them).
+      * `TemporalHeartbeatReporter` — pumps compact summaries into
+        Temporal activity heartbeats so operator UIs (Temporal Web,
+        worker logs) see liveness on long-running activities.
+
+    Importing this from a deployment entrypoint avoids each
+    deployment re-discovering the right composition. Tests can pass
+    `NoopProgressReporter()` directly instead.
+    """
+    return CompositeProgressReporter(
+        AuditProgressReporter(audit_recorder),
+        TemporalHeartbeatReporter(),
+    )
+
 __all__ = [
     "ACTION_PROGRESS_ASSESSMENT_COMPLETED",
     "ACTION_PROGRESS_ASSESSMENT_STARTED",
@@ -79,6 +101,7 @@ __all__ = [
     "ACTION_PROGRESS_STEP_WARNING",
     "AuditProgressReporter",
     "CompositeProgressReporter",
+    "build_default_progress_reporter",
     "EXECUTION_DECISION_CONDITIONAL",
     "EXECUTION_DECISION_RUN",
     "EXECUTION_DECISION_SKIP",

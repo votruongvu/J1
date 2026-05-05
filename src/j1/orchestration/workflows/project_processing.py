@@ -25,6 +25,12 @@ with workflow.unsafe.imports_passed_through():
         ProfilingActivities,
     )
     from j1.orchestration.activities.project import ProjectActivities
+    from j1.orchestration.activities.runs import (
+        ReportRunTerminalInput,
+        ReportStepSkippedInput,
+        RunsActivities,
+        StepSummaryEntry,
+    )
     from j1.orchestration.errors import (
         ERROR_TYPE_REQUIRED_STEP_FAILED,
         ERROR_TYPE_UNEXPECTED_ERROR,
@@ -291,6 +297,11 @@ class ProjectProcessingWorkflow:
                     reason="indexer_kind not provided in request",
                     artifact_count=len(self._produced_artifact_ids),
                 )
+                await self._emit_step_skipped(
+                    request, stage="INDEX", step="index",
+                    reason="indexer_kind not provided in request",
+                    source="caller",
+                )
 
             await self._finalize(request)
 
@@ -303,6 +314,9 @@ class ProjectProcessingWorkflow:
                     status="cancelled",
                 )
                 self._set_search_attribute("J1IngestStage", "cancelled")
+                await self._emit_run_terminal(
+                    request, final_status="cancelled",
+                )
             else:
                 self._state = WorkflowState.COMPLETED
                 self._log_step(
@@ -312,6 +326,17 @@ class ProjectProcessingWorkflow:
                     status="completed",
                 )
                 self._set_search_attribute("J1IngestStage", "completed")
+                # `final_status` distinguishes succeeded vs.
+                # succeeded_with_warnings using the recorded
+                # `step_results` warning_count semantic. Today the
+                # workflow raises on any failure, so warning_count
+                # is 0 in the success path; deployments adopting
+                # `continue_optional` policy will populate this.
+                final_status = "succeeded_with_warnings" if self._warning_count() > 0 else "succeeded"
+                await self._emit_run_terminal(
+                    request, final_status=final_status,
+                    warning_count=self._warning_count(),
+                )
         except _BusinessRejection as exc:
             # Terminal business failure (validation, rejected approval,
             # required-step failure, etc.). Record the recoverable state
@@ -333,6 +358,11 @@ class ProjectProcessingWorkflow:
             )
             self._set_search_attribute("J1IngestStage", "failed")
             await self._safe_finalize(request)
+            await self._emit_run_terminal(
+                request, final_status="failed",
+                failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                failure_message=self._error,
+            )
             raise ApplicationError(
                 self._error,
                 type=ERROR_TYPE_REQUIRED_STEP_FAILED,
@@ -355,6 +385,11 @@ class ProjectProcessingWorkflow:
             )
             self._set_search_attribute("J1IngestStage", "failed")
             await self._safe_finalize(request)
+            await self._emit_run_terminal(
+                request, final_status="failed",
+                failure_code=getattr(exc, "type", None) or "ApplicationError",
+                failure_message=self._error,
+            )
             raise
         except Exception as exc:
             # Unexpected exception — wrap in ApplicationError so
@@ -377,6 +412,11 @@ class ProjectProcessingWorkflow:
             )
             self._set_search_attribute("J1IngestStage", "failed")
             await self._safe_finalize(request)
+            await self._emit_run_terminal(
+                request, final_status="failed",
+                failure_code=ERROR_TYPE_UNEXPECTED_ERROR,
+                failure_message=self._error,
+            )
             raise ApplicationError(
                 self._error,
                 type=ERROR_TYPE_UNEXPECTED_ERROR,
@@ -535,6 +575,101 @@ class ProjectProcessingWorkflow:
             artifact_count=artifact_count,
             metadata=metadata or {},
         ))
+
+    # ---- Run-terminal progress events (via activity) ----------------
+
+    def _warning_count(self) -> int:
+        """Count step results in WARNING / FAILED-but-non-fatal state.
+
+        Today the workflow is `fail_fast` everywhere, so the count is
+        always 0 when the workflow reaches the success path — but the
+        helper exists so deployments adopting `continue_optional`
+        policy can populate it without a workflow signature change."""
+        count = 0
+        for r in self._step_results:
+            if r.status == StepStatus.FAILED and not r.required:
+                count += 1
+        return count
+
+    def _step_summary_payload(self) -> tuple[StepSummaryEntry, ...]:
+        """Compact summary embedded in `run.completed` / `run.failed`
+        events so the frontend can render a "what ran" recap without
+        re-fetching `/events`."""
+        return tuple(
+            StepSummaryEntry(
+                step=r.step,
+                status=r.status.value,
+                required=r.required,
+                source=r.source.value,
+                reason=r.reason,
+                artifact_count=r.artifact_count,
+            )
+            for r in self._step_results
+        )
+
+    async def _emit_run_terminal(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        final_status: str,
+        warning_count: int = 0,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        """Schedule the `j1.runs.report_terminal` activity. Best-effort
+        — telemetry must not block the workflow's exit. Skipped when
+        the request didn't supply a `correlation_id` (which by
+        convention is the run_id; without it the reporter has nothing
+        to correlate against)."""
+        if not request.correlation_id:
+            return
+        try:
+            await workflow.execute_activity_method(
+                RunsActivities.report_run_terminal,
+                ReportRunTerminalInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    final_status=final_status,
+                    warning_count=warning_count,
+                    failure_code=failure_code,
+                    failure_message=failure_message,
+                    actor=request.actor,
+                    step_summary=self._step_summary_payload(),
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
+            pass
+
+    async def _emit_step_skipped(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        stage: str,
+        step: str,
+        reason: str,
+        source: str = "planner",
+    ) -> None:
+        """Emit a `step.skipped` progress event from inside the
+        workflow. Goes through an activity because the reporter call
+        needs to happen in non-deterministic context."""
+        if not request.correlation_id:
+            return
+        try:
+            await workflow.execute_activity_method(
+                RunsActivities.report_step_skipped,
+                ReportStepSkippedInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    stage=stage, step=step, reason=reason,
+                    source=source, actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _set_search_attribute(self, name: str, value: str) -> None:
         """Opt-in search-attribute upsert.
@@ -769,6 +904,11 @@ class ProjectProcessingWorkflow:
                 reason=enrich_reason,
                 metadata={"document_id": document_id},
             )
+            await self._emit_step_skipped(
+                request, stage="ENRICH", step="enrich",
+                reason=enrich_reason or "skipped",
+                source=enrich_source.value,
+            )
 
         if enrich_enabled:
             for artifact_id in list(compile_result.artifact_ids):
@@ -836,6 +976,11 @@ class ProjectProcessingWorkflow:
                 source=graph_source,
                 reason=graph_reason,
                 metadata={"document_id": document_id},
+            )
+            await self._emit_step_skipped(
+                request, stage="GRAPH", step="graph",
+                reason=graph_reason or "skipped",
+                source=graph_source.value,
             )
 
         if graph_enabled:

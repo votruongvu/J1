@@ -82,11 +82,43 @@ def feedback_store(workspace):
 
 
 @pytest.fixture
-def client(application_facade, workspace, run_store) -> TestClient:
+def started_jobs() -> list[tuple[str, str, str]]:
+    """Captures (project_id, document_id, compiler_kind) per
+    job_starter call. Mirrors the pattern from test_rest_adapter.py."""
+    return []
+
+
+@pytest.fixture
+def job_starter(started_jobs):
+    async def starter(ctx, document_id, body):
+        started_jobs.append((ctx.project_id, document_id, body.compiler_kind))
+        return f"wf-{document_id}-{len(started_jobs)}"
+    return starter
+
+
+@pytest.fixture
+def client(application_facade, workspace, run_store, job_starter, reporter) -> TestClient:
     app = create_rest_api(
         application_facade,
         workspace=workspace,
         ingestion_run_store=run_store,
+        progress_reporter=reporter,
+        job_starter=job_starter,
+    )
+    return TestClient(app)
+
+
+@pytest.fixture
+def client_no_reporter(application_facade, workspace, run_store, job_starter) -> TestClient:
+    """Client without a progress reporter — used to verify the
+    POST /ingestion-runs endpoint still works when the deployment
+    hasn't wired the progress surface (records are persisted; no
+    progress events are emitted)."""
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        job_starter=job_starter,
     )
     return TestClient(app)
 
@@ -332,3 +364,126 @@ def test_sse_stream_data_payload_uses_camel_case(client, ctx, reporter):
     # No snake_case slipped through.
     assert "progress_percent" not in progress_data
     assert "event_id" not in progress_data
+
+
+# ---- POST /ingestion-runs --------------------------------------
+
+
+def test_post_ingestion_run_returns_400_when_tenant_header_missing(
+    client,
+):
+    """The Tenant/Project context contract applies to every endpoint —
+    missing X-Tenant-Id is a 400, not a silent default."""
+    files = {"file": ("doc.txt", b"hello", "text/plain")}
+    resp = client.post(
+        "/ingestion-runs", files=files,
+        headers={PROJECT_HEADER: "alpha"},  # only project, missing tenant
+    )
+    assert resp.status_code == 400
+
+
+def test_post_ingestion_run_returns_400_when_project_header_missing(client):
+    files = {"file": ("doc.txt", b"hello", "text/plain")}
+    resp = client.post(
+        "/ingestion-runs", files=files,
+        headers={TENANT_HEADER: "acme"},  # only tenant, missing project
+    )
+    assert resp.status_code == 400
+
+
+def test_post_ingestion_run_creates_run_and_starts_workflow(
+    client, run_store, ctx, started_jobs, workspace,
+):
+    """Composite happy path: document registered, run record
+    persisted with status=CREATED, workflow started exactly once,
+    progress events emitted to the audit log."""
+    files = {"file": ("hello.txt", b"hello world", "text/plain")}
+    resp = client.post(
+        "/ingestion-runs",
+        files=files,
+        data={"compilerKind": "mock"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 201
+
+    body = resp.json()["data"]
+    assert body["status"] == "created"
+    assert body["runId"]
+    assert body["documentId"]
+    assert body["workflowId"]
+
+    # Run record persisted under the correct (tenant, project) path.
+    run = run_store.get(ctx, body["runId"])
+    assert run is not None
+    assert run.status == RunStatus.CREATED
+    assert run.document_id == body["documentId"]
+
+    # Workflow started exactly once with the resolved compiler kind.
+    assert len(started_jobs) == 1
+
+
+def test_post_ingestion_run_emits_run_created_and_document_received(
+    client, ctx, workspace,
+):
+    """When a progress reporter is wired, POST /ingestion-runs
+    emits the first two progress events (`run.created` and
+    `document.received`) so the SSE stream has content from t=0."""
+    files = {"file": ("hello.txt", b"hi", "text/plain")}
+    resp = client.post(
+        "/ingestion-runs",
+        files=files,
+        data={"compilerKind": "mock"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 201
+    run_id = resp.json()["data"]["runId"]
+
+    events_resp = client.get(
+        f"/ingestion-runs/{run_id}/events", headers=_HEADERS,
+    )
+    types = [e["eventType"] for e in events_resp.json()["data"]["events"]]
+    assert "run.created" in types
+    assert "document.received" in types
+
+
+def test_post_ingestion_run_works_without_progress_reporter(
+    client_no_reporter, run_store, ctx,
+):
+    """Backwards compat: when no reporter is wired the endpoint
+    still creates the run record and starts the workflow — just
+    without emitting progress events. This is the migration path
+    for deployments that adopt /ingestion-runs without immediately
+    wiring the progress surface."""
+    files = {"file": ("hello.txt", b"hi", "text/plain")}
+    resp = client_no_reporter.post(
+        "/ingestion-runs",
+        files=files,
+        data={"compilerKind": "mock"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 201
+    run = run_store.get(ctx, resp.json()["data"]["runId"])
+    assert run is not None
+
+
+def test_post_ingestion_run_uses_correlation_id_as_run_id_when_provided(
+    client, run_store, ctx,
+):
+    """Open question default: run_id == correlation_id == workflow_id.
+    Caller-supplied correlation_id wins so the audit log + SSE
+    cursor + Temporal IDs all share one identifier."""
+    files = {"file": ("hello.txt", b"hi", "text/plain")}
+    resp = client.post(
+        "/ingestion-runs",
+        files=files,
+        data={
+            "correlation_id": "my-correlation-123",
+            "compilerKind": "mock",
+        },
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 201
+    body = resp.json()["data"]
+    assert body["runId"] == "my-correlation-123"
+    # And the run record persists under that ID.
+    assert run_store.get(ctx, "my-correlation-123") is not None

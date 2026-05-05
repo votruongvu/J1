@@ -43,6 +43,13 @@ class RAGAnythingCompileRequest:
     Fully canonical — no provider-native types in or out. The callable
     returns an `ArtifactProcessingResult` whose drafts the framework
     materialises into the project workspace.
+
+    `progress_reporter` and `run_id` are optional plumbing for the
+    user-facing progress surface: when both are present the bridge
+    attaches the MinerU log handler so vendor progress lines turn
+    into structured `step.progress` events. When absent (default for
+    callers that don't use the runs surface) the bridge runs
+    unchanged.
     """
 
     ctx: ProjectContext
@@ -51,6 +58,8 @@ class RAGAnythingCompileRequest:
     text_client: Any
     vision_client: Any | None
     embedding_client: Any | None
+    progress_reporter: Any = None  # ProgressReporter | None — Any to keep this dataclass importable without j1.runs.
+    run_id: str | None = None
 
 
 CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult]
@@ -98,8 +107,21 @@ class RAGAnythingCompiler:
         )
 
     def compile(
-        self, ctx: ProjectContext, document_id: str,
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        progress_reporter: Any = None,
+        run_id: str | None = None,
     ) -> ArtifactProcessingResult:
+        """Run the wrapped vendor compile.
+
+        `progress_reporter` and `run_id` are optional. When both are
+        supplied, the bridge attaches the MinerU log handler so
+        vendor progress lines become structured `step.progress`
+        events. The `KnowledgeCompiler` Protocol's compile method
+        only requires `(ctx, document_id)` — these kwargs are
+        additive and existing callers stay working."""
         request = RAGAnythingCompileRequest(
             ctx=ctx,
             document_id=document_id,
@@ -107,6 +129,8 @@ class RAGAnythingCompiler:
             text_client=self._llm_registry.text(),
             vision_client=self._llm_registry.try_vision(),
             embedding_client=self._llm_registry.try_embedding(),
+            progress_reporter=progress_reporter,
+            run_id=run_id,
         )
         try:
             return self._compile_callable(request)

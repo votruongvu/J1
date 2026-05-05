@@ -1,6 +1,7 @@
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import (
@@ -62,6 +63,7 @@ from j1.adapters.rest.schemas import (
     HealthRecord,
     IngestRequest,
     IngestionRunConfirmRecord,
+    IngestionRunCreatedRecord,
     IngestionRunRecord,
     JobActionRecord,
     JobEventRecord,
@@ -89,8 +91,10 @@ from j1.artifacts.registry import ArtifactNotFoundError
 from j1.runs import (
     ACTION_PROGRESS_PLAN_CONFIRMED,
     ACTION_PROGRESS_PLAN_GENERATED,
+    IngestionRun,
     IngestionRunStore,
     PROGRESS_ACTION_PREFIX,
+    ProgressReporter,
     RunStatus,
 )
 from j1.audit.sink import AUDIT_LOG_FILENAME
@@ -289,6 +293,7 @@ def create_rest_api(
     bulk_import: BulkImportService | None = None,
     processing_capabilities: ProcessingCapabilities | None = None,
     ingestion_run_store: "IngestionRunStore | None" = None,
+    progress_reporter: "ProgressReporter | None" = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -1035,6 +1040,158 @@ def create_rest_api(
             media_type=SSE_CONTENT_TYPE,
             headers=SSE_HEADERS,
         )
+
+    @app.post(
+        "/ingestion-runs",
+        status_code=201,
+        tags=["ingestion-runs"],
+        summary="Upload a document and start an ingestion run",
+        description=(
+            "Composite entry point for the user-facing execution console: "
+            "registers the document, allocates a run record, emits the "
+            "`run.created` and `document.received` progress events, and "
+            "starts the workflow in a single call. Returns the run "
+            "identifier the frontend uses to poll status / fetch the "
+            "execution plan / subscribe to the SSE stream."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_ingestion_run(
+        request: Request,
+        file: UploadFile = File(...),
+        actor: str = Form("system"),
+        correlation_id: str | None = Form(default=None),
+        compiler_kind: str | None = Form(default=None, alias="compilerKind"),
+        enricher_kind: str | None = Form(default=None, alias="enricherKind"),
+        graph_builder_kind: str | None = Form(
+            default=None, alias="graphBuilderKind",
+        ),
+        indexer_kind: str | None = Form(default=None, alias="indexerKind"),
+        policy: str | None = Form(default=None),
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        store = _require_run_store()
+
+        # 1. Register the document (existing service; idempotent on
+        # checksum). We reuse the same DTO + duplicate handling as
+        # `POST /documents` so the frontend can re-upload safely.
+        try:
+            doc_dto = facade.ingestion.register_document(
+                ctx,
+                file.file,
+                original_filename=file.filename or "upload.bin",
+                mime_type=file.content_type,
+                actor=actor,
+                correlation_id=correlation_id,
+            )
+            duplicate = False
+        except DuplicateDocumentError as exc:
+            doc_dto = facade.source_lookup.get_source(
+                ctx, exc.existing_document_id,
+            )
+            duplicate = True
+
+        # 2. Validate / resolve processor kinds at the boundary so a
+        # typo fails fast rather than as a workflow failure 5s later.
+        resolved_compiler = _resolve_compiler_kind(compiler_kind)
+        resolved_enricher = _validate_optional_processor_kind(
+            enricher_kind,
+            (processing_capabilities.enricher_kinds
+             if processing_capabilities else frozenset()),
+            "enricherKind",
+        )
+        resolved_graph = _validate_optional_processor_kind(
+            graph_builder_kind,
+            (processing_capabilities.graph_builder_kinds
+             if processing_capabilities else frozenset()),
+            "graphBuilderKind",
+        )
+        resolved_indexer = _validate_optional_processor_kind(
+            indexer_kind,
+            (processing_capabilities.indexer_kinds
+             if processing_capabilities else frozenset()),
+            "indexerKind",
+        )
+
+        # 3. Allocate run_id. By convention `run_id == correlation_id ==
+        # workflow_id` so the audit log, SSE cursor, and Temporal
+        # search-attributes share one identifier — the frontend never
+        # has to map between them.
+        run_id = correlation_id or uuid.uuid4().hex
+
+        # 4. Persist initial run record with status=CREATED. Subsequent
+        # writes (status transitions) append fresh snapshots; the
+        # latest one wins on read.
+        now = datetime.now(timezone.utc)
+        run = IngestionRun(
+            run_id=run_id,
+            document_id=doc_dto.document_id,
+            workflow_id=run_id,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                "duplicate_upload": duplicate,
+                "policy": policy or "auto",
+            },
+        )
+        store.upsert(ctx, run)
+
+        # 5. Emit progress events (no-op when no reporter is wired).
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=run_id, document_id=doc_dto.document_id,
+                actor=actor,
+            )
+            progress_reporter.report_document_received(
+                ctx, run_id=run_id, document_id=doc_dto.document_id,
+                actor=actor,
+            )
+
+        # 6. Start the workflow. Use the existing JobStarter contract
+        # so this endpoint stays compatible with deployments that
+        # have already wired job control.
+        body = IngestRequest(
+            compiler_kind=resolved_compiler,
+            enricher_kind=resolved_enricher,
+            graph_builder_kind=resolved_graph,
+            indexer_kind=resolved_indexer,
+            actor=actor,
+            correlation_id=run_id,
+        )
+        workflow_id = await starter(ctx, doc_dto.document_id, body)
+
+        # 7. Update the run record with the workflow_id (which by
+        # convention equals run_id, but starters that allocate their
+        # own ID can override).
+        run.workflow_id = workflow_id
+        run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, run)
+
+        # 8. Existing event publisher (webhooks / event bus).
+        publish_document_uploaded(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, document_id=doc_dto.document_id,
+            checksum=doc_dto.checksum, file_size=doc_dto.file_size,
+            mime_type=doc_dto.mime_type, duplicate=duplicate,
+        )
+        publish_document_ingestion_started(
+            event_bus, security=security, request_id=_req_id(request),
+            tenant_id=ctx.tenant_id, job_id=workflow_id,
+            document_id=doc_dto.document_id, project_wide=False,
+        )
+
+        record = IngestionRunCreatedRecord(
+            run_id=run_id,
+            document_id=doc_dto.document_id,
+            workflow_id=workflow_id,
+            workflow_run_id=None,
+            status=RunStatus.CREATED.value,
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
 
     @app.post(
         "/ingestion-jobs",

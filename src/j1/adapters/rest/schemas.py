@@ -183,6 +183,19 @@ class IngestionRunConfirmRecord(CamelModel):
     status: str
 
 
+class IngestionRunCreatedRecord(CamelModel):
+    """Response to `POST /ingestion-runs` — minimal handshake the
+    frontend uses to navigate to the run-detail page and open the
+    SSE stream. The run-record is already persisted server-side; the
+    client should `GET /ingestion-runs/{runId}` for the full snapshot."""
+
+    run_id: str
+    document_id: str
+    workflow_id: str
+    workflow_run_id: str | None = None
+    status: str
+
+
 # ---- Search / retrieve / answer --------------------------------------
 
 

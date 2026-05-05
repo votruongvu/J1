@@ -447,29 +447,150 @@ curl -N http://localhost:8000/ingestion-runs/run_abc123/events/stream \
 
 ---
 
-## 11. What's NOT yet wired
+## 11. End-to-end wiring (live)
 
-The abstractions and endpoints ship in this iteration; deeper
-integration points are deliberately left as follow-ups so the
-existing workflow doesn't change behaviour:
+The progress layer is wired into three production code paths.
+Each is opt-in: deployments that don't pass the relevant parameters
+keep the legacy behaviour bit-for-bit. By convention, **`run_id`
+== `correlation_id` == `workflow_id`** so the audit log, SSE
+cursor, and Temporal IDs share one identifier — the frontend
+never has to map between them.
 
-- **Workflow-side `ProgressReporter` injection.** Activities don't
-  yet emit progress events automatically. To wire them, pass a
-  `ProgressReporter` through the activity-class constructor and
-  call the appropriate `report_*` method at stage boundaries. A
-  good first integration is `KnowledgeProcessingActivities` (which
-  already records audit events with `correlation_id` — switching
-  those audit calls to progress-reporter calls reuses the same
-  identifiers).
-- **`POST /documents` → run record.** The existing `POST /documents`
-  doesn't yet allocate a run record. Deployments adopting the runs
-  surface should add the run-creation step in their facade /
-  job-starter wiring.
+### 11.1 `POST /ingestion-runs` — composite entry point
+
+The user-facing upload endpoint. One call:
+
+1. Registers the document via `facade.ingestion.register_document`.
+2. Validates / resolves processor kinds (`compilerKind`,
+   `enricherKind`, `graphBuilderKind`, `indexerKind`).
+3. Allocates `run_id` (caller-supplied `correlation_id` wins;
+   otherwise `uuid4().hex`).
+4. Persists the initial `IngestionRun` record with `status=CREATED`.
+5. Calls `reporter.report_run_created` and
+   `reporter.report_document_received` if a reporter is wired.
+6. Starts the workflow via the existing `JobStarter` contract.
+7. Updates the run record with the resulting `workflow_id`.
+
+Returns `IngestionRunCreatedRecord(runId, documentId, workflowId,
+status)`. The frontend uses the `runId` to navigate to the
+run-detail page and open the SSE stream immediately.
+
+The legacy `POST /documents` and `POST /documents/{id}/ingest`
+endpoints are unchanged — deployments that don't adopt the runs
+surface keep working.
+
+### 11.2 Activities emit progress events
+
+`ProcessingActivities` accepts an optional `progress_reporter`
+parameter. When set AND the request carries a `correlation_id`,
+each activity:
+
+- Calls `reporter.report_step_started` before the underlying
+  service call.
+- Calls `reporter.report_step_completed` (or `skipped` / `failed`
+  based on `result.status`) after.
+- Calls `reporter.report_step_failed` and re-raises on unhandled
+  exception. **Telemetry never swallows errors** — the workflow's
+  failure-propagation contract still fires.
+
+Stage labels: `COMPILE`, `ENRICH`, `GRAPH`, `INDEX`. Step IDs:
+`compile`, `enrich`, `build_graph`, `index`. The `query` activity
+is intentionally NOT instrumented — it's a read path, not part of
+the ingestion timeline.
+
+### 11.3 Workflow exit + skipped stages → activities
+
+Workflow code is replay-deterministic and cannot directly call
+`AuditRecorder` (non-deterministic side effect). Two short-lived
+activities in [`j1.orchestration.activities.runs`](../src/j1/orchestration/activities/runs.py)
+bridge the gap:
+
+- **`j1.runs.report_terminal`** — called by the workflow at every
+  exit path (success, business rejection, unexpected exception,
+  cancellation). Translates the workflow's `final_status` into
+  `report_run_completed` / `report_run_failed`. The input carries
+  a compact `step_summary` (one entry per stage, max ~5 entries)
+  so the `run.completed` event payload supports a "what ran" recap
+  without a follow-up `/events` fetch.
+- **`j1.runs.report_step_skipped`** — called when the planner /
+  policy / config skips a stage. Records the `step.skipped` event
+  with a mandatory `reason` and `source` (`caller` / `planner` /
+  `policy` / `default` / `config`). Triggered from the workflow's
+  `_stage_enabled` branches at compile / enrich / graph / index.
+
+Both activities are best-effort — telemetry must never block the
+workflow. They no-op silently when no reporter is wired.
+
+### 11.4 MinerU log lines → progress events
+
+`RAGAnythingCompileRequest` has two optional fields:
+`progress_reporter` and `run_id`. When both are present, the
+bridge wraps `asyncio.run(_run_compile())` in
+[`attach_mineru_progress_handler`](../src/j1/providers/raganything/_log_bridge.py),
+which installs a `logging.Handler` on the `mineru` and
+`raganything` loggers for the duration of the call. Each log line
+is parsed by `MinerUProgressParser` and routed to the reporter as
+`step.progress` (layout / model fetch) or `step.completed` (model
+load). The handler is removed on context exit; no log spillover.
+
+Pass-through:
+
+```
+RAGAnythingCompiler.compile(ctx, document_id,
+                            progress_reporter=reporter,
+                            run_id=run_id)
+                ↓ via RAGAnythingCompileRequest
+        _bridge.default_compile(request)
+                ↓ wraps in attach_mineru_progress_handler
+        rag.process_document_complete(...)
+                ↓ logger lines via mineru/raganything loggers
+        MinerUProgressParser
+                ↓
+        reporter.report_step_progress(stage="COMPILE",
+                                      step="LAYOUT_PREPARATION",
+                                      progress_percent=80,
+                                      current=35, total=44,
+                                      engine="MinerU")
+                ↓
+        AuditProgressReporter → audit JSONL
+                ↓
+        SSE stream picks it up via correlation_id filter
+```
+
+Throttling: the reporter drops sub-5% deltas (always emits 0%
+and 100%); the parser de-duplicates exact-same-percent ticks.
+
+### 11.5 Bootstrap factory
+
+[`build_default_progress_reporter(audit_recorder)`](../src/j1/runs/__init__.py)
+returns the standard composite:
+
+```python
+CompositeProgressReporter(
+    AuditProgressReporter(audit_recorder),
+    TemporalHeartbeatReporter(),
+)
+```
+
+Deployment entrypoints (`deploy/dev/api.py`, `deploy/dev/worker.py`)
+construct an `AuditRecorder` and call this factory; the result is
+passed into:
+
+- `create_rest_api(..., progress_reporter=...)` — for the
+  `POST /ingestion-runs` flow.
+- `ProcessingActivities(..., progress_reporter=...)` and
+  `RunsActivities(progress_reporter=...)` — for the worker.
+
+### 11.6 What's still optional (not blocking)
+
+Two integration points remain explicitly opt-in:
+
 - **Confirmation gate workflow signal.** `POST /ingestion-runs/{id}/confirm`
-  currently flips the run status only. To make it an actual workflow
-  gate, add a `WAITING_FOR_CONFIRMATION` state to
-  `ProjectProcessingWorkflow` analogous to the existing review /
-  budget gates and have `confirm` send a workflow signal.
-
-These are orthogonal to the progress surface itself and ship cleanly
-as additive changes.
+  currently flips the run status only. Promoting it to a real
+  workflow signal (analogous to the existing review / budget gates)
+  is a workflow-version change, not a data-shape change — additive
+  whenever manual confirmation becomes a product requirement.
+- **Per-page progress emission for non-MinerU vendors.** Other
+  vendors that expose progress callbacks (rather than logger
+  lines) can integrate by accepting a `ProgressReporter` and
+  calling `report_step_progress` directly — no log-bridge needed.

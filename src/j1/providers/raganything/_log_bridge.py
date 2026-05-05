@@ -106,7 +106,11 @@ def attach_mineru_progress_handler(
     The handler attaches to the named loggers' `addHandler()` rather
     than the root logger to avoid capturing unrelated log output in
     deployments that share the root configuration."""
-    if reporter is None:
+    if reporter is None or not run_id:
+        # No-op when EITHER the reporter is missing OR the run_id is
+        # empty. Both are required to correlate progress events with
+        # a run; without one of them the handler has nowhere to send
+        # the parsed events.
         yield
         return
     handler = _ProgressLoggingHandler(reporter, ctx, run_id)
