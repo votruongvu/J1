@@ -1,0 +1,16 @@
+node_modules
+dist
+*.local
+.DS_Store
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.swp
+
+# Build artifacts
+*.tsbuildinfo
