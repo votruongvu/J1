@@ -16,6 +16,7 @@ with workflow.unsafe.imports_passed_through():
         IndexActivityInput,
         ProcessingActivityResult,
         ProjectScope,
+        SetDocumentStatusInput,
         SpendSummary,
         ValidateContextResult,
     )
@@ -54,6 +55,7 @@ with workflow.unsafe.imports_passed_through():
         StepStatus,
     )
     from j1.processing.step_result import StepError, StepResult
+    from j1.jobs.status import ProcessingStatus
 
 
 class WorkflowState(StrEnum):
@@ -106,6 +108,14 @@ class ProjectProcessingRequest:
     review_after: tuple[str, ...] = ()
     actor: str = "system"
     correlation_id: str | None = None
+    # Restrict the workflow to specific document IDs. When non-empty,
+    # the workflow processes ONLY these documents and skips
+    # `list_pending_documents` entirely. The user-facing
+    # `POST /ingestion-runs` flow uses this to scope each upload to
+    # the document that was just registered, instead of re-processing
+    # every PENDING document in the project. Empty (default) keeps
+    # the legacy bulk-job behaviour.
+    target_document_ids: tuple[str, ...] = ()
     # How the workflow reacts to step failures. Defaults to fail_fast,
     # which preserves the historical "any failure fails the workflow"
     # behaviour. `continue_optional` permits PARTIAL_COMPLETED when
@@ -264,7 +274,29 @@ class ProjectProcessingWorkflow:
                 self._set_pending(f"{OPERATION_COMPILE}:{doc_id}")
                 if await self._should_stop():
                     break
-                await self._process_document(request, doc_id)
+                try:
+                    await self._process_document(request, doc_id)
+                except BaseException:
+                    # The document failed mid-pipeline. Flip its
+                    # registry status to FAILED so a subsequent
+                    # project-wide job doesn't re-pick it (otherwise
+                    # the same document loops forever — registry
+                    # status stays PENDING and `list_pending_documents`
+                    # keeps surfacing it). Best-effort: registry
+                    # writes never block the workflow's failure
+                    # surface.
+                    await self._mark_document_status(
+                        request, doc_id, ProcessingStatus.FAILED,
+                    )
+                    raise
+                # Successful per-document path. Mark as SUCCEEDED so
+                # the next bulk job won't re-pick it. Per-stage
+                # warnings/skips are recorded separately in
+                # `step_results`; the document itself is "done" once
+                # `_process_document` returns without raising.
+                await self._mark_document_status(
+                    request, doc_id, ProcessingStatus.SUCCEEDED,
+                )
                 self._documents_completed += 1
 
                 if self._should_continue_as_new(request):
@@ -722,14 +754,48 @@ class ProjectProcessingWorkflow:
         self, request: ProjectProcessingRequest
     ) -> list[str]:
         self._begin(OPERATION_LIST_DOCUMENTS)
-        documents = await workflow.execute_activity_method(
-            ProjectActivities.list_pending_documents,
-            request.scope,
-            start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
-            retry_policy=DEFAULT_RETRY.to_temporal(),
-        )
+        # `target_document_ids` lets the user-facing flow scope the
+        # workflow to a specific document (the one just uploaded)
+        # without re-processing every PENDING document in the project.
+        # When unset, the legacy bulk behaviour kicks in.
+        if request.target_document_ids:
+            documents = list(request.target_document_ids)
+        else:
+            documents = await workflow.execute_activity_method(
+                ProjectActivities.list_pending_documents,
+                request.scope,
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
         self._complete(OPERATION_LIST_DOCUMENTS)
         return documents
+
+    async def _mark_document_status(
+        self,
+        request: ProjectProcessingRequest,
+        document_id: str,
+        status: ProcessingStatus,
+    ) -> None:
+        """Best-effort registry status update.
+
+        Telemetry-grade: failures are swallowed so they can't block
+        the workflow's outcome. The activity itself logs missing
+        documents; transport-level failures here just mean the
+        registry stays at PENDING for that doc — the next bulk job
+        will re-pick it, which is the previous behaviour."""
+        try:
+            await workflow.execute_activity_method(
+                ProjectActivities.set_document_status,
+                SetDocumentStatusInput(
+                    scope=request.scope,
+                    document_id=document_id,
+                    status=status.value,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — registry status is non-critical telemetry
+            pass
 
     async def _build_plan(
         self,

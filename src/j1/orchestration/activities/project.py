@@ -7,9 +7,11 @@ from j1.audit.recorder import AuditRecorder
 from j1.cost.sink import COST_LOG_FILENAME
 from j1.intake.registry import SourceRegistry
 from j1.jobs.status import ProcessingStatus
+from j1.errors.exceptions import DocumentNotFoundError
 from j1.orchestration.activities.payloads import (
     FinalizeInput,
     ProjectScope,
+    SetDocumentStatusInput,
     SpendSummary,
     ValidateContextResult,
 )
@@ -19,6 +21,7 @@ ACTIVITY_VALIDATE_CONTEXT = "j1.project.validate_context"
 ACTIVITY_LIST_PENDING_DOCUMENTS = "j1.project.list_pending_documents"
 ACTIVITY_COMPUTE_SPEND = "j1.project.compute_spend"
 ACTIVITY_FINALIZE = "j1.project.finalize"
+ACTIVITY_SET_DOCUMENT_STATUS = "j1.project.set_document_status"
 
 ACTION_FINALIZED = "project.processing.finalized"
 TARGET_PROJECT = "project"
@@ -39,6 +42,7 @@ class ProjectActivities:
         return [
             self.validate_context,
             self.list_pending_documents,
+            self.set_document_status,
             self.compute_spend,
             self.finalize,
         ]
@@ -59,6 +63,32 @@ class ProjectActivities:
             for d in self._sources.list_documents(ctx)
             if d.status == ProcessingStatus.PENDING
         ]
+
+    @activity.defn(name=ACTIVITY_SET_DOCUMENT_STATUS)
+    def set_document_status(self, input: SetDocumentStatusInput) -> None:
+        """Flip a document's registry status.
+
+        Called by the workflow after each document is processed so a
+        subsequent project-wide job doesn't re-pick it. Best-effort:
+        an unknown status string or missing document is logged-and-
+        ignored rather than raised — telemetry never blocks the
+        workflow."""
+        try:
+            status = ProcessingStatus(input.status)
+        except ValueError:
+            activity.logger.warning(
+                "set_document_status: ignoring unknown status %r for %s",
+                input.status, input.document_id,
+            )
+            return
+        ctx = input.scope.to_context()
+        try:
+            self._sources.update_status(ctx, input.document_id, status)
+        except DocumentNotFoundError:
+            activity.logger.warning(
+                "set_document_status: document %s not in registry; "
+                "skipping status update", input.document_id,
+            )
 
     @activity.defn(name=ACTIVITY_COMPUTE_SPEND)
     def compute_spend(self, scope: ProjectScope) -> SpendSummary:

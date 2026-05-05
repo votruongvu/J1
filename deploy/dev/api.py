@@ -97,12 +97,26 @@ def _build_app():
         review=facade.review,
     )
 
+    # User-facing flow: should each upload run the planner? Default
+    # ON for the dev stack so the FE's run-detail page sees a
+    # populated execution plan immediately. Operators who don't want
+    # adaptive planning can set `J1_INGEST_PLANNER_ENABLED=false`.
+    planner_enabled = (
+        os.environ.get("J1_INGEST_PLANNER_ENABLED", "true").lower()
+        not in {"false", "0", "no", "off"}
+    )
+
     async def _start_project_workflow(ctx, document_id, body) -> str:
         """`job_starter` callable — drives the per-document ingest path.
 
-        Distinct from `job_control.start_project_job`, which is the
-        project-wide variant. Both share the Temporal client built in
-        the lifespan handler.
+        Crucial: scopes the workflow to the SINGLE document just
+        uploaded (`target_document_ids=(document_id,)`). Without
+        this filter the workflow would call
+        `list_pending_documents` and re-process every PENDING
+        document in the project — once on the first upload, twice on
+        the second, three times on the third, … The bulk-job path
+        (`job_control.start_project_job`) intentionally leaves the
+        filter empty.
         """
         client = client_provider()
         scope = ProjectScope.from_context(ctx)
@@ -119,6 +133,8 @@ def _build_app():
                 indexer_kind=body.indexer_kind,
                 actor=body.actor,
                 correlation_id=body.correlation_id,
+                target_document_ids=(document_id,),
+                planner_enabled=planner_enabled,
             ),
             id=workflow_id,
             task_queue=temporal_settings.task_queue,

@@ -197,6 +197,8 @@ def test_run_completes_happy_path(monkeypatch):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-1"]
             )
+        if name.endswith("set_document_status"):
+            return None
         if name.endswith("finalize"):
             return None
         raise AssertionError(f"unexpected activity invocation: {name}")
@@ -214,7 +216,91 @@ def test_run_completes_happy_path(monkeypatch):
     assert result.documents_total == 1
     assert result.documents_completed == 1
     assert any(c.endswith("compile") for c in calls)
+    # The workflow MUST flip the doc off PENDING after a successful
+    # process — otherwise subsequent project-wide jobs re-pick it
+    # and we get the per-upload reprocessing loop.
+    assert any(c.endswith("set_document_status") for c in calls)
     assert calls[-1].endswith("finalize")
+
+
+def test_target_document_ids_skips_list_pending_and_processes_only_named(monkeypatch):
+    """`target_document_ids` lets the user-facing flow scope each
+    upload to the just-uploaded document. The workflow must NOT call
+    `list_pending_documents` in that case — otherwise every upload
+    re-processes every PENDING document in the project (the bug we
+    saw with one upload triggering many MinerU starts)."""
+    calls: list[str] = []
+    statuses: list[str] = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        calls.append(name)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            raise AssertionError(
+                "list_pending_documents must not be called when "
+                "target_document_ids is set"
+            )
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"]
+            )
+        if name.endswith("set_document_status"):
+            statuses.append(payload.status)
+            return None
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="mock.compiler",
+        target_document_ids=("doc-uploaded-just-now",),
+    )
+
+    result = asyncio.run(wf.run(request))
+    assert result.documents_total == 1
+    assert result.documents_completed == 1
+    assert statuses == ["succeeded"]
+
+
+def test_failed_compile_marks_document_failed(monkeypatch):
+    """When the per-document pipeline raises, the workflow must
+    still flip the doc's registry status (to FAILED). Without this,
+    a doc that fails once stays PENDING and gets retried by every
+    subsequent bulk job indefinitely."""
+    statuses: list[str] = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-fail"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(status="failed", error="boom")
+        if name.endswith("set_document_status"):
+            statuses.append(payload.status)
+            return None
+        if name.endswith("finalize"):
+            return None
+        if name.endswith("report_terminal"):
+            return None
+        return None
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="mock.compiler",
+    )
+
+    with pytest.raises(Exception):
+        asyncio.run(wf.run(request))
+    assert statuses == ["failed"]
 
 
 def test_run_completes_full_pipeline(monkeypatch):

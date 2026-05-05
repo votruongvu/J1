@@ -105,3 +105,38 @@ def test_write_is_atomic(registry, workspace, ctx):
     runtime = workspace.runtime(ctx)
     leftover = [p.name for p in runtime.iterdir() if p.suffix == ".tmp"]
     assert leftover == []
+
+
+def test_update_status_flips_pending_to_succeeded(registry, ctx):
+    """Workflows call this after each processed doc so subsequent
+    bulk jobs don't re-pick it. Without the transition, a freshly
+    uploaded document stays PENDING forever and every project-wide
+    job loops it again."""
+    registry.add(_make_record(project=ctx, document_id="doc-1"))
+    registry.update_status(ctx, "doc-1", ProcessingStatus.SUCCEEDED)
+    after = registry.get(ctx, "doc-1")
+    assert after.status == ProcessingStatus.SUCCEEDED
+
+
+def test_update_status_persists_across_reads(workspace, ctx):
+    """Status update must survive a re-instantiation of the
+    registry (file-backed write, not in-memory only)."""
+    first = JsonSourceRegistry(workspace)
+    first.add(_make_record(project=ctx, document_id="doc-1"))
+    first.update_status(ctx, "doc-1", ProcessingStatus.FAILED)
+    second = JsonSourceRegistry(workspace)
+    assert second.get(ctx, "doc-1").status == ProcessingStatus.FAILED
+
+
+def test_update_status_unknown_document_raises(registry, ctx):
+    with pytest.raises(DocumentNotFoundError):
+        registry.update_status(ctx, "missing", ProcessingStatus.SUCCEEDED)
+
+
+def test_update_status_does_not_touch_other_documents(registry, ctx):
+    registry.add(_make_record(project=ctx, document_id="doc-1"))
+    registry.add(_make_record(
+        project=ctx, document_id="doc-2", checksum="sha256:bbb",
+    ))
+    registry.update_status(ctx, "doc-1", ProcessingStatus.SUCCEEDED)
+    assert registry.get(ctx, "doc-2").status == ProcessingStatus.PENDING

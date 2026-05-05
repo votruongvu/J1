@@ -102,6 +102,22 @@ class ValidateContextResult:
 
 
 @dataclass(frozen=True)
+class SetDocumentStatusInput:
+    """Workflow → activity payload for `j1.project.set_document_status`.
+
+    Used to flip a document's status off `PENDING` once the workflow
+    has finished processing it. `status` must be the wire value of a
+    `ProcessingStatus` enum member (e.g. `"succeeded"` / `"failed"` /
+    `"cancelled"`). Best-effort: if the document is missing the
+    activity logs and returns rather than raising — telemetry never
+    blocks workflow progress."""
+
+    scope: ProjectScope
+    document_id: str
+    status: str
+
+
+@dataclass(frozen=True)
 class SpendSummary:
     total_amount: str
     currency: str

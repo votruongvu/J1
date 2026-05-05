@@ -25,6 +25,20 @@ class SourceRegistry(Protocol):
 
     def list_documents(self, ctx: ProjectContext) -> list[DocumentRecord]: ...
 
+    def update_status(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        status: ProcessingStatus,
+    ) -> None:
+        """Transition a document's status.
+
+        Called by the workflow after each document finishes (or fails)
+        to flip it off `PENDING` so subsequent project-wide jobs
+        don't re-pick the same documents. Raises
+        `DocumentNotFoundError` if the document isn't registered."""
+        ...
+
 
 class JsonSourceRegistry:
     def __init__(self, workspace: WorkspaceResolver) -> None:
@@ -57,6 +71,22 @@ class JsonSourceRegistry:
 
     def list_documents(self, ctx: ProjectContext) -> list[DocumentRecord]:
         return self._read(ctx)
+
+    def update_status(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        status: ProcessingStatus,
+    ) -> None:
+        records = self._read(ctx)
+        for record in records:
+            if record.document_id == document_id:
+                record.status = status
+                self._write(ctx, records)
+                return
+        raise DocumentNotFoundError(
+            f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
+        )
 
     def _path(self, ctx: ProjectContext) -> Path:
         return self._workspace.runtime(ctx) / REGISTRY_FILENAME
