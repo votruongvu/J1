@@ -105,11 +105,24 @@ class RunsActivities:
             return
         ctx = input.scope.to_context()
         # Translate `final_status` to the appropriate reporter call.
-        # `failed` / `cancelled` / `timed_out` → run.failed.
+        # `cancelled`        → run.cancelled (its own terminal type so
+        #                      the SSE stream closes cleanly without
+        #                      pretending the run failed).
+        # `failed` / `timed_out` → run.failed.
         # `succeeded` / `partial_completed` → run.completed (the
         # frontend distinguishes via `warning_count` and `final_status`
         # fields in the event payload).
-        if input.final_status in ("failed", "cancelled", "timed_out"):
+        if input.final_status == "cancelled":
+            try:
+                self._reporter.report_run_cancelled(
+                    ctx, run_id=input.run_id,
+                    reason=input.failure_message,
+                    actor=input.actor,
+                )
+            except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+                pass
+            return
+        if input.final_status in ("failed", "timed_out"):
             try:
                 self._reporter.report_run_failed(
                     ctx, run_id=input.run_id,
@@ -117,7 +130,7 @@ class RunsActivities:
                     failure_message=input.failure_message or input.final_status,
                     actor=input.actor,
                 )
-            except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+            except Exception:  # noqa: BLE001
                 pass
             return
         try:

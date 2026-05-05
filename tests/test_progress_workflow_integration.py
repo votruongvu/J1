@@ -74,6 +74,7 @@ class _RecordingReporter:
     def report_step_failed(self, _ctx, **kw): return self._record("step.failed", **kw)
     def report_run_completed(self, _ctx, **kw): return self._record("run.completed", **kw)
     def report_run_failed(self, _ctx, **kw): return self._record("run.failed", **kw)
+    def report_run_cancelled(self, _ctx, **kw): return self._record("run.cancelled", **kw)
     def report_human_review_required(self, _ctx, **kw): return self._record("human_review.required", **kw)
 
 
@@ -297,6 +298,36 @@ def test_run_terminal_activity_warnings_uses_warning_count(scope, reporter):
     completed = reporter.calls[0]
     assert completed[1]["warning_count"] == 2
     assert completed[1]["final_status"] == "succeeded_with_warnings"
+
+
+def test_run_terminal_activity_cancelled_calls_run_cancelled(scope, reporter):
+    """Cancellation is its own terminal event so the SSE stream
+    closes cleanly via `run.cancelled` (the FE doesn't have to
+    misread a cancelled run as failed). The reason field carries
+    over from the workflow's failure_message slot — workflows fan
+    that into the activity input as the human-readable cause."""
+    runs = RunsActivities(progress_reporter=reporter)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-1",
+        final_status="cancelled",
+        failure_message="cancelled by operator",
+    ))
+    assert [c[0] for c in reporter.calls] == ["run.cancelled"]
+    cancelled = reporter.calls[0][1]
+    assert cancelled["reason"] == "cancelled by operator"
+
+
+def test_run_terminal_activity_timed_out_calls_run_failed(scope, reporter):
+    """`timed_out` is treated like a failure — the SSE stream closes
+    via `run.failed` and the FE renders the failed panel."""
+    runs = RunsActivities(progress_reporter=reporter)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-1",
+        final_status="timed_out",
+        failure_message="activity heartbeat timeout",
+    ))
+    assert [c[0] for c in reporter.calls] == ["run.failed"]
+    assert reporter.calls[0][1]["failure_code"] == "TIMED_OUT"
 
 
 def test_step_skipped_activity_emits_step_skipped(scope, reporter):

@@ -59,6 +59,7 @@ from j1 import (
     WorkspaceResolver,
     load_security_settings,
 )
+from j1.orchestration.activities.runs import RunsActivities
 from j1.runs import (
     AuditProgressReporter,
     IngestionRunStore,
@@ -211,7 +212,18 @@ def build_worker_spec(
     )
     indexer = SqliteSearchIndexer(workspace, artifacts, sources)
 
+    # Progress reporter shared by every workflow exit-point
+    # activity (`run.completed`, `run.failed`, `run.cancelled`,
+    # `step.skipped`). Same audit recorder the API uses, so the
+    # frontend's `GET /ingestion-runs/{id}/events[/stream]` sees one
+    # combined timeline regardless of whether the event was emitted
+    # by the REST handler or by the worker.
+    progress_reporter = AuditProgressReporter(audit_recorder)
+
     activities: list = []
+    activities += RunsActivities(
+        progress_reporter=progress_reporter,
+    ).all_activities()
     activities += ProjectLifecycleActivities(
         workspace=workspace, intake=intake, audit=audit_recorder,
     ).all_activities()
