@@ -27,7 +27,19 @@ class SecurityPolicy:
     """
 
     authenticator: Authenticator | None = None
-    anonymous_paths: frozenset[str] = frozenset({"/health", "/version"})
+    # Anonymous paths bypass authentication. The defaults cover health
+    # checks AND the OpenAPI / Swagger UI surface — operators must be
+    # able to load the docs page without pasting a token, and Swagger
+    # itself fetches `/openapi.json` before the operator can use the
+    # Authorize button.
+    anonymous_paths: frozenset[str] = frozenset({
+        "/health",
+        "/version",
+        "/openapi.json",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+    })
 
     @property
     def enabled(self) -> bool:

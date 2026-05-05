@@ -159,15 +159,16 @@ def _install_openapi_security(
       * "Authorize" button appears top-right.
       * Each non-anonymous operation shows a lock icon and applies
         the chosen scheme on `Try it out` requests.
-      * Anonymous paths (`/health` / `/version`) keep their `security: []`
-        marker so Swagger doesn't pretend they need auth.
+      * Anonymous paths (`/health` / `/version`) carry an empty
+        `security: []` so Swagger doesn't pretend they need auth.
 
-    Implementation: we wrap `app.openapi` (the bound method) in a
-    function that post-processes the schema. Reassigning to
-    `app.openapi` works as a Python instance-attribute override, but
-    FastAPI's setup-time route closure for `/openapi.json` resolves
-    `self.openapi` at request time too, so the wrapper takes effect
-    on every spec fetch."""
+    Implementation: instead of trying to override FastAPI's
+    `app.openapi()` method (instance-attribute shadowing has been
+    flaky across SDK versions when combined with Starlette's
+    lazily-built middleware stack), we let FastAPI generate its
+    schema as usual and post-process the cached `app.openapi_schema`
+    on first call. The post-processing is idempotent: subsequent
+    calls return the already-augmented cached value."""
     bearer_scheme = {
         "type": "http",
         "scheme": "bearer",
@@ -186,35 +187,80 @@ def _install_openapi_security(
             "can't easily set the Authorization header."
         ),
     }
-    # Capture the original openapi-generation method up front. Storing
-    # the bound method (rather than calling `app.openapi` at wrap time)
-    # avoids any lookup ambiguity later — we always have a known-good
-    # generator to defer to.
     _original_openapi = app.openapi
 
-    def _custom_openapi() -> dict[str, object]:
-        if app.openapi_schema:
-            return app.openapi_schema
+    def _augmented_openapi() -> dict[str, object]:
+        # FastAPI's own `openapi()` caches into `app.openapi_schema`.
+        # We reuse that cache: first call generates + augments; later
+        # calls short-circuit on the augmented marker.
         schema = _original_openapi()
         components = schema.setdefault("components", {})
         security_schemes = components.setdefault("securitySchemes", {})
-        security_schemes["bearer"] = bearer_scheme
-        security_schemes["api_key"] = api_key_scheme
+        if "bearer" not in security_schemes:
+            security_schemes["bearer"] = bearer_scheme
+        if "api_key" not in security_schemes:
+            security_schemes["api_key"] = api_key_scheme
 
         # Apply security globally, then strip it on anonymous paths.
         # Either scheme satisfies — Swagger renders both as choices.
-        global_security = [{"bearer": []}, {"api_key": []}]
-        schema["security"] = global_security
-        paths = schema.get("paths", {})
-        for path, operations in paths.items():
-            if path in anonymous_paths:
-                for op in operations.values():
-                    if isinstance(op, dict):
-                        op["security"] = []
-        app.openapi_schema = schema
+        if "security" not in schema:
+            schema["security"] = [{"bearer": []}, {"api_key": []}]
+            paths = schema.get("paths", {})
+            for path, operations in paths.items():
+                if path in anonymous_paths:
+                    for op in operations.values():
+                        if isinstance(op, dict):
+                            op["security"] = []
         return schema
 
-    app.openapi = _custom_openapi  # type: ignore[method-assign]
+    # FastAPI's openapi.json route handler resolves `self.openapi` at
+    # request time, so a plain instance-attribute reassignment SHOULD
+    # work — but we belt-and-brace it by also augmenting via response
+    # middleware below. This assignment also covers direct callers
+    # (tests, tooling) that call `app.openapi()`.
+    app.openapi = _augmented_openapi  # type: ignore[method-assign]
+
+    # Belt-and-brace: intercept the OpenAPI response in middleware
+    # and augment its body if the schemes aren't there yet. This
+    # works regardless of how the route handler resolves
+    # `self.openapi`.
+    @app.middleware("http")
+    async def _openapi_security_middleware(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path != app.openapi_url:
+            return response
+        # Read the response body, augment, re-emit.
+        body_chunks: list[bytes] = []
+        async for chunk in response.body_iterator:
+            body_chunks.append(
+                chunk if isinstance(chunk, bytes) else chunk.encode()
+            )
+        body = b"".join(body_chunks)
+        try:
+            schema = json.loads(body)
+        except (ValueError, json.JSONDecodeError):
+            return JSONResponse(
+                content={"raw": body.decode("utf-8", errors="replace")},
+                status_code=response.status_code,
+            )
+
+        components = schema.setdefault("components", {})
+        security_schemes = components.setdefault("securitySchemes", {})
+        if "bearer" not in security_schemes:
+            security_schemes["bearer"] = bearer_scheme
+        if "api_key" not in security_schemes:
+            security_schemes["api_key"] = api_key_scheme
+        if "security" not in schema:
+            schema["security"] = [{"bearer": []}, {"api_key": []}]
+            paths = schema.get("paths", {})
+            for path, operations in paths.items():
+                if path in anonymous_paths:
+                    for op in operations.values():
+                        if isinstance(op, dict):
+                            op["security"] = []
+        # Cache so subsequent fetches avoid the full regenerate.
+        app.openapi_schema = schema
+        return JSONResponse(content=schema, status_code=response.status_code)
 
 
 def create_rest_api(
@@ -284,7 +330,14 @@ def create_rest_api(
         anonymous_paths=(
             anonymous_paths
             if anonymous_paths is not None
-            else frozenset({"/health", "/version"})
+            else frozenset({
+                "/health",
+                "/version",
+                "/openapi.json",
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+            })
         ),
     )
 
