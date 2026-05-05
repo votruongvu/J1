@@ -45,6 +45,8 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
+      temporal-init:
+        condition: service_completed_successfully
     networks:
       - j1-net
     restart: unless-stopped
@@ -65,6 +67,8 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
+      temporal-init:
+        condition: service_completed_successfully
     networks:
       - j1-net
     restart: unless-stopped
@@ -165,6 +169,49 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
+
+  # One-shot init: registers J1's custom search attributes with the
+  # default namespace so the workflow's `J1IngestStage` /
+  # `J1IngestMode` upserts succeed at activation time. Without this,
+  # flipping `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` causes
+  # every workflow activation to fail with `BadSearchAttributes` —
+  # see deploy/dev/README.md § "Temporal search attributes".
+  #
+  # Idempotent: re-running on an already-registered cluster is a
+  # warning, not a failure, so this stays correct across `up` /
+  # `down` / `up` cycles. Exits as soon as both attributes are
+  # registered (or already-present).
+  #
+  # Reuses the same `temporalio/auto-setup` image the server runs, so
+  # no extra image pull. `tctl admin cluster add-search-attributes`
+  # is the right command for Temporal 1.24 (the newer
+  # `temporal operator search-attribute create` ships in `temporal`,
+  # which `auto-setup` doesn't include).
+  temporal-init:
+    image: temporalio/auto-setup:1.24.2
+    container_name: j1-temporal-init
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - j1-net
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    # `--auto_confirm` skips the interactive prompt tctl shows on
+    # mutating cluster commands. The `|| true` swallows the
+    # "attribute already exists" error so the service is idempotent
+    # across `down` / `up` cycles.
+    command:
+      - |
+        set -e
+        echo "[temporal-init] registering J1 search attributes…"
+        for ATTR in J1IngestStage J1IngestMode; do
+          tctl --auto_confirm --address temporal:7233 \
+            admin cluster add-search-attributes \
+            --name "$$ATTR" --type Keyword \
+          || echo "[temporal-init] $$ATTR already registered — skipping"
+        done
+        echo "[temporal-init] done."
 
   temporal-ui:
     image: temporalio/ui:2.31.0
