@@ -85,7 +85,7 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
     setLoading(true);
     setError(null);
     try {
-      const all = await client.listRuns(ctx, { page: 1, pageSize: 1000 });
+      const all = await client.listRuns(ctx, { page: 1, pageSize: 10 });
       setAllData(all);
     } catch (e) {
       const status = e instanceof ApiError ? e.status : 500;

@@ -47,7 +47,7 @@ function AllRunsPage({ ctx, onOpenRun, onNewRun, pushToast }) {
     setLoading(true);
     setError(null);
     try {
-      const all = await window.client.listRuns(ctx, { page: 1, pageSize: 1000 });
+      const all = await window.client.listRuns(ctx, { page: 1, pageSize: 10 });
       setAllData(all);
     } catch (e) {
       setError({ status: e.status, message: e.message });
