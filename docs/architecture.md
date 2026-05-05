@@ -267,15 +267,26 @@ with:
 via `workflow.logger` at every lifecycle transition (started /
 completed / cancelled / failed) with operationally safe context
 (`tenant_id`, `project_id`, `compiler_kind`, etc. — never document
-content). It also publishes a typed search attribute `J1IngestStage`
-that tracks the active stage so the Temporal UI can group / filter
-running workflows. When adaptive planning is enabled, `J1IngestMode`
-exposes the chosen mode. Search-attribute upserts are best-effort:
-deployments that haven't registered the keys with the namespace just
-get no signal (no error). Long-running activities (compile,
-build_graph) heartbeat at start / finish, governed by `HEARTBEAT_TIMEOUT`
-(2 minutes) so a stalled vendor call surfaces as a timeout instead
-of consuming the full activity start-to-close budget.
+content). Logs are always-on and need no setup.
+
+Optionally, the workflow can also publish typed search attributes —
+`J1IngestStage` (active stage) and `J1IngestMode` (chosen mode when
+adaptive planning is on) — so the Temporal UI can group / filter
+workflows. Search attributes are **opt-in** (default off). Temporal
+rejects upserts for attributes that aren't registered with the
+namespace, and the rejection happens at workflow-activation
+completion — server-side, after the workflow code returns — so a
+try/except in the workflow can't catch it. To enable: register the
+keys with `temporal operator search-attribute create` AND set
+`J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` (the deployment passes
+this through to `request.search_attributes_enabled`). See
+[`docs/operations/temporal.md`](operations/temporal.md) for the
+exact CLI commands.
+
+Long-running activities (compile, build_graph) heartbeat at start /
+finish, governed by `HEARTBEAT_TIMEOUT` (2 minutes) so a stalled
+vendor call surfaces as a timeout instead of consuming the full
+activity start-to-close budget.
 
 **Signals available on `ProjectProcessingWorkflow`:**
 

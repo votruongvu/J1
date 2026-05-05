@@ -287,28 +287,50 @@ optional `reason` for skips and `error` for failures — operators
 don't need to dig into activity-attempt history to answer "what ran,
 what was skipped, what failed, why?".
 
-**Visibility.** The workflow emits structured `workflow.logger`
-events at every lifecycle transition with operationally safe
-context (`tenant_id`, `project_id`, `compiler_kind`, etc. — never
-document content). It also publishes typed search attributes:
+**Visibility.** The workflow always emits structured
+`workflow.logger` events at every lifecycle transition with
+operationally safe context (`tenant_id`, `project_id`,
+`compiler_kind`, etc. — never document content). Logs are on by
+default and need no setup.
+
+The workflow can also publish typed search attributes for Temporal
+UI filtering:
 
 | Search attribute | Updates on |
 |---|---|
 | `J1IngestStage` | Each stage start, completion, and terminal exit (`completed` / `cancelled` / `failed`). |
 | `J1IngestMode` | Set once per document when adaptive planning is enabled, to the chosen ingest mode (e.g. `text_only`). |
 
-Search-attribute upserts are best-effort: deployments that haven't
-registered the keys with the namespace silently get no signal (no
-error). Register them with:
+Search attributes are **opt-in (default off)**. The Temporal cluster
+rejects upserts for attributes that aren't registered with the
+namespace, and the rejection happens at workflow-activation
+completion — server-side, after the workflow code returns — so a
+try/except inside the workflow body cannot recover from it. If you
+turn the flag on without first registering the attributes, every
+workflow activation fails with `BadSearchAttributes` and the worker
+gets stuck.
 
-```bash
-temporal operator search-attribute create \
-  --namespace default \
-  --name J1IngestStage --type Keyword
-temporal operator search-attribute create \
-  --namespace default \
-  --name J1IngestMode --type Keyword
-```
+**To enable:**
+
+1. Register the attributes with your Temporal namespace:
+
+   ```bash
+   temporal operator search-attribute create \
+     --namespace default \
+     --name J1IngestStage --type Keyword
+   temporal operator search-attribute create \
+     --namespace default \
+     --name J1IngestMode --type Keyword
+   ```
+
+2. Set `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` in the deployment
+   environment. The API / JobStarter reads this and passes it
+   through to `ProjectProcessingRequest.search_attributes_enabled`.
+
+For dev clusters using `temporalio/auto-setup`, the attributes
+**must** be registered after the namespace is created (i.e. after
+the first run of the auto-setup container). Until then, leave the
+flag off — structured logs alone are enough for debugging.
 
 ### 5.2 `DocumentProcessingWorkflow`
 
