@@ -11,7 +11,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, type StreamHandle } from "@/lib/api/client";
 import { useClient } from "@/lib/hooks/useClient";
-import type { ExecutionPlan, IngestionRun, ProgressEvent } from "@/types/ingestion";
+import {
+  type ExecutionPlan,
+  type IngestionRun,
+  type ProgressEvent,
+  isTerminalEvent,
+} from "@/types/ingestion";
 import type { ProjectContext, RuntimeStepStatus, StreamStatus, Toast } from "@/types/ui";
 import { Banner } from "@/components/Banner";
 import { RunHeader } from "./run-detail/RunHeader";
@@ -68,11 +73,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       setEvents((prev) => [...prev, e]);
 
       const t = e.event;
-      const isTerminal =
-        t === "run.completed" ||
-        t === "run.failed" ||
-        t === "run.cancelled" ||
-        t === "human_review.required";
+      const isTerminal = isTerminalEvent(t);
       if (isTerminal) terminalRef.current = true;
 
       // Refresh the run snapshot so header/status panels reflect the

@@ -130,6 +130,30 @@ describe("runListItemFromApi", () => {
     expect(item.documentName).toBe("doc-1");
     expect(item.status).toBe("COMPLETED");
   });
+
+  it("threads mode/policy through and falls back when missing", () => {
+    const withMeta = runListItemFromApi({
+      runId: "r1",
+      documentId: "doc-1",
+      mode: "FAST",
+      policy: "redact-pii",
+      status: "running",
+      startedAt: "2026-05-01T00:00:00Z",
+      updatedAt: "2026-05-01T00:00:01Z",
+    });
+    expect(withMeta.mode).toBe("FAST");
+    expect(withMeta.policy).toBe("redact-pii");
+
+    const withoutMeta = runListItemFromApi({
+      runId: "r2",
+      documentId: "doc-2",
+      status: "running",
+      startedAt: "2026-05-01T00:00:00Z",
+      updatedAt: "2026-05-01T00:00:01Z",
+    });
+    expect(withoutMeta.mode).toBe("STANDARD");
+    expect(withoutMeta.policy).toBe("auto");
+  });
 });
 
 describe("eventFromApi", () => {

@@ -80,6 +80,8 @@ export interface ApiRunListItem {
   runId: string;
   documentId?: string;
   documentName?: string | null;
+  mode?: string | null;
+  policy?: string | null;
   status?: string;
   startedAt?: string | null;
   updatedAt?: string | null;
@@ -133,8 +135,11 @@ export function runListItemFromApi(api: ApiRunListItem): RunListItem {
     runId: api.runId,
     documentName: api.documentName ?? api.documentId ?? api.runId,
     status: translateStatus(api.status),
-    mode: "STANDARD",
-    policy: "auto",
+    // Backend reads `mode` / `policy` from `run.metadata`. Fall back
+    // to sensible labels when the metadata is missing rather than
+    // showing literal "undefined" in the All Runs row meta line.
+    mode: api.mode ?? "STANDARD",
+    policy: api.policy ?? "auto",
     currentStage: (api.currentStage as Stage | null | undefined) ?? null,
     currentStep: api.currentStep ?? null,
     progressPercent: api.progressPercent ?? 0,

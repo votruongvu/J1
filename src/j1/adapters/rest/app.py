@@ -5,8 +5,6 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-_log = logging.getLogger("j1.adapters.rest")
-
 from fastapi import (
     Depends,
     FastAPI,
@@ -19,6 +17,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic.alias_generators import to_camel
 from temporalio.exceptions import ApplicationError
 
 from j1.adapters.rest.envelope import envelope, error_envelope, error_response
@@ -141,6 +140,8 @@ from j1.integration.services import ApplicationFacade
 from j1.projects.context import ProjectContext
 from j1.review.queue import ReviewItemNotFoundError
 from j1.workspace.resolver import WorkspaceResolver
+
+_log = logging.getLogger("j1.adapters.rest")
 
 TENANT_HEADER = "X-Tenant-Id"
 PROJECT_HEADER = "X-Project-Id"
@@ -1270,6 +1271,12 @@ def create_rest_api(
             metadata={
                 "duplicate_upload": duplicate,
                 "policy": policy or "auto",
+                # `mode` is the human-readable label the FE shows
+                # alongside `policy` (e.g., STANDARD / FAST / THOROUGH).
+                # The upload form doesn't yet collect a value, so we
+                # default to STANDARD — when a mode selector lands in
+                # the UI thread it through here.
+                "mode": "STANDARD",
                 # Persisted so `GET /ingestion-runs` can render the
                 # uploaded filename without joining on the documents
                 # store. `original_filename` falls back to the multi-
@@ -2248,12 +2255,16 @@ def _read_job_events(
 
 def _ingestion_run_to_list_item(run) -> IngestionRunListItem:
     """Compact projection used by `GET /ingestion-runs`. Pulls
-    `documentName` from the run's metadata when present so the All
-    Runs view can render the same display name as the upload page."""
+    `documentName` / `mode` / `policy` from the run's metadata bag
+    (populated by the upload handler) so the All Runs view can render
+    the same display fields as the upload page."""
+    metadata = run.metadata or {}
     return IngestionRunListItem(
         run_id=run.run_id,
         document_id=run.document_id,
-        document_name=str(run.metadata.get("document_name") or "") or None,
+        document_name=_optional_str(metadata.get("document_name")),
+        mode=_optional_str(metadata.get("mode")),
+        policy=_optional_str(metadata.get("policy")),
         status=run.status.value,
         started_at=run.started_at,
         updated_at=run.updated_at,
@@ -2265,6 +2276,19 @@ def _ingestion_run_to_list_item(run) -> IngestionRunListItem:
         failure_code=run.failure_code,
         failure_message=run.failure_message,
     )
+
+
+def _optional_str(value: object) -> str | None:
+    """Coerce a metadata-bag value into a non-empty str, or None.
+
+    Run metadata is `dict[str, object]` (raw JSONL passthrough), so
+    callers shouldn't trust the type. We accept anything that
+    stringifies and treat empty / missing as None so Pydantic can
+    omit the field from the wire payload entirely."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _ingestion_run_to_record(run) -> IngestionRunRecord:
@@ -2335,7 +2359,7 @@ def _progress_event_from_audit(data: dict[str, Any]) -> ProgressEventRecord:
         "current", "total", "message", "engine", "provider",
     }
     metadata = {
-        _to_camel(k): v for k, v in payload.items() if k not in typed_keys
+        to_camel(k): v for k, v in payload.items() if k not in typed_keys
     }
     return ProgressEventRecord(
         event_id=data["event_id"],
@@ -2356,13 +2380,6 @@ def _progress_event_from_audit(data: dict[str, Any]) -> ProgressEventRecord:
     )
 
 
-def _to_camel(snake: str) -> str:
-    """`failure_code` → `failureCode`. Single-word inputs are returned
-    unchanged. Idempotent: an already-camelCase input round-trips."""
-    if "_" not in snake:
-        return snake
-    head, *tail = snake.split("_")
-    return head + "".join(part.capitalize() for part in tail if part)
 
 
 def _read_run_plan(

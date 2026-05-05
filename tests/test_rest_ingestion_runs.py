@@ -531,6 +531,32 @@ def test_list_ingestion_runs_paginates_and_orders_by_started_desc(
     assert body["items"][0]["status"] in {"running", "succeeded"}
 
 
+def test_list_ingestion_runs_carries_mode_and_policy_from_metadata(
+    client, run_store, ctx,
+):
+    """`mode` / `policy` come from the run's metadata bag (populated
+    by the upload handler). Listing items must surface them so the
+    All Runs row meta line ("STANDARD · auto") matches the run-detail
+    page header."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    run_store.upsert(ctx, IngestionRun(
+        run_id="r1", document_id="d1", workflow_id="wf",
+        workflow_run_id=None, status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+        metadata={
+            "document_name": "earnings.pdf",
+            "mode": "FAST",
+            "policy": "redact-pii",
+        },
+    ))
+    resp = client.get("/ingestion-runs", headers=_HEADERS)
+    item = resp.json()["data"]["items"][0]
+    assert item["mode"] == "FAST"
+    assert item["policy"] == "redact-pii"
+
+
 def test_list_ingestion_runs_filters_by_status_repeats(client, run_store, ctx):
     """Repeated `?status=` query params narrow the result set; the
     FE quick-filter chips drive this."""

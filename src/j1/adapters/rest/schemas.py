@@ -201,12 +201,17 @@ class IngestionRunListItem(CamelModel):
 
     Stays a strict subset of `IngestionRunRecord` so the list view
     can render the same status badge / progress bar / failure
-    summary as the detail page without an extra round-trip."""
+    summary as the detail page without an extra round-trip. `mode`
+    and `policy` are sourced from the run's metadata bag (populated
+    by the upload handler) so the list rows show the same values
+    the run-detail page does."""
 
     run_id: str
     document_id: str
     document_name: str | None = None
     status: str
+    mode: str | None = None
+    policy: str | None = None
     started_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None

@@ -11,16 +11,17 @@
  * so demos / screenshots are reproducible.
  */
 
-import type {
-  ExecutionPlan,
-  IngestionRun,
-  ProgressEvent,
-  ProgressEventType,
-  RunListItem,
-  RunListQuery,
-  RunListResult,
-  RunStatus,
-  Stage,
+import {
+  type ExecutionPlan,
+  type IngestionRun,
+  type ProgressEvent,
+  type ProgressEventType,
+  type RunListItem,
+  type RunListQuery,
+  type RunListResult,
+  type RunStatus,
+  type Stage,
+  isTerminalEvent,
 } from "@/types/ingestion";
 import type { MockScenario, ProjectContext } from "@/types/ui";
 import {
@@ -950,7 +951,12 @@ export class MockClient implements IngestionClient {
       this.updateRunFromEvent(adjusted);
       handlers.onEvent?.(adjusted);
 
-      if (adjusted.event === "run.completed" || adjusted.event === "run.failed") {
+      // Mirror the backend's SSE terminal set (single source of
+      // truth: `TERMINAL_EVENT_TYPES`) so mock-mode and live-mode
+      // behave identically — closing on the same event types means
+      // the FE's reconnect/dedupe logic doesn't have to special-case
+      // mock runs.
+      if (isTerminalEvent(adjusted.event)) {
         handlers.onClose?.();
         return;
       }

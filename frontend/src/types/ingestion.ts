@@ -161,6 +161,27 @@ export type ProgressEventType =
   | "human_review.required";
 
 /**
+ * Event types that close the SSE stream. Mirrors the backend's
+ * `_TERMINAL_PROGRESS_TYPES` (in `j1.adapters.rest.app`) — keep in
+ * sync. The FE uses this in two places:
+ *
+ *   - `RunDetailPage` to flip the "stay closed" flag so a clean
+ *     stream end after a terminal event doesn't trigger a reconnect.
+ *   - `MockClient.openStream` to end the scripted timeline so mock
+ *     mode behaves identically to live mode.
+ */
+export const TERMINAL_EVENT_TYPES: ReadonlySet<ProgressEventType> = new Set([
+  "run.completed",
+  "run.failed",
+  "run.cancelled",
+  "human_review.required",
+]);
+
+export function isTerminalEvent(eventType: ProgressEventType | string): boolean {
+  return TERMINAL_EVENT_TYPES.has(eventType as ProgressEventType);
+}
+
+/**
  * Free-form payload carried by every progress event. Optional fields
  * vary by event type — `step.progress` carries `progress` / `current` /
  * `total`; `step.failed` / `run.failed` carry `failure_code` /
