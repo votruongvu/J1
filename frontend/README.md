@@ -64,6 +64,41 @@ GET  /ingestion-runs/{run_id}/events/stream    live SSE
 
 The `GET /ingestion-runs` list endpoint is not yet implemented on the backend. In live mode the All Runs view shows an explanatory banner; create runs from the Upload page and the run-detail screen works end-to-end.
 
+## Docker
+
+The dev compose stack ships the SPA as part of `docker compose up`
+(see [`../deploy/dev/README.md`](../deploy/dev/README.md)). The
+[`Dockerfile`](Dockerfile) is multi-stage:
+
+1. **`deps`** — `npm ci` against `package*.json` only, so source
+   edits don't bust the cache.
+2. **`build`** — runs `npm run build` with `VITE_API_BASE_URL`
+   wired in as a build arg.
+3. **`run`** — `nginx:alpine` serves `dist/` and proxies `/api/*`
+   to the `api` service over the Docker bridge network. Browser
+   stays single-origin → no CORS allow-list needed on the backend.
+
+Build standalone:
+
+```bash
+# Default — bundle hits `/api` (use behind a same-origin proxy)
+docker build -t j1-frontend frontend/
+
+# Point the bundle at an absolute backend URL
+docker build \
+  --build-arg VITE_API_BASE_URL=https://api.example.com \
+  -t j1-frontend frontend/
+```
+
+Or via compose (rebuilds on source change):
+
+```bash
+docker compose -f deploy/dev/docker-compose.yml up --build frontend
+```
+
+The host port and API base URL are controlled by `J1_FRONTEND_PORT`
+and `J1_FRONTEND_API_BASE_URL` in [`../.env`](../.env).
+
 ## Reference snapshot
 
 The original Babel-standalone HTML/JSX prototype is preserved verbatim under [`frontend.prototype/`](../frontend.prototype/) for design reference.

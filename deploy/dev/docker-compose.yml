@@ -3,6 +3,8 @@
 # Brings up:
 #   - api          : FastAPI server (`python -m deploy.dev.api`)
 #   - worker       : Temporal worker (`python -m deploy.dev.worker`)
+#   - frontend     : Static SPA (J1 Execution Console) served by nginx
+#                    with `/api/*` proxied to the api service
 #   - temporal     : Temporal server with in-memory persistence
 #   - temporal-ui  : Browser UI for Temporal
 #
@@ -67,6 +69,39 @@ services:
       - j1-net
     restart: unless-stopped
     command: ["python", "-m", "deploy.dev.worker"]
+
+  # Frontend SPA — Vite-built static bundle served by nginx with
+  # `/api/*` proxied to the `api` service over the Docker bridge.
+  # Browser stays single-origin so CORS is a non-issue.
+  #
+  # Code edits: the bundle is baked into the image at build time, so
+  # changes under `frontend/src/` need a rebuild:
+  #
+  #   docker compose -f deploy/dev/docker-compose.yml up --build frontend
+  #
+  # Or bypass the container entirely for HMR / fast iteration: run
+  # `npm run dev` on the host (`cd frontend && npm run dev`) and
+  # point your browser at http://localhost:5173 — the host-side dev
+  # server still talks to the api container on its published port.
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        # Build-time API base URL baked into the SPA. `/api` keeps
+        # the browser single-origin via nginx's proxy block. To point
+        # the bundle at a different backend (staging, etc.), override:
+        #   docker compose build --build-arg VITE_API_BASE_URL=https://api.example.com frontend
+        VITE_API_BASE_URL: ${J1_FRONTEND_API_BASE_URL:-/api}
+    image: j1-frontend:latest
+    container_name: j1-frontend
+    ports:
+      - "${J1_FRONTEND_PORT:-8081}:80"
+    depends_on:
+      - api
+    networks:
+      - j1-net
+    restart: unless-stopped
 
   # Temporal's own storage. Postgres is here ONLY for Temporal — the
   # J1 framework itself does NOT use a relational database (it uses

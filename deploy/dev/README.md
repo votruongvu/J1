@@ -1,9 +1,9 @@
 # Local development with Docker
 
 A minimal Docker Compose stack for running the J1 framework locally.
-Brings up a REST API, a Temporal worker, a Temporal server (with
-Postgres for its own storage), and the Temporal web UI on a single
-laptop.
+Brings up a REST API, a Temporal worker, the J1 Execution Console
+SPA, a Temporal server (with Postgres for its own storage), and the
+Temporal web UI on a single laptop.
 
 > **First time?** Read [`docs/development/onboarding.md`](../../docs/development/onboarding.md)
 > first — it walks the full path from install through first
@@ -33,10 +33,11 @@ event-integration, …) for production hardening.
 - Docker (20.10+)
 - Docker Compose (v2 — invoked as `docker compose`, not
   `docker-compose`)
-- Free local ports: **8000** (API), **7233** (Temporal gRPC),
-  **8080** (Temporal UI)
+- Free local ports: **8000** (API), **8081** (Frontend),
+  **7233** (Temporal gRPC), **8080** (Temporal UI)
 
-That's it. No Python install, no Postgres, no Redis, no S3.
+That's it. No Python install, no Postgres, no Redis, no S3, no
+Node toolchain on the host (the frontend image builds its own).
 
 ---
 
@@ -93,9 +94,32 @@ Services that come up:
 |----------------|---------------------------------------|------------|
 | `api`          | http://localhost:8000                 | J1 REST API (`python -m deploy.dev.api`) |
 | `worker`       | (no port — connects to Temporal)      | J1 Temporal worker (`python -m deploy.dev.worker`) |
+| `frontend`     | http://localhost:8081                 | J1 Execution Console SPA (nginx + Vite-built bundle, proxies `/api/*` to the api service) |
 | `temporal`     | localhost:7233 (gRPC)                 | Temporal server (`temporalio/auto-setup`) |
 | `temporal-ui`  | http://localhost:8080                 | Temporal web UI |
 | `postgresql`   | (no exposed port; Temporal-internal)  | Temporal's storage — **not** used by J1 |
+
+### Editing frontend code
+
+The frontend bundle is **baked into the image at build time** (no
+bind mount), so source edits under `frontend/src/` need a rebuild:
+
+```bash
+docker compose -f deploy/dev/docker-compose.yml up --build frontend
+```
+
+For HMR / fast iteration, run Vite directly on the host instead and
+keep the container stack for the backend services:
+
+```bash
+cd frontend
+npm install      # first time only
+npm run dev      # http://localhost:5173 with HMR
+```
+
+The host-side dev server hits the api container on its published
+port (`http://localhost:8000`); the SPA's "Authorize" modal lets you
+override the API base URL per-browser at runtime.
 
 ---
 
@@ -260,6 +284,8 @@ Every variable lives in [`.env.example`](../../.env.example). Highlights:
 | `J1_TEMPORAL_TASK_QUEUE` | `j1-processing` | Generic, stable; both API + worker read this |
 | `J1_API_PORT` | `8000` | Port inside the container; compose maps it to the same host port |
 | `J1_WORKER_MAX_CONCURRENT_ACTIVITIES` | `5` | Tune for laptop workload |
+| `J1_FRONTEND_PORT` | `8081` | Host port the SPA is published on |
+| `J1_FRONTEND_API_BASE_URL` | `/api` | Baked into the SPA bundle at build time. Defaults to a relative path so the browser stays single-origin via nginx's proxy block |
 | `J1_AUTH_API_KEYS` / `J1_AUTH_API_KEYS_FILE` | unset | Anonymous mode by default; set either to require auth |
 | `J1_WEBHOOK_SUBSCRIPTIONS` / `J1_WEBHOOK_SUBSCRIPTIONS_FILE` | unset | No webhook delivery by default |
 | `J1_EVENT_PUBLISHER_TYPE` | `noop` | Set to `bus` to fan events into the in-process `ApplicationEventBus` |
@@ -301,11 +327,13 @@ Per-area context lives in:
 | File | Purpose |
 |---|---|
 | [`Dockerfile`](Dockerfile) | Single image — runs both API and worker |
-| [`docker-compose.yml`](docker-compose.yml) | Brings up API + worker + Temporal + UI |
+| [`docker-compose.yml`](docker-compose.yml) | Brings up API + worker + frontend + Temporal + UI |
 | [`api.py`](api.py) | `python -m deploy.dev.api` — FastAPI server entrypoint |
 | [`worker.py`](worker.py) | `python -m deploy.dev.worker` — Temporal worker entrypoint |
 | [`_wiring.py`](_wiring.py) | Shared `ApplicationFacade` + `WorkerSpec` constructors |
 | `__init__.py` | Package marker |
+| [`../../frontend/Dockerfile`](../../frontend/Dockerfile) | Multi-stage build for the SPA (Vite build → nginx static serve) |
+| [`../../frontend/nginx.conf`](../../frontend/nginx.conf) | Static + `/api/*` reverse proxy used by the frontend container |
 
 The framework's library code lives in `src/j1/` — none of it
 imports anything from this directory. This is a *deployment*; J1

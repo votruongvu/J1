@@ -25,7 +25,12 @@ import { UploadPage } from "@/pages/UploadPage";
 import { RunDetailPage } from "@/pages/RunDetailPage";
 import type { AuthConfig, AuthKind, MockScenario, Mode, Route, Theme, Toast } from "@/types/ui";
 
-const DEFAULT_API_BASE = "http://localhost:8000";
+// Vite inlines `import.meta.env.VITE_API_BASE_URL` at build time. The
+// dev compose stack sets this to `/api` so the browser stays
+// single-origin (nginx proxies to FastAPI). Falls back to a direct
+// `http://localhost:8000` for local-host dev runs (`npm run dev`)
+// where Vite serves the SPA on 5173 and the API runs on 8000.
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 export function App() {
   const [tenant, setTenant] = useLocalStorage(LS_KEYS.tenant, MOCK_TENANT);
