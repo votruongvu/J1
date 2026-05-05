@@ -487,3 +487,339 @@ def test_post_ingestion_run_uses_correlation_id_as_run_id_when_provided(
     assert body["runId"] == "my-correlation-123"
     # And the run record persists under that ID.
     assert run_store.get(ctx, "my-correlation-123") is not None
+
+
+# ---- GET /ingestion-runs (list) -------------------------------
+
+
+def test_list_ingestion_runs_paginates_and_orders_by_started_desc(
+    client, run_store, ctx,
+):
+    """The list endpoint dedupes by run_id (latest snapshot wins),
+    sorts by `startedAt` desc, and paginates the result set. Drives
+    the All Runs page so the UI can land on a stable contract before
+    the FE list code gets wired."""
+    from datetime import datetime, timedelta, timezone
+
+    base = datetime.now(timezone.utc)
+    for i in range(5):
+        run_store.upsert(
+            ctx,
+            IngestionRun(
+                run_id=f"r{i}",
+                document_id=f"d{i}",
+                workflow_id=f"wf-{i}",
+                workflow_run_id=None,
+                status=RunStatus.RUNNING if i % 2 == 0 else RunStatus.SUCCEEDED,
+                started_at=base + timedelta(seconds=i),
+                updated_at=base + timedelta(seconds=i),
+                metadata={"document_name": f"doc-{i}.pdf"},
+            ),
+        )
+
+    resp = client.get(
+        "/ingestion-runs", headers=_HEADERS, params={"page": 1, "pageSize": 3},
+    )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["total"] == 5
+    assert body["page"] == 1
+    assert body["pageSize"] == 3
+    assert [item["runId"] for item in body["items"]] == ["r4", "r3", "r2"]
+    # Each item carries the user-facing display fields.
+    assert body["items"][0]["documentName"] == "doc-4.pdf"
+    assert body["items"][0]["status"] in {"running", "succeeded"}
+
+
+def test_list_ingestion_runs_filters_by_status_repeats(client, run_store, ctx):
+    """Repeated `?status=` query params narrow the result set; the
+    FE quick-filter chips drive this."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    for i, status in enumerate(
+        [RunStatus.RUNNING, RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.RUNNING],
+    ):
+        run_store.upsert(
+            ctx,
+            IngestionRun(
+                run_id=f"r{i}", document_id="d", workflow_id="wf",
+                workflow_run_id=None, status=status,
+                started_at=now, updated_at=now,
+            ),
+        )
+    resp = client.get(
+        "/ingestion-runs",
+        headers=_HEADERS,
+        params=[("status", "running"), ("status", "failed")],
+    )
+    assert resp.status_code == 200
+    statuses = {item["status"] for item in resp.json()["data"]["items"]}
+    assert statuses == {"running", "failed"}
+
+
+def test_list_ingestion_runs_q_filter_matches_run_id_or_document_name(
+    client, run_store, ctx,
+):
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    run_store.upsert(ctx, IngestionRun(
+        run_id="quarterly-Q4", document_id="d1", workflow_id="wf",
+        workflow_run_id=None, status=RunStatus.SUCCEEDED,
+        started_at=now, updated_at=now,
+        metadata={"document_name": "earnings.pdf"},
+    ))
+    run_store.upsert(ctx, IngestionRun(
+        run_id="other", document_id="d2", workflow_id="wf",
+        workflow_run_id=None, status=RunStatus.SUCCEEDED,
+        started_at=now, updated_at=now,
+        metadata={"document_name": "earnings-summary.pdf"},
+    ))
+    # Match on document name substring.
+    resp = client.get(
+        "/ingestion-runs", headers=_HEADERS, params={"q": "earnings"},
+    )
+    ids = {item["runId"] for item in resp.json()["data"]["items"]}
+    assert ids == {"quarterly-Q4", "other"}
+    # Match on run_id substring.
+    resp = client.get("/ingestion-runs", headers=_HEADERS, params={"q": "Q4"})
+    ids = {item["runId"] for item in resp.json()["data"]["items"]}
+    assert ids == {"quarterly-Q4"}
+
+
+def test_list_ingestion_runs_returns_503_when_store_not_configured(
+    application_facade, workspace,
+):
+    app = create_rest_api(application_facade, workspace=workspace)
+    test_client = TestClient(app)
+    resp = test_client.get("/ingestion-runs", headers=_HEADERS)
+    assert resp.status_code == 503
+
+
+# ---- POST /ingestion-runs/{id}/confirm — extended behaviour ----
+
+
+def test_confirm_emits_plan_confirmed_progress_event(
+    client, run_store, ctx,
+):
+    """Confirming a parked run must surface a `plan.confirmed` event
+    in the timeline so the SSE stream and the events-history
+    endpoint show the operator action — no need to poll the run
+    record to detect that confirmation happened."""
+    run = _make_run("run-emits-confirmed")
+    run.status = RunStatus.PLAN_READY
+    run_store.upsert(ctx, run)
+
+    resp = client.post(
+        "/ingestion-runs/run-emits-confirmed/confirm", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+
+    events = client.get(
+        "/ingestion-runs/run-emits-confirmed/events", headers=_HEADERS,
+    ).json()["data"]["events"]
+    assert any(e["eventType"] == "plan.confirmed" for e in events)
+
+
+def test_confirm_persists_confirmed_at_and_confirmed_by(
+    client, run_store, ctx,
+):
+    """Audit-trail metadata: who confirmed, when. Future workflow
+    integrations can compare these against `started_at` to compute
+    operator response time."""
+    run = _make_run("run-meta")
+    run.status = RunStatus.PLAN_READY
+    run_store.upsert(ctx, run)
+    resp = client.post(
+        "/ingestion-runs/run-meta/confirm", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    after = run_store.get(ctx, "run-meta")
+    assert "confirmed_at" in after.metadata
+    assert "confirmed_by" in after.metadata
+
+
+def test_confirm_invokes_handler_with_ctx_and_run_id(
+    application_facade, workspace, run_store, reporter, job_starter, ctx,
+):
+    """The injected `confirm_handler` is the seam Temporal-signal
+    integrations plug into. Verify the REST adapter calls it with
+    (ctx, run_id) on a real confirmation transition."""
+    calls: list[tuple] = []
+
+    async def handler(c, run_id):
+        calls.append((c.tenant_id, c.project_id, run_id))
+
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        progress_reporter=reporter,
+        job_starter=job_starter,
+        confirm_handler=handler,
+    )
+    test_client = TestClient(app)
+
+    run = _make_run("run-handler")
+    run.status = RunStatus.PLAN_READY
+    run_store.upsert(ctx, run)
+
+    resp = test_client.post(
+        "/ingestion-runs/run-handler/confirm", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert calls == [("acme", "alpha", "run-handler")]
+
+
+def test_confirm_handler_failure_does_not_block_status_flip(
+    application_facade, workspace, run_store, reporter, job_starter, ctx,
+):
+    """If the downstream signal raises, the run is still marked
+    RUNNING in the store — confirmation is acknowledged at the REST
+    boundary even when the workflow couldn't be reached."""
+
+    async def broken_handler(_ctx, _run_id):
+        raise RuntimeError("temporal unreachable")
+
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        progress_reporter=reporter,
+        job_starter=job_starter,
+        confirm_handler=broken_handler,
+    )
+    test_client = TestClient(app)
+
+    run = _make_run("run-broken-handler")
+    run.status = RunStatus.PLAN_READY
+    run_store.upsert(ctx, run)
+
+    resp = test_client.post(
+        "/ingestion-runs/run-broken-handler/confirm", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert run_store.get(ctx, "run-broken-handler").status == RunStatus.RUNNING
+
+
+def test_confirm_does_not_invoke_handler_for_already_running_run(
+    application_facade, workspace, run_store, reporter, job_starter, ctx,
+):
+    """Idempotency: re-issuing confirm on a running run is a noop —
+    no signal is forwarded, no event is re-emitted."""
+    calls: list[tuple] = []
+
+    async def handler(_c, _run_id):
+        calls.append(("called",))
+
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        progress_reporter=reporter,
+        job_starter=job_starter,
+        confirm_handler=handler,
+    )
+    test_client = TestClient(app)
+
+    run = _make_run("run-already-running")
+    run.status = RunStatus.RUNNING
+    run_store.upsert(ctx, run)
+
+    test_client.post(
+        "/ingestion-runs/run-already-running/confirm", headers=_HEADERS,
+    )
+    assert calls == []
+
+
+# ---- camelCase metadata on the wire ---------------------------
+
+
+def test_run_failed_event_metadata_uses_camel_case(client, ctx, reporter):
+    """Backend reporter writes `failure_code` / `failure_message` to
+    the audit payload (Python convention). The wire format for the
+    `metadata` bag must be camelCase so the frontend doesn't have to
+    handle two casings — the audit-to-record translator camelizes
+    keys at serialisation time."""
+    reporter.report_run_failed(
+        ctx, run_id="run-fail",
+        failure_code="J1_INGEST_RUN_FAILED",
+        failure_message="graph build failed",
+    )
+    resp = client.get(
+        "/ingestion-runs/run-fail/events", headers=_HEADERS,
+    )
+    failed = next(
+        e for e in resp.json()["data"]["events"]
+        if e["eventType"] == "run.failed"
+    )
+    # Metadata bag is camelCase — no snake_case slipped through.
+    assert failed["metadata"]["failureCode"] == "J1_INGEST_RUN_FAILED"
+    assert failed["metadata"]["failureMessage"] == "graph build failed"
+    assert "failure_code" not in failed["metadata"]
+    assert "failure_message" not in failed["metadata"]
+
+
+def test_step_failed_event_metadata_uses_camel_case(client, ctx, reporter):
+    reporter.report_step_failed(
+        ctx, run_id="run-step-fail", stage="GRAPH", step="graph.build",
+        error_type="GraphBuildError", error_message="duplicate node id",
+        retryable=False,
+    )
+    resp = client.get(
+        "/ingestion-runs/run-step-fail/events", headers=_HEADERS,
+    )
+    failed = next(
+        e for e in resp.json()["data"]["events"]
+        if e["eventType"] == "step.failed"
+    )
+    assert failed["metadata"]["errorType"] == "GraphBuildError"
+    assert failed["metadata"]["errorMessage"] == "duplicate node id"
+    assert failed["metadata"]["retryable"] is False
+
+
+# ---- run.cancelled SSE termination ------------------------------
+
+
+def test_sse_stream_closes_on_run_cancelled(client, ctx, reporter):
+    """Run cancellation must close the SSE generator like
+    run.completed / run.failed do — otherwise the client idles
+    against an in-flight stream until the 1h max-duration timeout."""
+    reporter.report_run_created(ctx, run_id="run-cxl", document_id="doc-1")
+    reporter.report_run_cancelled(
+        ctx, run_id="run-cxl", reason="operator-cancelled",
+    )
+    with client.stream(
+        "GET", "/ingestion-runs/run-cxl/events/stream", headers=_HEADERS,
+    ) as resp:
+        body = b""
+        for chunk in resp.iter_bytes():
+            body += chunk
+            if b"run.cancelled" in body:
+                break
+    assert b"event: run.cancelled" in body
+    # The reason payload travels in the metadata bag (camelCase).
+    cancelled = next(
+        line for line in body.decode("utf-8").splitlines()
+        if line.startswith("data: ") and "run.cancelled" in line
+    )
+    payload = json.loads(cancelled[len("data: "):])
+    assert payload["metadata"]["reason"] == "operator-cancelled"
+
+
+def test_sse_stream_closes_on_human_review_required(client, ctx, reporter):
+    """Same termination guarantee for the human-review terminal."""
+    reporter.report_run_created(ctx, run_id="run-rev", document_id="doc-1")
+    reporter.report_human_review_required(
+        ctx, run_id="run-rev", gate="manual-review",
+    )
+    with client.stream(
+        "GET", "/ingestion-runs/run-rev/events/stream", headers=_HEADERS,
+    ) as resp:
+        body = b""
+        for chunk in resp.iter_bytes():
+            body += chunk
+            if b"human_review.required" in body:
+                break
+    assert b"event: human_review.required" in body

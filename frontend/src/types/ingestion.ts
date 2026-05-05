@@ -157,6 +157,7 @@ export type ProgressEventType =
   | "step.failed"
   | "run.completed"
   | "run.failed"
+  | "run.cancelled"
   | "human_review.required";
 
 /**
@@ -218,8 +219,6 @@ export interface RunListResult {
   page: number;
   pageSize: number;
   total: number;
-  /** Live-API-only hint when the list endpoint isn't supported yet. */
-  _liveUnsupported?: string;
 }
 
 export interface RunListQuery {

@@ -35,10 +35,12 @@ import {
 import {
   type ApiPlanRecord,
   type ApiProgressEvent,
+  type ApiRunListItem,
   type ApiRunRecord,
   eventFromApi,
   planFromApi,
   runFromApi,
+  runListItemFromApi,
 } from "./translate";
 import { readSseStream } from "./sse";
 
@@ -98,19 +100,35 @@ export class ApiClient implements IngestionClient {
   }
 
   // ---- listRuns ---------------------------------------------------
-  // The J1 API does not yet ship a `GET /ingestion-runs` list endpoint.
-  // Return an empty page with a hint so the All Runs view renders an
-  // explanatory empty state instead of silently displaying nothing.
-  async listRuns(_ctx: ProjectContext, _opts?: RunListQuery): Promise<RunListResult> {
+  // GET /ingestion-runs — paginated list with optional `?status=`
+  // repeats and a `?q=` substring filter (matches `runId` /
+  // `documentName`). Tenant + project headers come from `headers()`
+  // like every other request.
+  async listRuns(_ctx: ProjectContext, opts?: RunListQuery): Promise<RunListResult> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.pageSize != null) params.set("pageSize", String(opts.pageSize));
+    if (opts?.q) params.set("q", opts.q);
+    // Map the FE's single-status filter onto the backend's repeated
+    // `?status=` query param. The backend uppercase status values
+    // are lowercase on the wire (`RunStatus` is a StrEnum); the FE
+    // passes them through as-is so the same string the FE filter
+    // dropdown carries reaches the server.
+    if (opts?.status) params.append("status", opts.status.toLowerCase());
+    const qs = params.toString();
+    const path = qs ? `/ingestion-runs?${qs}` : "/ingestion-runs";
+    const resp = await fetch(this.url(path), { headers: this.headers() });
+    const data = await this.json<{
+      items?: ApiRunListItem[];
+      page?: number;
+      pageSize?: number;
+      total?: number;
+    }>(resp);
     return {
-      items: [],
-      page: 1,
-      pageSize: 0,
-      total: 0,
-      _liveUnsupported:
-        "List view is not available in live mode (the J1 API doesn't ship " +
-        "a GET /ingestion-runs list endpoint yet). Use 'New ingestion run' " +
-        "to create a run; the run-detail page will work end-to-end.",
+      items: (data.items ?? []).map(runListItemFromApi),
+      page: data.page ?? 1,
+      pageSize: data.pageSize ?? 20,
+      total: data.total ?? 0,
     };
   }
 
@@ -129,7 +147,13 @@ export class ApiClient implements IngestionClient {
       const filename = (file as { name?: string }).name ?? "demo.txt";
       fd.append("file", blob, filename);
     }
-    fd.append("compilerKind", "mock");
+    // `compilerKind` is intentionally OMITTED. The backend resolves it
+    // from the deployment's `J1_DEFAULT_COMPILER` (validated against
+    // the registered processor kinds at the API boundary). Sending a
+    // hard-coded value here would override the deployment default and
+    // either silently swap the compiler or fail with INVALID_ARGUMENT
+    // when the chosen kind isn't registered. Surface a `compilerKind`
+    // selector in the UI before threading a value through here.
     const resp = await fetch(this.url("/ingestion-runs"), {
       method: "POST",
       headers: this.headers(),
@@ -222,7 +246,11 @@ export class ApiClient implements IngestionClient {
       } catch (err) {
         if (!aborted) handlers.onError?.(err);
       } finally {
-        handlers.onClose?.();
+        // Don't fan an `onClose` back to the caller when *they* asked
+        // to close — they already know. This keeps the reconnect path
+        // in the run-detail page from re-opening a stream we just
+        // tore down on unmount or on a terminal event.
+        if (!aborted) handlers.onClose?.();
       }
     })();
 

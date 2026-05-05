@@ -52,6 +52,7 @@ __all__ = [
     "ACTION_PROGRESS_HUMAN_REVIEW_REQUIRED",
     "ACTION_PROGRESS_PLAN_CONFIRMED",
     "ACTION_PROGRESS_PLAN_GENERATED",
+    "ACTION_PROGRESS_RUN_CANCELLED",
     "ACTION_PROGRESS_RUN_COMPLETED",
     "ACTION_PROGRESS_RUN_CREATED",
     "ACTION_PROGRESS_RUN_FAILED",
@@ -92,6 +93,7 @@ ACTION_PROGRESS_STEP_COMPLETED = PROGRESS_ACTION_PREFIX + "step.completed"
 ACTION_PROGRESS_STEP_FAILED = PROGRESS_ACTION_PREFIX + "step.failed"
 ACTION_PROGRESS_RUN_COMPLETED = PROGRESS_ACTION_PREFIX + "run.completed"
 ACTION_PROGRESS_RUN_FAILED = PROGRESS_ACTION_PREFIX + "run.failed"
+ACTION_PROGRESS_RUN_CANCELLED = PROGRESS_ACTION_PREFIX + "run.cancelled"
 ACTION_PROGRESS_HUMAN_REVIEW_REQUIRED = PROGRESS_ACTION_PREFIX + "human_review.required"
 
 
@@ -263,6 +265,15 @@ class ProgressReporter(Protocol):
         run_id: str,
         failure_code: str,
         failure_message: str,
+        actor: str = "system",
+    ) -> str: ...
+
+    def report_run_cancelled(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        reason: str | None = None,
         actor: str = "system",
     ) -> str: ...
 
@@ -640,6 +651,33 @@ class AuditProgressReporter:
             },
         )
 
+    def report_run_cancelled(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        reason: str | None = None,
+        actor: str = "system",
+    ) -> str:
+        # Mirrors `report_run_failed` shape but is its own terminal
+        # event so the SSE stream can close cleanly when a run is
+        # cancelled by an operator (or by Temporal cancellation
+        # propagation). The `reason` is operator-supplied — short
+        # operational text only, never document content.
+        payload: dict[str, Any] = {
+            "severity": PROGRESS_SEVERITY_WARNING,
+            "status": "cancelled",
+        }
+        if reason is not None:
+            payload["reason"] = reason
+        return self._record(
+            ctx,
+            actor=actor,
+            action=ACTION_PROGRESS_RUN_CANCELLED,
+            run_id=run_id,
+            payload=payload,
+        )
+
     def report_human_review_required(
         self,
         ctx: ProjectContext,
@@ -813,6 +851,10 @@ class TemporalHeartbeatReporter:
         self._hb(event="run.failed", run_id=run_id, failure_code=failure_code)
         return ""
 
+    def report_run_cancelled(self, _ctx, *, run_id, reason=None, actor="system"):
+        self._hb(event="run.cancelled", run_id=run_id, reason=reason)
+        return ""
+
     def report_human_review_required(self, _ctx, *, run_id, gate, actor="system"):
         self._hb(event="human_review.required", run_id=run_id, gate=gate)
         return ""
@@ -874,6 +916,8 @@ class CompositeProgressReporter:
         return self._fanout("report_run_completed", *a, **kw)
     def report_run_failed(self, *a, **kw):
         return self._fanout("report_run_failed", *a, **kw)
+    def report_run_cancelled(self, *a, **kw):
+        return self._fanout("report_run_cancelled", *a, **kw)
     def report_human_review_required(self, *a, **kw):
         return self._fanout("report_human_review_required", *a, **kw)
 
@@ -895,4 +939,5 @@ class NoopProgressReporter:
     def report_step_failed(self, *_, **__): return ""
     def report_run_completed(self, *_, **__): return ""
     def report_run_failed(self, *_, **__): return ""
+    def report_run_cancelled(self, *_, **__): return ""
     def report_human_review_required(self, *_, **__): return ""

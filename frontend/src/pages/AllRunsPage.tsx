@@ -1,12 +1,10 @@
 /**
  * All Runs page — paginated list of every ingestion run for the
  * current tenant/project, with search, status, stage, and quick-tab
- * filters. The data is fetched once and filtered/paginated client-side
- * so the prototype's interactive feel survives the migration.
- *
- * Live mode currently has no `GET /ingestion-runs` endpoint and will
- * return `_liveUnsupported`; in that case we surface a banner instead
- * of an empty grid.
+ * filters. The data is fetched once (with `pageSize=1000`) and
+ * filtered / paginated client-side so the prototype's interactive
+ * feel survives the migration. Server-side filtering will kick in
+ * once the dataset grows past a few hundred runs per project.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -159,8 +157,6 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
     };
   }, [allData]);
 
-  const liveUnsupported = allData?._liveUnsupported;
-
   return (
     <div>
       <div className="page-header">
@@ -188,7 +184,7 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
         </div>
       </div>
 
-      {ready && allData && !liveUnsupported && (
+      {ready && allData && (
         <div className="summary-pills">
           {(
             [
@@ -232,12 +228,6 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
         </Banner>
       )}
 
-      {ready && liveUnsupported && (
-        <Banner kind="info" title="List view is not available in live mode">
-          {liveUnsupported}
-        </Banner>
-      )}
-
       {ready && error && error.status === 400 && (
         <Banner kind="warn" title="Tenant and Project are required">
           {error.message}
@@ -266,7 +256,7 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
         </Banner>
       )}
 
-      {ready && !liveUnsupported && (
+      {ready && (
         <div className="quick-filters" role="tablist" aria-label="Quick filter by status">
           {(
             [
@@ -323,7 +313,7 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
         </div>
       )}
 
-      {ready && !liveUnsupported && (
+      {ready && (
         <div className="filters">
           <div className="filters__search">
             <Icon.Eye className="icon-sm" />
@@ -384,7 +374,7 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
         </div>
       )}
 
-      {ready && !error && !liveUnsupported && (
+      {ready && !error && (
         <div className="run-list">
           {loading && data.items.length === 0 && (
             <div style={{ display: "grid", gap: 8 }}>

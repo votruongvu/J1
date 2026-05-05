@@ -196,6 +196,43 @@ class IngestionRunCreatedRecord(CamelModel):
     status: str
 
 
+class IngestionRunListItem(CamelModel):
+    """Compact projection of an `IngestionRun` for the All Runs view.
+
+    Stays a strict subset of `IngestionRunRecord` so the list view
+    can render the same status badge / progress bar / failure
+    summary as the detail page without an extra round-trip."""
+
+    run_id: str
+    document_id: str
+    document_name: str | None = None
+    status: str
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    current_stage: str | None = None
+    current_step: str | None = None
+    progress_percent: int = 0
+    warning_count: int = 0
+    failure_code: str | None = None
+    failure_message: str | None = None
+
+
+class IngestionRunListRecord(CamelModel):
+    """Paginated list response for `GET /ingestion-runs`.
+
+    `total` counts items AFTER status filtering but BEFORE
+    pagination, so the client can render a paging widget without a
+    second round-trip. Listing reads through
+    `IngestionRunStore.list()` — currently a JSONL scan, swappable
+    to a SQL implementation per the store Protocol."""
+
+    items: list[IngestionRunListItem]
+    page: int = 1
+    page_size: int
+    total: int
+
+
 # ---- Search / retrieve / answer --------------------------------------
 
 

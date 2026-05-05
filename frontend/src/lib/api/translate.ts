@@ -18,6 +18,7 @@ import type {
   ProgressEventData,
   ProgressEventType,
   RiskLevel,
+  RunListItem,
   RunStatus,
   Stage,
 } from "@/types/ingestion";
@@ -74,6 +75,23 @@ export interface ApiPlanStep {
   metadata?: Record<string, unknown>;
 }
 
+/** Raw envelope item from `GET /ingestion-runs` list endpoint. */
+export interface ApiRunListItem {
+  runId: string;
+  documentId?: string;
+  documentName?: string | null;
+  status?: string;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  completedAt?: string | null;
+  currentStage?: string | null;
+  currentStep?: string | null;
+  progressPercent?: number;
+  warningCount?: number;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+}
+
 /** Raw envelope from `GET /ingestion-runs/{id}/events` items. */
 export interface ApiProgressEvent {
   eventId: string;
@@ -108,6 +126,25 @@ function translateStatus(s: string | undefined): RunStatus {
   if (upper === "SUCCEEDED_WITH_WARNINGS") return "COMPLETED_WITH_WARNINGS";
   if (upper === "REQUIRES_HUMAN_REVIEW") return "AWAITING_HUMAN_REVIEW";
   return upper;
+}
+
+export function runListItemFromApi(api: ApiRunListItem): RunListItem {
+  return {
+    runId: api.runId,
+    documentName: api.documentName ?? api.documentId ?? api.runId,
+    status: translateStatus(api.status),
+    mode: "STANDARD",
+    policy: "auto",
+    currentStage: (api.currentStage as Stage | null | undefined) ?? null,
+    currentStep: api.currentStep ?? null,
+    progressPercent: api.progressPercent ?? 0,
+    warningCount: api.warningCount ?? 0,
+    startedAt: api.startedAt ?? null,
+    updatedAt: api.updatedAt ?? null,
+    completedAt: api.completedAt ?? null,
+    failureCode: api.failureCode ?? null,
+    failureMessage: api.failureMessage ?? null,
+  };
 }
 
 export function runFromApi(api: ApiRunRecord): IngestionRun {
@@ -176,6 +213,31 @@ export function planFromApi(api: ApiPlanRecord): ExecutionPlan {
 }
 
 export function eventFromApi(api: ApiProgressEvent): ProgressEvent {
+  // Metadata keys are camelCase on the wire — the audit-to-record
+  // translator camelizes the payload bag at serialisation time so
+  // the FE has exactly one naming convention to think about.
+  const meta = api.metadata ?? {};
+  const eventType = api.eventType as ProgressEventType;
+
+  // `step.failed` carries `errorType` / `errorMessage`; `run.failed`
+  // carries `failureCode` / `failureMessage`. Collapse both shapes
+  // onto the single FE pair so the timeline/final panels don't have
+  // to branch.
+  const failureCode =
+    (meta["failureCode"] as string | undefined) ?? (meta["errorType"] as string | undefined);
+  const failureMessage =
+    (meta["failureMessage"] as string | undefined) ??
+    (meta["errorMessage"] as string | undefined);
+
+  // `step.warning` puts the warning text on the top-level `message`
+  // field (the reporter doesn't write a separate `warning` key). The
+  // timeline component looks for `data.warning` to render the
+  // emphasised warning panel, so mirror it here.
+  const warning =
+    eventType === "step.warning"
+      ? (api.message ?? undefined)
+      : ((meta["warning"] as string | undefined) ?? undefined);
+
   const data: ProgressEventData = {
     runId: api.runId,
     message: api.message ?? undefined,
@@ -187,15 +249,15 @@ export function eventFromApi(api: ApiProgressEvent): ProgressEvent {
     total: api.total ?? undefined,
     engine: api.engine ?? undefined,
     provider: api.provider ?? undefined,
-    failure_code: api.metadata?.["failureCode"] as string | undefined,
-    failure_message: api.metadata?.["failureMessage"] as string | undefined,
-    reason: api.metadata?.["reason"] as string | undefined,
-    warning: api.metadata?.["warning"] as string | undefined,
+    failure_code: failureCode,
+    failure_message: failureMessage,
+    reason: meta["reason"] as string | undefined,
+    warning,
   };
 
   return {
     eventId: api.eventId,
-    event: api.eventType as ProgressEventType,
+    event: eventType,
     ts: api.timestamp ? Date.parse(api.timestamp) : Date.now(),
     data,
   };

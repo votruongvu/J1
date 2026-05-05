@@ -16,7 +16,14 @@ module.exports = {
     "plugin:react-hooks/recommended",
   ],
   plugins: ["react-refresh"],
-  ignorePatterns: ["dist", ".eslintrc.cjs", "*.config.ts", "*.config.js"],
+  ignorePatterns: [
+    "dist",
+    "playwright-report",
+    "test-results",
+    ".eslintrc.cjs",
+    "*.config.ts",
+    "*.config.js",
+  ],
   rules: {
     "react-refresh/only-export-components": [
       "warn",

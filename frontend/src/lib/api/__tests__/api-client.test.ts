@@ -1,0 +1,248 @@
+/**
+ * Guard tests for the live `ApiClient`. We verify the bits that
+ * caused real integration bugs:
+ *
+ *   1. Every request carries `X-Tenant-Id`, `X-Project-Id`, and the
+ *      auth header for the configured scheme.
+ *   2. Multipart upload sends a `file` field (matching the backend's
+ *      `UploadFile` parameter name) and DOES NOT inject a hard-coded
+ *      `compilerKind` form field that would override the deployment
+ *      default.
+ *   3. The success envelope (`{ requestId, data, meta }`) is unwrapped
+ *      so callers see the raw `data` payload.
+ *   4. Error envelopes (`{ error: { message } }`) surface as
+ *      `ApiError` with a useful message.
+ */
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ApiClient } from "../api-client";
+import { ApiError } from "../client";
+
+interface CapturedCall {
+  url: string;
+  init: RequestInit;
+}
+
+function withFetch(responder: (call: CapturedCall) => Response | Promise<Response>): {
+  calls: CapturedCall[];
+} {
+  const calls: CapturedCall[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const call = { url: String(input), init };
+      calls.push(call);
+      return responder(call);
+    }),
+  );
+  return { calls };
+}
+
+function makeClient(
+  overrides: Partial<{
+    tenant: string;
+    project: string;
+    auth: { kind: "bearer" | "apiKey"; value: string };
+  }> = {},
+) {
+  return new ApiClient({
+    baseUrl: "https://api.test.j1.local",
+    getCtx: () => ({
+      tenant: overrides.tenant ?? "acme",
+      project: overrides.project ?? "alpha",
+    }),
+    getAuth: () => overrides.auth ?? { kind: "bearer", value: "tok-123" },
+  });
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("ApiClient header injection", () => {
+  it("sends Tenant + Project + Bearer on JSON GETs", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({
+        requestId: "r1",
+        data: {
+          runId: "run-1",
+          documentId: "doc-1",
+          workflowId: "run-1",
+          status: "running",
+          startedAt: "2026-05-01T00:00:00Z",
+          updatedAt: "2026-05-01T00:00:01Z",
+          progressPercent: 12,
+          warningCount: 0,
+        },
+      }),
+    );
+
+    const run = await makeClient().getRun("run-1");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.test.j1.local/ingestion-runs/run-1");
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Tenant-Id"]).toBe("acme");
+    expect(headers["X-Project-Id"]).toBe("alpha");
+    expect(headers["Authorization"]).toBe("Bearer tok-123");
+    expect(headers["X-API-Key"]).toBeUndefined();
+    expect(run.runId).toBe("run-1");
+    expect(run.status).toBe("RUNNING");
+    expect(run.progress_pct).toBe(12);
+  });
+
+  it("sends X-API-Key when the auth scheme is apiKey", async () => {
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "r", events: [] } }));
+    await makeClient({ auth: { kind: "apiKey", value: "sk_abc" } }).getEvents("r");
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-API-Key"]).toBe("sk_abc");
+    expect(headers["Authorization"]).toBeUndefined();
+  });
+
+  it("includes Last-Event-Id when caller passes a resume cursor", async () => {
+    const { calls } = withFetch(
+      () =>
+        new Response("", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    );
+    const handle = makeClient().openStream("run-1", { lastEventId: "evt-42" });
+    // Allow the microtask that issues the fetch to run.
+    await Promise.resolve();
+    await Promise.resolve();
+    handle.close();
+    expect(calls[0]!.url).toBe("https://api.test.j1.local/ingestion-runs/run-1/events/stream");
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Tenant-Id"]).toBe("acme");
+    expect(headers["X-Project-Id"]).toBe("alpha");
+    expect(headers["Last-Event-Id"]).toBe("evt-42");
+    expect(headers["Accept"]).toBe("text/event-stream");
+  });
+});
+
+describe("ApiClient.upload", () => {
+  it("posts multipart with a `file` field and Tenant/Project headers", async () => {
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "run-new" } }, 201));
+
+    const file = new File(["hello"], "report.pdf", { type: "application/pdf" });
+    const out = await makeClient().upload(file, { tenant: "acme", project: "alpha" });
+
+    expect(out).toEqual({ runId: "run-new" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.init.method).toBe("POST");
+
+    const body = calls[0]!.init.body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    const fileEntry = body.get("file");
+    expect(fileEntry).toBeInstanceOf(Blob);
+    expect((fileEntry as File).name).toBe("report.pdf");
+
+    // The frontend must NOT hard-code a compilerKind — the backend
+    // resolves the deployment default. Sending one would silently
+    // override that default and either swap compilers or 400.
+    expect(body.get("compilerKind")).toBeNull();
+    expect(body.get("policy")).toBeNull();
+
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Tenant-Id"]).toBe("acme");
+    expect(headers["X-Project-Id"]).toBe("alpha");
+    expect(headers["Authorization"]).toBe("Bearer tok-123");
+    // `fetch` must compute its own multipart boundary; we never set
+    // Content-Type on a FormData POST.
+    expect(headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("rejects with a 400 ApiError when tenant/project are missing", async () => {
+    withFetch(() => jsonResponse({}, 200));
+    const client = makeClient({ tenant: "" });
+    await expect(
+      client.upload(new File([""], "x.txt"), { tenant: "", project: "alpha" }),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("ApiClient.listRuns", () => {
+  it("forwards page/pageSize/q to the query string and translates items", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({
+        data: {
+          items: [
+            {
+              runId: "r1",
+              documentId: "d1",
+              documentName: "earnings.pdf",
+              status: "running",
+              startedAt: "2026-05-01T00:00:00Z",
+              updatedAt: "2026-05-01T00:00:01Z",
+              progressPercent: 30,
+              warningCount: 0,
+            },
+          ],
+          page: 2,
+          pageSize: 10,
+          total: 42,
+        },
+      }),
+    );
+    const result = await makeClient().listRuns(
+      { tenant: "acme", project: "alpha" },
+      { page: 2, pageSize: 10, q: "earnings" },
+    );
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe("/ingestion-runs");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("pageSize")).toBe("10");
+    expect(url.searchParams.get("q")).toBe("earnings");
+    expect(result.total).toBe(42);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.documentName).toBe("earnings.pdf");
+    expect(result.items[0]!.status).toBe("RUNNING");
+  });
+
+  it("appends ?status=<lowercase> for the single-status filter", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: { items: [], page: 1, pageSize: 20, total: 0 } }),
+    );
+    await makeClient().listRuns({ tenant: "acme", project: "alpha" }, { status: "RUNNING" });
+    const url = new URL(calls[0]!.url);
+    // Backend's RunStatus is lowercase on the wire (StrEnum). The
+    // FE filter dropdown surfaces UPPERCASE values; the api-client
+    // lowercases on the way out.
+    expect(url.searchParams.get("status")).toBe("running");
+  });
+});
+
+describe("ApiClient envelope unwrap", () => {
+  it("unwraps the success envelope's `data` field", async () => {
+    withFetch(() =>
+      jsonResponse({
+        requestId: "r2",
+        data: { runId: "x", events: [] },
+        meta: {},
+      }),
+    );
+    const events = await makeClient().getEvents("x");
+    expect(events).toEqual([]);
+  });
+
+  it("surfaces the error envelope message as an ApiError", async () => {
+    withFetch(() =>
+      jsonResponse({ error: { code: "INVALID_ARGUMENT", message: "tenant required" } }, 400),
+    );
+    await expect(makeClient().getRun("x")).rejects.toMatchObject({
+      status: 400,
+      message: "tenant required",
+    });
+  });
+});

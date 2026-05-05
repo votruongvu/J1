@@ -1,8 +1,11 @@
 import json
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
+
+_log = logging.getLogger("j1.adapters.rest")
 
 from fastapi import (
     Depends,
@@ -64,6 +67,8 @@ from j1.adapters.rest.schemas import (
     IngestRequest,
     IngestionRunConfirmRecord,
     IngestionRunCreatedRecord,
+    IngestionRunListItem,
+    IngestionRunListRecord,
     IngestionRunRecord,
     JobActionRecord,
     JobEventRecord,
@@ -142,6 +147,15 @@ PROJECT_HEADER = "X-Project-Id"
 REQUEST_ID_HEADER = "X-Request-Id"
 
 ContextResolver = Callable[[Request], ProjectContext]
+# Hook the deployment can wire to forward `POST /ingestion-runs/{id}/
+# confirm` to the workflow that's parked at the confirmation gate.
+# Typical implementation is a thin wrapper around `temporalio.Client.
+# get_workflow_handle(workflow_id).signal(...)`. When omitted, the
+# REST adapter still flips the run record's status to RUNNING and
+# emits the `plan.confirmed` progress event, but no Temporal signal
+# is sent — appropriate for deployments that auto-run (no
+# confirmation gate is configured per-run).
+RunConfirmHandler = Callable[[ProjectContext, str], Awaitable[None]]
 JobStarter = Callable[
     [ProjectContext, str, IngestRequest], Awaitable[str]
 ]
@@ -294,6 +308,7 @@ def create_rest_api(
     processing_capabilities: ProcessingCapabilities | None = None,
     ingestion_run_store: "IngestionRunStore | None" = None,
     progress_reporter: "ProgressReporter | None" = None,
+    confirm_handler: RunConfirmHandler | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -898,6 +913,78 @@ def create_rest_api(
         return ingestion_run_store
 
     @app.get(
+        "/ingestion-runs",
+        tags=["ingestion-runs"],
+        summary="List ingestion runs in the current tenant/project",
+        description=(
+            "Paginated list of ingestion runs for the current tenant/"
+            "project, ordered by `startedAt` descending. Optional "
+            "`status` query repeats narrow to specific run states "
+            "(e.g. `?status=running&status=plan_ready`). The `q` "
+            "parameter does a case-insensitive contains match against "
+            "`runId` and the `documentName` metadata field. Counts in "
+            "`total` reflect the filtered set BEFORE pagination."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def list_ingestion_runs(
+        request: Request,
+        ctx: ProjectContext = Depends(get_ctx),
+        page: int = Query(default=1, ge=1),
+        # Aliased to match the camelCase wire convention used by the
+        # rest of the API. FastAPI does not auto-camelize query
+        # params; without the explicit `alias=` the FE would have to
+        # send `?page_size=` which clashes with the JSON body
+        # convention.
+        page_size: int = Query(default=20, ge=1, le=200, alias="pageSize"),
+        status: list[str] | None = Query(default=None),
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        store = _require_run_store()
+        # Page bounds are enforced by FastAPI via `Query(ge=, le=)`
+        # above; we only get here with sane values.
+
+        # Translate the optional `?status=` repeats into RunStatus
+        # values. Unknown strings are dropped silently — the FE drives
+        # the list of valid statuses, and a typo from a hand-rolled
+        # cURL shouldn't 400 the whole call.
+        status_filter: list[RunStatus] | None = None
+        if status:
+            parsed: list[RunStatus] = []
+            for raw in status:
+                try:
+                    parsed.append(RunStatus(raw))
+                except ValueError:
+                    continue
+            status_filter = parsed or None
+
+        # The store's `list` already deduplicates by run_id and sorts
+        # by `started_at desc`. We pull the full filtered set, then
+        # apply the `q` substring + page slicing here. JSONL scans
+        # stay cheap up to thousands of runs; switch to a SQL store
+        # before paginating across millions.
+        runs = store.list(ctx, statuses=status_filter)
+        if q:
+            needle = q.strip().lower()
+            if needle:
+                runs = [
+                    r
+                    for r in runs
+                    if needle in r.run_id.lower()
+                    or needle in str(r.metadata.get("document_name", "")).lower()
+                ]
+        total = len(runs)
+        start = (page - 1) * page_size
+        items = runs[start : start + page_size]
+        record = IngestionRunListRecord(
+            items=[_ingestion_run_to_list_item(r) for r in items],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}",
         tags=["ingestion-runs"],
         summary="Get ingestion-run status",
@@ -955,16 +1042,28 @@ def create_rest_api(
         summary="Confirm a generated execution plan",
         description=(
             "Acknowledges the plan and signals the workflow to "
-            "continue. No-op when the run is already running (default "
+            "continue. Three things happen, in order:\n"
+            "  1. The run record's status flips to RUNNING (so any "
+            "client polling `GET /ingestion-runs/{id}` sees the new "
+            "state immediately).\n"
+            "  2. A `plan.confirmed` progress event is emitted so the "
+            "SSE timeline shows the operator action.\n"
+            "  3. The deployment's `confirm_handler` is invoked with "
+            "(ctx, run_id) — typical implementation forwards a "
+            "Temporal signal to the workflow that was parked at the "
+            "confirmation gate. When no handler is wired, the status "
+            "flip + progress event are still authoritative.\n"
+            "No-op when the run is already running (default "
             "deployment behaviour is auto-run; the confirmation gate "
             "is opt-in per-run)."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
-    def post_ingestion_run_confirm(
+    async def post_ingestion_run_confirm(
         request: Request,
         run_id: str,
         ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         store = _require_run_store()
         run = store.get(ctx, run_id)
@@ -978,14 +1077,49 @@ def create_rest_api(
             # the current status so the caller can inspect.
             record = IngestionRunConfirmRecord(run_id=run_id, status=run.status.value)
             return envelope(record.model_dump(by_alias=True), _req_id(request))
-        # Mark confirmed; the workflow that was waiting on the
-        # confirmation gate will pick this up via its `get_status`
-        # query / wait-condition. Until that integration ships the
-        # status flip alone is what the UI consumes.
+
         from datetime import datetime, timezone
+
+        # 1. Persist the transition + audit-trail metadata. The
+        # `confirmed_at` / `confirmed_by` fields let downstream tools
+        # (and the workflow when it polls the store) tell a "true"
+        # confirm from a status flip due to e.g. a manual edit.
+        now = datetime.now(timezone.utc)
+        actor = security.subject if security and security.subject else "system"
         run.status = RunStatus.RUNNING
-        run.updated_at = datetime.now(timezone.utc)
+        run.updated_at = now
+        run.metadata = dict(run.metadata)
+        run.metadata["confirmed_at"] = now.isoformat()
+        run.metadata["confirmed_by"] = actor
         store.upsert(ctx, run)
+
+        # 2. Emit the timeline event. The reporter is optional — the
+        # `/ingestion-runs/*` surface can run without it (run record
+        # is still authoritative; the timeline just won't be
+        # populated). Failures here must NEVER block the confirmation.
+        if progress_reporter is not None:
+            try:
+                progress_reporter.report_plan_confirmed(
+                    ctx, run_id=run_id, actor=actor,
+                )
+            except Exception:  # noqa: BLE001 — observability never blocks
+                _log.exception("plan.confirmed event emission failed")
+
+        # 3. Forward to the deployment's signal hook. Same failure
+        # rule as above: confirmation is acknowledged at the REST
+        # boundary even if the downstream signal can't be delivered
+        # (the workflow can pick up the persisted status on its next
+        # heartbeat / poll). Operators see the failure in logs.
+        if confirm_handler is not None:
+            try:
+                await confirm_handler(ctx, run_id)
+            except Exception:  # noqa: BLE001
+                _log.exception(
+                    "confirm_handler failed for run_id=%s; "
+                    "run record is RUNNING but downstream signal "
+                    "was not delivered", run_id,
+                )
+
         record = IngestionRunConfirmRecord(run_id=run_id, status=run.status.value)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
@@ -1136,6 +1270,11 @@ def create_rest_api(
             metadata={
                 "duplicate_upload": duplicate,
                 "policy": policy or "auto",
+                # Persisted so `GET /ingestion-runs` can render the
+                # uploaded filename without joining on the documents
+                # store. `original_filename` falls back to the multi-
+                # part `filename` parameter, which the FE always sends.
+                "document_name": doc_dto.original_filename,
             },
         )
         store.upsert(ctx, run)
@@ -2107,6 +2246,27 @@ def _read_job_events(
 # ---- Ingestion-run helpers --------------------------------------
 
 
+def _ingestion_run_to_list_item(run) -> IngestionRunListItem:
+    """Compact projection used by `GET /ingestion-runs`. Pulls
+    `documentName` from the run's metadata when present so the All
+    Runs view can render the same display name as the upload page."""
+    return IngestionRunListItem(
+        run_id=run.run_id,
+        document_id=run.document_id,
+        document_name=str(run.metadata.get("document_name") or "") or None,
+        status=run.status.value,
+        started_at=run.started_at,
+        updated_at=run.updated_at,
+        completed_at=run.completed_at,
+        current_stage=run.current_stage,
+        current_step=run.current_step,
+        progress_percent=run.progress_percent,
+        warning_count=run.warning_count,
+        failure_code=run.failure_code,
+        failure_message=run.failure_message,
+    )
+
+
 def _ingestion_run_to_record(run) -> IngestionRunRecord:
     """Project an `IngestionRun` dataclass into the wire schema."""
     return IngestionRunRecord(
@@ -2159,9 +2319,24 @@ def _read_progress_events(
 
 
 def _progress_event_from_audit(data: dict[str, Any]) -> ProgressEventRecord:
-    """Project one audit JSONL line into a `ProgressEventRecord`."""
+    """Project one audit JSONL line into a `ProgressEventRecord`.
+
+    Pydantic's `alias_generator=to_camel` only camel-cases declared
+    model fields; dict CONTENTS pass through verbatim. The reporter
+    writes payloads as snake_case (Python convention), so we camelize
+    `metadata` keys HERE — that way the SSE / events-history wire
+    format is uniformly camelCase, and frontends never have to read
+    snake_case keys for `failure_code`, `error_type`, `final_status`,
+    etc."""
     payload = data.get("payload") or {}
     action: str = data["action"]
+    typed_keys = {
+        "severity", "stage", "step", "status", "progress_percent",
+        "current", "total", "message", "engine", "provider",
+    }
+    metadata = {
+        _to_camel(k): v for k, v in payload.items() if k not in typed_keys
+    }
     return ProgressEventRecord(
         event_id=data["event_id"],
         run_id=data.get("correlation_id") or "",
@@ -2177,14 +2352,17 @@ def _progress_event_from_audit(data: dict[str, Any]) -> ProgressEventRecord:
         message=payload.get("message"),
         engine=payload.get("engine"),
         provider=payload.get("provider"),
-        metadata={
-            k: v for k, v in payload.items()
-            if k not in {
-                "severity", "stage", "step", "status", "progress_percent",
-                "current", "total", "message", "engine", "provider",
-            }
-        },
+        metadata=metadata,
     )
+
+
+def _to_camel(snake: str) -> str:
+    """`failure_code` → `failureCode`. Single-word inputs are returned
+    unchanged. Idempotent: an already-camelCase input round-trips."""
+    if "_" not in snake:
+        return snake
+    head, *tail = snake.split("_")
+    return head + "".join(part.capitalize() for part in tail if part)
 
 
 def _read_run_plan(
@@ -2257,7 +2435,16 @@ import asyncio as _asyncio
 _SSE_TAIL_INTERVAL_SECONDS = 1.0
 _SSE_MAX_DURATION_SECONDS = 60 * 60  # 1 hour — clients reconnect after.
 _TERMINAL_PROGRESS_TYPES = frozenset({
-    "run.completed", "run.failed",
+    # Stream closes when the run reaches one of these. Mirrors the
+    # set of `RunStatus` terminal values so the SSE doesn't idle-loop
+    # for an hour after a non-success terminal:
+    #   run.completed         → status SUCCEEDED / SUCCEEDED_WITH_WARNINGS
+    #   run.failed            → status FAILED
+    #   run.cancelled         → status CANCELLED
+    #   human_review.required → status REQUIRES_HUMAN_REVIEW (terminal
+    #                           per the run state machine; the user
+    #                           continues via a separate review API)
+    "run.completed", "run.failed", "run.cancelled", "human_review.required",
 })
 
 

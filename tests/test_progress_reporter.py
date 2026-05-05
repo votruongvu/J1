@@ -10,6 +10,7 @@ from j1.projects.context import ProjectContext
 from j1.runs import (
     ACTION_PROGRESS_DOCUMENT_RECEIVED,
     ACTION_PROGRESS_PLAN_GENERATED,
+    ACTION_PROGRESS_RUN_CANCELLED,
     ACTION_PROGRESS_RUN_COMPLETED,
     ACTION_PROGRESS_RUN_CREATED,
     ACTION_PROGRESS_STEP_COMPLETED,
@@ -219,6 +220,28 @@ def test_run_completed_clean_uses_info_severity(reporter, sink, ctx):
         ctx, run_id="r1", final_status="succeeded", warning_count=0,
     )
     assert sink.events[-1].payload["severity"] == "INFO"
+
+
+def test_run_cancelled_records_cancelled_action_and_reason(reporter, sink, ctx):
+    """`run.cancelled` is its own terminal event (not a flavour of
+    run.failed). The audit `action` and the payload `status` both
+    carry the cancellation marker so consumers can distinguish
+    operator-cancellation from a failure."""
+    reporter.report_run_cancelled(
+        ctx, run_id="r1", reason="operator-cancelled",
+    )
+    event = sink.events[-1]
+    assert event.action == ACTION_PROGRESS_RUN_CANCELLED
+    assert event.payload["status"] == "cancelled"
+    assert event.payload["severity"] == "WARNING"
+    assert event.payload["reason"] == "operator-cancelled"
+
+
+def test_run_cancelled_omits_reason_when_not_supplied(reporter, sink, ctx):
+    reporter.report_run_cancelled(ctx, run_id="r1")
+    payload = sink.events[-1].payload
+    assert payload["status"] == "cancelled"
+    assert "reason" not in payload
 
 
 # ---- Composite ------------------------------------------------------

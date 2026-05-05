@@ -105,6 +105,7 @@ export const EventTypeDisplay: Readonly<Record<ProgressEventType, string>> = {
   "step.failed": "Step failed",
   "run.completed": "Run completed",
   "run.failed": "Run failed",
+  "run.cancelled": "Run cancelled",
   "human_review.required": "Human review required",
 };
 
