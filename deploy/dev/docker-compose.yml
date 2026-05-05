@@ -27,6 +27,19 @@ services:
       - "${J1_API_PORT:-8000}:8000"
     volumes:
       - j1_workspace:/var/lib/j1
+      # Bind-mount Python source so code edits land without rebuilding
+      # the image. `pip install -e .` (run during the image build)
+      # already symlinked the j1 package; the bind mount transparently
+      # replaces the baked-in source files with the host copy. Restart
+      # the container after edits — there's no auto-reload (Temporal
+      # workflow code is replay-sensitive, so a watcher could load
+      # half-edited modules into a running worker). Dependency
+      # changes in pyproject.toml STILL need a rebuild.
+      #
+      # Container path is /app/src and /app/deploy because the
+      # Dockerfile sets WORKDIR /app and copies into those subdirs.
+      - ../../src:/app/src
+      - ../../deploy:/app/deploy
     depends_on:
       temporal:
         condition: service_healthy
@@ -44,6 +57,9 @@ services:
     env_file: ../../.env
     volumes:
       - j1_workspace:/var/lib/j1
+      # Same bind mounts as api — see comment above.
+      - ../../src:/app/src
+      - ../../deploy:/app/deploy
     depends_on:
       temporal:
         condition: service_healthy

@@ -53,6 +53,23 @@ docker compose -f deploy/dev/docker-compose.yml up --build
 The first run takes a couple of minutes (image build + Temporal
 schema init). Subsequent runs are fast.
 
+### Editing Python code
+
+`src/` and `deploy/` are bind-mounted into both `api` and `worker`,
+so Python edits land without a rebuild — just restart the affected
+container:
+
+```bash
+# After editing anything under src/ or deploy/:
+docker compose -f deploy/dev/docker-compose.yml restart worker
+docker compose -f deploy/dev/docker-compose.yml restart api
+```
+
+There's no auto-reload (Temporal workflow code is replay-sensitive,
+so reloading half-edited modules into a running worker can corrupt
+in-flight workflows). A rebuild is only needed when you change
+`pyproject.toml`, the `Dockerfile`, or another build-time input.
+
 > **First build downloads ~2.4 GB of MinerU model weights.** RAGAnything's
 > default `parse_method=auto` drives MinerU's hybrid-auto VLM
 > (`opendatalab/MinerU2.5-Pro-2604-1.2B`), and the Dockerfile pre-caches
