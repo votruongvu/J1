@@ -61,20 +61,20 @@ export function RunControls({ run, onRefresh, pushToast, compact = false }: RunC
         if (action === "pause") result = await client.pauseRun(run.runId);
         else if (action === "resume") result = await client.resumeRun(run.runId);
         else result = await client.cancelRun(run.runId);
+        const verb = action.charAt(0).toUpperCase() + action.slice(1);
         pushToast({
           kind: "success",
-          title: `${action[0].toUpperCase()}${action.slice(1)} requested`,
+          title: `${verb} requested`,
           body: result.message ?? `Run is now ${result.status}.`,
         });
       } catch (err) {
         const status = err instanceof ApiError ? err.status : undefined;
         const message =
           err instanceof Error ? err.message : `Failed to ${action} the run.`;
+        const verb = action.charAt(0).toUpperCase() + action.slice(1);
         pushToast({
           kind: "error",
-          title: `${action[0].toUpperCase()}${action.slice(1)} failed${
-            status != null ? ` (HTTP ${status})` : ""
-          }`,
+          title: `${verb} failed${status != null ? ` (HTTP ${status})` : ""}`,
           body: message,
         });
       } finally {
