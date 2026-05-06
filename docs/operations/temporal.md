@@ -431,12 +431,17 @@ Mechanisms that prevent or detect this:
   `failed` entries are recorded for operator visibility but do NOT
   block retry.
 - **Deterministic workflow_id**
-  ([`deploy/dev/api.py:_start_project_workflow`](../../deploy/dev/api.py)).
+  ([`deploy/dev/api.py:make_per_document_starter`](../../deploy/dev/api.py)).
   Per-document workflow IDs derived from `(tenant, project,
   document_id)` where `document_id` is content-addressed via the
   intake service's checksum dedup. Re-uploading identical bytes
-  collides on the workflow_id; Temporal's default
-  `WorkflowIDReusePolicy` rejects a duplicate while one is running.
+  collides on the workflow_id. The starter passes
+  `id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING`, so a
+  re-upload while a workflow with that id is still running returns
+  the existing handle instead of erroring or starting a parallel
+  run — the FE then polls the in-flight run. Once the original
+  workflow completes, the cache short-circuits any new attempt to
+  re-parse the same content.
 
 Workflow vs activity replay:
 
@@ -576,3 +581,28 @@ For REST-side issues see [`docs/troubleshooting.md`](../troubleshooting.md).
 - [`src/j1/orchestration/temporal/`](../../src/j1/orchestration/temporal/) — client + worker + retry primitives
 - [`src/j1/orchestration/workflows/`](../../src/j1/orchestration/workflows/) — workflow source
 - [`src/j1/orchestration/activities/`](../../src/j1/orchestration/activities/) — activity classes
+
+---
+
+## 12. End-to-end smoke test
+
+A single opt-in pytest exists to confirm worker / API / Temporal
+wiring on a fresh checkout. It boots `deploy/dev/docker-compose.yml`,
+uploads a tiny Markdown fixture, and polls
+`/ingestion-runs/{id}` until the run reaches a terminal status.
+
+```bash
+J1_E2E=1 .venv/bin/pytest -m e2e -s
+```
+
+Requirements:
+
+- Docker Desktop / Compose v2 on `PATH`.
+- The default `J1_E2E_API_BASE=http://localhost:8000` matches the
+  port published by `deploy/dev/docker-compose.yml`. Override the
+  env var if you've remapped ports.
+- The test always tears down the stack (`docker compose down -v`)
+  even on failure.
+
+The test is **not** in the default `pytest -q` run; CI must opt in
+explicitly because it requires Docker.

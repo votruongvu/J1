@@ -369,3 +369,56 @@ Add a row to the appropriate error-code table.
 
 The full suite runs in ~4s on a laptop; nothing should be slow
 enough to need optimisation today.
+
+## Worker / ingest pipeline
+
+### MinerU appears to run multiple times for one document
+
+If you see the same document being parsed by MinerU repeatedly while
+the workflow is still in-flight, walk through these knobs in order:
+
+1. **Heartbeat ticker.**
+   `src/j1/orchestration/activities/processing.py` runs a daemon
+   thread (`_heartbeating`) that emits `activity.heartbeat()` every
+   30s while compile is running. Paired with
+   `HEARTBEAT_TIMEOUT=5min` on the activity call, this prevents
+   Temporal from declaring the worker dead and re-dispatching the
+   activity to another slot. If you've disabled the ticker or set
+   `HEARTBEAT_TIMEOUT` shorter than the ticker interval, expect
+   re-dispatch.
+
+2. **Compile retry policy.**
+   `COMPILE_RETRY` (`src/j1/orchestration/temporal/retries.py`)
+   bounds compile to **2 attempts** — not the global default of 5.
+   `DocumentProcessingWorkflow` and `ProjectProcessingWorkflow`
+   both apply this policy explicitly. Anything that hides the
+   policy will fall back to `DEFAULT_RETRY` (5×) and look like
+   "MinerU keeps running".
+
+3. **Result cache.**
+   `JsonlProcessingResultCache` keys on
+   `(document_hash, processor_kind, processor_version, mode)`. A
+   second activity attempt for the same logical document hits the
+   cache and returns the prior result instead of re-parsing.
+   Verify the cache file under
+   `<workspace>/cache/processing/` is being written.
+
+4. **Workflow id collisions.**
+   The dev API uses `make_per_document_starter` which generates a
+   deterministic id `j1-{tenant}-{project}-{document_id}` and
+   passes `id_conflict_policy=USE_EXISTING`. A re-upload of the
+   same physical bytes (same checksum → same `document_id`) gets
+   the existing handle back instead of a parallel run.
+   Custom integrations that build their own starter MUST match
+   this contract; see
+   `j1.integration.services.make_per_document_workflow_id`.
+
+5. **Audit log.**
+   `_read_progress_events` (and the SSE stream) shows every
+   `step.*` event with timestamps. If you see two
+   `step.started/COMPILE` entries for the same run, the workflow
+   itself is re-entering compile — that points at a workflow-side
+   loop, not a Temporal redispatch.
+
+See `docs/operations/temporal.md` for the full activity-timeout /
+retry / heartbeat contract.

@@ -109,6 +109,14 @@ class IngestionRunRecord(CamelModel):
     failure_code: str | None = None
     failure_message: str | None = None
     warning_count: int = 0
+    # Most recent progress-event type observed for this run (e.g.
+    # `step.started`, `step.progress`, `step.completed`,
+    # `step.failed`, `step.skipped`). The run record itself isn't
+    # mutated by the worker today, so callers that don't subscribe
+    # to SSE can use this field to know what stage the workflow is
+    # at without reading the raw event timeline. Derived server-side
+    # from the audit log on read.
+    last_event_type: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

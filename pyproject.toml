@@ -88,3 +88,6 @@ packages = ["src/j1"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "e2e: opt-in end-to-end smoke tests that require Docker Compose. Skipped unless J1_E2E=1.",
+]

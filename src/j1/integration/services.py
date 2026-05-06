@@ -436,6 +436,21 @@ class TemporalJobControlService:
 
     `client_provider` returns a Temporal client (kept as a callable so the
     integration layer never imports `temporalio.client.Client` directly).
+
+    `workflow_id_factory` lets callers supply deterministic id
+    generation (e.g. `f"j1-{tenant}-{project}-{document_id}"`) so a
+    repeated start for the same logical job collapses onto the same
+    workflow id. The default uses a UUID suffix, which is appropriate
+    for the bulk-job path (each invocation is intentionally a fresh
+    run); deployments that drive per-document starts should pass a
+    deterministic factory.
+
+    `id_conflict_policy` controls Temporal's behaviour when a workflow
+    with the requested id is already running. Default `None` keeps
+    SDK behaviour (raise / fail). Pass
+    `WorkflowIDConflictPolicy.USE_EXISTING` for paths where a
+    duplicate trigger should return the in-flight handle instead of
+    spawning a parallel run.
     """
 
     def __init__(
@@ -444,10 +459,12 @@ class TemporalJobControlService:
         *,
         task_queue: str,
         workflow_id_factory: Callable[[ProjectContext], str] | None = None,
+        id_conflict_policy: Any = None,
     ) -> None:
         self._client_provider = client_provider
         self._task_queue = task_queue
         self._workflow_id_factory = workflow_id_factory or _default_workflow_id
+        self._id_conflict_policy = id_conflict_policy
 
     async def start_project_job(
         self,
@@ -469,11 +486,16 @@ class TemporalJobControlService:
             correlation_id=request.correlation_id,
         )
         workflow_id = self._workflow_id_factory(ctx)
+        start_kwargs: dict[str, Any] = {
+            "id": workflow_id,
+            "task_queue": self._task_queue,
+        }
+        if self._id_conflict_policy is not None:
+            start_kwargs["id_conflict_policy"] = self._id_conflict_policy
         await client.start_workflow(
             ProjectProcessingWorkflow.run,
             workflow_request,
-            id=workflow_id,
-            task_queue=self._task_queue,
+            **start_kwargs,
         )
         return JobActionResultDTO(job_id=workflow_id, action="start")
 
@@ -502,7 +524,29 @@ class TemporalJobControlService:
 
 
 def _default_workflow_id(ctx: ProjectContext) -> str:
+    """Generate a fresh non-deterministic workflow id.
+
+    Appropriate for the bulk-job path where each invocation is
+    intentionally a separate run (operator clicks "run pipeline
+    again"). Deployments that drive PER-DOCUMENT starts should pass
+    a deterministic factory like `make_per_document_workflow_id`
+    so a repeated trigger for the same logical document collapses
+    onto the same workflow id.
+    """
     return f"j1-{ctx.tenant_id}-{ctx.project_id}-{uuid.uuid4().hex[:12]}"
+
+
+def make_per_document_workflow_id(
+    ctx: ProjectContext, document_id: str,
+) -> str:
+    """Deterministic workflow id for per-document ingest triggers.
+
+    Format: `j1-{tenant_id}-{project_id}-{document_id}`. Combined
+    with `id_conflict_policy=USE_EXISTING` and intake's checksum
+    dedup (which maps re-uploaded bytes back to the same
+    `document_id`), this guarantees a single physical document is
+    never processed by two parallel workflows."""
+    return f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
 
 
 class CostSummaryService:

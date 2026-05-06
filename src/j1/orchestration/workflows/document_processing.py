@@ -15,9 +15,19 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.orchestration.activities.processing import ProcessingActivities
     from j1.orchestration.errors import ERROR_TYPE_REQUIRED_STEP_FAILED
-    from j1.orchestration.temporal.retries import DEFAULT_RETRY
+    from j1.orchestration.temporal.retries import COMPILE_RETRY, DEFAULT_RETRY
 
 DEFAULT_ACTIVITY_TIMEOUT = timedelta(minutes=10)
+# Compile is the most expensive activity (MinerU + raganything routinely
+# parse for many minutes per real PDF). The mirror values in
+# `project_processing.py` are the source of truth — kept in sync here so
+# `DocumentProcessingWorkflow` cannot regress to the "10-minute timeout
+# fires mid-parse → Temporal retries → fresh MinerU subprocess each time"
+# failure mode. The activity's `_heartbeating` ticker keeps liveness
+# alive within HEARTBEAT_TIMEOUT; COMPILE_ACTIVITY_TIMEOUT is the upper
+# bound on a single attempt.
+COMPILE_ACTIVITY_TIMEOUT = timedelta(hours=1)
+HEARTBEAT_TIMEOUT = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -56,8 +66,18 @@ class DocumentProcessingWorkflow:
                 actor=request.actor,
                 correlation_id=request.correlation_id,
             ),
-            start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
-            retry_policy=retry,
+            # Compile gets compile-specific knobs even in the slim
+            # workflow: a 1-hour upper bound, a 5-minute heartbeat
+            # liveness check (paired with the activity's 30-second
+            # heartbeat ticker), and the bounded `COMPILE_RETRY`
+            # (2 attempts) policy. Without these, real PDFs would
+            # exceed the 10-minute default, time out mid-parse, and
+            # Temporal would retry up to 5× — re-spawning MinerU
+            # for the same document on every retry. See
+            # `project_processing.py` for the same configuration.
+            start_to_close_timeout=COMPILE_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=HEARTBEAT_TIMEOUT,
+            retry_policy=COMPILE_RETRY.to_temporal(),
         )
 
         if compile_result.status != "succeeded":

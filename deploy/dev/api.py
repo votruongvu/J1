@@ -40,10 +40,74 @@ from j1 import (
     create_rest_api,
     load_temporal_settings,
 )
+from temporalio.common import WorkflowIDConflictPolicy
 from j1.integration.services import ApplicationFacade
 from j1.search.indexer import SqliteSearchIndexer
 
 _log = logging.getLogger("j1.dev.api")
+
+
+def make_per_document_starter(
+    *,
+    client_provider,
+    task_queue: str,
+    planner_enabled: bool,
+):
+    """Build the `JobStarter` closure used by `POST /documents/{id}/ingest`.
+
+    Lifted out of `_build_app` so its behaviour (deterministic
+    workflow id, single-document scoping, USE_EXISTING conflict
+    policy) is unit-testable without standing up the entire app.
+
+    Crucial:
+
+      * Scopes the workflow to the SINGLE document just uploaded
+        (`target_document_ids=(document_id,)`). Without this filter
+        the workflow would call `list_pending_documents` and re-
+        process every PENDING document in the project — once on the
+        first upload, twice on the second, three times on the third,
+        … The bulk-job path (`job_control.start_project_job`)
+        intentionally leaves the filter empty.
+
+      * Workflow id is `j1-{tenant_id}-{project_id}-{document_id}` —
+        deterministic per (tenant, project, document). Combined with
+        intake's checksum-based dedup, re-uploading the same file
+        always lands on the same workflow id.
+
+      * `id_conflict_policy=USE_EXISTING`. If a workflow with this
+        id is already running (re-upload of an in-flight file), do
+        NOT spawn a parallel run — return the existing handle.
+        Combined with `ProcessingResultCache`, this means a single
+        physical file is never parsed twice in parallel and never
+        re-parsed once already completed.
+    """
+
+    async def _start(ctx, document_id, body) -> str:
+        client = client_provider()
+        scope = ProjectScope.from_context(ctx)
+        workflow_id = (
+            f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
+        )
+        await client.start_workflow(
+            ProjectProcessingWorkflow.run,
+            ProjectProcessingRequest(
+                scope=scope,
+                compiler_kind=body.compiler_kind,
+                enricher_kind=body.enricher_kind,
+                graph_builder_kind=body.graph_builder_kind,
+                indexer_kind=body.indexer_kind,
+                actor=body.actor,
+                correlation_id=body.correlation_id,
+                target_document_ids=(document_id,),
+                planner_enabled=planner_enabled,
+            ),
+            id=workflow_id,
+            task_queue=task_queue,
+            id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        )
+        return workflow_id
+
+    return _start
 
 
 def _build_app():
@@ -106,40 +170,11 @@ def _build_app():
         not in {"false", "0", "no", "off"}
     )
 
-    async def _start_project_workflow(ctx, document_id, body) -> str:
-        """`job_starter` callable — drives the per-document ingest path.
-
-        Crucial: scopes the workflow to the SINGLE document just
-        uploaded (`target_document_ids=(document_id,)`). Without
-        this filter the workflow would call
-        `list_pending_documents` and re-process every PENDING
-        document in the project — once on the first upload, twice on
-        the second, three times on the third, … The bulk-job path
-        (`job_control.start_project_job`) intentionally leaves the
-        filter empty.
-        """
-        client = client_provider()
-        scope = ProjectScope.from_context(ctx)
-        workflow_id = (
-            f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
-        )
-        await client.start_workflow(
-            ProjectProcessingWorkflow.run,
-            ProjectProcessingRequest(
-                scope=scope,
-                compiler_kind=body.compiler_kind,
-                enricher_kind=body.enricher_kind,
-                graph_builder_kind=body.graph_builder_kind,
-                indexer_kind=body.indexer_kind,
-                actor=body.actor,
-                correlation_id=body.correlation_id,
-                target_document_ids=(document_id,),
-                planner_enabled=planner_enabled,
-            ),
-            id=workflow_id,
-            task_queue=temporal_settings.task_queue,
-        )
-        return workflow_id
+    _start_project_workflow = make_per_document_starter(
+        client_provider=client_provider,
+        task_queue=temporal_settings.task_queue,
+        planner_enabled=planner_enabled,
+    )
 
     # Compose the env-declared providers so the API can default
     # `compilerKind` and validate unknown kinds. The same `boot`

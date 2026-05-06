@@ -158,6 +158,69 @@ def test_get_run_returns_status_snapshot(client, run_store, ctx):
     assert body["progressPercent"] == 50
 
 
+def test_get_run_derives_current_step_from_audit_when_record_is_empty(
+    client, run_store, ctx, reporter,
+):
+    """Worker activities don't update the run-store record (the
+    run-store is API-side state; the worker emits audit events).
+    Without server-side derivation the detail endpoint's
+    `currentStage` / `currentStep` would stay null for the lifetime
+    of the run. This test pins down the round-2 fix: when the run
+    record's own `current_*` fields are empty, the GET handler
+    backfills them from the most recent `step.*` progress event."""
+    now = datetime.now(timezone.utc)
+    run_store.upsert(ctx, IngestionRun(
+        run_id="run-derived",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now,
+        updated_at=now,
+        # `current_*` deliberately left at defaults — simulates the
+        # worker not writing back to the run store.
+    ))
+
+    reporter.report_run_created(ctx, run_id="run-derived", document_id="doc-1")
+    reporter.report_step_started(
+        ctx, run_id="run-derived", stage="COMPILE", step="LAYOUT_PREPARATION",
+    )
+    reporter.report_step_progress(
+        ctx, run_id="run-derived", stage="COMPILE",
+        step="LAYOUT_PREPARATION", progress_percent=42,
+    )
+
+    resp = client.get("/ingestion-runs/run-derived", headers=_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["currentStage"] == "COMPILE"
+    assert body["currentStep"] == "LAYOUT_PREPARATION"
+    assert body["progressPercent"] == 42
+    assert body["lastEventType"] == "step.progress"
+
+
+def test_get_run_keeps_record_values_when_present(
+    client, run_store, ctx, reporter,
+):
+    """When the run record DOES carry `current_*` (e.g. a future
+    worker-side writer fills it), the audit-derived values must not
+    overwrite them. Only `lastEventType` is always derived because it
+    isn't on the record."""
+    run_store.upsert(ctx, _make_run("run-pinned"))
+    reporter.report_step_started(
+        ctx, run_id="run-pinned", stage="ENRICH", step="OTHER_STEP",
+    )
+
+    resp = client.get("/ingestion-runs/run-pinned", headers=_HEADERS)
+    body = resp.json()["data"]
+    # Run-record values win.
+    assert body["currentStage"] == "COMPILE"
+    assert body["currentStep"] == "LAYOUT_PREPARATION"
+    assert body["progressPercent"] == 50
+    # But lastEventType is still surfaced.
+    assert body["lastEventType"] == "step.started"
+
+
 def test_get_run_returns_503_when_store_not_configured(application_facade, workspace):
     """The endpoint degrades gracefully when no run store is wired —
     deployments that don't use the runs surface aren't required to."""

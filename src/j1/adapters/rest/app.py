@@ -1007,8 +1007,20 @@ def create_rest_api(
         run = store.get(ctx, run_id)
         if run is None:
             raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        # Worker activities don't update the run-store record today
+        # (the run-store is API-side state; the worker emits audit
+        # progress events). Derive `currentStage` / `currentStep` /
+        # `lastEventType` from the most recent progress event so the
+        # detail endpoint reflects the in-flight step without
+        # requiring the FE to subscribe to SSE.
+        latest_progress = (
+            _latest_progress_snapshot(workspace, ctx, run_id)
+            if workspace is not None else None
+        )
         return envelope(
-            _ingestion_run_to_record(run).model_dump(by_alias=True),
+            _ingestion_run_to_record(
+                run, latest_progress=latest_progress,
+            ).model_dump(by_alias=True),
             _req_id(request),
         )
 
@@ -2291,8 +2303,33 @@ def _optional_str(value: object) -> str | None:
     return text or None
 
 
-def _ingestion_run_to_record(run) -> IngestionRunRecord:
-    """Project an `IngestionRun` dataclass into the wire schema."""
+def _ingestion_run_to_record(
+    run, *, latest_progress: "dict[str, Any] | None" = None,
+) -> IngestionRunRecord:
+    """Project an `IngestionRun` dataclass into the wire schema.
+
+    `latest_progress` (optional) is a small dict produced by
+    `_latest_progress_snapshot` carrying the most recent
+    `j1.progress.*` audit event for the run. When supplied AND the
+    run record's own `current_*` fields are empty, we backfill them
+    from the event so the wire payload reflects what the worker is
+    actually doing right now. The run record itself isn't mutated —
+    it stays the source of truth for terminal state."""
+    current_stage = run.current_stage
+    current_step = run.current_step
+    progress_percent = run.progress_percent
+    last_event_type: str | None = None
+    if latest_progress is not None:
+        last_event_type = latest_progress.get("event_type")
+        if not current_stage:
+            current_stage = latest_progress.get("stage")
+        if not current_step:
+            current_step = latest_progress.get("step")
+        # Only fall back to event-derived percent when the run
+        # record didn't carry one — keeps the run-store as the
+        # source of truth when it is updated.
+        if not progress_percent and latest_progress.get("progress_percent"):
+            progress_percent = int(latest_progress["progress_percent"])
     return IngestionRunRecord(
         run_id=run.run_id,
         document_id=run.document_id,
@@ -2303,14 +2340,74 @@ def _ingestion_run_to_record(run) -> IngestionRunRecord:
         updated_at=run.updated_at,
         completed_at=run.completed_at,
         workspace_id=run.workspace_id,
-        current_stage=run.current_stage,
-        current_step=run.current_step,
-        progress_percent=run.progress_percent,
+        current_stage=current_stage,
+        current_step=current_step,
+        progress_percent=progress_percent,
         failure_code=run.failure_code,
         failure_message=run.failure_message,
         warning_count=run.warning_count,
+        last_event_type=last_event_type,
         metadata=dict(run.metadata),
     )
+
+
+def _latest_progress_snapshot(
+    workspace: WorkspaceResolver,
+    ctx: ProjectContext,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Return a small dict for the most recent `j1.progress.*` audit
+    entry for the run, or None if no event has been recorded.
+
+    The run-store record isn't currently updated by the worker (the
+    worker emits audit progress events; only the API process writes
+    to the run-store). Without this lookup the detail endpoint's
+    `currentStage`/`currentStep` would stay None for the lifetime of
+    the run. We tail the audit log here on each detail GET — same
+    cost as the existing events endpoint's full read but we stop at
+    the first match scanning backwards.
+
+    Step events (`step.*`) are preferred over plan/run-level events
+    because they carry the `stage` / `step` the FE wants. When no
+    `step.*` event exists yet (very early in a run) we fall back to
+    whatever the most recent `j1.progress.*` entry was so
+    `lastEventType` is at least populated."""
+    path = workspace.audit(ctx) / AUDIT_LOG_FILENAME
+    if not path.exists():
+        return None
+    fallback: dict[str, Any] | None = None
+    # Scan once front-to-back; keep the latest matching record. The
+    # JSONL audit log is append-only, so the last matching line wins.
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    latest_step: dict[str, Any] | None = None
+    latest_any: dict[str, Any] | None = None
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if data.get("correlation_id") != run_id:
+            continue
+        action = data.get("action") or ""
+        if not action.startswith(PROGRESS_ACTION_PREFIX):
+            continue
+        event_type = action[len(PROGRESS_ACTION_PREFIX):]
+        payload = data.get("payload") or {}
+        snapshot = {
+            "event_type": event_type,
+            "stage": payload.get("stage"),
+            "step": payload.get("step"),
+            "progress_percent": payload.get("progress_percent"),
+        }
+        latest_any = snapshot
+        if event_type.startswith("step."):
+            latest_step = snapshot
+    return latest_step or latest_any or fallback
 
 
 def _read_progress_events(
