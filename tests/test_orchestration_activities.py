@@ -494,6 +494,60 @@ def test_compile_activity_writes_processing_marker_before_processor_call(
     assert final.status == CACHE_STATUS_COMPLETED
 
 
+def test_heartbeating_thread_propagates_contextvars(workspace, ctx):
+    """Regression test for the heartbeat thread silently no-op'ing.
+
+    `temporalio.activity.heartbeat()` reads the current activity from
+    a `contextvars.ContextVar`. Python `threading.Thread` does NOT
+    propagate contextvars, so a naive daemon-thread call to
+    `_safe_heartbeat` would silently swallow the resulting
+    RuntimeError and never deliver a heartbeat — letting the
+    `heartbeat_timeout` fire mid-parse on real documents.
+
+    The fix is `contextvars.copy_context().run(...)` inside the
+    ticker loop. This test simulates the activity context with a
+    free contextvar and verifies the thread sees the same value the
+    parent set."""
+    import contextvars
+    import threading
+    import time
+
+    from j1.orchestration.activities.processing import _heartbeating
+
+    # Standalone contextvar simulating Temporal's activity contextvar.
+    test_var: contextvars.ContextVar[str] = contextvars.ContextVar("test-var")
+    test_var.set("activity-context-value")
+
+    seen: list[str] = []
+    barrier = threading.Event()
+
+    # Monkeypatch `_safe_heartbeat` for the duration of the test so
+    # we can record what the daemon thread sees instead of pretending
+    # it's inside a real activity.
+    from j1.orchestration.activities import processing as proc_mod
+    original = proc_mod._safe_heartbeat
+
+    def _record(_details):
+        seen.append(test_var.get("<MISSING>"))
+        barrier.set()
+
+    proc_mod._safe_heartbeat = _record
+    try:
+        with _heartbeating({"x": 1}, interval_seconds=0.05):
+            assert barrier.wait(timeout=2.0), "thread never produced a heartbeat"
+            time.sleep(0.12)  # let the loop tick a few times
+    finally:
+        proc_mod._safe_heartbeat = original
+
+    # Without contextvar propagation, `test_var.get("<MISSING>")`
+    # would return the default. With propagation, it returns the
+    # value the parent set.
+    assert seen, "heartbeat thread never ran"
+    assert all(v == "activity-context-value" for v in seen), (
+        f"contextvar not propagated to heartbeat thread; saw {seen}"
+    )
+
+
 def test_compile_cache_key_includes_processor_version(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):

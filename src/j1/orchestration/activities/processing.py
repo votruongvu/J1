@@ -1,4 +1,5 @@
 import contextlib
+import contextvars
 import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -592,20 +593,31 @@ def _heartbeating(details: dict[str, object], *, interval_seconds: float = 30.0)
     spawning fresh subprocesses on every retry. The "many MinerU
     starts for one document" symptom.
 
+    Threading + contextvars: `temporalio.activity.heartbeat()` reads
+    the current activity from a `ContextVar`. `threading.Thread`
+    does NOT propagate contextvars, so a naive daemon-thread call to
+    `activity.heartbeat()` raises `RuntimeError: Not in activity
+    context`. We capture the current context (which includes the
+    activity contextvar set by the worker before invoking us) and
+    run each heartbeat invocation under that context via
+    `ctx.run(...)`. This is the standard Python pattern for
+    propagating contextvars to threads.
+
     Heartbeat semantics: this proves the WORKER is alive, not that
     progress is being made. Callers that have real per-step progress
     (page counters, etc.) should heartbeat with those richer details
     via `_safe_heartbeat` directly; the ticker is the safety net for
     everyone else."""
     stop = threading.Event()
+    captured_ctx = contextvars.copy_context()
 
     def _tick() -> None:
         # First beat fires immediately — Temporal needs at least one
         # heartbeat per `heartbeat_timeout` window, and we don't want
         # to wait `interval_seconds` for the first one.
-        _safe_heartbeat(details)
+        captured_ctx.run(_safe_heartbeat, details)
         while not stop.wait(interval_seconds):
-            _safe_heartbeat(details)
+            captured_ctx.run(_safe_heartbeat, details)
 
     thread = threading.Thread(target=_tick, daemon=True, name="j1-activity-heartbeat")
     thread.start()
