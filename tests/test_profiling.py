@@ -86,7 +86,7 @@ def test_unknown_extension_leaves_modality_signals_unknown(
 def test_pdf_page_count_uses_pypdf_when_available(tmp_path, profiler):
     """If `pypdf` is importable (which it is in this repo via
     raganything's transitive deps), the profiler reads the page
-    count without parsing content."""
+    count and text extractability without parsing content deeply."""
     pypdf = pytest.importorskip("pypdf")
     src = tmp_path / "report.pdf"
     # Build a tiny 2-page PDF with pypdf so the test is deterministic.
@@ -100,8 +100,10 @@ def test_pdf_page_count_uses_pypdf_when_available(tmp_path, profiler):
 
     assert profile.extension == ".pdf"
     assert profile.page_count == 2
-    # PDFs don't get the plain-text shortcut — modality flags stay None.
-    assert profile.text_extractable_ratio is None
+    # Blank-page PDFs have no extractable text → ratio = 0.0 and
+    # has_scanned_pages = True (blank == effectively scanned).
+    assert profile.text_extractable_ratio == 0.0
+    assert profile.has_scanned_pages is True
 
 
 def test_pdf_page_count_warning_when_pypdf_missing(

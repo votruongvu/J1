@@ -175,8 +175,12 @@ class DeterministicDocumentProfiler:
         # PDF inspection — best-effort; absence of pypdf or a malformed
         # file just leaves page_count unknown.
         page_count: int | None = None
+        text_extractable_ratio: float | None = None
+        has_scanned_pages: bool | None = None
         if extension == ".pdf":
-            page_count, pdf_warnings = _safe_pdf_page_count(path)
+            page_count, text_extractable_ratio, has_scanned_pages, pdf_warnings = (
+                _safe_pdf_profile(path)
+            )
             warnings.extend(pdf_warnings)
 
         return DocumentProfile(
@@ -185,32 +189,62 @@ class DeterministicDocumentProfiler:
             mime_type=mime_type,
             file_size_bytes=file_size_bytes,
             page_count=page_count,
-            text_extractable_ratio=None,
+            text_extractable_ratio=text_extractable_ratio,
             has_images=None,
             has_tables=None,
-            has_scanned_pages=None,
+            has_scanned_pages=has_scanned_pages,
             warnings=tuple(warnings),
         )
 
 
-def _safe_pdf_page_count(path: Path) -> tuple[int | None, list[str]]:
-    """Read page count via `pypdf` if available. Best-effort.
+def _safe_pdf_profile(
+    path: Path,
+    *,
+    sample_pages: int = 5,
+) -> tuple[int | None, float | None, bool | None, list[str]]:
+    """Read page count + text-extractability ratio via `pypdf`. Best-effort.
 
-    We deliberately don't try to extract text or images here — that's
-    a deeper, slower profiler's job. Page count alone is enough for
-    the planner to bias toward MULTIMODAL_FULL on long PDFs."""
+    Samples up to `sample_pages` pages to estimate what fraction have
+    embedded text.  Returns:
+      (page_count, text_extractable_ratio, has_scanned_pages, warnings)
+
+    `text_extractable_ratio` — 0..1 fraction of sampled pages with
+    ≥ 20 non-whitespace chars of extractable text.
+    `has_scanned_pages` — True when ratio < 0.1 (nearly all scanned);
+    False when ratio ≥ 0.8; None in between (mixed document, planner
+    should treat conservatively).
+
+    We deliberately stop at text extraction — no image pixel sampling,
+    no table detection. Those are a deeper profiler's job. This gives
+    the planner and fast-path logic the cheapest useful signal."""
     warnings: list[str] = []
     try:
         from pypdf import PdfReader
     except ImportError:
         warnings.append(
-            "pypdf not installed — page_count unavailable; "
+            "pypdf not installed — page_count and text_extractable_ratio unavailable; "
             "planner will fall back to mode-default heuristics"
         )
-        return None, warnings
+        return None, None, None, warnings
     try:
         reader = PdfReader(str(path))
-        return len(reader.pages), warnings
+        total = len(reader.pages)
+        if total == 0:
+            return 0, None, None, warnings
+        n = min(sample_pages, total)
+        pages_with_text = sum(
+            1
+            for i in range(n)
+            if len((reader.pages[i].extract_text() or "").strip()) >= 20
+        )
+        ratio = round(pages_with_text / n, 2)
+        if ratio >= 0.8:
+            has_scanned_pages: bool | None = False
+        elif ratio < 0.1:
+            has_scanned_pages = True
+        else:
+            has_scanned_pages = None  # mixed — planner decides conservatively
+        return total, ratio, has_scanned_pages, warnings
     except Exception as exc:  # noqa: BLE001 — any pypdf error is recoverable
         warnings.append(f"pypdf could not read {path.name!r}: {exc!s}")
-        return None, warnings
+        return None, None, None, warnings

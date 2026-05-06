@@ -143,6 +143,44 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             )
             return
 
+        # Fast path for text-layer PDFs: skip MinerU entirely when the
+        # document has embedded text on most pages.  MinerU's auto mode
+        # runs full layout analysis (layout blocks, OCR, formula /
+        # table detection) on every page regardless of content — for a
+        # normal text PDF this adds 3–5 minutes of transformer
+        # inference with no benefit.  pypdf text extraction for the
+        # same file completes in < 1 second.
+        #
+        # We only activate the fast path when:
+        #   * the source is a .pdf (not already-converted other format)
+        #   * at least _PDF_TEXT_THRESHOLD fraction of sampled pages
+        #     have meaningful embedded text  (≥ 20 non-whitespace chars)
+        #
+        # Complex documents (scanned, image-heavy, table-heavy,
+        # equation-heavy) have low text extraction ratios and fall
+        # through to the full MinerU pipeline unchanged.
+        if _is_text_extractable_pdf(source_path):
+            _log.info(
+                "fast-text path: PDF has extractable text layer, "
+                "skipping MinerU for document %r (%s)",
+                request.document_id,
+                source_path.name,
+            )
+            await _insert_pdf_text_directly(
+                rag=rag,
+                source_path=source_path,
+                document_id=request.document_id,
+                output_dir=output_dir,
+            )
+            return
+
+        _log.info(
+            "full-parse path: routing document %r to MinerU "
+            "(parse_method=%s, file=%s)",
+            request.document_id,
+            request.settings.parse_method,
+            source_path.name,
+        )
         await rag.process_document_complete(
             file_path=str(source_path),
             output_dir=str(output_dir),
@@ -456,6 +494,54 @@ def _is_plain_text(source_path: Path) -> bool:
     return source_path.suffix.lower() in _NATIVE_TEXT_EXTENSIONS
 
 
+# Fraction of sampled PDF pages that must have extractable text before
+# we skip MinerU.  0.8 = at least 80 % of the first ≤5 pages carry a
+# real text layer.  Deliberately conservative: a mixed scan/text PDF
+# still routes to MinerU so we don't drop scanned content.
+_PDF_TEXT_THRESHOLD = 0.8
+
+
+def _is_text_extractable_pdf(
+    source_path: Path,
+    *,
+    threshold: float = _PDF_TEXT_THRESHOLD,
+    sample_pages: int = 5,
+) -> bool:
+    """Return True when `source_path` is a PDF whose embedded text layer
+    is rich enough for the fast-text path.
+
+    Samples up to `sample_pages` pages with pypdf (which is already a
+    transitive dependency of raganything and is imported for page-count
+    profiling elsewhere).  A page is counted as "has text" when
+    `extract_text()` yields ≥ 20 non-whitespace characters — this
+    filters out PDFs that have only a few invisible copy-protection or
+    watermark text nodes.
+
+    Returns False (→ full MinerU path) when:
+      * source is not a .pdf
+      * pypdf is not importable
+      * the file can't be read (corrupt, encrypted, etc.)
+      * text ratio < threshold  (scanned / image-heavy / formula-heavy)
+    """
+    if source_path.suffix.lower() != ".pdf":
+        return False
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(source_path))
+        total = len(reader.pages)
+        if total == 0:
+            return False
+        n = min(sample_pages, total)
+        pages_with_text = sum(
+            1
+            for i in range(n)
+            if len((reader.pages[i].extract_text() or "").strip()) >= 20
+        )
+        return (pages_with_text / n) >= threshold
+    except Exception:  # noqa: BLE001 — any failure → conservative full path
+        return False
+
+
 async def _insert_plain_text_directly(
     *,
     rag,
@@ -502,6 +588,62 @@ async def _insert_plain_text_directly(
     # Persist the text so the standard output-dir draft walker picks it up.
     out_path = output_dir / f"{document_id}.md"
     out_path.write_text(text, encoding="utf-8")
+
+
+async def _insert_pdf_text_directly(
+    *,
+    rag,
+    source_path: Path,
+    document_id: str,
+    output_dir: Path,
+) -> None:
+    """Extract text from a text-layer PDF with pypdf and insert into LightRAG.
+
+    Bypasses `RAGAnything.process_document_complete` for PDFs that have
+    reliable embedded text.  MinerU's `parse_method=auto` runs full layout
+    analysis (layout blocks, OCR, formula/table detection) on every page
+    regardless of content — for a normal 4-page text PDF this means several
+    minutes of transformer inference on CPU/GPU with no benefit.  pypdf text
+    extraction completes in < 1 second for the same file.
+
+    Caller must first confirm the document is text-extractable via
+    `_is_text_extractable_pdf()`.  This function does NOT re-check — it
+    trusts the caller's decision and proceeds directly.
+
+    Also writes the concatenated text into `output_dir` so the standard
+    `_drafts_from_output_dir` walker discovers it without special-casing.
+    """
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(source_path))
+    pages_text: list[str] = []
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages_text.append(page_text)
+
+    combined = "\n\n".join(pages_text)
+    if not combined.strip():
+        # Empty extraction (all pages had no text); nothing to insert.
+        return
+
+    await rag.lightrag.ainsert(
+        input=combined,
+        file_paths=str(source_path),
+        ids=document_id,
+    )
+
+    # Best-effort doc-status bookkeeping.
+    mark = getattr(rag, "_mark_multimodal_processing_complete", None)
+    if mark is not None:
+        try:
+            await mark(document_id)
+        except Exception:  # noqa: BLE001
+            _log.debug("doc-status bookkeeping failed (non-fatal)", exc_info=True)
+
+    # Persist the extracted text for the draft walker.
+    out_path = output_dir / f"{document_id}.md"
+    out_path.write_text(combined, encoding="utf-8")
 
 
 # ---- LibreOffice pre-conversion (broad format coverage) ------------

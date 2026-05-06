@@ -179,12 +179,16 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         setRun(r);
 
         // Allow the assessor to populate before fetching the plan.
+        // Kept as a fallback for the case where plan.generated
+        // arrives in history between `getEvents` and `openStream`.
         setTimeout(async () => {
-          try {
-            const p = await client.getPlan(runId);
-            if (!cancelled) setPlan(p);
-          } catch {
-            /* plan may not be ready yet — events will trigger refetch */
+          if (plan === null) {
+            try {
+              const p = await client.getPlan(runId);
+              if (!cancelled) setPlan(p);
+            } catch {
+              /* plan may not be ready yet — events will trigger refetch */
+            }
           }
         }, 600);
 
@@ -195,6 +199,22 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           lastEventIdRef.current = e.eventId;
         }
         setEvents(hist);
+
+        // If `plan.generated` is already in history we must fetch the
+        // plan here — the SSE stream starts at `Last-Event-Id` and
+        // will NOT replay past events, so the `handleEvent` branch
+        // that calls `getPlan` never fires for already-seen events.
+        // The 600 ms eager fetch below can lose this race when the
+        // plan was written just before page-load; scanning history is
+        // the reliable alternative.
+        if (hist.some((e) => e.event === "plan.generated") && !cancelled) {
+          void client
+            .getPlan(runId)
+            .then((p) => {
+              if (!cancelled) setPlan(p);
+            })
+            .catch(() => {});
+        }
         openStream();
       } catch (e) {
         if (cancelled) return;
