@@ -13,6 +13,7 @@ context to emit the event."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from temporalio import activity
 
@@ -85,7 +86,7 @@ class ReportPlanGeneratedInput:
 
     scope: ProjectScope
     run_id: str
-    plan_payload: dict[str, "object"]
+    plan_payload: dict[str, Any]
     actor: str = "system"
 
 
