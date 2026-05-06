@@ -219,17 +219,51 @@ services:
     # `--auto_confirm` skips the interactive prompt tctl shows on
     # mutating cluster commands. The `|| true` swallows the
     # "attribute already exists" error so the service is idempotent
-    # across `down` / `up` cycles.
+    # across `down` / `up` cycles. Each attribute is registered
+    # under a Temporal-supported type:
+    #
+    #   Keyword — exact-match string filters (most J1 attributes).
+    #   Int     — numeric filters / ordering (J1CurrentAttempt).
+    #
+    # Adding a new attribute below requires a matching upsert call
+    # in the workflow (`_set_search_attribute` in
+    # `project_processing.py`); registration alone has no operator-
+    # visible effect until the workflow writes values.
     command:
       - |
         set -e
         echo "[temporal-init] registering J1 search attributes…"
-        for ATTR in J1IngestStage J1IngestMode; do
+        register_keyword() {
           tctl --auto_confirm --address temporal:7233 \
             admin cluster add-search-attributes \
-            --name "$$ATTR" --type Keyword \
-          || echo "[temporal-init] $$ATTR already registered — skipping"
-        done
+            --name "$$1" --type Keyword \
+          || echo "[temporal-init] $$1 already registered — skipping"
+        }
+        register_int() {
+          tctl --auto_confirm --address temporal:7233 \
+            admin cluster add-search-attributes \
+            --name "$$1" --type Int \
+          || echo "[temporal-init] $$1 already registered — skipping"
+        }
+        # Stage / mode — already used by the workflow today.
+        register_keyword J1IngestStage
+        register_keyword J1IngestMode
+        # Document identity — surfaced on every workflow so operators
+        # can find the workflow that processed a given document or
+        # content hash without scanning histories.
+        register_keyword J1DocumentId
+        register_keyword J1DocumentHash
+        # Workspace scope — useful when one Temporal cluster serves
+        # multiple tenants / projects.
+        register_keyword J1WorkspaceId
+        # Parser identity — answers "which parser version produced
+        # this output?" when output shape changes across upgrades.
+        register_keyword J1ParserName
+        register_keyword J1ParserVersion
+        register_keyword J1ParseMode
+        # Activity attempt counter — visible on the workflow so
+        # operators see retry depth without opening event history.
+        register_int     J1CurrentAttempt
         echo "[temporal-init] done."
 
   temporal-ui:

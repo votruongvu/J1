@@ -59,9 +59,33 @@ _NON_RETRYABLE_ERROR_TYPES: tuple[str, ...] = (
     "DocumentNotFoundError",
     "UnknownProcessorError",
     "LLMConfigError",
+    # Parser / source-document failures. These are deterministic with
+    # respect to the input bytes — re-running the same parser against
+    # the same source produces the same failure. Retrying just wastes
+    # parse time (which can be many minutes per attempt for MinerU)
+    # without any chance of recovery. Names are conventional;
+    # parser implementations should raise `ApplicationError(type=...)`
+    # with one of these to opt their permanent failures out of retry.
+    "UnsupportedFileType",
+    "CorruptedDocument",
+    "ParserValidationError",
+    "MissingSourceObject",
 )
 
 
 DEFAULT_RETRY = RetryPolicySpec(
+    non_retryable_error_types=_NON_RETRYABLE_ERROR_TYPES,
+)
+
+
+# Compile-stage retry policy. Compile is the most expensive activity
+# in the pipeline (MinerU parse can take many minutes per document),
+# so we bound retries tightly: one second-attempt covers transient
+# infrastructure blips (worker crash, brief network failure) without
+# multiplying parse cost. Combined with the heartbeat ticker, a
+# successful compile shouldn't need to retry at all in normal
+# operation; this policy is the safety net.
+COMPILE_RETRY = RetryPolicySpec(
+    maximum_attempts=2,
     non_retryable_error_types=_NON_RETRYABLE_ERROR_TYPES,
 )

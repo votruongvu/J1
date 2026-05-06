@@ -61,6 +61,7 @@ from j1 import (
 )
 from j1.orchestration.activities.profiling import ProfilingActivities
 from j1.orchestration.activities.runs import RunsActivities
+from j1.processing.cache import JsonlProcessingResultCache
 from j1.processing.profiling import DeterministicDocumentProfiler
 from j1.runs import (
     AuditProgressReporter,
@@ -272,6 +273,11 @@ def build_worker_spec(
         # `run.created` / `document.received` events emitted by the
         # REST upload handler — nothing fires from the worker side.
         progress_reporter=progress_reporter,
+        # Idempotency cache so retries / re-runs of the same logical
+        # document skip the (expensive) compile call when the
+        # artifact already exists. Same workspace-area JSONL backing
+        # as the audit log, so a single backup covers both.
+        result_cache=JsonlProcessingResultCache(workspace),
     ).all_activities()
     activities += KnowledgeProcessingActivities(
         workspace=workspace,

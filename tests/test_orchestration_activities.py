@@ -207,6 +207,348 @@ def test_compile_activity_unknown_processor(activities, ctx, registry):
         )
 
 
+# ---- Compile idempotency cache --------------------------------------
+
+
+def _activities_with_cache(
+    *, processing_service, registry, artifact_registry, compiler, cache,
+):
+    """Build a ProcessingActivities instance wired to a cache + a
+    counting compiler so tests can prove the second invocation
+    bypasses the underlying compile call."""
+    from j1.orchestration.activities.processing import ProcessingActivities
+    return ProcessingActivities(
+        processing=processing_service,
+        sources=registry,
+        artifacts=artifact_registry,
+        compilers={"mock.compiler": compiler},
+        enrichers={},
+        graph_builders={},
+        indexers={},
+        query_providers={},
+        result_cache=cache,
+    )
+
+
+class _CountingCompiler:
+    """Compiler that tracks how many times its `compile` method runs.
+
+    Real Temporal activity retries (heartbeat-timeout, worker crash)
+    re-invoke the activity from scratch. The cache must short-circuit
+    that re-invocation when a `completed` entry exists for the same
+    input, so the underlying processor (here MinerU stand-in) is
+    NOT re-run."""
+
+    kind = "mock.compiler"
+
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    def compile(self, ctx, document_id):  # noqa: ARG002 — real interface signature
+        self.calls += 1
+        return ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED,
+            drafts=[
+                ArtifactDraft(
+                    kind="compiled.text",
+                    content=b"compiled bytes",
+                    suggested_extension=".txt",
+                ),
+            ],
+        )
+
+
+def test_compile_activity_skips_processor_when_cache_hit(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """Second invocation of compile with the same inputs must NOT
+    call the underlying compiler — the artifact ids from the cached
+    `completed` entry are returned directly. This is what stops
+    Temporal retries from re-running MinerU on a successful prior
+    attempt."""
+    from j1.processing.cache import JsonlProcessingResultCache
+
+    registry.add(_document(ctx))
+    compiler = _CountingCompiler()
+    cache = JsonlProcessingResultCache(workspace)
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=compiler,
+        cache=cache,
+    )
+    inp = CompileActivityInput(
+        scope=_scope(ctx),
+        document_id="doc-1",
+        processor_kind="mock.compiler",
+    )
+
+    first = activities.compile(inp)
+    assert first.status == "succeeded"
+    assert compiler.calls == 1
+
+    # Second activity invocation simulates a Temporal retry. The
+    # cache hit must take over — compile MUST NOT run again.
+    second = activities.compile(inp)
+    assert second.status == "succeeded"
+    assert second.artifact_ids == first.artifact_ids
+    assert compiler.calls == 1, (
+        "compile re-ran despite a completed cache entry — the cache "
+        "lookup is broken or the activity bypassed it"
+    )
+
+
+def test_compile_activity_records_failure_in_cache(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """Failures land in the cache as `failed` entries (audit trail
+    for operators inspecting repeated processing). They DO NOT block
+    retries — Temporal's retry policy is the source of truth for
+    that — but they make the cache file self-explaining: 'this doc
+    failed at compile, here's the message'.
+
+    Note: `ProcessingService.compile` catches compiler exceptions
+    and returns a `FAILED` `ArtifactProcessingResult`. The activity
+    therefore sees a non-raising failed result — the cache must
+    still record it."""
+    from j1.processing.cache import (
+        CACHE_STATUS_FAILED,
+        JsonlProcessingResultCache,
+    )
+
+    class _BoomCompiler:
+        kind = "mock.compiler"
+
+        def compile(self, ctx, document_id):  # noqa: ARG002
+            raise RuntimeError("compile blew up")
+
+    registry.add(_document(ctx))
+    cache = JsonlProcessingResultCache(workspace)
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=_BoomCompiler(),
+        cache=cache,
+    )
+    result = activities.compile(
+        CompileActivityInput(
+            scope=_scope(ctx),
+            document_id="doc-1",
+            processor_kind="mock.compiler",
+        )
+    )
+    assert result.status == "failed"
+    entry = cache.lookup(
+        ctx,
+        document_hash="sha256:doc",
+        processor_kind="mock.compiler",
+    )
+    assert entry is not None
+    assert entry.status == CACHE_STATUS_FAILED
+
+
+def test_compile_activity_failed_cache_entry_does_not_short_circuit_retry(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """A `failed` cache entry MUST NOT short-circuit the next attempt
+    — only `completed` entries do. Otherwise a transient first
+    failure would lock the document out of all future processing."""
+    from j1.processing.cache import (
+        CACHE_STATUS_FAILED,
+        JsonlProcessingResultCache,
+        ProcessingCacheEntry,
+        make_cache_key,
+    )
+    from datetime import datetime, timezone
+
+    registry.add(_document(ctx))
+    cache = JsonlProcessingResultCache(workspace)
+    # Pre-seed a failed entry to simulate a previous failed attempt.
+    now = datetime.now(timezone.utc)
+    cache.upsert(ctx, ProcessingCacheEntry(
+        cache_key=make_cache_key(
+            document_hash="sha256:doc", processor_kind="mock.compiler",
+        ),
+        document_id="doc-1",
+        document_hash="sha256:doc",
+        processor_kind="mock.compiler",
+        processor_version="",
+        mode="",
+        status=CACHE_STATUS_FAILED,
+        artifact_ids=(),
+        created_at=now,
+        updated_at=now,
+    ))
+    compiler = _CountingCompiler()
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=compiler,
+        cache=cache,
+    )
+    result = activities.compile(
+        CompileActivityInput(
+            scope=_scope(ctx), document_id="doc-1",
+            processor_kind="mock.compiler",
+        )
+    )
+    assert result.status == "succeeded"
+    assert compiler.calls == 1, "compile must run despite a prior failed cache entry"
+
+
+def test_compile_activity_runs_when_cache_disabled(
+    processing_service, registry, artifact_registry, ctx,
+):
+    """Sanity: with `result_cache=None` (the default for deployments
+    that haven't migrated), the activity always invokes the
+    underlying compiler — preserves legacy behaviour exactly."""
+    registry.add(_document(ctx))
+    compiler = _CountingCompiler()
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=compiler,
+        cache=None,
+    )
+    inp = CompileActivityInput(
+        scope=_scope(ctx),
+        document_id="doc-1",
+        processor_kind="mock.compiler",
+    )
+    activities.compile(inp)
+    activities.compile(inp)
+    assert compiler.calls == 2
+
+
+def test_compile_activity_writes_processing_marker_before_processor_call(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """Cache visibility: while the processor is running there should
+    be a `processing` row, then a `completed` row after success.
+    Operators inspecting the cache file mid-parse see the marker;
+    latest-snapshot semantics mean the `completed` row supersedes
+    once the call returns."""
+    from j1.processing.cache import (
+        CACHE_STATUS_COMPLETED,
+        CACHE_STATUS_PROCESSING,
+        JsonlProcessingResultCache,
+    )
+
+    seen_during_call: list[str] = []
+
+    class _ObservingCompiler:
+        kind = "mock.compiler"
+        version = "1"
+
+        def __init__(self, cache, ctx_):
+            self._cache = cache
+            self._ctx = ctx_
+            self.calls = 0
+
+        def compile(self, ctx, document_id):  # noqa: ARG002
+            self.calls += 1
+            # Snapshot the cache state at the moment the processor is
+            # actually executing — this is when operators looking at
+            # the cache file would see the "in flight" state.
+            entry = self._cache.lookup(
+                self._ctx, document_hash="sha256:doc",
+                processor_kind="mock.compiler", processor_version="1",
+            )
+            seen_during_call.append(entry.status if entry else "<no-row>")
+            return ArtifactProcessingResult(
+                status=ResultStatus.SUCCEEDED,
+                drafts=[ArtifactDraft(
+                    kind="compiled.text", content=b"x",
+                    suggested_extension=".txt",
+                )],
+            )
+
+    registry.add(_document(ctx))
+    cache = JsonlProcessingResultCache(workspace)
+    compiler = _ObservingCompiler(cache, ctx)
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=compiler,
+        cache=cache,
+    )
+    activities.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+    ))
+    # Compiler ran exactly once.
+    assert compiler.calls == 1
+    # While the processor was executing, the cache had a `processing` row.
+    assert seen_during_call == [CACHE_STATUS_PROCESSING]
+    # After completion, the visible state is `completed`.
+    final = cache.lookup(
+        ctx, document_hash="sha256:doc",
+        processor_kind="mock.compiler", processor_version="1",
+    )
+    assert final is not None
+    assert final.status == CACHE_STATUS_COMPLETED
+
+
+def test_compile_cache_key_includes_processor_version(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """Bumping the compiler's `version` attribute must invalidate
+    the cache — otherwise an upgraded parser would silently reuse
+    artifacts produced by the old version."""
+    from j1.processing.cache import JsonlProcessingResultCache
+
+    class _VersionedCompiler:
+        kind = "mock.compiler"
+
+        def __init__(self, version: str):
+            self.version = version
+            self.calls = 0
+
+        def compile(self, ctx, document_id):  # noqa: ARG002
+            self.calls += 1
+            return ArtifactProcessingResult(
+                status=ResultStatus.SUCCEEDED,
+                drafts=[ArtifactDraft(
+                    kind="compiled.text", content=b"v",
+                    suggested_extension=".txt",
+                )],
+            )
+
+    registry.add(_document(ctx))
+    cache = JsonlProcessingResultCache(workspace)
+    v1 = _VersionedCompiler("1")
+    activities_v1 = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=v1, cache=cache,
+    )
+    activities_v1.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+    ))
+    assert v1.calls == 1
+
+    v2 = _VersionedCompiler("2")
+    activities_v2 = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=v2, cache=cache,
+    )
+    activities_v2.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+    ))
+    # Different version → fresh cache key → must run.
+    assert v2.calls == 1, "version bump must invalidate the cache"
+
+
 # Enrich
 
 

@@ -37,7 +37,7 @@ with workflow.unsafe.imports_passed_through():
         ERROR_TYPE_REQUIRED_STEP_FAILED,
         ERROR_TYPE_UNEXPECTED_ERROR,
     )
-    from j1.orchestration.temporal.retries import DEFAULT_RETRY
+    from j1.orchestration.temporal.retries import COMPILE_RETRY, DEFAULT_RETRY
     from j1.processing.planning import (
         STEP_COMPILE,
         STEP_ENRICH,
@@ -78,14 +78,22 @@ GATE_AFTER_INDEX = "after_index"
 
 DEFAULT_ACTIVITY_TIMEOUT = timedelta(minutes=10)
 SHORT_ACTIVITY_TIMEOUT = timedelta(seconds=30)
-# Long-running activities (compile, build_graph) emit a heartbeat at
-# start and finish. The activity is considered hung if no heartbeat
-# arrives within this window — Temporal then fails the attempt with
-# a heartbeat-timeout, retried per the activity's retry policy.
-# Generous compared to the default heartbeat cadence so a slow but
-# progressing activity (e.g. mineru loading 2.4 GB of model weights
-# on first call) doesn't get killed.
-HEARTBEAT_TIMEOUT = timedelta(minutes=2)
+# Long-running activities (compile, enrich, build_graph, index) wrap
+# the synchronous work in a background heartbeat ticker (see
+# `j1.orchestration.activities.processing._heartbeating`) that emits
+# `activity.heartbeat` every 30 s. `HEARTBEAT_TIMEOUT` is therefore
+# the LIVENESS budget — the worker has to ping at least once per
+# this window or Temporal fails the attempt and the retry policy
+# kicks in. We tune it generously enough to absorb GIL contention,
+# brief network hiccups, and a slow-loading model, while still
+# detecting genuine worker death within minutes.
+HEARTBEAT_TIMEOUT = timedelta(minutes=5)
+# Compile-stage timeout. Real PDFs through MinerU + raganything can
+# legitimately take many minutes. Generous ceiling so the activity
+# isn't killed mid-parse on the worst documents — the heartbeat
+# ticker is the real liveness check; this is the absolute upper
+# bound on a single attempt.
+COMPILE_ACTIVITY_TIMEOUT = timedelta(hours=1)
 
 OPERATION_VALIDATE = "validate"
 OPERATION_LIST_DOCUMENTS = "list_documents"
@@ -746,7 +754,7 @@ class ProjectProcessingWorkflow:
             pass
 
     def _set_search_attribute(self, name: str, value: str) -> None:
-        """Opt-in search-attribute upsert.
+        """Opt-in keyword search-attribute upsert.
 
         Default OFF (`request.search_attributes_enabled=False`). The
         Temporal cluster rejects upserts for attributes that aren't
@@ -759,11 +767,10 @@ class ProjectProcessingWorkflow:
         the deployment passes through to `request.search_attributes_enabled`).
 
         Uses the typed `SearchAttributeKey` API (the dict form is
-        deprecated as of Temporal Python SDK 1.x). All J1 ingestion
-        attributes are `keyword` type (lower-cardinality, exact-match
-        filterable in the UI). Inner try/except is kept as a final
-        guardrail for unit tests and other non-Temporal-runtime
-        scenarios where the upsert call itself raises synchronously."""
+        deprecated as of Temporal Python SDK 1.x). Inner try/except
+        is kept as a final guardrail for unit tests and other
+        non-Temporal-runtime scenarios where the upsert call itself
+        raises synchronously."""
         if not self._search_attributes_enabled:
             return
         try:
@@ -774,6 +781,20 @@ class ProjectProcessingWorkflow:
             # Intentionally silent. Server-side rejection (unregistered
             # attribute) bypasses this handler — that's why the opt-in
             # flag above exists.
+            pass
+
+    def _set_search_attribute_int(self, name: str, value: int) -> None:
+        """Opt-in int-typed search-attribute upsert. Same gating
+        rules as `_set_search_attribute`; separate method because
+        Temporal's typed-key API distinguishes Keyword from Int at
+        the SDK level."""
+        if not self._search_attributes_enabled:
+            return
+        try:
+            from temporalio.common import SearchAttributeKey
+            key = SearchAttributeKey.for_int(name)
+            workflow.upsert_search_attributes([key.value_set(int(value))])
+        except Exception:  # noqa: BLE001
             pass
 
     # ---- Pipeline phases ---------------------------------------------------
@@ -928,6 +949,18 @@ class ProjectProcessingWorkflow:
     async def _process_document(
         self, request: ProjectProcessingRequest, document_id: str
     ) -> None:
+        # Surface document / workspace identity on every workflow as
+        # search attributes so operators can find the workflow that
+        # processed a given document via the Temporal UI without
+        # paging through histories. Gated on
+        # `search_attributes_enabled` like every other upsert; the
+        # `temporal-init` service registers all of these at cluster
+        # boot for the dev stack.
+        self._set_search_attribute("J1DocumentId", document_id)
+        self._set_search_attribute("J1WorkspaceId", request.scope.project_id)
+        if request.compiler_kind:
+            self._set_search_attribute("J1ParserName", request.compiler_kind)
+
         # When adaptive planning is enabled, build the plan up-front
         # so every stage gate consults the same authoritative
         # decision. When disabled, `plan` stays None and the gate
@@ -967,9 +1000,16 @@ class ProjectProcessingWorkflow:
                     actor=request.actor,
                     correlation_id=request.correlation_id,
                 ),
-                start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
+                # Compile is the most expensive activity (MinerU parse
+                # is minutes per real PDF). Wider timeout absorbs
+                # worst-case docs; bounded retry (`COMPILE_RETRY` =
+                # 2 attempts) keeps a transient infrastructure blip
+                # from multiplying parse cost. The activity ticker
+                # heartbeats every 30 s, so `HEARTBEAT_TIMEOUT` is
+                # the real liveness check.
+                start_to_close_timeout=COMPILE_ACTIVITY_TIMEOUT,
                 heartbeat_timeout=HEARTBEAT_TIMEOUT,
-                retry_policy=DEFAULT_RETRY.to_temporal(),
+                retry_policy=COMPILE_RETRY.to_temporal(),
             )
         )
         if compile_result.status != "succeeded":

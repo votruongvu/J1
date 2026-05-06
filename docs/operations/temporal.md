@@ -347,12 +347,13 @@ For the full architecture see
 
 | Concern | Default | Configurable |
 |---|---|---|
-| Activity retry policy | `RetryPolicySpec(initial=1s, backoff=2.0, max_interval=60s, max_attempts=5)` | Per-activity override |
-| Non-retryable errors | `J1_INGEST_REQUIRED_STEP_FAILED`, `J1_INGEST_LOOKUP_FAILED`, `ConfigError`, `ValidationError`, `LLMConfigError`, `DocumentNotFoundError`, `UnknownProcessorError` (full list in [`retries.py`](../../src/j1/orchestration/temporal/retries.py)) | Add new types in your activity wrappers |
+| Generic activity retry policy | `RetryPolicySpec(initial=1s, backoff=2.0, max_interval=60s, max_attempts=5)` (`DEFAULT_RETRY`) | Per-activity override |
+| Compile-stage retry policy | `COMPILE_RETRY` — `max_attempts=2` (compile is many minutes per attempt; one second-attempt covers transient infra blips, more would multiply parse cost) | Override at registration |
+| Non-retryable errors | `J1_INGEST_REQUIRED_STEP_FAILED`, `J1_INGEST_LOOKUP_FAILED`, `ConfigError`, `ValidationError`, `LLMConfigError`, `DocumentNotFoundError`, `UnknownProcessorError`, plus parser-specific: `UnsupportedFileType`, `CorruptedDocument`, `ParserValidationError`, `MissingSourceObject` (full list in [`retries.py`](../../src/j1/orchestration/temporal/retries.py)) | Add new types in your activity wrappers |
 | Workflow execution timeout | _(Temporal default — unset by J1)_ | Pass via `client.start_workflow(..., execution_timeout=...)` |
-| Activity start-to-close timeout | `DEFAULT_ACTIVITY_TIMEOUT=10m` for compile / enrich / graph / index; `SHORT_ACTIVITY_TIMEOUT=30s` for validate / list / spend / finalize / profile | Override at registration |
-| Activity heartbeat timeout | `HEARTBEAT_TIMEOUT=2m` on `compile` and `build_graph` (the long-running stages); unset on others | Override at registration |
-| Heartbeat | `compile` and `build_graph` heartbeat at start and finish via `_safe_heartbeat()`; longer custom stages should call [`j1.heartbeat()`](../../src/j1/heartbeat.py) periodically | Add to your activity body |
+| Activity start-to-close timeout | `COMPILE_ACTIVITY_TIMEOUT=1h` for compile (real PDFs through MinerU + raganything are minutes per doc); `DEFAULT_ACTIVITY_TIMEOUT=10m` for enrich / graph / index; `SHORT_ACTIVITY_TIMEOUT=30s` for validate / list / spend / finalize / profile / set_document_status | Override at registration |
+| Activity heartbeat timeout | `HEARTBEAT_TIMEOUT=5m` on compile / enrich / graph / index | Override at registration |
+| Heartbeat | Compile / enrich / graph / index wrap their synchronous body in `_heartbeating(...)` — a daemon thread that pumps `activity.heartbeat` every 30 s. See "Repeated processing of the same document" below | Add `with _heartbeating(...)` around any new long-running synchronous activity |
 
 Definitions live in
 [`src/j1/orchestration/temporal/retries.py`](../../src/j1/orchestration/temporal/retries.py).
@@ -383,6 +384,79 @@ short-lived and treated as bounded units of work. If you write a
 custom activity that may exceed the configured start-to-close
 timeout, call `heartbeat()` inside its loop and set the activity's
 `heartbeat_timeout` accordingly when registering.
+
+### 6.1 Repeated processing of the same document
+
+Symptom: the worker keeps starting a fresh parse subprocess for the
+same uploaded document (visible in worker logs as multiple `Started
+local mineru-api at http://127.0.0.1:NNNNN` lines on different
+ports for one upload).
+
+Diagnosis order:
+
+1. **Open Temporal UI → the workflow → the failing activity.** Look
+   at "Attempt count" and the failure type of each attempt. If it's
+   `ActivityTaskTimedOut` with `HEARTBEAT_TIMEOUT`, the activity is
+   exceeding the heartbeat budget.
+2. **`docker compose logs --tail=500 worker | grep -E "Started local
+   mineru-api|TimeoutError|HeartbeatTimeout|j1\.processing\.compile"`**
+   to count the actual subprocess starts and see the cause between
+   them.
+3. **Inspect the cache file** at `$J1_DATA_ROOT/<tenant>/<project>/
+   audit/processing_results.jsonl`. Each row records one
+   activity outcome — `completed` / `failed` — with the error
+   message. Multiple `failed` rows for one `cache_key` mean retries
+   ARE happening; one `completed` row means the cache is doing its
+   job.
+
+Mechanisms that prevent or detect this:
+
+- **Heartbeat ticker**
+  ([`activities/processing.py:_heartbeating`](../../src/j1/orchestration/activities/processing.py)).
+  Compile / enrich / build_graph / index wrap their synchronous
+  call in a context manager that emits `activity.heartbeat` every
+  30 s. Combined with `heartbeat_timeout=5m`, this means a true
+  worker hang is detected within ~5 minutes; legitimate long parses
+  are not killed.
+- **Bounded compile retries** (`COMPILE_RETRY` =
+  `max_attempts=2`). One transient infrastructure blip (worker
+  crash, brief network failure) gets one re-attempt; that's it. No
+  multiplicative parse cost from a 5-attempt default.
+- **Processing-result cache**
+  ([`processing/cache.py`](../../src/j1/processing/cache.py)). Keyed
+  on `(document_hash, processor_kind, processor_version, mode)` —
+  any change in those produces a fresh cache row. On activity
+  retry, a `completed` entry short-circuits the underlying
+  processor call; the cached `artifact_ids` are returned directly.
+  `failed` entries are recorded for operator visibility but do NOT
+  block retry.
+- **Deterministic workflow_id**
+  ([`deploy/dev/api.py:_start_project_workflow`](../../deploy/dev/api.py)).
+  Per-document workflow IDs derived from `(tenant, project,
+  document_id)` where `document_id` is content-addressed via the
+  intake service's checksum dedup. Re-uploading identical bytes
+  collides on the workflow_id; Temporal's default
+  `WorkflowIDReusePolicy` rejects a duplicate while one is running.
+
+Workflow vs activity replay:
+
+- **Workflow code replays** during recovery — `workflow.logger`
+  output is replay-aware and not duplicated to operators.
+- **Activity retries actually run again** — that's a real
+  re-execution of the activity body. The cache lookup is what
+  makes that re-execution cheap when the underlying work was
+  already done.
+
+Custom long-running activities that you write should:
+
+1. Wrap the synchronous body in `with _heartbeating({...}):` (or
+   call `j1.heartbeat()` inside the loop with progress details).
+2. Set `heartbeat_timeout` at registration.
+3. Compute a deterministic cache key from the input that decides the
+   output (NOT including run_id, attempt number, or anything
+   ephemeral) and consult `JsonlProcessingResultCache` (or your own
+   `ProcessingResultCache` Protocol implementation) before invoking
+   the expensive call.
 
 ---
 

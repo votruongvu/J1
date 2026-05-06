@@ -67,6 +67,13 @@ CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult
 
 class RAGAnythingCompiler:
     kind: str = PROVIDER_NAME
+    # Bump when the produced artifact shape changes — e.g. a new
+    # raganything release or a content-format migration. The
+    # processing-result cache uses this to partition cache rows so
+    # cross-version artifacts don't get reused. `version` is part of
+    # the `KnowledgeCompiler` informal interface; activities read it
+    # via `getattr(compiler, "version", "")`.
+    version: str = "1"
 
     def __init__(
         self,
@@ -78,6 +85,14 @@ class RAGAnythingCompiler:
         self._llm_registry = llm_registry
         self._settings = settings
         self._compile_callable = compile_callable
+
+    @property
+    def mode(self) -> str:
+        """Parser mode (e.g. `auto`, `vlm-http-client`). The cache
+        key includes this so a `parse_method` change forces a fresh
+        parse instead of reusing artifacts produced by a different
+        backend."""
+        return str(getattr(self._settings, "parse_method", "") or "")
 
     @classmethod
     def from_default(
