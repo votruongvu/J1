@@ -188,7 +188,7 @@ RUN mkdir -p /app/src/j1 \
 #
 # Cache location: `HF_HOME` is pinned so both the build-time
 # download and the runtime lookup land in the same directory.
-ARG J1_PRECACHE_MINERU_MODELS=none
+ARG J1_PRECACHE_MINERU_MODELS=all
 ENV HF_HOME=/opt/huggingface
 RUN case "$J1_PRECACHE_MINERU_MODELS" in \
         none) \
