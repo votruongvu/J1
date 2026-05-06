@@ -59,7 +59,9 @@ from j1 import (
     WorkspaceResolver,
     load_security_settings,
 )
+from j1.orchestration.activities.profiling import ProfilingActivities
 from j1.orchestration.activities.runs import RunsActivities
+from j1.processing.profiling import DeterministicDocumentProfiler
 from j1.runs import (
     AuditProgressReporter,
     IngestionRunStore,
@@ -224,6 +226,18 @@ def build_worker_spec(
     activities += RunsActivities(
         progress_reporter=progress_reporter,
     ).all_activities()
+    # Profiling activity (`j1.ingestion.profile_document`). Required
+    # whenever `planner_enabled=True` flows through the workflow —
+    # which is the dev default since the user-facing flow needs the
+    # planner output for the FE's run-detail page. Without it the
+    # workflow fails with `NotFoundError: Activity function
+    # j1.ingestion.profile_document … is not registered on this
+    # worker`.
+    activities += ProfilingActivities(
+        sources=sources,
+        workspace=workspace,
+        profiler=DeterministicDocumentProfiler(),
+    ).all_activities()
     activities += ProjectLifecycleActivities(
         workspace=workspace, intake=intake, audit=audit_recorder,
     ).all_activities()
@@ -251,6 +265,13 @@ def build_worker_spec(
         graph_builders=dict(graph_builders or {}),
         indexers={SqliteSearchIndexer.kind: indexer, **(indexers or {})},
         query_providers=dict(query_providers or {}),
+        # Without a reporter wired here, none of the per-step events
+        # (`step.started`, `step.progress`, `step.completed`,
+        # `step.failed`, `step.skipped`) make it into the audit log,
+        # which means the FE's SSE timeline only shows the two
+        # `run.created` / `document.received` events emitted by the
+        # REST upload handler — nothing fires from the worker side.
+        progress_reporter=progress_reporter,
     ).all_activities()
     activities += KnowledgeProcessingActivities(
         workspace=workspace,

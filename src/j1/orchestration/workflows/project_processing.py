@@ -27,6 +27,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.orchestration.activities.project import ProjectActivities
     from j1.orchestration.activities.runs import (
+        ReportPlanGeneratedInput,
         ReportRunTerminalInput,
         ReportStepSkippedInput,
         RunsActivities,
@@ -56,6 +57,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.processing.step_result import StepError, StepResult
     from j1.jobs.status import ProcessingStatus
+    from j1._serialization import to_jsonable
 
 
 class WorkflowState(StrEnum):
@@ -703,6 +705,46 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001
             pass
 
+    async def _emit_plan_generated(
+        self,
+        request: ProjectProcessingRequest,
+        document_id: str,
+        plan: IngestPlan,
+    ) -> None:
+        """Persist the plan into the audit log via an activity.
+
+        The planner runs in workflow code (deterministic, no I/O), so
+        the audit-log write that backs `GET /ingestion-runs/{id}/plan`
+        has to be an activity call. Best-effort like the other
+        emit helpers — failure to record the plan must not block the
+        rest of the pipeline."""
+        if not request.correlation_id:
+            return
+        # `to_jsonable` recursively converts dataclasses + enums (the
+        # `IngestPlan` tree includes `PlannedStep` / `IngestMode` /
+        # `IngestPolicy` / `DocumentProfile`) into Temporal-data-
+        # converter-safe dicts.
+        plan_payload = to_jsonable(plan)
+        # The REST `_read_run_plan` reads `payload["plan"]["document_id"]`
+        # etc. directly, so make sure the payload has `document_id`
+        # at top level (matches `IngestPlan.document_id`).
+        if isinstance(plan_payload, dict):
+            plan_payload.setdefault("document_id", document_id)
+        try:
+            await workflow.execute_activity_method(
+                RunsActivities.report_plan_generated,
+                ReportPlanGeneratedInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    plan_payload=plan_payload,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _set_search_attribute(self, name: str, value: str) -> None:
         """Opt-in search-attribute upsert.
 
@@ -902,6 +944,13 @@ class ProjectProcessingWorkflow:
                 document_id=document_id,
                 reason=f"mode={plan.mode.value} policy={plan.policy.value}",
             )
+            # Persist the plan into the audit log so the FE's
+            # `GET /ingestion-runs/{id}/plan` endpoint can serve it.
+            # Without this the run-detail page sits on "Generating
+            # plan…" forever — the plan only exists in workflow
+            # memory until this activity writes it through the
+            # progress reporter.
+            await self._emit_plan_generated(request, document_id, plan)
 
         compile_op = f"{OPERATION_COMPILE}:{document_id}"
         if await self._gate_before_expensive(request, compile_op):

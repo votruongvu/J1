@@ -22,6 +22,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/dev/Dockerfile
+      args:
+        # MinerU model precache. Default `none` so the image stays
+        # ~2.4 GB lighter and rebuilds don't re-download. The worker
+        # mounts `j1_huggingface_cache` at `$HF_HOME` so the first
+        # parse pays the download once and reuses it across restarts
+        # / rebuilds. Override to `vlm` or `all` for air-gapped
+        # deployments — see deploy/dev/Dockerfile for the trade-offs.
+        J1_PRECACHE_MINERU_MODELS: ${J1_PRECACHE_MINERU_MODELS:-none}
     image: j1-dev:latest
     container_name: j1-api
     env_file: ../../.env
@@ -58,9 +66,20 @@ services:
     build:
       context: ../..
       dockerfile: deploy/dev/Dockerfile
+      args:
+        # See `api.build.args` above — same image, same arg.
+        J1_PRECACHE_MINERU_MODELS: ${J1_PRECACHE_MINERU_MODELS:-none}
     env_file: ../../.env
     volumes:
       - j1_workspace:/var/lib/j1
+      # MinerU's HuggingFace cache. Mounted at `$HF_HOME` (set in
+      # the Dockerfile) so the first document compile downloads the
+      # ~2.4 GB VLM weights into the volume; subsequent compiles —
+      # and crucially, restarts and rebuilds of the image — find
+      # them already there. This is what makes
+      # `J1_PRECACHE_MINERU_MODELS=none` cheap: you pay the
+      # download once, not per build.
+      - j1_huggingface_cache:/opt/huggingface
       # Same bind mounts as api — see comment above.
       - ../../src:/app/src
       - ../../deploy:/app/deploy
@@ -232,5 +251,6 @@ networks:
     driver: bridge
 
 volumes:
-  j1_workspace:    # framework state (per-project JSON registries, SQLite FTS5)
-  j1_postgres:     # Temporal's own storage — not used by J1 itself
+  j1_workspace:          # framework state (per-project JSON registries, SQLite FTS5)
+  j1_postgres:           # Temporal's own storage — not used by J1 itself
+  j1_huggingface_cache:  # MinerU model weights (~2.4 GB) — survives image rebuilds

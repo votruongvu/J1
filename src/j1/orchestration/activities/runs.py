@@ -21,10 +21,13 @@ from j1.runs.reporter import ProgressReporter
 
 ACTIVITY_REPORT_RUN_TERMINAL = "j1.runs.report_terminal"
 ACTIVITY_REPORT_STEP_SKIPPED = "j1.runs.report_step_skipped"
+ACTIVITY_REPORT_PLAN_GENERATED = "j1.runs.report_plan_generated"
 
 __all__ = [
+    "ACTIVITY_REPORT_PLAN_GENERATED",
     "ACTIVITY_REPORT_RUN_TERMINAL",
     "ACTIVITY_REPORT_STEP_SKIPPED",
+    "ReportPlanGeneratedInput",
     "ReportRunTerminalInput",
     "ReportStepSkippedInput",
     "RunsActivities",
@@ -70,6 +73,23 @@ class ReportRunTerminalInput:
 
 
 @dataclass(frozen=True)
+class ReportPlanGeneratedInput:
+    """Workflow → activity payload for `plan.generated` events.
+
+    The planner runs in workflow code (replay-deterministic, no I/O),
+    but the audit-log write that backs the FE's
+    `GET /ingestion-runs/{id}/plan` endpoint must happen in activity
+    context. This payload carries the serialised `IngestPlan` (as a
+    plain dict for Temporal-data-converter compatibility) plus the
+    scope + correlation needed to record it under the right run."""
+
+    scope: ProjectScope
+    run_id: str
+    plan_payload: dict[str, "object"]
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class ReportStepSkippedInput:
     """Workflow → activity payload for step.skipped events that fire
     at workflow time (planner / policy / config decided to skip),
@@ -97,7 +117,31 @@ class RunsActivities:
         self._reporter = progress_reporter
 
     def all_activities(self) -> list:
-        return [self.report_run_terminal, self.report_step_skipped]
+        return [
+            self.report_run_terminal,
+            self.report_step_skipped,
+            self.report_plan_generated,
+        ]
+
+    @activity.defn(name=ACTIVITY_REPORT_PLAN_GENERATED)
+    def report_plan_generated(self, input: ReportPlanGeneratedInput) -> None:
+        """Write `j1.progress.plan.generated` to the audit log.
+
+        The FE's `GET /ingestion-runs/{id}/plan` reads from this
+        entry, so without the activity firing the run-detail page
+        sits on "Generating plan…" forever. Best-effort like the
+        other reporter activities — failure is logged, never raised."""
+        if self._reporter is None:
+            return
+        ctx = input.scope.to_context()
+        try:
+            self._reporter.report_plan_generated(
+                ctx, run_id=input.run_id,
+                plan_payload=dict(input.plan_payload),
+                actor=input.actor,
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+            pass
 
     @activity.defn(name=ACTIVITY_REPORT_RUN_TERMINAL)
     def report_run_terminal(self, input: ReportRunTerminalInput) -> None:

@@ -127,10 +127,21 @@ WORKDIR /app
 #                     specific extras you need (e.g. `[raganything]`
 #                     alone, or `[langchain-openai]` alone).
 COPY pyproject.toml README.md /app/
-COPY src/ /app/src/
+# Stub the `j1` package so hatchling's editable install passes
+# WITHOUT the real source tree. The dependency install (heavy: torch,
+# transformers, mineru, …) and the model precache below then form
+# stable layers keyed only on `pyproject.toml` — code edits under
+# `src/` don't invalidate them. The real source tree is COPY'd in
+# AFTER the precache layer; the editable `.pth` already points at
+# `/app/src`, so the swap is transparent. Without this stub-first
+# pattern, every Python edit busted the pip layer and triggered a
+# fresh 2.4 GB MinerU re-download on the next build.
+#
 # `PIP_NO_CACHE_DIR=1` (set in ENV above) already disables the
 # wheel cache for both invocations — matches the Q1 pattern.
-RUN pip install --upgrade pip \
+RUN mkdir -p /app/src/j1 \
+    && touch /app/src/j1/__init__.py \
+    && pip install --upgrade pip \
     && pip install -e ".[dev,dev-server,all-providers]"
 
 # ---- Pre-cache MinerU model weights ---------------------------------
@@ -177,7 +188,7 @@ RUN pip install --upgrade pip \
 #
 # Cache location: `HF_HOME` is pinned so both the build-time
 # download and the runtime lookup land in the same directory.
-ARG J1_PRECACHE_MINERU_MODELS=vlm
+ARG J1_PRECACHE_MINERU_MODELS=none
 ENV HF_HOME=/opt/huggingface
 RUN case "$J1_PRECACHE_MINERU_MODELS" in \
         none) \
@@ -192,6 +203,14 @@ RUN case "$J1_PRECACHE_MINERU_MODELS" in \
             echo "[J1] ERROR: J1_PRECACHE_MINERU_MODELS must be one of: none|vlm|all (got: $J1_PRECACHE_MINERU_MODELS)" >&2 \
             && exit 1 ;; \
     esac
+
+# Real source tree replaces the stub created above. Editable
+# install's `.pth` already points at `/app/src`, so swapping the
+# directory contents is transparent — no second `pip install`
+# needed. Putting this AFTER the precache layer is the whole point:
+# code edits invalidate ONLY this `COPY` (cheap), not the pip
+# install + 2.4 GB model download above.
+COPY src/ /app/src/
 
 # Bring the dev entrypoint scripts in.
 COPY deploy/ /app/deploy/
