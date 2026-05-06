@@ -357,6 +357,160 @@ def test_runs_activities_no_reporter_is_silent_no_op(scope):
     ))
 
 
+# ---- Run-record terminal persistence -------------------------
+
+
+def test_run_terminal_activity_flips_run_record_to_failed(
+    scope, reporter, ctx, workspace,
+):
+    """When the workflow fails, the run record's `status` field MUST
+    flip to FAILED. Without this, the FE's `GET /ingestion-runs/{id}`
+    response keeps reporting `running` and the run-detail page sits
+    on the "Running" panel even though the timeline shows the
+    failure. Operators see "UI doesn't reflect anything" while
+    worker logs scream."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-fail",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope,
+        run_id="run-fail",
+        final_status="failed",
+        failure_code="J1_INGEST_REQUIRED_STEP_FAILED",
+        failure_message="compile died",
+    ))
+    after = store.get(ctx, "run-fail")
+    assert after is not None
+    assert after.status == RunStatus.FAILED
+    assert after.failure_code == "J1_INGEST_REQUIRED_STEP_FAILED"
+    assert after.failure_message == "compile died"
+    assert after.completed_at is not None
+
+
+def test_run_terminal_activity_flips_run_record_to_succeeded(
+    scope, reporter, ctx, workspace,
+):
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-ok",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-ok",
+        final_status="succeeded", warning_count=0,
+    ))
+    after = store.get(ctx, "run-ok")
+    assert after.status == RunStatus.SUCCEEDED
+    assert after.progress_percent == 100
+    assert after.completed_at is not None
+
+
+def test_run_terminal_activity_uses_succeeded_with_warnings_when_warnings(
+    scope, reporter, ctx, workspace,
+):
+    """Successful runs that accumulated warnings must surface as
+    SUCCEEDED_WITH_WARNINGS so the FE's primary status panel renders
+    the warning variant rather than the clean-success variant."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-warn",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-warn",
+        final_status="succeeded", warning_count=2,
+    ))
+    after = store.get(ctx, "run-warn")
+    assert after.status == RunStatus.SUCCEEDED_WITH_WARNINGS
+    assert after.warning_count == 2
+
+
+def test_run_terminal_activity_flips_run_record_to_cancelled(
+    scope, reporter, ctx, workspace,
+):
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-cxl",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-cxl",
+        final_status="cancelled",
+        failure_message="operator cancelled",
+    ))
+    after = store.get(ctx, "run-cxl")
+    assert after.status == RunStatus.CANCELLED
+    assert after.completed_at is not None
+
+
+def test_run_terminal_activity_no_store_silent_no_op(scope, reporter, ctx):
+    """No `run_store` wired → the run-record update is skipped, but
+    the audit-event emission still fires (legacy behaviour)."""
+    runs = RunsActivities(progress_reporter=reporter, run_store=None)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-1", final_status="succeeded",
+    ))
+    # Reporter still got the call.
+    assert any(c[0] == "run.completed" for c in reporter.calls)
+
+
+def test_run_terminal_activity_missing_run_is_no_op(scope, reporter, workspace):
+    """A terminal call for a run that's not in the store must NOT
+    crash — the deterministic workflow_id pattern means a stale
+    Temporal workflow can fire after the run record was deleted."""
+    from j1.runs import JsonlIngestionRunStore
+
+    store = JsonlIngestionRunStore(workspace)
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    # Should not raise.
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="never-existed", final_status="failed",
+    ))
+
+
 # ---- Step summary embedded in run-terminal events ----------
 
 

@@ -226,6 +226,15 @@ def build_worker_spec(
     activities: list = []
     activities += RunsActivities(
         progress_reporter=progress_reporter,
+        # Without `run_store` wired here, the workflow would emit a
+        # `run.failed` audit event but the IngestionRun record's
+        # `status` field would stay at RUNNING — and the FE's run-
+        # detail page reads that field for the primary status panel
+        # (the audit log only feeds the timeline). Result: timeline
+        # shows the failure, status badge / panel shows "Running"
+        # forever. Pass the same store the API uses so terminal
+        # events update both surfaces.
+        run_store=JsonlIngestionRunStore(workspace),
     ).all_activities()
     # Profiling activity (`j1.ingestion.profile_document`). Required
     # whenever `planner_enabled=True` flows through the workflow —
