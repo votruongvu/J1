@@ -134,8 +134,10 @@ class ProjectProcessingRequest:
     # Adaptive ingestion planning toggle. When False (default), the
     # workflow uses the "kind is None → skip" gate logic and behaves
     # exactly as it did before adaptive planning landed. When True,
-    # each document is profiled and run through `DefaultIngestPlanner`;
-    # the resulting `IngestPlan` decides which configured stages to
+    # each document is compiled first (compile is always required),
+    # then profiled and run through `DefaultIngestPlanner` using the
+    # parser's content signals; the resulting `IngestPlan` decides
+    # which of the LLM-expensive stages (enrich / graph / index) to
     # actually attempt. Caller-supplied kinds always override planner
     # decisions (caller wins).
     planner_enabled: bool = False
@@ -208,6 +210,41 @@ class _BusinessRejection(Exception):
     Why: lets the workflow distinguish business rejections (FAILED_FINAL) from unexpected
     exceptions (FAILED_RECOVERABLE) without exposing the distinction to callers.
     """
+
+
+def _merge_compile_signals(
+    profile: DocumentProfile, signals: dict
+) -> DocumentProfile:
+    """Return a new `DocumentProfile` with parser-observed signals
+    overlaid on the deterministic profile.
+
+    Compile-time signals are authoritative because the parser inspects
+    block-level structure; the deterministic profiler only saw the
+    file from the outside. Keys recognised: `has_images`, `has_tables`,
+    `has_scanned_pages`, `page_count`, `text_extractable_ratio`. Any
+    other keys are ignored — `_artifact_result` already filters the
+    activity payload, but we re-filter here so a stale audit log or
+    a third-party processor with a richer schema doesn't leak fields
+    into the profile."""
+    overrides: dict = {}
+    if "has_images" in signals:
+        overrides["has_images"] = bool(signals["has_images"])
+    if "has_tables" in signals:
+        overrides["has_tables"] = bool(signals["has_tables"])
+    if "has_scanned_pages" in signals:
+        overrides["has_scanned_pages"] = bool(signals["has_scanned_pages"])
+    if "page_count" in signals and signals["page_count"] is not None:
+        overrides["page_count"] = int(signals["page_count"])
+    if (
+        "text_extractable_ratio" in signals
+        and signals["text_extractable_ratio"] is not None
+    ):
+        overrides["text_extractable_ratio"] = float(
+            signals["text_extractable_ratio"]
+        )
+    if not overrides:
+        return profile
+    return _replace_request(profile, **overrides)
 
 
 @workflow.defn
@@ -864,6 +901,8 @@ class ProjectProcessingWorkflow:
         self,
         request: ProjectProcessingRequest,
         document_id: str,
+        *,
+        compile_content_stats: dict | None = None,
     ) -> IngestPlan:
         """Run the profiling activity and feed the result through the
         planner. Pure side-effect-free planning happens in-workflow;
@@ -872,7 +911,14 @@ class ProjectProcessingWorkflow:
         Caller-supplied kinds become caller_overrides — the planner
         sees them as forced-enable for that step (the legacy
         "kind is set" semantics). Stages without a kind on the
-        request are left to the planner's mode-driven decision."""
+        request are left to the planner's mode-driven decision.
+
+        `compile_content_stats` (when supplied — typically by the
+        post-compile call site) carries observed signals from the
+        parser. Keys override the deterministic profile so a 1-page
+        PDF that contains only a diagram (which the file-system-only
+        profiler classifies as text-only) gets `has_images=True`
+        post-compile and the planner picks an image-aware mode."""
         profile: DocumentProfile = await workflow.execute_activity_method(
             ProfilingActivities.profile_document,
             ProfileDocumentInput(
@@ -884,6 +930,8 @@ class ProjectProcessingWorkflow:
             start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
             retry_policy=DEFAULT_RETRY.to_temporal(),
         )
+        if compile_content_stats:
+            profile = _merge_compile_signals(profile, compile_content_stats)
         # Caller-supplied kinds → forced-enable. Compile is treated
         # as always set (request.compiler_kind has a default fallback
         # at the REST adapter layer).
@@ -961,29 +1009,14 @@ class ProjectProcessingWorkflow:
         if request.compiler_kind:
             self._set_search_attribute("J1ParserName", request.compiler_kind)
 
-        # When adaptive planning is enabled, build the plan up-front
-        # so every stage gate consults the same authoritative
-        # decision. When disabled, `plan` stays None and the gate
-        # helpers fall back to caller-driven (legacy) behaviour.
+        # `plan` is populated AFTER compile (see below). Compile is
+        # always force-enabled — the planner only gates the LLM-
+        # expensive stages (enrich / graph / index) — so deferring
+        # planning costs nothing in cost-avoidance and lets the
+        # planner consume real content signals (has_images /
+        # has_tables) surfaced by the parser instead of guessing
+        # from the file extension.
         plan: IngestPlan | None = None
-        if request.planner_enabled:
-            plan = await self._build_plan(request, document_id)
-            self._set_search_attribute("J1IngestMode", plan.mode.value)
-            self._log_step(
-                request,
-                event="ingestion.plan.created",
-                stage="plan",
-                status="completed",
-                document_id=document_id,
-                reason=f"mode={plan.mode.value} policy={plan.policy.value}",
-            )
-            # Persist the plan into the audit log so the FE's
-            # `GET /ingestion-runs/{id}/plan` endpoint can serve it.
-            # Without this the run-detail page sits on "Generating
-            # plan…" forever — the plan only exists in workflow
-            # memory until this activity writes it through the
-            # progress reporter.
-            await self._emit_plan_generated(request, document_id, plan)
 
         compile_op = f"{OPERATION_COMPILE}:{document_id}"
         if await self._gate_before_expensive(request, compile_op):
@@ -1039,6 +1072,37 @@ class ProjectProcessingWorkflow:
             metadata={"document_id": document_id},
         )
         self._complete(compile_op)
+
+        # Build the plan AFTER compile when adaptive planning is
+        # enabled. The compile result carries optional content_stats
+        # (has_images / has_tables / has_scanned_pages / page_count /
+        # text_extractable_ratio) populated by the parser — when
+        # present they override the deterministic profile so the
+        # planner decides on observed content rather than extension
+        # heuristics. When `planner_enabled=False` (or when no
+        # signals are surfaced), the gate helpers fall back to
+        # caller-driven legacy behaviour.
+        if request.planner_enabled:
+            plan = await self._build_plan(
+                request, document_id,
+                compile_content_stats=compile_result.content_stats,
+            )
+            self._set_search_attribute("J1IngestMode", plan.mode.value)
+            self._log_step(
+                request,
+                event="ingestion.plan.created",
+                stage="plan",
+                status="completed",
+                document_id=document_id,
+                reason=f"mode={plan.mode.value} policy={plan.policy.value}",
+            )
+            # Persist the plan into the audit log so the FE's
+            # `GET /ingestion-runs/{id}/plan` endpoint can serve it.
+            # Without this the run-detail page sits on "Generating
+            # plan…" forever — the plan only exists in workflow
+            # memory until this activity writes it through the
+            # progress reporter.
+            await self._emit_plan_generated(request, document_id, plan)
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:

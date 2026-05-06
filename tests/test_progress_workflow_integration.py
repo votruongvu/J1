@@ -261,6 +261,172 @@ def test_index_emits_correct_stage(scope, reporter):
     assert started[1]["step"] == "index"
 
 
+# ---- Mid-flight run-record updates -----------------------------
+
+
+def _activities_with_run_store(reporter, run_store) -> ProcessingActivities:
+    return ProcessingActivities(
+        processing=_StubProcessing(),
+        sources=_StubSourceRegistry(),
+        artifacts=_StubArtifactRegistry(),
+        compilers={"mock": object()},
+        enrichers={"mock": object()},
+        graph_builders={"mock": object()},
+        indexers={"mock": object()},
+        progress_reporter=reporter,
+        run_store=run_store,
+    )
+
+
+def test_compile_flips_run_record_from_assessing_to_running(
+    scope, reporter, ctx, workspace,
+):
+    """Regression for the 'UI stuck on Building execution plan' bug.
+    The PrimaryStatusPanel renders that label while `IngestionRun.status`
+    is ASSESSING / CREATED. Without a mid-flight update the run sits at
+    ASSESSING until terminal — now the first step.started flips it to
+    RUNNING and updates current_stage / progress_percent."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-mid",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.ASSESSING,
+        started_at=now, updated_at=now,
+    ))
+
+    activities = _activities_with_run_store(reporter, store)
+    activities.compile(CompileActivityInput(
+        scope=scope, document_id="doc-1", processor_kind="mock",
+        actor="tester", correlation_id="run-mid",
+    ))
+
+    after = store.get(ctx, "run-mid")
+    assert after is not None
+    assert after.status == RunStatus.RUNNING
+    assert after.current_stage == "COMPILE"
+    assert after.current_step == "compile"
+    assert after.progress_percent >= 10  # start-of-stage tick
+    assert after.completed_at is None    # still in flight
+
+
+def test_full_pipeline_updates_run_record_through_each_stage(
+    scope, reporter, ctx, workspace,
+):
+    """Walk the activities in pipeline order and assert the run record
+    ends up at the highest progress tick (INDEX end) and the last
+    stage sticks. Each stage transition pushes progress forward but
+    never regresses it."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-pipeline",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.ASSESSING,
+        started_at=now, updated_at=now,
+    ))
+
+    activities = _activities_with_run_store(reporter, store)
+    activities.compile(CompileActivityInput(
+        scope=scope, document_id="doc-1", processor_kind="mock",
+        actor="tester", correlation_id="run-pipeline",
+    ))
+    activities.enrich(EnrichActivityInput(
+        scope=scope, artifact_id="art-1", processor_kind="mock",
+        actor="tester", correlation_id="run-pipeline",
+    ))
+    activities.build_graph(GraphActivityInput(
+        scope=scope, artifact_ids=("art-1",), processor_kind="mock",
+        actor="tester", correlation_id="run-pipeline",
+    ))
+    activities.index(IndexActivityInput(
+        scope=scope, artifact_ids=("art-1",), processor_kind="mock",
+        actor="tester", correlation_id="run-pipeline",
+    ))
+
+    after = store.get(ctx, "run-pipeline")
+    assert after is not None
+    assert after.status == RunStatus.RUNNING  # terminal flip happens elsewhere
+    assert after.current_stage == "INDEX"
+    assert after.current_step == "index"
+    assert after.progress_percent >= 95
+
+
+def test_compile_without_run_store_does_not_crash(scope, reporter):
+    """Backwards-compat regression guard: deployments that don't wire
+    a `run_store` keep working — the activity must NOT raise just
+    because the IngestionRun update path is unavailable."""
+    activities = ProcessingActivities(
+        processing=_StubProcessing(),
+        sources=_StubSourceRegistry(),
+        artifacts=_StubArtifactRegistry(),
+        compilers={"mock": object()},
+        progress_reporter=reporter,
+        run_store=None,
+    )
+    activities.compile(CompileActivityInput(
+        scope=scope, document_id="doc-1", processor_kind="mock",
+        actor="tester", correlation_id="run-no-store",
+    ))
+    # Reporter still got the events; legacy behaviour preserved.
+    assert [c[0] for c in reporter.calls] == ["step.started", "step.completed"]
+
+
+def test_compile_surfaces_content_stats_from_processor_metadata(
+    scope, reporter,
+):
+    """The post-compile planner reads `content_stats` off the activity
+    result to override the deterministic profile (so a 1-page PDF
+    that contains only a diagram gets `has_images=True`). Compile
+    processors signal this via `ArtifactProcessingResult.metadata`;
+    `_artifact_result` re-projects only the planner-recognised keys."""
+    activities = _activities(reporter)
+    activities._processing.compile_result = ArtifactProcessingResult(
+        status=ResultStatus.SUCCEEDED,
+        metadata={
+            "has_images": True,
+            "has_tables": False,
+            "page_count": 12,
+            "internal_unrelated_field": "should be filtered out",
+        },
+    )
+    result = activities.compile(CompileActivityInput(
+        scope=scope, document_id="doc-1", processor_kind="mock",
+        actor="tester", correlation_id="run-stats",
+    ))
+    assert result.content_stats is not None
+    assert result.content_stats["has_images"] is True
+    assert result.content_stats["has_tables"] is False
+    assert result.content_stats["page_count"] == 12
+    assert "internal_unrelated_field" not in result.content_stats
+
+
+def test_compile_without_processor_metadata_leaves_content_stats_none(
+    scope, reporter,
+):
+    """Processors that don't surface content signals leave
+    `content_stats=None` so the planner falls back to the deterministic
+    profile (legacy behaviour)."""
+    activities = _activities(reporter)
+    result = activities.compile(CompileActivityInput(
+        scope=scope, document_id="doc-1", processor_kind="mock",
+        actor="tester", correlation_id="run-nostats",
+    ))
+    assert result.content_stats is None
+
+
 # ---- Run-terminal activity ------------------------------------
 
 

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 from j1.projects.context import ProjectContext
 
@@ -77,6 +78,13 @@ class ArtifactActivityResult:
     artifact_ids: list[str] = field(default_factory=list)
     error: str | None = None
     message: str | None = None
+    # Optional content signals surfaced by the compile processor —
+    # e.g. {"has_images": True, "has_tables": False, "page_count": 12}.
+    # The post-compile planner merges these into the DocumentProfile so
+    # downstream stages (enrich / graph) decide based on observed
+    # content rather than extension heuristics. None = processor did
+    # not populate; planner falls back to the deterministic profile.
+    content_stats: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

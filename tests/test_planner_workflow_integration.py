@@ -248,13 +248,23 @@ def test_planner_failure_is_surfaced_as_workflow_failure(monkeypatch):
     """If the profiling activity fails (file gone, pypdf crash that
     we can't recover from), it must propagate as a workflow failure,
     not silently disable the planner. Workflow-failure-propagation
-    semantics apply: a failure in the planner step is workflow-fatal."""
+    semantics apply: a failure in the planner step is workflow-fatal.
+
+    Note: planning happens AFTER compile, so a successful compile is
+    a precondition for the profile_document call to fire. The handler
+    below provides a stub compile result; the failure originates from
+    the post-compile profile_document activity."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
             return ValidateContextResult(valid=True)
         if name.endswith("list_pending_documents"):
             return ["doc-1"]
+        if name.endswith("compile"):
+            from j1.orchestration.activities.payloads import ArtifactActivityResult
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"],
+            )
         if name.endswith("profile_document"):
             raise ApplicationError(
                 "source file missing",

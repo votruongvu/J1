@@ -3,6 +3,7 @@ import contextvars
 import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import Any
 
 from temporalio import activity
 
@@ -15,7 +16,9 @@ from j1.processing.cache import (
     ProcessingCacheEntry,
     ProcessingResultCache,
 )
+from j1.runs.models import RunStatus
 from j1.runs.reporter import ProgressReporter
+from j1.runs.store import IngestionRunStore
 from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     CompileActivityInput,
@@ -64,6 +67,7 @@ class ProcessingActivities:
         query_providers: Mapping[str, QueryProvider] | None = None,
         progress_reporter: ProgressReporter | None = None,
         result_cache: ProcessingResultCache | None = None,
+        run_store: IngestionRunStore | None = None,
     ) -> None:
         self._processing = processing
         self._sources = sources
@@ -78,6 +82,14 @@ class ProcessingActivities:
         # emitted). Bootstrap wires a CompositeProgressReporter
         # that fans out to audit + Temporal heartbeat.
         self._reporter = progress_reporter
+        # IngestionRun record store. Wired in production so step events
+        # also flip `IngestionRun.status` from ASSESSING → RUNNING and
+        # advance `current_stage` / `current_step` / `progress_percent`
+        # mid-flight. Without this the FE's `GET /ingestion-runs/{id}`
+        # response stays at ASSESSING until terminal, which keeps the
+        # run-detail page on "Building execution plan…" until the run
+        # finishes. None preserves legacy behaviour.
+        self._run_store = run_store
         # Idempotency cache for expensive deterministic processing
         # (today: compile / parse). When wired, an activity that
         # finds a `completed` cache entry for the same input bypasses
@@ -436,7 +448,20 @@ class ProcessingActivities:
         """Emit `step.started` if a reporter is configured AND the
         caller supplied a `correlation_id` (which by convention
         equals `run_id`). No-op otherwise — keeps existing behaviour
-        for deployments that don't opt into the progress surface."""
+        for deployments that don't opt into the progress surface.
+
+        Also flips the `IngestionRun` record to `RUNNING` and updates
+        `current_stage` / `current_step` / `progress_percent` so the
+        FE's polling endpoint reflects mid-pipeline state. Without
+        this update the run sits at ASSESSING until terminal and the
+        UI's PrimaryStatusPanel stays on 'Building execution plan…'."""
+        if input.correlation_id:
+            self._update_run_progress(
+                ctx, run_id=input.correlation_id,
+                status=RunStatus.RUNNING,
+                stage=stage, step=step,
+                progress_percent=_STAGE_START_PROGRESS.get(stage),
+            )
         if self._reporter is None or not input.correlation_id:
             return
         try:
@@ -454,13 +479,25 @@ class ProcessingActivities:
         """Emit `step.completed`, `step.skipped`, or `step.failed`
         based on the activity result's `status`. `result.status` is
         a `ResultStatus` (SUCCEEDED / FAILED / SKIPPED)."""
+        status_value = (
+            result.status.value if hasattr(result.status, "value")
+            else str(result.status)
+        )
+        if input.correlation_id and status_value == "succeeded":
+            # Advance the run record to the end-of-stage progress
+            # tick so the FE's progress bar moves between stages
+            # rather than sitting at the start-of-stage tick until
+            # terminal. Stage stays the same — the next stage's
+            # `_report_step_start` call updates it.
+            self._update_run_progress(
+                ctx, run_id=input.correlation_id,
+                status=RunStatus.RUNNING,
+                stage=stage, step=step,
+                progress_percent=_STAGE_END_PROGRESS.get(stage),
+            )
         if self._reporter is None or not input.correlation_id:
             return
         try:
-            status_value = (
-                result.status.value if hasattr(result.status, "value")
-                else str(result.status)
-            )
             artifact_count = len(getattr(result, "artifacts", []) or [])
             if status_value == "succeeded":
                 self._reporter.report_step_completed(
@@ -513,6 +550,54 @@ class ProcessingActivities:
         except Exception:  # noqa: BLE001
             pass
 
+    def _update_run_progress(
+        self,
+        ctx,
+        *,
+        run_id: str,
+        status: RunStatus,
+        stage: str,
+        step: str,
+        progress_percent: int | None,
+    ) -> None:
+        """Best-effort update of the IngestionRun record so the FE's
+        polling endpoint sees mid-pipeline state.
+
+        Mirrors `_persist_run_terminal` in `RunsActivities` but for
+        non-terminal transitions: status flips to RUNNING the first
+        time a stage starts, and `current_stage` / `current_step` /
+        `progress_percent` track the most recent stage event. Failures
+        are swallowed — telemetry never blocks ingest. No-op when
+        `run_store` is unwired (legacy deployments)."""
+        if self._run_store is None:
+            return
+        try:
+            run = self._run_store.get(ctx, run_id)
+        except Exception:  # noqa: BLE001
+            return
+        if run is None or run.is_terminal():
+            return
+        # Don't regress the run away from a stickier in-flight status
+        # (e.g. PLAN_READY / WAITING_FOR_CONFIRMATION). RUNNING wins
+        # only over CREATED / ASSESSING.
+        promote_from = (
+            RunStatus.CREATED, RunStatus.ASSESSING, RunStatus.RUNNING,
+        )
+        if run.status in promote_from:
+            run.status = status
+        run.current_stage = stage
+        run.current_step = step
+        if progress_percent is not None:
+            # Never regress the bar — concurrent activities can race
+            # the writes and end-of-stage shouldn't be undone by a
+            # later start-of-stage at the same percent.
+            run.progress_percent = max(run.progress_percent, progress_percent)
+        run.updated_at = datetime.now(timezone.utc)
+        try:
+            self._run_store.upsert(ctx, run)
+        except Exception:  # noqa: BLE001 — telemetry never blocks ingest
+            pass
+
     @staticmethod
     def _lookup(registry: dict, kind: str, role: str):
         try:
@@ -521,6 +606,25 @@ class ProcessingActivities:
             raise UnknownProcessorError(
                 f"no {role} registered for kind {kind!r}"
             ) from exc
+
+
+# Per-stage progress ticks (0..100). Coarse but visible: the FE's
+# progress bar advances on each stage boundary so users see motion
+# rather than a single jump from 0% to 100% at run terminal. The
+# numbers are deliberately conservative — index completion only
+# reaches 95% so `_persist_run_terminal` can land the final 100%.
+_STAGE_START_PROGRESS: dict[str, int] = {
+    "COMPILE": 10,
+    "ENRICH": 45,
+    "GRAPH": 65,
+    "INDEX": 85,
+}
+_STAGE_END_PROGRESS: dict[str, int] = {
+    "COMPILE": 40,
+    "ENRICH": 60,
+    "GRAPH": 80,
+    "INDEX": 95,
+}
 
 
 def _compile_cache_key_parts(input, compiler, document) -> dict:
@@ -629,11 +733,35 @@ def _heartbeating(details: dict[str, object], *, interval_seconds: float = 30.0)
 
 
 def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult:
+    # Surface only the keys the planner actually consumes today
+    # (`has_images` / `has_tables` / `has_scanned_pages` / `page_count`
+    # / `text_extractable_ratio`) so the activity payload doesn't
+    # accidentally carry processor-internal blobs that aren't safe for
+    # the audit log. Compile processors that don't populate any of
+    # these leave `content_stats=None` — the planner falls back to the
+    # deterministic profile.
+    content_stats: dict[str, Any] | None = None
+    if result.metadata:
+        signal_keys = (
+            "has_images",
+            "has_tables",
+            "has_scanned_pages",
+            "page_count",
+            "text_extractable_ratio",
+        )
+        picked = {
+            k: result.metadata[k]
+            for k in signal_keys
+            if k in result.metadata
+        }
+        if picked:
+            content_stats = picked
     return ArtifactActivityResult(
         status=result.status.value,
         artifact_ids=[r.artifact_id for r in result.artifacts],
         error=result.error,
         message=result.message,
+        content_stats=content_stats,
     )
 
 
