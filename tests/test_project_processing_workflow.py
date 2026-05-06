@@ -1192,3 +1192,70 @@ def test_continuation_completes_full_pipeline_after_resume(monkeypatch):
     result = asyncio.run(wf.run(request))
     assert result.state == WorkflowState.COMPLETED.value
     assert set(result.artifact_ids) == {"art-d-1", "art-d-2"}
+
+
+# ---- Completion validation gate -----------------------------------
+
+
+def test_completion_validation_blocks_succeeded_when_no_artifacts(monkeypatch):
+    """Compile reported success but produced ZERO artifacts (a real
+    failure mode when the parser silently no-ops on a corrupt PDF).
+    The completion gate must fail-fast rather than mark SUCCEEDED."""
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-empty"]
+        if name.endswith("compile"):
+            # The pathological success — succeeded with no artifacts.
+            return ArtifactActivityResult(status="succeeded", artifact_ids=[])
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="mock.compiler",
+    )
+    # The completion-validation gate raises BusinessRejection at
+    # workflow exit, which the workflow re-raises as a typed
+    # ApplicationError — contract: NEVER mark SUCCEEDED on a degenerate
+    # run.
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert "completion validation" in str(excinfo.value).lower()
+
+
+def test_completion_validation_passes_when_artifacts_present(monkeypatch):
+    """Sanity-check counterpart: a real artifact gets through the
+    gate without changing the existing happy-path semantics."""
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-real"],
+            )
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="mock.compiler",
+    )
+    result = asyncio.run(wf.run(request))
+    assert result.state == WorkflowState.COMPLETED.value
+    assert "art-real" in result.artifact_ids

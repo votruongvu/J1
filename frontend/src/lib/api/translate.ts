@@ -13,6 +13,7 @@ import type {
   Decision,
   ExecutionPlan,
   IngestionRun,
+  LlmClass,
   PlanStep,
   ProgressEvent,
   ProgressEventData,
@@ -56,6 +57,13 @@ export interface ApiPlanRecord {
   warnings?: string[];
   steps?: ApiPlanStep[];
   profile?: Record<string, unknown>;
+  /** True when any enabled step uses the premium LLM class. */
+  requiresPremiumLlm?: boolean;
+  /** True when any enabled step needs the vision LLM. */
+  requiresVision?: boolean;
+  /** Per-image vision triage decisions; empty when the parser
+   * doesn't surface per-image metadata. */
+  visionDecisions?: Array<Record<string, unknown>>;
 }
 
 export interface ApiPlanStep {
@@ -73,6 +81,8 @@ export interface ApiPlanStep {
   riskLevel?: string;
   warning?: string | null;
   metadata?: Record<string, unknown>;
+  /** none|fast|standard|premium — the LLM class chosen for this step. */
+  llmClass?: string;
 }
 
 /** Raw envelope item from `GET /ingestion-runs` list endpoint. */
@@ -194,6 +204,7 @@ export function planFromApi(api: ApiPlanRecord): ExecutionPlan {
     expected_engine: s.expectedEngine ?? null,
     expected_provider: s.expectedProvider ?? null,
     warning: s.warning ?? undefined,
+    llm_class: (s.llmClass as LlmClass | undefined) ?? "none",
   }));
 
   // Build summary from steps if the backend doesn't include one.
@@ -214,6 +225,8 @@ export function planFromApi(api: ApiPlanRecord): ExecutionPlan {
       stages,
     },
     steps,
+    requires_vision: api.requiresVision ?? false,
+    requires_premium_llm: api.requiresPremiumLlm ?? false,
   };
 }
 

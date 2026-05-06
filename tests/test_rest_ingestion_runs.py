@@ -49,10 +49,45 @@ def reporter(workspace) -> AuditProgressReporter:
     return AuditProgressReporter(DefaultAuditRecorder(JsonlAuditSink(workspace)))
 
 
+class _StubJobControl:
+    """Captures pause/resume/cancel calls without touching Temporal."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []  # [(action, job_id)]
+        self.fail_on: set[str] = set()
+
+    async def pause_job(self, _ctx, job_id: str):
+        self.calls.append(("pause", job_id))
+        if "pause" in self.fail_on:
+            raise RuntimeError("pause signal failed")
+
+        from j1.integration import JobActionResultDTO
+        return JobActionResultDTO(job_id=job_id, action="pause")
+
+    async def resume_job(self, _ctx, job_id: str):
+        self.calls.append(("resume", job_id))
+        if "resume" in self.fail_on:
+            raise RuntimeError("resume signal failed")
+        from j1.integration import JobActionResultDTO
+        return JobActionResultDTO(job_id=job_id, action="resume")
+
+    async def cancel_job(self, _ctx, job_id: str):
+        self.calls.append(("cancel", job_id))
+        if "cancel" in self.fail_on:
+            raise RuntimeError("cancel signal failed")
+        from j1.integration import JobActionResultDTO
+        return JobActionResultDTO(job_id=job_id, action="cancel")
+
+
+@pytest.fixture
+def job_control() -> _StubJobControl:
+    return _StubJobControl()
+
+
 @pytest.fixture
 def application_facade(
     intake_service, artifact_registry, registry, feedback_store,
-    audit_recorder,
+    audit_recorder, job_control,
 ):
     """Minimal facade for the run-related endpoints. Mirrors the
     constructor shape used in `test_rest_adapter.py` but skips the
@@ -70,6 +105,7 @@ def application_facade(
         source_lookup=SourceLookupService(registry),
         feedback=FeedbackService(feedback_store, audit_recorder),
         event_publisher=EventPublisherService(audit_recorder),
+        job_control=job_control,
     )
 
 
@@ -912,3 +948,166 @@ def test_sse_stream_closes_on_human_review_required(client, ctx, reporter):
             if b"human_review.required" in body:
                 break
     assert b"event: human_review.required" in body
+
+
+# ---- POST /ingestion-runs/{id}/{pause|resume|cancel} ---------
+
+
+def test_pause_flips_run_record_to_paused_and_signals_workflow(
+    client, run_store, ctx, job_control,
+):
+    """Pause endpoint must do BOTH: update the run record's status
+    (so the FE polling sees PAUSED immediately) AND forward the
+    Temporal signal so the workflow stops at the next gate."""
+    run = _make_run("run-pause")
+    run.status = RunStatus.RUNNING
+    run.workflow_id = "wf-pause"
+    run_store.upsert(ctx, run)
+
+    resp = client.post("/ingestion-runs/run-pause/pause", headers=_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["runId"] == "run-pause"
+    assert body["action"] == "pause"
+    assert body["status"] == "paused"
+    assert body["message"]
+    assert body["updatedAt"]
+
+    after = run_store.get(ctx, "run-pause")
+    assert after.status == RunStatus.PAUSED
+    # Forwarded the signal using the run's workflow_id (not the run_id).
+    assert ("pause", "wf-pause") in job_control.calls
+
+
+def test_pause_uses_run_id_when_workflow_id_missing(
+    client, run_store, ctx, job_control,
+):
+    """For per-document workflows the workflow_id == run_id; if the
+    run record doesn't carry workflow_id we fall back to the run_id
+    so the signal still routes."""
+    run = _make_run("run-pause-fallback")
+    run.status = RunStatus.RUNNING
+    run.workflow_id = ""
+    run_store.upsert(ctx, run)
+
+    resp = client.post(
+        "/ingestion-runs/run-pause-fallback/pause", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert ("pause", "run-pause-fallback") in job_control.calls
+
+
+def test_pause_409_when_run_is_terminal(client, run_store, ctx, job_control):
+    """Cannot pause a terminal run — 409 + the signal is not sent."""
+    run = _make_run("run-done")
+    run.status = RunStatus.SUCCEEDED
+    run_store.upsert(ctx, run)
+
+    resp = client.post("/ingestion-runs/run-done/pause", headers=_HEADERS)
+    assert resp.status_code == 409
+    assert job_control.calls == []
+
+
+def test_pause_404_for_unknown_run(client, job_control):
+    resp = client.post("/ingestion-runs/missing/pause", headers=_HEADERS)
+    assert resp.status_code == 404
+    assert job_control.calls == []
+
+
+def test_resume_flips_paused_back_to_running(
+    client, run_store, ctx, job_control,
+):
+    run = _make_run("run-resume")
+    run.status = RunStatus.PAUSED
+    run.workflow_id = "wf-resume"
+    run_store.upsert(ctx, run)
+
+    resp = client.post("/ingestion-runs/run-resume/resume", headers=_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["status"] == "running"
+    after = run_store.get(ctx, "run-resume")
+    assert after.status == RunStatus.RUNNING
+    assert ("resume", "wf-resume") in job_control.calls
+
+
+def test_resume_409_when_run_is_running(client, run_store, ctx, job_control):
+    """Resume only legal from PAUSED — running/idle should 409 so
+    the operator notices the misclick."""
+    run = _make_run("run-running")
+    run.status = RunStatus.RUNNING
+    run_store.upsert(ctx, run)
+
+    resp = client.post("/ingestion-runs/run-running/resume", headers=_HEADERS)
+    assert resp.status_code == 409
+    assert job_control.calls == []
+
+
+def test_cancel_flips_run_record_to_cancelling_and_signals(
+    client, run_store, ctx, job_control,
+):
+    """Cancel is one-way: status flips to CANCELLING immediately so
+    the UI shows the operator action; the workflow's terminal exit
+    later flips it to CANCELLED."""
+    run = _make_run("run-cancel")
+    run.status = RunStatus.RUNNING
+    run.workflow_id = "wf-cancel"
+    run_store.upsert(ctx, run)
+
+    resp = client.post("/ingestion-runs/run-cancel/cancel", headers=_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["status"] == "cancelling"
+    after = run_store.get(ctx, "run-cancel")
+    assert after.status == RunStatus.CANCELLING
+    assert ("cancel", "wf-cancel") in job_control.calls
+
+
+def test_cancel_legal_from_paused(client, run_store, ctx, job_control):
+    """A paused run can still be cancelled — operators may decide to
+    abandon a paused run rather than resume it."""
+    run = _make_run("run-paused")
+    run.status = RunStatus.PAUSED
+    run_store.upsert(ctx, run)
+
+    resp = client.post("/ingestion-runs/run-paused/cancel", headers=_HEADERS)
+    assert resp.status_code == 200
+    after = run_store.get(ctx, "run-paused")
+    assert after.status == RunStatus.CANCELLING
+
+
+def test_control_signal_failure_keeps_run_record_flipped(
+    client, run_store, ctx, job_control,
+):
+    """If the Temporal signal fails (worker disconnected, network
+    blip), the REST call still succeeds because the run-record
+    update IS the authoritative FE-visible flip. Operators see the
+    failure in worker logs; the FE shows the requested status."""
+    run = _make_run("run-signal-fail")
+    run.status = RunStatus.RUNNING
+    run.workflow_id = "wf-fail"
+    run_store.upsert(ctx, run)
+    job_control.fail_on = {"pause"}
+
+    resp = client.post(
+        "/ingestion-runs/run-signal-fail/pause", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    after = run_store.get(ctx, "run-signal-fail")
+    assert after.status == RunStatus.PAUSED
+
+
+def test_control_persists_actor_metadata(
+    client, run_store, ctx, job_control,
+):
+    """For the audit trail, every control action records who and
+    when. The FE doesn't render this today, but cost/compliance
+    tooling reads it from the run record's metadata bag."""
+    run = _make_run("run-meta-pause")
+    run.status = RunStatus.RUNNING
+    run_store.upsert(ctx, run)
+
+    client.post("/ingestion-runs/run-meta-pause/pause", headers=_HEADERS)
+    after = run_store.get(ctx, "run-meta-pause")
+    assert "pause_at" in after.metadata
+    assert "pause_by" in after.metadata

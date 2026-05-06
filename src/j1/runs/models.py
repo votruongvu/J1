@@ -38,8 +38,10 @@ class RunStatus(StrEnum):
                                      ├──▶  WAITING_FOR_CONFIRMATION
                                      │             │
                                      │             ▼
-                                     └──▶  RUNNING
+                                     └──▶  RUNNING  ⇄  PAUSED
                                               │
+                                              ▼
+                                          CANCELLING (operator stop)
         ┌─────────────────────────────────────┤
         ▼                                     ▼
         SUCCEEDED                             FAILED
@@ -49,13 +51,20 @@ class RunStatus(StrEnum):
 
     `WAITING_FOR_CONFIRMATION` is reached only when the deployment
     has opted into manual confirmation (auto-run is the default; the
-    confirmation gate is configured per-run via the ingest request)."""
+    confirmation gate is configured per-run via the ingest request).
+
+    `PAUSED` and `CANCELLING` are operator-driven intermediate states.
+    PAUSED is reversible (resume → RUNNING). CANCELLING is one-way:
+    the workflow is winding down, will land at CANCELLED at terminal
+    once any in-flight activity finishes."""
 
     CREATED = "created"
     ASSESSING = "assessing"
     PLAN_READY = "plan_ready"
     WAITING_FOR_CONFIRMATION = "waiting_for_confirmation"
     RUNNING = "running"
+    PAUSED = "paused"
+    CANCELLING = "cancelling"
     SUCCEEDED = "succeeded"
     SUCCEEDED_WITH_WARNINGS = "succeeded_with_warnings"
     FAILED = "failed"

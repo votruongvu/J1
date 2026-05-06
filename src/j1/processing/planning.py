@@ -32,10 +32,17 @@ __all__ = [
     "IngestPlan",
     "IngestPlanner",
     "IngestPolicy",
+    "LLM_CLASS_FAST",
+    "LLM_CLASS_NONE",
+    "LLM_CLASS_PREMIUM",
+    "LLM_CLASS_STANDARD",
     "PlannedStep",
     "RISK_LEVEL_HIGH",
     "RISK_LEVEL_LOW",
     "RISK_LEVEL_MEDIUM",
+    "VISION_DECISION_ENRICH",
+    "VISION_DECISION_SKIP",
+    "VISION_DECISION_TRIAGE",
 ]
 
 
@@ -60,6 +67,38 @@ COST_TIER_HIGH = "HIGH"
 RISK_LEVEL_LOW = "low"
 RISK_LEVEL_MEDIUM = "medium"
 RISK_LEVEL_HIGH = "high"
+
+# LLM model class chosen per step. The policy default is to pick the
+# cheapest class that can do the job — premium is opt-in only via
+# policy=high_accuracy or caller signals (high-risk content). The
+# strings round-trip through the audit log and the FE plan card.
+#   `none`     no LLM call at all (e.g. text_only mode for the index
+#              step uses local embeddings)
+#   `fast`     small/cheap model — triage, classification, summarisation
+#              of short snippets
+#   `standard` production-default model — entity extraction, table
+#              summarisation, normal-risk reasoning
+#   `premium`  largest/strongest model — high-risk content, low-
+#              confidence parses, ambiguous tables/images
+LLM_CLASS_NONE = "none"
+LLM_CLASS_FAST = "fast"
+LLM_CLASS_STANDARD = "standard"
+LLM_CLASS_PREMIUM = "premium"
+
+# Vision LLM triage decisions surfaced on the plan. Per-document
+# coarse decision; per-image entries in `IngestPlan.vision_decisions`
+# carry the same vocabulary when the parser surfaces image-level
+# metadata.
+#   `skip`    don't call the vision LLM; text/structured output is
+#             enough (default for documents with no images and for
+#             documents whose images are decorative/captioned)
+#   `triage`  call a fast vision pass to classify each image, then
+#             decide whether to run the heavier enrichment
+#   `enrich`  run the full vision enrichment (semantic description,
+#             entity extraction, etc.)
+VISION_DECISION_SKIP = "skip"
+VISION_DECISION_TRIAGE = "triage"
+VISION_DECISION_ENRICH = "enrich"
 
 
 # Step names — the same strings the workflow uses for `StepResult.step`
@@ -182,6 +221,12 @@ class PlannedStep:
     risk_level: str = RISK_LEVEL_LOW
     warning: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
+    # LLM model class the step intends to use. `none` for steps that
+    # don't touch an LLM (compile, index when using local embeddings).
+    # The planner picks the cheapest class that can do the job; only
+    # `high_accuracy` policy or explicit caller signals upgrade to
+    # `premium`. See module-level `LLM_CLASS_*` constants.
+    llm_class: str = LLM_CLASS_NONE
 
 
 @dataclass(frozen=True)
@@ -207,6 +252,21 @@ class IngestPlan:
     profile: DocumentProfile
     fast_llm_used: bool = False
     warnings: tuple[str, ...] = ()
+    # High-level LLM/vision flags surfaced to the FE for "vision off
+    # by default" / "premium opt-in" guarantees and to the Temporal
+    # search-attribute layer for filtering. Computed from the per-
+    # step `llm_class` values + profile signals; never store these
+    # without recomputing — keeping them in sync with `steps` is a
+    # planner-internal invariant.
+    requires_vision: bool = False
+    requires_premium_llm: bool = False
+    # Per-image vision triage decisions. Empty when the parser did
+    # not surface per-image metadata; the FE renders the coarse
+    # `requires_vision` flag in that case. Each entry is a tiny dict
+    # to keep the audit-log payload compact and forward-compatible.
+    # Recognised keys: `image_id`, `decision` (skip|triage|enrich),
+    # `role` (e.g. logo / diagram / chart), `score`, `reason`.
+    vision_decisions: tuple[dict[str, object], ...] = ()
 
     def step(self, name: str) -> PlannedStep | None:
         """Lookup helper. Returns None when the planner didn't emit
@@ -339,21 +399,34 @@ class DefaultIngestPlanner(IngestPlanner):
                     else _skip_reason(name, mode, profile)
                 ),
                 mode=mode,
+                policy=policy,
+                profile=profile,
             ))
 
         # Step 3: confidence + cost level.
         confidence = self._confidence(profile)
         cost_level = self._cost_level(mode)
 
+        # Step 4: high-level LLM/vision flags + per-image triage.
+        steps_tuple = tuple(steps)
+        requires_vision = _compute_requires_vision(mode, profile, steps_tuple)
+        requires_premium = any(
+            s.enabled and s.llm_class == LLM_CLASS_PREMIUM for s in steps_tuple
+        )
+        vision_decisions = _compute_vision_decisions(profile, requires_vision)
+
         return IngestPlan(
             document_id=profile.document_id,
             mode=mode,
             policy=policy,
-            steps=tuple(steps),
+            steps=steps_tuple,
             confidence=confidence,
             estimated_cost_level=cost_level,
             profile=profile,
             warnings=tuple([*profile.warnings, *warnings]),
+            requires_vision=requires_vision,
+            requires_premium_llm=requires_premium,
+            vision_decisions=vision_decisions,
         )
 
     # ---- Mode selection ----------------------------------------------
@@ -490,11 +563,13 @@ def _build_planned_step(
     source: StepSource,
     reason: str | None,
     mode: IngestMode,
+    policy: IngestPolicy = IngestPolicy.AUTO,
+    profile: DocumentProfile | None = None,
 ) -> PlannedStep:
     """Construct a `PlannedStep` populated with both the workflow-gate
     fields and the frontend execution-plan fields. Centralised so the
-    UI-facing metadata (stage label, cost tier, dependencies) stays
-    in sync with the gate decision."""
+    UI-facing metadata (stage label, cost tier, dependencies, llm
+    class) stays in sync with the gate decision."""
     decision = (
         EXECUTION_DECISION_RUN if enabled else EXECUTION_DECISION_SKIP
     )
@@ -510,7 +585,114 @@ def _build_planned_step(
         dependency_step_ids=_STEP_DEPS.get(name, ()),
         estimated_cost_tier=_STEP_COST_TIER.get(name, COST_TIER_NONE),
         risk_level=_risk_level_for_skip(name, enabled, mode),
+        llm_class=_pick_llm_class(name, enabled, mode, policy, profile),
     )
+
+
+def _pick_llm_class(
+    step: str,
+    enabled: bool,
+    mode: IngestMode,
+    policy: IngestPolicy,
+    profile: DocumentProfile | None,
+) -> str:
+    """Choose an LLM class for a step. Skipped steps always = `none`.
+
+    Defaults err cheap. Premium is opt-in: only `high_accuracy` policy
+    or known-low-confidence parser output upgrades a step to premium."""
+    if not enabled:
+        return LLM_CLASS_NONE
+    # Stages that never call an LLM regardless of mode.
+    if step in (STEP_COMPILE, STEP_INDEX):
+        return LLM_CLASS_NONE
+    if policy == IngestPolicy.FORCE_FULL or policy == IngestPolicy.HIGH_ACCURACY:
+        # Operator explicitly asked for the strongest path.
+        return LLM_CLASS_PREMIUM
+    if policy == IngestPolicy.COST_SAVING:
+        # Cost-saving uses the cheapest LLM class for any LLM-bearing
+        # step that the mode demands; if the mode has no LLM step the
+        # planner already disabled it above.
+        return LLM_CLASS_FAST
+    # Per-step defaults for `auto` / `balanced`.
+    if step == STEP_ENRICH:
+        if mode == IngestMode.TEXT_ONLY:
+            return LLM_CLASS_NONE
+        if mode == IngestMode.TEXT_WITH_LIGHT_ENRICHMENT:
+            return LLM_CLASS_FAST
+        return LLM_CLASS_STANDARD
+    if step == STEP_GRAPH:
+        # Graph extraction is the most expensive optional step; if the
+        # parser flagged the document as low-confidence (e.g. lots of
+        # scanned pages with mixed extraction), upgrade to premium so
+        # entity extraction has a fighting chance.
+        if profile is not None and profile.has_scanned_pages is True:
+            return LLM_CLASS_PREMIUM
+        return LLM_CLASS_STANDARD
+    return LLM_CLASS_NONE
+
+
+def _compute_requires_vision(
+    mode: IngestMode,
+    profile: DocumentProfile,
+    steps: tuple[PlannedStep, ...],
+) -> bool:
+    """Coarse 'does this run need a vision LLM?' flag.
+
+    Vision is OFF by default. It flips on only when:
+      * the mode is multimodal (operator/profile chose it);
+      * the profile reports scanned pages (only OCR/vision can recover
+        text);
+      * the deployment forced FULL_DIAGNOSTIC.
+    A document that merely contains images does NOT trigger vision —
+    that's the spec's "vision off by default" guarantee. Per-image
+    triage in `vision_decisions` handles the fine-grained case."""
+    enabled_step_names = {s.name for s in steps if s.enabled}
+    if STEP_ENRICH not in enabled_step_names:
+        # No enrich step → no vision call possible.
+        return False
+    if mode in (
+        IngestMode.MULTIMODAL_LIGHT,
+        IngestMode.MULTIMODAL_FULL,
+        IngestMode.FULL_DIAGNOSTIC,
+    ):
+        return True
+    if profile.has_scanned_pages is True:
+        return True
+    return False
+
+
+def _compute_vision_decisions(
+    profile: DocumentProfile,
+    requires_vision: bool,
+) -> tuple[dict[str, object], ...]:
+    """Per-image triage decisions surfaced on the plan.
+
+    When the parser populated `profile.images` (see the raganything
+    bridge's `_build_content_manifest`), each entry already carries
+    a `decision` / `role` / `score` / `reason` set by file-level
+    heuristics. We pass it through verbatim so the FE plan card can
+    render per-image badges.
+
+    When the doc-level `requires_vision=False` (e.g. text-only mode)
+    we override every per-image decision to `skip` — there's no point
+    triaging individual images for a run that won't call the vision
+    LLM at all. The original heuristic stays in `_original_decision`
+    so future replans can reconsider."""
+    if not profile.images:
+        return ()
+    out: list[dict[str, object]] = []
+    for entry in profile.images:
+        decision = entry.get("decision", VISION_DECISION_TRIAGE)
+        if not requires_vision and decision != VISION_DECISION_SKIP:
+            out.append({
+                **entry,
+                "decision": VISION_DECISION_SKIP,
+                "_original_decision": decision,
+                "reason": "vision LLM disabled at document level",
+            })
+        else:
+            out.append(dict(entry))
+    return tuple(out)
 
 
 def _risk_level_for_skip(

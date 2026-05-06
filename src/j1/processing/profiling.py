@@ -70,6 +70,29 @@ class DocumentProfile:
     language: str | None = None
     parser_confidence: float | None = None
     warnings: tuple[str, ...] = ()
+    # ---- Manifest signals (post-parse) -----------------------------
+    # Populated by the workflow after compile completes, by merging
+    # the parser's `content_stats` into the deterministic profile.
+    # All optional — pre-parse the deterministic profiler can't see
+    # any of these. Quality scores are 0..1, deterministic, derived
+    # from the counts so `_compute_quality_scores()` can re-derive
+    # them anywhere without re-reading the parsed content.
+    image_count: int | None = None
+    table_count: int | None = None
+    equation_count: int | None = None
+    text_block_count: int | None = None
+    total_text_chars: int | None = None
+    empty_page_ratio: float | None = None
+    parse_quality_score: float | None = None
+    text_sufficiency_score: float | None = None
+    layout_complexity_score: float | None = None
+    # Per-image triage decisions surfaced by the parser. Each entry
+    # is a small dict (image_id, decision, role, score, reason, page,
+    # caption, size_bytes); the planner reads it and exposes the same
+    # list as `IngestPlan.vision_decisions`. None = parser doesn't
+    # surface per-image data; the planner falls back to the coarse
+    # `requires_vision` doc-level decision.
+    images: tuple[dict[str, object], ...] | None = None
 
 
 class DocumentProfiler(Protocol):

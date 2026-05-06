@@ -28,6 +28,7 @@ import type { AuthConfig, ProjectContext } from "@/types/ui";
 import {
   ApiError,
   type IngestionClient,
+  type RunControlResult,
   type StreamHandle,
   type StreamHandlers,
   type UploadFile,
@@ -192,6 +193,34 @@ export class ApiClient implements IngestionClient {
     });
     await this.json(resp);
     return { ok: true };
+  }
+
+  // ---- Control actions: pause / resume / cancel --------------------
+  // Each posts to `/ingestion-runs/{run_id}/{action}`. The backend
+  // flips the run record's status, emits a progress event, and
+  // forwards the matching Temporal signal. The returned record is
+  // the FE-facing camelCase shape from `IngestionRunControlRecord`.
+
+  private async _control(runId: string, action: "pause" | "resume" | "cancel"):
+    Promise<RunControlResult>
+  {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/${action}`),
+      { method: "POST", headers: this.headers() },
+    );
+    return this.json<RunControlResult>(resp);
+  }
+
+  pauseRun(runId: string): Promise<RunControlResult> {
+    return this._control(runId, "pause");
+  }
+
+  resumeRun(runId: string): Promise<RunControlResult> {
+    return this._control(runId, "resume");
+  }
+
+  cancelRun(runId: string): Promise<RunControlResult> {
+    return this._control(runId, "cancel");
   }
 
   // ---- getEvents ---------------------------------------------------

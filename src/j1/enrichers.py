@@ -225,20 +225,146 @@ class TableExtractor(_StructuredEnricher):
 
 
 class VisualContentDescriber(_StructuredEnricher):
+    """Vision-LLM enricher for image artifacts.
+
+    Three-state behaviour, picked based on what the deployment wired:
+      * `vision_client` is None         → no-op (returns empty visuals
+        list). Keeps existing tests / deployments without a vision
+        provider working.
+      * `vision_client` set, no bytes   → no-op with a `reason` field
+        explaining why (the artifact registry didn't expose payload
+        loading for this artifact).
+      * `vision_client` + bytes         → calls
+        `vision_client.analyze_image(...)` with the prompt configured
+        in the active profile (`describe_visuals` key) and packs the
+        response into the structured `visuals` entry.
+
+    The result is marked `review_required=True` (the class default)
+    so a human gets to confirm vision-generated descriptions before
+    they're treated as authoritative."""
+
     kind = PROCESSOR_VISUAL_DESCRIBER
     artifact_type = ARTIFACT_TYPE_VISUALS
     prompt_name = "describe_visuals"
     confidence_default = 0.5
     review_required_default = True
 
+    # Default prompt used when the active profile has no
+    # `describe_visuals` entry. Generic so it works on any image —
+    # diagrams, charts, screenshots, photos. Not domain-specific.
+    _DEFAULT_PROMPT = (
+        "Describe this image in 3-5 sentences. List any visible "
+        "labels, captions, or text verbatim. Identify the type of "
+        "visual (diagram / chart / photograph / screenshot / table "
+        "image / icon). If the image is decorative (logo, watermark, "
+        "icon) say so explicitly."
+    )
+
+    def __init__(
+        self,
+        profile: Profile,
+        *,
+        vision_client: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(profile, **kwargs)
+        self._vision_client = vision_client
+
     def _produce(self, ctx, artifact_id):
-        json_data = {"source_artifact_id": artifact_id, "visuals": []}
+        # Read image bytes through the standard `_read_content` hook.
+        # When the wiring layer didn't supply a `content_source` the
+        # call returns b"" and we degrade gracefully — same as the
+        # other enrichers.
+        content = self._read_content(ctx, artifact_id)
+        prompt = self._profile_prompt() or self._DEFAULT_PROMPT
+
+        if self._vision_client is None:
+            # No vision client wired — preserve the original
+            # placeholder shape so existing fixtures see the same
+            # output. The `reason` field tells the operator why
+            # nothing happened.
+            return {
+                "source_artifact_id": artifact_id,
+                "visuals": [],
+                "reason": "no vision_client wired into VisualContentDescriber",
+            }, _no_vision_md(artifact_id)
+
+        if not content:
+            return {
+                "source_artifact_id": artifact_id,
+                "visuals": [],
+                "reason": "no image bytes available for artifact",
+            }, _no_bytes_md(artifact_id)
+
+        # Call the vision LLM. `media_type=None` lets the implementation
+        # default (typically image/png). `metadata` is forwarded for
+        # the provider's telemetry — useful when reconciling spend.
+        try:
+            description, usage = self._vision_client.analyze_image(
+                content,
+                prompt=prompt,
+                metadata={
+                    "processor_name": self.kind,
+                    "artifact_id": artifact_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — surface the failure as a soft skip
+            return {
+                "source_artifact_id": artifact_id,
+                "visuals": [],
+                "reason": f"vision LLM call failed: {type(exc).__name__}: {exc}",
+            }, _vision_failure_md(artifact_id, exc)
+
+        visual_entry: dict[str, Any] = {
+            "artifact_id": artifact_id,
+            "description": description,
+            "model": getattr(self._vision_client, "model", None),
+            "provider": getattr(self._vision_client, "provider", None),
+            "byte_size": len(content),
+        }
+        if usage is not None:
+            visual_entry["usage"] = {
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0),
+                "estimated_cost": getattr(usage, "estimated_cost", None),
+            }
+        json_data = {
+            "source_artifact_id": artifact_id,
+            "visuals": [visual_entry],
+        }
         md_text = (
             "# Visual content\n\n"
             f"Source artifact: `{artifact_id}`\n\n"
+            f"## Description\n\n{description}\n\n"
             "_Pending human review._\n"
         )
         return json_data, md_text
+
+
+def _no_vision_md(artifact_id: str) -> str:
+    return (
+        "# Visual content\n\n"
+        f"Source artifact: `{artifact_id}`\n\n"
+        "_No vision LLM configured — visual enrichment skipped._\n"
+    )
+
+
+def _no_bytes_md(artifact_id: str) -> str:
+    return (
+        "# Visual content\n\n"
+        f"Source artifact: `{artifact_id}`\n\n"
+        "_Image bytes not available — visual enrichment skipped._\n"
+    )
+
+
+def _vision_failure_md(artifact_id: str, exc: Exception) -> str:
+    return (
+        "# Visual content\n\n"
+        f"Source artifact: `{artifact_id}`\n\n"
+        f"_Vision LLM call failed: `{type(exc).__name__}`. "
+        "Visual enrichment skipped — operator should investigate._\n"
+    )
 
 
 class FormulaExtractor(_StructuredEnricher):

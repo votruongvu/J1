@@ -31,6 +31,24 @@ export interface StreamHandle {
  * dropzone and the `{ name }` placeholder the demo button uses. */
 export type UploadFile = File | { name?: string };
 
+/**
+ * Response shape for control actions (`pauseRun` / `resumeRun` / `cancelRun`).
+ * Mirrors the backend's `IngestionRunControlRecord` so callers can update
+ * their local cache without a follow-up `getRun()`.
+ */
+export interface RunControlResult {
+  runId: string;
+  action: "pause" | "resume" | "cancel";
+  /** New run status post-action — typically PAUSED / RUNNING / CANCELLING. */
+  status: string;
+  /** Current stage if known. */
+  stage?: string | null;
+  /** Short message suitable for a toast. */
+  message?: string | null;
+  /** ISO 8601 server timestamp of the update. */
+  updatedAt?: string | null;
+}
+
 export interface IngestionClient {
   /** GET list of runs (live mode may return an empty page with `_liveUnsupported`). */
   listRuns(ctx: ProjectContext, opts?: RunListQuery): Promise<RunListResult>;
@@ -46,6 +64,15 @@ export interface IngestionClient {
 
   /** POST confirm — transitions a run from PLAN_READY → RUNNING. */
   confirm(runId: string): Promise<{ ok: true }>;
+
+  /** POST pause — transitions a RUNNING run to PAUSED. */
+  pauseRun(runId: string): Promise<RunControlResult>;
+
+  /** POST resume — transitions a PAUSED run back to RUNNING. */
+  resumeRun(runId: string): Promise<RunControlResult>;
+
+  /** POST cancel — flips run record to CANCELLING; workflow lands at CANCELLED at terminal. */
+  cancelRun(runId: string): Promise<RunControlResult>;
 
   /** GET historical events. */
   getEvents(runId: string): Promise<ProgressEvent[]>;

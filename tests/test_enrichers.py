@@ -310,3 +310,156 @@ def test_generic_enrichers_catalog_lists_nine_processors():
         "SourceMapper",
         "ConfidenceAssessor",
     }
+
+
+# ---- VisualContentDescriber: vision-LLM wiring -------------------------
+
+
+class _StubVisionClient:
+    """Captures calls so tests can assert what got sent to the model."""
+
+    def __init__(
+        self,
+        *,
+        return_text: str = "A workflow diagram with three boxes connected by arrows.",
+        provider: str = "stub",
+        model: str = "stub-vision-1",
+        raises: Exception | None = None,
+    ) -> None:
+        self.return_text = return_text
+        self.provider_value = provider
+        self.model_value = model
+        self.raises = raises
+        self.calls: list[dict] = []
+
+    @property
+    def provider(self) -> str:
+        return self.provider_value
+
+    @property
+    def model(self) -> str:
+        return self.model_value
+
+    def analyze_image(self, image, *, prompt, media_type=None, metadata=None):
+        self.calls.append({
+            "image_size": len(image),
+            "prompt": prompt,
+            "media_type": media_type,
+            "metadata": dict(metadata or {}),
+        })
+        if self.raises is not None:
+            raise self.raises
+        from j1.llm.clients import LLMUsage
+        return self.return_text, LLMUsage(
+            provider=self.provider_value, model=self.model_value,
+            input_tokens=42, output_tokens=18, total_tokens=60,
+        )
+
+
+def test_visual_describer_no_vision_client_returns_empty_visuals(
+    default_profile, ctx,
+):
+    """Backwards-compat: deployments without a vision client wired
+    keep the original behaviour (empty visuals[] + a `reason`
+    explaining why), no crash."""
+    descriptor = VisualContentDescriber(default_profile)
+    result = descriptor.enrich(ctx, "art-1")
+    assert result.status == ResultStatus.SUCCEEDED
+    json_draft = next(d for d in result.drafts if d.suggested_extension == ".json")
+    payload = json.loads(json_draft.content.decode())
+    assert payload["visuals"] == []
+    assert "no vision_client wired" in payload["reason"]
+
+
+def test_visual_describer_calls_vision_llm_and_packs_response(
+    default_profile, ctx,
+):
+    """Vision client + content source wired → calls analyze_image,
+    captures the description + usage in the visuals[] entry, and
+    surfaces the model/provider for cost reconciliation."""
+    image_bytes = b"\x89PNG fake bytes" + b"x" * 5000
+    client = _StubVisionClient()
+    descriptor = VisualContentDescriber(
+        default_profile,
+        vision_client=client,
+        content_source=lambda _ctx, _aid: image_bytes,
+    )
+    result = descriptor.enrich(ctx, "art-image")
+    assert result.status == ResultStatus.SUCCEEDED
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["image_size"] == len(image_bytes)
+    assert call["metadata"]["artifact_id"] == "art-image"
+
+    json_draft = next(d for d in result.drafts if d.suggested_extension == ".json")
+    payload = json.loads(json_draft.content.decode())
+    visuals = payload["visuals"]
+    assert len(visuals) == 1
+    assert visuals[0]["description"] == client.return_text
+    assert visuals[0]["model"] == "stub-vision-1"
+    assert visuals[0]["provider"] == "stub"
+    assert visuals[0]["byte_size"] == len(image_bytes)
+    assert visuals[0]["usage"]["total_tokens"] == 60
+
+
+def test_visual_describer_uses_default_prompt_when_profile_missing_one(
+    default_profile, ctx, monkeypatch,
+):
+    """`describe_visuals` may not be in the profile. The descriptor
+    must fall back to a built-in generic prompt rather than passing
+    an empty string to the vision LLM."""
+    image_bytes = b"\x89PNG" + b"x" * 1000
+    client = _StubVisionClient()
+    descriptor = VisualContentDescriber(
+        default_profile,
+        vision_client=client,
+        content_source=lambda _ctx, _aid: image_bytes,
+    )
+    # Force the profile-prompt lookup to miss, simulating a deployment
+    # whose profile YAML doesn't define `describe_visuals`.
+    monkeypatch.setattr(descriptor, "_profile_prompt", lambda: "")
+    descriptor.enrich(ctx, "art-2")
+    sent = client.calls[0]["prompt"]
+    assert sent  # not empty — the default prompt kicked in
+    assert "describe" in sent.lower() or "image" in sent.lower()
+
+
+def test_visual_describer_no_bytes_skips_vision_call(default_profile, ctx):
+    """If the artifact registry doesn't yield bytes (no
+    content_source wired), don't burn a vision LLM call on empty
+    input — return a soft skip with a reason."""
+    client = _StubVisionClient()
+    descriptor = VisualContentDescriber(
+        default_profile, vision_client=client,
+        # No content_source.
+    )
+    result = descriptor.enrich(ctx, "art-3")
+    assert result.status == ResultStatus.SUCCEEDED
+    assert client.calls == []  # no LLM call burned
+    json_draft = next(d for d in result.drafts if d.suggested_extension == ".json")
+    payload = json.loads(json_draft.content.decode())
+    assert payload["visuals"] == []
+    assert "no image bytes available" in payload["reason"]
+
+
+def test_visual_describer_llm_failure_yields_succeeded_with_reason(
+    default_profile, ctx,
+):
+    """A vision LLM exception MUST NOT fail the run. The enricher
+    surfaces the error in the `reason` field and returns SUCCEEDED
+    so the workflow's failure-propagation contract isn't tripped by
+    a flaky vendor."""
+    image_bytes = b"\x89PNG" + b"x" * 1000
+    client = _StubVisionClient(raises=RuntimeError("rate limited"))
+    descriptor = VisualContentDescriber(
+        default_profile,
+        vision_client=client,
+        content_source=lambda _ctx, _aid: image_bytes,
+    )
+    result = descriptor.enrich(ctx, "art-4")
+    assert result.status == ResultStatus.SUCCEEDED
+    json_draft = next(d for d in result.drafts if d.suggested_extension == ".json")
+    payload = json.loads(json_draft.content.decode())
+    assert payload["visuals"] == []
+    assert "vision LLM call failed" in payload["reason"]
+    assert "rate limited" in payload["reason"]

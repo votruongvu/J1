@@ -137,6 +137,10 @@ class ExecutionPlanStep(CamelModel):
     risk_level: str = "low"
     warning: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # LLM model class chosen for this step (none|fast|standard|premium).
+    # Defaults to "none" so callers/clients that don't read it see
+    # the safe-default value.
+    llm_class: str = "none"
 
 
 class ExecutionPlanRecord(CamelModel):
@@ -153,6 +157,12 @@ class ExecutionPlanRecord(CamelModel):
     warnings: list[str] = Field(default_factory=list)
     steps: list[ExecutionPlanStep]
     profile: dict[str, Any] = Field(default_factory=dict)
+    # High-level LLM/vision flags computed by the planner. Surfaced
+    # on the FE plan card so operators can see "vision off by default"
+    # / "premium opt-in" guarantees at a glance.
+    requires_vision: bool = False
+    requires_premium_llm: bool = False
+    vision_decisions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProgressEventRecord(CamelModel):
@@ -189,6 +199,22 @@ class ProgressEventsRecord(CamelModel):
 class IngestionRunConfirmRecord(CamelModel):
     run_id: str
     status: str
+
+
+class IngestionRunControlRecord(CamelModel):
+    """Response to `POST /ingestion-runs/{run_id}/{pause|resume|cancel}`.
+
+    Carries the post-action status so the FE can update its cache
+    without a follow-up GET, plus a short human-readable message
+    suitable for a toast and the new `updated_at` timestamp the FE
+    can render in its "last updated" line."""
+
+    run_id: str
+    action: str
+    status: str
+    stage: str | None = None
+    message: str | None = None
+    updated_at: str | None = None
 
 
 class IngestionRunCreatedRecord(CamelModel):

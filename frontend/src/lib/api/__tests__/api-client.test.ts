@@ -246,3 +246,71 @@ describe("ApiClient envelope unwrap", () => {
     });
   });
 });
+
+describe("ApiClient run controls", () => {
+  it("pauseRun POSTs to /ingestion-runs/{id}/pause and returns the control record", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({
+        requestId: "r3",
+        data: {
+          runId: "run-1",
+          action: "pause",
+          status: "paused",
+          stage: "COMPILE",
+          message: "Pause requested.",
+          updatedAt: "2026-05-01T00:00:00Z",
+        },
+      }),
+    );
+    const result = await makeClient().pauseRun("run-1");
+    expect(result.status).toBe("paused");
+    expect(result.action).toBe("pause");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/run-1/pause",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+  });
+
+  it("resumeRun POSTs to /ingestion-runs/{id}/resume", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: { runId: "r", action: "resume", status: "running" } }),
+    );
+    await makeClient().resumeRun("r");
+    expect(calls[0]!.url).toBe("https://api.test.j1.local/ingestion-runs/r/resume");
+    expect(calls[0]!.init.method).toBe("POST");
+  });
+
+  it("cancelRun POSTs to /ingestion-runs/{id}/cancel", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: { runId: "r", action: "cancel", status: "cancelling" } }),
+    );
+    const result = await makeClient().cancelRun("r");
+    expect(result.status).toBe("cancelling");
+    expect(calls[0]!.url).toBe("https://api.test.j1.local/ingestion-runs/r/cancel");
+    expect(calls[0]!.init.method).toBe("POST");
+  });
+
+  it("propagates 409 errors from invalid state transitions as ApiError", async () => {
+    withFetch(() =>
+      jsonResponse({
+        error: {
+          code: "INVALID_STATE",
+          message: "cannot pause a terminal run (status=succeeded)",
+        },
+      }, 409),
+    );
+    await expect(makeClient().pauseRun("done")).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
+  it("encodes the runId so special characters round-trip safely", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: { runId: "x", action: "pause", status: "paused" } }),
+    );
+    await makeClient().pauseRun("a/b c");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/a%2Fb%20c/pause",
+    );
+  });
+});

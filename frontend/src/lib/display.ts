@@ -32,6 +32,8 @@ export const StatusDisplay: Readonly<Record<RunStatus, StatusMeta>> = {
   PLAN_READY: { label: "Plan ready", tone: "accent", pulse: false },
   WAITING_FOR_CONFIRMATION: { label: "Awaiting confirm", tone: "accent", pulse: true },
   RUNNING: { label: "Running", tone: "info", pulse: true },
+  PAUSED: { label: "Paused", tone: "warning", pulse: false },
+  CANCELLING: { label: "Cancelling", tone: "neutral", pulse: true },
   COMPLETED: { label: "Completed", tone: "success", pulse: false },
   COMPLETED_WITH_WARNINGS: { label: "Completed · warnings", tone: "warning", pulse: false },
   SUCCEEDED: { label: "Succeeded", tone: "success", pulse: false },

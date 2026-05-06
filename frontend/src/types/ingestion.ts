@@ -32,6 +32,8 @@ export type RunStatus =
   | "PLAN_READY"
   | "WAITING_FOR_CONFIRMATION"
   | "RUNNING"
+  | "PAUSED"
+  | "CANCELLING"
   | "COMPLETED"
   | "COMPLETED_WITH_WARNINGS"
   | "SUCCEEDED"
@@ -123,7 +125,13 @@ export interface PlanStep {
   expected_provider?: string | null;
   /** Optional inline warning attached to a step (e.g. low-confidence detection). */
   warning?: string;
+  /** none|fast|standard|premium — the LLM class chosen for this step. */
+  llm_class?: LlmClass;
 }
+
+/** LLM model class chosen per step. Mirrors the backend's
+ * `LLM_CLASS_*` constants. */
+export type LlmClass = "none" | "fast" | "standard" | "premium";
 
 export interface PlanSummary {
   total: number;
@@ -138,6 +146,12 @@ export interface ExecutionPlan {
   runId: string;
   summary: PlanSummary;
   steps: PlanStep[];
+  /** True when any enabled step needs the vision LLM. Drives the
+   * "Vision LLM" indicator on the plan card — vision is OFF by
+   * default; this surfaces the operator-visible exception. */
+  requires_vision?: boolean;
+  /** True when any enabled step uses the premium LLM class. */
+  requires_premium_llm?: boolean;
 }
 
 // ---- Progress events ------------------------------------------------

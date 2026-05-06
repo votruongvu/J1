@@ -27,6 +27,7 @@ import type { MockScenario, ProjectContext } from "@/types/ui";
 import {
   ApiError,
   type IngestionClient,
+  type RunControlResult,
   type StreamHandle,
   type StreamHandlers,
   type UploadFile,
@@ -909,6 +910,39 @@ export class MockClient implements IngestionClient {
     if (this.currentRun) this.currentRun.status = "RUNNING";
     this.gateResolved.confirm = true;
     return { ok: true };
+  }
+
+  async pauseRun(runId: string): Promise<RunControlResult> {
+    await delay(120);
+    if (this.currentRun) this.currentRun.status = "PAUSED";
+    return {
+      runId, action: "pause", status: "PAUSED",
+      stage: this.currentRun?.current_stage ?? null,
+      message: "Pause requested.",
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async resumeRun(runId: string): Promise<RunControlResult> {
+    await delay(120);
+    if (this.currentRun) this.currentRun.status = "RUNNING";
+    return {
+      runId, action: "resume", status: "RUNNING",
+      stage: this.currentRun?.current_stage ?? null,
+      message: "Resume requested.",
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async cancelRun(runId: string): Promise<RunControlResult> {
+    await delay(120);
+    if (this.currentRun) this.currentRun.status = "CANCELLING";
+    return {
+      runId, action: "cancel", status: "CANCELLING",
+      stage: this.currentRun?.current_stage ?? null,
+      message: "Cancel requested.",
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   async getEvents(_runId: string): Promise<ProgressEvent[]> {

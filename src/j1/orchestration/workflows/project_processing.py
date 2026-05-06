@@ -242,6 +242,32 @@ def _merge_compile_signals(
         overrides["text_extractable_ratio"] = float(
             signals["text_extractable_ratio"]
         )
+    # Manifest signals — post-parse counts + quality scores. Each is
+    # optional so a parser that doesn't surface them leaves the
+    # corresponding field None on the profile (the planner already
+    # treats None as "I don't know").
+    for int_key in (
+        "image_count", "table_count", "equation_count",
+        "text_block_count", "total_text_chars",
+    ):
+        if int_key in signals and signals[int_key] is not None:
+            overrides[int_key] = int(signals[int_key])
+    for float_key in (
+        "empty_page_ratio",
+        "parse_quality_score",
+        "text_sufficiency_score",
+        "layout_complexity_score",
+    ):
+        if float_key in signals and signals[float_key] is not None:
+            overrides[float_key] = float(signals[float_key])
+    # Per-image list — coerce to tuple so the frozen dataclass can
+    # hold it. Each entry stays a dict (Temporal-data-converter
+    # serialisable) so we don't need a parallel dataclass.
+    images = signals.get("images")
+    if isinstance(images, list):
+        overrides["images"] = tuple(
+            dict(item) for item in images if isinstance(item, dict)
+        )
     if not overrides:
         return profile
     return _replace_request(profile, **overrides)
@@ -397,6 +423,19 @@ class ProjectProcessingWorkflow:
                     request, final_status="cancelled",
                 )
             else:
+                # Completion validation: catch the case where the
+                # workflow reached the end without any failure being
+                # raised, but the required artifacts aren't actually
+                # present (compile reported success but produced
+                # nothing, a required step's StepResult was never
+                # recorded, etc.). Without this gate the workflow
+                # would mark SUCCEEDED on a degenerate run.
+                validation_errors = self._validate_completion()
+                if validation_errors:
+                    raise _BusinessRejection(
+                        "completion validation failed: "
+                        + "; ".join(validation_errors)
+                    )
                 self._state = WorkflowState.COMPLETED
                 self._log_step(
                     request,
@@ -669,6 +708,47 @@ class ProjectProcessingWorkflow:
             if r.status == StepStatus.FAILED and not r.required:
                 count += 1
         return count
+
+    def _validate_completion(self) -> list[str]:
+        """Last-mile gate: don't mark SUCCEEDED unless the required
+        artifacts are actually present.
+
+        The workflow's per-step error handling already raises on a
+        failed required step (the `fail_fast` policy), so most paths
+        never reach this validator. It catches the degenerate cases:
+          * compile reported success but produced ZERO artifacts (the
+            parser may have silently no-oped on an unsupported MIME);
+          * a required step's `StepResult` was never recorded because
+            of a coding-level miss in a new branch;
+          * the workflow drained all documents but produced nothing
+            indexable.
+
+        Returns a list of human-readable validation errors. An empty
+        list = OK, callers proceed to the SUCCEEDED transition. Any
+        entries cause the caller to raise `_BusinessRejection` and
+        the workflow is marked FAILED with `J1_INGEST_COMPLETION_VALIDATION_FAILED`.
+
+        Cheap to call; no I/O — pure inspection of in-memory state."""
+        errors: list[str] = []
+        # Required = at least one artifact got produced. Catches the
+        # compile-no-op-and-falls-through case.
+        if not self._produced_artifact_ids:
+            errors.append(
+                "no artifacts were produced; the workflow ran but "
+                "compile/enrich/graph/index returned nothing indexable"
+            )
+        # Required steps recorded as anything other than COMPLETED at
+        # this point are a contract bug — fail_fast should have raised
+        # earlier. Surface explicitly so the operator sees what slipped.
+        for r in self._step_results:
+            if r.required and r.status not in (
+                StepStatus.COMPLETED, StepStatus.SKIPPED,
+            ):
+                errors.append(
+                    f"required step {r.step!r} ended in status "
+                    f"{r.status.value!r} without aborting the workflow"
+                )
+        return errors
 
     def _step_summary_payload(self) -> tuple[StepSummaryEntry, ...]:
         """Compact summary embedded in `run.completed` / `run.failed`
@@ -1088,13 +1168,29 @@ class ProjectProcessingWorkflow:
                 compile_content_stats=compile_result.content_stats,
             )
             self._set_search_attribute("J1IngestMode", plan.mode.value)
+            # Surface the LLM/vision policy decisions as search
+            # attributes so operators can filter Temporal histories
+            # for "all runs that needed the premium model" without
+            # re-reading the audit log. Both gated on the same
+            # `search_attributes_enabled` flag as the existing upserts.
+            self._set_search_attribute(
+                "J1RequiresVision", "true" if plan.requires_vision else "false",
+            )
+            self._set_search_attribute(
+                "J1RequiresPremiumLLM",
+                "true" if plan.requires_premium_llm else "false",
+            )
             self._log_step(
                 request,
                 event="ingestion.plan.created",
                 stage="plan",
                 status="completed",
                 document_id=document_id,
-                reason=f"mode={plan.mode.value} policy={plan.policy.value}",
+                reason=(
+                    f"mode={plan.mode.value} policy={plan.policy.value} "
+                    f"requires_vision={plan.requires_vision} "
+                    f"requires_premium_llm={plan.requires_premium_llm}"
+                ),
             )
             # Persist the plan into the audit log so the FE's
             # `GET /ingestion-runs/{id}/plan` endpoint can serve it.

@@ -65,6 +65,7 @@ from j1.adapters.rest.schemas import (
     HealthRecord,
     IngestRequest,
     IngestionRunConfirmRecord,
+    IngestionRunControlRecord,
     IngestionRunCreatedRecord,
     IngestionRunListItem,
     IngestionRunListRecord,
@@ -1134,6 +1135,187 @@ def create_rest_api(
                 )
 
         record = IngestionRunConfirmRecord(run_id=run_id, status=run.status.value)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Run-level control endpoints --------------------------------
+    # Mirror the existing `/ingestion-jobs/{id}/{pause,resume,cancel}`
+    # admin signals but expose them under the `/ingestion-runs/`
+    # surface the FE already uses, AND flip the run record's status
+    # so polling clients see the operator action immediately. The
+    # `/ingestion-jobs/` raw-signal variants stay in place for CLI /
+    # script use.
+
+    def _control_action(
+        action: str,
+        target_status: RunStatus,
+        allowed_from: tuple[RunStatus, ...],
+        signal_name: str,
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext,
+        security: SecurityContext,
+    ):
+        """Shared body for pause / resume / cancel.
+
+        1. Look up the run record (404 if missing).
+        2. Validate the transition (409 if from a status that disallows it).
+        3. Flip the run record (FE polling sees the new state immediately).
+        4. Emit a progress event so the SSE timeline reflects the action.
+        5. Forward to the job-control facade so the workflow signal fires.
+        Returns the populated `IngestionRunControlRecord`."""
+        from datetime import datetime, timezone
+
+        store = _require_run_store()
+        run = store.get(ctx, run_id)
+        if run is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        if run.is_terminal():
+            raise HTTPException(
+                409,
+                f"cannot {action} a terminal run (status={run.status.value})",
+            )
+        if run.status not in allowed_from:
+            raise HTTPException(
+                409,
+                f"cannot {action} run in status {run.status.value!r}; "
+                f"allowed from: {[s.value for s in allowed_from]}",
+            )
+        now = datetime.now(timezone.utc)
+        actor = security.subject if security and security.subject else "system"
+        run.status = target_status
+        run.updated_at = now
+        run.metadata = dict(run.metadata)
+        run.metadata[f"{action}_at"] = now.isoformat()
+        run.metadata[f"{action}_by"] = actor
+        store.upsert(ctx, run)
+        if progress_reporter is not None:
+            try:
+                # Reuse the existing step.warning channel (severity=INFO
+                # via the optional `metadata`) to surface the operator
+                # action in the timeline. We don't add a dedicated
+                # `run.paused` event type because the FE doesn't render
+                # it — the run record's `status` flip is already the
+                # authoritative signal for the panel/badge update.
+                progress_reporter.report_step_warning(
+                    ctx, run_id=run_id,
+                    stage=run.current_stage or "control",
+                    step=run.current_step or action,
+                    message=f"operator {action}",
+                    actor=actor,
+                )
+            except Exception:  # noqa: BLE001 — observability never blocks
+                _log.exception(
+                    "%s control event emission failed", action,
+                )
+        signal_workflow_id = run.workflow_id or run_id
+        return IngestionRunControlRecord(
+            run_id=run_id,
+            action=action,
+            status=run.status.value,
+            stage=run.current_stage,
+            message=f"{action.capitalize()} requested.",
+            updated_at=now.isoformat(),
+        ), signal_workflow_id
+
+    @app.post(
+        "/ingestion-runs/{run_id}/pause",
+        tags=["ingestion-runs"],
+        summary="Pause a running ingestion run",
+        description=(
+            "Operator-driven pause. Flips the run record to PAUSED so "
+            "polling clients see the action immediately, then forwards "
+            "the `pause` signal to the workflow which will stop at the "
+            "next pause-checkpoint."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_ingestion_run_pause(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        record, signal_id = _control_action(
+            action="pause",
+            target_status=RunStatus.PAUSED,
+            allowed_from=(RunStatus.RUNNING, RunStatus.ASSESSING),
+            signal_name="pause",
+            request=request, run_id=run_id, ctx=ctx, security=security,
+        )
+        try:
+            await control.pause_job(ctx, signal_id)
+        except Exception:  # noqa: BLE001
+            _log.exception(
+                "pause signal failed for run_id=%s; run record is "
+                "PAUSED but workflow may not be paused yet", run_id,
+            )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-runs/{run_id}/resume",
+        tags=["ingestion-runs"],
+        summary="Resume a paused ingestion run",
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_ingestion_run_resume(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        record, signal_id = _control_action(
+            action="resume",
+            target_status=RunStatus.RUNNING,
+            allowed_from=(RunStatus.PAUSED,),
+            signal_name="resume",
+            request=request, run_id=run_id, ctx=ctx, security=security,
+        )
+        try:
+            await control.resume_job(ctx, signal_id)
+        except Exception:  # noqa: BLE001
+            _log.exception(
+                "resume signal failed for run_id=%s; run record is "
+                "RUNNING but workflow may not have resumed", run_id,
+            )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-runs/{run_id}/cancel",
+        tags=["ingestion-runs"],
+        summary="Cancel a running ingestion run",
+        description=(
+            "Flips the run record to CANCELLING and forwards the "
+            "`cancel` signal. The workflow will land at CANCELLED "
+            "once any in-flight activity finishes."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_ingestion_run_cancel(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+        control=Depends(require_job_control),
+    ) -> dict[str, Any]:
+        record, signal_id = _control_action(
+            action="cancel",
+            target_status=RunStatus.CANCELLING,
+            allowed_from=(
+                RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.ASSESSING,
+                RunStatus.PLAN_READY, RunStatus.WAITING_FOR_CONFIRMATION,
+            ),
+            signal_name="cancel",
+            request=request, run_id=run_id, ctx=ctx, security=security,
+        )
+        try:
+            await control.cancel_job(ctx, signal_id)
+        except Exception:  # noqa: BLE001
+            _log.exception(
+                "cancel signal failed for run_id=%s; run record is "
+                "CANCELLING but workflow signal may not have arrived", run_id,
+            )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
     @app.get(
@@ -2530,10 +2712,14 @@ def _read_run_plan(
                 risk_level=str(s.get("risk_level") or "low"),
                 warning=s.get("warning"),
                 metadata=dict(s.get("metadata") or {}),
+                llm_class=str(s.get("llm_class") or "none"),
             )
             for s in (plan_dict.get("steps") or [])
         ],
         profile=dict(plan_dict.get("profile") or {}),
+        requires_vision=bool(plan_dict.get("requires_vision") or False),
+        requires_premium_llm=bool(plan_dict.get("requires_premium_llm") or False),
+        vision_decisions=list(plan_dict.get("vision_decisions") or []),
     )
 
 

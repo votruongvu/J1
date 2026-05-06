@@ -5,9 +5,10 @@
  */
 
 import type { ExecutionPlan, IngestionRun } from "@/types/ingestion";
-import type { ProjectContext } from "@/types/ui";
+import type { ProjectContext, Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 import { StatusBadge } from "@/components/badges";
+import { RunControls } from "./RunControls";
 
 interface RunHeaderProps {
   run: IngestionRun | null;
@@ -15,6 +16,8 @@ interface RunHeaderProps {
   ctx: ProjectContext;
   onBack: () => void;
   onOpenDrawer: () => void;
+  onRefresh: () => void;
+  pushToast: (toast: Omit<Toast, "id">) => void;
 }
 
 function formatDuration(seconds: number | null): string {
@@ -24,7 +27,9 @@ function formatDuration(seconds: number | null): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
-export function RunHeader({ run, plan, ctx, onBack, onOpenDrawer }: RunHeaderProps) {
+export function RunHeader({
+  run, plan, ctx, onBack, onOpenDrawer, onRefresh, pushToast,
+}: RunHeaderProps) {
   if (!run) return null;
   const summary = plan?.summary;
   const startedMs = run.started_at ? new Date(run.started_at).getTime() : null;
@@ -62,6 +67,7 @@ export function RunHeader({ run, plan, ctx, onBack, onOpenDrawer }: RunHeaderPro
           <div className="run-hero__id">{run.runId}</div>
         </div>
         <div className="run-hero__actions">
+          <RunControls run={run} onRefresh={onRefresh} pushToast={pushToast} />
           <button className="btn btn--sm" onClick={onOpenDrawer}>
             <Icon.Code className="icon-sm" /> Technical details
           </button>

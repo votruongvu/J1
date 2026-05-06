@@ -279,6 +279,13 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         ctx={ctx}
         onBack={onBack}
         onOpenDrawer={() => setDrawerOpen(true)}
+        onRefresh={() => {
+          void client
+            .getRun(runId)
+            .then((r) => setRun(r))
+            .catch(() => {});
+        }}
+        pushToast={pushToast}
       />
 
       {loadError && loadError.status === 400 && (

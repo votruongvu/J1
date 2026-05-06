@@ -37,7 +37,9 @@ exported here.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -228,10 +230,20 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     drafts = _drafts_from_output_dir(
         output_dir, document_id=request.document_id, kind="compiled.text",
     )
+    # Build the post-parse manifest (counts, quality scores, per-image
+    # triage decisions) and merge it into the result metadata. The
+    # activity layer projects the recognised keys into `content_stats`
+    # which the planner then merges into the DocumentProfile.
+    manifest = _build_content_manifest(output_dir)
+    metadata: dict[str, Any] = {
+        "provider": "raganything",
+        "output_dir": str(output_dir),
+    }
+    metadata.update(manifest)
     return ArtifactProcessingResult(
         status=ResultStatus.SUCCEEDED,
         drafts=drafts,
-        metadata={"provider": "raganything", "output_dir": str(output_dir)},
+        metadata=metadata,
     )
 
 
@@ -841,6 +853,291 @@ def _graph_drafts_from_storage(
                 },
             ))
     return drafts
+
+
+# ---- Content manifest from MinerU output ---------------------------
+#
+# The post-parse planner reads aggregate counts (image_count,
+# table_count, page_count, …) and per-image triage decisions to
+# decide which optional stages to run. MinerU writes a structured
+# `*_content_list*.json` alongside the markdown / image files when
+# it finishes parsing — this helper pulls that file (when present)
+# and falls back to filename-based heuristics otherwise. Output is
+# the dict that the activity layer projects into `content_stats`.
+
+_IMAGE_SUFFIXES: frozenset[str] = frozenset({
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif",
+})
+_TEXT_SUFFIXES: frozenset[str] = frozenset({
+    ".md", ".markdown", ".txt",
+})
+
+# Filename heuristics for vision-triage decisions when MinerU does
+# not surface per-image semantic data. These are coarse — the actual
+# semantic decision lives in the vision LLM (when wired) or a deeper
+# profiler (LLM-assisted).
+_DECORATIVE_NAME_RE = re.compile(
+    r"(logo|icon|watermark|header|footer|bullet|sprite)", re.IGNORECASE,
+)
+_SEMANTIC_NAME_RE = re.compile(
+    r"(diagram|chart|figure|graph|workflow|architecture|screenshot)",
+    re.IGNORECASE,
+)
+# Size thresholds (bytes). Tuned conservatively: under 2KB is almost
+# always an icon/sprite; over 30KB is large enough to plausibly carry
+# semantic content. The middle range gets `triage` so a fast vision
+# pass can decide.
+_DECORATIVE_MAX_BYTES = 2 * 1024
+_SEMANTIC_MIN_BYTES = 30 * 1024
+
+
+def _build_content_manifest(output_dir: Path) -> dict[str, Any]:
+    """Build the post-parse content manifest from MinerU output.
+
+    Returns a dict with aggregate counts, derived quality scores, and
+    per-image triage decisions. Empty / missing output_dir yields an
+    empty manifest; the planner treats `None` fields as "unknown" and
+    falls back to the deterministic profile.
+
+    The dict is shaped to match the keys the activity layer (`_artifact_result`
+    in `j1.orchestration.activities.processing`) projects into the
+    `ArtifactActivityResult.content_stats` field. Adding a new key here
+    requires a corresponding entry in that projection list."""
+    if not output_dir.exists():
+        return {}
+
+    text_chars = 0
+    image_files: list[Path] = []
+    table_count = 0
+    equation_count = 0
+    text_block_count = 0
+    page_indices: set[int] = set()
+
+    # Walk the output dir once; categorise by suffix + filename.
+    content_list_path: Path | None = None
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        name = path.name.lower()
+        if suffix in _IMAGE_SUFFIXES:
+            image_files.append(path)
+            continue
+        if suffix in _TEXT_SUFFIXES:
+            text_block_count += 1
+            try:
+                text_chars += len(path.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                pass
+            continue
+        if suffix == ".json" and "content_list" in name and content_list_path is None:
+            # MinerU writes `*_content_list.json` (or similar) with
+            # the structured per-element list. Defer parsing until
+            # after the walk so we have a single canonical path.
+            content_list_path = path
+
+    # Parse the structured content_list if present — it carries
+    # per-element page indices, captions, and types we can't infer
+    # from filenames alone.
+    images_from_list: list[dict[str, Any]] = []
+    if content_list_path is not None:
+        try:
+            payload = json.loads(content_list_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("type", "")).lower()
+                page_idx = item.get("page_idx")
+                if isinstance(page_idx, int):
+                    page_indices.add(page_idx)
+                if item_type in ("image", "img"):
+                    images_from_list.append(item)
+                elif item_type == "table":
+                    table_count += 1
+                elif item_type in ("equation", "formula"):
+                    equation_count += 1
+                elif item_type == "text":
+                    body = item.get("text") or ""
+                    if isinstance(body, str):
+                        text_chars = max(text_chars, text_chars)  # already counted via files
+
+    image_count = max(len(image_files), len(images_from_list))
+    page_count = max(page_indices) + 1 if page_indices else None
+
+    images = _build_image_triage(image_files, images_from_list, output_dir)
+
+    parse_quality_score = _score_parse_quality(text_block_count, text_chars)
+    text_sufficiency_score = _score_text_sufficiency(text_chars, page_count)
+    layout_complexity_score = _score_layout_complexity(
+        image_count, table_count, equation_count, page_count,
+    )
+
+    manifest: dict[str, Any] = {
+        "image_count": image_count,
+        "table_count": table_count,
+        "equation_count": equation_count,
+        "text_block_count": text_block_count,
+        "total_text_chars": text_chars,
+        "has_images": image_count > 0,
+        "has_tables": table_count > 0,
+        "parse_quality_score": parse_quality_score,
+        "text_sufficiency_score": text_sufficiency_score,
+        "layout_complexity_score": layout_complexity_score,
+        "images": images,
+    }
+    if page_count is not None:
+        manifest["page_count"] = page_count
+    return manifest
+
+
+def _build_image_triage(
+    image_files: list[Path],
+    images_from_list: list[dict[str, Any]],
+    output_dir: Path,
+) -> list[dict[str, Any]]:
+    """Per-image triage decisions surfaced on the plan.
+
+    Combines two information sources:
+      * filesystem image files (size, filename heuristics)
+      * MinerU's structured content_list entries (page_idx, caption,
+        img_path) — when available
+
+    Each entry is a flat dict so the audit-log payload stays compact
+    and forward-compatible. Decision vocabulary mirrors
+    `j1.processing.planning.VISION_DECISION_*` (skip / triage /
+    enrich)."""
+    decisions: list[dict[str, Any]] = []
+
+    # Index the structured entries by image filename for cross-correlation.
+    by_name: dict[str, dict[str, Any]] = {}
+    for entry in images_from_list:
+        img_path = entry.get("img_path") or entry.get("image_path") or ""
+        if isinstance(img_path, str) and img_path:
+            by_name[Path(img_path).name.lower()] = entry
+
+    for path in image_files:
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        meta = by_name.get(path.name.lower(), {})
+        caption = meta.get("img_caption") or meta.get("caption") or ""
+        if isinstance(caption, list):
+            caption = " ".join(str(c) for c in caption if c)
+        page = meta.get("page_idx")
+        decision, role, score, reason = _classify_image(
+            filename=path.name,
+            size_bytes=size_bytes,
+            caption=str(caption or ""),
+        )
+        decisions.append({
+            "image_id": str(path.relative_to(output_dir)),
+            "decision": decision,
+            "role": role,
+            "score": score,
+            "reason": reason,
+            "size_bytes": size_bytes,
+            "page": page if isinstance(page, int) else None,
+            "caption": str(caption or "")[:200] or None,
+        })
+
+    # Structured-list entries that didn't resolve to a file on disk
+    # (MinerU sometimes references images that were inlined or
+    # discarded). Keep them so the operator can see the count match.
+    seen_names = {Path(d["image_id"]).name.lower() for d in decisions}
+    for entry in images_from_list:
+        img_path = entry.get("img_path") or entry.get("image_path") or ""
+        if not isinstance(img_path, str) or not img_path:
+            continue
+        if Path(img_path).name.lower() in seen_names:
+            continue
+        decisions.append({
+            "image_id": img_path,
+            "decision": "triage",
+            "role": "unknown",
+            "score": 0.5,
+            "reason": "image referenced in content_list but not on disk",
+            "size_bytes": None,
+            "page": entry.get("page_idx") if isinstance(entry.get("page_idx"), int) else None,
+            "caption": str(entry.get("img_caption") or entry.get("caption") or "")[:200] or None,
+        })
+    return decisions
+
+
+def _classify_image(
+    *, filename: str, size_bytes: int, caption: str,
+) -> tuple[str, str, float, str]:
+    """Filename + size + caption heuristics for one image.
+
+    Returns (decision, role, score, reason). Decisions land at one of:
+      * `skip`    — almost certainly decorative; don't burn vision LLM
+      * `enrich`  — likely semantic content; run the full vision pass
+      * `triage`  — uncertain; let a cheap vision pass classify it
+    Score is 0..1 confidence in the chosen decision."""
+    if _DECORATIVE_NAME_RE.search(filename):
+        return ("skip", "decorative", 0.9,
+                f"filename matches decorative pattern ({filename!r})")
+    if size_bytes and size_bytes <= _DECORATIVE_MAX_BYTES:
+        return ("skip", "icon", 0.85,
+                f"file is {size_bytes} bytes, under decorative threshold")
+    if _SEMANTIC_NAME_RE.search(filename):
+        return ("enrich", "diagram", 0.9,
+                f"filename matches semantic pattern ({filename!r})")
+    if caption and len(caption) >= 20:
+        # Long caption = MinerU thinks this image carries enough
+        # context to talk about. Vision enrichment is high-value.
+        return ("enrich", "captioned", 0.8,
+                "image has a substantive caption")
+    if size_bytes >= _SEMANTIC_MIN_BYTES:
+        return ("enrich", "large", 0.65,
+                f"file is {size_bytes} bytes, above semantic threshold")
+    return ("triage", "unknown", 0.5,
+            "no strong filename / size / caption signal — needs cheap triage")
+
+
+def _score_parse_quality(text_block_count: int, text_chars: int) -> float:
+    """0..1 score for how well MinerU extracted text content.
+
+    A clean text PDF yields several markdown files and many chars;
+    a failed parse yields nothing or near-empty output."""
+    if text_block_count == 0 or text_chars == 0:
+        return 0.0
+    if text_chars < 100:
+        return 0.3  # very thin output, possibly a parse failure
+    if text_block_count >= 1 and text_chars >= 500:
+        return 1.0
+    return 0.7
+
+
+def _score_text_sufficiency(text_chars: int, page_count: int | None) -> float:
+    """0..1 score for whether the document has enough text to skip
+    vision/OCR enrichment. ~1000 chars/page is the rule of thumb for
+    a 'text-rich' page."""
+    if text_chars == 0:
+        return 0.0
+    pages = page_count or 1
+    chars_per_page = text_chars / max(pages, 1)
+    if chars_per_page >= 1000:
+        return 1.0
+    return min(1.0, chars_per_page / 1000)
+
+
+def _score_layout_complexity(
+    image_count: int, table_count: int, equation_count: int,
+    page_count: int | None,
+) -> float:
+    """0..1 score for how visually busy the document is. ≥5 visual
+    elements per page caps at 1.0 (complex). Empty / pure-text
+    documents score 0."""
+    visuals = image_count + table_count + equation_count
+    if visuals == 0:
+        return 0.0
+    pages = page_count or 1
+    per_page = visuals / max(pages, 1)
+    return min(1.0, per_page / 5)
 
 
 # ---- Workspace path resolution -------------------------------------

@@ -748,6 +748,24 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
             "has_scanned_pages",
             "page_count",
             "text_extractable_ratio",
+            # Manifest signals (post-parse counts + quality scores).
+            # These flow into `DocumentProfile` via the workflow's
+            # `_merge_compile_signals` helper and feed the planner /
+            # completion-validation gate.
+            "image_count",
+            "table_count",
+            "equation_count",
+            "text_block_count",
+            "total_text_chars",
+            "empty_page_ratio",
+            "parse_quality_score",
+            "text_sufficiency_score",
+            "layout_complexity_score",
+            # Per-image triage decisions surfaced by the parser. List
+            # of dicts with `image_id` / `decision` / `role` / etc.
+            # Empty list = parser surfaced no images; absent key =
+            # parser doesn't surface per-image data at all.
+            "images",
         )
         picked = {
             k: result.metadata[k]

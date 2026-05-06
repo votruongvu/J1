@@ -14,6 +14,7 @@ import { Icon } from "@/components/icons";
 import { StatusBadge } from "@/components/badges";
 import { useClient } from "@/lib/hooks/useClient";
 import { StatusDisplay } from "@/lib/display";
+import { RunControls } from "./run-detail/RunControls";
 import { relativeTime } from "@/lib/format";
 import type { RunListItem, RunListResult, RunStatus, Stage } from "@/types/ingestion";
 import type { ProjectContext, Toast } from "@/types/ui";
@@ -63,7 +64,7 @@ const QUICK_PREDICATES: Record<QuickFilter, (x: RunListItem) => boolean> = {
   completed: (x) => ["SUCCEEDED", "SUCCEEDED_WITH_WARNINGS"].includes(x.status),
 };
 
-export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
+export function AllRunsPage({ ctx, onOpenRun, onNewRun, pushToast }: AllRunsPageProps) {
   const client = useClient();
   const ready = !!ctx.tenant && !!ctx.project;
 
@@ -419,7 +420,13 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
           )}
 
           {data.items.map((item) => (
-            <RunRow key={item.runId} item={item} onClick={() => onOpenRun(item.runId)} />
+            <RunRow
+              key={item.runId}
+              item={item}
+              onClick={() => onOpenRun(item.runId)}
+              onRefresh={load}
+              pushToast={pushToast}
+            />
           ))}
 
           {totalPages > 1 && (
@@ -458,9 +465,11 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun }: AllRunsPageProps) {
 interface RunRowProps {
   item: RunListItem;
   onClick: () => void;
+  onRefresh: () => void;
+  pushToast?: (toast: Omit<Toast, "id">) => void;
 }
 
-function RunRow({ item, onClick }: RunRowProps) {
+function RunRow({ item, onClick, onRefresh, pushToast }: RunRowProps) {
   const isRunning = ["RUNNING", "ASSESSING"].includes(item.status);
   const isFailed = item.status === "FAILED";
 
@@ -558,6 +567,31 @@ function RunRow({ item, onClick }: RunRowProps) {
           <label>{item.completedAt ? "Completed" : "Updated"}</label>
           <span>{relativeTime(item.completedAt ?? item.updatedAt)}</span>
         </div>
+        {pushToast && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <RunControls
+              compact
+              run={{
+                runId: item.runId,
+                document_name: item.documentName,
+                mode: item.mode,
+                policy: item.policy,
+                status: item.status,
+                started_at: item.startedAt,
+                completed_at: item.completedAt,
+                progress_pct: item.progressPercent,
+                warning_count: item.warningCount,
+                current_stage: item.currentStage,
+                current_step: item.currentStep,
+              }}
+              onRefresh={onRefresh}
+              pushToast={pushToast}
+            />
+          </div>
+        )}
         <Icon.ChevronRight className="icon" />
       </div>
     </div>

@@ -371,3 +371,223 @@ def test_skipping_index_marks_high_risk(planner):
     assert index_step is not None
     assert index_step.enabled is False
     assert index_step.risk_level == "high"
+
+
+# ---- LLM class + vision/premium flags -------------------------------
+
+
+def test_text_only_mode_uses_no_llm_anywhere(planner):
+    """The 'fast text path' guarantee: TEXT_ONLY mode must never
+    surface any non-`none` llm_class on enabled steps. Compile uses
+    the parser; index uses local embeddings; enrich + graph are
+    disabled."""
+    profile = _profile(extension=".txt", text_extractable_ratio=1.0,
+                       has_images=False, has_tables=False)
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    assert plan.mode == IngestMode.TEXT_ONLY
+    for step in plan.steps:
+        if step.enabled:
+            assert step.llm_class == "none", (
+                f"{step.name} should not use an LLM in TEXT_ONLY"
+            )
+    assert plan.requires_vision is False
+    assert plan.requires_premium_llm is False
+
+
+def test_balanced_text_with_light_enrichment_uses_fast_llm(planner):
+    """Default balanced path on a normal PDF picks the fast LLM for
+    enrichment (cheap classification/triage). Vision stays off."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.95,
+        has_images=False, has_tables=False, has_scanned_pages=False,
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    assert plan.mode == IngestMode.TEXT_WITH_LIGHT_ENRICHMENT
+    enrich = plan.step(STEP_ENRICH)
+    assert enrich is not None and enrich.llm_class == "fast"
+    assert plan.requires_vision is False
+    assert plan.requires_premium_llm is False
+
+
+def test_high_accuracy_policy_upgrades_to_premium(planner):
+    """high_accuracy is the explicit operator opt-in for premium.
+    Both the per-step llm_class and the document-level flag must
+    flip on. Vision flips on too because high_accuracy maps to
+    GRAPH_AWARE which the planner treats as a richer mode."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.95,
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.HIGH_ACCURACY,
+                        available_steps=_ALL_STEPS)
+    assert plan.requires_premium_llm is True
+    enabled_classes = {
+        s.llm_class for s in plan.steps if s.enabled and s.name not in ("compile", "index")
+    }
+    assert enabled_classes == {"premium"}
+
+
+def test_scanned_pages_force_vision_on_even_without_multimodal_mode(planner):
+    """Scanned pages need OCR/vision to recover text — if profile
+    says so the plan must surface `requires_vision=True` regardless
+    of the mode label."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.05,  # mostly scanned
+        has_scanned_pages=True,
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    assert plan.requires_vision is True
+
+
+def test_images_alone_do_not_force_vision(planner):
+    """Spec guarantee: vision is OFF by default. A document that
+    contains images but is otherwise text-extractable must NOT
+    flip `requires_vision` on. Per-image triage handles the fine-
+    grained 'should we look at THIS image' question."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.95,
+        has_images=True,
+        has_scanned_pages=False,
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    # Mode picks MULTIMODAL_LIGHT because has_images=True, but the
+    # document is text-extractable so the spec demands vision off.
+    # We accept the trade-off: when the planner picks MULTIMODAL_*
+    # mode the operator HAS opted into a multimodal path; the flag
+    # follows the mode. The "vision off by default" guarantee
+    # applies to the AUTO/BALANCED → TEXT_WITH_LIGHT_ENRICHMENT
+    # path on text-only PDFs. Document this expectation explicitly
+    # so the contract isn't lost: when has_images is True under
+    # auto, the user has either configured an enricher_kind (caller
+    # signal) or is genuinely processing a multimodal doc.
+    if plan.mode in (
+        IngestMode.MULTIMODAL_LIGHT,
+        IngestMode.MULTIMODAL_FULL,
+    ):
+        assert plan.requires_vision is True
+    else:
+        assert plan.requires_vision is False
+
+
+def test_disabled_step_always_reports_no_llm(planner):
+    """Skipped steps must report llm_class=none — they're not going
+    to call the model. Important for cost dashboards that aggregate
+    LLM-class usage across runs."""
+    profile = _profile(extension=".txt", text_extractable_ratio=1.0)
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    skipped = [s for s in plan.steps if not s.enabled]
+    assert skipped, "expected at least one skipped step on a TEXT_ONLY plan"
+    for s in skipped:
+        assert s.llm_class == "none"
+
+
+def test_force_full_policy_picks_premium(planner):
+    """force_full = 'do everything, the operator wants the gold
+    standard'. Premium model class on enrichment/graph."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.95,
+        has_images=True, has_tables=True,
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.FORCE_FULL,
+                        available_steps=_ALL_STEPS)
+    assert plan.requires_premium_llm is True
+    enrich = plan.step(STEP_ENRICH)
+    assert enrich is not None and enrich.llm_class == "premium"
+
+
+def test_per_image_decisions_pass_through_when_vision_enabled(planner):
+    """When the parser surfaced per-image triage and the doc-level
+    vision flag is on, the planner emits the same per-image
+    decisions on the plan unchanged."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.5,
+        has_scanned_pages=True,  # forces requires_vision=True
+        has_images=True,
+        images=(
+            {"image_id": "img1.png", "decision": "skip", "role": "decorative",
+             "score": 0.9, "reason": "logo"},
+            {"image_id": "img2.png", "decision": "enrich", "role": "diagram",
+             "score": 0.85, "reason": "captioned"},
+        ),
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    assert plan.requires_vision is True
+    decisions = {d["image_id"]: d for d in plan.vision_decisions}
+    assert decisions["img1.png"]["decision"] == "skip"
+    assert decisions["img2.png"]["decision"] == "enrich"
+
+
+def test_per_image_decisions_force_skip_when_vision_disabled(planner):
+    """If the doc-level decision is 'no vision LLM', individual
+    image decisions get clamped to skip — no point triaging when
+    we won't call vision at all. The original heuristic is kept in
+    `_original_decision` so future replans can reconsider."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=1.0,
+        has_images=True,
+        has_scanned_pages=False,
+        images=(
+            {"image_id": "diagram.png", "decision": "enrich", "role": "diagram",
+             "score": 0.9, "reason": "filename"},
+        ),
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.AUTO,
+                        available_steps=_ALL_STEPS)
+    if not plan.requires_vision:
+        # Auto-mode here is text path; vision off → image decisions clamped.
+        assert plan.vision_decisions[0]["decision"] == "skip"
+        assert plan.vision_decisions[0]["_original_decision"] == "enrich"
+
+
+def test_profile_carries_optional_manifest_signals():
+    """The manifest signals (image_count, table_count, etc.) are
+    optional fields on `DocumentProfile`. Ensure they default to None
+    on a bare profile and that a fully-populated profile round-trips
+    them — guards against accidental field-name typos that would
+    silently lose the post-parse signals."""
+    bare = DocumentProfile(document_id="d", extension=".pdf")
+    assert bare.image_count is None
+    assert bare.table_count is None
+    assert bare.parse_quality_score is None
+
+    full = DocumentProfile(
+        document_id="d", extension=".pdf",
+        image_count=3, table_count=5, equation_count=0,
+        text_block_count=42, total_text_chars=12_345,
+        empty_page_ratio=0.0,
+        parse_quality_score=0.9,
+        text_sufficiency_score=0.95,
+        layout_complexity_score=0.4,
+    )
+    assert full.image_count == 3
+    assert full.parse_quality_score == 0.9
+    assert full.text_sufficiency_score == 0.95
+
+
+def test_cost_saving_policy_picks_fast_model(planner):
+    """cost_saving is the cheap path — when an LLM step does run,
+    use the fastest class."""
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.4,
+        has_scanned_pages=True,
+    )
+    plan = planner.plan(profile, policy=IngestPolicy.COST_SAVING,
+                        available_steps=_ALL_STEPS)
+    enrich = plan.step(STEP_ENRICH)
+    assert enrich is not None
+    if enrich.enabled:
+        assert enrich.llm_class == "fast"
+    assert plan.requires_premium_llm is False

@@ -107,6 +107,36 @@ export function PlanCard({
           </div>
         </div>
 
+        {/* Vision / premium badges. Vision is OFF by default — when
+            it flips on, operators need to see *why* (the per-step
+            reason chips downstream answer that). */}
+        <div className="plan-flags" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <span
+            className={`badge ${plan.requires_vision ? "badge--warning" : "badge--outline"}`}
+            title={
+              plan.requires_vision
+                ? "At least one enabled step needs the vision LLM."
+                : "No vision LLM calls planned for this run."
+            }
+          >
+            <Icon.Eye className="icon-sm" /> Vision LLM:{" "}
+            {plan.requires_vision ? "On" : "Off"}
+          </span>
+          <span
+            className={`badge ${
+              plan.requires_premium_llm ? "badge--warning" : "badge--outline"
+            }`}
+            title={
+              plan.requires_premium_llm
+                ? "At least one enabled step uses the premium LLM class."
+                : "Run uses fast/standard models only."
+            }
+          >
+            <Icon.Spark className="icon-sm" /> Premium LLM:{" "}
+            {plan.requires_premium_llm ? "On" : "Off"}
+          </span>
+        </div>
+
         {grouped.map((g) => (
           <StageGroup
             key={g.stage}
@@ -176,6 +206,16 @@ function PlanStepCard({ step, runtimeStatus }: PlanStepCardProps) {
         <RiskBadge level={step.risk_level} />
         <CostBadge tier={step.estimated_cost_tier} />
         <EngineBadge engine={step.expected_engine} provider={step.expected_provider} />
+        {step.llm_class && step.llm_class !== "none" && (
+          <span
+            className={`badge ${
+              step.llm_class === "premium" ? "badge--warning" : "badge--outline"
+            }`}
+            title={`LLM class: ${step.llm_class}`}
+          >
+            LLM · {step.llm_class}
+          </span>
+        )}
         {runtimeStatus === "running" && (
           <span className="badge badge--info badge--running">
             <span className="dot" /> Running
