@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -83,6 +84,45 @@ class _LibreOfficeConversionError(RuntimeError):
     "binary not installed" infrastructure case."""
 
 
+def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
+    """When `parse_method=vlm-http-client`, propagate J1's vision-LLM
+    config into the env vars MinerU's `mineru_vl_utils.MinerUClient`
+    expects: `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`,
+    `MINERU_VL_MODEL_NAME`.
+
+    Without this, switching `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client`
+    on its own gets the operator a `RequestError: Invalid server URL`
+    from mineru-vl-utils because no server URL was wired in. With it,
+    the existing `J1_VISION_LLM_*` config (which the operator already
+    set for the rest of the stack) is the only thing that needs to be
+    in place — flipping parse_method routes MinerU through the same
+    LM Studio / vLLM / hosted endpoint already serving the J1 vision
+    role.
+
+    Idempotent — only sets each env var when (a) the parse method is
+    `vlm-http-client`, (b) we have a value, and (c) the operator
+    hasn't already exported the var directly. Operator-supplied
+    `MINERU_VL_*` always wins so existing deployments keep their
+    tuning.
+
+    No-op when parse_method is anything else (default `auto` runs
+    MinerU locally and never reads these vars)."""
+    if settings.parse_method != "vlm-http-client":
+        return
+    mapping = {
+        "MINERU_VL_SERVER": settings.vlm_http_server_url,
+        "MINERU_VL_API_KEY": settings.vlm_http_api_key,
+        "MINERU_VL_MODEL_NAME": settings.vlm_http_model_name,
+    }
+    for name, value in mapping.items():
+        if not value:
+            continue
+        if os.environ.get(name):
+            # Operator already exported this — don't shadow it.
+            continue
+        os.environ[name] = value
+
+
 # ---- Public entry points -------------------------------------------
 
 
@@ -96,6 +136,10 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     `RAGAnything.process_document_complete()` to a temp output dir
     and walks the output for ArtifactDrafts.
     """
+    # Bridge the J1 vision LLM config into MinerU's expected env
+    # vars when the operator has selected the HTTP-client backend.
+    # No-op for the default `auto` parse method.
+    _apply_vlm_http_client_env(request.settings)
     rag, output_dir, source_path = _prepare_compile(request)
 
     # Pre-conversion: legacy/non-OOXML → PDF via LibreOffice headless.
@@ -272,6 +316,10 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
     and then collecting the graph artifacts the vendor writes to its
     storage dir.
     """
+    # Same env bridge as compile — the graph path also drives
+    # `process_document_complete` which can re-invoke the VLM
+    # backend when the storage dir is regenerated.
+    _apply_vlm_http_client_env(request.settings)
     rag = _build_rag_instance(
         text_client=request.text_client,
         vision_client=None,

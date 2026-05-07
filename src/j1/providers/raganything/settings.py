@@ -27,6 +27,27 @@ ENV_RAGANYTHING_PDF_CONVERT_EXTENSIONS = "J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS"
 ENV_RAGANYTHING_LIBREOFFICE_BINARY = "J1_RAGANYTHING_LIBREOFFICE_BINARY"
 ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT = "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS"
 
+# VLM HTTP client configuration. Consumed by MinerU when
+# `parse_method=vlm-http-client` — MinerU reads `MINERU_VL_SERVER` /
+# `MINERU_VL_API_KEY` / `MINERU_VL_MODEL_NAME` directly. The bridge
+# applies these env vars from settings at compile time so the
+# operator doesn't need to set both J1 and MinerU env vars by hand.
+#
+# Defaults: fall back to the project-wide `J1_VISION_LLM_*` config
+# the operator already wired for the rest of the stack — that way
+# turning on `vlm-http-client` requires ONE env change
+# (J1_RAGANYTHING_PARSE_METHOD), not three.
+ENV_RAGANYTHING_VLM_HTTP_SERVER_URL = "J1_RAGANYTHING_VLM_HTTP_SERVER_URL"
+ENV_RAGANYTHING_VLM_HTTP_API_KEY = "J1_RAGANYTHING_VLM_HTTP_API_KEY"
+ENV_RAGANYTHING_VLM_HTTP_MODEL_NAME = "J1_RAGANYTHING_VLM_HTTP_MODEL_NAME"
+# Project-wide vision LLM env vars used as fallbacks. We deliberately
+# read these from the env at load-time rather than importing the
+# `j1.llm.*` modules to keep the provider self-contained — the LLM
+# layer doesn't depend on raganything, and the reverse must hold.
+ENV_J1_VISION_LLM_BASE_URL = "J1_VISION_LLM_BASE_URL"
+ENV_J1_VISION_LLM_API_KEY = "J1_VISION_LLM_API_KEY"
+ENV_J1_VISION_LLM_MODEL = "J1_VISION_LLM_MODEL"
+
 DEFAULT_MODE = "local"
 DEFAULT_WORKDIR = "./data/raganything"
 DEFAULT_PARSE_METHOD = "auto"
@@ -101,6 +122,17 @@ class RAGAnythingSettings:
     # Per-conversion timeout (seconds). LibreOffice can be slow on
     # first launch (font cache rebuild) — keep generous.
     libreoffice_timeout_seconds: float = DEFAULT_LIBREOFFICE_TIMEOUT
+    # VLM HTTP client wiring. Only consulted when
+    # `parse_method=vlm-http-client`. None on any field means "let
+    # MinerU's auto-detection do its thing" — typically that means
+    # `MINERU_VL_MODEL_NAME` is None and MinerU pulls the first
+    # registered model from `<server>/v1/models`. The bridge skips
+    # applying any env var that's None at compile time, so leaving
+    # these unset preserves the legacy behaviour for callers that
+    # were already exporting `MINERU_VL_*` themselves.
+    vlm_http_server_url: str | None = None
+    vlm_http_api_key: str | None = None
+    vlm_http_model_name: str | None = None
 
 
 def load_raganything_settings(
@@ -128,6 +160,21 @@ def load_raganything_settings(
         ),
         libreoffice_timeout_seconds=_parse_timeout(
             source.get(ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT),
+        ),
+        vlm_http_server_url=(
+            source.get(ENV_RAGANYTHING_VLM_HTTP_SERVER_URL)
+            or source.get(ENV_J1_VISION_LLM_BASE_URL)
+            or None
+        ),
+        vlm_http_api_key=(
+            source.get(ENV_RAGANYTHING_VLM_HTTP_API_KEY)
+            or source.get(ENV_J1_VISION_LLM_API_KEY)
+            or None
+        ),
+        vlm_http_model_name=(
+            source.get(ENV_RAGANYTHING_VLM_HTTP_MODEL_NAME)
+            or source.get(ENV_J1_VISION_LLM_MODEL)
+            or None
         ),
     )
 
