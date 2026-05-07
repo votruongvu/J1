@@ -49,6 +49,9 @@ class WorkspaceResolver:
     def runtime(self, ctx: ProjectContext) -> Path:
         return self.area(ctx, WorkspaceArea.RUNTIME)
 
+    def validation(self, ctx: ProjectContext) -> Path:
+        return self.area(ctx, WorkspaceArea.VALIDATION)
+
     def ensure(self, ctx: ProjectContext) -> Path:
         root = self.project_root(ctx)
         root.mkdir(parents=True, exist_ok=True)

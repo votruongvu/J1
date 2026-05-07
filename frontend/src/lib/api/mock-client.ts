@@ -24,6 +24,7 @@ import {
   isTerminalEvent,
 } from "@/types/ingestion";
 import type {
+  GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
   ReviewArtifactContent,
@@ -38,6 +39,11 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  StartValidationRunRequest,
+  ValidationRun,
+  ValidationRunListItem,
+  ValidationSet,
+  ValidationSetListItem,
 } from "@/types/review";
 import type { MockScenario, ProjectContext } from "@/types/ui";
 import {
@@ -1654,6 +1660,242 @@ export class MockClient implements IngestionClient {
         ? { mock: true, scenario: this.scenario }
         : null,
     };
+  }
+
+  // ---- Validation sets + runs (Phase 2 mock) ----------------------
+
+  // Stash for set/run state across calls in mock mode. Keyed by
+  // runId so a single MockClient can simulate multiple runs.
+  private _mockSets: Map<string, ValidationSet> = new Map();
+  private _mockRuns: Map<string, ValidationRun> = new Map();
+
+  async generateValidationSet(
+    runId: string,
+    request: GenerateValidationSetRequest = {},
+  ): Promise<ValidationSet> {
+    await delay(160);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    const isFailureScenario = this.scenario === "failure";
+
+    // Idempotency mock: same runId reuses the existing set unless
+    // `force` is set. Mirrors the backend's hash-based contract.
+    const existing = [...this._mockSets.values()].find(
+      (s) => s.runId === runId,
+    );
+    if (existing && !request.force) {
+      return existing;
+    }
+
+    const setId = `vs-${Math.random().toString(36).slice(2, 10)}`;
+    const cases = isFailureScenario
+      ? []
+      : [
+          {
+            testCaseId: "tc-smoke",
+            question: "What is this document about?",
+            type: "retrieval" as const,
+            priority: "smoke" as const,
+            expectedBehavior: "answer_with_citations" as const,
+            expectedAnswerPoints: [],
+            expectedChunks: [],
+            expectedPages: [],
+            expectedArtifacts: [],
+            expectedGraphNodes: [],
+            expectedGraphEdges: [],
+            citationRequired: !!request.citationRequired,
+            sourceTraceability: [],
+            metadata: {},
+          },
+          {
+            testCaseId: "tc-1",
+            question: "When is the proposal due?",
+            type: "retrieval" as const,
+            priority: "normal" as const,
+            expectedBehavior: "answer_with_citations" as const,
+            expectedAnswerPoints: ["20 May 2026"],
+            expectedChunks: ["mock-chunk-1"],
+            expectedPages: [1],
+            expectedArtifacts: [],
+            expectedGraphNodes: [],
+            expectedGraphEdges: [],
+            citationRequired: !!request.citationRequired,
+            sourceTraceability: ["mock-chunk-1"],
+            metadata: {},
+          },
+        ];
+    const vset: ValidationSet = {
+      validationSetId: setId,
+      runId,
+      documentIds: ["mock-doc"],
+      source: "generated",
+      status: "draft",
+      createdAt: new Date().toISOString(),
+      createdBy: "mock-tester",
+      generatorVersion: "v1",
+      artifactsContentHash: `sha256:mock-${runId}`,
+      testCases: cases,
+      metadata: {},
+    };
+    this._mockSets.set(setId, vset);
+    return vset;
+  }
+
+  async listValidationSets(runId: string): Promise<ValidationSetListItem[]> {
+    await delay(60);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    return [...this._mockSets.values()]
+      .filter((s) => s.runId === runId)
+      .map((s) => ({
+        validationSetId: s.validationSetId,
+        runId: s.runId,
+        source: s.source,
+        status: s.status,
+        createdAt: s.createdAt,
+        createdBy: s.createdBy ?? null,
+        caseCount: s.testCases.length,
+      }));
+  }
+
+  async getValidationSet(
+    runId: string, validationSetId: string,
+  ): Promise<ValidationSet> {
+    await delay(60);
+    const vset = this._mockSets.get(validationSetId);
+    if (!vset || vset.runId !== runId) {
+      throw new ApiError(404, "Validation set not found.");
+    }
+    return vset;
+  }
+
+  async runValidation(
+    runId: string,
+    request: StartValidationRunRequest,
+  ): Promise<ValidationRun> {
+    await delay(280);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    const vset = this._mockSets.get(request.validationSetId);
+    if (!vset || vset.runId !== runId) {
+      throw new ApiError(404, "Validation set not found.");
+    }
+    const isFailureScenario = this.scenario === "failure";
+    const passed = !isFailureScenario;
+    const vrunId = `vrun-${Math.random().toString(36).slice(2, 10)}`;
+    const startedAt = new Date().toISOString();
+    const completedAt = new Date().toISOString();
+    const results = vset.testCases.map((tc) => ({
+      resultId: `vr-${Math.random().toString(36).slice(2, 8)}`,
+      testCaseId: tc.testCaseId,
+      status: (passed ? "passed" : "failed") as
+        | "passed"
+        | "warning"
+        | "failed"
+        | "skipped",
+      question: tc.question,
+      answer: passed
+        ? `Mock answer for: ${tc.question}`
+        : "",
+      retrievedChunks: passed
+        ? [
+            {
+              artifactId: "mock-art-1",
+              chunkId: "mock-chunk-1",
+              runId,
+              documentId: "mock-doc",
+              sourceLocation: "p.1",
+              score: 0.85,
+              preview: "Demo retrieved chunk text.",
+            },
+          ]
+        : [],
+      citations: passed
+        ? [
+            {
+              artifactId: "mock-art-1",
+              artifactType: "chunk",
+              sourceDocumentId: "mock-doc",
+              sourceLocation: "p.1",
+              chunkId: "mock-chunk-1",
+              runId,
+            },
+          ]
+        : [],
+      checks: [
+        {
+          name: "answer_non_empty",
+          severity: "required" as const,
+          passed,
+        },
+        {
+          name: "retrieved_chunks_present",
+          severity: "required" as const,
+          passed,
+        },
+      ],
+      judgeNotes: null,
+      failureReason: passed ? null : "no chunks retrieved (mock)",
+      testerVerdict: null,
+      testerNotes: null,
+    }));
+    const total = results.length;
+    const passedCount = results.filter((r) => r.status === "passed").length;
+    const failedCount = results.filter((r) => r.status === "failed").length;
+    const vrun: ValidationRun = {
+      validationRunId: vrunId,
+      validationSetId: vset.validationSetId,
+      runId,
+      executionStatus: "completed",
+      validationStatus: passed ? "passed" : "failed",
+      startedAt,
+      completedAt,
+      actor: "mock-tester",
+      summary: {
+        total,
+        passed: passedCount,
+        warning: 0,
+        failed: failedCount,
+        skipped: 0,
+        coverage: {
+          byType: { retrieval: total },
+          byPriority: { smoke: 1, normal: Math.max(0, total - 1) },
+          bySection: {},
+        },
+        mainIssues: passed ? [] : ["mock failure"],
+        recommendedAction: passed ? "ready" : "block release until resolved",
+      },
+      results,
+      failureMessage: null,
+      metadata: {},
+    };
+    this._mockRuns.set(vrunId, vrun);
+    return vrun;
+  }
+
+  async listValidationRuns(runId: string): Promise<ValidationRunListItem[]> {
+    await delay(60);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    return [...this._mockRuns.values()]
+      .filter((v) => v.runId === runId)
+      .map((v) => ({
+        validationRunId: v.validationRunId,
+        validationSetId: v.validationSetId,
+        runId: v.runId,
+        executionStatus: v.executionStatus,
+        validationStatus: v.validationStatus,
+        startedAt: v.startedAt,
+        completedAt: v.completedAt ?? null,
+        summary: v.summary,
+      }));
+  }
+
+  async getValidationRun(
+    runId: string, validationRunId: string,
+  ): Promise<ValidationRun> {
+    await delay(60);
+    const vrun = this._mockRuns.get(validationRunId);
+    if (!vrun || vrun.runId !== runId) {
+      throw new ApiError(404, "Validation run not found.");
+    }
+    return vrun;
   }
 
   openStream(runId: string, handlers: StreamHandlers): StreamHandle {

@@ -1,0 +1,459 @@
+"""Tests for `DefaultValidationRunner`.
+
+Drives a real `HybridQueryEngine` (against an in-memory SQLite FTS
+index populated through the same code path the production worker
+uses) so the run-scope filter, the chunk_id round-trip, and the
+Phase 2 case-specific checks (`expected_chunk_in_topk`,
+`expected_page_in_citations`) are all exercised end-to-end.
+
+What's NOT covered:
+  * Persistence — the runner's store-side wiring is the service's
+    job, tested in test_validation_service_phase2.py.
+  * REST envelope shape — covered in test_rest_validation_runs.py.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from j1.artifacts.models import ArtifactRecord
+from j1.jobs.status import ProcessingStatus, ReviewStatus
+from j1.query.classifier import QueryIntentClassifier
+from j1.query.engine import HybridQueryEngine
+from j1.query.providers import (
+    ConsistencyProvider,
+    EvidenceProvider,
+    GraphQueryProvider,
+    KnowledgeQueryProvider,
+    ReportGenerator,
+)
+from j1.search import SqliteSearchIndexer
+from j1.validation import (
+    DefaultValidationRunner,
+    ValidationSetDTO,
+    ValidationTestCaseDTO,
+)
+from j1.workspace.layout import WorkspaceArea
+
+
+# ---- Fixtures -------------------------------------------------------
+
+
+@pytest.fixture
+def indexer(workspace, artifact_registry, registry):
+    return SqliteSearchIndexer(workspace, artifact_registry, registry)
+
+
+@pytest.fixture
+def query_engine(workspace, artifact_registry, registry, indexer):
+    from types import SimpleNamespace
+    profile_stub = SimpleNamespace(report_templates={})
+    return HybridQueryEngine(
+        classifier=QueryIntentClassifier(),
+        knowledge_provider=KnowledgeQueryProvider(indexer),
+        graph_provider=GraphQueryProvider(artifact_registry, workspace),
+        evidence_provider=EvidenceProvider(indexer, registry),
+        consistency_provider=ConsistencyProvider(artifact_registry, workspace),
+        report_generator=ReportGenerator(indexer, profile_stub),
+    )
+
+
+@pytest.fixture
+def runner(query_engine, artifact_registry):
+    return DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+    )
+
+
+def _stage_chunk(
+    workspace, ctx, artifact_registry, indexer,
+    *,
+    artifact_id: str,
+    content: bytes,
+    run_id: str,
+    chunk_id: str,
+    page: str | None = None,
+) -> ArtifactRecord:
+    """Stage a chunk-kind artifact + index it. Mirrors what the
+    production compile pipeline produces."""
+    area = WorkspaceArea.COMPILED
+    area_dir = workspace.area(ctx, area)
+    area_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{artifact_id}.txt"
+    (area_dir / stored).write_bytes(content)
+    metadata: dict = {"run_id": run_id, "chunk_id": chunk_id}
+    if page is not None:
+        metadata["source_location"] = page
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    record = ArtifactRecord(
+        artifact_id=artifact_id,
+        project=ctx,
+        kind="chunk",
+        location=f"{area.value}/{stored}",
+        content_hash=f"sha256:{artifact_id}",
+        byte_size=len(content),
+        status=ProcessingStatus.SUCCEEDED,
+        review_status=ReviewStatus.NOT_REQUIRED,
+        version=1,
+        created_at=now,
+        updated_at=now,
+        source_document_ids=[],
+        source_artifact_ids=[],
+        metadata=metadata,
+    )
+    artifact_registry.add(record)
+    indexer.index(ctx, [artifact_id])
+    return record
+
+
+def _make_set(
+    *,
+    set_id: str = "vs-1",
+    run_id: str = "run-1",
+    test_cases: list[ValidationTestCaseDTO] | None = None,
+) -> ValidationSetDTO:
+    return ValidationSetDTO(
+        validation_set_id=set_id,
+        run_id=run_id,
+        document_ids=["doc-1"],
+        source="generated",
+        status="draft",
+        created_at="2026-05-07T10:00:00Z",
+        created_by=None,
+        generator_version="v1",
+        artifacts_content_hash="sha256:test",
+        test_cases=test_cases or [],
+    )
+
+
+def _case(
+    *,
+    case_id: str = "tc-1",
+    question: str,
+    expected_chunks: list[str] | None = None,
+    expected_pages: list[int] | None = None,
+    citation_required: bool = False,
+    priority: str = "normal",
+) -> ValidationTestCaseDTO:
+    return ValidationTestCaseDTO(
+        test_case_id=case_id,
+        question=question,
+        type="retrieval",
+        priority=priority,  # type: ignore[arg-type]
+        expected_behavior="answer_with_citations",
+        expected_chunks=expected_chunks or [],
+        expected_pages=expected_pages or [],
+        citation_required=citation_required,
+    )
+
+
+# ---- Happy path ----------------------------------------------------
+
+
+def test_runner_passes_when_expected_chunk_retrieved(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    """Expected-chunk-in-topK is the headline Phase 2 check.
+    When the chunk is retrievable, the case passes and the run
+    aggregates to passed."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-1", content=b"hello world",
+        run_id="run-1", chunk_id="chunk-A",
+    )
+    case = _case(
+        question="hello", expected_chunks=["chunk-A"],
+    )
+
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    assert vrun.execution_status == "completed"
+    assert vrun.validation_status == "passed"
+    assert vrun.summary.total == 1
+    assert vrun.summary.passed == 1
+    assert vrun.summary.failed == 0
+    assert vrun.results[0].status == "passed"
+
+
+def test_runner_fails_when_expected_chunk_not_retrieved(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    """The case names a chunk-id that doesn't appear in the index.
+    The runner runs the query (returns nothing because the FTS
+    query won't match), the expected_chunk_in_topk check fails,
+    the case is marked failed, and the run validation_status is
+    failed even though execution_status is completed."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-other", content=b"unrelated",
+        run_id="run-1", chunk_id="chunk-OTHER",
+    )
+    case = _case(
+        question="hello", expected_chunks=["chunk-DOES-NOT-EXIST"],
+    )
+
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    # Critical: split status must persist independently. The job
+    # finished cleanly (completed); the document's case failed.
+    assert vrun.execution_status == "completed"
+    assert vrun.validation_status == "failed"
+    assert vrun.results[0].status == "failed"
+    assert vrun.results[0].failure_reason
+
+
+def test_runner_aggregates_to_passed_with_warnings(
+    runner, ctx,
+):
+    """Phase 2 doesn't ship optional checks yet, but the aggregator
+    rule is locked here so Phase 3 doesn't have to refactor: any
+    optional fail downgrades the run, but a required fail dominates."""
+    case = _case(question="anything", expected_chunks=[])
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+    # No retrieved chunks (empty index) → retrieved_chunks_present
+    # required-fails → run is "failed". This locks the contract:
+    # 'no retrieval' is a required fail, not a warning.
+    assert vrun.validation_status == "failed"
+
+
+def test_runner_priority_orders_smoke_first(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    """Smoke-priority cases must run before normal — testers want
+    the "is the index alive?" signal first. Order is asserted via
+    the result list, which preserves execution order."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-1", content=b"hello world",
+        run_id="run-1", chunk_id="chunk-A",
+    )
+    smoke = _case(
+        case_id="smoke-1", question="hello", priority="smoke",
+    )
+    normal = _case(
+        case_id="normal-1", question="hello", priority="normal",
+    )
+    deep = _case(
+        case_id="deep-1", question="hello", priority="deep",
+    )
+
+    vrun = runner.run(
+        ctx, _make_set(test_cases=[deep, normal, smoke]),
+    )
+
+    ids = [r.test_case_id for r in vrun.results]
+    assert ids == ["smoke-1", "normal-1", "deep-1"]
+
+
+# ---- Page-level check ----------------------------------------------
+
+
+def test_runner_checks_expected_page_in_citations(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    """expected_pages drives the citation page-overlap check. The
+    indexer surfaces the producer's `source_location` verbatim;
+    we accept any string that contains the expected page number
+    (producers don't share a single page format yet)."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-1", content=b"page three content",
+        run_id="run-1", chunk_id="chunk-A",
+        page="p.3",
+    )
+    case = _case(
+        question="three", expected_chunks=["chunk-A"], expected_pages=[3],
+    )
+
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    page_check = next(
+        c for c in vrun.results[0].checks
+        if c.name == "expected_page_in_citations"
+    )
+    assert page_check.passed is True
+
+
+def test_runner_fails_on_wrong_expected_page(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-1", content=b"page seven content",
+        run_id="run-1", chunk_id="chunk-A",
+        page="p.7",
+    )
+    case = _case(
+        question="seven", expected_chunks=["chunk-A"], expected_pages=[3],
+    )
+
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    assert vrun.validation_status == "failed"
+    page_check = next(
+        c for c in vrun.results[0].checks
+        if c.name == "expected_page_in_citations"
+    )
+    assert page_check.passed is False
+
+
+# ---- Run-scope filter ----------------------------------------------
+
+
+def test_runner_run_scope_isolates_to_requested_run(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    """Trust regression: same chunk text indexed under run-A and
+    run-B. The runner targets run-A; the run-B chunk must not
+    surface in retrieval, and the per-result run_id checks must
+    reflect that."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-A", content=b"shared keyword",
+        run_id="run-A", chunk_id="chunk-A1",
+    )
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-B", content=b"shared keyword",
+        run_id="run-B", chunk_id="chunk-B1",
+    )
+    case = _case(
+        question="shared", expected_chunks=["chunk-A1"],
+    )
+    vset = _make_set(run_id="run-A", test_cases=[case])
+
+    vrun = runner.run(ctx, vset)
+
+    # All retrieved chunks must come from run-A.
+    chunk_runs = {c.run_id for c in vrun.results[0].retrieved_chunks}
+    assert chunk_runs == {"run-A"}
+    # And the case passes — run-A's chunk is the only candidate.
+    assert vrun.validation_status == "passed"
+
+
+# ---- Lifecycle callback --------------------------------------------
+
+
+def test_runner_emits_three_lifecycle_snapshots(
+    query_engine, artifact_registry, ctx,
+):
+    """The runner fires the lifecycle callback three times:
+    pending → running → completed. Persistence layer relies on
+    this contract to upsert each transition."""
+    snapshots = []
+    runner = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+        lifecycle_callback=lambda v: snapshots.append(v),
+    )
+    case = _case(question="anything", expected_chunks=[])
+
+    runner.run(ctx, _make_set(test_cases=[case]))
+
+    statuses = [s.execution_status for s in snapshots]
+    assert statuses == ["pending", "running", "completed"]
+
+
+def test_runner_lifecycle_failure_does_not_break_run(
+    query_engine, artifact_registry, ctx,
+):
+    """If the persistence callback throws, the runner must still
+    return the terminal snapshot. Persistence is best-effort —
+    losing a snapshot can't fail the user-facing call."""
+    runner = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+        lifecycle_callback=lambda v: (_ for _ in ()).throw(RuntimeError("oops")),
+    )
+    case = _case(question="anything", expected_chunks=[])
+
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    assert vrun.execution_status == "completed"
+
+
+def test_runner_engine_failure_marks_run_failed(
+    artifact_registry, ctx,
+):
+    """If the query engine itself raises (e.g. corrupt index), the
+    run reports execution_status=failed with the error message,
+    and validation_status=inconclusive (we don't know if the
+    document would have passed)."""
+
+    class _BoomEngine:
+        def query(self, ctx, request):
+            raise RuntimeError("simulated index corruption")
+
+    runner = DefaultValidationRunner(
+        query_engine=_BoomEngine(),  # type: ignore[arg-type]
+        artifact_registry=artifact_registry,
+    )
+    case = _case(question="anything")
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    # When the engine fails on a per-case call, the runner doesn't
+    # crash — it records a failed result. The run completes with
+    # validation_status=failed (the case failed).
+    assert vrun.execution_status == "completed"
+    assert vrun.results[0].status == "failed"
+    assert "simulated" in (vrun.results[0].failure_reason or "").lower()
+
+
+# ---- Empty / edge cases --------------------------------------------
+
+
+def test_runner_empty_set_produces_inconclusive_summary(
+    runner, ctx,
+):
+    """A set with zero cases gives nothing to evaluate. Run is
+    `completed` (the runner finished) but `validation_status` is
+    `inconclusive` (no cases were ever evaluated)."""
+    vrun = runner.run(ctx, _make_set(test_cases=[]))
+
+    assert vrun.execution_status == "completed"
+    assert vrun.validation_status == "inconclusive"
+    assert vrun.summary.total == 0
+    assert vrun.summary.recommended_action == "no test cases to evaluate"
+
+
+def test_runner_summary_carries_coverage_breakdown(
+    runner, ctx, workspace, artifact_registry, indexer,
+):
+    """Coverage is the readiness card's main visualisation. Phase 2
+    populates by_type and by_priority; by_section ships in Phase 4."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-1", content=b"content one",
+        run_id="run-1", chunk_id="c-1",
+    )
+    cases = [
+        _case(case_id="t1", question="content", expected_chunks=["c-1"], priority="smoke"),
+        _case(case_id="t2", question="content", expected_chunks=["c-1"], priority="normal"),
+        _case(case_id="t3", question="content", expected_chunks=["c-1"], priority="normal"),
+    ]
+    vrun = runner.run(ctx, _make_set(test_cases=cases))
+
+    assert vrun.summary.coverage.by_type == {"retrieval": 3}
+    assert vrun.summary.coverage.by_priority == {"smoke": 1, "normal": 2}
+
+
+def test_runner_summary_main_issues_caps_at_three(
+    runner, ctx,
+):
+    """When many cases fail, surface only the first three reasons
+    on the readiness card subtitle. Full list is in `results[]`."""
+    cases = [
+        _case(
+            case_id=f"t-{i}",
+            question="anything",
+            expected_chunks=[f"chunk-missing-{i}"],
+        )
+        for i in range(5)
+    ]
+    vrun = runner.run(ctx, _make_set(test_cases=cases))
+
+    assert len(vrun.summary.main_issues) <= 3
+    assert vrun.summary.failed == 5

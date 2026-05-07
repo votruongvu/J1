@@ -127,6 +127,154 @@ export interface ManualTestQueryResponse {
   rawResponse?: Record<string, unknown> | null;
 }
 
+// ---- Validation sets and runs (Phase 2) -------------------------
+
+export type ValidationTestType =
+  | "retrieval"
+  | "answer"
+  | "citation"
+  | "negative"
+  | "table"
+  | "image"
+  | "graph";
+
+export type ValidationPriority = "smoke" | "normal" | "deep";
+
+export type ExpectedBehavior =
+  | "answer_with_citations"
+  | "abstain"
+  | "retrieve_evidence"
+  | "validate_relationship";
+
+export type ValidationSetSource = "generated" | "manual" | "imported";
+export type ValidationSetStatus = "draft" | "ready" | "archived";
+
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface ValidationTestCase {
+  testCaseId: string;
+  question: string;
+  type: ValidationTestType;
+  priority: ValidationPriority;
+  expectedBehavior: ExpectedBehavior;
+  expectedAnswerPoints: string[];
+  expectedChunks: string[];
+  expectedPages: number[];
+  expectedArtifacts: string[];
+  expectedGraphNodes: string[];
+  expectedGraphEdges: string[];
+  citationRequired: boolean;
+  sourceTraceability: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface ValidationSet {
+  validationSetId: string;
+  runId: string;
+  documentIds: string[];
+  source: ValidationSetSource;
+  status: ValidationSetStatus;
+  createdAt: string;
+  createdBy?: string | null;
+  generatorVersion?: string | null;
+  artifactsContentHash?: string | null;
+  testCases: ValidationTestCase[];
+  metadata: Record<string, unknown>;
+}
+
+export interface ValidationSetListItem {
+  validationSetId: string;
+  runId: string;
+  source: ValidationSetSource;
+  status: ValidationSetStatus;
+  createdAt: string;
+  createdBy?: string | null;
+  caseCount: number;
+}
+
+export interface ValidationCoverage {
+  byType: Record<string, number>;
+  byPriority: Record<string, number>;
+  bySection: Record<string, number>;
+}
+
+export interface ValidationSummary {
+  total: number;
+  passed: number;
+  warning: number;
+  failed: number;
+  skipped: number;
+  coverage: ValidationCoverage;
+  mainIssues: string[];
+  recommendedAction?: string | null;
+}
+
+export type ValidationResultStatus =
+  | "passed"
+  | "warning"
+  | "failed"
+  | "skipped";
+
+export interface ValidationResult {
+  resultId: string;
+  testCaseId: string;
+  status: ValidationResultStatus;
+  question: string;
+  answer: string;
+  retrievedChunks: ValidationRetrievedChunk[];
+  citations: ValidationCitation[];
+  checks: ValidationCheck[];
+  judgeNotes?: string | null;
+  failureReason?: string | null;
+  testerVerdict?: "pass" | "warning" | "fail" | null;
+  testerNotes?: string | null;
+}
+
+export interface ValidationRun {
+  validationRunId: string;
+  validationSetId: string;
+  runId: string;
+  // The split: executionStatus is the JOB status; validationStatus is
+  // the TEST OUTCOME. A `completed` + `failed` pair means "the runner
+  // job finished, but the document didn't pass". They MUST NOT be
+  // collapsed in the UI.
+  executionStatus: ExecutionStatus;
+  validationStatus: ValidationStatus;
+  startedAt: string;
+  completedAt?: string | null;
+  actor: string;
+  summary: ValidationSummary;
+  results: ValidationResult[];
+  failureMessage?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface ValidationRunListItem {
+  validationRunId: string;
+  validationSetId: string;
+  runId: string;
+  executionStatus: ExecutionStatus;
+  validationStatus: ValidationStatus;
+  startedAt: string;
+  completedAt?: string | null;
+  summary: ValidationSummary;
+}
+
+export interface GenerateValidationSetRequest {
+  maxCases?: number;
+  citationRequired?: boolean;
+  force?: boolean;
+}
+
+export interface StartValidationRunRequest {
+  validationSetId: string;
+}
+
 // ---- Run summary -------------------------------------------------
 
 export interface ReviewQualitySummary {

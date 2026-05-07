@@ -12,6 +12,7 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
   ReviewArtifactContent,
@@ -24,6 +25,11 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  StartValidationRunRequest,
+  ValidationRun,
+  ValidationRunListItem,
+  ValidationSet,
+  ValidationSetListItem,
 } from "@/types/review";
 import type { ProjectContext } from "@/types/ui";
 
@@ -161,6 +167,44 @@ export interface IngestionClient {
     runId: string,
     request: ManualTestQueryRequest,
   ): Promise<ManualTestQueryResponse>;
+
+  // ---- Validation sets + runs (Phase 2) --------------------------
+
+  /**
+   * Generate a validation set from this run's chunks. Idempotent on
+   * `(runId, hash)` — repeated calls with the same chunks return
+   * the same set unless `force` is set.
+   */
+  generateValidationSet(
+    runId: string,
+    request?: GenerateValidationSetRequest,
+  ): Promise<ValidationSet>;
+
+  /** List validation sets for this run (lightweight projections). */
+  listValidationSets(runId: string): Promise<ValidationSetListItem[]>;
+
+  /** Fetch one set with its full test_cases array. */
+  getValidationSet(runId: string, validationSetId: string): Promise<ValidationSet>;
+
+  /**
+   * POST to execute a validation set against this run. Synchronous
+   * in v1. Returns the terminal snapshot — `executionStatus`
+   * (`completed`/`failed`) and `validationStatus` (the answer
+   * outcome) are independent fields.
+   */
+  runValidation(
+    runId: string,
+    request: StartValidationRunRequest,
+  ): Promise<ValidationRun>;
+
+  /** List validation runs for this run (lightweight projections). */
+  listValidationRuns(runId: string): Promise<ValidationRunListItem[]>;
+
+  /** Fetch one validation run with its full per-case results array. */
+  getValidationRun(
+    runId: string,
+    validationRunId: string,
+  ): Promise<ValidationRun>;
 }
 
 /** Sentinel error type the UI can surface as 4xx / 5xx differently. */

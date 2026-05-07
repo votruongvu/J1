@@ -12,6 +12,10 @@ class WorkspaceArea(StrEnum):
     SEARCH = "search"
     AUDIT = "audit"
     RUNTIME = "runtime"
+    # Post-ingestion validation: stores generated validation sets +
+    # validation run records (Phase 2+). Durable — losing it loses
+    # tester history, generated test cases, and verdict notes.
+    VALIDATION = "validation"
 
 
 # Backup classification: which areas hold authoritative state and which can
@@ -28,6 +32,7 @@ DURABLE_AREAS: frozenset[WorkspaceArea] = frozenset({
     WorkspaceArea.GRAPH,
     WorkspaceArea.AUDIT,
     WorkspaceArea.RUNTIME,
+    WorkspaceArea.VALIDATION,
 })
 
 REBUILDABLE_AREAS: frozenset[WorkspaceArea] = frozenset({

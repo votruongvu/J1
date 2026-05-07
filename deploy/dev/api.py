@@ -23,6 +23,7 @@ import uvicorn
 from deploy.dev._wiring import (
     build_application_facade,
     build_review_service,
+    build_validation_service,
     build_run_progress_surface,
     build_settings,
     build_workspace,
@@ -213,6 +214,11 @@ def _build_app():
         # Read-only review surface for completed runs (Results tabs).
         # Without this the FE's `/ingestion-runs/{id}/summary` 503s.
         review_service=build_review_service(workspace),
+        # Manual test query (Phase 1 validation). Returns None when
+        # no profile is loaded — the REST endpoint then 503s, which
+        # is fine because the FE's Validation tab availability gate
+        # in `availableViews.validation` will already be off.
+        validation_service=build_validation_service(workspace),
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

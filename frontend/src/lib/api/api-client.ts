@@ -25,6 +25,7 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
   ReviewArtifactContent,
@@ -37,6 +38,11 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  StartValidationRunRequest,
+  ValidationRun,
+  ValidationRunListItem,
+  ValidationSet,
+  ValidationSetListItem,
 } from "@/types/review";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import {
@@ -388,6 +394,84 @@ export class ApiClient implements IngestionClient {
     // The backend response is camelCase already (CamelModel) so we
     // don't translate field names — same shape as ManualTestQueryResponse.
     return await this.json<ManualTestQueryResponse>(resp);
+  }
+
+  // ---- Validation sets + runs (Phase 2) ----------------------------
+
+  async generateValidationSet(
+    runId: string,
+    request: GenerateValidationSetRequest = {},
+  ): Promise<ValidationSet> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/validation-sets/generate`,
+      ),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(request),
+      },
+    );
+    return await this.json<ValidationSet>(resp);
+  }
+
+  async listValidationSets(runId: string): Promise<ValidationSetListItem[]> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/validation-sets`),
+      { headers: this.headers() },
+    );
+    const body = await this.json<{ items: ValidationSetListItem[] }>(resp);
+    return body.items;
+  }
+
+  async getValidationSet(
+    runId: string,
+    validationSetId: string,
+  ): Promise<ValidationSet> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/validation-sets/${encodeURIComponent(validationSetId)}`,
+      ),
+      { headers: this.headers() },
+    );
+    return await this.json<ValidationSet>(resp);
+  }
+
+  async runValidation(
+    runId: string,
+    request: StartValidationRunRequest,
+  ): Promise<ValidationRun> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/validation-runs`),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(request),
+      },
+    );
+    return await this.json<ValidationRun>(resp);
+  }
+
+  async listValidationRuns(runId: string): Promise<ValidationRunListItem[]> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/validation-runs`),
+      { headers: this.headers() },
+    );
+    const body = await this.json<{ items: ValidationRunListItem[] }>(resp);
+    return body.items;
+  }
+
+  async getValidationRun(
+    runId: string,
+    validationRunId: string,
+  ): Promise<ValidationRun> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/validation-runs/${encodeURIComponent(validationRunId)}`,
+      ),
+      { headers: this.headers() },
+    );
+    return await this.json<ValidationRun>(resp);
   }
 
   // ---- openStream --------------------------------------------------

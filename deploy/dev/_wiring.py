@@ -161,6 +161,102 @@ def build_review_service(workspace: WorkspaceResolver):
     )
 
 
+def build_validation_service(workspace: WorkspaceResolver):
+    """Build the `IngestionValidationService` for the REST adapter.
+
+    Phase 1 surface: synchronous manual test queries scoped to one
+    ingestion run. Phase 2 adds generated set / set-execution.
+    Reuses the same `HybridQueryEngine` providers the facade builds
+    for the public `/answer` endpoint, but invokes them with
+    `RunScope` so retrieval is restricted to artifacts produced by
+    the run under test.
+
+    Returns `None` when the deployment doesn't have a profile loaded
+    — the engine needs a profile for `ReportGenerator`'s template
+    lookup, and without it we can't construct the engine. The REST
+    adapter degrades `/ingestion-runs/{id}/test-query` to 503 in
+    that case, mirroring the `/answer` degradation pattern.
+
+    Phase 2 dependencies (set/run stores + generator) are always
+    wired when the validation service is constructible — there's no
+    failure mode where the manual-query path works but the set/run
+    path doesn't, given a profile is present. The FAST/text LLM is
+    optional (the generator falls back to the heuristic question
+    producer when no client is supplied).
+    """
+    from j1.audit.recorder import DefaultAuditRecorder
+    from j1.audit.sink import JsonlAuditSink
+    from j1.compose import bootstrap_from_env
+    from j1.profiles.loader import ProfileLoader
+    from j1.query.classifier import QueryIntentClassifier
+    from j1.query.engine import HybridQueryEngine
+    from j1.query.providers import (
+        ConsistencyProvider,
+        EvidenceProvider,
+        GraphQueryProvider,
+        KnowledgeQueryProvider,
+        ReportGenerator,
+    )
+    from j1.validation import (
+        DefaultTestCaseGenerator,
+        IngestionValidationService,
+        JsonlValidationRunStore,
+        JsonlValidationSetStore,
+    )
+
+    try:
+        profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
+    except Exception:  # noqa: BLE001 — profile is optional for validation
+        return None
+
+    sources = JsonSourceRegistry(workspace)
+    artifacts = JsonArtifactRegistry(workspace)
+    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+
+    query_engine = HybridQueryEngine(
+        classifier=QueryIntentClassifier(),
+        knowledge_provider=KnowledgeQueryProvider(indexer),
+        graph_provider=GraphQueryProvider(artifacts, workspace),
+        evidence_provider=EvidenceProvider(indexer, sources),
+        consistency_provider=ConsistencyProvider(artifacts, workspace),
+        report_generator=ReportGenerator(indexer, profile),
+    )
+
+    # Best-effort LLM client for the test-case generator. Prefer
+    # FAST role (cheap structured output) and fall back to text;
+    # the generator gracefully degrades to its heuristic question
+    # producer if no client is wired.
+    llm_client = None
+    try:
+        boot = bootstrap_from_env()
+        if hasattr(boot, "llm_registry"):
+            try_fast = getattr(boot.llm_registry, "try_fast", None)
+            try_text = getattr(boot.llm_registry, "try_text", None)
+            if callable(try_fast):
+                llm_client = try_fast()
+            if llm_client is None and callable(try_text):
+                llm_client = try_text()
+    except Exception:  # noqa: BLE001 — bootstrap may not be available in tests
+        llm_client = None
+
+    return IngestionValidationService(
+        run_store=JsonlIngestionRunStore(workspace),
+        artifact_registry=artifacts,
+        query_engine=query_engine,
+        # Audit recorder writes one `j1.validation.manual_query.completed`
+        # event per call — same JSONL stream the `/events` endpoint
+        # tails, so manual queries show up in the live timeline.
+        audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
+        # Phase 2 dependencies — always wire them when we get this
+        # far so generate / run aren't 503'd separately from
+        # manual query.
+        workspace=workspace,
+        validation_set_store=JsonlValidationSetStore(workspace),
+        validation_run_store=JsonlValidationRunStore(workspace),
+        test_case_generator=DefaultTestCaseGenerator(text_client=llm_client),
+    )
+
+
 def build_run_progress_surface(
     workspace: WorkspaceResolver,
 ) -> tuple[IngestionRunStore, ProgressReporter]:

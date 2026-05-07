@@ -76,8 +76,10 @@ from j1.adapters.rest.schemas import (
     JobEventsRecord,
     JobStartRecord,
     JobStatusRecord,
+    GenerateValidationSetRequestRecord,
     ManualTestQueryRequestRecord,
     ManualTestQueryResponseRecord,
+    StartValidationRunRequestRecord,
     ProgressEventRecord,
     ProgressEventsRecord,
     ProjectCreateRequest,
@@ -95,6 +97,17 @@ from j1.adapters.rest.schemas import (
     SearchResultRecord,
     SourceDetailRecord,
     ValidationCheckRecord,
+    ValidationCitationRecord,
+    ValidationCoverageRecord,
+    ValidationResultRecord,
+    ValidationRunListItem,
+    ValidationRunListRecord,
+    ValidationRunRecord,
+    ValidationSetListItem,
+    ValidationSetListRecord,
+    ValidationSetRecord,
+    ValidationSummaryRecord,
+    ValidationTestCaseRecord,
     VersionRecord,
 )
 from j1.artifacts.registry import ArtifactNotFoundError
@@ -145,6 +158,7 @@ from j1.integration.security import (
     SCOPE_READ,
     SCOPE_RETRIEVE,
     SCOPE_SEARCH,
+    SCOPE_VALIDATION_READ,
     SCOPE_VALIDATION_WRITE,
     SecurityContext,
 )
@@ -1511,6 +1525,174 @@ def create_rest_api(
             raw_response=result.raw_response,
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Validation: generated sets + runs (Phase 2) ----------------
+
+    @app.post(
+        "/ingestion-runs/{run_id}/validation-sets/generate",
+        status_code=201,
+        tags=["ingestion-runs"],
+        summary="Generate a validation set from this run's chunks",
+        description=(
+            "Generates a draft validation set: smoke + retrieval / "
+            "answer cases authored from sampled chunks. Idempotent "
+            "on `(runId, generatorVersion, artifactsContentHash)` — "
+            "re-calling with the same chunks returns the existing "
+            "set unless `force=true`. Generation is synchronous "
+            "(small case counts, ≤50). Returns 404 if the run "
+            "does not exist in the caller's tenant/project, or "
+            "503 if the validation service isn't configured."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_validation_set_generate(
+        request: Request,
+        run_id: str,
+        body: GenerateValidationSetRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        try:
+            vset = service.generate_validation_set(
+                ctx, run_id,
+                max_cases=body.max_cases,
+                citation_required=body.citation_required,
+                force=body.force,
+                actor=security.subject,
+            )
+        except RuntimeError as exc:
+            # Phase 2 dependencies not wired (set store / generator
+            # missing). Surfaces as 503 — uniform with the rest of
+            # the optional-service degradation pattern.
+            raise HTTPException(503, str(exc)) from exc
+        return envelope(_set_to_record(vset).model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/validation-sets",
+        tags=["ingestion-runs"],
+        summary="List validation sets for this run",
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_validation_sets(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        sets = service.list_validation_sets(ctx, run_id)
+        items = [
+            ValidationSetListItem(
+                validation_set_id=v.validation_set_id,
+                run_id=v.run_id,
+                source=v.source,
+                status=v.status,
+                created_at=v.created_at,
+                created_by=v.created_by,
+                case_count=len(v.test_cases),
+            )
+            for v in sets
+        ]
+        record = ValidationSetListRecord(items=items)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/validation-sets/{validation_set_id}",
+        tags=["ingestion-runs"],
+        summary="Get a validation set with its test cases",
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_validation_set(
+        request: Request,
+        run_id: str,
+        validation_set_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        vset = service.get_validation_set(ctx, run_id, validation_set_id)
+        return envelope(_set_to_record(vset).model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-runs/{run_id}/validation-runs",
+        status_code=201,
+        tags=["ingestion-runs"],
+        summary="Execute a validation set against this run",
+        description=(
+            "Runs every test case in the named set against the run "
+            "under test. Synchronous in v1 — blocks until every "
+            "case has executed. Persists three lifecycle snapshots "
+            "(pending → running → terminal) so a polling client "
+            "sees progressive state.\n\n"
+            "HTTP 201 means the runner job FINISHED (it always "
+            "does in v1 — caps + synchronous). The body's "
+            "`validationStatus` reports whether the document "
+            "PASSED. The two are independent — a 201 with "
+            "`validationStatus=\"failed\"` is the canonical "
+            "'job ran but the document didn't pass' case."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_validation_run(
+        request: Request,
+        run_id: str,
+        body: StartValidationRunRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        try:
+            vrun = service.run_validation(
+                ctx, run_id, body.validation_set_id,
+                actor=security.subject,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/validation-runs",
+        tags=["ingestion-runs"],
+        summary="List validation runs for this ingestion run",
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_validation_runs(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        vruns = service.list_validation_runs(ctx, run_id)
+        items = [
+            ValidationRunListItem(
+                validation_run_id=v.validation_run_id,
+                validation_set_id=v.validation_set_id,
+                run_id=v.run_id,
+                execution_status=v.execution_status,
+                validation_status=v.validation_status,
+                started_at=v.started_at,
+                completed_at=v.completed_at,
+                summary=_summary_to_record(v.summary),
+            )
+            for v in vruns
+        ]
+        record = ValidationRunListRecord(items=items)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}",
+        tags=["ingestion-runs"],
+        summary="Get a validation run with full per-case results",
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_validation_run(
+        request: Request,
+        run_id: str,
+        validation_run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        vrun = service.get_validation_run(ctx, run_id, validation_run_id)
+        return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
 
     @app.post(
         "/ingestion-runs/{run_id}/confirm",
@@ -3288,3 +3470,124 @@ def _format_progress_sse(event: ProgressEventRecord) -> bytes:
         f"event: {event.event_type}\n"
         f"data: {body}\n\n"
     ).encode("utf-8")
+
+
+# ---- Validation DTO → Pydantic record translators (Phase 2) ---------
+# Kept at module scope so both the GET and POST handlers reuse the
+# same projection. The validation service deals in dataclasses; the
+# REST adapter's job is to translate to the wire schema.
+
+
+def _set_to_record(vset) -> ValidationSetRecord:
+    return ValidationSetRecord(
+        validation_set_id=vset.validation_set_id,
+        run_id=vset.run_id,
+        document_ids=list(vset.document_ids),
+        source=vset.source,
+        status=vset.status,
+        created_at=vset.created_at,
+        created_by=vset.created_by,
+        generator_version=vset.generator_version,
+        artifacts_content_hash=vset.artifacts_content_hash,
+        test_cases=[
+            ValidationTestCaseRecord(
+                test_case_id=tc.test_case_id,
+                question=tc.question,
+                type=tc.type,
+                priority=tc.priority,
+                expected_behavior=tc.expected_behavior,
+                expected_answer_points=list(tc.expected_answer_points),
+                expected_chunks=list(tc.expected_chunks),
+                expected_pages=list(tc.expected_pages),
+                expected_artifacts=list(tc.expected_artifacts),
+                expected_graph_nodes=list(tc.expected_graph_nodes),
+                expected_graph_edges=list(tc.expected_graph_edges),
+                citation_required=tc.citation_required,
+                source_traceability=list(tc.source_traceability),
+                metadata=dict(tc.metadata),
+            )
+            for tc in vset.test_cases
+        ],
+        metadata=dict(vset.metadata),
+    )
+
+
+def _summary_to_record(summary) -> ValidationSummaryRecord:
+    return ValidationSummaryRecord(
+        total=summary.total,
+        passed=summary.passed,
+        warning=summary.warning,
+        failed=summary.failed,
+        skipped=summary.skipped,
+        coverage=ValidationCoverageRecord(
+            by_type=dict(summary.coverage.by_type),
+            by_priority=dict(summary.coverage.by_priority),
+            by_section=dict(summary.coverage.by_section),
+        ),
+        main_issues=list(summary.main_issues),
+        recommended_action=summary.recommended_action,
+    )
+
+
+def _run_to_record(vrun) -> ValidationRunRecord:
+    return ValidationRunRecord(
+        validation_run_id=vrun.validation_run_id,
+        validation_set_id=vrun.validation_set_id,
+        run_id=vrun.run_id,
+        execution_status=vrun.execution_status,
+        validation_status=vrun.validation_status,
+        started_at=vrun.started_at,
+        completed_at=vrun.completed_at,
+        actor=vrun.actor,
+        summary=_summary_to_record(vrun.summary),
+        results=[
+            ValidationResultRecord(
+                result_id=r.result_id,
+                test_case_id=r.test_case_id,
+                status=r.status,
+                question=r.question,
+                answer=r.answer,
+                retrieved_chunks=[
+                    RetrievedChunkRefRecord(
+                        artifact_id=c.artifact_id,
+                        chunk_id=c.chunk_id,
+                        run_id=c.run_id,
+                        document_id=c.document_id,
+                        source_location=c.source_location,
+                        score=c.score,
+                        preview=c.preview,
+                    )
+                    for c in r.retrieved_chunks
+                ],
+                citations=[
+                    ValidationCitationRecord(
+                        artifact_id=c.artifact_id,
+                        artifact_type=c.artifact_type,
+                        source_document_id=c.source_document_id,
+                        source_location=c.source_location,
+                        chunk_id=c.chunk_id,
+                        run_id=c.run_id,
+                    )
+                    for c in r.citations
+                ],
+                checks=[
+                    ValidationCheckRecord(
+                        name=chk.name,
+                        severity=chk.severity,
+                        passed=chk.passed,
+                        detail=chk.detail,
+                        expected=chk.expected,
+                        actual=chk.actual,
+                    )
+                    for chk in r.checks
+                ],
+                judge_notes=r.judge_notes,
+                failure_reason=r.failure_reason,
+                tester_verdict=r.tester_verdict,
+                tester_notes=r.tester_notes,
+            )
+            for r in vrun.results
+        ],
+        failure_message=vrun.failure_message,
+        metadata=dict(vrun.metadata),
+    )

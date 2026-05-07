@@ -125,3 +125,200 @@ class ManualTestQueryResponseDTO:
     validation_status: ValidationStatus
     evidence_flags: dict[str, bool] = field(default_factory=dict)
     raw_response: dict[str, Any] | None = None
+
+
+# ---- Phase 2: validation sets, runs, summaries ---------------------
+
+
+# Source of a validation set. `generated` means the LLM produced it
+# (treat as smoke/regression material, NOT gold truth). `manual`
+# means a human authored it (Phase 5+). `imported` means it came
+# from a CSV/JSON upload (Phase 5+). For Phase 2 only `generated`
+# ships, but the field exists now so the wire shape doesn't churn.
+ValidationSetSource = Literal["generated", "manual", "imported"]
+
+
+# Lifecycle of a validation set. `draft` means generation just
+# finished and a tester hasn't reviewed it yet; `ready` means it's
+# considered approved-for-use (currently a no-op flag — editing /
+# approval workflows arrive in Phase 5). `archived` is a tombstone.
+ValidationSetStatus = Literal["draft", "ready", "archived"]
+
+
+# Type of test case. Used by both the generator (which kinds to
+# emit) and the runner (which checks to apply). Phase 2 actively
+# emits `retrieval` and `answer`. `negative` ships in Phase 3,
+# `table` / `image` / `graph` in Phase 4. `citation` is reserved.
+ValidationTestType = Literal[
+    "retrieval", "answer", "citation",
+    "negative", "table", "image", "graph",
+]
+
+
+# Test priority. `smoke` runs first, are guaranteed to be fast, and
+# fail loudly on regressions. `normal` is the bulk. `deep` is the
+# expensive long-tail (modality-aware checks, semantic judging).
+ValidationPriority = Literal["smoke", "normal", "deep"]
+
+
+# Expected behaviour the test asserts. The runner picks which
+# checks to apply based on this. `answer_with_citations` is the
+# default; the others land with later phases as their checks ship.
+ExpectedBehavior = Literal[
+    "answer_with_citations",
+    "abstain",
+    "retrieve_evidence",
+    "validate_relationship",
+]
+
+
+# Execution status of a validation run — does NOT collapse with
+# validationStatus. A run can be `executionStatus=completed` and
+# `validationStatus=failed` (the runner finished but the test
+# cases didn't all pass).
+ExecutionStatus = Literal[
+    "pending", "running", "completed", "failed", "cancelled",
+]
+
+
+@dataclass(frozen=True)
+class ValidationTestCaseDTO:
+    """One test case inside a validation set.
+
+    Carries everything the runner needs to execute the case + judge
+    the result. Phase 2 emits cases of type `retrieval` (does the
+    expected chunk show up in topK?) and `answer` (does the engine
+    produce a non-empty answer with valid citations?). Other types
+    are reserved for later phases.
+
+    `expected_*` fields are advisory — the deterministic check
+    engine uses them to compute pass/fail. Empty lists mean "no
+    check on this dimension," not "must be empty."
+    """
+
+    test_case_id: str
+    question: str
+    type: ValidationTestType
+    priority: ValidationPriority
+    expected_behavior: ExpectedBehavior
+    expected_answer_points: list[str] = field(default_factory=list)
+    expected_chunks: list[str] = field(default_factory=list)
+    expected_pages: list[int] = field(default_factory=list)
+    expected_artifacts: list[str] = field(default_factory=list)
+    expected_graph_nodes: list[str] = field(default_factory=list)
+    expected_graph_edges: list[str] = field(default_factory=list)
+    citation_required: bool = False
+    # IDs of the chunks/artifacts the GENERATOR consulted to author
+    # this case. Lets a tester audit "where did this question come
+    # from?" without re-running the generator.
+    source_traceability: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ValidationSetDTO:
+    """A bundle of test cases produced for one ingestion run.
+
+    Phase 2 generates these synchronously when the tester clicks
+    "Generate test set." Idempotent on `(run_id, generator_version,
+    artifacts_content_hash)` — same run + same artifacts returns
+    the existing set unless `force=true`. The hash composition is
+    decided by the generator; the store treats it as opaque.
+    """
+
+    validation_set_id: str
+    run_id: str
+    document_ids: list[str]
+    source: ValidationSetSource
+    status: ValidationSetStatus
+    created_at: str  # ISO-8601 UTC
+    created_by: str | None
+    generator_version: str | None
+    artifacts_content_hash: str | None
+    test_cases: list[ValidationTestCaseDTO]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ValidationCoverageDTO:
+    """Coverage breakdown shown on the run summary.
+
+    `by_type` and `by_priority` are simple counters. `by_section`
+    is reserved for Phase 4 — the generator will surface a
+    `section` hint per case once it reads structured chunk
+    metadata. For Phase 2 it stays empty rather than fabricating
+    false-precision counts.
+    """
+
+    by_type: dict[str, int] = field(default_factory=dict)
+    by_priority: dict[str, int] = field(default_factory=dict)
+    by_section: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ValidationSummaryDTO:
+    """Roll-up shown on the Knowledge Readiness card.
+
+    Counters are mutually-exclusive — every result lands in exactly
+    one of `passed/warning/failed/skipped` so totals always reconcile
+    with `total`. `recommended_action` is a human-readable string
+    derived from the counts (FE renders it as the card subtitle).
+    """
+
+    total: int = 0
+    passed: int = 0
+    warning: int = 0
+    failed: int = 0
+    skipped: int = 0
+    coverage: ValidationCoverageDTO = field(default_factory=ValidationCoverageDTO)
+    main_issues: list[str] = field(default_factory=list)
+    recommended_action: str | None = None
+
+
+@dataclass(frozen=True)
+class ValidationResultDTO:
+    """Outcome of one test case execution.
+
+    `status` is the per-case roll-up — same vocabulary as the
+    summary counters. Distinct from `executionStatus` on the parent
+    `ValidationRun`. `tester_verdict` / `tester_notes` are
+    placeholders for Phase 5 (human override workflow).
+    """
+
+    result_id: str
+    test_case_id: str
+    status: Literal["passed", "warning", "failed", "skipped"]
+    question: str
+    answer: str
+    retrieved_chunks: list[RetrievedChunkRefDTO]
+    citations: list[ValidationCitationDTO]
+    checks: list[ValidationCheckDTO]
+    judge_notes: str | None = None
+    failure_reason: str | None = None
+    tester_verdict: Literal["pass", "warning", "fail"] | None = None
+    tester_notes: str | None = None
+
+
+@dataclass(frozen=True)
+class ValidationRunDTO:
+    """A single execution of a validation set against an ingestion run.
+
+    Note the split: `execution_status` reports whether the runner
+    job completed; `validation_status` reports the aggregate of
+    test-case outcomes. `execution_status="completed"` +
+    `validation_status="failed"` is the canonical "the job ran
+    successfully but the document didn't pass" case.
+    """
+
+    validation_run_id: str
+    validation_set_id: str
+    run_id: str
+    execution_status: ExecutionStatus
+    validation_status: ValidationStatus
+    started_at: str
+    completed_at: str | None
+    actor: str
+    summary: ValidationSummaryDTO
+    results: list[ValidationResultDTO] = field(default_factory=list)
+    failure_message: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

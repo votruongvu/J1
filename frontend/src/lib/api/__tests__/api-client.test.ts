@@ -425,3 +425,156 @@ describe("ApiClient.runManualTestQuery", () => {
     ).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe("ApiClient validation set methods (Phase 2)", () => {
+  const _SET_PAYLOAD = {
+    data: {
+      validationSetId: "vs-1",
+      runId: "run-1",
+      documentIds: ["doc-1"],
+      source: "generated",
+      status: "draft",
+      createdAt: "2026-05-07T10:00:00Z",
+      createdBy: null,
+      generatorVersion: "v1",
+      artifactsContentHash: "sha256:abcd",
+      testCases: [],
+      metadata: {},
+    },
+  };
+
+  const _RUN_PAYLOAD = {
+    data: {
+      validationRunId: "vrun-1",
+      validationSetId: "vs-1",
+      runId: "run-1",
+      executionStatus: "completed",
+      validationStatus: "passed",
+      startedAt: "2026-05-07T10:00:00Z",
+      completedAt: "2026-05-07T10:00:05Z",
+      actor: "tester",
+      summary: {
+        total: 0, passed: 0, warning: 0, failed: 0, skipped: 0,
+        coverage: { byType: {}, byPriority: {}, bySection: {} },
+        mainIssues: [],
+        recommendedAction: "ready",
+      },
+      results: [],
+      failureMessage: null,
+      metadata: {},
+    },
+  };
+
+  it("POSTs generate to the run-scoped path with auth headers", async () => {
+    const { calls } = withFetch(() => jsonResponse(_SET_PAYLOAD, 201));
+    await makeClient().generateValidationSet("run-1", { force: true });
+
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/run-1/validation-sets/generate",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Tenant-Id"]).toBe("acme");
+    expect(headers["X-Project-Id"]).toBe("alpha");
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.force).toBe(true);
+  });
+
+  it("listValidationSets unwraps the items array", async () => {
+    withFetch(() =>
+      jsonResponse({
+        data: {
+          items: [
+            {
+              validationSetId: "vs-1",
+              runId: "run-1",
+              source: "generated",
+              status: "draft",
+              createdAt: "2026-05-07T10:00:00Z",
+              createdBy: null,
+              caseCount: 3,
+            },
+          ],
+        },
+      }),
+    );
+    const items = await makeClient().listValidationSets("run-1");
+    expect(items).toHaveLength(1);
+    expect(items[0]!.validationSetId).toBe("vs-1");
+    expect(items[0]!.caseCount).toBe(3);
+  });
+
+  it("getValidationSet returns the full set", async () => {
+    withFetch(() => jsonResponse(_SET_PAYLOAD));
+    const out = await makeClient().getValidationSet("run-1", "vs-1");
+    expect(out.validationSetId).toBe("vs-1");
+    expect(out.source).toBe("generated");
+  });
+
+  it("runValidation POSTs the validationSetId in the body", async () => {
+    const { calls } = withFetch(() => jsonResponse(_RUN_PAYLOAD, 201));
+    await makeClient().runValidation("run-1", { validationSetId: "vs-1" });
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/run-1/validation-runs",
+    );
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.validationSetId).toBe("vs-1");
+  });
+
+  it("runValidation returns the terminal snapshot with split status", async () => {
+    withFetch(() =>
+      jsonResponse({
+        data: {
+          ..._RUN_PAYLOAD.data,
+          executionStatus: "completed",
+          validationStatus: "failed",
+        },
+      }, 201),
+    );
+    const out = await makeClient().runValidation("run-1", {
+      validationSetId: "vs-1",
+    });
+    // Critical: split status must round-trip end-to-end so the FE
+    // can render `validationStatus=failed` even when HTTP=201.
+    expect(out.executionStatus).toBe("completed");
+    expect(out.validationStatus).toBe("failed");
+  });
+
+  it("listValidationRuns unwraps items + getValidationRun returns full payload", async () => {
+    withFetch(() =>
+      jsonResponse({
+        data: {
+          items: [
+            {
+              validationRunId: "vrun-1",
+              validationSetId: "vs-1",
+              runId: "run-1",
+              executionStatus: "completed",
+              validationStatus: "passed",
+              startedAt: "2026-05-07T10:00:00Z",
+              completedAt: "2026-05-07T10:00:05Z",
+              summary: {
+                total: 0, passed: 0, warning: 0, failed: 0, skipped: 0,
+                coverage: { byType: {}, byPriority: {}, bySection: {} },
+                mainIssues: [], recommendedAction: "ready",
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const items = await makeClient().listValidationRuns("run-1");
+    expect(items).toHaveLength(1);
+    expect(items[0]!.validationRunId).toBe("vrun-1");
+  });
+
+  it("404 envelopes from validation endpoints surface as ApiError", async () => {
+    withFetch(() =>
+      jsonResponse({ error: { code: "REVIEW_NOT_FOUND", message: "missing" } }, 404),
+    );
+    await expect(
+      makeClient().getValidationSet("run-1", "vs-ghost"),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+});
