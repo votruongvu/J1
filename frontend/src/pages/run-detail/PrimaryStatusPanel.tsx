@@ -74,6 +74,66 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
   }
 
   if (status === "ASSESSING" || status === "CREATED") {
+    // Backend is still flipping the run record from ASSESSING → RUNNING
+    // when compile begins, so we look for stronger signals from the
+    // event stream + plan to advance the banner. Without this, the
+    // panel sticks on "Building execution plan…" even when the plan
+    // is visibly rendered below and the live timeline is firing
+    // step events. Two transitional cases (in priority order):
+    //
+    //   1. step.started has fired → the runner is past planning,
+    //      show the running spinner with the active stage so the
+    //      user sees the actual phase the document is in.
+    //   2. plan exists but no step has started yet → planning
+    //      completed; we're in the brief "compile is about to
+    //      begin" window. Show a "Plan ready" transition so the
+    //      banner doesn't lie about what just happened.
+    //
+    // When neither signal is present (the genuine pre-plan window),
+    // fall through to the original "Building execution plan…" copy.
+    const lastStarted = [...events].reverse().find((e) => e.event === "step.started");
+    if (lastStarted) {
+      const stage = (lastStarted.data?.stage as string | undefined) ?? "—";
+      const step = (lastStarted.data?.step as string | undefined) ?? "—";
+      return (
+        <div className="psp psp--running">
+          <div className="psp__icon">
+            <Icon.RefreshCw className="icon spin" />
+          </div>
+          <div className="psp__body">
+            <div className="psp__eyebrow">Running</div>
+            <h2 className="psp__title">
+              Executing {stage} · <span className="psp__step">{step}</span>
+            </h2>
+            <p className="psp__lede">
+              Streaming events live from the pipeline. Watch the timeline on the right for
+              per-step progress.
+            </p>
+          </div>
+        </div>
+      );
+    }
+    if (plan) {
+      const summary = plan.summary;
+      const total = (summary?.run ?? 0) + (summary?.skip ?? 0) + (summary?.conditional ?? 0);
+      return (
+        <div className="psp psp--assessing">
+          <div className="psp__icon">
+            <Icon.RefreshCw className="icon spin" />
+          </div>
+          <div className="psp__body">
+            <div className="psp__eyebrow">Plan ready</div>
+            <h2 className="psp__title">Starting pipeline…</h2>
+            <p className="psp__lede">
+              The execution plan has <strong>{total}</strong> step(s)
+              ({summary?.run ?? 0} run, {summary?.skip ?? 0} skip,
+              {" "}{summary?.conditional ?? 0} conditional). The first stage
+              is about to begin.
+            </p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="psp psp--assessing">
         <div className="psp__icon">
