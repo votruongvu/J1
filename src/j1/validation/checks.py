@@ -1,9 +1,24 @@
-"""Deterministic check engine for Phase 1 manual test queries.
+"""Deterministic check engine for the validation feature.
 
-Six required checks today, all source-server-derived metadata only:
-no LLM judge, no semantic comparison, no abstain regex (negative
-validation is deferred per the implementation plan). Optional /
-warning-severity checks are reserved for later phases.
+Phase 1: six required deterministic checks (server-derived metadata
+only, no LLM judging).
+Phase 3 adds two new check families:
+
+  * **Negative test deterministic check** —
+    `negative_answer_abstains` (required) — for case type=`negative`,
+    the answer must match a regex pattern of "I don't know" /
+    "insufficient information" / similar OR be empty.
+  * **Optional semantic checks** (judge-driven, severity=optional):
+    - `answer_covers_expected_points` — when `expected_answer_points`
+      is non-empty AND a judge is configured.
+    - `answer_grounded_in_citations` — when there's an answer and a
+      judge is configured.
+    - `negative_no_fabrication` — for negative cases, when a judge
+      is configured.
+
+Optional checks are EVER warning-severity. A judge that flips its
+mind between runs would create flapping outcomes — required failures
+must stay reproducible. The judge is "witness, not validator."
 
 Each check is a small pure function that takes the response context
 and returns a `ValidationCheckDTO`. The engine runs them in order
@@ -12,6 +27,7 @@ and aggregates the result via `_aggregate_status`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from j1.artifacts.registry import ArtifactNotFoundError, ArtifactRegistry
@@ -21,6 +37,10 @@ from j1.validation.dtos import (
     ValidationCheckDTO,
     ValidationCitationDTO,
     ValidationStatus,
+)
+from j1.validation.judge import (
+    LLMJudge,
+    coverage_threshold,
 )
 
 
@@ -43,6 +63,51 @@ class _CheckContext:
     citations: list[ValidationCitationDTO]
     citation_required: bool
     artifact_registry: ArtifactRegistry
+
+
+# ---- Phase 3 abstain regex ---------------------------------------------
+#
+# Matches phrase-level signals that the answer admits it doesn't know /
+# can't answer / has insufficient information. Case-insensitive across
+# whitespace boundaries. Tuned for the kind of language an LLM uses
+# when politely declining: "I don't know", "the document doesn't
+# contain", "not enough information", "cannot determine", etc.
+#
+# Deliberately conservative — false negatives (missing an abstain that
+# WAS there) are preferable to false positives. An LLM that says "Yes,
+# 20 May 2026" should never look like an abstain.
+
+_ABSTAIN_PATTERNS: tuple[re.Pattern, ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        # "I don't know" / "I do not know"
+        r"\bi\s+(do\s+not|don'?t)\s+know\b",
+        # "I cannot" / "I can not" / "I can't"
+        r"\bi\s+(cannot|can\s+not|can'?t)\b",
+        r"\bnot\s+enough\s+information\b",
+        r"\binsufficient\s+information\b",
+        r"\bunable\s+to\s+answer\b",
+        r"\bno\s+information\b",
+        r"\bnot\s+(present|mentioned|covered|specified|provided|in\s+the\s+document)\b",
+        r"\bthe\s+document\s+(does\s+not|doesn'?t)\b",
+        r"\b(cannot|can\s+not|can'?t)\s+determine\b",
+        r"\bunable\s+to\s+determine\b",
+        # "cannot find" / "can't find" — captures "I cannot find that"
+        r"\b(cannot|can\s+not|can'?t)\s+find\b",
+    )
+)
+
+
+def _is_abstain_response(answer: str) -> bool:
+    """True when the answer reads as a refusal / abstention.
+
+    Empty / whitespace-only answers also count as abstaining — a
+    blank response from a knowledge-grounded engine on an out-of-
+    scope question is the right behaviour."""
+    body = (answer or "").strip()
+    if not body:
+        return True
+    return any(p.search(body) for p in _ABSTAIN_PATTERNS)
 
 
 # ---- Individual checks --------------------------------------------------
@@ -212,6 +277,181 @@ def _check_no_cross_tenant_or_cross_project_leak(
     )
 
 
+# ---- Phase 3 negative-test deterministic check -------------------------
+
+
+def _check_negative_answer_abstains(ctx_: _CheckContext) -> ValidationCheckDTO:
+    """Required for `case_type=negative`: the answer must read as a
+    refusal / "I don't know" / similar. Empty answers also count.
+    Honest abstention is the entire point of a negative case."""
+    abstained = _is_abstain_response(ctx_.answer)
+    return ValidationCheckDTO(
+        name="negative_answer_abstains",
+        severity="required",
+        passed=abstained,
+        detail=(
+            None if abstained
+            else (
+                "negative case expected an abstain / 'I don't know' "
+                "response; got a substantive answer instead"
+            )
+        ),
+        expected="abstain phrase or empty answer",
+        actual=(ctx_.answer or "")[:200],
+    )
+
+
+# ---- Phase 3 optional judge-driven checks -----------------------------
+
+
+def _check_answer_covers_expected_points(
+    ctx_: _CheckContext,
+    *,
+    judge: LLMJudge,
+    question: str,
+    expected_points: list[str],
+) -> ValidationCheckDTO | None:
+    """Optional: the answer must semantically cover ≥80% of the
+    expected answer points. Below the threshold is a warning, NOT a
+    failure (the judge is fallible — required failures must stay
+    deterministic).
+
+    Returns None when the judge couldn't render an opinion (LLM
+    unavailable, malformed response, etc.) — we omit the check
+    rather than count silence as a pass."""
+    judgement = judge.judge_answer_covers_points(
+        question=question, answer=ctx_.answer,
+        expected_points=list(expected_points),
+    )
+    if judgement is None:
+        return None
+    threshold = coverage_threshold()
+    ratio = judgement.coverage_ratio
+    passed = ratio >= threshold
+    covered = sum(1 for p in judgement.points if p.covered)
+    total = len(judgement.points)
+    return ValidationCheckDTO(
+        name="answer_covers_expected_points",
+        severity="optional",
+        passed=passed,
+        detail=(
+            None if passed
+            else (
+                f"covered {covered}/{total} expected points "
+                f"(ratio={ratio:.2f}, threshold={threshold:.2f})"
+            )
+        ),
+        expected=f"coverage_ratio >= {threshold}",
+        actual={
+            "coverage_ratio": round(ratio, 4),
+            "covered": covered,
+            "total": total,
+            "missing": [
+                p.text for p in judgement.points if not p.covered
+            ][:5],
+        },
+    )
+
+
+def _check_answer_grounded_in_citations(
+    ctx_: _CheckContext,
+    *,
+    judge: LLMJudge,
+    question: str,
+) -> ValidationCheckDTO | None:
+    """Optional: the answer must rely on the citations. The judge
+    flags any unsupported claims; severity≥moderate counts as a fail.
+    Low-severity flags (filler, hedging) are tolerated.
+
+    Skipped when the answer is empty (nothing to ground) — for the
+    abstain case `negative_answer_abstains` already covers it."""
+    if not (ctx_.answer or "").strip():
+        return None
+    judgement = judge.judge_answer_grounded(
+        question=question,
+        answer=ctx_.answer,
+        citations=[_citation_to_dict(c) for c in ctx_.citations],
+    )
+    if judgement is None:
+        return None
+    has_issues = judgement.has_significant_issues()
+    return ValidationCheckDTO(
+        name="answer_grounded_in_citations",
+        severity="optional",
+        passed=not has_issues,
+        detail=(
+            None if not has_issues
+            else (
+                f"{len(judgement.unsupported_claims)} unsupported "
+                f"claim(s) flagged; first: "
+                f"{judgement.unsupported_claims[0].text[:200]!r}"
+            )
+        ),
+        expected="no moderate-or-higher unsupported claims",
+        actual=[
+            {"text": c.text, "severity": c.severity}
+            for c in judgement.unsupported_claims
+        ][:5],
+    )
+
+
+def _check_negative_no_fabrication(
+    ctx_: _CheckContext,
+    *,
+    judge: LLMJudge,
+    question: str,
+) -> ValidationCheckDTO | None:
+    """Optional: for negative cases, even an abstaining answer
+    shouldn't fabricate facts. The judge looks at the answer + any
+    citations and flags concrete fabrications.
+
+    Distinct from `answer_grounded_in_citations` because the
+    fabrication check accepts an empty citation list (the question
+    is OUT of scope; honest abstention with no citations is the
+    target). Severity threshold matches the grounding check."""
+    judgement = judge.judge_negative_abstain(
+        question=question,
+        answer=ctx_.answer,
+        citations=[_citation_to_dict(c) for c in ctx_.citations],
+    )
+    if judgement is None:
+        return None
+    has_issues = judgement.has_fabrication()
+    return ValidationCheckDTO(
+        name="negative_no_fabrication",
+        severity="optional",
+        passed=not has_issues,
+        detail=(
+            None if not has_issues
+            else (
+                f"{len(judgement.fabricated_claims)} fabricated "
+                f"claim(s) flagged; first: "
+                f"{judgement.fabricated_claims[0].text[:200]!r}"
+            )
+        ),
+        expected="no moderate-or-higher fabricated claims",
+        actual=[
+            {"text": c.text, "severity": c.severity}
+            for c in judgement.fabricated_claims
+        ][:5],
+    )
+
+
+def _citation_to_dict(c: ValidationCitationDTO) -> dict:
+    """Compact dict for the judge prompt. Mirrors the wire shape so
+    the judge sees the same fields the FE renders."""
+    return {
+        "artifact_id": c.artifact_id,
+        "artifact_type": c.artifact_type,
+        "source_document_id": c.source_document_id,
+        "source_location": c.source_location,
+        "chunk_id": c.chunk_id,
+        "run_id": c.run_id,
+        # `preview` not on the DTO today — leave it absent so the
+        # judge renderer surfaces "lineage only" lines.
+    }
+
+
 # ---- Engine -------------------------------------------------------------
 
 
@@ -224,14 +464,31 @@ def run_checks(
     citations: list[ValidationCitationDTO],
     citation_required: bool,
     artifact_registry: ArtifactRegistry,
+    case_type: str | None = None,
+    expected_answer_points: list[str] | None = None,
+    question: str | None = None,
+    judge: LLMJudge | None = None,
 ) -> list[ValidationCheckDTO]:
-    """Run the Phase-1 deterministic check suite in fixed order.
+    """Run the deterministic check suite + optional judge checks.
 
     Order matters for operator readability — answer presence first,
-    retrieval next, then run-scope checks, then ownership defense.
-    Conditional checks (`citation_present`) are appended only when
-    applicable so the FE doesn't render confusing "skipped" badges
-    for checks that never ran.
+    retrieval next, then run-scope checks, then ownership defense,
+    then negative/judge optional checks at the tail.
+
+    Per-case-type branching:
+      * `case_type="negative"` swaps the answer-non-empty +
+        retrieved-chunks-present required checks for
+        `negative_answer_abstains` (required) +
+        `negative_no_fabrication` (optional, judge-driven).
+      * Any other case (or `case_type=None` for the manual query
+        path) runs the Phase 1 / Phase 2 positive-case suite.
+
+    Optional judge checks are appended ONLY when a judge is
+    supplied AND its preconditions hold (e.g. `expected_answer_points`
+    non-empty for the coverage check). Conditional checks are
+    OMITTED rather than included-and-passing — that keeps the
+    `_aggregate_status` rule honest: a check that wasn't run can't
+    flip the validation status by accident.
     """
     check_ctx = _CheckContext(
         ctx=ctx,
@@ -242,16 +499,51 @@ def run_checks(
         citation_required=citation_required,
         artifact_registry=artifact_registry,
     )
-    checks: list[ValidationCheckDTO] = [
-        _check_answer_non_empty(check_ctx),
-        _check_retrieved_chunks_present(check_ctx),
-    ]
-    citation_check = _check_citation_present(check_ctx)
-    if citation_check is not None:
-        checks.append(citation_check)
+    checks: list[ValidationCheckDTO] = []
+
+    if case_type == "negative":
+        # Negative test: an empty answer is the IDEAL outcome,
+        # retrieval may legitimately return nothing relevant. Skip
+        # the positive-case required checks for those two
+        # dimensions. Ownership checks always run.
+        checks.append(_check_negative_answer_abstains(check_ctx))
+    else:
+        checks.append(_check_answer_non_empty(check_ctx))
+        checks.append(_check_retrieved_chunks_present(check_ctx))
+        citation_check = _check_citation_present(check_ctx)
+        if citation_check is not None:
+            checks.append(citation_check)
+
     checks.append(_check_retrieved_chunks_belong_to_run(check_ctx))
     checks.append(_check_citations_belong_to_run(check_ctx))
     checks.append(_check_no_cross_tenant_or_cross_project_leak(check_ctx))
+
+    # Optional judge checks (severity=optional → at worst downgrade
+    # to passed_with_warnings). All judge calls happen via the
+    # `LLMJudge` Protocol so tests can inject a stub.
+    if judge is not None:
+        if case_type == "negative":
+            fab_check = _check_negative_no_fabrication(
+                check_ctx, judge=judge, question=question or "",
+            )
+            if fab_check is not None:
+                checks.append(fab_check)
+        else:
+            if expected_answer_points:
+                cov_check = _check_answer_covers_expected_points(
+                    check_ctx,
+                    judge=judge,
+                    question=question or "",
+                    expected_points=expected_answer_points,
+                )
+                if cov_check is not None:
+                    checks.append(cov_check)
+            grounded_check = _check_answer_grounded_in_citations(
+                check_ctx, judge=judge, question=question or "",
+            )
+            if grounded_check is not None:
+                checks.append(grounded_check)
+
     return checks
 
 

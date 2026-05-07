@@ -46,6 +46,7 @@ from j1.validation.dtos import (
     ValidationSummaryDTO,
     ValidationTestCaseDTO,
 )
+from j1.validation.judge import LLMJudge
 
 _log = logging.getLogger("j1.validation.runner")
 
@@ -96,10 +97,16 @@ class DefaultValidationRunner:
         query_engine: HybridQueryEngine,
         artifact_registry: ArtifactRegistry,
         lifecycle_callback: Callable[[ValidationRunDTO], None] | None = None,
+        judge: LLMJudge | None = None,
     ) -> None:
         self._query_engine = query_engine
         self._artifacts = artifact_registry
         self._on_lifecycle = lifecycle_callback or (lambda _vrun: None)
+        # Optional LLM judge for Phase 3 semantic checks. When None
+        # the runner skips the optional checks entirely — the
+        # checks engine returns nothing for them, which leaves the
+        # result accounting deterministic.
+        self._judge = judge
 
     def run(
         self,
@@ -224,7 +231,11 @@ class DefaultValidationRunner:
         retrieved = _retrieved_chunks_from_response(response)
         citations = _citations_from_response(response)
 
-        # Phase 1 deterministic checks (six).
+        # Phase 1 + Phase 3 deterministic and judge-driven checks.
+        # Run-checks branches internally on `case_type` to swap
+        # required positive-case checks for the negative abstain
+        # check, and appends optional judge-driven checks when a
+        # judge is supplied.
         checks = run_checks(
             ctx=ctx,
             run_id=run_id,
@@ -233,12 +244,19 @@ class DefaultValidationRunner:
             citations=citations,
             citation_required=case.citation_required,
             artifact_registry=self._artifacts,
+            case_type=case.type,
+            expected_answer_points=list(case.expected_answer_points),
+            question=case.question,
+            judge=self._judge,
         )
-        # Phase 2 case-specific checks layered on top.
-        if case.expected_chunks:
-            checks.append(_check_expected_chunk_in_topk(case, retrieved))
-        if case.expected_pages:
-            checks.append(_check_expected_page_in_citations(case, citations))
+        # Phase 2 case-specific checks layered on top. Skipped for
+        # negative cases — by definition there's no expected
+        # chunk/page (the question is out-of-scope).
+        if case.type != "negative":
+            if case.expected_chunks:
+                checks.append(_check_expected_chunk_in_topk(case, retrieved))
+            if case.expected_pages:
+                checks.append(_check_expected_page_in_citations(case, citations))
 
         validation_status = aggregate_status(checks)
         result_status = _result_status_from_validation_status(validation_status)

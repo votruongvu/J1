@@ -53,6 +53,26 @@ _MAX_CHUNK_SAMPLES = 8
 _MAX_QUESTIONS_PER_CHUNK = 2
 _PREVIEW_MAX_CHARS = 240
 
+# Negative-case pool. Off-topic prompts the document is extremely
+# unlikely to answer, by design. Deterministic — no LLM call needed,
+# no domain inference; the runner's check is whether the engine
+# abstains, which doesn't require a domain-specific question. Phase
+# 4+ may layer in an LLM-driven domain-aware variant; for Phase 3
+# this fixed pool ships every set with reproducible negatives.
+#
+# The list is intentionally diverse so retrievers can't accidentally
+# match a single keyword (e.g. "price"). One question per category
+# (finance, sports, recipes, celebrity gossip, geography); the runner
+# samples up to 2 by default.
+_NEGATIVE_PROMPTS: tuple[str, ...] = (
+    "What is the current price of Bitcoin?",
+    "Who won the most recent FIFA World Cup?",
+    "What's a good recipe for chocolate cake?",
+    "What is the capital city of the planet Mars?",
+    "Who is currently the highest-paid celebrity in Hollywood?",
+)
+_DEFAULT_NEGATIVE_COUNT = 2
+
 # Schema for the LLM's structured-extract response. The text client
 # enforces JSON-schema-style structured outputs (per the LM Studio fix
 # we shipped earlier), so the model is constrained to this shape.
@@ -106,6 +126,11 @@ class GenerationOptions:
     # ensures these chunks show up in the sample (if they exist).
     # Useful for "regenerate but keep my last set's coverage."
     must_include_chunk_ids: tuple[str, ...] = ()
+    # Phase 3: count of off-topic negative cases to include. The
+    # generator picks them deterministically from `_NEGATIVE_PROMPTS`
+    # so the same set is reproducible across regenerations. Zero
+    # disables negatives entirely (e.g. for very small case budgets).
+    negative_case_count: int = _DEFAULT_NEGATIVE_COUNT
 
 
 # ---- Generator -----------------------------------------------------
@@ -157,8 +182,20 @@ class DefaultTestCaseGenerator:
             _smoke_case(citation_required=opts.citation_required),
         ]
 
+        # Phase 3: deterministic negatives drawn from a fixed pool.
+        # Inserted right after the smoke case so they show up early
+        # in execution order (smoke priority is highest; negatives
+        # are normal priority but appear before chunk cases for
+        # operator readability).
+        negative_count = max(
+            0, min(opts.negative_case_count, len(_NEGATIVE_PROMPTS)),
+        )
+        for prompt in _NEGATIVE_PROMPTS[:negative_count]:
+            if len(cases) >= opts.max_cases:
+                break
+            cases.append(_negative_case(prompt))
+
         # Cap chunk-derived cases so the total respects max_cases.
-        # `-1` accounts for the smoke case already in the list.
         remaining_budget = max(0, opts.max_cases - len(cases))
         per_chunk_budget = (
             min(_MAX_QUESTIONS_PER_CHUNK, max(1, remaining_budget // max(1, len(sampled))))
@@ -305,6 +342,28 @@ def _smoke_case(*, citation_required: bool) -> ValidationTestCaseDTO:
         citation_required=citation_required,
         source_traceability=[],
         metadata={"smoke": True},
+    )
+
+
+def _negative_case(question: str) -> ValidationTestCaseDTO:
+    """Phase 3: an off-topic test case. The runner expects the
+    engine to abstain (regex check) and not fabricate (judge check).
+    `expected_chunks` / `expected_answer_points` are intentionally
+    empty — there's nothing in the document to cite."""
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-neg-{uuid.uuid4().hex[:8]}",
+        question=question,
+        type="negative",
+        priority="normal",
+        expected_behavior="abstain",
+        expected_answer_points=[],
+        expected_chunks=[],
+        # Negative cases never require citations — an honest abstain
+        # has none. Setting the flag would force a check failure
+        # for the right behaviour.
+        citation_required=False,
+        source_traceability=[],
+        metadata={"negative": True},
     )
 
 

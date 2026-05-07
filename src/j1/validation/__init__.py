@@ -41,6 +41,14 @@ from j1.validation.generator import (
     GENERATOR_VERSION,
     GenerationOptions,
 )
+from j1.validation.judge import (
+    CoverageJudgement,
+    DefaultLLMJudge,
+    FabricationJudgement,
+    GroundingJudgement,
+    LLMJudge,
+    coverage_threshold,
+)
 from j1.validation.runner import (
     DefaultValidationRunner,
     MAX_CASES_PER_RUN,
@@ -54,16 +62,22 @@ from j1.validation.store import (
 )
 
 __all__ = [
+    "CoverageJudgement",
+    "DefaultLLMJudge",
     "DefaultTestCaseGenerator",
     "DefaultValidationRunner",
     "ExecutionStatus",
     "ExpectedBehavior",
+    "FabricationJudgement",
     "GENERATOR_VERSION",
     "GenerationOptions",
+    "GroundingJudgement",
     "IngestionValidationService",
     "JsonlValidationRunStore",
     "JsonlValidationSetStore",
+    "LLMJudge",
     "MAX_CASES_PER_RUN",
+    "coverage_threshold",
     "ManualTestQueryRequest",
     "ManualTestQueryResponseDTO",
     "RetrievedChunkRefDTO",

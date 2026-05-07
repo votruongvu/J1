@@ -440,6 +440,114 @@ def test_runner_summary_carries_coverage_breakdown(
     assert vrun.summary.coverage.by_priority == {"smoke": 1, "normal": 2}
 
 
+def test_runner_with_judge_emits_optional_checks(
+    query_engine, artifact_registry, ctx, workspace, indexer,
+):
+    """Phase 3 integration: a runner constructed with a judge
+    appends optional semantic checks to every result. Wiring
+    smoke test — judge stub returns a clean coverage + grounding
+    judgement, so the optional checks pass and don't downgrade
+    the run."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="a-1", content=b"alpha keyword",
+        run_id="run-1", chunk_id="chunk-1",
+    )
+
+    from j1.validation import (
+        CoverageJudgement,
+        DefaultValidationRunner,
+        GroundingJudgement,
+    )
+
+    class _StubJudge:
+        def judge_answer_covers_points(self, **kwargs):
+            return CoverageJudgement(
+                points=[CoverageJudgement.Point(text="x", covered=True)],
+            )
+
+        def judge_answer_grounded(self, **kwargs):
+            return GroundingJudgement(unsupported_claims=[])
+
+        def judge_negative_abstain(self, **kwargs):
+            return None  # not exercised by this case
+
+    runner_with_judge = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+        judge=_StubJudge(),
+    )
+    case = _case(
+        question="alpha", expected_chunks=["chunk-1"],
+    )
+    # Force expected_answer_points so the coverage check engages.
+    case_with_points = ValidationTestCaseDTO(
+        test_case_id=case.test_case_id,
+        question=case.question,
+        type=case.type,
+        priority=case.priority,
+        expected_behavior=case.expected_behavior,
+        expected_answer_points=["proposal due date"],
+        expected_chunks=case.expected_chunks,
+        expected_pages=case.expected_pages,
+        expected_artifacts=case.expected_artifacts,
+        expected_graph_nodes=case.expected_graph_nodes,
+        expected_graph_edges=case.expected_graph_edges,
+        citation_required=case.citation_required,
+        source_traceability=case.source_traceability,
+        metadata=case.metadata,
+    )
+
+    vrun = runner_with_judge.run(ctx, _make_set(test_cases=[case_with_points]))
+
+    check_names = {c.name for c in vrun.results[0].checks}
+    assert "answer_covers_expected_points" in check_names
+    assert "answer_grounded_in_citations" in check_names
+    # Run still passes — judge said all good, deterministic checks
+    # all green.
+    assert vrun.validation_status == "passed"
+
+
+def test_runner_handles_negative_test_case(
+    runner, ctx,
+):
+    """Phase 3 integration: a negative case asks an off-topic
+    question. The engine returns no retrieval (out-of-scope), the
+    deterministic abstain check passes if the answer's empty, and
+    the run aggregates accordingly."""
+    case = ValidationTestCaseDTO(
+        test_case_id="tc-neg",
+        question="What is the price of Bitcoin?",
+        type="negative",
+        priority="normal",
+        expected_behavior="abstain",
+        expected_answer_points=[],
+        expected_chunks=[],
+        expected_pages=[],
+        expected_artifacts=[],
+        expected_graph_nodes=[],
+        expected_graph_edges=[],
+        citation_required=False,
+        source_traceability=[],
+        metadata={"negative": True},
+    )
+
+    vrun = runner.run(ctx, _make_set(test_cases=[case]))
+
+    # No chunks indexed → engine returns nothing → answer is the
+    # default "no knowledge results for: …" string from the stub
+    # provider. Whether that reads as an abstain depends on our
+    # regex pool; verify the case is in the result list and the
+    # negative_answer_abstains check is present.
+    assert len(vrun.results) == 1
+    result = vrun.results[0]
+    check_names = {c.name for c in result.checks}
+    assert "negative_answer_abstains" in check_names
+    # The non-negative checks must NOT appear.
+    assert "answer_non_empty" not in check_names
+    assert "retrieved_chunks_present" not in check_names
+
+
 def test_runner_summary_main_issues_caps_at_three(
     runner, ctx,
 ):

@@ -42,6 +42,7 @@ from j1.validation.generator import (
     DefaultTestCaseGenerator,
     GenerationOptions,
 )
+from j1.validation.judge import LLMJudge
 from j1.validation.runner import (
     DefaultValidationRunner,
     MAX_CASES_PER_RUN,
@@ -93,6 +94,7 @@ class IngestionValidationService:
         validation_set_store: ValidationSetStore | None = None,
         validation_run_store: ValidationRunStore | None = None,
         test_case_generator: DefaultTestCaseGenerator | None = None,
+        judge: LLMJudge | None = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -102,6 +104,10 @@ class IngestionValidationService:
         self._set_store = validation_set_store
         self._run_store_v = validation_run_store
         self._generator = test_case_generator
+        # Optional LLM judge for Phase 3 semantic checks. The runner
+        # picks this up when it's configured; when None, optional
+        # checks are simply omitted.
+        self._judge = judge
 
     def run_manual_test_query(
         self,
@@ -339,6 +345,7 @@ class IngestionValidationService:
             query_engine=self._query_engine,
             artifact_registry=self._artifacts,
             lifecycle_callback=lambda v: self._run_store_v.upsert(ctx, v),  # type: ignore[union-attr]
+            judge=self._judge,
         )
         vrun = runner.run(ctx, vset, actor=actor)
         self._audit_run_completed(ctx, run_id, vrun, actor)

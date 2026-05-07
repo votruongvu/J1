@@ -198,6 +198,7 @@ def build_validation_service(workspace: WorkspaceResolver):
         ReportGenerator,
     )
     from j1.validation import (
+        DefaultLLMJudge,
         DefaultTestCaseGenerator,
         IngestionValidationService,
         JsonlValidationRunStore,
@@ -239,6 +240,15 @@ def build_validation_service(workspace: WorkspaceResolver):
     except Exception:  # noqa: BLE001 — bootstrap may not be available in tests
         llm_client = None
 
+    # Phase 3 LLM judge — uses the same FAST/text client as the
+    # generator. Optional: if no LLM is configured, the runner
+    # simply omits the optional semantic checks (`answer_covers_*`,
+    # `answer_grounded_*`, `negative_no_fabrication`) and the
+    # validation status reflects the deterministic checks only.
+    judge = (
+        DefaultLLMJudge(text_client=llm_client) if llm_client else None
+    )
+
     return IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=artifacts,
@@ -254,6 +264,8 @@ def build_validation_service(workspace: WorkspaceResolver):
         validation_set_store=JsonlValidationSetStore(workspace),
         validation_run_store=JsonlValidationRunStore(workspace),
         test_case_generator=DefaultTestCaseGenerator(text_client=llm_client),
+        # Phase 3 — optional. Off when no LLM client is wired.
+        judge=judge,
     )
 
 

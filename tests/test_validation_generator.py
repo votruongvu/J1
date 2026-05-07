@@ -186,7 +186,10 @@ class _StubTextClient:
 def test_generator_emits_smoke_case_when_no_chunks():
     """An empty run still gets a smoke case — the runner will fail
     `retrieved_chunks_present`, which is the right operator signal
-    for 'the run produced nothing queryable.'"""
+    for 'the run produced nothing queryable.' Negatives are added
+    by Phase 3 even on an empty run because the off-topic test is
+    still meaningful (engine should abstain regardless of index
+    state)."""
     gen = DefaultTestCaseGenerator()
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=[],
@@ -194,8 +197,13 @@ def test_generator_emits_smoke_case_when_no_chunks():
     assert vset.source == "generated"
     assert vset.status == "draft"
     assert vset.generator_version == GENERATOR_VERSION
-    assert len(vset.test_cases) == 1
+    # Always at least the smoke case; negatives ride along by
+    # default (Phase 3). Cap at 3 = smoke + 2 default negatives.
+    assert len(vset.test_cases) >= 1
     assert vset.test_cases[0].priority == "smoke"
+    # No chunks → no chunk cases — the rest are negatives.
+    non_smoke = [c for c in vset.test_cases if c.priority != "smoke"]
+    assert all(c.type == "negative" for c in non_smoke)
 
 
 def test_generator_uses_llm_questions_when_available():
@@ -219,9 +227,13 @@ def test_generator_uses_llm_questions_when_available():
 
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
+        # Disable negatives so this test stays focused on the
+        # LLM-question-extraction path. Negative-case generation
+        # has its own dedicated test.
+        options=GenerationOptions(negative_case_count=0),
     )
 
-    # Smoke + 1 LLM-derived question.
+    # Smoke + 1 LLM-derived chunk question (negatives disabled).
     assert len(vset.test_cases) == 2
     chunk_case = next(tc for tc in vset.test_cases if tc.priority != "smoke")
     assert chunk_case.question == "When is the proposal due?"
@@ -244,9 +256,13 @@ def test_generator_falls_back_to_heuristic_on_llm_failure():
 
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
+        options=GenerationOptions(negative_case_count=0),
     )
 
-    chunk_case = next(tc for tc in vset.test_cases if tc.priority != "smoke")
+    chunk_case = next(
+        tc for tc in vset.test_cases
+        if tc.priority != "smoke" and tc.type != "negative"
+    )
     # Heuristic question shape — "What does the document say about: …?"
     assert "What does the document say about" in chunk_case.question
     assert "Proposal due 20 May 2026" in chunk_case.question
@@ -261,8 +277,12 @@ def test_generator_uses_heuristic_when_no_llm_configured():
     chunks = [_chunk(chunk_id="c-1", body="Heading content body.")]
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
+        options=GenerationOptions(negative_case_count=0),
     )
-    chunk_case = next(tc for tc in vset.test_cases if tc.priority != "smoke")
+    chunk_case = next(
+        tc for tc in vset.test_cases
+        if tc.priority != "smoke" and tc.type != "negative"
+    )
     assert chunk_case.expected_chunks == ["c-1"]
     assert chunk_case.question  # non-empty
 
@@ -294,8 +314,10 @@ def test_generator_caps_total_cases(monkeypatch):
 
 def test_generator_threads_citation_required_through(monkeypatch):
     """Caller-supplied `citation_required` flips the flag on every
-    emitted case — the runner reads this to enable/skip the
-    `citation_present` check."""
+    NON-NEGATIVE case — the runner reads this to enable/skip the
+    `citation_present` check. Negatives intentionally override to
+    `False` because an honest abstain has no citations and shouldn't
+    be failed for that."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="Some text.")]
 
@@ -305,7 +327,10 @@ def test_generator_threads_citation_required_through(monkeypatch):
     )
 
     for tc in vset.test_cases:
-        assert tc.citation_required is True
+        if tc.type == "negative":
+            assert tc.citation_required is False
+        else:
+            assert tc.citation_required is True
 
 
 def test_generator_records_artifacts_content_hash():
@@ -318,6 +343,58 @@ def test_generator_records_artifacts_content_hash():
 
     assert vset_a.artifacts_content_hash == vset_b.artifacts_content_hash
     assert vset_a.artifacts_content_hash != "sha256:empty"
+
+
+def test_generator_emits_negative_cases_by_default():
+    """Phase 3: every generated set carries N negative cases drawn
+    from the deterministic pool. Defaults to 2; respects budget."""
+    gen = DefaultTestCaseGenerator()
+    chunks = [_chunk(chunk_id="c-1", body="alpha")]
+
+    vset = gen.generate(run_id="r", document_ids=[], chunks=chunks)
+
+    negatives = [c for c in vset.test_cases if c.type == "negative"]
+    assert len(negatives) >= 1
+    for case in negatives:
+        # Negatives must abstain, not require citations, and have
+        # no expected chunks (there's nothing to cite).
+        assert case.expected_behavior == "abstain"
+        assert case.citation_required is False
+        assert case.expected_chunks == []
+        assert case.metadata.get("negative") is True
+
+
+def test_generator_negative_count_zero_disables_negatives():
+    """Caller can opt out via `negative_case_count=0`. Useful for
+    very small budgets or smoke-only sets."""
+    gen = DefaultTestCaseGenerator()
+    chunks = [_chunk(chunk_id="c-1", body="alpha")]
+
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=chunks,
+        options=GenerationOptions(negative_case_count=0),
+    )
+
+    negatives = [c for c in vset.test_cases if c.type == "negative"]
+    assert negatives == []
+
+
+def test_generator_negative_count_respects_max_cases():
+    """When max_cases is tight, negatives don't crowd out smoke +
+    chunk cases. Smoke is always first; negatives fit in the
+    remaining budget."""
+    gen = DefaultTestCaseGenerator()
+    chunks = [_chunk(chunk_id="c-1", body="alpha")]
+
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=chunks,
+        # Budget = smoke + 1 negative + 1 chunk = 3
+        options=GenerationOptions(max_cases=3, negative_case_count=5),
+    )
+
+    assert len(vset.test_cases) <= 3
+    # Smoke always survives.
+    assert any(c.priority == "smoke" for c in vset.test_cases)
 
 
 def test_generator_handles_malformed_llm_response():
@@ -337,8 +414,14 @@ def test_generator_handles_malformed_llm_response():
     )
     gen = DefaultTestCaseGenerator(text_client=stub)
     chunks = [_chunk(chunk_id="c-1", body="Body.")]
-    vset = gen.generate(run_id="r", document_ids=[], chunks=chunks)
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=chunks,
+        options=GenerationOptions(negative_case_count=0),
+    )
 
-    chunk_cases = [c for c in vset.test_cases if c.priority != "smoke"]
+    chunk_cases = [
+        c for c in vset.test_cases
+        if c.priority != "smoke" and c.type != "negative"
+    ]
     assert len(chunk_cases) == 1
     assert chunk_cases[0].question == "OK?"
