@@ -1898,6 +1898,63 @@ export class MockClient implements IngestionClient {
     return vrun;
   }
 
+  async recordTesterVerdict(
+    runId: string,
+    validationRunId: string,
+    resultId: string,
+    body: { verdict: "pass" | "warning" | "fail"; notes?: string | null },
+  ): Promise<ValidationRun> {
+    await delay(80);
+    const vrun = this._mockRuns.get(validationRunId);
+    if (!vrun || vrun.runId !== runId) {
+      throw new ApiError(404, "Validation run not found.");
+    }
+    const updated: ValidationRun = {
+      ...vrun,
+      results: vrun.results.map((r) =>
+        r.resultId === resultId
+          ? { ...r, testerVerdict: body.verdict, testerNotes: body.notes ?? null }
+          : r,
+      ),
+    };
+    this._mockRuns.set(validationRunId, updated);
+    return updated;
+  }
+
+  async downloadValidationReport(
+    runId: string,
+    validationRunId: string,
+    format: "markdown" | "json" = "markdown",
+  ): Promise<{ content: string; mediaType: string; filename: string }> {
+    await delay(80);
+    const vrun = this._mockRuns.get(validationRunId);
+    if (!vrun || vrun.runId !== runId) {
+      throw new ApiError(404, "Validation run not found.");
+    }
+    if (format === "json") {
+      return {
+        content: JSON.stringify(vrun, null, 2),
+        mediaType: "application/json",
+        filename: `validation-${validationRunId}.json`,
+      };
+    }
+    // Trivial Markdown render in mock mode — production format
+    // is the backend's. Enough for the FE download flow to work
+    // without backend access.
+    const content =
+      `# Validation Report — ${vrun.validationRunId}\n\n`
+      + `- Run: ${vrun.runId}\n`
+      + `- Set: ${vrun.validationSetId}\n`
+      + `- Execution status: ${vrun.executionStatus}\n`
+      + `- Validation status: ${vrun.validationStatus}\n`
+      + `\n## Results (${vrun.results.length})\n`;
+    return {
+      content,
+      mediaType: "text/markdown",
+      filename: `validation-${validationRunId}.md`,
+    };
+  }
+
   openStream(runId: string, handlers: StreamHandlers): StreamHandle {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -604,6 +604,17 @@ class ValidationRunListRecord(CamelModel):
 
 class StartValidationRunRequestRecord(CamelModel):
     validation_set_id: str = Field(min_length=1)
+
+
+class TesterVerdictRequestRecord(CamelModel):
+    """Body for POST /validation-results/{id}/verdict.
+
+    `verdict` is constrained at the boundary so a typo fails fast.
+    `notes` is free-form, capped at a sensible 4 KB so a tester
+    pasting a wall of text can't blow up audit-log lines."""
+
+    verdict: Literal["pass", "warning", "fail"]
+    notes: str | None = Field(default=None, max_length=4096)
 
 
 # ---- Citations / sources ---------------------------------------------

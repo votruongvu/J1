@@ -166,6 +166,7 @@ export function ValidationTab({ runId }: ValidationTabProps) {
         generating={generating}
         onGenerate={() => void onGenerate()}
         onRun={() => void onRun()}
+        runId={runId}
       />
 
       {error && (
@@ -198,7 +199,15 @@ export function ValidationTab({ runId }: ValidationTabProps) {
       <ValidationResultDrawer
         open={drawerResultId !== null}
         result={drawerResult}
+        runId={runId}
+        validationRunId={latestRun?.validationRunId ?? null}
         onClose={() => setDrawerResultId(null)}
+        // Refresh latestRun (and the table) after a verdict is
+        // recorded so the per-row badge re-renders without the
+        // tester having to navigate away. Phase 5 contract: the
+        // verdict POST returns the updated snapshot, so a single
+        // refetch is enough.
+        onVerdictRecorded={() => void refresh()}
       />
     </div>
   );

@@ -578,3 +578,117 @@ describe("ApiClient validation set methods (Phase 2)", () => {
     ).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe("ApiClient tester verdict + report (Phase 5)", () => {
+  const _RUN_PAYLOAD = {
+    data: {
+      validationRunId: "vrun-1",
+      validationSetId: "vs-1",
+      runId: "run-1",
+      executionStatus: "completed",
+      validationStatus: "failed",
+      startedAt: "2026-05-07T10:00:00Z",
+      completedAt: "2026-05-07T10:00:05Z",
+      actor: "tester",
+      summary: {
+        total: 1, passed: 0, warning: 0, failed: 1, skipped: 0,
+        coverage: { byType: {}, byPriority: {}, bySection: {} },
+        mainIssues: [], recommendedAction: "block release until resolved",
+      },
+      results: [
+        {
+          resultId: "vr-1",
+          testCaseId: "tc-1",
+          status: "failed",
+          question: "?",
+          answer: "",
+          retrievedChunks: [],
+          citations: [],
+          checks: [],
+          testerVerdict: "pass",
+          testerNotes: "ok",
+        },
+      ],
+      failureMessage: null,
+      metadata: {},
+    },
+  };
+
+  it("recordTesterVerdict POSTs to the verdict path with JSON body", async () => {
+    const { calls } = withFetch(() => jsonResponse(_RUN_PAYLOAD));
+    await makeClient().recordTesterVerdict(
+      "run-1", "vrun-1", "vr-1",
+      { verdict: "pass", notes: "ok" },
+    );
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/run-1/validation-runs/vrun-1/results/vr-1/verdict",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body).toEqual({ verdict: "pass", notes: "ok" });
+  });
+
+  it("recordTesterVerdict returns the updated run with verdict surfaced", async () => {
+    withFetch(() => jsonResponse(_RUN_PAYLOAD));
+    const out = await makeClient().recordTesterVerdict(
+      "run-1", "vrun-1", "vr-1",
+      { verdict: "pass" },
+    );
+    // Critical wire-shape regression — the FE relies on the
+    // response containing the updated verdict so it can
+    // re-render without an extra GET.
+    expect(out.results[0]!.testerVerdict).toBe("pass");
+    // Auto status must NOT change on a verdict POST.
+    expect(out.results[0]!.status).toBe("failed");
+  });
+
+  it("downloadValidationReport returns text body + filename + mediaType", async () => {
+    const markdownBody = "# Validation Report\n";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(markdownBody, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/markdown",
+            "Content-Disposition": 'attachment; filename="validation-vrun-1.md"',
+          },
+        }),
+      ),
+    );
+    const out = await makeClient().downloadValidationReport(
+      "run-1", "vrun-1", "markdown",
+    );
+    expect(out.content).toBe(markdownBody);
+    expect(out.mediaType).toBe("text/markdown");
+    expect(out.filename).toBe("validation-vrun-1.md");
+  });
+
+  it("downloadValidationReport surfaces 4xx envelopes as ApiError", async () => {
+    withFetch(() =>
+      jsonResponse({ error: { code: "REVIEW_NOT_FOUND", message: "missing" } }, 404),
+    );
+    await expect(
+      makeClient().downloadValidationReport("run-1", "vrun-ghost"),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("downloadValidationReport falls back to a sensible filename if the header is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("# x", {
+          status: 200,
+          headers: { "Content-Type": "text/markdown" },
+        }),
+      ),
+    );
+    const out = await makeClient().downloadValidationReport(
+      "run-1", "vrun-1",
+    );
+    // Defensive default: the FE should never render an empty
+    // download filename. Locked here so a producer that drops the
+    // header doesn't silently break the download UX.
+    expect(out.filename).toBe("validation-vrun-1.md");
+  });
+});

@@ -3,25 +3,94 @@
  *
  * Mirrors the existing `ChunkDrawer` two-view pattern (Readable +
  * Raw JSON) so the FE feels consistent across surfaces.
+ *
+ * Phase 5: tester verdict UI. The tester can record `pass` /
+ * `warning` / `fail` plus free-form notes. The recorded verdict is
+ * a SEPARATE signal from the auto `status` — both are surfaced
+ * side-by-side; the deterministic outcome stays unchanged.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useClient } from "@/lib/hooks/useClient";
+import { ApiError } from "@/lib/api/client";
 import type { ValidationResult } from "@/types/review";
 
 interface ValidationResultDrawerProps {
   open: boolean;
   result: ValidationResult | null;
+  /** Run id of the parent ingestion run — needed for verdict POST. */
+  runId: string;
+  /** Validation run id this result belongs to. */
+  validationRunId: string | null;
+  /** Called after a successful verdict POST so the parent can
+   * refresh its `latestRun` state and re-render the table. */
+  onVerdictRecorded?: () => void;
   onClose: () => void;
 }
+
+const _VERDICT_OPTIONS: Array<{
+  value: "pass" | "warning" | "fail";
+  label: string;
+  cls: string;
+}> = [
+  { value: "pass", label: "Pass", cls: "validation-status--ok" },
+  { value: "warning", label: "Warning", cls: "validation-status--warn" },
+  { value: "fail", label: "Fail", cls: "validation-status--fail" },
+];
 
 export function ValidationResultDrawer({
   open,
   result,
+  runId,
+  validationRunId,
+  onVerdictRecorded,
   onClose,
 }: ValidationResultDrawerProps) {
+  const client = useClient();
   const [showRaw, setShowRaw] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState<
+    "pass" | "warning" | "fail" | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset local state when the drawer opens for a new result so
+  // notes/errors don't leak between cases.
+  useEffect(() => {
+    if (result) {
+      setNotes(result.testerNotes ?? "");
+      setError(null);
+      setSubmitting(null);
+    }
+  }, [result?.resultId]);
 
   if (!open || !result) return null;
+
+  const submitVerdict = async (verdict: "pass" | "warning" | "fail") => {
+    if (!validationRunId) return;
+    setSubmitting(verdict);
+    setError(null);
+    try {
+      await client.recordTesterVerdict(
+        runId,
+        validationRunId,
+        result.resultId,
+        { verdict, notes: notes.trim() || null },
+      );
+      onVerdictRecorded?.();
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `Verdict failed (${e.status}): ${e.message}`
+          : e instanceof Error
+            ? e.message
+            : "Verdict failed.";
+      setError(msg);
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
   return (
     <div
       className="drawer drawer--open"
@@ -48,7 +117,12 @@ export function ValidationResultDrawer({
         <section>
           <h4>Status</h4>
           <p>
-            <strong>{result.status}</strong>
+            <strong>Auto: {result.status}</strong>
+            {result.testerVerdict && (
+              <>
+                {" "}· Tester: <strong>{result.testerVerdict}</strong>
+              </>
+            )}
             {result.failureReason ? <> — {result.failureReason}</> : null}
           </p>
         </section>
@@ -123,6 +197,49 @@ export function ValidationResultDrawer({
               </li>
             ))}
           </ul>
+        </section>
+
+        <section>
+          <h4>Tester verdict</h4>
+          <p style={{ color: "var(--fg-muted)", fontSize: 13 }}>
+            Record a human override. The auto status above stays
+            unchanged — both signals are kept side-by-side.
+          </p>
+          <textarea
+            rows={3}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Optional notes (e.g. 'tested manually — answer is correct')"
+            style={{ width: "100%", fontFamily: "inherit", padding: 8 }}
+            disabled={submitting !== null}
+            maxLength={4096}
+          />
+          <div
+            style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}
+          >
+            {_VERDICT_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                className={`btn validation-status ${opt.cls}`}
+                disabled={submitting !== null || !validationRunId}
+                onClick={() => void submitVerdict(opt.value)}
+              >
+                {submitting === opt.value
+                  ? "Saving…"
+                  : `Mark ${opt.label}`}
+              </button>
+            ))}
+          </div>
+          {error && (
+            <div
+              className="banner banner--err"
+              role="alert"
+              style={{ marginTop: 8 }}
+            >
+              {error}
+            </div>
+          )}
         </section>
 
         <section>

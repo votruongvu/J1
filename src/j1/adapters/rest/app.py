@@ -80,6 +80,7 @@ from j1.adapters.rest.schemas import (
     ManualTestQueryRequestRecord,
     ManualTestQueryResponseRecord,
     StartValidationRunRequestRecord,
+    TesterVerdictRequestRecord,
     ProgressEventRecord,
     ProgressEventsRecord,
     ProjectCreateRequest,
@@ -1694,6 +1695,94 @@ def create_rest_api(
         service = _require_validation_service()
         vrun = service.get_validation_run(ctx, run_id, validation_run_id)
         return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
+
+    # ---- Tester verdict (Phase 5) -----------------------------------
+
+    @app.post(
+        "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}/results/{result_id}/verdict",
+        tags=["ingestion-runs"],
+        summary="Record a tester verdict on a validation result",
+        description=(
+            "Layered human override on top of the deterministic "
+            "`status`. The auto status NEVER changes — the verdict "
+            "is a separate signal recorded on the result. Operators "
+            "see both side-by-side; downstream tooling picks the "
+            "axis it prefers.\n\n"
+            "Valid `verdict` values: `pass` / `warning` / `fail`. "
+            "Returns the full updated validation run snapshot."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_validation_result_verdict(
+        request: Request,
+        run_id: str,
+        validation_run_id: str,
+        result_id: str,
+        body: TesterVerdictRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        try:
+            vrun = service.record_tester_verdict(
+                ctx, run_id, validation_run_id, result_id,
+                verdict=body.verdict,
+                notes=body.notes,
+                actor=security.subject,
+            )
+        except ValueError as exc:
+            # Service raises ValueError on an unknown verdict
+            # string. Pydantic should already block this at the
+            # boundary, but the service guard exists for stand-
+            # alone callers; surface as 422 so the wire shape
+            # stays consistent.
+            raise HTTPException(422, str(exc)) from exc
+        return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
+
+    # ---- Validation report export (Phase 5) -------------------------
+
+    @app.get(
+        "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}/report",
+        tags=["ingestion-runs"],
+        summary="Export a validation run report (Markdown or JSON)",
+        description=(
+            "Renders the validation run as a tester-friendly "
+            "report. Default `format=markdown` for copy-paste; "
+            "`format=json` for downstream automation. The "
+            "Markdown surface explicitly distinguishes "
+            "executionStatus from validationStatus and surfaces "
+            "tester-verdict overrides next to the auto status."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_validation_run_report(
+        request: Request,
+        run_id: str,
+        validation_run_id: str,
+        format: str = Query(default="markdown", alias="format"),
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> Response:
+        service = _require_validation_service()
+        try:
+            content, media = service.export_validation_run_report(
+                ctx, run_id, validation_run_id, format=format,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        # Plain Response (not envelope-wrapped) so the body stays
+        # downloadable as `report.md` / `report.json` directly.
+        # The Content-Disposition header gives the FE a sensible
+        # default filename when the user clicks "Download report."
+        ext = "md" if media.startswith("text/markdown") else "json"
+        return Response(
+            content=content,
+            media_type=media,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="validation-{validation_run_id}.{ext}"'
+                ),
+            },
+        )
 
     @app.post(
         "/ingestion-runs/{run_id}/confirm",

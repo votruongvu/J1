@@ -205,6 +205,34 @@ export interface IngestionClient {
     runId: string,
     validationRunId: string,
   ): Promise<ValidationRun>;
+
+  // ---- Phase 5: tester verdict + report --------------------------
+
+  /**
+   * Record a human override on a single validation result. The
+   * automated `status` is unchanged — verdict is a separate
+   * signal recorded on the result. Returns the full updated
+   * validation run snapshot so the caller can refresh local
+   * state without an extra GET.
+   */
+  recordTesterVerdict(
+    runId: string,
+    validationRunId: string,
+    resultId: string,
+    body: { verdict: "pass" | "warning" | "fail"; notes?: string | null },
+  ): Promise<ValidationRun>;
+
+  /**
+   * Download a validation run report. Returns the raw text body
+   * (Markdown or JSON depending on `format`) plus the suggested
+   * filename from the backend's Content-Disposition header. The
+   * caller decides whether to render inline or trigger a download.
+   */
+  downloadValidationReport(
+    runId: string,
+    validationRunId: string,
+    format?: "markdown" | "json",
+  ): Promise<{ content: string; mediaType: string; filename: string }>;
 }
 
 /** Sentinel error type the UI can surface as 4xx / 5xx differently. */

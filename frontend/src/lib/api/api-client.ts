@@ -474,6 +474,63 @@ export class ApiClient implements IngestionClient {
     return await this.json<ValidationRun>(resp);
   }
 
+  // ---- Tester verdict + report (Phase 5) ---------------------------
+
+  async recordTesterVerdict(
+    runId: string,
+    validationRunId: string,
+    resultId: string,
+    body: { verdict: "pass" | "warning" | "fail"; notes?: string | null },
+  ): Promise<ValidationRun> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/validation-runs/${encodeURIComponent(validationRunId)}/results/${encodeURIComponent(resultId)}/verdict`,
+      ),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+      },
+    );
+    return await this.json<ValidationRun>(resp);
+  }
+
+  async downloadValidationReport(
+    runId: string,
+    validationRunId: string,
+    format: "markdown" | "json" = "markdown",
+  ): Promise<{ content: string; mediaType: string; filename: string }> {
+    const params = new URLSearchParams({ format });
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/validation-runs/${encodeURIComponent(validationRunId)}/report?${params}`,
+      ),
+      { headers: this.headers() },
+    );
+    if (!resp.ok) {
+      // Reuse the standard envelope-error path for non-2xx so the
+      // caller sees the same `ApiError` shape as every other
+      // endpoint, even though the success path returns raw text.
+      let message = `HTTP ${resp.status}`;
+      try {
+        const body = await resp.json();
+        message = body?.error?.message ?? message;
+      } catch {
+        // not JSON — fall back to status code
+      }
+      throw new ApiError(resp.status, message);
+    }
+    const content = await resp.text();
+    const mediaType = resp.headers.get("Content-Type") ?? "text/plain";
+    // Parse the suggested filename from `Content-Disposition`. The
+    // backend always sends one; defensive parse falls back to a
+    // sensible default if the header is malformed.
+    const disposition = resp.headers.get("Content-Disposition") ?? "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    const filename = match?.[1] ?? `validation-${validationRunId}.${format === "json" ? "json" : "md"}`;
+    return { content, mediaType, filename };
+  }
+
   // ---- openStream --------------------------------------------------
 
   openStream(runId: string, handlers: StreamHandlers): StreamHandle {

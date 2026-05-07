@@ -10,6 +10,9 @@
  * a "ran successfully but cases failed" subtitle.
  */
 
+import { useState } from "react";
+import { useClient } from "@/lib/hooks/useClient";
+import { ApiError } from "@/lib/api/client";
 import type {
   ValidationRun,
   ValidationSetListItem,
@@ -26,6 +29,10 @@ interface KnowledgeReadinessCardProps {
   generating: boolean;
   onGenerate: () => void;
   onRun: () => void;
+  /** Run id of the parent ingestion run — needed for the report
+   * download. We pass it down so the card can issue the request
+   * without going back through ValidationTab. */
+  runId: string;
 }
 
 const _STATUS_LABEL: Record<ValidationStatus | "not_run", string> = {
@@ -51,11 +58,54 @@ export function KnowledgeReadinessCard({
   generating,
   onGenerate,
   onRun,
+  runId,
 }: KnowledgeReadinessCardProps) {
+  const client = useClient();
+  const [downloading, setDownloading] = useState<"markdown" | "json" | null>(
+    null,
+  );
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
   const status: ValidationStatus | "not_run" =
     latestRun?.validationStatus ?? "not_run";
   const summary = latestRun?.summary ?? null;
   const subtitle = _buildSubtitle(latestRun, setItem);
+
+  const downloadReport = async (format: "markdown" | "json") => {
+    if (!latestRun) return;
+    setDownloading(format);
+    setDownloadError(null);
+    try {
+      const { content, mediaType, filename } =
+        await client.downloadValidationReport(
+          runId, latestRun.validationRunId, format,
+        );
+      // Trigger a browser download via an in-memory Blob URL. The
+      // backend's `Content-Disposition: attachment` header is
+      // ignored by `fetch` callers — we have to build the link
+      // ourselves. `revokeObjectURL` after a tick so the browser
+      // has time to start the download.
+      const blob = new Blob([content], { type: mediaType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `Download failed (${e.status}): ${e.message}`
+          : e instanceof Error
+            ? e.message
+            : "Download failed.";
+      setDownloadError(msg);
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   return (
     <div className="card">
@@ -131,7 +181,40 @@ export function KnowledgeReadinessCard({
           >
             {running ? "Running…" : "Run Validation"}
           </button>
+          {/* Phase 5 download buttons. Disabled until a run exists
+              so testers don't try to download an empty report. */}
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => void downloadReport("markdown")}
+            disabled={!latestRun || downloading !== null}
+            title={
+              !latestRun ? "Run validation first" : "Download as Markdown"
+            }
+          >
+            {downloading === "markdown" ? "Downloading…" : "Download .md"}
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => void downloadReport("json")}
+            disabled={!latestRun || downloading !== null}
+            title={
+              !latestRun ? "Run validation first" : "Download as JSON"
+            }
+          >
+            {downloading === "json" ? "Downloading…" : "Download .json"}
+          </button>
         </div>
+        {downloadError && (
+          <div
+            className="banner banner--err"
+            role="alert"
+            style={{ marginTop: 8 }}
+          >
+            {downloadError}
+          </div>
+        )}
       </div>
     </div>
   );
