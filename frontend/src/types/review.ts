@@ -57,6 +57,74 @@ export interface ReviewAvailableViews {
   graph: ReviewAvailability;
   quality: ReviewAvailability;
   rawArtifacts: ReviewAvailability;
+  validation: ReviewAvailability;
+}
+
+// ---- Validation (Phase 1: manual test query) --------------------
+
+export interface ValidationCheck {
+  name: string;
+  severity: "required" | "optional";
+  passed: boolean;
+  detail?: string | null;
+  expected?: unknown;
+  actual?: unknown;
+}
+
+export interface ValidationCitation {
+  artifactId: string;
+  artifactType: string;
+  sourceDocumentId?: string | null;
+  sourceLocation?: string | null;
+  // Server-derived from index/artifact metadata. Trusted by the FE
+  // for ownership / grounding affordances; never echoed from LLM
+  // output or client input.
+  chunkId?: string | null;
+  runId?: string | null;
+}
+
+export interface ValidationRetrievedChunk {
+  artifactId: string;
+  chunkId?: string | null;
+  runId?: string | null;
+  documentId?: string | null;
+  sourceLocation?: string | null;
+  score: number;
+  preview: string;
+}
+
+export interface ValidationEvidenceFlags {
+  graphUsed: boolean;
+  tablesUsed: boolean;
+  imagesUsed: boolean;
+}
+
+export type ValidationStatus =
+  | "passed"
+  | "passed_with_warnings"
+  | "failed"
+  | "inconclusive";
+
+export interface ManualTestQueryRequest {
+  question: string;
+  topK?: number;
+  mode?: string;
+  citationRequired?: boolean;
+  includeRaw?: boolean;
+}
+
+export interface ManualTestQueryResponse {
+  requestId: string;
+  runId: string;
+  question: string;
+  answer: string;
+  modeUsed: string;
+  retrievedChunks: ValidationRetrievedChunk[];
+  citations: ValidationCitation[];
+  checks: ValidationCheck[];
+  validationStatus: ValidationStatus;
+  evidenceFlags: ValidationEvidenceFlags;
+  rawResponse?: Record<string, unknown> | null;
 }
 
 // ---- Run summary -------------------------------------------------

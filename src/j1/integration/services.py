@@ -123,6 +123,8 @@ def _hit_to_dto(hit: SearchHit) -> SearchHitDTO:
         confidence=hit.confidence,
         review_status=hit.review_status,
         extracted_text=hit.extracted_text,
+        chunk_id=hit.chunk_id,
+        run_id=hit.run_id,
     )
 
 
@@ -263,6 +265,8 @@ class AnswerService:
                     artifact_type=s.artifact_type,
                     source_document_id=s.source_document_id,
                     source_location=s.source_location,
+                    chunk_id=s.chunk_id,
+                    run_id=s.run_id,
                 )
                 for s in response.sources
             ],

@@ -25,6 +25,8 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  ManualTestQueryRequest,
+  ManualTestQueryResponse,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -367,6 +369,25 @@ export class ApiClient implements IngestionClient {
     const path = `/ingestion-runs/${encodeURIComponent(runId)}/graph${qs ? `?${qs}` : ""}`;
     const resp = await fetch(this.url(path), { headers: this.headers() });
     return graphSnapshotFromApi(await this.json<unknown>(resp));
+  }
+
+  // ---- runManualTestQuery (Phase 1 validation) ---------------------
+
+  async runManualTestQuery(
+    runId: string,
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/test-query`),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(request),
+      },
+    );
+    // The backend response is camelCase already (CamelModel) so we
+    // don't translate field names — same shape as ManualTestQueryResponse.
+    return await this.json<ManualTestQueryResponse>(resp);
   }
 
   // ---- openStream --------------------------------------------------

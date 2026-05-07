@@ -12,6 +12,8 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  ManualTestQueryRequest,
+  ManualTestQueryResponse,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -142,6 +144,23 @@ export interface IngestionClient {
     runId: string,
     opts?: ReviewGraphQuery,
   ): Promise<ReviewGraphSnapshot>;
+
+  // ---- Validation (Phase 1) ---------------------------------------
+
+  /**
+   * POST a single manual test query against an ingested run.
+   *
+   * Synchronous: blocks until the answer engine has run + the
+   * deterministic checks have aggregated. Throws `ApiError` on
+   * transport errors. The returned body's `validationStatus` is
+   * INDEPENDENT of the HTTP outcome — a 200 with
+   * `validationStatus="failed"` is the canonical 'job ran but the
+   * answer didn't pass' case.
+   */
+  runManualTestQuery(
+    runId: string,
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse>;
 }
 
 /** Sentinel error type the UI can surface as 4xx / 5xx differently. */

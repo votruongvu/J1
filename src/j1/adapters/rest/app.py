@@ -57,6 +57,7 @@ from j1.adapters.rest.schemas import (
     CostSummaryRecord,
     DocumentRecord,
     DocumentStatusRecord,
+    EvidenceFlagsRecord,
     FeedbackReceiptRecord,
     FeedbackRequest,
     GraphPathRecord,
@@ -75,11 +76,14 @@ from j1.adapters.rest.schemas import (
     JobEventsRecord,
     JobStartRecord,
     JobStatusRecord,
+    ManualTestQueryRequestRecord,
+    ManualTestQueryResponseRecord,
     ProgressEventRecord,
     ProgressEventsRecord,
     ProjectCreateRequest,
     ProjectIngestionRequest,
     ProjectRecord,
+    RetrievedChunkRefRecord,
     RetrieveRequest,
     RetrieveResultRecord,
     ReviewDecisionRecord,
@@ -90,6 +94,7 @@ from j1.adapters.rest.schemas import (
     SearchRequest,
     SearchResultRecord,
     SourceDetailRecord,
+    ValidationCheckRecord,
     VersionRecord,
 )
 from j1.artifacts.registry import ArtifactNotFoundError
@@ -140,11 +145,16 @@ from j1.integration.security import (
     SCOPE_READ,
     SCOPE_RETRIEVE,
     SCOPE_SEARCH,
+    SCOPE_VALIDATION_WRITE,
     SecurityContext,
 )
 from j1.integration.services import ApplicationFacade
 from j1.projects.context import ProjectContext
 from j1.review.queue import ReviewItemNotFoundError
+from j1.validation import (
+    IngestionValidationService,
+    ManualTestQueryRequest as ManualTestQueryRequestDTO,
+)
 from j1.workspace.resolver import WorkspaceResolver
 
 _log = logging.getLogger("j1.adapters.rest")
@@ -316,6 +326,7 @@ def create_rest_api(
     ingestion_run_store: "IngestionRunStore | None" = None,
     progress_reporter: "ProgressReporter | None" = None,
     review_service: IngestionResultReviewService | None = None,
+    validation_service: IngestionValidationService | None = None,
     confirm_handler: RunConfirmHandler | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
@@ -1393,6 +1404,114 @@ def create_rest_api(
         )
         return envelope(snapshot.model_dump(by_alias=True), _req_id(request))
 
+    # ---- Validation: manual test query (Phase 1) ---------------------
+    # Stateless tester surface: ask one question against an ingested
+    # run, get answer + retrieved chunks + citations + deterministic
+    # check results scoped to that run. No persistence yet.
+
+    def _require_validation_service() -> IngestionValidationService:
+        if validation_service is None:
+            raise HTTPException(
+                503,
+                "ingestion-validation service not configured "
+                "(pass `validation_service=` to create_rest_api)",
+            )
+        return validation_service
+
+    @app.post(
+        "/ingestion-runs/{run_id}/test-query",
+        tags=["ingestion-runs"],
+        summary="Run a manual test query against this ingestion run",
+        description=(
+            "Sends a single tester-supplied question through the "
+            "answer engine with retrieval restricted to artifacts "
+            "produced by this run. Returns the engine's answer + "
+            "retrieved chunks + citations + a deterministic check "
+            "report. The HTTP 200 indicates the QUERY ran "
+            "successfully; the body's `validationStatus` field "
+            "reports whether the answer PASSED the deterministic "
+            "checks. The two are independent — a 200 with "
+            "`validationStatus=\"failed\"` is the canonical 'job ran "
+            "but the answer didn't pass' case.\n\n"
+            "Returns 404 if the run does not exist in the caller's "
+            "tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_ingestion_run_test_query(
+        request: Request,
+        run_id: str,
+        body: ManualTestQueryRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        dto_request = ManualTestQueryRequestDTO(
+            question=body.question,
+            top_k=body.top_k,
+            mode=body.mode,
+            citation_required=body.citation_required,
+            include_raw=body.include_raw,
+        )
+        # `_load_run` inside the service raises `ReviewNotFound` on
+        # cross-tenant / cross-project access — caught by the
+        # existing exception handler at the top of the app and
+        # converted to a uniform 404. We don't need to translate
+        # here; just let it propagate.
+        result = service.run_manual_test_query(
+            ctx, run_id, dto_request,
+            actor=security.subject,
+        )
+        record = ManualTestQueryResponseRecord(
+            request_id=result.request_id,
+            run_id=result.run_id,
+            question=result.question,
+            answer=result.answer,
+            mode_used=result.mode_used,
+            retrieved_chunks=[
+                RetrievedChunkRefRecord(
+                    artifact_id=c.artifact_id,
+                    chunk_id=c.chunk_id,
+                    run_id=c.run_id,
+                    document_id=c.document_id,
+                    source_location=c.source_location,
+                    score=c.score,
+                    preview=c.preview,
+                )
+                for c in result.retrieved_chunks
+            ],
+            citations=[
+                CitationRecord(
+                    artifact_id=c["artifactId"],
+                    artifact_type=c["artifactType"],
+                    source_document_id=c.get("sourceDocumentId"),
+                    source_location=c.get("sourceLocation"),
+                    chunk_id=c.get("chunkId"),
+                    run_id=c.get("runId"),
+                )
+                for c in result.citations
+            ],
+            checks=[
+                ValidationCheckRecord(
+                    name=chk.name,
+                    severity=chk.severity,
+                    passed=chk.passed,
+                    detail=chk.detail,
+                    expected=chk.expected,
+                    actual=chk.actual,
+                )
+                for chk in result.checks
+            ],
+            validation_status=result.validation_status,
+            evidence_flags=EvidenceFlagsRecord(
+                graph_used=result.evidence_flags.get("graphUsed", False),
+                tables_used=result.evidence_flags.get("tablesUsed", False),
+                images_used=result.evidence_flags.get("imagesUsed", False),
+            ),
+            raw_response=result.raw_response,
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
     @app.post(
         "/ingestion-runs/{run_id}/confirm",
         tags=["ingestion-runs"],
@@ -2116,6 +2235,8 @@ def create_rest_api(
                     artifact_type=h.artifact_type,
                     source_document_id=h.source_document_id,
                     source_location=h.source_location,
+                    chunk_id=h.chunk_id,
+                    run_id=h.run_id,
                 ),
             )
             for h in hits
@@ -2173,6 +2294,8 @@ def create_rest_api(
                     artifact_type=c.artifact_type,
                     source_document_id=c.source_document_id,
                     source_location=c.source_location,
+                    chunk_id=c.chunk_id,
+                    run_id=c.run_id,
                 )
                 for c in dto.sources
             ],

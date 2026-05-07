@@ -49,6 +49,10 @@ class SearchHitDTO:
     confidence: float = 0.0
     review_status: str = "not_required"
     extracted_text: str = ""
+    # Server-derived from the indexed artifact's metadata. Same trust
+    # contract as CitationRecord — never echoed from request input.
+    chunk_id: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,11 @@ class CitationDTO:
     artifact_type: str
     source_document_id: str | None = None
     source_location: str | None = None
+    # Server-derived from index/artifact metadata. See CitationRecord
+    # (REST schema) for the trust contract — these come from the
+    # matched FTS row, never from LLM output or client input.
+    chunk_id: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)

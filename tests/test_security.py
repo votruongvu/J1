@@ -25,6 +25,8 @@ from j1.integration.security import (
     SCOPE_READ,
     SCOPE_RETRIEVE,
     SCOPE_SEARCH,
+    SCOPE_VALIDATION_READ,
+    SCOPE_VALIDATION_WRITE,
     ApiKeyAuthenticator,
     ApiKeyRecord,
     AuthenticationError,
@@ -78,6 +80,7 @@ def test_default_kb_scopes_contains_all_named_scopes():
         SCOPE_READ, SCOPE_SEARCH, SCOPE_RETRIEVE, SCOPE_ANSWER,
         SCOPE_INGEST, SCOPE_FEEDBACK, SCOPE_ADMIN, SCOPE_DELETE,
         SCOPE_AUDIT_READ,
+        SCOPE_VALIDATION_READ, SCOPE_VALIDATION_WRITE,
     }
     assert expected == set(DEFAULT_KB_SCOPES)
 

@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from j1.query.scope import QueryScope, default_scope
 from j1.review.governance import (
     ConfidenceLevel,
     WarningCategory,
@@ -23,6 +24,11 @@ class QueryRequest:
     mode: QueryMode = QueryMode.AUTO
     max_results: int = 10
     artifact_types: list[str] = field(default_factory=list)
+    # Search-time filter applied INSIDE the index layer. Defaults to
+    # `WorkspaceScope` so every legacy caller gets the historical
+    # project-wide behaviour. Validation passes a `RunScope` to
+    # restrict retrieval to a single ingestion run.
+    scope: QueryScope = field(default_factory=default_scope)
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,12 @@ class SourceReference:
     title: str
     source_document_id: str | None = None
     source_location: str | None = None
+    # Server-derived from the matched artifact's metadata at index
+    # time. Surfaced as nullable because not every artifact is
+    # chunk-grained (e.g. graph_json hits legitimately have no
+    # chunk_id). Citations the FE renders read these fields directly.
+    chunk_id: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)

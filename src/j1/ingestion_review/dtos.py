@@ -102,6 +102,10 @@ class AvailableViewsDTO(CamelModel):
     graph: AvailabilityDTO
     quality: AvailabilityDTO
     raw_artifacts: AvailabilityDTO
+    # Validation tab is enabled for terminal-success runs that
+    # produced at least one chunk artifact (otherwise there's nothing
+    # to query). Manual test query is the Phase 1 entry point.
+    validation: AvailabilityDTO
 
 
 # ---- Quality summary --------------------------------------------

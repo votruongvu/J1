@@ -28,6 +28,8 @@ from j1.integration.security.scopes import (
     SCOPE_READ,
     SCOPE_RETRIEVE,
     SCOPE_SEARCH,
+    SCOPE_VALIDATION_READ,
+    SCOPE_VALIDATION_WRITE,
 )
 from j1.integration.security.settings import (
     DEFAULT_ANONYMOUS_PATHS,
@@ -59,6 +61,8 @@ __all__ = [
     "SCOPE_READ",
     "SCOPE_RETRIEVE",
     "SCOPE_SEARCH",
+    "SCOPE_VALIDATION_READ",
+    "SCOPE_VALIDATION_WRITE",
     "SecurityContext",
     "SecuritySettings",
     "load_security_settings",

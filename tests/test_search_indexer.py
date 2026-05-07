@@ -36,6 +36,8 @@ def _stage(
     source_location: str | None = None,
     confidence: float | None = None,
     review_status: ReviewStatus = ReviewStatus.NOT_REQUIRED,
+    run_id: str | None = None,
+    chunk_id: str | None = None,
 ) -> ArtifactRecord:
     area_dir = workspace.area(ctx, area)
     area_dir.mkdir(parents=True, exist_ok=True)
@@ -48,6 +50,10 @@ def _stage(
         metadata["source_location"] = source_location
     if confidence is not None:
         metadata["confidence"] = confidence
+    if run_id:
+        metadata["run_id"] = run_id
+    if chunk_id:
+        metadata["chunk_id"] = chunk_id
     record = ArtifactRecord(
         artifact_id=artifact_id,
         project=ctx,

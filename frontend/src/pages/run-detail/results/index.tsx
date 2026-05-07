@@ -22,6 +22,7 @@ import { isTerminalRunStatus } from "./lifecycle";
 import { OverviewTab } from "./OverviewTab";
 import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
+import { ValidationTab } from "./ValidationTab";
 
 type ResultsTab =
   | "overview"
@@ -29,7 +30,8 @@ type ResultsTab =
   | "assets"
   | "graph"
   | "quality"
-  | "raw";
+  | "raw"
+  | "validation";
 
 interface ResultsSectionProps {
   run: IngestionRun | null;
@@ -153,6 +155,12 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
       available: views?.rawArtifacts.available ?? false,
       reason: views?.rawArtifacts.reason ?? "Loading…",
     },
+    {
+      key: "validation",
+      label: "Validation",
+      available: views?.validation.available ?? false,
+      reason: views?.validation.reason ?? "Loading…",
+    },
   ];
 
   return (
@@ -205,6 +213,7 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
         {tab === "assets" && <AssetsTab runId={runId} />}
         {tab === "graph" && <GraphTab runId={runId} />}
         {tab === "raw" && <RawArtifactsTab runId={runId} />}
+        {tab === "validation" && <ValidationTab runId={runId} />}
       </div>
     </section>
   );

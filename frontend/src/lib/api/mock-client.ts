@@ -24,6 +24,8 @@ import {
   isTerminalEvent,
 } from "@/types/ingestion";
 import type {
+  ManualTestQueryRequest,
+  ManualTestQueryResponse,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -1410,6 +1412,13 @@ export class MockClient implements IngestionClient {
             : { available: false, reason: "Graph generation was skipped by policy." },
         quality: { available: true, reason: null },
         rawArtifacts: { available: true, reason: null },
+        // Validation tab is on for the success scenarios (run is
+        // terminal-success and chunks exist). The `failure` scenario
+        // disables it so the FE renders the disabled-with-tooltip
+        // path the same way the live API would.
+        validation: this.scenario === "failure"
+          ? { available: false, reason: "Run did not complete successfully." }
+          : { available: true, reason: null },
       },
     };
   }
@@ -1554,6 +1563,97 @@ export class MockClient implements IngestionClient {
     return mockGraphUnavailable(
       "Graph generation was skipped by policy.", opts,
     );
+  }
+
+  async runManualTestQuery(
+    runId: string,
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse> {
+    await delay(220);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    // Mock answer mirrors the question for transparency. The
+    // server-derived chunk_id / run_id round-trip lets the FE
+    // exercise its citation rendering even in mock mode.
+    const isFailureScenario = this.scenario === "failure";
+    const retrieved: ManualTestQueryResponse["retrievedChunks"] =
+      isFailureScenario
+        ? []
+        : [
+            {
+              artifactId: "mock-art-1",
+              chunkId: "mock-chunk-1",
+              runId,
+              documentId: "mock-doc",
+              sourceLocation: "p.1",
+              score: 0.82,
+              preview: "Demo chunk for the validation tab.",
+            },
+          ];
+    const citations: ManualTestQueryResponse["citations"] = retrieved.map(
+      (r) => ({
+        artifactId: r.artifactId,
+        artifactType: "chunk",
+        sourceDocumentId: r.documentId,
+        sourceLocation: r.sourceLocation,
+        chunkId: r.chunkId,
+        runId: r.runId,
+      }),
+    );
+    const checks: ManualTestQueryResponse["checks"] = [
+      {
+        name: "answer_non_empty",
+        severity: "required",
+        passed: !isFailureScenario,
+      },
+      {
+        name: "retrieved_chunks_present",
+        severity: "required",
+        passed: !isFailureScenario,
+      },
+      {
+        name: "retrieved_chunks_belong_to_run",
+        severity: "required",
+        passed: true,
+      },
+      {
+        name: "citations_belong_to_run",
+        severity: "required",
+        passed: true,
+      },
+      {
+        name: "no_cross_tenant_or_cross_project_leak",
+        severity: "required",
+        passed: true,
+      },
+    ];
+    if (request.citationRequired) {
+      checks.splice(2, 0, {
+        name: "citation_present",
+        severity: "required",
+        passed: !isFailureScenario,
+      });
+    }
+    return {
+      requestId: `mock-tq-${Math.random().toString(36).slice(2, 10)}`,
+      runId,
+      question: request.question,
+      answer: isFailureScenario
+        ? ""
+        : `Mock answer for: ${request.question}`,
+      modeUsed: request.mode ?? "auto",
+      retrievedChunks: retrieved,
+      citations,
+      checks,
+      validationStatus: isFailureScenario ? "failed" : "passed",
+      evidenceFlags: {
+        graphUsed: false,
+        tablesUsed: false,
+        imagesUsed: false,
+      },
+      rawResponse: request.includeRaw
+        ? { mock: true, scenario: this.scenario }
+        : null,
+    };
   }
 
   openStream(runId: string, handlers: StreamHandlers): StreamHandle {

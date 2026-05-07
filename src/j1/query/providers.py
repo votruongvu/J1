@@ -15,9 +15,30 @@ from j1.query.models import (
     QueryResponse,
     SourceReference,
 )
+from j1.query.scope import RunScope
 from j1.review.governance import WarningCategory
 from j1.search.indexer import SearchHit, SqliteSearchIndexer
 from j1.workspace.resolver import WorkspaceResolver
+
+
+def _filter_by_scope(
+    records: list[ArtifactRecord], request: QueryRequest,
+) -> list[ArtifactRecord]:
+    """Apply `RunScope` to a list of artifacts loaded straight from
+    the registry (graph / consistency / report providers don't go
+    through the FTS index, so they need their own filter).
+
+    Default `WorkspaceScope` is the no-op — returns the list
+    unchanged. `RunScope` keeps only artifacts whose
+    `metadata.run_id` matches.
+    """
+    if isinstance(request.scope, RunScope):
+        run_id = request.scope.run_id
+        return [
+            r for r in records
+            if str(r.metadata.get("run_id", "")) == run_id
+        ]
+    return records
 
 GRAPH_JSON_KIND = "graph_json"
 DEFAULT_REPORT_TEMPLATE_NAME = "default"
@@ -31,12 +52,17 @@ _GRAPH_FILE_LIMIT = 3
 
 
 def _hit_to_source(hit: SearchHit) -> SourceReference:
+    # Server-derived: `chunk_id` and `run_id` come from the FTS row,
+    # which the indexer populated from the artifact's metadata at
+    # index time. Never echoed from request input or LLM output.
     return SourceReference(
         artifact_id=hit.artifact_id,
         artifact_type=hit.artifact_type,
         title=hit.title,
         source_document_id=hit.source_document_id,
         source_location=hit.source_location,
+        chunk_id=hit.chunk_id,
+        run_id=hit.run_id,
     )
 
 
@@ -65,6 +91,7 @@ class KnowledgeQueryProvider:
             request.question,
             artifact_types=request.artifact_types or None,
             max_results=request.max_results,
+            scope=request.scope,
         )
         sources = [_hit_to_source(h) for h in hits]
         review_required = any(
@@ -114,6 +141,7 @@ class GraphQueryProvider:
 
     def query(self, ctx: ProjectContext, request: QueryRequest) -> QueryResponse:
         records = self._artifacts.list_artifacts(ctx, kind=GRAPH_JSON_KIND)
+        records = _filter_by_scope(records, request)
         sources = [_record_to_source(r) for r in records]
         related = [r.artifact_id for r in records]
         paths = self._extract_paths(ctx, records, request.question)
@@ -202,6 +230,7 @@ class EvidenceProvider:
             request.question,
             artifact_types=request.artifact_types or None,
             max_results=request.max_results,
+            scope=request.scope,
         )
         evidence: list[SourceReference] = []
         for hit in hits:
@@ -260,6 +289,7 @@ class ConsistencyProvider:
         records = self._artifacts.list_artifacts(
             ctx, kind=ARTIFACT_TYPE_CONSISTENCY_FINDINGS
         )
+        records = _filter_by_scope(records, request)
         findings = self._collect_findings(ctx, records)
         warnings = [f"Consistency: {self._render_finding(f)}" for f in findings[:5]]
         if not warnings:
@@ -333,6 +363,9 @@ class ReportGenerator:
         hits = self._indexer.list_indexed(
             ctx, artifact_types=request.artifact_types or None
         )
+        if isinstance(request.scope, RunScope):
+            run_id = request.scope.run_id
+            hits = [h for h in hits if (h.run_id or "") == run_id]
         hits = hits[: request.max_results * 2]
         template = self._profile.report_templates.get(self._template_name, "")
         warnings: list[str] = []

@@ -57,6 +57,15 @@ def resolve_available_views(
     if not quality_present and (run.warning_count or 0) > 0:
         quality_present = True
 
+    # Validation tab gates: terminal-success run with at least one
+    # chunk artifact. Without chunks there's nothing to query — the
+    # Phase 1 manual test query would return zero retrieval and fail
+    # every check. Failed/cancelled runs disable the tab entirely
+    # rather than expose a confusing "test a broken run" surface.
+    validation_available = (
+        _is_terminal_success(run) and chunks_present
+    )
+
     return AvailableViewsDTO(
         chunks=AvailabilityDTO(
             available=chunks_present,
@@ -77,6 +86,13 @@ def resolve_available_views(
         raw_artifacts=AvailabilityDTO(
             available=raw_present,
             reason=None if raw_present else "No artifacts produced.",
+        ),
+        validation=AvailabilityDTO(
+            available=validation_available,
+            reason=(
+                None if validation_available
+                else _validation_reason(run, chunks_present)
+            ),
         ),
     )
 
@@ -143,3 +159,31 @@ def graph_unavailable_reason(run: IngestionRun) -> str:
 
 def _quality_reason(run: IngestionRun) -> str:  # noqa: ARG001 — reserved
     return "No quality data was produced for this run."
+
+
+_TERMINAL_SUCCESS_STATUSES = frozenset({
+    "succeeded",
+    "succeeded_with_warnings",
+})
+
+
+def _is_terminal_success(run: IngestionRun) -> bool:
+    """Validation-tab gate: only enable for runs that finished cleanly
+    enough to have a queryable index. Failed/cancelled runs never
+    qualify — even if some chunks slipped through, exposing a 'test
+    a broken run' surface confuses operators more than it helps."""
+    return str(run.status) in _TERMINAL_SUCCESS_STATUSES
+
+
+def _validation_reason(run: IngestionRun, chunks_present: bool) -> str:
+    """Two operator-facing reasons in priority order: (1) the run
+    didn't complete cleanly, (2) the run completed but produced no
+    chunks. The FE renders this as a tooltip on the disabled tab."""
+    if not _is_terminal_success(run):
+        return "Run did not complete successfully."
+    if not chunks_present:
+        return "Run produced no chunks to query."
+    # Defensive fallback — shouldn't be reached given the caller's
+    # gate logic, but a non-empty reason is required when
+    # `available=False` so the FE never renders an empty tooltip.
+    return "Validation is not available for this run."

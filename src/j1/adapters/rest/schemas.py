@@ -308,6 +308,14 @@ class CitationRecord(CamelModel):
     artifact_type: str
     source_document_id: str | None = None
     source_location: str | None = None
+    # Server-derived from the matched artifact's metadata at index
+    # time. NEVER echoed from request input or LLM output — the FE
+    # and downstream validators can trust these for ownership /
+    # grounding checks. `chunk_id` is None for non-chunk artifacts
+    # (e.g. graph_json hits); `run_id` is None for any artifact
+    # that wasn't tagged with one (legacy / cross-tenant test data).
+    chunk_id: str | None = None
+    run_id: str | None = None
 
 
 class ContextBlockRecord(CamelModel):
@@ -347,6 +355,93 @@ class AnswerRecord(CamelModel):
     review_required: bool = False
     warnings: list[str] = Field(default_factory=list)
     warning_categories: list[str] = Field(default_factory=list)
+
+
+# ---- Validation (post-ingestion manual test query) -------------------
+
+
+class ManualTestQueryRequestRecord(CamelModel):
+    """Body for POST /ingestion-runs/{run_id}/test-query.
+
+    `mode` is forwarded verbatim to the underlying answer engine
+    (accepts `auto`, `knowledge_first`, `graph_first`, etc.).
+    `topK` is hard-capped to 50 server-side; FastAPI clamps to the
+    same cap to fail fast on out-of-range input. `citationRequired`
+    flips the conditional `citation_present` deterministic check
+    on/off.
+    """
+
+    question: str = Field(min_length=1)
+    top_k: int = Field(default=10, ge=1, le=50)
+    mode: str = "auto"
+    citation_required: bool = False
+    include_raw: bool = False
+
+
+class ValidationCheckRecord(CamelModel):
+    """One deterministic check outcome on the validation response.
+
+    `severity=required` failures flip the response's
+    `validationStatus` to `failed`. `severity=optional` failures
+    flip it to `passed_with_warnings` (Phase 3+). `severity` and
+    `passed` together are the canonical badge inputs.
+    """
+
+    name: str
+    severity: str
+    passed: bool
+    detail: str | None = None
+    expected: Any | None = None
+    actual: Any | None = None
+
+
+class RetrievedChunkRefRecord(CamelModel):
+    """Compact server-side projection of one retrieved chunk."""
+
+    artifact_id: str
+    chunk_id: str | None = None
+    run_id: str | None = None
+    document_id: str | None = None
+    source_location: str | None = None
+    score: float = 0.0
+    preview: str = ""
+
+
+class EvidenceFlagsRecord(CamelModel):
+    """Hints to the FE for which evidence rails to render.
+
+    Phase 1 only populates `graphUsed` honestly — table/image
+    detection lands in Phase 4 with the artifact-registry probe.
+    The other flags are present in the schema today so the FE can
+    bind them once and not need a contract change later.
+    """
+
+    graph_used: bool = False
+    tables_used: bool = False
+    images_used: bool = False
+
+
+class ManualTestQueryResponseRecord(CamelModel):
+    """Body of the 200 response.
+
+    HTTP status = execution outcome (200 = the query ran).
+    `validationStatus` field = the answer's outcome, aggregated from
+    `checks[]`. Callers MUST not collapse the two — a 200 with
+    `validationStatus="failed"` is the canonical 'job ran but the
+    answer didn't pass' case.
+    """
+
+    request_id: str
+    run_id: str
+    question: str
+    answer: str
+    mode_used: str
+    retrieved_chunks: list[RetrievedChunkRefRecord]
+    citations: list[CitationRecord]
+    checks: list[ValidationCheckRecord]
+    validation_status: str
+    evidence_flags: EvidenceFlagsRecord
+    raw_response: dict[str, Any] | None = None
 
 
 # ---- Citations / sources ---------------------------------------------

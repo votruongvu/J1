@@ -10,6 +10,7 @@ from j1.intake.registry import SourceRegistry
 from j1.processing.results import ProcessingResult
 from j1.processing.status import ResultStatus
 from j1.projects.context import ProjectContext
+from j1.query.scope import QueryScope, RunScope, WorkspaceScope, default_scope
 from j1.workspace.resolver import WorkspaceResolver
 
 DEFAULT_DB_FILENAME = "index.db"
@@ -17,6 +18,11 @@ MAX_INDEXED_BYTES = 1 * 1024 * 1024  # 1 MiB per artifact
 
 _TABLE_NAME = "artifacts"
 
+# Schema note: `run_id` and `chunk_id` are server-derived columns —
+# they're populated from the artifact's metadata at index time so
+# downstream consumers (validation, lineage) get trusted IDs they can
+# match against without re-reading the registry. Both are UNINDEXED:
+# we filter on equality, never full-text search them.
 _CREATE_TABLE_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS {_TABLE_NAME} USING fts5(
     artifact_id UNINDEXED,
@@ -29,7 +35,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS {_TABLE_NAME} USING fts5(
     review_status UNINDEXED,
     checksum UNINDEXED,
     created_at UNINDEXED,
-    byte_size UNINDEXED
+    byte_size UNINDEXED,
+    run_id UNINDEXED,
+    chunk_id UNINDEXED
 )
 """
 
@@ -37,8 +45,9 @@ _INSERT_SQL = f"""
 INSERT INTO {_TABLE_NAME} (
     artifact_id, artifact_type, title, extracted_text,
     source_document_id, source_location, confidence,
-    review_status, checksum, created_at, byte_size
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    review_status, checksum, created_at, byte_size,
+    run_id, chunk_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _DELETE_SQL = f"DELETE FROM {_TABLE_NAME} WHERE artifact_id = ?"
@@ -46,7 +55,8 @@ _DELETE_SQL = f"DELETE FROM {_TABLE_NAME} WHERE artifact_id = ?"
 _SELECT_COLUMNS = (
     "artifact_id, artifact_type, title, extracted_text, "
     "source_document_id, source_location, confidence, "
-    "review_status, checksum, created_at, byte_size"
+    "review_status, checksum, created_at, byte_size, "
+    "run_id, chunk_id"
 )
 
 
@@ -65,6 +75,14 @@ class SearchHit:
     extracted_text: str
     score: float = 0.0
     metadata: dict[str, str] = field(default_factory=dict)
+    # Server-derived from the indexed artifact's metadata. `run_id` is
+    # populated for every artifact registered during a run; `chunk_id`
+    # only for artifacts of kind `chunk` (the canonical chunk artifact
+    # carries it in metadata via the RAGAnything bridge). Both are
+    # `None` on the DTO when the underlying column is empty so the FE
+    # can branch cleanly.
+    run_id: str | None = None
+    chunk_id: str | None = None
 
 
 class SqliteSearchIndexer:
@@ -127,6 +145,7 @@ class SqliteSearchIndexer:
         *,
         artifact_types: list[str] | None = None,
         max_results: int = 20,
+        scope: QueryScope | None = None,
     ) -> list[SearchHit]:
         if not query.strip():
             return []
@@ -136,6 +155,8 @@ class SqliteSearchIndexer:
         sanitized = _sanitize_fts_query(query)
         if not sanitized:
             return []
+        scope = scope if scope is not None else default_scope()
+
         sql = (
             f"SELECT {_SELECT_COLUMNS}, bm25({_TABLE_NAME}) AS score "
             f"FROM {_TABLE_NAME} "
@@ -146,6 +167,13 @@ class SqliteSearchIndexer:
             placeholders = ",".join("?" for _ in artifact_types)
             sql += f" AND artifact_type IN ({placeholders})"
             params.extend(artifact_types)
+        # Scope filter sits in the WHERE clause, BEFORE ORDER BY score
+        # / LIMIT, so BM25 ranks only rows that survived the run-id
+        # filter. Post-topK pruning would distort the ranking.
+        scope_sql, scope_params = _scope_to_sql(scope)
+        if scope_sql:
+            sql += f" {scope_sql}"
+            params.extend(scope_params)
         sql += " ORDER BY score LIMIT ?"
         params.append(max_results)
 
@@ -208,6 +236,13 @@ class SqliteSearchIndexer:
                 )
                 source_location = str(record.metadata.get("source_location", ""))
                 confidence = float(record.metadata.get("confidence", 0.0))
+                # Server-derived: read straight from the artifact record's
+                # metadata so downstream consumers can trust these fields
+                # without a second lookup. Empty string when the producer
+                # didn't tag (e.g. legacy/non-chunk artifacts) — the row-
+                # to-hit mapper turns "" back into None for the DTO.
+                run_id = str(record.metadata.get("run_id", ""))
+                chunk_id = str(record.metadata.get("chunk_id", ""))
                 conn.execute(_DELETE_SQL, (record.artifact_id,))
                 conn.execute(
                     _INSERT_SQL,
@@ -223,6 +258,8 @@ class SqliteSearchIndexer:
                         record.content_hash,
                         record.created_at.isoformat(),
                         record.byte_size,
+                        run_id,
+                        chunk_id,
                     ),
                 )
                 indexed += 1
@@ -293,6 +330,8 @@ def _row_to_hit(row, *, with_score: bool) -> SearchHit:
         checksum,
         created_at,
         byte_size,
+        run_id,
+        chunk_id,
         *score_tail,
     ) = row
     return SearchHit(
@@ -308,4 +347,24 @@ def _row_to_hit(row, *, with_score: bool) -> SearchHit:
         byte_size=int(byte_size) if byte_size is not None else 0,
         extracted_text=extracted_text,
         score=float(score_tail[0]) if with_score and score_tail else 0.0,
+        run_id=run_id or None,
+        chunk_id=chunk_id or None,
     )
+
+
+def _scope_to_sql(scope: QueryScope) -> tuple[str, list]:
+    """Translate a `QueryScope` into a SQL fragment + bind parameters.
+
+    Returned fragment is ANDed onto the caller's existing WHERE clause.
+    `WorkspaceScope` is the no-op default (empty fragment). `RunScope`
+    appends an exact-match equality on `run_id` so BM25 ranking sees
+    only rows from that run.
+    """
+    if isinstance(scope, RunScope):
+        return ("AND run_id = ?", [scope.run_id])
+    if isinstance(scope, WorkspaceScope):
+        return ("", [])
+    # Defensive: an unknown scope subtype gets the workspace-default
+    # behaviour so we never accidentally widen results when a future
+    # scope subclass is introduced before its filter clause exists.
+    return ("", [])

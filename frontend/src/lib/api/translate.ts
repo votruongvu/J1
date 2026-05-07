@@ -270,6 +270,10 @@ function availableViewsFromApi(raw: unknown): ReviewAvailableViews {
     graph: availabilityFromApi(obj.graph),
     quality: availabilityFromApi(obj.quality),
     rawArtifacts: availabilityFromApi(obj.rawArtifacts),
+    // Tolerant of older backend snapshots that don't yet emit a
+    // `validation` field — `availabilityFromApi` returns a safe
+    // disabled stub when the input is undefined.
+    validation: availabilityFromApi(obj.validation),
   };
 }
 

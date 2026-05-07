@@ -314,3 +314,114 @@ describe("ApiClient run controls", () => {
     );
   });
 });
+
+describe("ApiClient.runManualTestQuery", () => {
+  // Stable response payload used across the wire-shape assertions
+  // below. Mirrors the live backend's CamelModel envelope verbatim.
+  const _OK_PAYLOAD = {
+    data: {
+      requestId: "tq-abc",
+      runId: "run-1",
+      question: "hello",
+      answer: "world",
+      modeUsed: "knowledge_first",
+      retrievedChunks: [
+        {
+          artifactId: "a-1",
+          chunkId: "c-1",
+          runId: "run-1",
+          documentId: "doc-1",
+          sourceLocation: "p.1",
+          score: 0.9,
+          preview: "demo",
+        },
+      ],
+      citations: [
+        {
+          artifactId: "a-1",
+          artifactType: "chunk",
+          sourceDocumentId: "doc-1",
+          sourceLocation: "p.1",
+          chunkId: "c-1",
+          runId: "run-1",
+        },
+      ],
+      checks: [
+        { name: "answer_non_empty", severity: "required", passed: true },
+      ],
+      validationStatus: "passed",
+      evidenceFlags: { graphUsed: false, tablesUsed: false, imagesUsed: false },
+      rawResponse: null,
+    },
+  };
+
+  it("POSTs to the run-scoped test-query endpoint with tenant/project + auth headers", async () => {
+    const { calls } = withFetch(() => jsonResponse(_OK_PAYLOAD));
+
+    await makeClient().runManualTestQuery("run-1", {
+      question: "hello",
+      topK: 5,
+      citationRequired: true,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/run-1/test-query",
+    );
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Tenant-Id"]).toBe("acme");
+    expect(headers["X-Project-Id"]).toBe("alpha");
+    expect(headers["Authorization"]).toBe("Bearer tok-123");
+    expect(headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("forwards request fields verbatim in the JSON body", async () => {
+    const { calls } = withFetch(() => jsonResponse(_OK_PAYLOAD));
+    await makeClient().runManualTestQuery("run-1", {
+      question: "hello",
+      topK: 7,
+      mode: "knowledge_first",
+      citationRequired: true,
+      includeRaw: true,
+    });
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.question).toBe("hello");
+    expect(body.topK).toBe(7);
+    expect(body.mode).toBe("knowledge_first");
+    expect(body.citationRequired).toBe(true);
+    expect(body.includeRaw).toBe(true);
+  });
+
+  it("unwraps the envelope and returns server-derived chunkId/runId on citations", async () => {
+    withFetch(() => jsonResponse(_OK_PAYLOAD));
+    const out = await makeClient().runManualTestQuery("run-1", {
+      question: "hello",
+    });
+    // Wire-shape regression — every Phase 1 field surfaces.
+    expect(out.requestId).toBe("tq-abc");
+    expect(out.runId).toBe("run-1");
+    expect(out.validationStatus).toBe("passed");
+    expect(out.checks).toHaveLength(1);
+    expect(out.citations[0]!.chunkId).toBe("c-1");
+    expect(out.citations[0]!.runId).toBe("run-1");
+    expect(out.retrievedChunks[0]!.chunkId).toBe("c-1");
+  });
+
+  it("encodes the runId for safe URL transport", async () => {
+    const { calls } = withFetch(() => jsonResponse(_OK_PAYLOAD));
+    await makeClient().runManualTestQuery("a/b c", { question: "x" });
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/a%2Fb%20c/test-query",
+    );
+  });
+
+  it("surfaces 4xx error envelopes as ApiError", async () => {
+    withFetch(() =>
+      jsonResponse({ error: { code: "REVIEW_NOT_FOUND", message: "missing" } }, 404),
+    );
+    await expect(
+      makeClient().runManualTestQuery("ghost", { question: "x" }),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+});
