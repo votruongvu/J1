@@ -22,7 +22,6 @@ import { useClient } from "@/lib/hooks/useClient";
 import { ApiError } from "@/lib/api/client";
 import type {
   ValidationRun,
-  ValidationRunListItem,
   ValidationSet,
   ValidationSetListItem,
 } from "@/types/review";
@@ -43,11 +42,9 @@ export function ValidationTab({ runId }: ValidationTabProps) {
   // recent (server returns newest-first).
   const [setItem, setSetItem] = useState<ValidationSetListItem | null>(null);
   const [setDetail, setSetDetail] = useState<ValidationSet | null>(null);
-  // Latest validation run, surfaced as the readiness card's status.
-  const [latestRunItem, setLatestRunItem] =
-    useState<ValidationRunListItem | null>(null);
   // Eagerly-fetched detail of latest run — needed to render
-  // per-case statuses on the table without a per-row round-trip.
+  // per-case statuses on the table + the readiness-card status
+  // without a per-row round-trip.
   const [latestRun, setLatestRun] = useState<ValidationRun | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -69,7 +66,6 @@ export function ValidationTab({ runId }: ValidationTabProps) {
       const latestSet = setItems[0] ?? null;
       const latestRunRef = runItems[0] ?? null;
       setSetItem(latestSet);
-      setLatestRunItem(latestRunRef);
 
       // Fetch full detail for both so the FE can render the table
       // + readiness card without secondary calls. Cheap — one set
