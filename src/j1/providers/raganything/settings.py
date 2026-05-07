@@ -177,8 +177,16 @@ def load_raganything_settings(
     return RAGAnythingSettings(
         mode=source.get(ENV_RAGANYTHING_MODE, DEFAULT_MODE),
         workdir=workdir,
-        storage_dir=source.get(ENV_RAGANYTHING_STORAGE_DIR)
-        or f"{workdir.rstrip('/')}/storage",
+        # Default to workdir itself — LightRAG writes
+        # `kv_store_*.json` and graph artifacts directly into
+        # `working_dir`, NOT into a `storage` subdirectory. The
+        # extractors (`_chunk_drafts_from_storage`,
+        # `_graph_drafts_from_storage`) use `rglob`, so a deeper
+        # path supplied explicitly via `J1_RAGANYTHING_STORAGE_DIR`
+        # still works — but the default must point where LightRAG
+        # actually writes, otherwise the FE Chunks tab stays empty
+        # because no `kv_store_text_chunks.json` is found.
+        storage_dir=source.get(ENV_RAGANYTHING_STORAGE_DIR) or workdir,
         cache_dir=source.get(ENV_RAGANYTHING_CACHE_DIR)
         or f"{workdir.rstrip('/')}/cache",
         parse_method=parse_method,

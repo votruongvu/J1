@@ -83,15 +83,22 @@ def test_raganything_settings_defaults():
     s = load_raganything_settings(env={})
     assert s.mode == "local"
     assert s.workdir == "./data/raganything"
-    assert s.storage_dir.endswith("/storage")
+    # `storage_dir` defaults to the workdir itself — LightRAG writes
+    # `kv_store_*.json` directly into working_dir, not into a
+    # `storage` subdirectory. The chunk + graph extractors expect
+    # this default to match LightRAG's actual write location.
+    assert s.storage_dir == "./data/raganything"
     assert s.cache_dir.endswith("/cache")
 
 
-def test_raganything_settings_workdir_overrides_inferred_subdirs():
+def test_raganything_settings_workdir_inherits_into_storage():
     s = load_raganything_settings(env={
         "J1_RAGANYTHING_WORKDIR": "/var/data/rag",
     })
-    assert s.storage_dir == "/var/data/rag/storage"
+    # storage_dir defaults to the workdir; cache_dir keeps its
+    # `<workdir>/cache` convention since the cache layer is ours,
+    # not LightRAG's.
+    assert s.storage_dir == "/var/data/rag"
     assert s.cache_dir == "/var/data/rag/cache"
 
 

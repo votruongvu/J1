@@ -303,8 +303,16 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # file silently produces zero chunk drafts — that's the no-op
     # contract that lets `process_document_complete` fall back to
     # writing nothing without us crashing the compile.
-    storage_dir = Path(request.settings.storage_dir or
-                       f"{request.settings.workdir}/storage").expanduser()
+    #
+    # `storage_dir` resolution: the settings loader defaults this to
+    # the workdir itself (where LightRAG actually writes). Old
+    # deployments that explicitly set `J1_RAGANYTHING_STORAGE_DIR=
+    # <workdir>/storage` still work because the helper uses `rglob`
+    # — finds the file at any depth. Falling back to workdir here
+    # too keeps things robust if `settings.storage_dir` is empty.
+    storage_dir = Path(
+        request.settings.storage_dir or request.settings.workdir
+    ).expanduser()
     drafts.extend(_chunk_drafts_from_storage(
         storage_dir, document_id=request.document_id,
     ))
@@ -345,8 +353,13 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
         embedding_client=request.embedding_client,
         settings=request.settings,
     )
-    storage_dir = Path(request.settings.storage_dir or
-                       f"{request.settings.workdir}/storage").expanduser()
+    # See compile-side note: storage_dir defaults to workdir itself
+    # because that's where LightRAG actually writes its KV files +
+    # graph artifacts. `_graph_drafts_from_storage` uses rglob so a
+    # custom deeper path still works.
+    storage_dir = Path(
+        request.settings.storage_dir or request.settings.workdir
+    ).expanduser()
     storage_dir.mkdir(parents=True, exist_ok=True)
     drafts = _graph_drafts_from_storage(storage_dir, request.artifact_ids)
     if not drafts:

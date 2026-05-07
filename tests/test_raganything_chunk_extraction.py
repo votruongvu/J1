@@ -136,6 +136,37 @@ def test_token_count_falls_back_to_none_when_missing(tmp_path):
     assert json.loads(drafts[0].content)["tokenCount"] is None
 
 
+def test_chunks_found_at_workdir_root(tmp_path):
+    """Regression: LightRAG writes `kv_store_text_chunks.json`
+    DIRECTLY into `working_dir`, not into a `<workdir>/storage`
+    subdirectory. The settings default sets `storage_dir = workdir`,
+    so `_chunk_drafts_from_storage(workdir, ...)` must find the file
+    at the root level.
+
+    Before the storage-default fix, the helper was called with
+    `<workdir>/storage` which doesn't exist for any LightRAG run —
+    the Chunks tab stayed disabled even after a successful index."""
+    _write(tmp_path / "kv_store_text_chunks.json", {
+        "chunk-001": {"tokens": 5, "content": "real chunk text"},
+    })
+    drafts = _chunk_drafts_from_storage(tmp_path, document_id="doc-1")
+    assert len(drafts) == 1
+    assert json.loads(drafts[0].content)["chunkId"] == "chunk-001"
+
+
+def test_chunks_found_at_legacy_storage_subdir(tmp_path):
+    """Forward-compat: deployments that explicitly set
+    `J1_RAGANYTHING_STORAGE_DIR=<workdir>/storage` (the OLD default)
+    must keep working. `rglob` already recurses, so the helper
+    finds the file at any depth."""
+    _write(tmp_path / "storage" / "kv_store_text_chunks.json", {
+        "chunk-001": {"tokens": 5, "content": "legacy layout"},
+    })
+    drafts = _chunk_drafts_from_storage(tmp_path, document_id="doc-1")
+    assert len(drafts) == 1
+    assert "legacy layout" in json.loads(drafts[0].content)["body"]
+
+
 def test_graph_drafts_excludes_chunks_file(tmp_path):
     """The `_graph_drafts_from_storage` helper used to surface
     `kv_store_text_chunks.json` as a `graph_json` artifact (it
