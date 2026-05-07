@@ -761,10 +761,26 @@ def _quality_summary(
 
     if overall_value is None and not warnings:
         return None
+
+    # `low_confidence_count` counts WARNING-severity progress events
+    # that flagged a confidence concern. Lightweight projection — the
+    # full confidence-finding count requires reading the
+    # `enriched.confidence_assessment` artifacts (the Quality tab's
+    # projector does that). For the Overview scorecard the warning
+    # count is the right scale-of-attention indicator.
+    low_confidence_count = sum(
+        1 for w in warnings
+        if w.severity in ("warning", "error")
+        and (
+            "confidence" in (w.code or "").lower()
+            or "confidence" in (w.message or "").lower()
+        )
+    )
+
     return QualitySummaryDTO(
         overall_confidence=overall_value,
         warning_count=len(warnings),
-        low_confidence_count=0,
+        low_confidence_count=low_confidence_count,
     )
 
 
