@@ -211,9 +211,14 @@ def build_worker_spec(
 ) -> WorkerSpec:
     """Build the `WorkerSpec` registered by the dev worker.
 
-    Processor maps default to empty — adequate for confirming the
-    stack stands up. Real processor wiring is deployment-specific
-    (vendor SDKs, model providers, etc.) and lives elsewhere.
+    Processor maps default to empty for everything except enrichers
+    — when `enrichers` is None, we auto-register the
+    `CompositeEnricher` so the FE's Results > Assets tab can light up
+    out of the box. Real deployments override `enrichers=` with a
+    deliberately-curated map.
+
+    Real processor wiring is deployment-specific (vendor SDKs, model
+    providers, etc.) and lives elsewhere.
     """
     audit_sink = JsonlAuditSink(workspace)
     audit_recorder = DefaultAuditRecorder(audit_sink)
@@ -284,12 +289,31 @@ def build_worker_spec(
     activities += ReviewActivities(
         review_queue=reviews, audit=audit_recorder,
     ).all_activities()
+    # Auto-register the composite enricher when the caller didn't
+    # pass an enrichers map. Without this the dev stack's Results >
+    # Assets tab stays disabled because no enricher is registered to
+    # produce `enriched.tables` / `enriched.visuals` / etc. Loading
+    # the profile is best-effort — the composite enrichers degrade
+    # to stub outputs when their prompts are absent.
+    resolved_enrichers: Mapping[str, object]
+    if enrichers is None:
+        from j1.enrichers import CompositeEnricher
+        try:
+            profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
+        except Exception:
+            from j1.profiles.model import Profile
+            profile = Profile(profile_id="default", metadata={})
+        composite = CompositeEnricher.from_default(profile)
+        resolved_enrichers = {composite.kind: composite}
+    else:
+        resolved_enrichers = enrichers
+
     activities += ProcessingActivities(
         processing=processing,
         sources=sources,
         artifacts=artifacts,
         compilers=dict(compilers or {}),
-        enrichers=dict(enrichers or {}),
+        enrichers=dict(resolved_enrichers),
         graph_builders=dict(graph_builders or {}),
         indexers={SqliteSearchIndexer.kind: indexer, **(indexers or {})},
         query_providers=dict(query_providers or {}),

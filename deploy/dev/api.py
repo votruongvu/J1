@@ -183,11 +183,17 @@ def _build_app():
     # one bootstrap means clients that omit `compilerKind` get the
     # selection the worker actually wired.
     boot = bootstrap_from_env()
+    # Surface the worker's registered processor kinds so the REST
+    # adapter can both (a) validate caller-supplied kinds at the API
+    # boundary and (b) auto-default omitted kinds via the new
+    # `_resolve_optional_processor_kind` rule. Keep this in lockstep
+    # with `build_worker_spec`'s registrations — if a kind ships in
+    # the worker but isn't surfaced here, FE uploads won't auto-pick
+    # it and the corresponding stage stays unrunnable.
+    from j1.enrichers import COMPOSITE_ENRICHER_KIND
     capabilities = capabilities_from_bootstrap(
         boot,
-        # The dev worker always wires the SQLite indexer under its
-        # canonical kind. Surface that here so `indexerKind` (when
-        # supplied) is validated.
+        enricher_kinds=frozenset({COMPOSITE_ENRICHER_KIND}),
         indexer_kinds=frozenset({SqliteSearchIndexer.kind}),
     )
 

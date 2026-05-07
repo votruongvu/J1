@@ -469,3 +469,109 @@ GENERIC_ENRICHERS: tuple[type[_StructuredEnricher], ...] = (
     SourceMapper,
     ConfidenceAssessor,
 )
+
+
+COMPOSITE_ENRICHER_KIND = "j1.enricher.composite"
+
+
+class CompositeEnricher:
+    """Bundles every generic enricher and runs them in sequence,
+    returning the union of their `ArtifactDraft`s.
+
+    The Results > Assets tab needs `enriched.tables` /
+    `enriched.visuals` / `enriched.formulas` artifacts to populate.
+    Each child enricher produces ONE kind, so wiring them
+    individually means an upload would pick exactly one (the
+    workflow runs one `enricher_kind` per run). Bundling them as a
+    single registered kind keeps the auto-default semantic intact —
+    one registered kind → unambiguous auto-pick on FE upload — while
+    still emitting the full set of enriched.* artifacts the Assets +
+    Quality tabs rely on.
+
+    The composite degrades gracefully: a child that raises (e.g. its
+    profile prompt is missing) is logged and skipped — the rest still
+    run. Failures of individual children do NOT fail the workflow's
+    enrich step; the operator sees the failures via the artifacts
+    that DID land + the quality report's surfaced warnings.
+    """
+
+    kind = COMPOSITE_ENRICHER_KIND
+
+    def __init__(
+        self,
+        profile: Profile,
+        *,
+        enrichers: tuple[_StructuredEnricher, ...] | None = None,
+        content_source: Callable[[ProjectContext, str], bytes] | None = None,
+    ) -> None:
+        if enrichers is None:
+            enrichers = tuple(
+                cls_(profile, content_source=content_source)
+                for cls_ in GENERIC_ENRICHERS
+            )
+        self._profile = profile
+        self._enrichers = enrichers
+
+    @classmethod
+    def from_default(
+        cls,
+        profile: Profile,
+        *,
+        content_source: Callable[[ProjectContext, str], bytes] | None = None,
+    ) -> "CompositeEnricher":
+        return cls(profile, content_source=content_source)
+
+    def enrich(
+        self, ctx: ProjectContext, artifact_id: str,
+    ) -> ArtifactProcessingResult:
+        drafts: list[ArtifactDraft] = []
+        cost_events: list[Any] = []
+        skipped_kinds: list[str] = []
+        failed_kinds: list[dict[str, str]] = []
+        for enricher in self._enrichers:
+            try:
+                result = enricher.enrich(ctx, artifact_id)
+            except Exception as exc:  # noqa: BLE001 — defensive isolation
+                failed_kinds.append({
+                    "kind": enricher.kind,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            if result.status == ResultStatus.SKIPPED:
+                skipped_kinds.append(enricher.kind)
+                continue
+            if result.status == ResultStatus.FAILED:
+                failed_kinds.append({
+                    "kind": enricher.kind,
+                    "error": result.error or result.message or "unknown",
+                })
+                continue
+            drafts.extend(result.drafts)
+            cost_events.extend(result.cost_events)
+        # Surface composite outcome via top-level status:
+        #   * Any drafts produced → SUCCEEDED.
+        #   * No drafts but at least one child ran successfully (all
+        #     skipped / no-op) → SUCCEEDED with empty drafts.
+        #   * Every child failed → FAILED so the workflow records the
+        #     enrich step as failed-optional.
+        if not drafts and failed_kinds and not skipped_kinds:
+            return ArtifactProcessingResult(
+                status=ResultStatus.FAILED,
+                error="every enricher failed",
+                message="composite enricher saw no successful children",
+                metadata={
+                    "processor_name": self.kind,
+                    "failed_kinds": failed_kinds,
+                },
+            )
+        return ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED,
+            drafts=drafts,
+            cost_events=cost_events,
+            metadata={
+                "processor_name": self.kind,
+                "child_count": len(self._enrichers),
+                "skipped_kinds": skipped_kinds,
+                "failed_kinds": failed_kinds,
+            },
+        )

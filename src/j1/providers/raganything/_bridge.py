@@ -230,6 +230,22 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     drafts = _drafts_from_output_dir(
         output_dir, document_id=request.document_id, kind="compiled.text",
     )
+    # LightRAG persists per-chunk text into
+    # `kv_store_text_chunks.json` inside its storage dir during
+    # `process_document_complete`. Surface those entries as canonical
+    # `kind="chunk"` artifacts so the Results > Chunks review tab has
+    # real text to render. Without this, the FE's Chunks tab stays
+    # disabled for every run because no producer ever emits the
+    # canonical chunk kind. Best-effort: missing storage_dir / empty
+    # file silently produces zero chunk drafts — that's the no-op
+    # contract that lets `process_document_complete` fall back to
+    # writing nothing without us crashing the compile.
+    storage_dir = Path(request.settings.storage_dir or
+                       f"{request.settings.workdir}/storage").expanduser()
+    drafts.extend(_chunk_drafts_from_storage(
+        storage_dir, document_id=request.document_id,
+    ))
+
     # Build the post-parse manifest (counts, quality scores, per-image
     # triage decisions) and merge it into the result metadata. The
     # activity layer projects the recognised keys into `content_stats`
@@ -821,6 +837,14 @@ def _graph_drafts_from_storage(
     RAGAnything (via LightRAG) writes graph + entity relation files to
     its storage directory after processing. We surface those as
     `graph_json` drafts.
+
+    Excludes `kv_store_text_chunks.json` — that file contains text
+    chunks, not graph data. It's surfaced separately as
+    `kind="chunk"` artifacts via `_chunk_drafts_from_storage` so the
+    Results > Chunks tab can review them with the canonical chunk
+    DTO. Lumping them together as `graph_json` would force the chunk
+    projector to scrape them out of every graph artifact at read
+    time.
     """
     drafts: list[ArtifactDraft] = []
     if not storage_dir.exists():
@@ -830,12 +854,19 @@ def _graph_drafts_from_storage(
     interesting = (
         "*graph*", "*relation*", "*entit*", "kv_store*.json",
     )
+    # Files we exclude from graph_json — they're surfaced under their
+    # own kind elsewhere. Match by lowercased filename so a
+    # `kv_store_text_chunks.json` (canonical) and a hypothetical
+    # `KV_STORE_TEXT_CHUNKS.JSON` both filter correctly.
+    chunk_filenames = {"kv_store_text_chunks.json"}
     seen: set[Path] = set()
     for pattern in interesting:
         for path in storage_dir.rglob(pattern):
             if path in seen or not path.is_file():
                 continue
             seen.add(path)
+            if path.name.lower() in chunk_filenames:
+                continue
             try:
                 content = path.read_bytes()
             except OSError:
@@ -852,6 +883,85 @@ def _graph_drafts_from_storage(
                     "relative_path": str(path.relative_to(storage_dir)),
                 },
             ))
+    return drafts
+
+
+def _chunk_drafts_from_storage(
+    storage_dir: Path,
+    *,
+    document_id: str,
+) -> list[ArtifactDraft]:
+    """Project LightRAG's `kv_store_text_chunks.json` into canonical
+    `kind="chunk"` ArtifactDrafts — one per chunk entry.
+
+    The file is a top-level dict keyed by chunk id; each value carries
+    `{tokens, content, full_doc_id, chunk_order_index, file_path}`.
+    We map onto the neutral chunk shape the `ChunkProjector` expects
+    (`{chunkId, body, tokenCount}`) so the Results > Chunks tab gets
+    real reviewable text from real runs.
+
+    Without this, the Chunks tab is correctly empty for every run
+    (no producer in the dev stack emitted `kind="chunk"`) — even
+    though LightRAG had the chunks on disk all along.
+    """
+    drafts: list[ArtifactDraft] = []
+    if not storage_dir.exists():
+        return drafts
+
+    # Find the chunks file — LightRAG variants name it consistently.
+    chunks_path: Path | None = None
+    for path in storage_dir.rglob("*"):
+        if path.is_file() and path.name.lower() == "kv_store_text_chunks.json":
+            chunks_path = path
+            break
+    if chunks_path is None:
+        return drafts
+
+    try:
+        payload = json.loads(chunks_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return drafts
+    if not isinstance(payload, dict):
+        return drafts
+
+    for chunk_id, entry in payload.items():
+        if not isinstance(entry, dict):
+            continue
+        body = entry.get("content")
+        if not isinstance(body, str) or not body.strip():
+            # Skip empty chunks — LightRAG sometimes emits
+            # placeholders for split boundaries. Reviewing those
+            # surfaces noise.
+            continue
+        # `tokens` is LightRAG's field for token count; pass through
+        # as the canonical `tokenCount`. The projector also accepts
+        # `tokens`, but we normalise here so the JSON-on-disk uses
+        # the FE-facing field name.
+        token_count = entry.get("tokens")
+        chunk_payload: dict[str, Any] = {
+            "chunkId": str(chunk_id),
+            "body": body,
+            "tokenCount": int(token_count) if isinstance(token_count, (int, float)) else None,
+            "metadata": {
+                "fullDocId": entry.get("full_doc_id"),
+                "chunkOrderIndex": entry.get("chunk_order_index"),
+                "filePath": entry.get("file_path"),
+            },
+        }
+        # One draft per chunk so the Chunks tab can paginate them.
+        # Each chunk artifact's source_document_ids points at the
+        # ingest's document so the lineage fallback resolves it
+        # cleanly even on legacy untagged runs.
+        drafts.append(ArtifactDraft(
+            kind="chunk",
+            content=json.dumps(chunk_payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id],
+            metadata={
+                "chunk_id": str(chunk_id),
+                "filename": chunks_path.name,
+            },
+        ))
     return drafts
 
 
