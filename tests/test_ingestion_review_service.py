@@ -76,6 +76,7 @@ def _make_artifact(
     kind: str,
     byte_size: int = 100,
     source_document_ids: list[str] | None = None,
+    source_artifact_ids: list[str] | None = None,
     metadata: dict | None = None,
 ) -> ArtifactRecord:
     now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -92,6 +93,7 @@ def _make_artifact(
         created_at=now,
         updated_at=now,
         source_document_ids=source_document_ids or [],
+        source_artifact_ids=source_artifact_ids or [],
         metadata=metadata or {},
     )
 
@@ -175,6 +177,89 @@ def test_summarize_run_counts_artifacts_by_kind_via_lineage(
 
     assert summary.artifact_counts == {"chunk": 2, "enriched.tables": 1}
     assert summary.total_bytes == 1500
+
+
+def test_summarize_run_lineage_walks_source_artifact_ids(
+    service, run_store, artifact_registry, ctx,
+):
+    """Regression: graph_json + enrichment artifacts carry only
+    `source_artifact_ids` (pointing at compile artifacts), NOT
+    `source_document_ids`. The lineage fallback MUST walk the chain
+    transitively or the Graph / Assets tabs silently disable for
+    legacy untagged runs even though the artifacts exist on disk."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+
+    # Compile artifact — has source_document_ids only.
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="compile-1", kind="compile",
+        source_document_ids=["doc-A"],
+    ))
+    # Graph artifact — has ONLY source_artifact_ids pointing at the
+    # compile artifact above. This is exactly what the RAGAnything
+    # bridge writes via `_graph_drafts_from_storage`.
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="graph-1", kind="graph_json",
+        source_artifact_ids=["compile-1"],
+    ))
+    # Enrichment artifact — same shape (source_artifact_ids only).
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="enrich-1", kind="enriched.tables",
+        source_artifact_ids=["compile-1"],
+    ))
+    # Cross-run artifact — points at a DIFFERENT document's compile
+    # output. Must NOT be pulled in.
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="other-compile", kind="compile",
+        source_document_ids=["doc-other"],
+    ))
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="other-graph", kind="graph_json",
+        source_artifact_ids=["other-compile"],
+    ))
+
+    summary = service.summarize_run(ctx, "run-1")
+
+    # Compile + graph_json + enriched.tables all surface — the chain
+    # walk hops through compile-1's id.
+    assert summary.artifact_counts == {
+        "compile": 1, "graph_json": 1, "enriched.tables": 1,
+    }
+    # Tabs flip available now that the artifacts are visible.
+    views = summary.available_views
+    assert views.graph.available is True
+    assert views.assets.available is True
+
+
+def test_summarize_run_lineage_walk_handles_two_hop_chains(
+    service, run_store, artifact_registry, ctx,
+):
+    """Two-hop chain: compile → graph_json → graph-derived summary.
+    Iterative fixed-point pulls in every step."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="compile-1", kind="compile",
+        source_document_ids=["doc-A"],
+    ))
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="graph-1", kind="graph_json",
+        source_artifact_ids=["compile-1"],
+    ))
+    # Hypothetical downstream artifact that depends on the graph
+    # (not produced today, but the resolver should support arbitrary
+    # depth).
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="graph-summary-1", kind="enriched.consistency_findings",
+        source_artifact_ids=["graph-1"],
+    ))
+
+    summary = service.summarize_run(ctx, "run-1")
+
+    assert summary.artifact_counts == {
+        "compile": 1,
+        "graph_json": 1,
+        "enriched.consistency_findings": 1,
+    }
 
 
 def test_summarize_run_prefers_metadata_run_id_tag_over_lineage(

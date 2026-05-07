@@ -509,16 +509,23 @@ class IngestionResultReviewService:
              Fast path for runs whose artifacts were tagged at registration
              time (Phase 4).
 
-          2. **Lineage fallback** — match any artifact whose
-             `source_document_ids` intersects the run's target document set.
-             Covers legacy artifacts written before tagging shipped, and
-             keeps the surface working with no migration."""
+          2. **Lineage fallback (transitive)** — start from artifacts whose
+             `source_document_ids` overlaps the run's target document set
+             (typically the compile-stage outputs), then iteratively pull in
+             any artifact whose `source_artifact_ids` overlaps the
+             accumulating set. The iteration is required because downstream
+             stages (graph_json, enriched.*) record `source_artifact_ids`
+             pointing at compile artifacts — they carry NO
+             `source_document_ids`, so a single-hop check leaves them
+             unresolved. Without this walk the Graph tab silently disables
+             on legacy untagged runs even though graph_json artifacts
+             exist on disk."""
         all_artifacts = self._artifacts.list_artifacts(ctx)
 
         target_doc_ids = set(_document_ids(run))
 
         tagged: list[ArtifactRecord] = []
-        lineage: list[ArtifactRecord] = []
+        lineage_candidates: list[ArtifactRecord] = []
         for record in all_artifacts:
             tagged_run_id = record.metadata.get("run_id")
             if tagged_run_id == run.run_id:
@@ -527,12 +534,39 @@ class IngestionResultReviewService:
             if tagged_run_id is not None and tagged_run_id != run.run_id:
                 # Tagged for a different run — never include via lineage.
                 continue
-            if target_doc_ids and target_doc_ids.intersection(record.source_document_ids):
-                lineage.append(record)
+            lineage_candidates.append(record)
 
-        # Tagged matches are authoritative; fall back to lineage when no
-        # tagged artifacts exist for this run.
-        return tagged if tagged else lineage
+        if tagged:
+            return tagged
+
+        # Transitive lineage walk over the untagged candidates only.
+        # Step 1: seed with artifacts whose source documents match the run.
+        # Step 2: iteratively pull in artifacts whose source_artifact_ids
+        # overlap the seed (or any subsequently included artifact).
+        if not target_doc_ids:
+            return []
+        seed_ids: set[str] = set()
+        included: list[ArtifactRecord] = []
+        for record in lineage_candidates:
+            if target_doc_ids.intersection(record.source_document_ids):
+                seed_ids.add(record.artifact_id)
+                included.append(record)
+
+        # Fixed-point: keep walking until no new artifact gets pulled in.
+        # Bounded by the candidate count, so worst-case is O(N²) which is
+        # fine at the artifact-registry scales we run (hundreds, not
+        # millions).
+        added = True
+        while added:
+            added = False
+            for record in lineage_candidates:
+                if record.artifact_id in seed_ids:
+                    continue
+                if seed_ids.intersection(record.source_artifact_ids):
+                    seed_ids.add(record.artifact_id)
+                    included.append(record)
+                    added = True
+        return included
 
     def _read_warnings(
         self, ctx: ProjectContext, run_id: str,
