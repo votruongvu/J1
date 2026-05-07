@@ -72,17 +72,27 @@ in-flight workflows). A rebuild is only needed when you change
 `pyproject.toml`, the `Dockerfile`, or another build-time input.
 
 > **The default stack offloads VLM inference to an OpenAI-compat endpoint**
-> (LM Studio / vLLM / hosted) via `J1_RAGANYTHING_BACKEND=vlm-http-client`,
+> (vLLM / sglang / hosted) via `J1_RAGANYTHING_BACKEND=vlm-http-client`,
 > so the worker image does **not** ship MinerU model weights — image
 > builds stay fast and ~5 GB smaller. The first compile hits your VLM
 > server over HTTP per page (seconds), not the in-process 1.2 B-param
 > model on CPU (~5 min/page).
 >
-> To run MinerU's local VLM backend instead (air-gapped or no remote VLM
-> available), unset `J1_RAGANYTHING_BACKEND` (or set it to a non-`vlm-*`
-> value), and add a precache layer in your downstream Dockerfile so the
-> ~2.4 GB of weights land in the `j1_huggingface_cache` volume at build
-> time rather than during the first parse:
+> The endpoint must serve a **MinerU-trained layout VLM** —
+> `opendatalab/MinerU2.5-Pro-2604-1.2B` is the canonical choice. A
+> generic chat VLM (Gemma, plain LLaVA, etc.) replies with prose and
+> MinerU drops every page with `Layout output does not match expected
+> format`. LM Studio's GGUF catalog does not currently carry a MinerU
+> VLM, so the typical local-dev split is LM Studio on `:1234` for the
+> chat / vision / embedding roles and vLLM (or sglang) on `:1235` with
+> MinerU2.5-Pro for parsing. See the LLM-role table further down for
+> the full model-per-role contract.
+>
+> If two model servers feels like too much, set
+> `J1_RAGANYTHING_BACKEND=pipeline` instead — MinerU's traditional CV
+> detectors handle parsing with no VLM, no extra server. Add a precache
+> layer in your downstream Dockerfile if you want the weights baked
+> into the image rather than downloaded on first parse:
 >
 > ```dockerfile
 > RUN mineru-models-download -s huggingface -m all
@@ -269,6 +279,27 @@ To run real processing instead of mocks:
    docker compose -f deploy/dev/docker-compose.yml down
    docker compose -f deploy/dev/docker-compose.yml up --build
    ```
+
+> **Important — LLM roles are independent and have different model
+> requirements.** Pointing every role at the same chat model is the
+> single most common cause of "ingestion ran but the Chunks/Graph tab
+> is empty" symptoms: a chat model can't do layout extraction, can't
+> produce stable embeddings, and silently no-ops the things that
+> actually need it.
+>
+> | Env var prefix | Used by | Acceptable model |
+> |---|---|---|
+> | `J1_RAGANYTHING_VLM_HTTP_*` | MinerU PDF parsing (when `J1_RAGANYTHING_BACKEND=vlm-http-client`) | **Only** a MinerU-trained layout VLM (`opendatalab/MinerU2.5-Pro-2604-1.2B`). Generic chat VLMs (Gemma, generic LLaVA) emit prose; MinerU drops every page and reports `Parsing failed: No content was extracted`. |
+> | `J1_TEXT_LLM_*` | LightRAG entity/relation extraction, J1 enrichers, retrieval answers | Any decent general chat model — Qwen2.5-7B-Instruct, Llama-3.1-8B, Gemma3-12B, etc. |
+> | `J1_VISION_LLM_*` | J1 enrichers describing images/diagrams MinerU already extracted (separate from MinerU itself) | Any general vision-chat model — Qwen2-VL, Llama-3.2-Vision, etc. Re-using your text model's endpoint is fine if it has vision. |
+> | `J1_EMBEDDING_*` | LightRAG vector indexing, retrieval | A real embedding model — `nomic-embed-text-v1.5`, `bge-large-en-v1.5`, `text-embedding-3-small`, etc. **Not** a chat LLM. Pointing this at a chat model returns hidden-state-shaped vectors of unpredictable dimension and LightRAG aborts at first vector upsert with `Embedding dimension mismatch`. The dim in `J1_EMBEDDING_DIM` must match exactly what the model returns. |
+> | `J1_FAST_LLM_*` | Adaptive ingestion planner (structured output) | Any decent chat model; usually the same as `J1_TEXT_LLM_*`. |
+>
+> Practical local-dev split: LM Studio on `:1234` with a chat + vision +
+> embedding model, vLLM (or sglang) on `:1235` with MinerU2.5-Pro for
+> the parser only. If running two model servers is overhead you don't
+> want, set `J1_RAGANYTHING_BACKEND=pipeline` instead — MinerU's
+> traditional CV detectors handle parsing without any VLM.
 
 The same `worker.py` / `bootstrap_from_env()` path serves both
 modes — no fork required for the common case. The image carries
