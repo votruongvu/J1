@@ -228,10 +228,17 @@ def test_pack_text_marker_only_when_too_tight():
 
 def test_pack_context_keeps_top_items():
     """First 2 fit; third pushes past — gets dropped. Locks the
-    'rank order; never re-rank' contract."""
+    'rank order; never re-rank' contract.
+
+    Budget computed from the actual estimator instead of a fixed
+    integer so the test stays valid when the safety-bump constant
+    changes (the contract — keep first two, drop third — does not).
+    """
     items = ["aaaa" * 10, "bbbb" * 10, "cccc" * 10]
-    # Each ~11 tokens. Budget 25 → 2 items fit.
-    result = pack_context_items(items, max_tokens=25)
+    # Set a budget that fits exactly two items but not three.
+    per_item = estimate_tokens(items[0])
+    budget = per_item * 2 + 1  # +1 for slack between items
+    result = pack_context_items(items, max_tokens=budget)
     assert len(result.kept) == 2
     assert len(result.dropped) == 1
     assert result.kept[0] == items[0]

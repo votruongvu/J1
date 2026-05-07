@@ -756,8 +756,14 @@ def test_default_compile_skips_ainsert_for_empty_text_file(
 
 def test_make_text_callable_returns_async_callable_that_unwraps_usage():
     """LightRAG `await`s the llm_model_func — the wrapper must be async,
-    must invoke `text_client.generate(prompt)`, and must drop the usage
-    half of the (text, usage) tuple."""
+    must invoke `text_client.generate(prompt, system_prompt=...)`, and
+    must drop the usage half of the (text, usage) tuple.
+
+    The fake matches `TextLLMClient.generate`'s real signature
+    (`prompt` + keyword `system_prompt`) so the wrapper's kwarg-
+    forwarding path is exercised. Accepting `**_` lets the fake
+    tolerate any future kwargs the wrapper learns to forward
+    without needing to update this test."""
     import asyncio
 
     from j1.providers.raganything._bridge import _make_text_callable
@@ -765,11 +771,11 @@ def test_make_text_callable_returns_async_callable_that_unwraps_usage():
     seen = []
 
     class _FakeText:
-        def generate(self, prompt):
-            seen.append(prompt)
+        def generate(self, prompt, *, system_prompt=None, **_):
+            seen.append({"prompt": prompt, "system_prompt": system_prompt})
             return ("hello back", {"input_tokens": 1})
 
     callable_ = _make_text_callable(_FakeText())
     result = asyncio.run(callable_("hi there"))
     assert result == "hello back"
-    assert seen == ["hi there"]
+    assert seen == [{"prompt": "hi there", "system_prompt": None}]

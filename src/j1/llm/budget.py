@@ -49,10 +49,16 @@ _log = logging.getLogger("j1.llm.budget")
 _WORD_RE = re.compile(r"\S+")
 _CHARS_PER_TOKEN = 4.0
 _WORDS_PER_TOKEN = 0.75
-# Multiplier on the raw estimate. 1.10 absorbs ~10% drift, which
-# easily covers the difference between this heuristic and a
-# tokenizer like tiktoken's o200k_base for typical content.
-_SAFETY_BUMP = 1.10
+# Multiplier on the raw estimate. 1.25 absorbs ~25% drift, which
+# covers the difference between this heuristic and a real
+# tokenizer (tiktoken's o200k_base / model-specific BPE) for
+# technical content where chars/4 frequently underestimates —
+# things like dense LightRAG entity-extraction prompts with
+# many short tokens (commas, hyphens, JSON keys), or content
+# heavy with non-ASCII characters. We'd rather refuse a
+# borderline prompt and surface the actionable J1 error than
+# slip past our boundary and trip LM Studio's HTTP-400.
+_SAFETY_BUMP = 1.25
 # Per-message overhead on chat completion APIs (every message
 # carries role/content framing). 4 tokens/message is the usual
 # tiktoken-derived constant for OpenAI-style chat formats.

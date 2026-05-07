@@ -562,16 +562,60 @@ def _build_rag_config(raganything_mod, settings):
 
 
 def _make_text_callable(text_client) -> Callable[..., Any]:
-    """RAGAnything (via LightRAG) `await`s llm_model_func(prompt, **kw) → str.
+    """RAGAnything (via LightRAG) `await`s
+    ``llm_model_func(prompt, system_prompt=..., history_messages=[...], **kw)``
+    → str.
 
     LightRAG awaits the result, so the wrapper has to be `async`.
     Underlying `TextLLMClient.generate` is synchronous, so we run it
     on a worker thread to keep the event loop free. Token usage is
     dropped at the vendor boundary — RAGAnything doesn't surface it.
+
+    Critical contract: forward `system_prompt` to the underlying
+    client AND fold `history_messages` into the user prompt. Two
+    consequences flow from this:
+
+      1. LightRAG's intended structured prompt (entity-extraction
+         template + few-shot examples in `system_prompt` + the
+         chunk content in `prompt`) reaches the model intact —
+         dropping `system_prompt` was producing degenerate
+         extractions.
+      2. The token-budget pre-flight check at the OpenAI-compat
+         boundary sees the WHOLE payload (system + history +
+         user). Without this, an oversize prompt could slip past
+         our budget check (which would only see the small user
+         message) and trip LM Studio's HTTP-400 'Context size has
+         been exceeded' for real.
+
+    `history_messages` is folded into the user prompt as a labelled
+    block rather than passed as an OpenAI `messages[]` array,
+    because `TextLLMClient.generate()` only takes
+    `(prompt, system_prompt)` — the simplest correct path is to
+    serialise history into the prompt string. The model still sees
+    every turn; the budget check still estimates accurately.
     """
 
-    async def _llm_callable(prompt: str, *args, **kwargs) -> str:
-        text, _usage = await asyncio.to_thread(text_client.generate, prompt)
+    async def _llm_callable(
+        prompt: str,
+        system_prompt: str | None = None,
+        history_messages: list | None = None,
+        *args,
+        **kwargs,
+    ) -> str:
+        full_prompt = prompt
+        if history_messages:
+            history_text = "\n".join(
+                f"{str(m.get('role', 'user')).upper()}: {m.get('content', '')}"
+                for m in history_messages
+                if isinstance(m, dict) and m.get("content")
+            )
+            if history_text:
+                full_prompt = f"{history_text}\n\nUSER: {prompt}"
+        text, _usage = await asyncio.to_thread(
+            text_client.generate,
+            full_prompt,
+            system_prompt=system_prompt,
+        )
         return text
 
     return _llm_callable
@@ -600,8 +644,14 @@ def _make_vision_callable(vision_client) -> Callable[..., Any]:
     message names the failing artifact.
     """
 
-    async def _vision_callable(prompt: str, image_data: Any = b"",
-                               *args, **kwargs) -> str:
+    async def _vision_callable(
+        prompt: str,
+        image_data: Any = b"",
+        system_prompt: str | None = None,
+        history_messages: list | None = None,
+        *args,
+        **kwargs,
+    ) -> str:
         try:
             image_bytes = _coerce_image_bytes(image_data)
         except (ValueError, base64.binascii.Error) as exc:
@@ -619,8 +669,23 @@ def _make_vision_callable(vision_client) -> Callable[..., Any]:
                 f"shape: {shape}. Expected raw bytes or a base64 string. "
                 f"Underlying decode error: {exc}"
             ) from exc
+        # Same fold-history-into-prompt strategy as the text
+        # callable so the budget pre-flight sees the full content.
+        # `analyze_image` doesn't currently accept a system_prompt
+        # parameter so we prepend it onto the user prompt instead.
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{full_prompt}"
+        if history_messages:
+            history_text = "\n".join(
+                f"{str(m.get('role', 'user')).upper()}: {m.get('content', '')}"
+                for m in history_messages
+                if isinstance(m, dict) and m.get("content")
+            )
+            if history_text:
+                full_prompt = f"{history_text}\n\nUSER: {full_prompt}"
         text, _usage = await asyncio.to_thread(
-            vision_client.analyze_image, image_bytes, prompt=prompt,
+            vision_client.analyze_image, image_bytes, prompt=full_prompt,
         )
         return text
 
