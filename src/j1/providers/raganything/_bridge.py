@@ -290,6 +290,40 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             except OSError:
                 pass
 
+    # `storage_dir` resolution: the settings loader defaults this to
+    # the workdir itself (where LightRAG actually writes). Old
+    # deployments that explicitly set `J1_RAGANYTHING_STORAGE_DIR=
+    # <workdir>/storage` still work because the helper uses `rglob`
+    # — finds the file at any depth. Falling back to workdir here
+    # too keeps things robust if `settings.storage_dir` is empty.
+    storage_dir = Path(
+        request.settings.storage_dir or request.settings.workdir
+    ).expanduser()
+
+    # Detect LightRAG silent failures BEFORE we collect drafts. RAGAnything
+    # swallows internal LightRAG errors (e.g. embedding dimension
+    # mismatch, vector-store upsert failure) — `process_document_complete`
+    # logs the traceback as ERROR and returns normally, leaving us to
+    # report compile=succeeded for a document that produced nothing.
+    # LightRAG records the real outcome in `kv_store_doc_status.json`
+    # under the document id; if the status there is `failed`, surface
+    # the error so the workflow's required-step contract trips and the
+    # operator sees the actual cause instead of an empty Chunks tab.
+    lightrag_error = _detect_lightrag_doc_failure(
+        storage_dir, document_id=request.document_id,
+    )
+    if lightrag_error is not None:
+        return ArtifactProcessingResult(
+            status=ResultStatus.FAILED,
+            error=lightrag_error,
+            message="LightRAG marked document as failed",
+            metadata={
+                "provider": "raganything",
+                "stage": "lightrag_postcheck",
+                "document_id": request.document_id,
+            },
+        )
+
     drafts = _drafts_from_output_dir(
         output_dir, document_id=request.document_id, kind="compiled.text",
     )
@@ -303,16 +337,6 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # file silently produces zero chunk drafts — that's the no-op
     # contract that lets `process_document_complete` fall back to
     # writing nothing without us crashing the compile.
-    #
-    # `storage_dir` resolution: the settings loader defaults this to
-    # the workdir itself (where LightRAG actually writes). Old
-    # deployments that explicitly set `J1_RAGANYTHING_STORAGE_DIR=
-    # <workdir>/storage` still work because the helper uses `rglob`
-    # — finds the file at any depth. Falling back to workdir here
-    # too keeps things robust if `settings.storage_dir` is empty.
-    storage_dir = Path(
-        request.settings.storage_dir or request.settings.workdir
-    ).expanduser()
     drafts.extend(_chunk_drafts_from_storage(
         storage_dir, document_id=request.document_id,
     ))
@@ -964,6 +988,50 @@ def _graph_drafts_from_storage(
                 },
             ))
     return drafts
+
+
+def _detect_lightrag_doc_failure(
+    storage_dir: Path, *, document_id: str,
+) -> str | None:
+    """Return the LightRAG error message for `document_id` when the
+    KV doc-status file marks it as failed; `None` otherwise.
+
+    LightRAG writes per-document outcomes to `kv_store_doc_status.json`
+    keyed by document id. A `status == "failed"` entry means the
+    pipeline aborted internally (most commonly embedding dimension
+    mismatch on the first vector upsert). The shape we care about is:
+
+        { "<document_id>": { "status": "failed",
+                              "error_msg": "<reason>", ... } }
+
+    Best-effort: missing file, malformed JSON, or no entry for our
+    document id returns `None` so callers fall through to normal
+    success handling. The caller decides what to do with a returned
+    error — `default_compile` turns it into a FAILED ArtifactProcessingResult
+    so the workflow's required-step contract surfaces the real cause."""
+    if not storage_dir.exists():
+        return None
+    status_path: Path | None = None
+    for path in storage_dir.rglob("*"):
+        if path.is_file() and path.name.lower() == "kv_store_doc_status.json":
+            status_path = path
+            break
+    if status_path is None:
+        return None
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    entry = payload.get(document_id)
+    if not isinstance(entry, dict):
+        return None
+    status = str(entry.get("status") or "").lower()
+    if status != "failed":
+        return None
+    error_msg = str(entry.get("error_msg") or "").strip()
+    return error_msg or "LightRAG reported the document as failed without a message."
 
 
 def _chunk_drafts_from_storage(
