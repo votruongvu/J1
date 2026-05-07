@@ -85,29 +85,33 @@ class _LibreOfficeConversionError(RuntimeError):
 
 
 def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
-    """When `parse_method=vlm-http-client`, propagate J1's vision-LLM
+    """When `backend=vlm-http-client`, propagate J1's vision-LLM
     config into the env vars MinerU's `mineru_vl_utils.MinerUClient`
-    expects: `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`,
+    reads at runtime: `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`,
     `MINERU_VL_MODEL_NAME`.
 
-    Without this, switching `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client`
-    on its own gets the operator a `RequestError: Invalid server URL`
-    from mineru-vl-utils because no server URL was wired in. With it,
-    the existing `J1_VISION_LLM_*` config (which the operator already
-    set for the rest of the stack) is the only thing that needs to be
-    in place — flipping parse_method routes MinerU through the same
-    LM Studio / vLLM / hosted endpoint already serving the J1 vision
-    role.
+    The CLI accepts `-u/--vlm-url` for the server URL (we pass that
+    as a kwarg to `process_document_complete`), but the API key and
+    model-name fields have no CLI flag — mineru-vl-utils reads them
+    directly from the environment. Without this propagation the
+    request reaches LM Studio with no Authorization header and an
+    auto-detected model name (which on multi-model servers picks the
+    wrong one).
 
-    Idempotent — only sets each env var when (a) the parse method is
+    With it, the existing `J1_VISION_LLM_*` config (already wired for
+    the rest of the stack) is the only thing the operator needs in
+    place — flipping `J1_RAGANYTHING_BACKEND=vlm-http-client` is the
+    sole additional change.
+
+    Idempotent — only sets each env var when (a) the backend is
     `vlm-http-client`, (b) we have a value, and (c) the operator
     hasn't already exported the var directly. Operator-supplied
     `MINERU_VL_*` always wins so existing deployments keep their
     tuning.
 
-    No-op when parse_method is anything else (default `auto` runs
-    MinerU locally and never reads these vars)."""
-    if settings.parse_method != "vlm-http-client":
+    No-op when backend is anything else (default `None` lets MinerU
+    pick its own engine and never reads these vars)."""
+    if settings.backend != "vlm-http-client":
         return
     mapping = {
         "MINERU_VL_SERVER": settings.vlm_http_server_url,
@@ -220,17 +224,32 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             )
             return
 
+        # Build backend + vlm_url kwargs from settings. mineru's CLI
+        # validates `--method` (parse_method) against {auto, txt, ocr}
+        # and `--backend` against {pipeline, vlm-http-client, …}; we
+        # validated both at settings-load time so this assembly is
+        # straightforward.
+        mineru_kwargs: dict[str, Any] = {}
+        if request.settings.backend:
+            mineru_kwargs["backend"] = request.settings.backend
+        if request.settings.backend == "vlm-http-client" and request.settings.vlm_http_server_url:
+            # `-u/--vlm-url` is the CLI flag for the VLM server URL.
+            # raganything's parser forwards this kwarg verbatim.
+            mineru_kwargs["vlm_url"] = request.settings.vlm_http_server_url
+
         _log.info(
             "full-parse path: routing document %r to MinerU "
-            "(parse_method=%s, file=%s)",
+            "(parse_method=%s, backend=%s, file=%s)",
             request.document_id,
             request.settings.parse_method,
+            request.settings.backend or "<mineru-default>",
             source_path.name,
         )
         await rag.process_document_complete(
             file_path=str(source_path),
             output_dir=str(output_dir),
             parse_method=request.settings.parse_method,
+            **mineru_kwargs,
         )
 
     # When the caller supplied a `progress_reporter` + `run_id`,

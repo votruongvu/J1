@@ -20,6 +20,7 @@ ENV_RAGANYTHING_WORKDIR = "J1_RAGANYTHING_WORKDIR"
 ENV_RAGANYTHING_STORAGE_DIR = "J1_RAGANYTHING_STORAGE_DIR"
 ENV_RAGANYTHING_CACHE_DIR = "J1_RAGANYTHING_CACHE_DIR"
 ENV_RAGANYTHING_PARSE_METHOD = "J1_RAGANYTHING_PARSE_METHOD"
+ENV_RAGANYTHING_BACKEND = "J1_RAGANYTHING_BACKEND"
 ENV_RAGANYTHING_COMPILER = "J1_RAGANYTHING_COMPILER_PROCESSOR"
 ENV_RAGANYTHING_GRAPH = "J1_RAGANYTHING_GRAPH_PROCESSOR"
 ENV_RAGANYTHING_RETRIEVAL = "J1_RAGANYTHING_RETRIEVAL_PROCESSOR"
@@ -51,8 +52,29 @@ ENV_J1_VISION_LLM_MODEL = "J1_VISION_LLM_MODEL"
 DEFAULT_MODE = "local"
 DEFAULT_WORKDIR = "./data/raganything"
 DEFAULT_PARSE_METHOD = "auto"
+DEFAULT_BACKEND: str | None = None
 DEFAULT_LIBREOFFICE_BINARY = "soffice"
 DEFAULT_LIBREOFFICE_TIMEOUT = 120.0  # seconds — soffice can be slow on first launch
+
+# Valid values for `parse_method` per MinerU's CLI choices. Validated
+# at settings-load time so a misuse of `parse_method=vlm-http-client`
+# (which actually belongs in `backend`) fails at startup with a
+# clear message instead of mid-compile with a cryptic mineru error.
+VALID_PARSE_METHODS = frozenset({"auto", "txt", "ocr"})
+
+# Valid values for `backend` per MinerU's CLI choices. The default
+# (None) lets MinerU pick its own default — currently
+# `hybrid-auto-engine` for parse_method=auto on local-CPU/GPU. Set
+# to `vlm-http-client` to offload VLM inference to an OpenAI-compat
+# endpoint (LM Studio / vLLM / hosted), which is dramatically
+# faster on machines without GPU passthrough.
+VALID_BACKENDS = frozenset({
+    "pipeline",
+    "vlm-http-client",
+    "hybrid-http-client",
+    "vlm-auto-engine",
+    "hybrid-auto-engine",
+})
 
 # Document formats RAGAnything / mineru cannot parse natively (the
 # pure-Python parsers it ships handle modern OOXML + PDF + images,
@@ -102,11 +124,19 @@ class RAGAnythingSettings:
     workdir: str = DEFAULT_WORKDIR
     storage_dir: str | None = None
     cache_dir: str | None = None
-    # MinerU parse_method passed to process_document_complete().
-    # Use "vlm-http-client" for lightweight deployments that have VLM
-    # API access but no local torch / GPU (avoids the hybrid-auto-engine
-    # dependency on libxcb and mineru[pipeline]).
+    # MinerU `--method` (-m) value: one of `auto` / `txt` / `ocr`.
+    # Selects the **PDF-parsing strategy**, NOT the inference engine.
+    # The engine is selected via `backend` below. Setting this to
+    # `vlm-http-client` (a backend value) is a misuse caught at
+    # load time — see `_validate_parse_method`.
     parse_method: str = DEFAULT_PARSE_METHOD
+    # MinerU `--backend` (-b) value: one of `pipeline` /
+    # `vlm-http-client` / `hybrid-http-client` / `vlm-auto-engine` /
+    # `hybrid-auto-engine`, or None to let MinerU pick the default.
+    # Set to `vlm-http-client` for CPU-only deployments to offload
+    # VLM inference to an OpenAI-compat endpoint — combine with the
+    # `vlm_http_*` fields below (or the `J1_VISION_LLM_*` fallback).
+    backend: str | None = DEFAULT_BACKEND
     compiler_processor: str | None = None
     graph_processor: str | None = None
     retrieval_processor: str | None = None
@@ -140,6 +170,10 @@ def load_raganything_settings(
 ) -> RAGAnythingSettings:
     source = env if env is not None else os.environ
     workdir = source.get(ENV_RAGANYTHING_WORKDIR, DEFAULT_WORKDIR)
+    parse_method = _validate_parse_method(
+        source.get(ENV_RAGANYTHING_PARSE_METHOD, DEFAULT_PARSE_METHOD),
+    )
+    backend = _validate_backend(source.get(ENV_RAGANYTHING_BACKEND))
     return RAGAnythingSettings(
         mode=source.get(ENV_RAGANYTHING_MODE, DEFAULT_MODE),
         workdir=workdir,
@@ -147,7 +181,8 @@ def load_raganything_settings(
         or f"{workdir.rstrip('/')}/storage",
         cache_dir=source.get(ENV_RAGANYTHING_CACHE_DIR)
         or f"{workdir.rstrip('/')}/cache",
-        parse_method=source.get(ENV_RAGANYTHING_PARSE_METHOD, DEFAULT_PARSE_METHOD),
+        parse_method=parse_method,
+        backend=backend,
         compiler_processor=source.get(ENV_RAGANYTHING_COMPILER) or None,
         graph_processor=source.get(ENV_RAGANYTHING_GRAPH) or None,
         retrieval_processor=source.get(ENV_RAGANYTHING_RETRIEVAL) or None,
@@ -210,5 +245,52 @@ def _parse_timeout(raw: str | None) -> float:
     if value <= 0:
         raise ValueError(
             f"{ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT} must be > 0, got {value}"
+        )
+    return value
+
+
+def _validate_parse_method(raw: str | None) -> str:
+    """Reject the common misuse where an operator sets
+    `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` (a backend value).
+
+    Surface a clear migration message at startup instead of letting
+    mineru fail mid-compile with the cryptic 'Invalid value for -m'
+    error. Backend values are forwarded through `J1_RAGANYTHING_BACKEND`
+    instead — that's the correct mineru flag for engine selection.
+    """
+    if not raw:
+        return DEFAULT_PARSE_METHOD
+    value = raw.strip()
+    if value in VALID_PARSE_METHODS:
+        return value
+    if value in VALID_BACKENDS:
+        raise ValueError(
+            f"{ENV_RAGANYTHING_PARSE_METHOD}={value!r} is a BACKEND value, "
+            f"not a parse method. Move it to "
+            f"{ENV_RAGANYTHING_BACKEND}={value!r} and set "
+            f"{ENV_RAGANYTHING_PARSE_METHOD}=auto (or txt/ocr)."
+        )
+    raise ValueError(
+        f"{ENV_RAGANYTHING_PARSE_METHOD}={value!r} is invalid; "
+        f"expected one of {sorted(VALID_PARSE_METHODS)}."
+    )
+
+
+def _validate_backend(raw: str | None) -> str | None:
+    """Validate the backend env var against MinerU's CLI choices.
+
+    None / empty → None (let MinerU pick its own default). Anything
+    else must match `VALID_BACKENDS` exactly — the CLI does the same
+    check and surfaces a much less helpful error message.
+    """
+    if not raw:
+        return DEFAULT_BACKEND
+    value = raw.strip()
+    if not value:
+        return DEFAULT_BACKEND
+    if value not in VALID_BACKENDS:
+        raise ValueError(
+            f"{ENV_RAGANYTHING_BACKEND}={value!r} is invalid; "
+            f"expected one of {sorted(VALID_BACKENDS)}."
         )
     return value

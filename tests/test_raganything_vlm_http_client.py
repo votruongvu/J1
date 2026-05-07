@@ -1,18 +1,25 @@
 """Tests for the VLM-HTTP-client wiring in the RAGAnything bridge.
 
-When `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` is set, the bridge
-must propagate the operator's vision-LLM config into the env vars
-MinerU's `mineru_vl_utils.MinerUClient` reads:
-  * `MINERU_VL_SERVER`
+MinerU separates the PDF parse method (CLI -m, values
+{auto, txt, ocr}) from the inference backend (CLI -b, values
+{pipeline, vlm-http-client, hybrid-http-client, vlm-auto-engine,
+hybrid-auto-engine}). The user-facing knob for offloading VLM is
+`J1_RAGANYTHING_BACKEND=vlm-http-client`; misusing
+`J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` is rejected at
+settings-load with a clear migration error.
+
+When backend=vlm-http-client, the bridge propagates the operator's
+vision-LLM config into the env vars MinerU's
+`mineru_vl_utils.MinerUClient` reads:
+  * `MINERU_VL_SERVER` (also overridable via the `-u` CLI flag,
+    forwarded as the `vlm_url` kwarg)
   * `MINERU_VL_API_KEY`
   * `MINERU_VL_MODEL_NAME`
 
-Without this, switching parse_method on its own gives operators a
-'RequestError: Invalid server URL' from mineru-vl-utils. With it,
-the existing `J1_VISION_LLM_*` env vars are the only thing the
-operator needs to set — flipping parse_method routes MinerU through
-the same LM Studio / vLLM / hosted endpoint already serving the J1
-vision role.
+Without the env propagation the request reaches LM Studio with no
+Authorization header and an auto-detected model name. With it, the
+existing `J1_VISION_LLM_*` env vars are the only thing the operator
+needs — flipping the backend env var is the sole additional change.
 """
 
 from __future__ import annotations
@@ -95,13 +102,14 @@ def _isolate_mineru_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_apply_is_noop_when_parse_method_is_auto():
-    """The default `auto` parse method runs MinerU's hybrid backend
-    locally and must NOT consult these env vars. Setting them when
-    not needed could accidentally break local-mode runs (mineru's
-    code paths sometimes branch on env-var presence)."""
+def test_apply_is_noop_when_backend_is_unset():
+    """The default backend (None) lets MinerU pick its own engine —
+    typically a local one. The bridge must NOT consult VLM env vars
+    in that case; setting them could accidentally break local runs
+    where mineru's code branches on env-var presence."""
     settings = RAGAnythingSettings(
         parse_method="auto",
+        backend=None,
         vlm_http_server_url="http://x:1234",
         vlm_http_api_key="k",
         vlm_http_model_name="m",
@@ -112,9 +120,25 @@ def test_apply_is_noop_when_parse_method_is_auto():
     assert os.environ.get("MINERU_VL_MODEL_NAME") is None
 
 
+def test_apply_is_noop_for_local_backends():
+    """Pipeline / vlm-auto-engine / hybrid-auto-engine all run the
+    VLM locally — they shouldn't touch the HTTP client env vars."""
+    for backend in ("pipeline", "vlm-auto-engine", "hybrid-auto-engine"):
+        settings = RAGAnythingSettings(
+            parse_method="auto",
+            backend=backend,
+            vlm_http_server_url="http://x:1234",
+            vlm_http_api_key="k",
+            vlm_http_model_name="m",
+        )
+        _apply_vlm_http_client_env(settings)
+        assert os.environ.get("MINERU_VL_SERVER") is None, backend
+
+
 def test_apply_sets_env_vars_for_vlm_http_client():
     settings = RAGAnythingSettings(
-        parse_method="vlm-http-client",
+        parse_method="auto",
+        backend="vlm-http-client",
         vlm_http_server_url="http://host.docker.internal:1234/v1",
         vlm_http_api_key="lm-studio",
         vlm_http_model_name="gemma-4-e4b",
@@ -130,7 +154,8 @@ def test_apply_skips_unset_fields():
     operator-supplied values and lets MinerU fall through to its
     own defaults (e.g. auto-detect model from /v1/models)."""
     settings = RAGAnythingSettings(
-        parse_method="vlm-http-client",
+        parse_method="auto",
+        backend="vlm-http-client",
         vlm_http_server_url="http://x:1234",
         vlm_http_api_key=None,
         vlm_http_model_name=None,
@@ -149,7 +174,8 @@ def test_apply_does_not_overwrite_operator_supplied_env(monkeypatch):
     monkeypatch.setenv("MINERU_VL_SERVER", "http://operator-set:7777")
     monkeypatch.setenv("MINERU_VL_MODEL_NAME", "operator-pinned")
     settings = RAGAnythingSettings(
-        parse_method="vlm-http-client",
+        parse_method="auto",
+        backend="vlm-http-client",
         vlm_http_server_url="http://settings-supplied:1234",
         vlm_http_api_key="settings-key",
         vlm_http_model_name="settings-model",
@@ -167,7 +193,8 @@ def test_apply_idempotent_when_called_twice():
     `default_build_graph` per request. Calling it twice in a row
     must not blow up or change the env state on the second call."""
     settings = RAGAnythingSettings(
-        parse_method="vlm-http-client",
+        parse_method="auto",
+        backend="vlm-http-client",
         vlm_http_server_url="http://x:1234",
         vlm_http_api_key="k",
         vlm_http_model_name="m",
@@ -178,3 +205,66 @@ def test_apply_idempotent_when_called_twice():
     assert os.environ["MINERU_VL_SERVER"] == first["MINERU_VL_SERVER"]
     assert os.environ["MINERU_VL_API_KEY"] == first["MINERU_VL_API_KEY"]
     assert os.environ["MINERU_VL_MODEL_NAME"] == first["MINERU_VL_MODEL_NAME"]
+
+
+# ---- Settings validation: catches the misuse the user just hit ----
+
+
+def test_parse_method_rejects_backend_value_with_migration_message():
+    """Operators previously told to set
+    `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` (incorrect — that's
+    a backend value) must get a clear migration error at startup
+    instead of mineru's cryptic 'Invalid value for -m' mid-compile."""
+    with pytest.raises(ValueError) as excinfo:
+        load_raganything_settings(env={
+            "J1_RAGANYTHING_PARSE_METHOD": "vlm-http-client",
+        })
+    msg = str(excinfo.value)
+    assert "BACKEND value" in msg
+    assert "J1_RAGANYTHING_BACKEND" in msg
+    assert "vlm-http-client" in msg
+
+
+def test_parse_method_rejects_unknown_value():
+    with pytest.raises(ValueError) as excinfo:
+        load_raganything_settings(env={
+            "J1_RAGANYTHING_PARSE_METHOD": "garbage",
+        })
+    assert "garbage" in str(excinfo.value)
+    assert "auto" in str(excinfo.value)
+
+
+def test_backend_rejects_unknown_value():
+    with pytest.raises(ValueError) as excinfo:
+        load_raganything_settings(env={
+            "J1_RAGANYTHING_BACKEND": "made-up-engine",
+        })
+    assert "made-up-engine" in str(excinfo.value)
+    assert "vlm-http-client" in str(excinfo.value)
+
+
+def test_backend_defaults_to_none_when_unset():
+    """Default = None means 'let MinerU pick' — the bridge passes no
+    `backend` kwarg in that case so MinerU's CLI default applies."""
+    s = load_raganything_settings(env={})
+    assert s.backend is None
+
+
+def test_backend_accepts_all_documented_values():
+    """Pin the full valid set so a future mineru change that adds
+    or removes a backend value is caught here."""
+    valid = ["pipeline", "vlm-http-client", "hybrid-http-client",
+             "vlm-auto-engine", "hybrid-auto-engine"]
+    for backend in valid:
+        s = load_raganything_settings(env={
+            "J1_RAGANYTHING_BACKEND": backend,
+        })
+        assert s.backend == backend
+
+
+def test_parse_method_accepts_all_documented_values():
+    for method in ("auto", "txt", "ocr"):
+        s = load_raganything_settings(env={
+            "J1_RAGANYTHING_PARSE_METHOD": method,
+        })
+        assert s.parse_method == method
