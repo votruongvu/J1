@@ -172,64 +172,417 @@ class _StructuredEnricher:
         return self._profile.prompts.get(self.prompt_name, "")
 
 
-class DocumentClassifier(_StructuredEnricher):
+# ---- LLM-backed enricher base class --------------------------------
+#
+# The next 6 classes (DocumentClassifier / RequirementExtractor /
+# TableExtractor / FormulaExtractor / RiskExtractor / RiskExtractor /
+# ConsistencyChecker / ConfidenceAssessor) all follow the same shape:
+#
+#   1. Skip when the artifact isn't text-shaped (chunks + compile
+#      markdown count; images / graph_json don't).
+#   2. Skip when no `text_client` was wired (legacy stub behaviour).
+#   3. Read the artifact bytes via `content_source`, decode as UTF-8.
+#   4. Build a prompt = profile_prompt() OR class default.
+#   5. Call `text_client.extract(prompt, schema)` for structured JSON.
+#   6. Render a small markdown summary alongside the JSON.
+#
+# The shared base class consolidates the boilerplate so subclasses
+# only have to declare {output_key, schema, default_prompt,
+# render_md}. Each subclass remains a thin specialisation of one
+# extraction concern.
+
+# Cap how much content we send the LLM per call. Most providers'
+# context windows are larger, but the failure mode of overflowing
+# is awful (silent truncation or 500). Bias toward "extract the
+# top of the document" — the FE shows partial extraction with a
+# warning rather than dropping the artifact entirely.
+_MAX_CONTENT_CHARS = 20_000
+
+
+# Image-specific kinds are matched by `_is_image_kind` (defined
+# below). For text-shaped enrichers, we skip kinds that we KNOW
+# are non-textual; everything else is fair game (chunks, compile
+# markdown, compile.metadata JSON).
+_NON_TEXT_KINDS = frozenset({
+    "graph_json",
+    ARTIFACT_TYPE_VISUALS.lower(),
+})
+
+
+def _is_text_kind(kind: str | None) -> bool:
+    """True when an artifact of `kind` is reasonable to feed an
+    LLM-backed text enricher. False for binary / image / graph
+    artifacts. Empty/None falls back to True so callers without an
+    `artifact_lookup` don't lose the legacy behaviour."""
+    if not kind:
+        return True
+    normalised = kind.strip().lower()
+    if normalised in _NON_TEXT_KINDS:
+        return False
+    if _is_image_kind(normalised):
+        return False
+    return True
+
+
+class _LLMBackedEnricher(_StructuredEnricher):
+    """Shared scaffolding for enrichers that delegate extraction to
+    a structured-output LLM call.
+
+    Subclasses declare:
+      * `_OUTPUT_KEY` — top-level JSON key in the response (e.g.
+        `"tables"`, `"requirements"`)
+      * `_OUTPUT_SCHEMA` — JSON schema passed to `text_client.extract`
+      * `_DEFAULT_PROMPT` — fallback when profile prompt is absent
+      * `_render_md(json_data)` — turn the structured response into
+        the markdown sibling artifact
+
+    The base handles the kind gate, content read, error wrapping,
+    and the legacy stub fallback when `text_client` is None.
+    """
+
+    _OUTPUT_KEY: str = "items"
+    _OUTPUT_SCHEMA: dict[str, Any] = {}
+    _DEFAULT_PROMPT: str = ""
+
+    def __init__(
+        self,
+        profile: Profile,
+        *,
+        artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(profile, **kwargs)
+        # Same gate VCD uses, but applied to text artifacts. None
+        # means "run on every artifact" (legacy behaviour).
+        self._artifact_lookup = artifact_lookup
+
+    def enrich(self, ctx, artifact_id):
+        if not self._enabled:
+            return ArtifactProcessingResult(
+                status=ResultStatus.SKIPPED,
+                message=f"{self.kind} disabled",
+                metadata={"processor_name": self.kind},
+            )
+        if self._artifact_lookup is not None:
+            kind = self._artifact_lookup(ctx, artifact_id)
+            if kind and not _is_text_kind(kind):
+                return ArtifactProcessingResult(
+                    status=ResultStatus.SKIPPED,
+                    message=f"{self.kind} skipped: artifact kind {kind!r} is not text",
+                    metadata={
+                        "processor_name": self.kind,
+                        "skip_reason": "non_text_artifact",
+                        "artifact_kind": kind,
+                    },
+                )
+        return super().enrich(ctx, artifact_id)
+
+    def _produce(self, ctx, artifact_id):
+        # Fallback to the legacy empty-output stub when the operator
+        # hasn't wired a text LLM. Preserves the contract callers
+        # have relied on (the enricher always returns a draft, even
+        # if empty).
+        if self._text_client is None:
+            return self._stub_response(artifact_id), self._render_md(
+                self._stub_response(artifact_id),
+            )
+
+        content = self._read_content(ctx, artifact_id)
+        if not content:
+            return self._stub_response(artifact_id), self._render_md(
+                self._stub_response(artifact_id),
+            )
+        try:
+            text = content.decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 — defensive, never observed
+            text = ""
+        # Truncate aggressively — see _MAX_CONTENT_CHARS rationale.
+        body = text[:_MAX_CONTENT_CHARS]
+        prompt = self._profile_prompt() or self._DEFAULT_PROMPT
+        full_prompt = (
+            f"{prompt}\n\n"
+            "Respond ONLY with JSON matching the schema. "
+            "Do not include prose around the JSON.\n\n"
+            "---\n"
+            f"{body}\n"
+        )
+
+        try:
+            parsed, _usage = self._text_client.extract(
+                full_prompt,
+                self._OUTPUT_SCHEMA,
+                metadata={"processor_name": self.kind, "artifact_id": artifact_id},
+            )
+        except Exception as exc:  # noqa: BLE001 — surface as soft skip
+            error_response = self._error_response(artifact_id, exc)
+            return error_response, self._render_md(error_response)
+
+        # Carry the full parsed response into json_data so subclass
+        # schemas with multiple top-level fields (e.g. DocumentClassifier
+        # = {classification, sections}, ConfidenceAssessor =
+        # {overall_confidence, assessments}) preserve everything the
+        # LLM returned. Then explicitly normalise the primary
+        # `_OUTPUT_KEY` so it's always a list.
+        json_data: dict[str, Any] = {
+            "source_artifact_id": artifact_id,
+            "model": getattr(self._text_client, "model", None),
+            "provider": getattr(self._text_client, "provider", None),
+        }
+        if isinstance(parsed, dict):
+            for k, v in parsed.items():
+                # Don't shadow the lineage / model fields if the
+                # LLM happened to mention them (unlikely but safe).
+                if k in ("source_artifact_id", "model", "provider"):
+                    continue
+                json_data[k] = v
+        items = parsed.get(self._OUTPUT_KEY) if isinstance(parsed, dict) else None
+        json_data[self._OUTPUT_KEY] = list(items) if isinstance(items, list) else []
+        return json_data, self._render_md(json_data)
+
+    # ---- Hooks subclasses customise -----------------------------
+
+    def _stub_response(self, artifact_id: str) -> dict[str, Any]:
+        """Empty-output shape returned when the LLM isn't available
+        or content is empty. Subclasses can override to add fields."""
+        return {
+            "source_artifact_id": artifact_id,
+            self._OUTPUT_KEY: [],
+        }
+
+    def _error_response(
+        self, artifact_id: str, exc: Exception,
+    ) -> dict[str, Any]:
+        return {
+            "source_artifact_id": artifact_id,
+            self._OUTPUT_KEY: [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        """Default markdown renderer — subclasses override for
+        domain-specific formatting (tables, requirements, etc.)."""
+        items = json_data.get(self._OUTPUT_KEY) or []
+        title = self._OUTPUT_KEY.replace("_", " ").title()
+        lines = [f"# {title}", "", f"Total: {len(items)}", ""]
+        for entry in items[:50]:
+            if isinstance(entry, dict):
+                # Pretty-print up to a few key fields.
+                bits = ", ".join(f"{k}={v!r}" for k, v in list(entry.items())[:4])
+                lines.append(f"- {bits}")
+            else:
+                lines.append(f"- {entry}")
+        return "\n".join(lines) + "\n"
+
+
+# ---- The 8 generic enrichers ---------------------------------------
+
+
+class DocumentClassifier(_LLMBackedEnricher):
     kind = PROCESSOR_DOCUMENT_CLASSIFIER
     artifact_type = ARTIFACT_TYPE_DOCUMENT_MAP
     prompt_name = "classify_document"
     confidence_default = 0.7
 
+    _OUTPUT_KEY = "sections"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "classification": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["label"],
+                },
+            },
+            "sections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "page_start": {"type": "integer"},
+                        "page_end": {"type": "integer"},
+                    },
+                    "required": ["title"],
+                },
+            },
+        },
+        "required": ["classification", "sections"],
+    }
+    _DEFAULT_PROMPT = (
+        "You are a document analyst. Classify the document type "
+        "(report / spec / contract / paper / memo / other) and list "
+        "its top-level sections. Each classification entry includes "
+        "a `label` and `confidence` (0..1). Each section includes a "
+        "`title`, optional `summary`, and `page_start`/`page_end` "
+        "when discernible."
+    )
+
     def _produce(self, ctx, artifact_id):
-        content = self._read_content(ctx, artifact_id)
-        prompt = self._profile_prompt()
-        json_data = {
-            "source_artifact_id": artifact_id,
-            "classification": [],
-            "sections": [],
-            "byte_size": len(content),
-            "prompt_used": bool(prompt),
-        }
-        md_text = (
-            "# Document map\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            "Sections: 0\n"
-        )
-        return json_data, md_text
+        json_data, _md = super()._produce(ctx, artifact_id)
+        # Preserve legacy fields the original stub emitted so existing
+        # consumers / tests don't break:
+        #   * `byte_size`   — informative when text_client is unwired
+        #   * `prompt_used` — bool, true iff the active profile
+        #                     supplied the `classify_document` prompt
+        #   * `classification` — always present (defaults to [] when
+        #                       the model didn't emit one)
+        json_data["byte_size"] = len(self._read_content(ctx, artifact_id))
+        json_data["prompt_used"] = bool(self._profile_prompt())
+        json_data.setdefault("classification", [])
+        return json_data, self._render_md(json_data)
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        sections = json_data.get("sections") or []
+        classification = json_data.get("classification") or []
+        lines = ["# Document map", ""]
+        if classification:
+            lines.append("## Classification")
+            for c in classification:
+                if isinstance(c, dict):
+                    label = c.get("label", "?")
+                    conf = c.get("confidence")
+                    lines.append(
+                        f"- {label}" + (f" ({conf})" if conf is not None else "")
+                    )
+            lines.append("")
+        lines.append(f"Sections: {len(sections)}")
+        for s in sections[:50]:
+            if isinstance(s, dict):
+                title = s.get("title", "?")
+                pages = s.get("page_start")
+                pages_str = f" (p. {pages})" if pages is not None else ""
+                lines.append(f"- {title}{pages_str}")
+        return "\n".join(lines) + "\n"
 
 
-class RequirementExtractor(_StructuredEnricher):
+class RequirementExtractor(_LLMBackedEnricher):
     kind = PROCESSOR_REQUIREMENT_EXTRACTOR
     artifact_type = ARTIFACT_TYPE_REQUIREMENTS
     prompt_name = "extract_requirements"
     confidence_default = 0.6
 
-    def _produce(self, ctx, artifact_id):
-        json_data = {
-            "source_artifact_id": artifact_id,
-            "requirements": [],
-            "prompt_used": bool(self._profile_prompt()),
-        }
-        md_text = (
-            "# Requirements\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            "Total: 0\n"
-        )
-        return json_data, md_text
+    _OUTPUT_KEY = "requirements"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "requirements": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "text": {"type": "string"},
+                        "priority": {
+                            "type": "string",
+                            "enum": ["MUST", "SHOULD", "MAY", "informative"],
+                        },
+                        "section": {"type": "string"},
+                        "page": {"type": "integer"},
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
+        "required": ["requirements"],
+    }
+    _DEFAULT_PROMPT = (
+        "Extract requirements from the document. A requirement is a "
+        "MUST / SHOULD / MAY statement, an explicit obligation, or "
+        "a constraint the system / process / contract must satisfy. "
+        "For each, include the verbatim `text`, the `priority` "
+        "(MUST / SHOULD / MAY / informative), and the `section` and "
+        "`page` when known. Skip background prose and definitions."
+    )
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        items = json_data.get("requirements") or []
+        lines = ["# Requirements", "", f"Total: {len(items)}", ""]
+        for r in items[:100]:
+            if isinstance(r, dict):
+                priority = r.get("priority", "?")
+                text = r.get("text", "")
+                rid = r.get("id") or ""
+                lines.append(f"- [{priority}] {rid} {text}".strip())
+        return "\n".join(lines) + "\n"
 
 
-class TableExtractor(_StructuredEnricher):
+class TableExtractor(_LLMBackedEnricher):
     kind = PROCESSOR_TABLE_EXTRACTOR
     artifact_type = ARTIFACT_TYPE_TABLES
     prompt_name = "extract_tables"
     confidence_default = 0.7
 
-    def _produce(self, ctx, artifact_id):
-        json_data = {"source_artifact_id": artifact_id, "tables": []}
-        md_text = (
-            "# Tables\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            "Total: 0\n"
-        )
-        return json_data, md_text
+    _OUTPUT_KEY = "tables"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "tables": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "caption": {"type": "string"},
+                        "columns": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "rows": {
+                            "type": "array",
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": ["string", "number", "null"],
+                                },
+                            },
+                        },
+                        "page": {"type": "integer"},
+                    },
+                    "required": ["columns", "rows"],
+                },
+            },
+        },
+        "required": ["tables"],
+    }
+    _DEFAULT_PROMPT = (
+        "Extract every tabular structure from the document. For "
+        "each table, return the column headers as `columns` (array "
+        "of strings) and the body cells as `rows` (array of arrays, "
+        "one per row). Include `title` / `caption` / `page` when "
+        "the document supplies them. Numbers stay numeric; missing "
+        "cells are null. Tables that span multiple pages should be "
+        "merged into a single entry."
+    )
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        tables = json_data.get("tables") or []
+        lines = ["# Tables", "", f"Total: {len(tables)}", ""]
+        for i, t in enumerate(tables[:25], 1):
+            if not isinstance(t, dict):
+                continue
+            title = t.get("title") or t.get("caption") or f"Table {i}"
+            page = t.get("page")
+            page_str = f" (p. {page})" if page is not None else ""
+            lines.append(f"## {title}{page_str}")
+            cols = t.get("columns") or []
+            rows = t.get("rows") or []
+            if cols:
+                lines.append("| " + " | ".join(str(c) for c in cols) + " |")
+                lines.append("|" + "|".join(["---"] * len(cols)) + "|")
+            for row in rows[:20]:
+                if isinstance(row, list):
+                    cells = ["" if v is None else str(v) for v in row]
+                    lines.append("| " + " | ".join(cells) + " |")
+            if len(rows) > 20:
+                lines.append(f"_…{len(rows) - 20} more rows_")
+            lines.append("")
+        return "\n".join(lines) + "\n"
 
 
 class VisualContentDescriber(_StructuredEnricher):
@@ -273,10 +626,48 @@ class VisualContentDescriber(_StructuredEnricher):
         profile: Profile,
         *,
         vision_client: Any | None = None,
+        artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(profile, **kwargs)
         self._vision_client = vision_client
+        # When set, called per artifact_id to fetch the artifact's
+        # `kind`. VCD short-circuits with SKIPPED for kinds that
+        # don't look image-shaped — the workflow runs enrich on
+        # EVERY compile artifact (chunks + metadata + images), and
+        # without this gate VCD pollutes the Visuals card with stub
+        # "Image bytes not available" markdown for every non-image
+        # artifact in the run. None disables the skip — falls back
+        # to the legacy behaviour where VCD runs on everything.
+        self._artifact_lookup = artifact_lookup
+
+    def enrich(self, ctx, artifact_id):
+        """Override to short-circuit non-image artifacts BEFORE
+        `_produce` runs. Returns `SKIPPED` (no drafts) so the
+        composite doesn't add this no-op to the Visuals card."""
+        if not self._enabled:
+            return ArtifactProcessingResult(
+                status=ResultStatus.SKIPPED,
+                message=f"{self.kind} disabled",
+                metadata={"processor_name": self.kind},
+            )
+        if self._artifact_lookup is not None:
+            kind = self._artifact_lookup(ctx, artifact_id)
+            if kind and not _is_image_kind(kind):
+                # Not an image artifact — skip silently without
+                # producing any `enriched.visuals` drafts. This is
+                # the difference between "Visuals card empty" and
+                # "Visuals card full of stub messages".
+                return ArtifactProcessingResult(
+                    status=ResultStatus.SKIPPED,
+                    message=f"{self.kind} skipped: artifact kind {kind!r} is not visual",
+                    metadata={
+                        "processor_name": self.kind,
+                        "skip_reason": "non_image_artifact",
+                        "artifact_kind": kind,
+                    },
+                )
+        return super().enrich(ctx, artifact_id)
 
     def _produce(self, ctx, artifact_id):
         # Read image bytes through the standard `_read_content` hook.
@@ -350,6 +741,29 @@ class VisualContentDescriber(_StructuredEnricher):
         return json_data, md_text
 
 
+def _is_image_kind(kind: str | None) -> bool:
+    """Decide whether VCD should run on an artifact of `kind`.
+
+    Image-shaped kinds in the J1 taxonomy:
+      * `compile.image` — the `_drafts_from_output_dir` helper stamps
+        `.png` / `.jpg` / `.webp` files with this suffix.
+      * Anything ending in `.image` for forward-compat with future
+        producers that follow the same convention.
+      * `enriched.visuals` — already a visual artifact, but
+        re-enriching it would loop. Treat as image-shaped so the
+        composite doesn't double-enrich (and so a deployment that
+        chains enrich passes still has VCD see it).
+
+    Everything else (chunks, compile.metadata, graph_json,
+    enriched.tables, etc.) is non-image and gets a SKIPPED result."""
+    if not kind:
+        return False
+    normalised = kind.strip().lower()
+    if normalised == ARTIFACT_TYPE_VISUALS.lower():
+        return True
+    return normalised.endswith(".image") or ".image." in normalised
+
+
 def _no_vision_md(artifact_id: str) -> str:
     return (
         "# Visual content\n\n"
@@ -375,54 +789,184 @@ def _vision_failure_md(artifact_id: str, exc: Exception) -> str:
     )
 
 
-class FormulaExtractor(_StructuredEnricher):
+class FormulaExtractor(_LLMBackedEnricher):
     kind = PROCESSOR_FORMULA_EXTRACTOR
     artifact_type = ARTIFACT_TYPE_FORMULAS
     prompt_name = "extract_formulas"
     confidence_default = 0.5
     review_required_default = True
 
-    def _produce(self, ctx, artifact_id):
-        json_data = {"source_artifact_id": artifact_id, "formulas": []}
-        md_text = (
-            "# Formulas\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            "_Pending human review._\n"
-        )
-        return json_data, md_text
+    _OUTPUT_KEY = "formulas"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "formulas": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "tex": {"type": "string"},
+                        "description": {"type": "string"},
+                        "variables": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "meaning": {"type": "string"},
+                                },
+                                "required": ["name"],
+                            },
+                        },
+                        "page": {"type": "integer"},
+                    },
+                    "required": ["tex"],
+                },
+            },
+        },
+        "required": ["formulas"],
+    }
+    _DEFAULT_PROMPT = (
+        "Extract every mathematical formula or equation from the "
+        "document. For each, include the LaTeX representation as "
+        "`tex`, an optional `description` of what it computes, and "
+        "the `variables` (each with `name` and `meaning`) when the "
+        "document defines them. Skip mere references to formulas "
+        "elsewhere — only emit ones the text actually contains."
+    )
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        items = json_data.get("formulas") or []
+        lines = ["# Formulas", "", f"Total: {len(items)}", ""]
+        if not items:
+            lines.append("_Pending human review._")
+        for f in items[:50]:
+            if isinstance(f, dict):
+                tex = f.get("tex", "")
+                desc = f.get("description")
+                lines.append(f"- `{tex}`" + (f" — {desc}" if desc else ""))
+        return "\n".join(lines) + "\n"
 
 
-class RiskExtractor(_StructuredEnricher):
+class RiskExtractor(_LLMBackedEnricher):
     kind = PROCESSOR_RISK_EXTRACTOR
     artifact_type = ARTIFACT_TYPE_RISKS
     prompt_name = "extract_risks"
     confidence_default = 0.6
 
-    def _produce(self, ctx, artifact_id):
-        json_data = {"source_artifact_id": artifact_id, "risks": []}
-        md_text = (
-            "# Risks\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            "Total: 0\n"
-        )
-        return json_data, md_text
+    _OUTPUT_KEY = "risks"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "risks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "severity": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high", "critical"],
+                        },
+                        "category": {"type": "string"},
+                        "mitigation": {"type": "string"},
+                        "page": {"type": "integer"},
+                    },
+                    "required": ["title", "severity"],
+                },
+            },
+        },
+        "required": ["risks"],
+    }
+    _DEFAULT_PROMPT = (
+        "Extract risk-relevant statements from the document. A "
+        "risk is any explicit threat, hazard, vulnerability, "
+        "compliance gap, or forward-looking concern. For each, "
+        "return `title`, `severity` (low/medium/high/critical), "
+        "`category` (e.g. financial, operational, legal, security, "
+        "reputational), `description`, and `mitigation` if the "
+        "document describes one. Include the `page` when known."
+    )
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        items = json_data.get("risks") or []
+        lines = ["# Risks", "", f"Total: {len(items)}", ""]
+        for r in items[:100]:
+            if isinstance(r, dict):
+                sev = r.get("severity", "?")
+                title = r.get("title", "")
+                cat = r.get("category", "")
+                cat_str = f" [{cat}]" if cat else ""
+                lines.append(f"- ({sev}){cat_str} {title}")
+        return "\n".join(lines) + "\n"
 
 
-class ConsistencyChecker(_StructuredEnricher):
+class ConsistencyChecker(_LLMBackedEnricher):
     kind = PROCESSOR_CONSISTENCY_CHECKER
     artifact_type = ARTIFACT_TYPE_CONSISTENCY_FINDINGS
     prompt_name = "check_consistency"
     confidence_default = 0.5
     review_required_default = True
 
-    def _produce(self, ctx, artifact_id):
-        json_data = {"source_artifact_id": artifact_id, "findings": []}
-        md_text = (
-            "# Consistency findings\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            "_Pending human review._\n"
-        )
-        return json_data, md_text
+    _OUTPUT_KEY = "findings"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "contradiction",
+                                "duplicate",
+                                "missing_section",
+                                "ambiguity",
+                                "terminology_drift",
+                                "other",
+                            ],
+                        },
+                        "message": {"type": "string"},
+                        "page": {"type": "integer"},
+                        "score": {"type": "number"},
+                    },
+                    "required": ["category", "message"],
+                },
+            },
+        },
+        "required": ["findings"],
+    }
+    _DEFAULT_PROMPT = (
+        "Find consistency issues within the document. Look for "
+        "contradictions (statement A vs statement B), duplicates "
+        "(the same requirement / claim repeated), missing sections "
+        "(referenced but never defined), terminology drift (the "
+        "same concept named two different ways), and ambiguities "
+        "(statements with no clear interpretation). For each, "
+        "return `category`, a short `message` explaining the "
+        "issue, the `page` when known, and a `score` 0..1 (1 = "
+        "high confidence the issue is real)."
+    )
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        items = json_data.get("findings") or []
+        lines = ["# Consistency findings", "", f"Total: {len(items)}", ""]
+        if not items:
+            lines.append("_Pending human review._")
+        for f in items[:100]:
+            if isinstance(f, dict):
+                cat = f.get("category", "?")
+                msg = f.get("message", "")
+                page = f.get("page")
+                page_str = f" (p. {page})" if page is not None else ""
+                lines.append(f"- [{cat}]{page_str} {msg}")
+        return "\n".join(lines) + "\n"
 
 
 class SourceMapper(_StructuredEnricher):
@@ -446,24 +990,81 @@ class SourceMapper(_StructuredEnricher):
         return json_data, ""
 
 
-class ConfidenceAssessor(_StructuredEnricher):
+class ConfidenceAssessor(_LLMBackedEnricher):
     kind = PROCESSOR_CONFIDENCE_ASSESSOR
     artifact_type = ARTIFACT_TYPE_CONFIDENCE_ASSESSMENT
     prompt_name = "assess_confidence"
     confidence_default = 0.8
 
+    _OUTPUT_KEY = "assessments"
+    _OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "overall_confidence": {"type": "number"},
+            "assessments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "modality": {
+                            "type": "string",
+                            "description": (
+                                "What's being assessed: 'tables', 'ocr', "
+                                "'reasoning', 'numbers', 'citations', etc."
+                            ),
+                        },
+                        "confidence": {"type": "number"},
+                        "page": {"type": "integer"},
+                        "category": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                    "required": ["modality", "confidence"],
+                },
+            },
+        },
+        "required": ["assessments"],
+    }
+    _DEFAULT_PROMPT = (
+        "Assess the extraction confidence for this content. For "
+        "each assessable modality (tables, ocr, reasoning, numeric "
+        "values, citations, etc.), return a `confidence` 0..1 with "
+        "1 = highest. When you spot a specific concern (a low-OCR "
+        "region, a contradicted claim, a numeric value that "
+        "doesn't add up), include the `page` and a brief "
+        "`message`. Return `overall_confidence` as the weighted "
+        "mean across modalities."
+    )
+
     def _produce(self, ctx, artifact_id):
-        json_data = {
-            "source_artifact_id": artifact_id,
-            "assessments": [],
-            "default_confidence": self.confidence_default,
-        }
-        md_text = (
-            "# Confidence assessment\n\n"
-            f"Source artifact: `{artifact_id}`\n\n"
-            f"Default confidence: {self.confidence_default:.3f}\n"
-        )
-        return json_data, md_text
+        json_data, _md = super()._produce(ctx, artifact_id)
+        # Carry the deployment-configured default through so the
+        # quality projector has a non-null fallback when the LLM
+        # didn't surface its own overall_confidence value.
+        json_data.setdefault("default_confidence", self.confidence_default)
+        return json_data, self._render_md(json_data)
+
+    def _render_md(self, json_data: dict[str, Any]) -> str:
+        assessments = json_data.get("assessments") or []
+        overall = json_data.get("overall_confidence")
+        default = json_data.get("default_confidence", self.confidence_default)
+        lines = ["# Confidence assessment", ""]
+        if overall is not None:
+            lines.append(f"Overall confidence: {float(overall):.2f}")
+        else:
+            lines.append(f"Default confidence: {float(default):.3f}")
+        lines.append("")
+        if assessments:
+            lines.append(f"Modality assessments ({len(assessments)}):")
+            for a in assessments[:50]:
+                if isinstance(a, dict):
+                    mod = a.get("modality", "?")
+                    conf = a.get("confidence")
+                    msg = a.get("message")
+                    head = f"- {mod}: {conf:.2f}" if isinstance(conf, (int, float)) else f"- {mod}"
+                    if msg:
+                        head += f" — {msg}"
+                    lines.append(head)
+        return "\n".join(lines) + "\n"
 
 
 GENERIC_ENRICHERS: tuple[type[_StructuredEnricher], ...] = (
@@ -514,6 +1115,7 @@ class CompositeEnricher:
         vision_client: Any | None = None,
         text_client: Any | None = None,
         embedding_client: Any | None = None,
+        artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
     ) -> None:
         if enrichers is None:
             enrichers = tuple(
@@ -524,6 +1126,7 @@ class CompositeEnricher:
                     vision_client=vision_client,
                     text_client=text_client,
                     embedding_client=embedding_client,
+                    artifact_lookup=artifact_lookup,
                 )
                 for cls_ in GENERIC_ENRICHERS
             )
@@ -539,6 +1142,7 @@ class CompositeEnricher:
         vision_client: Any | None = None,
         text_client: Any | None = None,
         embedding_client: Any | None = None,
+        artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
     ) -> "CompositeEnricher":
         return cls(
             profile,
@@ -546,6 +1150,7 @@ class CompositeEnricher:
             vision_client=vision_client,
             text_client=text_client,
             embedding_client=embedding_client,
+            artifact_lookup=artifact_lookup,
         )
 
     def enrich(
@@ -612,11 +1217,18 @@ def _construct_child(
     vision_client: Any | None,
     text_client: Any | None = None,
     embedding_client: Any | None = None,
+    artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
 ) -> _StructuredEnricher:
     """Build one composite child, forwarding clients per child class.
 
-    Vision client → only `VisualContentDescriber` (the only enricher
-    that calls `vision_client.analyze_image`).
+    Vision client + artifact_lookup → only `VisualContentDescriber`.
+      * `vision_client` is the only client VCD specifically uses.
+      * `artifact_lookup` lets VCD ask "is this artifact an image?"
+        without itself depending on the registry — the wiring layer
+        provides the closure. With it, VCD returns SKIPPED for
+        non-image artifacts (chunks, metadata) instead of polluting
+        the Visuals card with stub "Image bytes not available"
+        markdown for every chunk artifact in the run.
 
     Text + embedding clients → forwarded to every child via the base
     `_StructuredEnricher.__init__(..., text_client=, embedding_client=)`
@@ -640,5 +1252,10 @@ def _construct_child(
     if embedding_client is not None:
         common_kwargs["embedding_client"] = embedding_client
     if cls_ is VisualContentDescriber:
-        return cls_(profile, vision_client=vision_client, **common_kwargs)
+        return cls_(
+            profile,
+            vision_client=vision_client,
+            artifact_lookup=artifact_lookup,
+            **common_kwargs,
+        )
     return cls_(profile, **common_kwargs)

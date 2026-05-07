@@ -306,6 +306,7 @@ def build_worker_spec(
     resolved_enrichers: Mapping[str, object]
     if enrichers is None:
         from j1.enrichers import CompositeEnricher
+        from j1.workspace.layout import WorkspaceArea
         try:
             profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
         except Exception:
@@ -334,8 +335,51 @@ def build_worker_spec(
                 text_client = llm_registry.try_text()
             if hasattr(llm_registry, "try_embedding"):
                 embedding_client = llm_registry.try_embedding()
+
+        # `content_source` reads artifact bytes from disk so VCD has
+        # actual image bytes to send the vision LLM. Without this,
+        # `_StructuredEnricher._read_content` returns b"" and VCD
+        # falls through to the "Image bytes not available" stub on
+        # every run.
+        def _artifact_content_source(
+            artifact_ctx, artifact_id: str,
+        ) -> bytes:
+            try:
+                record = artifacts.get(artifact_ctx, artifact_id)
+            except Exception:  # noqa: BLE001 — registry miss → empty bytes
+                return b""
+            location = (record.location or "").strip()
+            if "/" not in location:
+                return b""
+            area_name, _, sub = location.partition("/")
+            try:
+                area = WorkspaceArea(area_name)
+            except ValueError:
+                return b""
+            path = workspace.area(artifact_ctx, area) / sub
+            try:
+                return path.read_bytes()
+            except OSError:
+                return b""
+
+        # `artifact_lookup` returns the kind (e.g. `compile.image`,
+        # `chunk`, `enriched.tables`) so VCD can skip non-image
+        # artifacts. Without this, the composite invokes VCD on
+        # EVERY compile artifact (chunks + metadata too) and pollutes
+        # the Visuals card with "Image bytes not available" stubs.
+        def _artifact_lookup(
+            artifact_ctx, artifact_id: str,
+        ) -> str | None:
+            try:
+                record = artifacts.get(artifact_ctx, artifact_id)
+            except Exception:  # noqa: BLE001
+                return None
+            return record.kind
+
         composite = CompositeEnricher.from_default(
             profile,
+            content_source=_artifact_content_source,
+            artifact_lookup=_artifact_lookup,
             vision_client=vision_client,
             text_client=text_client,
             embedding_client=embedding_client,

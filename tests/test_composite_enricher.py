@@ -353,6 +353,155 @@ def test_composite_skips_text_client_when_unset(default_profile):
         assert getattr(child, "_embedding_client", None) is None
 
 
+# ---- VCD non-image-artifact skip (the "Image bytes not available" fix) -
+
+
+def test_vcd_skips_when_artifact_kind_is_chunk(default_profile, ctx):
+    """Regression: the workflow runs enrich on EVERY compile artifact
+    (chunks + metadata + images). Without the artifact_lookup gate,
+    VCD emits a stub `enriched.visuals` draft for every chunk
+    artifact in the run, polluting the Visuals card with 'Image
+    bytes not available — visual enrichment skipped' messages."""
+    from j1.enrichers import VisualContentDescriber
+    from j1.processing.status import ResultStatus
+
+    def _lookup(_ctx, _artifact_id: str) -> str:
+        return "chunk"  # never an image kind
+
+    vcd = VisualContentDescriber(
+        default_profile,
+        vision_client=_StubVisionClient(),
+        artifact_lookup=_lookup,
+    )
+    result = vcd.enrich(ctx, "art-chunk-1")
+
+    assert result.status is ResultStatus.SKIPPED
+    assert result.drafts == []
+    assert result.metadata["skip_reason"] == "non_image_artifact"
+    assert result.metadata["artifact_kind"] == "chunk"
+
+
+def test_vcd_runs_for_compile_image_kind(default_profile, ctx):
+    """The bridge's `_drafts_from_output_dir` stamps PNG/JPG outputs
+    with `kind="compile.image"`. VCD must NOT skip those — they're
+    the actual image artifacts the visual enrichment exists for."""
+    from j1.enrichers import VisualContentDescriber
+    from j1.processing.status import ResultStatus
+
+    def _lookup(_ctx, _artifact_id: str) -> str:
+        return "compile.image"
+
+    def _content_source(_ctx, _artifact_id: str) -> bytes:
+        return b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # PNG header bytes
+
+    vision = _StubVisionClient()
+    vcd = VisualContentDescriber(
+        default_profile,
+        vision_client=vision,
+        artifact_lookup=_lookup,
+        content_source=_content_source,
+    )
+    result = vcd.enrich(ctx, "art-img-1")
+
+    assert result.status is ResultStatus.SUCCEEDED
+    # Vision client called → real description in the markdown.
+    assert vision.calls
+    md = next(d for d in result.drafts if d.suggested_extension == ".md")
+    assert "Stub description for testing" in md.content.decode("utf-8")
+
+
+def test_vcd_runs_for_enriched_visuals_kind(default_profile, ctx):
+    """`enriched.visuals` is the dedicated kind for image artifacts
+    that have already been pre-classified as visual content. VCD
+    must run on those (not skip)."""
+    from j1.enrichers import VisualContentDescriber
+    from j1.processing.status import ResultStatus
+
+    def _lookup(_ctx, _artifact_id: str) -> str:
+        return "enriched.visuals"
+
+    def _content_source(_ctx, _artifact_id: str) -> bytes:
+        return b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+    vcd = VisualContentDescriber(
+        default_profile,
+        vision_client=_StubVisionClient(),
+        artifact_lookup=_lookup,
+        content_source=_content_source,
+    )
+    result = vcd.enrich(ctx, "art-vis-1")
+    assert result.status is ResultStatus.SUCCEEDED
+
+
+def test_vcd_runs_for_every_kind_when_lookup_unset(default_profile, ctx):
+    """Backwards-compat: callers that don't supply an
+    `artifact_lookup` get the legacy behaviour where VCD runs on
+    every artifact regardless of kind. Some test fixtures rely on
+    this."""
+    from j1.enrichers import VisualContentDescriber
+    from j1.processing.status import ResultStatus
+
+    def _content_source(_ctx, _artifact_id: str) -> bytes:
+        return b"image-bytes"
+
+    vcd = VisualContentDescriber(
+        default_profile,
+        vision_client=_StubVisionClient(),
+        artifact_lookup=None,  # no gate
+        content_source=_content_source,
+    )
+    result = vcd.enrich(ctx, "art-anything")
+    # Runs and SUCCEEDS regardless of what kind the artifact is.
+    assert result.status is ResultStatus.SUCCEEDED
+
+
+def test_vcd_skipped_disabled_short_circuits_before_lookup(default_profile, ctx):
+    """`enabled=False` MUST short-circuit before the lookup runs —
+    a disabled enricher shouldn't make registry calls. Pinning the
+    order so a future tweak doesn't accidentally call lookup on
+    every artifact when the operator turned VCD off."""
+    from j1.enrichers import VisualContentDescriber
+    from j1.processing.status import ResultStatus
+
+    lookups: list[str] = []
+    def _lookup(_ctx, artifact_id: str):
+        lookups.append(artifact_id)
+        return "compile.image"
+
+    vcd = VisualContentDescriber(
+        default_profile,
+        enabled=False,
+        vision_client=_StubVisionClient(),
+        artifact_lookup=_lookup,
+    )
+    result = vcd.enrich(ctx, "art-1")
+    assert result.status is ResultStatus.SKIPPED
+    assert lookups == []  # lookup never called
+
+
+def test_is_image_kind_recognises_documented_kinds():
+    """Pin the matcher's contract so a future kind taxonomy change
+    is caught before it accidentally turns the Visuals card into a
+    chunk dumping ground."""
+    from j1.enrichers import _is_image_kind
+
+    # Image-shaped — VCD runs.
+    assert _is_image_kind("compile.image") is True
+    assert _is_image_kind("enriched.visuals") is True
+    assert _is_image_kind("Enriched.Visuals") is True  # case-insensitive
+    assert _is_image_kind("custom.image.png") is True
+
+    # Non-image — VCD skips.
+    assert _is_image_kind("chunk") is False
+    assert _is_image_kind("compile") is False
+    assert _is_image_kind("compile.metadata") is False
+    assert _is_image_kind("graph_json") is False
+    assert _is_image_kind("enriched.tables") is False
+    assert _is_image_kind("enriched.formulas") is False
+    assert _is_image_kind("") is False
+    assert _is_image_kind(None) is False
+
+
 def test_composite_forwards_all_three_clients_independently(default_profile):
     """Vision + text + embedding can all be wired together. The
     dispatch in `_construct_child` must NOT cross-wire (e.g. send
