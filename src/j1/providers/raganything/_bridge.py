@@ -37,6 +37,7 @@ exported here.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -561,16 +562,78 @@ def _make_text_callable(text_client) -> Callable[..., Any]:
 
 
 def _make_vision_callable(vision_client) -> Callable[..., Any]:
-    """RAGAnything `await`s vision_model_func(prompt, image_data, **kw) → str."""
+    """RAGAnything `await`s vision_model_func(prompt, image_data, **kw) → str.
 
-    async def _vision_callable(prompt: str, image_data: bytes = b"",
+    `image_data` arrives in one of two shapes depending on which call
+    site inside raganything is firing:
+
+      * **bytes** — when the caller has already read the file (the
+        less common path).
+      * **base64 string** — what
+        `raganything.modalprocessors._encode_image_to_base64` returns,
+        used by every multimodal-processor pass during compile. This
+        is the dominant path; the value is the bare base64 ASCII (no
+        `data:` prefix).
+
+    Our `OpenAICompatVisionLLMClient.analyze_image` expects **bytes**
+    so it can re-base64-encode them into a data URL. Calling it with a
+    string blows up at `base64.b64encode("...")` with `a bytes-like
+    object is required, not 'str'` — the exact error operators have
+    been seeing in the worker log with no useful context. Decode the
+    string back to bytes here so the client stays strict and the error
+    message names the failing artifact.
+    """
+
+    async def _vision_callable(prompt: str, image_data: Any = b"",
                                *args, **kwargs) -> str:
+        try:
+            image_bytes = _coerce_image_bytes(image_data)
+        except (ValueError, base64.binascii.Error) as exc:
+            # Surface the artifact-level cause so multimodal-processing
+            # failures are diagnosable without enabling DEBUG. Without
+            # this the only signal in the worker log is RAGAnything's
+            # generic `Error generating image description:`.
+            shape = (
+                f"str(len={len(image_data)})"
+                if isinstance(image_data, str)
+                else type(image_data).__name__
+            )
+            raise ValueError(
+                f"vision_model_func received unsupported image_data "
+                f"shape: {shape}. Expected raw bytes or a base64 string. "
+                f"Underlying decode error: {exc}"
+            ) from exc
         text, _usage = await asyncio.to_thread(
-            vision_client.analyze_image, image_data, prompt=prompt,
+            vision_client.analyze_image, image_bytes, prompt=prompt,
         )
         return text
 
     return _vision_callable
+
+
+def _coerce_image_bytes(image_data: Any) -> bytes:
+    """Normalise `image_data` from RAGAnything into raw bytes.
+
+    Accepts:
+      * `bytes` / `bytearray` / `memoryview` → returned as-is.
+      * `str` → assumed base64. Strips an optional `data:<mime>;base64,`
+        prefix (some call sites pre-format the data URL) before
+        decoding.
+    Anything else raises `ValueError` so the caller logs a clear
+    artifact-scoped error.
+    """
+    if isinstance(image_data, (bytes, bytearray, memoryview)):
+        return bytes(image_data)
+    if isinstance(image_data, str):
+        payload = image_data
+        prefix = "base64,"
+        idx = payload.find(prefix)
+        if idx != -1:
+            payload = payload[idx + len(prefix):]
+        return base64.b64decode(payload, validate=False)
+    raise ValueError(
+        f"image_data must be bytes or base64 string, got {type(image_data).__name__}"
+    )
 
 
 def _make_embedding_func(embedding_client):
