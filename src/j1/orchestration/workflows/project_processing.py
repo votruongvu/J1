@@ -1095,14 +1095,58 @@ class ProjectProcessingWorkflow:
         if request.compiler_kind:
             self._set_search_attribute("J1ParserName", request.compiler_kind)
 
-        # `plan` is populated AFTER compile (see below). Compile is
-        # always force-enabled — the planner only gates the LLM-
-        # expensive stages (enrich / graph / index) — so deferring
-        # planning costs nothing in cost-avoidance and lets the
-        # planner consume real content signals (has_images /
-        # has_tables) surfaced by the parser instead of guessing
-        # from the file extension.
+        # Build the plan BEFORE compile so the FE's plan card resolves
+        # within seconds of upload — operators see "what will run" up
+        # front, not at workflow exit.
+        #
+        # We trade off content-stat refinement for visibility: the
+        # planner sees only the deterministic profile (file size,
+        # extension), not the parser-derived signals (has_images /
+        # has_tables / text_extractable_ratio). For most documents the
+        # extension-based profile is sufficient — e.g. a `.pdf` is
+        # already known to potentially carry images and tables, so the
+        # planner picks an image-aware mode regardless. The remaining
+        # edge case (a `.txt` that secretly contains a base64-encoded
+        # diagram) is rare enough that earlier visibility wins.
+        #
+        # Compile is always force-enabled — the planner only gates the
+        # LLM-expensive stages (enrich / graph / index) — so an
+        # upfront plan never short-circuits the parsing path.
         plan: IngestPlan | None = None
+        if request.planner_enabled:
+            plan = await self._build_plan(request, document_id)
+            self._set_search_attribute("J1IngestMode", plan.mode.value)
+            # Surface the LLM/vision policy decisions as search
+            # attributes so operators can filter Temporal histories
+            # for "all runs that needed the premium model" without
+            # re-reading the audit log. Both gated on the same
+            # `search_attributes_enabled` flag as the existing upserts.
+            self._set_search_attribute(
+                "J1RequiresVision", "true" if plan.requires_vision else "false",
+            )
+            self._set_search_attribute(
+                "J1RequiresPremiumLLM",
+                "true" if plan.requires_premium_llm else "false",
+            )
+            self._log_step(
+                request,
+                event="ingestion.plan.created",
+                stage="plan",
+                status="completed",
+                document_id=document_id,
+                reason=(
+                    f"mode={plan.mode.value} policy={plan.policy.value} "
+                    f"requires_vision={plan.requires_vision} "
+                    f"requires_premium_llm={plan.requires_premium_llm}"
+                ),
+            )
+            # Persist the plan into the audit log so the FE's
+            # `GET /ingestion-runs/{id}/plan` endpoint can serve it.
+            # Without this the run-detail page sits on "Generating
+            # plan…" forever — the plan only exists in workflow
+            # memory until this activity writes it through the
+            # progress reporter.
+            await self._emit_plan_generated(request, document_id, plan)
 
         compile_op = f"{OPERATION_COMPILE}:{document_id}"
         if await self._gate_before_expensive(request, compile_op):
@@ -1158,53 +1202,6 @@ class ProjectProcessingWorkflow:
             metadata={"document_id": document_id},
         )
         self._complete(compile_op)
-
-        # Build the plan AFTER compile when adaptive planning is
-        # enabled. The compile result carries optional content_stats
-        # (has_images / has_tables / has_scanned_pages / page_count /
-        # text_extractable_ratio) populated by the parser — when
-        # present they override the deterministic profile so the
-        # planner decides on observed content rather than extension
-        # heuristics. When `planner_enabled=False` (or when no
-        # signals are surfaced), the gate helpers fall back to
-        # caller-driven legacy behaviour.
-        if request.planner_enabled:
-            plan = await self._build_plan(
-                request, document_id,
-                compile_content_stats=compile_result.content_stats,
-            )
-            self._set_search_attribute("J1IngestMode", plan.mode.value)
-            # Surface the LLM/vision policy decisions as search
-            # attributes so operators can filter Temporal histories
-            # for "all runs that needed the premium model" without
-            # re-reading the audit log. Both gated on the same
-            # `search_attributes_enabled` flag as the existing upserts.
-            self._set_search_attribute(
-                "J1RequiresVision", "true" if plan.requires_vision else "false",
-            )
-            self._set_search_attribute(
-                "J1RequiresPremiumLLM",
-                "true" if plan.requires_premium_llm else "false",
-            )
-            self._log_step(
-                request,
-                event="ingestion.plan.created",
-                stage="plan",
-                status="completed",
-                document_id=document_id,
-                reason=(
-                    f"mode={plan.mode.value} policy={plan.policy.value} "
-                    f"requires_vision={plan.requires_vision} "
-                    f"requires_premium_llm={plan.requires_premium_llm}"
-                ),
-            )
-            # Persist the plan into the audit log so the FE's
-            # `GET /ingestion-runs/{id}/plan` endpoint can serve it.
-            # Without this the run-detail page sits on "Generating
-            # plan…" forever — the plan only exists in workflow
-            # memory until this activity writes it through the
-            # progress reporter.
-            await self._emit_plan_generated(request, document_id, plan)
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:
