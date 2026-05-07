@@ -47,6 +47,34 @@ _LEAF_PATH_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _json_response_format(
+    schema: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the `response_format` payload for a JSON-only response.
+
+    Prefers the newer `json_schema` shape when a schema is supplied —
+    that's what LM Studio (and OpenAI's strict-mode structured outputs)
+    require. The older `json_object` shape is the fallback for endpoints
+    that only need "valid JSON, any shape." LM Studio rejects
+    `json_object` outright with `'response_format.type' must be
+    'json_schema' or 'text'`, so any caller emitting structured output
+    against an LM Studio endpoint must pass the schema through.
+
+    The wrapper name `j1_extract` is informational — OpenAI's strict
+    structured-output rules require a name, but the value isn't
+    surfaced to the model."""
+    if schema is not None:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "j1_extract",
+                "strict": False,
+                "schema": dict(schema),
+            },
+        }
+    return {"type": "json_object"}
+
+
 def _normalize_base_url(raw: str) -> str:
     """Trim trailing slashes and accidental leaf-path suffixes.
 
@@ -239,6 +267,7 @@ class OpenAICompatTextLLMClient(_BaseOpenAICompatClient):
             ),
             system_prompt="You return JSON only.",
             response_format="json",
+            json_schema=schema,
         )
         response = self._post("/chat/completions", body)
         text, usage = _extract_text(response, self._settings.model, self.provider)
@@ -286,6 +315,7 @@ class OpenAICompatTextLLMClient(_BaseOpenAICompatClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         response_format: str | None = None,
+        json_schema: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         messages: list[dict] = []
         if system_prompt:
@@ -300,7 +330,7 @@ class OpenAICompatTextLLMClient(_BaseOpenAICompatClient):
             "max_tokens": max_output_tokens or self._settings.max_output_tokens,
         }
         if response_format == "json":
-            body["response_format"] = {"type": "json_object"}
+            body["response_format"] = _json_response_format(json_schema)
         return body
 
 
@@ -358,6 +388,17 @@ class OpenAICompatVisionLLMClient(_BaseOpenAICompatClient):
             ),
             media_type=media_type,
             response_format="json",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "headers": {"type": "array", "items": {"type": "string"}},
+                    "rows": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "required": ["headers", "rows"],
+            },
         )
         response = self._post("/chat/completions", body)
         text, usage = _extract_text(response, self._settings.model, self.provider)
@@ -377,6 +418,7 @@ class OpenAICompatVisionLLMClient(_BaseOpenAICompatClient):
         prompt: str,
         media_type: str | None,
         response_format: str | None = None,
+        json_schema: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         media_type = media_type or "image/png"
         b64 = base64.b64encode(image).decode("ascii")
@@ -395,7 +437,7 @@ class OpenAICompatVisionLLMClient(_BaseOpenAICompatClient):
             "max_tokens": self._settings.max_output_tokens,
         }
         if response_format == "json":
-            body["response_format"] = {"type": "json_object"}
+            body["response_format"] = _json_response_format(json_schema)
         return body
 
 

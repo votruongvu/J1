@@ -317,6 +317,33 @@ def test_text_client_extract_returns_parsed_json(monkeypatch):
     assert parsed == {"kind": "doc"}
 
 
+def test_text_client_extract_sends_json_schema_response_format(monkeypatch):
+    """Regression: when a schema is supplied, the body must carry the
+    newer `response_format={type: 'json_schema', json_schema: {...}}`
+    shape, not the older `{type: 'json_object'}`. LM Studio rejects
+    `json_object` outright with `'response_format.type' must be
+    'json_schema' or 'text'` — that 400 was breaking every enricher
+    when pointed at LM Studio."""
+    schema = {"type": "object", "properties": {"kind": {"type": "string"}}}
+    calls = _stub_httpx(monkeypatch, response_json={
+        "choices": [{"message": {"content": '{"kind": "doc"}'}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="m",
+    ))
+    client.extract("input", schema=schema)
+    rf = calls[0]["body"]["response_format"]
+    assert rf["type"] == "json_schema"
+    # The schema we passed in must round-trip into the request body so
+    # strict-mode endpoints (real OpenAI, vLLM with guided decoding) can
+    # actually constrain the output.
+    assert rf["json_schema"]["schema"] == schema
+    # `name` is required by OpenAI's strict structured-output contract.
+    assert rf["json_schema"].get("name")
+
+
 def test_text_client_4xx_raises_provider_unavailable(monkeypatch):
     _stub_httpx(monkeypatch, response_json={"error": "bad"}, status_code=400)
     client = OpenAICompatTextLLMClient(TextLLMSettings(
