@@ -1,0 +1,145 @@
+"""Per-view availability resolver for the Results tabs.
+
+The single source of truth for *whether* each Results tab should be
+enabled and *why not* when it isn't. Keeping the reason strings here
+(rather than hardcoded in the FE) means the Overview tab and disabled
+tab tooltips always agree.
+"""
+
+from __future__ import annotations
+
+from typing import Iterable
+
+from j1.artifacts.models import ArtifactRecord
+from j1.ingestion_review.dtos import AvailabilityDTO, AvailableViewsDTO
+from j1.runs.models import IngestionRun
+
+
+# Artifact-kind taxonomy used for availability checks. Kept narrow on
+# purpose — adding a new asset kind here is the one-line opt-in for
+# the Assets tab. New `kind=` strings produced by future enrichers
+# should be added explicitly so we don't silently surface garbage.
+_ASSET_KINDS = frozenset({
+    "enriched.tables",
+    "enriched.visuals",
+    "enriched.formulas",
+})
+
+_QUALITY_KINDS = frozenset({
+    "enriched.confidence_assessment",
+    "enriched.consistency_findings",
+})
+
+_GRAPH_KIND = "graph_json"
+_CHUNK_KIND = "chunk"
+
+
+def resolve_available_views(
+    run: IngestionRun,
+    artifacts: Iterable[ArtifactRecord],
+) -> AvailableViewsDTO:
+    """Compute per-tab availability for the given run.
+
+    Inputs are intentionally minimal — the resolver is pure and
+    cheap; callers (the service) gather everything once and pass it
+    in. No I/O happens here."""
+    artifact_kinds = {a.kind for a in artifacts}
+
+    chunks_present = _CHUNK_KIND in artifact_kinds
+    graph_present = _GRAPH_KIND in artifact_kinds
+    assets_present = bool(artifact_kinds & _ASSET_KINDS)
+    quality_present = bool(artifact_kinds & _QUALITY_KINDS)
+    raw_present = bool(artifact_kinds)
+
+    # Quality is also available when the run carries warnings, even if
+    # no quality artifact was emitted — the Quality tab can still
+    # surface those.
+    if not quality_present and (run.warning_count or 0) > 0:
+        quality_present = True
+
+    return AvailableViewsDTO(
+        chunks=AvailabilityDTO(
+            available=chunks_present,
+            reason=None if chunks_present else _chunks_reason(run),
+        ),
+        assets=AvailabilityDTO(
+            available=assets_present,
+            reason=None if assets_present else _assets_reason(run),
+        ),
+        graph=AvailabilityDTO(
+            available=graph_present,
+            reason=None if graph_present else _graph_reason(run),
+        ),
+        quality=AvailabilityDTO(
+            available=quality_present,
+            reason=None if quality_present else _quality_reason(run),
+        ),
+        raw_artifacts=AvailabilityDTO(
+            available=raw_present,
+            reason=None if raw_present else "No artifacts produced.",
+        ),
+    )
+
+
+# ---- Reason strings ------------------------------------------------
+#
+# Reasons are intentionally short, neutral, and operator-readable. No
+# vendor names. Re-used both in the Overview banner and the disabled-
+# tab tooltip on the FE.
+
+_FAILED_OR_CANCELLED_STATUSES = frozenset({"failed", "cancelled"})
+
+
+def _chunks_reason(run: IngestionRun) -> str:
+    if str(run.status) in _FAILED_OR_CANCELLED_STATUSES:
+        return "Compile stage did not produce chunks before the run ended."
+    return "No chunks were produced."
+
+
+def _assets_reason(run: IngestionRun) -> str:  # noqa: ARG001 — reserved for future use
+    return "No assets were produced for this run."
+
+
+def _graph_reason(run: IngestionRun) -> str:
+    return graph_unavailable_reason(run)
+
+
+def graph_unavailable_reason(run: IngestionRun) -> str:
+    """Public version of `_graph_reason`. Single source of truth for
+    the "why no graph?" string — used by both the availability
+    resolver (`/summary`) and the graph snapshot projector
+    (`/graph`'s `unavailable.reason` field) so the FE shows the
+    same copy across surfaces.
+
+    Three documented reasons in priority order:
+      1. Skipped by policy / planner.
+      2. Attempted but failed.
+      3. Generic fallback when neither signal is present.
+
+    Step-result-derived reasons require Phase 4's
+    `metadata["step_results"]` persistence to be effective; without
+    it the function falls back to the generic copy."""
+    step_results = run.metadata.get("step_results")
+    if isinstance(step_results, list):
+        for entry in step_results:
+            if not isinstance(entry, dict):
+                continue
+            # Accept either lowercase ("graph", what the workflow
+            # writes) or uppercase ("GRAPH", what some early test
+            # fixtures used). Tolerance keeps the resolver stable
+            # across the Phase 1 → Phase 4 transition.
+            if str(entry.get("step") or "").lower() != "graph":
+                continue
+            status = str(entry.get("status") or "").lower()
+            if status == "skipped":
+                source = str(entry.get("source") or "").lower()
+                if source == "policy":
+                    return "Graph generation was skipped by policy."
+                return "Graph stage was not selected by the planner."
+            if status == "failed":
+                return "Graph generation failed."
+    return "No graph snapshot was produced for this run."
+
+
+def _quality_reason(run: IngestionRun) -> str:  # noqa: ARG001 — reserved
+    return "No quality data was produced for this run."

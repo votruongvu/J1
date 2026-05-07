@@ -22,6 +22,7 @@ import uvicorn
 
 from deploy.dev._wiring import (
     build_application_facade,
+    build_review_service,
     build_run_progress_surface,
     build_settings,
     build_workspace,
@@ -203,6 +204,9 @@ def _build_app():
         # audit area).
         ingestion_run_store=run_store,
         progress_reporter=progress_reporter,
+        # Read-only review surface for completed runs (Results tabs).
+        # Without this the FE's `/ingestion-runs/{id}/summary` 503s.
+        review_service=build_review_service(workspace),
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

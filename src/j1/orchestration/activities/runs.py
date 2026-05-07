@@ -219,7 +219,14 @@ class RunsActivities:
         Maps `final_status` (operator-facing string) to `RunStatus`
         (the run record's enum). Unknown values fall back to FAILED
         with the original string in `failure_code` so the FE has a
-        breadcrumb."""
+        breadcrumb.
+
+        Also persists the workflow's `step_summary` into
+        `metadata["step_results"]` so the review surface
+        (`/ingestion-runs/{id}/summary`) can render the per-stage
+        recap without scraping the audit log. Same atomic write as
+        the status flip — if the upsert fails for any reason, the FE
+        sees neither change."""
         if self._run_store is None:
             return
         run = None
@@ -241,7 +248,8 @@ class RunsActivities:
             run.failure_code = input.failure_code or input.final_status.upper()
             run.failure_message = input.failure_message or input.final_status
         elif input.final_status == "succeeded_with_warnings" or (
-            input.final_status == "succeeded" and input.warning_count > 0
+            input.final_status in ("succeeded", "partial_completed")
+            and input.warning_count > 0
         ):
             run.status = RunStatus.SUCCEEDED_WITH_WARNINGS
             run.completed_at = now
@@ -260,6 +268,26 @@ class RunsActivities:
             run.failure_code = "UNKNOWN_TERMINAL_STATUS"
             run.failure_message = input.final_status
         run.updated_at = now
+
+        # Persist step_summary into metadata["step_results"] so the
+        # review surface (Phase 1 + onwards) can render the per-stage
+        # recap directly off the run record. Plain dicts only — keep
+        # the JSONL store free of dataclass coupling. Empty summaries
+        # leave the existing key alone (a re-run after a crash should
+        # not blank previously-good data).
+        if input.step_summary:
+            run.metadata["step_results"] = [
+                {
+                    "step": entry.step,
+                    "status": entry.status,
+                    "required": entry.required,
+                    "source": entry.source,
+                    "reason": entry.reason,
+                    "artifact_count": entry.artifact_count,
+                }
+                for entry in input.step_summary
+            ]
+
         try:
             self._run_store.upsert(ctx, run)
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow

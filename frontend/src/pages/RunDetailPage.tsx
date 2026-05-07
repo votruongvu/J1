@@ -23,6 +23,7 @@ import { RunHeader } from "./run-detail/RunHeader";
 import { PlanCard } from "./run-detail/PlanCard";
 import { LiveTimeline } from "./run-detail/LiveTimeline";
 import { PrimaryStatusPanel } from "./run-detail/PrimaryStatusPanel";
+import { ResultsSection } from "./run-detail/results";
 import { TechDrawer } from "./run-detail/TechDrawer";
 
 interface RunDetailPageProps {
@@ -332,6 +333,11 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           />
         </div>
       </div>
+
+      {/* Results section — visible only when the run is terminal.
+          The component handles the visibility check internally so
+          the page tree stays declarative. */}
+      <ResultsSection run={run} runId={runId} />
 
       <TechDrawer
         open={drawerOpen}

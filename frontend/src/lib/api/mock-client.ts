@@ -23,6 +23,20 @@ import {
   type Stage,
   isTerminalEvent,
 } from "@/types/ingestion";
+import type {
+  ReviewArtifactContent,
+  ReviewArtifactListQuery,
+  ReviewArtifactPage,
+  ReviewArtifactRecord,
+  ReviewChunkDetail,
+  ReviewChunkListQuery,
+  ReviewChunkPage,
+  ReviewChunkPreview,
+  ReviewGraphQuery,
+  ReviewGraphSnapshot,
+  ReviewQualityReport,
+  ReviewRunSummary,
+} from "@/types/review";
 import type { MockScenario, ProjectContext } from "@/types/ui";
 import {
   ApiError,
@@ -821,6 +835,373 @@ function mockListData(): RunListItem[] {
   ];
 }
 
+// ---- Mock chunk fixtures (Phase 8) ----------------------------------
+//
+// Realistic-ish previews so the Chunks tab has something to render in
+// mock mode. Bodies are synthesised on demand from the preview text
+// so we don't pay storage for full text in this fixture.
+
+function mockChunkList(): ReviewChunkPreview[] {
+  const make = (
+    n: number,
+    opts: Partial<ReviewChunkPreview> & {
+      preview: string;
+      pageStart: number;
+      pageEnd: number;
+      tokenCount: number;
+      confidence: number;
+    },
+  ): ReviewChunkPreview => ({
+    chunkId: `ch_${String(n).padStart(3, "0")}`,
+    section: opts.section ?? "Body",
+    title: opts.title ?? null,
+    metadata: opts.metadata ?? {},
+    linkedAssets: opts.linkedAssets ?? [],
+    sourceArtifactId: opts.sourceArtifactId ?? "art_compile_demo",
+    pageStart: opts.pageStart,
+    pageEnd: opts.pageEnd,
+    tokenCount: opts.tokenCount,
+    confidence: opts.confidence,
+    preview: opts.preview,
+  });
+  return [
+    make(1, {
+      preview:
+        "Quarterly performance summary highlighting growth in the cloud segment, partially offset by hardware shortages.",
+      pageStart: 1, pageEnd: 1, section: "Executive summary",
+      tokenCount: 96, confidence: 0.92,
+    }),
+    make(2, {
+      preview:
+        "Revenue grew 12.3% year-over-year, driven by recurring subscriptions and higher attach rates on enterprise tiers.",
+      pageStart: 2, pageEnd: 2, section: "Financials",
+      tokenCount: 134, confidence: 0.88,
+      linkedAssets: [{ artifactId: "tab_revenue_q4", kind: "enriched.tables" }],
+    }),
+    make(3, {
+      preview:
+        "OCR confidence on table 3.1 was lower than expected — operators should manually review numeric figures on page 7.",
+      pageStart: 7, pageEnd: 7, section: "Notes",
+      tokenCount: 88, confidence: 0.55,
+      metadata: { status: "needs_review" },
+    }),
+    make(4, {
+      preview:
+        "Forward-looking risk factors include sustained currency volatility and renewal headwinds in two key contracts.",
+      pageStart: 9, pageEnd: 10, section: "Risks",
+      tokenCount: 178, confidence: 0.81,
+    }),
+    make(5, {
+      preview:
+        "Operating margin held at 23.1% as automation investments offset incremental wage pressure across regions.",
+      pageStart: 11, pageEnd: 11, section: "Financials",
+      tokenCount: 102, confidence: 0.86,
+    }),
+  ];
+}
+
+function mockChunkBody(p: ReviewChunkPreview): string {
+  // Repeat the preview a couple of times so the drawer's "Readable"
+  // view shows substantive content for screenshots / e2e.
+  const lines = [
+    p.title ? `# ${p.title}\n\n` : "",
+    `${p.preview}\n\n`,
+    `${p.preview}\n\n`,
+    `(Pages ${p.pageStart ?? "?"}–${p.pageEnd ?? "?"} · ${p.section ?? "Body"})\n`,
+  ];
+  return lines.join("");
+}
+
+// ---- Mock artifact fixtures (Phase 9) -------------------------------
+//
+// Five artifacts spanning chunk / table / visual / formula / graph
+// shapes — one per kind the FE renders specially. Bytes are
+// synthesised on demand by `mockArtifactContent` so the fixture
+// stays small.
+
+function mockArtifactList(): ReviewArtifactRecord[] {
+  const now = new Date(Date.now() - 60_000).toISOString();
+  const make = (
+    over: Partial<ReviewArtifactRecord> & {
+      artifactId: string;
+      kind: string;
+      location: string;
+      byteSize: number;
+    },
+  ): ReviewArtifactRecord => ({
+    contentHash: `sha256:mock-${over.artifactId}`,
+    status: "succeeded",
+    reviewStatus: "not_required",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    sourceDocumentIds: ["doc_demo"],
+    sourceArtifactIds: [],
+    metadata: { run_id: "run_mock" },
+    ...over,
+  });
+  return [
+    make({
+      artifactId: "art_chunk_001",
+      kind: "chunk",
+      location: "compiled/chunk_001.json",
+      byteSize: 412,
+    }),
+    make({
+      artifactId: "art_table_revenue",
+      kind: "enriched.tables",
+      location: "enriched/revenue.json",
+      byteSize: 786,
+      metadata: { run_id: "run_mock", caption: "Revenue by segment" },
+    }),
+    make({
+      artifactId: "art_visual_pixel",
+      kind: "enriched.visuals",
+      location: "enriched/pixel.png",
+      byteSize: 71,
+      metadata: { run_id: "run_mock", caption: "Tiny demo PNG" },
+    }),
+    make({
+      artifactId: "art_formula_alpha",
+      kind: "enriched.formulas",
+      location: "enriched/alpha.json",
+      byteSize: 188,
+    }),
+    make({
+      artifactId: "art_graph_kv",
+      kind: "graph_json",
+      location: "graph/vdb_entities.json",
+      byteSize: 1024,
+    }),
+  ];
+}
+
+/**
+ * Synthesise the byte payload for a mock artifact. Mirrors what the
+ * production `/artifacts/{id}/content` endpoint would return, with
+ * a stable content-type per artifact kind.
+ */
+function mockArtifactContent(
+  record: ReviewArtifactRecord,
+): ReviewArtifactContent {
+  const kind = record.kind;
+  const filenameOnly = record.location.split("/").pop() ?? record.artifactId;
+
+  if (kind === "enriched.tables") {
+    const text = JSON.stringify(
+      {
+        title: "Revenue by segment",
+        columns: ["segment", "q3", "q4"],
+        rows: [
+          ["Cloud", 412, 478],
+          ["Hardware", 318, 296],
+          ["Services", 207, 234],
+        ],
+      },
+      null,
+      2,
+    );
+    return {
+      blob: new Blob([text], { type: "application/json" }),
+      contentType: "application/json",
+      filename: null,
+      etag: record.contentHash,
+    };
+  }
+  if (kind === "enriched.visuals") {
+    // 1×1 transparent PNG — keeps the fixture tiny but the FE can
+    // still render it as a real <img> via `URL.createObjectURL`.
+    const pngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+      0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+      0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
+    return {
+      blob: new Blob([pngBytes], { type: "image/png" }),
+      contentType: "image/png",
+      filename: null,
+      etag: record.contentHash,
+    };
+  }
+  if (kind === "enriched.formulas") {
+    const text = JSON.stringify({ formulas: [{ tex: "E = mc^2" }] }, null, 2);
+    return {
+      blob: new Blob([text], { type: "application/json" }),
+      contentType: "application/json",
+      filename: null,
+      etag: record.contentHash,
+    };
+  }
+  if (kind === "chunk") {
+    const text = JSON.stringify(
+      { chunkId: record.artifactId, body: "Synthesised chunk body." },
+      null,
+      2,
+    );
+    return {
+      blob: new Blob([text], { type: "application/json" }),
+      contentType: "application/json",
+      filename: null,
+      etag: record.contentHash,
+    };
+  }
+  if (kind === "graph_json") {
+    const text = JSON.stringify(
+      { entities: { e1: { __id__: "e1", __name__: "Demo entity" } } },
+      null,
+      2,
+    );
+    return {
+      blob: new Blob([text], { type: "application/json" }),
+      contentType: "application/json",
+      filename: null,
+      etag: record.contentHash,
+    };
+  }
+  // Unknown kind → octet-stream + attachment filename.
+  return {
+    blob: new Blob([new Uint8Array([0])], {
+      type: "application/octet-stream",
+    }),
+    contentType: "application/octet-stream",
+    filename: filenameOnly,
+    etag: record.contentHash,
+  };
+}
+
+// ---- Mock graph fixtures (Phase 10) ---------------------------------
+
+function mockGraphUnavailable(
+  reason: string, opts?: ReviewGraphQuery,
+): ReviewGraphSnapshot {
+  return {
+    stats: { entityCount: 0, relationCount: 0, sourceArtifactIds: [] },
+    entities: [],
+    relations: [],
+    truncated: {
+      entities: false,
+      relations: false,
+      limits: {
+        maxNodes: opts?.maxNodes ?? 5000,
+        maxEdges: opts?.maxEdges ?? 5000,
+      },
+    },
+    unavailable: { reason },
+  };
+}
+
+function mockGraphPopulated(opts?: ReviewGraphQuery): ReviewGraphSnapshot {
+  const maxNodes = opts?.maxNodes ?? 5000;
+  const maxEdges = opts?.maxEdges ?? 5000;
+  const allEntities = [
+    {
+      id: "PERSON:Alice",
+      label: "Alice",
+      type: "PERSON",
+      description: "Lead author of the quarterly report.",
+      sourceChunkIds: ["ch_001", "ch_002"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+    {
+      id: "PERSON:Bob",
+      label: "Bob",
+      type: "PERSON",
+      description: "Reviewer of the financial section.",
+      sourceChunkIds: ["ch_003"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+    {
+      id: "ORG:Acme",
+      label: "Acme Corporation",
+      type: "ORG",
+      description: "Subject organisation.",
+      sourceChunkIds: ["ch_001", "ch_002", "ch_003"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+    {
+      id: "EVENT:Q4Earnings",
+      label: "Q4 Earnings call",
+      type: "EVENT",
+      description: "Quarterly earnings briefing referenced throughout.",
+      sourceChunkIds: ["ch_002"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+    {
+      id: "METRIC:OperatingMargin",
+      label: "Operating margin",
+      type: "METRIC",
+      description: null,
+      sourceChunkIds: ["ch_005"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+  ];
+  const allRelations = [
+    {
+      id: "rel_001",
+      sourceEntityId: "PERSON:Alice",
+      targetEntityId: "ORG:Acme",
+      label: "works_at",
+      type: null,
+      description: null,
+      weight: 0.9,
+      sourceChunkIds: ["ch_001"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+    {
+      id: "rel_002",
+      sourceEntityId: "PERSON:Bob",
+      targetEntityId: "ORG:Acme",
+      label: "reviewed",
+      type: null,
+      description: "Bob signed off on the financial section.",
+      weight: 0.7,
+      sourceChunkIds: ["ch_003"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+    {
+      id: "rel_003",
+      sourceEntityId: "ORG:Acme",
+      targetEntityId: "EVENT:Q4Earnings",
+      label: "hosted",
+      type: null,
+      description: null,
+      weight: 0.95,
+      sourceChunkIds: ["ch_002"],
+      sourceArtifactIds: ["art_graph_kv"],
+      metadata: {},
+    },
+  ];
+  // Apply caps so the FE truncation banner exercises in mock mode if
+  // the operator passes a tiny `maxNodes` / `maxEdges`.
+  const entities = allEntities.slice(0, maxNodes);
+  const relations = allRelations.slice(0, maxEdges);
+  return {
+    stats: {
+      entityCount: allEntities.length,
+      relationCount: allRelations.length,
+      sourceArtifactIds: ["art_graph_kv"],
+    },
+    entities,
+    relations,
+    truncated: {
+      entities: allEntities.length > maxNodes,
+      relations: allRelations.length > maxEdges,
+      limits: { maxNodes, maxEdges },
+    },
+    unavailable: null,
+  };
+}
+
 // ---- MockClient -----------------------------------------------------
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -948,6 +1329,231 @@ export class MockClient implements IngestionClient {
   async getEvents(_runId: string): Promise<ProgressEvent[]> {
     await delay(100);
     return [...this.eventBuffer];
+  }
+
+  // ---- Result-review surface (Phase 7) ----------------------------
+  // Returns shapes that match `j1.ingestion_review.dtos`. Mock data
+  // exercises every Results tab so the FE can be developed without
+  // a worker connected.
+
+  async getRunSummary(runId: string): Promise<ReviewRunSummary> {
+    await delay(120);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    const warningCount = this.currentRun.warning_count ?? 0;
+    const status = String(this.currentRun.status).toLowerCase();
+    return {
+      runId,
+      status,
+      durationMs: 12_000,
+      documentIds: ["doc_demo"],
+      steps: [
+        {
+          step: "compile", status: "completed", required: true,
+          source: "caller", durationMs: 2400, artifactCount: 4,
+          metadata: { engine: "mineru" },
+        },
+        {
+          step: "enrich",
+          status: this.scenario === "review" ? "completed" : "completed",
+          required: false, source: "planner", durationMs: 6800,
+          artifactCount: 8, metadata: {},
+        },
+        {
+          step: "graph",
+          status: this.scenario === "failure" ? "failed" : "skipped",
+          required: false,
+          source: this.scenario === "failure" ? "planner" : "policy",
+          reason: this.scenario === "failure"
+            ? "Constraint violated"
+            : "TEXT_ONLY mode",
+          metadata: {}, artifactCount: 0,
+          error: this.scenario === "failure"
+            ? { type: "ConstraintError", message: "uniqueness", retryable: false }
+            : null,
+        },
+        {
+          step: "index", status: "completed", required: true,
+          source: "default", durationMs: 800, artifactCount: 1, metadata: {},
+        },
+      ],
+      artifactCounts: { chunk: 12, "enriched.tables": 3, "enriched.visuals": 2 },
+      totalBytes: 184_320,
+      warnings: warningCount > 0
+        ? [{
+            code: "step.warning",
+            message: "page 7 OCR confidence low",
+            severity: "warning",
+            step: "EXTRACT_TABLES",
+            page: 7,
+            chunkId: null,
+            artifactId: null,
+            documentId: "doc_demo",
+          }]
+        : [],
+      qualitySummary: {
+        overallConfidence: this.scenario === "failure" ? 0.42 : 0.78,
+        warningCount,
+        lowConfidenceCount: this.scenario === "failure" ? 6 : 1,
+      },
+      availableViews: {
+        chunks: { available: true, reason: null },
+        assets: { available: true, reason: null },
+        // Match `getRunGraph`'s scenario logic — `warnings` produces
+        // a populated graph in mock mode, every other scenario shows
+        // an empty / failure state. Without this alignment the Graph
+        // tab button stays disabled even when the mock would happily
+        // render a graph.
+        graph: this.scenario === "warnings"
+          ? { available: true, reason: null }
+          : this.scenario === "failure"
+            ? { available: false, reason: "Graph generation failed." }
+            : { available: false, reason: "Graph generation was skipped by policy." },
+        quality: { available: true, reason: null },
+        rawArtifacts: { available: true, reason: null },
+      },
+    };
+  }
+
+  async getRunQualityReport(
+    _runId: string,
+    opts?: { includeRaw?: boolean },
+  ): Promise<ReviewQualityReport> {
+    await delay(150);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    return {
+      overallConfidence: this.scenario === "failure" ? 0.42 : 0.78,
+      modalityConfidences: [
+        { modality: "tables", confidence: 0.86, sampleCount: 12 },
+        { modality: "ocr", confidence: 0.55, sampleCount: 8 },
+      ],
+      warnings: (this.currentRun.warning_count ?? 0) > 0
+        ? [{
+            code: "step.warning",
+            message: "page 7 OCR confidence low",
+            severity: "warning",
+            step: "EXTRACT_TABLES",
+            page: 7,
+            chunkId: null,
+            artifactId: null,
+            documentId: "doc_demo",
+          }]
+        : [],
+      skippedSteps: this.scenario === "failure"
+        ? []
+        : [{ step: "graph", reason: "TEXT_ONLY mode", policy: "policy" }],
+      failedOptionalSteps: this.scenario === "failure"
+        ? [{ step: "graph", reason: "Constraint violated", errorType: "ConstraintError" }]
+        : [],
+      lowConfidenceFindings: [
+        { score: 0.55, category: "low_confidence", message: "page 7 OCR uncertain",
+          page: 7, chunkId: null, artifactId: "art_ocr_p7" },
+      ],
+      rawDebug: opts?.includeRaw ? { confidence_assessment: [{ modality: "tables" }] } : null,
+    };
+  }
+
+  async listRunChunks(
+    _runId: string, opts?: ReviewChunkListQuery,
+  ): Promise<ReviewChunkPage> {
+    await delay(120);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    let items = mockChunkList();
+    if (opts?.minConfidence != null) {
+      const floor = opts.minConfidence;
+      items = items.filter(
+        (c) => c.confidence != null && c.confidence >= floor,
+      );
+    }
+    if (opts?.status) {
+      const needle = opts.status.toLowerCase();
+      items = items.filter((c) => {
+        const value = c.metadata?.status;
+        return typeof value === "string" && value.toLowerCase() === needle;
+      });
+    }
+    const page = opts?.page ?? 1;
+    const pageSize = opts?.pageSize ?? 25;
+    const start = (page - 1) * pageSize;
+    const slice = items.slice(start, start + pageSize);
+    return { items: slice, page, pageSize, total: items.length };
+  }
+
+  async getRunChunk(
+    _runId: string, chunkId: string,
+  ): Promise<ReviewChunkDetail> {
+    await delay(120);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    const all = mockChunkList();
+    const preview = all.find((c) => c.chunkId === chunkId);
+    if (!preview) throw new ApiError(404, "Chunk not found.");
+    return {
+      chunkId: preview.chunkId,
+      body: mockChunkBody(preview),
+      pageStart: preview.pageStart ?? null,
+      pageEnd: preview.pageEnd ?? null,
+      section: preview.section ?? null,
+      title: preview.title ?? null,
+      tokenCount: preview.tokenCount ?? null,
+      confidence: preview.confidence ?? null,
+      metadata: preview.metadata,
+      linkedAssets: preview.linkedAssets,
+      sourceArtifactId: preview.sourceArtifactId ?? null,
+      lineage: {
+        documentIds: ["doc_demo"],
+        sourceArtifactId: preview.sourceArtifactId ?? "art_compile_demo",
+        stage: "compile",
+      },
+    };
+  }
+
+  async listRunArtifacts(
+    _runId: string, opts?: ReviewArtifactListQuery,
+  ): Promise<ReviewArtifactPage> {
+    await delay(120);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    let items = mockArtifactList();
+    if (opts?.kind) {
+      items = items.filter((a) => a.kind === opts.kind);
+    }
+    const page = opts?.page ?? 1;
+    const pageSize = opts?.pageSize ?? 50;
+    const start = (page - 1) * pageSize;
+    return {
+      items: items.slice(start, start + pageSize),
+      page,
+      pageSize,
+      total: items.length,
+    };
+  }
+
+  async getRunArtifactContent(
+    _runId: string, artifactId: string,
+  ): Promise<ReviewArtifactContent> {
+    await delay(80);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    const record = mockArtifactList().find((a) => a.artifactId === artifactId);
+    if (!record) throw new ApiError(404, "Artifact not found.");
+    return mockArtifactContent(record);
+  }
+
+  async getRunGraph(
+    _runId: string, opts?: ReviewGraphQuery,
+  ): Promise<ReviewGraphSnapshot> {
+    await delay(140);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    // The `failure` and default scenarios match what the summary
+    // mock surfaces — graph either failed (no data) or was skipped
+    // by policy. The `warnings` / `review` scenarios DO produce a
+    // demo graph so the FE can render the populated state too.
+    if (this.scenario === "failure") {
+      return mockGraphUnavailable("Graph generation failed.", opts);
+    }
+    if (this.scenario === "warnings") {
+      return mockGraphPopulated(opts);
+    }
+    return mockGraphUnavailable(
+      "Graph generation was skipped by policy.", opts,
+    );
   }
 
   openStream(runId: string, handlers: StreamHandlers): StreamHandle {

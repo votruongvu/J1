@@ -213,6 +213,60 @@ def test_project_success_returns_final_status_completed(monkeypatch):
     assert result.final_status == FinalStatus.COMPLETED
 
 
+def test_project_completed_with_optional_failure_returns_partial_completed():
+    """Phase 4: when the workflow reaches COMPLETED but recorded a
+    FAILED step result for an OPTIONAL stage (not required), the
+    operator-facing `final_status` must be PARTIAL_COMPLETED — which
+    the terminal activity then maps to RunStatus.SUCCEEDED_WITH_WARNINGS."""
+    from datetime import datetime, timezone
+
+    from j1.processing.status import StepSource, StepStatus
+    from j1.processing.step_result import StepError, StepResult
+
+    wf = ProjectProcessingWorkflow()
+    wf._state = WorkflowState.COMPLETED
+    now = datetime.now(timezone.utc)
+    wf._step_results.append(StepResult(
+        step="compile", status=StepStatus.COMPLETED,
+        required=True, source=StepSource.CALLER,
+        started_at=now, completed_at=now, duration_ms=10,
+    ))
+    wf._step_results.append(StepResult(
+        step="graph", status=StepStatus.FAILED,
+        required=False, source=StepSource.PLANNER,
+        started_at=now, completed_at=now, duration_ms=5,
+        error=StepError(type="GraphTimeout", message="timed out"),
+    ))
+
+    assert wf._compute_final_status() == FinalStatus.PARTIAL_COMPLETED
+
+
+def test_project_completed_with_no_optional_failures_stays_completed():
+    """Counter-test: a clean success with NO optional failures must
+    still return COMPLETED, not get accidentally downgraded."""
+    from datetime import datetime, timezone
+
+    from j1.processing.status import StepSource, StepStatus
+    from j1.processing.step_result import StepResult
+
+    wf = ProjectProcessingWorkflow()
+    wf._state = WorkflowState.COMPLETED
+    now = datetime.now(timezone.utc)
+    wf._step_results.append(StepResult(
+        step="compile", status=StepStatus.COMPLETED,
+        required=True, source=StepSource.CALLER,
+        started_at=now, completed_at=now, duration_ms=10,
+    ))
+    wf._step_results.append(StepResult(
+        step="graph", status=StepStatus.SKIPPED,
+        required=False, source=StepSource.POLICY,
+        started_at=now, completed_at=now, duration_ms=0,
+        reason="skipped by policy",
+    ))
+
+    assert wf._compute_final_status() == FinalStatus.COMPLETED
+
+
 def test_project_cancellation_returns_final_status_cancelled(monkeypatch):
     """Cancelled workflows are not failures — their `final_status`
     is `CANCELLED`, distinct from `FAILED`."""

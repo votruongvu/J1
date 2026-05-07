@@ -677,6 +677,158 @@ def test_run_terminal_activity_missing_run_is_no_op(scope, reporter, workspace):
     ))
 
 
+# ---- Phase 4: step_results persistence into run.metadata --------
+
+
+def test_run_terminal_persists_step_summary_into_run_metadata(
+    scope, reporter, ctx, workspace,
+):
+    """The activity writes the workflow's step summary into the run
+    record's `metadata["step_results"]` so the review surface
+    (`GET /ingestion-runs/{id}/summary`) can render the per-stage
+    recap without scraping the audit log."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-summary",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+
+    summary = (
+        StepSummaryEntry(
+            step="compile", status="completed", required=True,
+            source="caller", artifact_count=3,
+        ),
+        StepSummaryEntry(
+            step="graph", status="skipped", required=False,
+            source="planner", reason="TEXT_ONLY mode",
+        ),
+    )
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-summary",
+        final_status="succeeded", warning_count=0,
+        step_summary=summary,
+    ))
+
+    after = store.get(ctx, "run-summary")
+    persisted = after.metadata["step_results"]
+    assert len(persisted) == 2
+    assert persisted[0]["step"] == "compile"
+    assert persisted[0]["status"] == "completed"
+    assert persisted[0]["required"] is True
+    assert persisted[0]["artifact_count"] == 3
+    assert persisted[1]["status"] == "skipped"
+    assert persisted[1]["source"] == "planner"
+    assert persisted[1]["reason"] == "TEXT_ONLY mode"
+
+
+def test_run_terminal_with_empty_step_summary_keeps_existing_metadata(
+    scope, reporter, ctx, workspace,
+):
+    """Phase 4 contract: an empty step_summary must NOT overwrite
+    previously-persisted step_results. A re-run of the activity
+    after a crash should not blank good data."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-existing",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+        metadata={"step_results": [{"step": "compile", "status": "completed"}]},
+    ))
+
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-existing",
+        final_status="succeeded",
+        step_summary=(),
+    ))
+
+    after = store.get(ctx, "run-existing")
+    assert after.metadata["step_results"] == [
+        {"step": "compile", "status": "completed"}
+    ]
+
+
+def test_run_terminal_partial_completed_with_warnings_flips_to_succeeded_with_warnings(
+    scope, reporter, ctx, workspace,
+):
+    """A workflow that returns FinalStatus.PARTIAL_COMPLETED + warnings
+    must surface as RunStatus.SUCCEEDED_WITH_WARNINGS so the FE shows
+    the warning header. Mirrors the Phase 4 _compute_final_status
+    extension."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-partial",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-partial",
+        final_status="partial_completed", warning_count=1,
+    ))
+
+    after = store.get(ctx, "run-partial")
+    assert after.status == RunStatus.SUCCEEDED_WITH_WARNINGS
+    assert after.warning_count == 1
+
+
+def test_run_terminal_partial_completed_no_warnings_flips_to_succeeded(
+    scope, reporter, ctx, workspace,
+):
+    """`partial_completed` with no warnings still maps cleanly to
+    SUCCEEDED — the FE doesn't need a third state."""
+    from datetime import datetime, timezone
+
+    from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
+
+    store = JsonlIngestionRunStore(workspace)
+    now = datetime.now(timezone.utc)
+    store.upsert(ctx, IngestionRun(
+        run_id="run-pc",
+        document_id="doc-1",
+        workflow_id="wf-1",
+        workflow_run_id=None,
+        status=RunStatus.RUNNING,
+        started_at=now, updated_at=now,
+    ))
+
+    runs = RunsActivities(progress_reporter=reporter, run_store=store)
+    runs.report_run_terminal(ReportRunTerminalInput(
+        scope=scope, run_id="run-pc",
+        final_status="partial_completed", warning_count=0,
+    ))
+
+    after = store.get(ctx, "run-pc")
+    assert after.status == RunStatus.SUCCEEDED
+
+
 # ---- Step summary embedded in run-terminal events ----------
 
 

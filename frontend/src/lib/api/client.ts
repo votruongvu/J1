@@ -11,6 +11,18 @@ import type {
   RunListQuery,
   RunListResult,
 } from "@/types/ingestion";
+import type {
+  ReviewArtifactContent,
+  ReviewArtifactListQuery,
+  ReviewArtifactPage,
+  ReviewChunkDetail,
+  ReviewChunkListQuery,
+  ReviewChunkPage,
+  ReviewGraphQuery,
+  ReviewGraphSnapshot,
+  ReviewQualityReport,
+  ReviewRunSummary,
+} from "@/types/review";
 import type { ProjectContext } from "@/types/ui";
 
 /** Handlers passed to `openStream`. */
@@ -79,6 +91,57 @@ export interface IngestionClient {
 
   /** Open the SSE stream and call back on each event. */
   openStream(runId: string, handlers: StreamHandlers): StreamHandle;
+
+  // ---- Result review (Phase 7) ------------------------------------
+  // Read-only review surface for completed runs. Each method returns
+  // a neutral DTO mirroring `j1.ingestion_review.dtos`.
+
+  /** GET the review summary (Overview tab, drives availableViews). */
+  getRunSummary(runId: string): Promise<ReviewRunSummary>;
+
+  /** GET the neutral quality report (Quality tab). */
+  getRunQualityReport(
+    runId: string,
+    opts?: { includeRaw?: boolean },
+  ): Promise<ReviewQualityReport>;
+
+  /** GET the run's chunks — paginated, filterable. */
+  listRunChunks(
+    runId: string,
+    opts?: ReviewChunkListQuery,
+  ): Promise<ReviewChunkPage>;
+
+  /** GET one chunk in detail (full body + lineage). */
+  getRunChunk(runId: string, chunkId: string): Promise<ReviewChunkDetail>;
+
+  /** GET the run's artifacts — paginated, kind-filterable. */
+  listRunArtifacts(
+    runId: string,
+    opts?: ReviewArtifactListQuery,
+  ): Promise<ReviewArtifactPage>;
+
+  /**
+   * GET the bytes for one artifact (run-scoped).
+   *
+   * Returns a `Blob` — caller decides whether to render inline (image
+   * via `URL.createObjectURL`, JSON via `blob.text()` + parse, etc.)
+   * or trigger a download. Component code MUST `URL.revokeObjectURL`
+   * any object URLs it creates.
+   */
+  getRunArtifactContent(
+    runId: string,
+    artifactId: string,
+  ): Promise<ReviewArtifactContent>;
+
+  /**
+   * GET the neutral graph snapshot for the run. When the run produced
+   * no graph data, the snapshot's `unavailable.reason` is populated
+   * and entities/relations are empty.
+   */
+  getRunGraph(
+    runId: string,
+    opts?: ReviewGraphQuery,
+  ): Promise<ReviewGraphSnapshot>;
 }
 
 /** Sentinel error type the UI can surface as 4xx / 5xx differently. */

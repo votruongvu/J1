@@ -23,6 +23,23 @@ import type {
   RunStatus,
   Stage,
 } from "@/types/ingestion";
+import type {
+  ReviewArtifactPage,
+  ReviewArtifactRecord,
+  ReviewAvailability,
+  ReviewAvailableViews,
+  ReviewChunkDetail,
+  ReviewChunkPage,
+  ReviewChunkPreview,
+  ReviewGraphEntity,
+  ReviewGraphRelation,
+  ReviewGraphSnapshot,
+  ReviewLinkedAsset,
+  ReviewQualityReport,
+  ReviewRunSummary,
+  ReviewStepResult,
+  ReviewWarning,
+} from "@/types/review";
 
 // ---- Backend response shapes (loose) -------------------------------
 
@@ -227,6 +244,368 @@ export function planFromApi(api: ApiPlanRecord): ExecutionPlan {
     steps,
     requires_vision: api.requiresVision ?? false,
     requires_premium_llm: api.requiresPremiumLlm ?? false,
+  };
+}
+
+// ---- Review surface (Phase 7+) -------------------------------------
+//
+// The backend already returns camelCase + the shapes match the FE
+// types directly. These translators do defensive normalisation
+// (defaults for absent fields, list/dict guards) so a sparse run
+// never crashes the FE — never re-shape the contract.
+
+function availabilityFromApi(raw: unknown): ReviewAvailability {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    available: Boolean(obj.available),
+    reason: typeof obj.reason === "string" ? obj.reason : null,
+  };
+}
+
+function availableViewsFromApi(raw: unknown): ReviewAvailableViews {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    chunks: availabilityFromApi(obj.chunks),
+    assets: availabilityFromApi(obj.assets),
+    graph: availabilityFromApi(obj.graph),
+    quality: availabilityFromApi(obj.quality),
+    rawArtifacts: availabilityFromApi(obj.rawArtifacts),
+  };
+}
+
+function stepResultFromApi(raw: unknown): ReviewStepResult {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const error = obj.error as Record<string, unknown> | null | undefined;
+  return {
+    step: String(obj.step ?? ""),
+    status: String(obj.status ?? ""),
+    required: Boolean(obj.required),
+    source: String(obj.source ?? ""),
+    startedAt: (obj.startedAt as string | null | undefined) ?? null,
+    completedAt: (obj.completedAt as string | null | undefined) ?? null,
+    durationMs: (obj.durationMs as number | null | undefined) ?? null,
+    reason: (obj.reason as string | null | undefined) ?? null,
+    error: error
+      ? {
+          type: String(error.type ?? ""),
+          message: String(error.message ?? ""),
+          retryable: Boolean(error.retryable),
+        }
+      : null,
+    artifactCount: typeof obj.artifactCount === "number" ? obj.artifactCount : 0,
+    metadata: (obj.metadata as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
+function warningFromApi(raw: unknown): ReviewWarning {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    code: String(obj.code ?? ""),
+    message: String(obj.message ?? ""),
+    severity: String(obj.severity ?? "warning"),
+    step: (obj.step as string | null | undefined) ?? null,
+    documentId: (obj.documentId as string | null | undefined) ?? null,
+    page: (obj.page as number | null | undefined) ?? null,
+    chunkId: (obj.chunkId as string | null | undefined) ?? null,
+    artifactId: (obj.artifactId as string | null | undefined) ?? null,
+  };
+}
+
+export function runSummaryFromApi(raw: unknown): ReviewRunSummary {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const stepsArr = Array.isArray(obj.steps) ? obj.steps : [];
+  const warningsArr = Array.isArray(obj.warnings) ? obj.warnings : [];
+  const docsArr = Array.isArray(obj.documentIds) ? obj.documentIds : [];
+  const counts = (obj.artifactCounts ?? {}) as Record<string, number>;
+  const quality = obj.qualitySummary as Record<string, unknown> | null | undefined;
+
+  return {
+    runId: String(obj.runId ?? ""),
+    status: String(obj.status ?? ""),
+    durationMs: (obj.durationMs as number | null | undefined) ?? null,
+    documentIds: docsArr.map((d) => String(d)),
+    steps: stepsArr.map(stepResultFromApi),
+    artifactCounts: { ...counts },
+    totalBytes: typeof obj.totalBytes === "number" ? obj.totalBytes : 0,
+    warnings: warningsArr.map(warningFromApi),
+    qualitySummary: quality
+      ? {
+          overallConfidence:
+            (quality.overallConfidence as number | null | undefined) ?? null,
+          warningCount:
+            typeof quality.warningCount === "number" ? quality.warningCount : 0,
+          lowConfidenceCount:
+            typeof quality.lowConfidenceCount === "number"
+              ? quality.lowConfidenceCount
+              : 0,
+        }
+      : null,
+    availableViews: availableViewsFromApi(obj.availableViews),
+  };
+}
+
+export function qualityReportFromApi(raw: unknown): ReviewQualityReport {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const modalities = Array.isArray(obj.modalityConfidences)
+    ? obj.modalityConfidences
+    : [];
+  const warnings = Array.isArray(obj.warnings) ? obj.warnings : [];
+  const skipped = Array.isArray(obj.skippedSteps) ? obj.skippedSteps : [];
+  const failedOpt = Array.isArray(obj.failedOptionalSteps)
+    ? obj.failedOptionalSteps
+    : [];
+  const findings = Array.isArray(obj.lowConfidenceFindings)
+    ? obj.lowConfidenceFindings
+    : [];
+  return {
+    overallConfidence:
+      (obj.overallConfidence as number | null | undefined) ?? null,
+    modalityConfidences: modalities.map((m) => {
+      const o = (m ?? {}) as Record<string, unknown>;
+      return {
+        modality: String(o.modality ?? ""),
+        confidence: typeof o.confidence === "number" ? o.confidence : 0,
+        sampleCount: (o.sampleCount as number | null | undefined) ?? null,
+      };
+    }),
+    warnings: warnings.map(warningFromApi),
+    skippedSteps: skipped.map((s) => {
+      const o = (s ?? {}) as Record<string, unknown>;
+      return {
+        step: String(o.step ?? ""),
+        reason: (o.reason as string | null | undefined) ?? null,
+        policy: (o.policy as string | null | undefined) ?? null,
+      };
+    }),
+    failedOptionalSteps: failedOpt.map((f) => {
+      const o = (f ?? {}) as Record<string, unknown>;
+      return {
+        step: String(o.step ?? ""),
+        reason: (o.reason as string | null | undefined) ?? null,
+        errorType: (o.errorType as string | null | undefined) ?? null,
+      };
+    }),
+    lowConfidenceFindings: findings.map((f) => {
+      const o = (f ?? {}) as Record<string, unknown>;
+      return {
+        score: typeof o.score === "number" ? o.score : 0,
+        category: String(o.category ?? ""),
+        message: (o.message as string | null | undefined) ?? null,
+        page: (o.page as number | null | undefined) ?? null,
+        chunkId: (o.chunkId as string | null | undefined) ?? null,
+        artifactId: (o.artifactId as string | null | undefined) ?? null,
+      };
+    }),
+    rawDebug: (obj.rawDebug as Record<string, unknown> | null | undefined) ?? null,
+  };
+}
+
+// ---- Chunks (Phase 8) ---------------------------------------------
+
+function linkedAssetsFromApi(raw: unknown): ReviewLinkedAsset[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReviewLinkedAsset[] = [];
+  for (const entry of raw) {
+    const o = (entry ?? {}) as Record<string, unknown>;
+    const id = o.artifactId;
+    if (typeof id !== "string" || !id) continue;
+    out.push({
+      artifactId: id,
+      kind: typeof o.kind === "string" ? o.kind : null,
+    });
+  }
+  return out;
+}
+
+function chunkPreviewFromApi(raw: unknown): ReviewChunkPreview {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    chunkId: String(obj.chunkId ?? ""),
+    preview: typeof obj.preview === "string" ? obj.preview : "",
+    pageStart: (obj.pageStart as number | null | undefined) ?? null,
+    pageEnd: (obj.pageEnd as number | null | undefined) ?? null,
+    section: (obj.section as string | null | undefined) ?? null,
+    title: (obj.title as string | null | undefined) ?? null,
+    tokenCount: (obj.tokenCount as number | null | undefined) ?? null,
+    confidence: (obj.confidence as number | null | undefined) ?? null,
+    metadata: (obj.metadata as Record<string, unknown> | undefined) ?? {},
+    linkedAssets: linkedAssetsFromApi(obj.linkedAssets),
+    sourceArtifactId:
+      (obj.sourceArtifactId as string | null | undefined) ?? null,
+  };
+}
+
+export function chunkPageFromApi(raw: unknown): ReviewChunkPage {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const items = Array.isArray(obj.items) ? obj.items : [];
+  return {
+    items: items.map(chunkPreviewFromApi),
+    page: typeof obj.page === "number" ? obj.page : 1,
+    pageSize: typeof obj.pageSize === "number" ? obj.pageSize : 50,
+    total: typeof obj.total === "number" ? obj.total : 0,
+  };
+}
+
+// ---- Artifacts (Phase 9) ------------------------------------------
+
+function artifactRecordFromApi(raw: unknown): ReviewArtifactRecord {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    artifactId: String(obj.artifactId ?? ""),
+    kind: String(obj.kind ?? ""),
+    location: String(obj.location ?? ""),
+    contentHash: String(obj.contentHash ?? ""),
+    byteSize: typeof obj.byteSize === "number" ? obj.byteSize : 0,
+    status: String(obj.status ?? ""),
+    reviewStatus: String(obj.reviewStatus ?? ""),
+    version: typeof obj.version === "number" ? obj.version : 1,
+    createdAt: String(obj.createdAt ?? ""),
+    updatedAt: String(obj.updatedAt ?? ""),
+    sourceDocumentIds: Array.isArray(obj.sourceDocumentIds)
+      ? obj.sourceDocumentIds.map((d) => String(d))
+      : [],
+    sourceArtifactIds: Array.isArray(obj.sourceArtifactIds)
+      ? obj.sourceArtifactIds.map((d) => String(d))
+      : [],
+    metadata: (obj.metadata as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
+export function artifactPageFromApi(raw: unknown): ReviewArtifactPage {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const items = Array.isArray(obj.items) ? obj.items : [];
+  return {
+    items: items.map(artifactRecordFromApi),
+    page: typeof obj.page === "number" ? obj.page : 1,
+    pageSize: typeof obj.pageSize === "number" ? obj.pageSize : 50,
+    total: typeof obj.total === "number" ? obj.total : 0,
+  };
+}
+
+/**
+ * Extract the `filename=` value from a `Content-Disposition` header.
+ *
+ * Handles the common shapes the J1 backend emits:
+ *   `attachment; filename="abc.png"`
+ *   `attachment; filename=abc.png`
+ *
+ * Does NOT yet handle RFC 5987 `filename*=UTF-8''…` — none of the
+ * filenames J1 generates today need it. Returns null when the
+ * header is absent / unrecognised.
+ */
+export function parseFilename(
+  contentDisposition: string | null,
+): string | null {
+  if (!contentDisposition) return null;
+  const m =
+    contentDisposition.match(/filename="([^"]+)"/) ??
+    contentDisposition.match(/filename=([^;]+)/);
+  if (!m) return null;
+  return m[1]!.trim() || null;
+}
+
+/**
+ * Strip surrounding quotes from an `ETag` header value.
+ * Returns null when the header is absent.
+ */
+export function parseEtag(etag: string | null): string | null {
+  if (!etag) return null;
+  const trimmed = etag.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed || null;
+}
+
+export function chunkDetailFromApi(raw: unknown): ReviewChunkDetail {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    chunkId: String(obj.chunkId ?? ""),
+    body: typeof obj.body === "string" ? obj.body : "",
+    pageStart: (obj.pageStart as number | null | undefined) ?? null,
+    pageEnd: (obj.pageEnd as number | null | undefined) ?? null,
+    section: (obj.section as string | null | undefined) ?? null,
+    title: (obj.title as string | null | undefined) ?? null,
+    tokenCount: (obj.tokenCount as number | null | undefined) ?? null,
+    confidence: (obj.confidence as number | null | undefined) ?? null,
+    metadata: (obj.metadata as Record<string, unknown> | undefined) ?? {},
+    linkedAssets: linkedAssetsFromApi(obj.linkedAssets),
+    sourceArtifactId:
+      (obj.sourceArtifactId as string | null | undefined) ?? null,
+    lineage: (obj.lineage as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
+// ---- Graph (Phase 10) ---------------------------------------------
+
+function strArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.map((x) => String(x)) : [];
+}
+
+function graphEntityFromApi(raw: unknown): ReviewGraphEntity {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: String(obj.id ?? ""),
+    label: String(obj.label ?? obj.id ?? ""),
+    type: (obj.type as string | null | undefined) ?? null,
+    description: (obj.description as string | null | undefined) ?? null,
+    sourceChunkIds: strArray(obj.sourceChunkIds),
+    sourceArtifactIds: strArray(obj.sourceArtifactIds),
+    metadata: (obj.metadata as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
+function graphRelationFromApi(raw: unknown): ReviewGraphRelation {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: String(obj.id ?? ""),
+    sourceEntityId: String(obj.sourceEntityId ?? ""),
+    targetEntityId: String(obj.targetEntityId ?? ""),
+    label: (obj.label as string | null | undefined) ?? null,
+    type: (obj.type as string | null | undefined) ?? null,
+    description: (obj.description as string | null | undefined) ?? null,
+    weight: (obj.weight as number | null | undefined) ?? null,
+    sourceChunkIds: strArray(obj.sourceChunkIds),
+    sourceArtifactIds: strArray(obj.sourceArtifactIds),
+    metadata: (obj.metadata as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
+export function graphSnapshotFromApi(raw: unknown): ReviewGraphSnapshot {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const stats = (obj.stats ?? {}) as Record<string, unknown>;
+  const truncated = (obj.truncated ?? {}) as Record<string, unknown>;
+  const limits = (truncated.limits ?? {}) as Record<string, unknown>;
+  const unavailable = obj.unavailable as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const entities = Array.isArray(obj.entities) ? obj.entities : [];
+  const relations = Array.isArray(obj.relations) ? obj.relations : [];
+
+  return {
+    stats: {
+      entityCount:
+        typeof stats.entityCount === "number" ? stats.entityCount : 0,
+      relationCount:
+        typeof stats.relationCount === "number" ? stats.relationCount : 0,
+      sourceArtifactIds: strArray(stats.sourceArtifactIds),
+    },
+    entities: entities.map(graphEntityFromApi),
+    relations: relations.map(graphRelationFromApi),
+    truncated: {
+      entities: Boolean(truncated.entities),
+      relations: Boolean(truncated.relations),
+      limits: {
+        maxNodes:
+          typeof limits.maxNodes === "number" ? limits.maxNodes : 5000,
+        maxEdges:
+          typeof limits.maxEdges === "number" ? limits.maxEdges : 5000,
+      },
+    },
+    unavailable: unavailable
+      ? { reason: String(unavailable.reason ?? "") }
+      : null,
   };
 }
 

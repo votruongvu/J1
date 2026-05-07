@@ -143,6 +143,24 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     )
 
 
+def build_review_service(workspace: WorkspaceResolver):
+    """Build the `IngestionResultReviewService` for the REST adapter.
+
+    Read-only surface over completed runs (Results > Overview etc.).
+    Constructs lightweight JSONL-backed dependencies — the run store
+    sits alongside `build_run_progress_surface`'s instance, and the
+    artifact registry is the same JSONL the worker writes to. No
+    external services. Without this wired, the REST adapter degrades
+    `/ingestion-runs/{id}/summary` (and the rest of the review surface
+    as it ships) to 503."""
+    from j1.ingestion_review import IngestionResultReviewService
+    return IngestionResultReviewService(
+        run_store=JsonlIngestionRunStore(workspace),
+        artifact_registry=JsonArtifactRegistry(workspace),
+        workspace=workspace,
+    )
+
+
 def build_run_progress_surface(
     workspace: WorkspaceResolver,
 ) -> tuple[IngestionRunStore, ProgressReporter]:

@@ -16,7 +16,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic.alias_generators import to_camel
 from temporalio.exceptions import ApplicationError
 
@@ -93,6 +93,10 @@ from j1.adapters.rest.schemas import (
     VersionRecord,
 )
 from j1.artifacts.registry import ArtifactNotFoundError
+from j1.ingestion_review import (
+    IngestionResultReviewService,
+    ReviewNotFound,
+)
 from j1.runs import (
     ACTION_PROGRESS_PLAN_CONFIRMED,
     ACTION_PROGRESS_PLAN_GENERATED,
@@ -108,6 +112,7 @@ from j1.errors.exceptions import (
     DuplicateDocumentError,
     InvalidIdentifierError,
     J1Error,
+    PathTraversalError,
 )
 from j1.integration.dto import (
     AnswerRequestDTO,
@@ -310,6 +315,7 @@ def create_rest_api(
     processing_capabilities: ProcessingCapabilities | None = None,
     ingestion_run_store: "IngestionRunStore | None" = None,
     progress_reporter: "ProgressReporter | None" = None,
+    review_service: IngestionResultReviewService | None = None,
     confirm_handler: RunConfirmHandler | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
@@ -459,6 +465,33 @@ def create_rest_api(
             status_code=404,
             code="REVIEW_ITEM_NOT_FOUND",
             message=str(exc),
+            request_id=_req_id(request),
+        )
+
+    @app.exception_handler(ReviewNotFound)
+    async def _ingestion_review_missing(request, exc) -> JSONResponse:
+        # Mapped to 404 — never 403 — so cross-tenant probing can't
+        # distinguish "missing" from "you can't see it." Same shape
+        # the rest of the not-found surface uses.
+        return error_response(
+            status_code=404,
+            code="REVIEW_NOT_FOUND",
+            message=str(exc),
+            request_id=_req_id(request),
+        )
+
+    @app.exception_handler(PathTraversalError)
+    async def _path_traversal(request, exc) -> JSONResponse:
+        # Defense-in-depth surface for the artifact-content endpoint:
+        # if a registry has been tampered with so a `location` field
+        # escapes its workspace area, surface the failure as a uniform
+        # 404 (don't leak that the path was rejected) but log it
+        # loudly so operators / monitoring can flag the registry.
+        _log.warning("path traversal blocked: %s", exc)
+        return error_response(
+            status_code=404,
+            code="REVIEW_NOT_FOUND",
+            message="artifact content not found",
             request_id=_req_id(request),
         )
 
@@ -1049,6 +1082,275 @@ def create_rest_api(
         if plan is None:
             raise HTTPException(404, f"no plan recorded for run {run_id!r}")
         return envelope(plan.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Ingestion Result Review --------------------------------------
+    # Read-only review surface for completed runs. Powered by
+    # `IngestionResultReviewService` (j1.ingestion_review). Endpoints
+    # here MUST stay thin — no projection logic in the route handler;
+    # everything funnels through the service so tenant/project/run
+    # ownership is enforced uniformly.
+
+    def _require_review_service() -> IngestionResultReviewService:
+        if review_service is None:
+            raise HTTPException(
+                503,
+                "ingestion-review service not configured "
+                "(pass `review_service=` to create_rest_api)",
+            )
+        return review_service
+
+    @app.get(
+        "/ingestion-runs/{run_id}/summary",
+        tags=["ingestion-runs"],
+        summary="Get the review summary for an ingestion run",
+        description=(
+            "Aggregate projection over the run: status, duration, step "
+            "results, artifact counts, total bytes, warnings, and a "
+            "compact quality summary. The `availableViews` field tells "
+            "the frontend which Results tabs to enable for this run "
+            "(and why a tab is disabled when it isn't available). "
+            "Returns 404 if the run does not exist in the caller's "
+            "tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_summary(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        summary = service.summarize_run(ctx, run_id)
+        return envelope(summary.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/artifacts",
+        tags=["ingestion-runs"],
+        summary="List artifacts produced by an ingestion run",
+        description=(
+            "Paginated list of artifacts the run produced. Filtering "
+            "by `kind` happens AFTER run-scoping — the page count "
+            "reflects only this run's artifacts (matched by tagged "
+            "`metadata.run_id` first, then by lineage on "
+            "`source_document_ids` for legacy artifacts). Returns 404 "
+            "if the run does not exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def list_ingestion_run_artifacts(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        kind: str | None = Query(default=None),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=200, alias="pageSize"),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        result = service.list_run_artifacts(
+            ctx, run_id, kind=kind, page=page, page_size=page_size,
+        )
+        return envelope(result.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/artifacts/{artifact_id}/content",
+        tags=["ingestion-runs"],
+        summary="Read the content bytes of one run-scoped artifact",
+        description=(
+            "Returns the artifact's raw bytes. Verifies the full "
+            "ownership chain (tenant + project + run + artifact) — "
+            "any break returns 404. `Content-Type` is derived from "
+            "the artifact's filename extension. Inline-renderable "
+            "types (json/text/image/pdf/...) are served with their "
+            "media type; everything else is `application/octet-stream` "
+            "with `Content-Disposition: attachment`. `ETag` carries "
+            "the artifact's content hash so the FE can cache safely "
+            "across tab switches."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_artifact_content(
+        request: Request,
+        run_id: str,
+        artifact_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> Response:
+        service = _require_review_service()
+        content = service.read_run_artifact_content(ctx, run_id, artifact_id)
+        headers: dict[str, str] = {
+            "ETag": f'"{content.content_hash}"',
+            "Cache-Control": "private, max-age=3600",
+            REQUEST_ID_HEADER: _req_id(request),
+        }
+        if not content.is_inline:
+            # Force download for unknown / binary types so the browser
+            # never renders something we don't trust to display safely
+            # in-page.
+            headers["Content-Disposition"] = (
+                f'attachment; filename="{content.filename}"'
+            )
+        return Response(
+            content=content.bytes,
+            media_type=content.media_type,
+            headers=headers,
+        )
+
+    @app.get(
+        "/ingestion-runs/{run_id}/chunks",
+        tags=["ingestion-runs"],
+        summary="List the run's chunks (paginated, JSON)",
+        description=(
+            "Paginated chunk previews suitable for the Results > "
+            "Chunks tab. Each item carries a short text preview plus "
+            "page / section / token / confidence fields when "
+            "producers populated them. Optional filters: `status` "
+            "(case-insensitive match against `metadata.status`), "
+            "`minConfidence` (strict floor — chunks without a score "
+            "are excluded when the filter is active). Returns 404 if "
+            "the run does not exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def list_ingestion_run_chunks(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=200, alias="pageSize"),
+        status: str | None = Query(default=None),
+        min_confidence: float | None = Query(
+            default=None, alias="minConfidence", ge=0.0, le=1.0,
+        ),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        result = service.list_run_chunks(
+            ctx, run_id,
+            page=page, page_size=page_size,
+            status=status, min_confidence=min_confidence,
+        )
+        return envelope(result.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/chunks/{chunk_id}",
+        tags=["ingestion-runs"],
+        summary="Get one chunk in detail view",
+        description=(
+            "Returns the full chunk body plus lineage (document ids, "
+            "source artifact id, stage). Used by the Results > "
+            "Chunks drawer's readable / raw views. Returns 404 if "
+            "the chunk does not exist for the given run in the "
+            "caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_chunk(
+        request: Request,
+        run_id: str,
+        chunk_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        chunk = service.get_run_chunk(ctx, run_id, chunk_id)
+        return envelope(chunk.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/exports/chunks.ndjson",
+        tags=["ingestion-runs"],
+        summary="Stream this run's chunks as NDJSON",
+        description=(
+            "Streams `application/x-ndjson` — one chunk preview per "
+            "line. Same content the JSON list endpoint returns, "
+            "without pagination, suitable for download / offline "
+            "analysis. Run-scoped (does NOT include chunks from "
+            "other runs in the project). Returns 404 if the run "
+            "does not exist."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def export_ingestion_run_chunks(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> StreamingResponse:
+        service = _require_review_service()
+        # `iter_run_chunks_ndjson` validates eagerly — a missing run /
+        # cross-tenant access raises `ReviewNotFound` here, which the
+        # exception handler maps to a clean 404 BEFORE StreamingResponse
+        # has a chance to commit a 200 status.
+        iterator = service.iter_run_chunks_ndjson(ctx, run_id)
+        return StreamingResponse(
+            iterator,
+            media_type="application/x-ndjson",
+            headers={
+                REQUEST_ID_HEADER: _req_id(request),
+                "Cache-Control": "private, no-store",
+            },
+        )
+
+    @app.get(
+        "/ingestion-runs/{run_id}/quality-report",
+        tags=["ingestion-runs"],
+        summary="Get the neutral quality report for an ingestion run",
+        description=(
+            "Composed projection over the run's enrichment + audit + "
+            "step-result data: overall confidence, per-modality "
+            "breakdown, warnings, skipped steps, failed-optional "
+            "steps, and low-confidence findings (with page / chunk / "
+            "artifact references when available). Vendor-shaped "
+            "JSON never appears in this response by default. Pass "
+            "`?includeRaw=true` to additionally receive the "
+            "unprojected source JSON under `rawDebug` — for "
+            "debugging only. Returns 404 if the run does not exist "
+            "in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_quality_report(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        include_raw: bool = Query(default=False, alias="includeRaw"),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        report = service.get_run_quality_report(
+            ctx, run_id, include_raw=include_raw,
+        )
+        return envelope(report.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/ingestion-runs/{run_id}/graph",
+        tags=["ingestion-runs"],
+        summary="Get the neutral graph snapshot for an ingestion run",
+        description=(
+            "Returns the run's graph as `entities[]` + `relations[]` "
+            "in a vendor-neutral shape — LightRAG / RAGAnything "
+            "internal field names are mapped to the standard DTO. "
+            "Per-list caps (`maxNodes`, `maxEdges`, default 5000 each) "
+            "keep the response bounded; per-list `truncated` flags "
+            "tell the FE when the table-fallback view is needed. When "
+            "the run produced no graph (skipped by policy / planner / "
+            "failed), `unavailable.reason` is populated with the same "
+            "copy used by `availableViews.graph.reason` in the run "
+            "summary. Returns 404 if the run does not exist in the "
+            "caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_graph(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        max_nodes: int = Query(
+            default=5000, ge=1, le=50_000, alias="maxNodes",
+        ),
+        max_edges: int = Query(
+            default=5000, ge=1, le=50_000, alias="maxEdges",
+        ),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        snapshot = service.get_run_graph(
+            ctx, run_id, max_nodes=max_nodes, max_edges=max_edges,
+        )
+        return envelope(snapshot.model_dump(by_alias=True), _req_id(request))
 
     @app.post(
         "/ingestion-runs/{run_id}/confirm",

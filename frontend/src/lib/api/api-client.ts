@@ -24,6 +24,18 @@ import type {
   RunListQuery,
   RunListResult,
 } from "@/types/ingestion";
+import type {
+  ReviewArtifactContent,
+  ReviewArtifactListQuery,
+  ReviewArtifactPage,
+  ReviewChunkDetail,
+  ReviewChunkListQuery,
+  ReviewChunkPage,
+  ReviewGraphQuery,
+  ReviewGraphSnapshot,
+  ReviewQualityReport,
+  ReviewRunSummary,
+} from "@/types/review";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import {
   ApiError,
@@ -38,10 +50,18 @@ import {
   type ApiProgressEvent,
   type ApiRunListItem,
   type ApiRunRecord,
+  artifactPageFromApi,
+  chunkDetailFromApi,
+  chunkPageFromApi,
   eventFromApi,
+  graphSnapshotFromApi,
+  parseEtag,
+  parseFilename,
   planFromApi,
+  qualityReportFromApi,
   runFromApi,
   runListItemFromApi,
+  runSummaryFromApi,
 } from "./translate";
 import { readSseStream } from "./sse";
 
@@ -231,6 +251,122 @@ export class ApiClient implements IngestionClient {
     });
     const data = await this.json<{ events?: ApiProgressEvent[] }>(resp);
     return (data.events ?? []).map(eventFromApi);
+  }
+
+  // ---- Result-review surface (Phase 7) -----------------------------
+  // Read-only; same envelope + tenant/project header discipline as
+  // every other request.
+
+  async getRunSummary(runId: string): Promise<ReviewRunSummary> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/summary`),
+      { headers: this.headers() },
+    );
+    return runSummaryFromApi(await this.json<unknown>(resp));
+  }
+
+  async getRunQualityReport(
+    runId: string,
+    opts?: { includeRaw?: boolean },
+  ): Promise<ReviewQualityReport> {
+    const qs = opts?.includeRaw ? "?includeRaw=true" : "";
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/quality-report${qs}`,
+      ),
+      { headers: this.headers() },
+    );
+    return qualityReportFromApi(await this.json<unknown>(resp));
+  }
+
+  async listRunChunks(
+    runId: string,
+    opts?: ReviewChunkListQuery,
+  ): Promise<ReviewChunkPage> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.pageSize != null) params.set("pageSize", String(opts.pageSize));
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.minConfidence != null) {
+      params.set("minConfidence", String(opts.minConfidence));
+    }
+    const qs = params.toString();
+    const path = `/ingestion-runs/${encodeURIComponent(runId)}/chunks${qs ? `?${qs}` : ""}`;
+    const resp = await fetch(this.url(path), { headers: this.headers() });
+    return chunkPageFromApi(await this.json<unknown>(resp));
+  }
+
+  async getRunChunk(
+    runId: string, chunkId: string,
+  ): Promise<ReviewChunkDetail> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/chunks/${encodeURIComponent(chunkId)}`,
+      ),
+      { headers: this.headers() },
+    );
+    return chunkDetailFromApi(await this.json<unknown>(resp));
+  }
+
+  async listRunArtifacts(
+    runId: string,
+    opts?: ReviewArtifactListQuery,
+  ): Promise<ReviewArtifactPage> {
+    const params = new URLSearchParams();
+    if (opts?.kind) params.set("kind", opts.kind);
+    if (opts?.page != null) params.set("page", String(opts.page));
+    if (opts?.pageSize != null) params.set("pageSize", String(opts.pageSize));
+    const qs = params.toString();
+    const path = `/ingestion-runs/${encodeURIComponent(runId)}/artifacts${qs ? `?${qs}` : ""}`;
+    const resp = await fetch(this.url(path), { headers: this.headers() });
+    return artifactPageFromApi(await this.json<unknown>(resp));
+  }
+
+  async getRunArtifactContent(
+    runId: string, artifactId: string,
+  ): Promise<ReviewArtifactContent> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/content`,
+      ),
+      { headers: this.headers() },
+    );
+    if (!resp.ok) {
+      // Try to surface the standard error envelope; fall back to a
+      // plain HTTP message if the response isn't JSON-shaped.
+      const text = await resp.text();
+      let msg = `HTTP ${resp.status}`;
+      try {
+        const obj = JSON.parse(text) as {
+          error?: { message?: string }; message?: string;
+        };
+        msg = obj?.error?.message ?? obj?.message ?? msg;
+      } catch {
+        if (text) msg = text;
+      }
+      throw new ApiError(resp.status, msg);
+    }
+    const blob = await resp.blob();
+    const contentType =
+      resp.headers.get("Content-Type") ?? "application/octet-stream";
+    return {
+      blob,
+      contentType,
+      filename: parseFilename(resp.headers.get("Content-Disposition")),
+      etag: parseEtag(resp.headers.get("ETag")),
+    };
+  }
+
+  async getRunGraph(
+    runId: string, opts?: ReviewGraphQuery,
+  ): Promise<ReviewGraphSnapshot> {
+    const params = new URLSearchParams();
+    if (opts?.maxNodes != null) params.set("maxNodes", String(opts.maxNodes));
+    if (opts?.maxEdges != null) params.set("maxEdges", String(opts.maxEdges));
+    const qs = params.toString();
+    const path = `/ingestion-runs/${encodeURIComponent(runId)}/graph${qs ? `?${qs}` : ""}`;
+    const resp = await fetch(this.url(path), { headers: this.headers() });
+    return graphSnapshotFromApi(await this.json<unknown>(resp));
   }
 
   // ---- openStream --------------------------------------------------

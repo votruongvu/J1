@@ -165,6 +165,7 @@ call.
 | `DOCUMENT_NOT_FOUND`  | 404     | `DocumentNotFoundError`                     |
 | `ARTIFACT_NOT_FOUND`  | 404     | `ArtifactNotFoundError`                     |
 | `REVIEW_ITEM_NOT_FOUND` | 404   | `ReviewItemNotFoundError`                   |
+| `REVIEW_NOT_FOUND`    | 404     | `ingestion_review.ReviewNotFound` — raised by the result-review surface (`/ingestion-runs/{id}/summary`, …); covers missing run AND cross-tenant access (uniform 404 to avoid existence leak) |
 | `APPLICATION_ERROR`   | 400     | Temporal `ApplicationError`                 |
 | `J1_ERROR`            | 400     | Any other `J1Error` subclass                |
 

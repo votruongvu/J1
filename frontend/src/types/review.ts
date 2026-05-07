@@ -1,0 +1,289 @@
+/**
+ * Ingestion-result review types.
+ *
+ * Mirror of the backend's `j1.ingestion_review.dtos` shapes — kept
+ * in their own file (not `ingestion.ts`) so the existing run/plan/
+ * event types stay focused. All fields are camelCase, matching the
+ * REST envelope wire format.
+ *
+ * Translator lives at `lib/api/translate.ts` (`*FromApi` helpers).
+ * Components import from here.
+ */
+
+// ---- Step / warning records ---------------------------------------
+
+export interface ReviewStepError {
+  type: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface ReviewStepResult {
+  step: string;
+  status: string;
+  required: boolean;
+  source: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  reason?: string | null;
+  error?: ReviewStepError | null;
+  artifactCount: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface ReviewWarning {
+  code: string;
+  message: string;
+  /** "info" | "warning" | "error" */
+  severity: string;
+  step?: string | null;
+  documentId?: string | null;
+  page?: number | null;
+  chunkId?: string | null;
+  artifactId?: string | null;
+}
+
+// ---- Availability -------------------------------------------------
+
+export interface ReviewAvailability {
+  available: boolean;
+  reason?: string | null;
+}
+
+export interface ReviewAvailableViews {
+  chunks: ReviewAvailability;
+  assets: ReviewAvailability;
+  graph: ReviewAvailability;
+  quality: ReviewAvailability;
+  rawArtifacts: ReviewAvailability;
+}
+
+// ---- Run summary -------------------------------------------------
+
+export interface ReviewQualitySummary {
+  overallConfidence?: number | null;
+  warningCount: number;
+  lowConfidenceCount: number;
+}
+
+export interface ReviewRunSummary {
+  runId: string;
+  status: string;
+  durationMs?: number | null;
+  documentIds: string[];
+  steps: ReviewStepResult[];
+  artifactCounts: Record<string, number>;
+  totalBytes: number;
+  warnings: ReviewWarning[];
+  qualitySummary?: ReviewQualitySummary | null;
+  availableViews: ReviewAvailableViews;
+}
+
+// ---- Quality report ----------------------------------------------
+
+export interface ReviewModalityConfidence {
+  modality: string;
+  confidence: number;
+  sampleCount?: number | null;
+}
+
+export interface ReviewSkippedStep {
+  step: string;
+  reason?: string | null;
+  policy?: string | null;
+}
+
+export interface ReviewFailedOptionalStep {
+  step: string;
+  reason?: string | null;
+  errorType?: string | null;
+}
+
+export interface ReviewLowConfidenceFinding {
+  score: number;
+  category: string;
+  message?: string | null;
+  page?: number | null;
+  chunkId?: string | null;
+  artifactId?: string | null;
+}
+
+export interface ReviewQualityReport {
+  overallConfidence?: number | null;
+  modalityConfidences: ReviewModalityConfidence[];
+  warnings: ReviewWarning[];
+  skippedSteps: ReviewSkippedStep[];
+  failedOptionalSteps: ReviewFailedOptionalStep[];
+  lowConfidenceFindings: ReviewLowConfidenceFinding[];
+  /** Only populated when caller explicitly opted in via `?includeRaw=true`. */
+  rawDebug?: Record<string, unknown> | null;
+}
+
+// ---- Chunks (Phase 8) --------------------------------------------
+
+export interface ReviewLinkedAsset {
+  artifactId: string;
+  kind?: string | null;
+}
+
+export interface ReviewChunkPreview {
+  chunkId: string;
+  /** Short excerpt (≤240 chars) — already squashed for whitespace. */
+  preview: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  section?: string | null;
+  title?: string | null;
+  tokenCount?: number | null;
+  /** 0..1 score when the producer set one. */
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  linkedAssets: ReviewLinkedAsset[];
+  sourceArtifactId?: string | null;
+}
+
+export interface ReviewChunkDetail {
+  chunkId: string;
+  /** Full chunk text. */
+  body: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  section?: string | null;
+  title?: string | null;
+  tokenCount?: number | null;
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  linkedAssets: ReviewLinkedAsset[];
+  sourceArtifactId?: string | null;
+  /** Lineage projection from the producing artifact + workflow. */
+  lineage: Record<string, unknown>;
+}
+
+export interface ReviewChunkPage {
+  items: ReviewChunkPreview[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface ReviewChunkListQuery {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+  /** Strict floor — chunks without a confidence score are excluded
+   * when this is set. */
+  minConfidence?: number;
+}
+
+// ---- Artifacts (Phase 9) ------------------------------------------
+
+export interface ReviewArtifactRecord {
+  artifactId: string;
+  kind: string;
+  /** Server-side path (`<area>/<filename>`). Opaque to the FE; used
+   * only as a label / filename hint. */
+  location: string;
+  contentHash: string;
+  byteSize: number;
+  status: string;
+  reviewStatus: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  sourceDocumentIds: string[];
+  sourceArtifactIds: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface ReviewArtifactPage {
+  items: ReviewArtifactRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface ReviewArtifactListQuery {
+  kind?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+/**
+ * Bytes + metadata returned by `getRunArtifactContent`.
+ *
+ * Component code receives a `Blob` it can hand to `URL.createObjectURL`
+ * for inline previews, OR turn into text via `blob.text()` for JSON
+ * / markdown viewers. Cleanup of object URLs is the caller's
+ * responsibility.
+ */
+export interface ReviewArtifactContent {
+  blob: Blob;
+  contentType: string;
+  /** Suggested download filename from `Content-Disposition`, or null
+   * when the artifact was served inline. */
+  filename: string | null;
+  /** ETag value WITHOUT the surrounding quotes, or null when absent. */
+  etag: string | null;
+}
+
+// ---- Graph (Phase 10) --------------------------------------------
+
+export interface ReviewGraphEntity {
+  id: string;
+  label: string;
+  type?: string | null;
+  description?: string | null;
+  sourceChunkIds: string[];
+  sourceArtifactIds: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface ReviewGraphRelation {
+  id: string;
+  sourceEntityId: string;
+  targetEntityId: string;
+  label?: string | null;
+  type?: string | null;
+  description?: string | null;
+  weight?: number | null;
+  sourceChunkIds: string[];
+  sourceArtifactIds: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface ReviewGraphStats {
+  /** Full count BEFORE truncation. The FE compares against
+   * `truncated.limits` to know if a re-fetch with a higher cap is
+   * worthwhile. */
+  entityCount: number;
+  relationCount: number;
+  sourceArtifactIds: string[];
+}
+
+export interface ReviewGraphTruncation {
+  entities: boolean;
+  relations: boolean;
+  limits: { maxNodes: number; maxEdges: number };
+}
+
+export interface ReviewGraphUnavailable {
+  reason: string;
+}
+
+export interface ReviewGraphSnapshot {
+  stats: ReviewGraphStats;
+  entities: ReviewGraphEntity[];
+  relations: ReviewGraphRelation[];
+  truncated: ReviewGraphTruncation;
+  /** Populated only when the run produced no graph data (skipped /
+   * planner-skipped / failed). When set, the FE should render the
+   * skipped empty state — entities + relations are guaranteed empty. */
+  unavailable: ReviewGraphUnavailable | null;
+}
+
+export interface ReviewGraphQuery {
+  /** Per-list cap (1..50_000). Server clamps to its own absolute max. */
+  maxNodes?: number;
+  maxEdges?: number;
+}

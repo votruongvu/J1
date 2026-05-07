@@ -278,6 +278,7 @@ class ProcessingService:
                 area,
                 fallback_source_documents=source_document_ids or [],
                 fallback_source_artifacts=source_artifact_ids or [],
+                run_id=correlation_id,
             )
             registered.append(record)
         for breakdown in output.cost_events:
@@ -305,6 +306,7 @@ class ProcessingService:
         *,
         fallback_source_documents: list[str],
         fallback_source_artifacts: list[str],
+        run_id: str | None = None,
     ) -> ArtifactRecord:
         artifact_id = self._id_factory()
         ext = draft.suggested_extension
@@ -320,6 +322,17 @@ class ProcessingService:
         now = self._clock()
         sources_doc = list(draft.source_document_ids or fallback_source_documents)
         sources_art = list(draft.source_artifact_ids or fallback_source_artifacts)
+
+        # Tag the artifact with `run_id` so the review surface can
+        # answer "what did this run produce?" by direct lookup
+        # (`metadata.run_id == run_id`) rather than falling back to
+        # lineage-join on `source_document_ids`. Producer-supplied
+        # `draft.metadata` wins on key conflict — explicit producer
+        # intent is authoritative.
+        merged_metadata = dict(draft.metadata)
+        if run_id and "run_id" not in merged_metadata:
+            merged_metadata["run_id"] = run_id
+
         record = ArtifactRecord(
             artifact_id=artifact_id,
             project=ctx,
@@ -334,7 +347,7 @@ class ProcessingService:
             updated_at=now,
             source_document_ids=sources_doc,
             source_artifact_ids=sources_art,
-            metadata=dict(draft.metadata),
+            metadata=merged_metadata,
         )
         try:
             self._artifacts.add(record)

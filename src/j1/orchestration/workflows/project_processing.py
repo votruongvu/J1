@@ -553,14 +553,20 @@ class ProjectProcessingWorkflow:
 
     def _compute_final_status(self) -> FinalStatus:
         """Map the internal `WorkflowState` to the operator-facing
-        `FinalStatus`. PARTIAL_COMPLETED requires *both* (a) all
-        required steps succeeded and (b) at least one optional step
-        failed — but neither condition can be true today: every
-        enabled step still raises on failure (`fail_fast`), so the
-        mapping is straightforward. The optional-failure path is
-        ready to wire whenever `FailurePolicy.CONTINUE_OPTIONAL`
-        gets a real consumer."""
+        `FinalStatus`. PARTIAL_COMPLETED is returned when (a) all
+        required steps succeeded AND (b) at least one optional step
+        is recorded as FAILED — same semantic as `_warning_count()`.
+
+        Today the workflow is `fail_fast` everywhere so the optional
+        path mostly stays unused, BUT activities / planner-skipped
+        stages can still record `StepStatus.FAILED` on optional
+        steps without aborting the workflow. When that happens, the
+        run completes successfully overall but with warnings — and
+        PARTIAL_COMPLETED is the correct external label so the FE
+        can flip the run header to SUCCEEDED_WITH_WARNINGS."""
         if self._state == WorkflowState.COMPLETED:
+            if self._warning_count() > 0:
+                return FinalStatus.PARTIAL_COMPLETED
             return FinalStatus.COMPLETED
         if self._state == WorkflowState.CANCELLED:
             return FinalStatus.CANCELLED
