@@ -76,6 +76,12 @@ class RetrievedChunkRefDTO:
     hits surfaced through the same retrieval pipeline). `run_id`
     is the server-derived value the indexer wrote at index time —
     consumers can trust it for ownership checks.
+
+    `artifact_kind` (Phase 4) carries the matched artifact's `kind`
+    string verbatim from the FTS row. Used by the modality-aware
+    checks (e.g. `evidence_flags.tables_used` ⇔ at least one
+    retrieved item has kind `enriched.tables`) and by future
+    UI surfaces that need to colour-by-modality.
     """
 
     artifact_id: str
@@ -85,6 +91,7 @@ class RetrievedChunkRefDTO:
     source_location: str | None
     score: float
     preview: str
+    artifact_kind: str | None = None
 
 
 @dataclass(frozen=True)

@@ -248,6 +248,12 @@ class IngestionValidationService:
 
         run = self._load_run(ctx, run_id)
         chunks = self._project_run_chunks(ctx, run)
+        # Phase 4: gather modality artifacts the generator can
+        # author cases against. Single registry scan; the partition
+        # below is O(n) over the run's artifact list.
+        tables, visuals, graphs = self._modality_artifacts_for_run(
+            ctx, run.run_id,
+        )
 
         # Generate first so we can compute the artifacts hash off
         # the sampled chunks. Cheap — no LLM call yet on the empty
@@ -261,6 +267,9 @@ class IngestionValidationService:
                 citation_required=citation_required,
             ),
             actor=actor,
+            table_artifacts=tables,
+            visual_artifacts=visuals,
+            graph_artifacts=graphs,
         )
 
         # Idempotency: scan existing sets for a hash match. Force
@@ -411,6 +420,32 @@ class IngestionValidationService:
 
         projector = ChunkProjector(path_resolver=_resolver)
         return projector.project_records(artifacts)
+
+    def _modality_artifacts_for_run(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> tuple[list, list, list]:
+        """Partition the run's artifacts into the three modality
+        buckets (tables / visuals / graph). One pass over the
+        registry; returns the three lists in fixed order so the
+        generator's call site stays unambiguous.
+
+        Phase 4 keeps the kind taxonomy in lockstep with
+        `j1.ingestion_review.availability` — table/image/graph
+        gating uses identical kind strings everywhere.
+        """
+        tables: list = []
+        visuals: list = []
+        graphs: list = []
+        for record in self._artifacts.list_artifacts(ctx):
+            if record.metadata.get("run_id") != run_id:
+                continue
+            if record.kind == "enriched.tables":
+                tables.append(record)
+            elif record.kind == "enriched.visuals":
+                visuals.append(record)
+            elif record.kind == "graph_json":
+                graphs.append(record)
+        return tables, visuals, graphs
 
     def _find_existing_set(
         self,
@@ -584,6 +619,10 @@ def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]
     so we default to 0.0 — the FE renders this as a neutral indicator.
     Hooking up real BM25 scores requires plumbing them through
     `KnowledgeQueryProvider`, which is a Phase 2+ concern.
+
+    Phase 4: `artifact_kind` comes from the engine source's
+    `artifact_type` (the indexer's column name for it). Used by
+    evidence-flag detection + the modality-aware checks.
     """
     out: list[RetrievedChunkRefDTO] = []
     for source in getattr(response, "sources", []):
@@ -597,6 +636,7 @@ def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]
                 source_location=getattr(source, "source_location", None),
                 score=0.0,
                 preview=title[:_PREVIEW_MAX_CHARS],
+                artifact_kind=getattr(source, "artifact_type", None),
             )
         )
     return out
@@ -648,21 +688,19 @@ def _citation_to_dict(citation: ValidationCitationDTO) -> dict[str, Any]:
 def _has_artifact_kind(
     retrieved: list[RetrievedChunkRefDTO], kind_prefix: str,
 ) -> bool:
-    """Return True when any retrieved item's artifact_id resolves to
-    an artifact whose kind starts with the given prefix.
+    """Return True when any retrieved item's artifact_kind starts
+    with the given prefix.
 
-    We can't tell the kind directly from the chunk-ref DTO (it only
-    surfaces ids/locations), so this is a forward-stub for the
-    Phase 4 modality-aware checks. Phase 1 sets the flag to False
-    unconditionally for the table/image variants — the engine's
-    response carries `graph_paths` for `graphUsed`, which is the
-    only flag we can populate honestly today.
+    Phase 4: honest signal. Reads the `artifact_kind` field
+    surfaced by `_retrieved_chunks_from_response` (Phase 4a). For
+    runs predating that field — `artifact_kind` arrives as None —
+    the function returns False, which matches the historical Phase
+    1 "we don't know" stub behaviour.
     """
-    # Stub for Phase 1 — modality-aware checks land in Phase 4 with
-    # the artifact-registry lookup wired in. Returning False here is
-    # the truthful "we don't know yet" answer; the FE can render a
-    # neutral indicator instead of a misleading green check.
-    _ = retrieved, kind_prefix
+    for chunk in retrieved:
+        kind = chunk.artifact_kind or ""
+        if kind.startswith(kind_prefix):
+            return True
     return False
 
 

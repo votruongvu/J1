@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from j1.artifacts.models import ArtifactRecord
 from j1.ingestion_review.projectors.chunks import _ChunkRecord
 from j1.validation.dtos import (
     ValidationSetDTO,
@@ -131,6 +132,14 @@ class GenerationOptions:
     # so the same set is reproducible across regenerations. Zero
     # disables negatives entirely (e.g. for very small case budgets).
     negative_case_count: int = _DEFAULT_NEGATIVE_COUNT
+    # Phase 4: per-modality cap on emitted cases. The generator
+    # samples up to N table / N image / N graph cases (where N
+    # below) to keep the total bounded. Zero disables a modality
+    # entirely; high values are still subject to the global
+    # `max_cases` ceiling.
+    max_table_cases: int = 3
+    max_image_cases: int = 3
+    max_graph_cases: int = 3
 
 
 # ---- Generator -----------------------------------------------------
@@ -163,13 +172,26 @@ class DefaultTestCaseGenerator:
         chunks: list[_ChunkRecord],
         options: GenerationOptions | None = None,
         actor: str | None = None,
+        # Phase 4: optional modality artifacts. Each list is the
+        # subset of the run's artifacts of the given kind. The
+        # service builds these from the registry; the generator
+        # treats empty lists as "no modality cases to emit."
+        table_artifacts: list[ArtifactRecord] | None = None,
+        visual_artifacts: list[ArtifactRecord] | None = None,
+        graph_artifacts: list[ArtifactRecord] | None = None,
     ) -> ValidationSetDTO:
-        """Build a validation set from the run's chunks.
+        """Build a validation set from the run's chunks + modality
+        artifacts.
 
         Always returns a set, even when `chunks` is empty — in that
-        case only the smoke case is emitted, which the runner will
-        fail at `retrieved_chunks_present`. That's the right signal
+        case only the smoke + negatives are emitted, which the
+        runner will exercise as smoke (engine returns nothing →
+        retrieved_chunks_present fails). That's the right signal
         for "the run produced nothing queryable."
+
+        Phase 4 modalities ship in fixed order: smoke → negatives →
+        tables → images → graph → chunk cases. This keeps the
+        sequencing reproducible across regenerations.
         """
         opts = options or GenerationOptions()
         sampled = _sample_chunks(
@@ -194,6 +216,24 @@ class DefaultTestCaseGenerator:
             if len(cases) >= opts.max_cases:
                 break
             cases.append(_negative_case(prompt))
+
+        # Phase 4 modality cases. Each modality's count is bounded
+        # by both `opts.max_*_cases` (per-modality) and the global
+        # `opts.max_cases` ceiling. We emit tables → images → graph
+        # in that fixed order so two runs over the same artifacts
+        # produce identical case sequences.
+        for table in (table_artifacts or [])[:opts.max_table_cases]:
+            if len(cases) >= opts.max_cases:
+                break
+            cases.append(_table_case(table))
+        for visual in (visual_artifacts or [])[:opts.max_image_cases]:
+            if len(cases) >= opts.max_cases:
+                break
+            cases.append(_image_case(visual))
+        for graph in (graph_artifacts or [])[:opts.max_graph_cases]:
+            if len(cases) >= opts.max_cases:
+                break
+            cases.append(_graph_case(graph))
 
         # Cap chunk-derived cases so the total respects max_cases.
         remaining_budget = max(0, opts.max_cases - len(cases))
@@ -228,6 +268,12 @@ class DefaultTestCaseGenerator:
             metadata={
                 "sampled_chunk_count": len(sampled),
                 "total_chunks_available": len(chunks),
+                # Phase 4 surfaces — let the FE/REST layer answer
+                # "did the generator look at modalities?" without
+                # scanning every emitted case.
+                "table_artifact_count": len(table_artifacts or []),
+                "visual_artifact_count": len(visual_artifacts or []),
+                "graph_artifact_count": len(graph_artifacts or []),
             },
         )
 
@@ -365,6 +411,147 @@ def _negative_case(question: str) -> ValidationTestCaseDTO:
         source_traceability=[],
         metadata={"negative": True},
     )
+
+
+# ---- Phase 4: modality case factories ------------------------------
+#
+# Each factory builds a case asserting that the named artifact is
+# retrievable for a topic-related question. The question text is
+# deterministic — derived from the artifact's title or kind — so
+# regenerating produces identical case sequences. LLM-driven
+# question phrasing (with chunk content) is a Phase 4+ enhancement.
+
+
+def _table_case(artifact: ArtifactRecord) -> ValidationTestCaseDTO:
+    """A retrieval check for one extracted-table artifact."""
+    label = _label_for_artifact(artifact)
+    page_hint = _page_hint(artifact)
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-table-{uuid.uuid4().hex[:8]}",
+        question=(
+            f"What does the table on {page_hint} ({label}) show?"
+            if page_hint
+            else f"What information is in the table {label}?"
+        ),
+        type="table",
+        priority="normal",
+        expected_behavior="answer_with_citations",
+        expected_artifacts=[artifact.artifact_id],
+        expected_pages=_pages_from_artifact(artifact),
+        citation_required=True,
+        source_traceability=[artifact.artifact_id],
+        metadata={"table": True, "artifact_id": artifact.artifact_id},
+    )
+
+
+def _image_case(artifact: ArtifactRecord) -> ValidationTestCaseDTO:
+    """A retrieval check for one visual-content artifact."""
+    label = _label_for_artifact(artifact)
+    page_hint = _page_hint(artifact)
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-image-{uuid.uuid4().hex[:8]}",
+        question=(
+            f"What is shown in the image on {page_hint} ({label})?"
+            if page_hint
+            else f"What is depicted in the image {label}?"
+        ),
+        type="image",
+        priority="normal",
+        expected_behavior="answer_with_citations",
+        expected_artifacts=[artifact.artifact_id],
+        expected_pages=_pages_from_artifact(artifact),
+        citation_required=True,
+        source_traceability=[artifact.artifact_id],
+        metadata={"image": True, "artifact_id": artifact.artifact_id},
+    )
+
+
+def _graph_case(artifact: ArtifactRecord) -> ValidationTestCaseDTO:
+    """A retrieval check for graph snapshots.
+
+    Phase 4 keeps this lightweight: we ask the engine to surface
+    the document's main entities/relationships. The check verifies
+    that retrieval engaged the graph artifact at all (Phase 5 may
+    add LLM-driven entity-specific question generation). When the
+    graph artifact's metadata carries explicit `entity_ids` or
+    `top_entities`, the case populates `expected_graph_nodes`."""
+    expected_nodes = _expected_graph_nodes_from_artifact(artifact)
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-graph-{uuid.uuid4().hex[:8]}",
+        question=(
+            "What are the main entities and relationships described "
+            "in this document?"
+        ),
+        type="graph",
+        priority="normal",
+        expected_behavior="validate_relationship",
+        expected_artifacts=[artifact.artifact_id],
+        expected_graph_nodes=expected_nodes,
+        citation_required=True,
+        source_traceability=[artifact.artifact_id],
+        metadata={"graph": True, "artifact_id": artifact.artifact_id},
+    )
+
+
+def _label_for_artifact(artifact: ArtifactRecord) -> str:
+    """Short human-readable label for use inside generated questions.
+    Prefers an explicit `title` from the artifact metadata, falls
+    back to the kind/id pair so questions never reference an
+    empty placeholder."""
+    title = artifact.metadata.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()[:80]
+    return f"{artifact.kind}/{artifact.artifact_id[:8]}"
+
+
+def _page_hint(artifact: ArtifactRecord) -> str:
+    """Best-effort page reference. Reads any of the standard
+    metadata keys producers use. Empty when no page info — caller
+    branches on the empty string to choose the alternate question
+    template."""
+    for key in ("page", "page_start", "source_location"):
+        value = artifact.metadata.get(key)
+        if value not in (None, ""):
+            return f"page {value}"
+    return ""
+
+
+def _pages_from_artifact(artifact: ArtifactRecord) -> list[int]:
+    """Extract the artifact's page set as a list of ints, used by
+    the runner's `expected_page_in_citations` check."""
+    pages: list[int] = []
+    for key in ("page_start", "page"):
+        value = artifact.metadata.get(key)
+        try:
+            pages.append(int(value))
+            break
+        except (TypeError, ValueError):
+            continue
+    end = artifact.metadata.get("page_end")
+    try:
+        page_end = int(end) if end is not None else None
+    except (TypeError, ValueError):
+        page_end = None
+    if pages and page_end is not None and page_end > pages[0]:
+        pages = list(range(pages[0], page_end + 1))
+    return pages
+
+
+def _expected_graph_nodes_from_artifact(
+    artifact: ArtifactRecord,
+) -> list[str]:
+    """Pull a list of expected graph node ids from the artifact's
+    metadata when the producer surfaced one. Producers vary on
+    the key — check the common variants. Returns [] when the
+    artifact doesn't surface entity ids; the runner's
+    `expected_graph_evidence` check then becomes a noop (omitted)
+    rather than a vacuous failure.
+    """
+    for key in ("top_entities", "entity_ids", "expected_nodes"):
+        value = artifact.metadata.get(key)
+        if isinstance(value, list):
+            return [str(v) for v in value if v][:5]
+    return []
 
 
 def _sample_chunks(

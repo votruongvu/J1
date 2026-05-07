@@ -1491,6 +1491,7 @@ def create_rest_api(
                     source_location=c.source_location,
                     score=c.score,
                     preview=c.preview,
+                    artifact_kind=c.artifact_kind,
                 )
                 for c in result.retrieved_chunks
             ],
@@ -3556,6 +3557,7 @@ def _run_to_record(vrun) -> ValidationRunRecord:
                         source_location=c.source_location,
                         score=c.score,
                         preview=c.preview,
+                        artifact_kind=c.artifact_kind,
                     )
                     for c in r.retrieved_chunks
                 ],

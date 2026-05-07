@@ -312,6 +312,7 @@ def _chunk_ref_from_payload(payload: dict) -> RetrievedChunkRefDTO:
         source_location=payload.get("source_location"),
         score=float(payload.get("score") or 0.0),
         preview=str(payload.get("preview", "")),
+        artifact_kind=payload.get("artifact_kind"),
     )
 
 

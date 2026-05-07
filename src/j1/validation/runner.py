@@ -59,6 +59,25 @@ _log = logging.getLogger("j1.validation.runner")
 _CHECK_EXPECTED_CHUNK_IN_TOPK = "expected_chunk_in_topk"
 _CHECK_EXPECTED_PAGE_IN_CITATIONS = "expected_page_in_citations"
 
+# Phase 4 modality-aware checks. `expected_artifact_retrieved`
+# applies to table/image cases (the case names a specific
+# artifact id and the runner verifies retrieval surfaced it).
+# `expected_graph_evidence` applies to graph cases (the case
+# names entity ids and the runner verifies they appear in the
+# response's graph paths or related artifacts).
+_CHECK_EXPECTED_ARTIFACT_RETRIEVED = "expected_artifact_retrieved"
+_CHECK_EXPECTED_GRAPH_EVIDENCE = "expected_graph_evidence"
+
+# Modality kinds that gate skip-applicability. A case typed
+# "table" / "image" / "graph" is skipped (status="skipped") when
+# the run produced none of the matching artifact kinds. Same
+# vocabulary as `j1.ingestion_review.availability`.
+_MODALITY_KIND_BY_CASE_TYPE: dict[str, frozenset[str]] = {
+    "table": frozenset({"enriched.tables"}),
+    "image": frozenset({"enriched.visuals"}),
+    "graph": frozenset({"graph_json"}),
+}
+
 
 # Synchronous in-process limit. Matches the Phase 2 plan's "≤ 50
 # cases per run" decision. The REST handler also clamps; this is
@@ -146,9 +165,21 @@ class DefaultValidationRunner:
         )
         self._safe_lifecycle(running)
 
+        # Phase 4: snapshot which artifact kinds exist for this
+        # run BEFORE looping. Modality cases are gated against
+        # this set — a `type="table"` case is skipped when the
+        # run produced no `enriched.tables`. Computing once
+        # bounds the registry I/O at one list_artifacts() call.
+        try:
+            available_kinds = self._available_kinds_for_run(ctx, vset.run_id)
+        except Exception:  # noqa: BLE001 — registry hiccup, treat as no info
+            available_kinds = frozenset()
+
         try:
             results = [
-                self._execute_case(ctx, vset.run_id, case)
+                self._execute_case(
+                    ctx, vset.run_id, case, available_kinds=available_kinds,
+                )
                 for case in self._ordered_cases(vset.test_cases)
             ]
         except Exception as exc:  # noqa: BLE001 — surface as failed run
@@ -189,10 +220,36 @@ class DefaultValidationRunner:
         ctx: ProjectContext,
         run_id: str,
         case: ValidationTestCaseDTO,
+        *,
+        available_kinds: frozenset[str] = frozenset(),
     ) -> ValidationResultDTO:
         """Drive one test case end-to-end. Always returns a result —
         an engine exception becomes a `failed` result with the
-        exception message in `failure_reason`."""
+        exception message in `failure_reason`.
+
+        Phase 4: when the case names a modality (table/image/graph)
+        the run doesn't have, the case short-circuits to a
+        `skipped` result. Skipped cases don't count toward the
+        run's `validation_status`, so a tester importing a generic
+        validation set onto a text-only run isn't punished for
+        modalities the run doesn't have.
+        """
+        # Skip-applicability gate (Phase 4 defense-in-depth — the
+        # generator already gates upstream).
+        skip_reason = _modality_skip_reason(case, available_kinds)
+        if skip_reason is not None:
+            return ValidationResultDTO(
+                result_id=f"vr-{uuid.uuid4().hex[:10]}",
+                test_case_id=case.test_case_id,
+                status="skipped",
+                question=case.question,
+                answer="",
+                retrieved_chunks=[],
+                citations=[],
+                checks=[],
+                failure_reason=skip_reason,
+            )
+
         try:
             top_k = max(10, len(case.expected_chunks) * 2)
             response = self._query_engine.query(
@@ -257,6 +314,17 @@ class DefaultValidationRunner:
                 checks.append(_check_expected_chunk_in_topk(case, retrieved))
             if case.expected_pages:
                 checks.append(_check_expected_page_in_citations(case, citations))
+            # Phase 4 modality checks. Required when the case
+            # names expected modality evidence; skipped (omitted)
+            # when the corresponding expected list is empty.
+            if case.expected_artifacts:
+                checks.append(
+                    _check_expected_artifact_retrieved(case, retrieved),
+                )
+            if case.expected_graph_nodes or case.expected_graph_edges:
+                checks.append(
+                    _check_expected_graph_evidence(case, response),
+                )
 
         validation_status = aggregate_status(checks)
         result_status = _result_status_from_validation_status(validation_status)
@@ -275,6 +343,24 @@ class DefaultValidationRunner:
         )
 
     # ---- Internals -----------------------------------------------------
+
+    def _available_kinds_for_run(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> frozenset[str]:
+        """One-shot scan of the registry for kinds present in this
+        run. Cached per `run()` call so `_execute_case` can apply
+        the modality skip gate without re-querying.
+
+        Looks at `metadata.run_id == run_id` per artifact — same
+        contract the chunk projector uses. Phase 5+ might layer in
+        a registry-side index for this lookup, but for v1 the
+        single-pass scan is fine (artifact counts are bounded).
+        """
+        kinds: set[str] = set()
+        for record in self._artifacts.list_artifacts(ctx):
+            if record.metadata.get("run_id") == run_id:
+                kinds.add(record.kind)
+        return frozenset(kinds)
 
     def _safe_lifecycle(self, vrun: ValidationRunDTO) -> None:
         """Lifecycle callback failures must not fail the run. The
@@ -303,6 +389,93 @@ class DefaultValidationRunner:
 
 
 # ---- Phase 2 case-specific checks ----------------------------------
+
+
+def _modality_skip_reason(
+    case: ValidationTestCaseDTO,
+    available_kinds: frozenset[str],
+) -> str | None:
+    """Return a human-readable reason when the case targets a
+    modality the run lacks; None when the case is applicable.
+
+    Cases of type retrieval/answer/citation/negative are always
+    applicable — they don't depend on a particular artifact kind.
+    Modality cases (table/image/graph) skip when their kind set
+    has zero overlap with the run's `available_kinds`.
+    """
+    required_kinds = _MODALITY_KIND_BY_CASE_TYPE.get(case.type)
+    if required_kinds is None:
+        return None
+    if available_kinds & required_kinds:
+        return None
+    return (
+        f"case type {case.type!r} skipped: run produced no "
+        f"{', '.join(sorted(required_kinds))} artifact(s)"
+    )
+
+
+def _check_expected_artifact_retrieved(
+    case: ValidationTestCaseDTO,
+    retrieved: list[RetrievedChunkRefDTO],
+) -> ValidationCheckDTO:
+    """Required: at least one of `expected_artifacts` must surface
+    in the retrieved set's `artifact_id`s. Phase 4's headline
+    table/image check — 'is the table I named in the test
+    actually retrievable for this question?'"""
+    expected = set(case.expected_artifacts)
+    actual = {c.artifact_id for c in retrieved if c.artifact_id}
+    overlap = expected & actual
+    passed = bool(overlap)
+    return ValidationCheckDTO(
+        name=_CHECK_EXPECTED_ARTIFACT_RETRIEVED,
+        severity="required",
+        passed=passed,
+        detail=(
+            None if passed
+            else (
+                f"expected one of {sorted(expected)[:5]}; "
+                f"retrieved {sorted(actual)[:5]}"
+            )
+        ),
+        expected=sorted(expected),
+        actual=sorted(actual),
+    )
+
+
+def _check_expected_graph_evidence(
+    case: ValidationTestCaseDTO,
+    response: Any,
+) -> ValidationCheckDTO:
+    """Required for graph cases: at least one of the expected
+    graph node ids must appear in the engine's `graph_paths`
+    (the entity ids surfaced by `GraphQueryProvider`).
+
+    Edge ids aren't checked separately yet — the engine doesn't
+    surface them as standalone identifiers, only as part of a
+    path. When edge-level identification ships in a future
+    engine pass, this check grows to include them.
+    """
+    expected_nodes = set(case.expected_graph_nodes)
+    paths = list(getattr(response, "graph_paths", []))
+    seen_nodes: set[str] = set()
+    for p in paths:
+        seen_nodes.update(getattr(p, "nodes", []) or [])
+    overlap = expected_nodes & seen_nodes
+    passed = bool(overlap) if expected_nodes else False
+    return ValidationCheckDTO(
+        name=_CHECK_EXPECTED_GRAPH_EVIDENCE,
+        severity="required",
+        passed=passed,
+        detail=(
+            None if passed
+            else (
+                f"expected node(s) {sorted(expected_nodes)[:5]}; "
+                f"engine returned graph paths over {sorted(seen_nodes)[:5]}"
+            )
+        ),
+        expected=sorted(expected_nodes),
+        actual=sorted(seen_nodes),
+    )
 
 
 def _check_expected_chunk_in_topk(
@@ -483,6 +656,7 @@ def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]
                 source_location=getattr(source, "source_location", None),
                 score=0.0,
                 preview=title[:_PREVIEW_MAX_CHARS],
+                artifact_kind=getattr(source, "artifact_type", None),
             )
         )
     return out

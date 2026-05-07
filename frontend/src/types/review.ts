@@ -91,6 +91,10 @@ export interface ValidationRetrievedChunk {
   sourceLocation?: string | null;
   score: number;
   preview: string;
+  // Phase 4 — artifact kind verbatim from the FTS index. Lets the
+  // FE branch on modality (e.g. table icon for `enriched.tables`).
+  // Optional because pre-Phase-4 backends don't surface it.
+  artifactKind?: string | null;
 }
 
 export interface ValidationEvidenceFlags {

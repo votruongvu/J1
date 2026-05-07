@@ -396,7 +396,12 @@ class ValidationCheckRecord(CamelModel):
 
 
 class RetrievedChunkRefRecord(CamelModel):
-    """Compact server-side projection of one retrieved chunk."""
+    """Compact server-side projection of one retrieved chunk.
+
+    `artifact_kind` (Phase 4) lets the FE branch on modality —
+    e.g. show a table icon for `enriched.tables`, etc. Optional
+    so older runs (Phase 1/2) without the field still serialise
+    correctly."""
 
     artifact_id: str
     chunk_id: str | None = None
@@ -405,6 +410,7 @@ class RetrievedChunkRefRecord(CamelModel):
     source_location: str | None = None
     score: float = 0.0
     preview: str = ""
+    artifact_kind: str | None = None
 
 
 class EvidenceFlagsRecord(CamelModel):
