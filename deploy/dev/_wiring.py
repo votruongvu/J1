@@ -311,18 +311,34 @@ def build_worker_spec(
         except Exception:
             from j1.profiles.model import Profile
             profile = Profile(profile_id="default", metadata={})
-        # Pull the vision client from the bootstrap registry so the
-        # `VisualContentDescriber` child gets a real LLM instead of
-        # falling through to the 'No vision LLM configured' stub.
-        # `try_vision()` returns None when J1_VISION_LLM_* isn't set;
-        # the composite handles that gracefully.
-        vision_client = (
-            llm_registry.try_vision()
-            if llm_registry is not None and hasattr(llm_registry, "try_vision")
-            else None
-        )
+        # Pull every available client from the bootstrap registry so
+        # the composite's children have what they need:
+        #   * vision  → `VisualContentDescriber` (already used)
+        #   * text    → reserved for future LLM-backed enrichers
+        #               (TableExtractor / RequirementExtractor / etc).
+        #               Today's stub `_produce` methods ignore the
+        #               client; wiring it now means real
+        #               implementations don't have to re-plumb later.
+        #   * embedding → same — reserved for any enricher that
+        #                 wants to compute embeddings (e.g.
+        #                 ConsistencyChecker comparing chunks).
+        # try_*() returns None when the env config is absent; the
+        # composite handles that gracefully.
+        vision_client = None
+        text_client = None
+        embedding_client = None
+        if llm_registry is not None:
+            if hasattr(llm_registry, "try_vision"):
+                vision_client = llm_registry.try_vision()
+            if hasattr(llm_registry, "try_text"):
+                text_client = llm_registry.try_text()
+            if hasattr(llm_registry, "try_embedding"):
+                embedding_client = llm_registry.try_embedding()
         composite = CompositeEnricher.from_default(
-            profile, vision_client=vision_client,
+            profile,
+            vision_client=vision_client,
+            text_client=text_client,
+            embedding_client=embedding_client,
         )
         resolved_enrichers = {composite.kind: composite}
     else:

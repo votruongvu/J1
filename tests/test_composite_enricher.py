@@ -306,3 +306,86 @@ def test_composite_without_vision_client_emits_no_vision_stub(
     )
     assert visual_md is not None
     assert "No vision LLM configured" in visual_md.content.decode("utf-8")
+
+
+# ---- Text + embedding client forwarding (infrastructure plumbing) ---
+
+
+class _StubTextClient:
+    provider = "stub"
+    model = "stub-text"
+
+
+class _StubEmbeddingClient:
+    provider = "stub"
+    model = "stub-embedding"
+
+
+def test_composite_forwards_text_client_to_every_child(default_profile):
+    """The base `_StructuredEnricher.__init__` accepts a `text_client`
+    kwarg; the composite must forward it so future LLM-backed
+    enricher implementations (TableExtractor / RiskExtractor / …)
+    can read `self._text_client` without re-plumbing the composite."""
+    text_client = _StubTextClient()
+    composite = CompositeEnricher.from_default(
+        default_profile, text_client=text_client,
+    )
+    for child in composite._enrichers:
+        # Every base-class subclass exposes `_text_client`.
+        assert getattr(child, "_text_client", None) is text_client
+
+
+def test_composite_forwards_embedding_client_to_every_child(default_profile):
+    embedding_client = _StubEmbeddingClient()
+    composite = CompositeEnricher.from_default(
+        default_profile, embedding_client=embedding_client,
+    )
+    for child in composite._enrichers:
+        assert getattr(child, "_embedding_client", None) is embedding_client
+
+
+def test_composite_skips_text_client_when_unset(default_profile):
+    """Default = None means 'no client wired' — every child sees
+    `_text_client = None` and falls through to its stub `_produce`."""
+    composite = CompositeEnricher.from_default(default_profile)
+    for child in composite._enrichers:
+        assert getattr(child, "_text_client", None) is None
+        assert getattr(child, "_embedding_client", None) is None
+
+
+def test_composite_forwards_all_three_clients_independently(default_profile):
+    """Vision + text + embedding can all be wired together. The
+    dispatch in `_construct_child` must NOT cross-wire (e.g. send
+    vision_client to non-VCD children) and must apply text +
+    embedding to every child."""
+    from j1.enrichers import VisualContentDescriber
+    vision = _StubVisionClient()
+    text_client = _StubTextClient()
+    embedding_client = _StubEmbeddingClient()
+    composite = CompositeEnricher.from_default(
+        default_profile,
+        vision_client=vision,
+        text_client=text_client,
+        embedding_client=embedding_client,
+    )
+    vcd = next(
+        (e for e in composite._enrichers if isinstance(e, VisualContentDescriber)),
+        None,
+    )
+    # VCD has all three.
+    assert vcd is not None
+    assert vcd._vision_client is vision
+    assert vcd._text_client is text_client
+    assert vcd._embedding_client is embedding_client
+    # Other children have text + embedding but NO vision attribute
+    # (they don't accept a `vision_client` kwarg).
+    others = [e for e in composite._enrichers if not isinstance(e, VisualContentDescriber)]
+    for child in others:
+        assert child._text_client is text_client
+        assert child._embedding_client is embedding_client
+        # Crucially: the dispatch did not silently set a vision
+        # attribute on these — that would mean we forwarded too
+        # aggressively and a non-VCD child started using it.
+        assert not hasattr(child, "_vision_client"), (
+            f"{type(child).__name__} unexpectedly carries _vision_client"
+        )

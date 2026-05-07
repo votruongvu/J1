@@ -58,6 +58,8 @@ class _StructuredEnricher:
         review_required: bool | None = None,
         content_source: Callable[[ProjectContext, str], bytes] | None = None,
         model: ModelProvider | None = None,
+        text_client: Any | None = None,
+        embedding_client: Any | None = None,
     ) -> None:
         self._profile = profile
         self._enabled = enabled
@@ -68,7 +70,13 @@ class _StructuredEnricher:
         if review_required is not None:
             self.review_required_default = review_required
         self._content_source = content_source
+        # `_model` is the legacy slot kept for any deployment that
+        # already wires a `ModelProvider`. New work should prefer
+        # `_text_client` / `_embedding_client` which are populated
+        # from the project-wide `LLMProviderRegistry`.
         self._model = model
+        self._text_client = text_client
+        self._embedding_client = embedding_client
 
     @property
     def enabled(self) -> bool:
@@ -504,6 +512,8 @@ class CompositeEnricher:
         enrichers: tuple[_StructuredEnricher, ...] | None = None,
         content_source: Callable[[ProjectContext, str], bytes] | None = None,
         vision_client: Any | None = None,
+        text_client: Any | None = None,
+        embedding_client: Any | None = None,
     ) -> None:
         if enrichers is None:
             enrichers = tuple(
@@ -512,6 +522,8 @@ class CompositeEnricher:
                     profile=profile,
                     content_source=content_source,
                     vision_client=vision_client,
+                    text_client=text_client,
+                    embedding_client=embedding_client,
                 )
                 for cls_ in GENERIC_ENRICHERS
             )
@@ -525,11 +537,15 @@ class CompositeEnricher:
         *,
         content_source: Callable[[ProjectContext, str], bytes] | None = None,
         vision_client: Any | None = None,
+        text_client: Any | None = None,
+        embedding_client: Any | None = None,
     ) -> "CompositeEnricher":
         return cls(
             profile,
             content_source=content_source,
             vision_client=vision_client,
+            text_client=text_client,
+            embedding_client=embedding_client,
         )
 
     def enrich(
@@ -594,28 +610,35 @@ def _construct_child(
     profile: Profile,
     content_source: Callable[[ProjectContext, str], bytes] | None,
     vision_client: Any | None,
+    text_client: Any | None = None,
+    embedding_client: Any | None = None,
 ) -> _StructuredEnricher:
-    """Build one composite child, forwarding `vision_client` only to
-    enrichers that accept it.
+    """Build one composite child, forwarding clients per child class.
 
-    Currently only `VisualContentDescriber` accepts a `vision_client`
-    constructor kwarg — every other generic enricher's signature is
-    `(profile, *, enabled=..., version=..., confidence=...,
-    review_required=..., content_source=..., model=...)`. Passing a
-    spurious `vision_client=` to those would raise `TypeError` at
-    construction.
+    Vision client → only `VisualContentDescriber` (the only enricher
+    that calls `vision_client.analyze_image`).
+
+    Text + embedding clients → forwarded to every child via the base
+    `_StructuredEnricher.__init__(..., text_client=, embedding_client=)`
+    kwargs. Today most concrete enrichers ignore these (their
+    `_produce` methods emit empty arrays — see module docstring), but
+    the wiring is in place so a future LLM-backed implementation can
+    pick the clients up via `self._text_client` / `self._embedding_client`
+    without re-plumbing the composite. This is the same pattern the
+    `model:` slot was reserved for; it stays in place too for
+    backwards-compat with adapters that read `_model`.
 
     Without this dispatch, the composite either:
-      * builds VCD with `vision_client=None` → emits the
-        'No vision LLM configured — visual enrichment skipped'
-        markdown stub on every run, OR
+      * silently keeps text/embedding clients out of reach for any
+        future enricher implementation, OR
       * passes `vision_client=` to every child → every other enricher
         crashes the composite at startup.
     """
+    common_kwargs: dict[str, Any] = {"content_source": content_source}
+    if text_client is not None:
+        common_kwargs["text_client"] = text_client
+    if embedding_client is not None:
+        common_kwargs["embedding_client"] = embedding_client
     if cls_ is VisualContentDescriber:
-        return cls_(
-            profile,
-            content_source=content_source,
-            vision_client=vision_client,
-        )
-    return cls_(profile, content_source=content_source)
+        return cls_(profile, vision_client=vision_client, **common_kwargs)
+    return cls_(profile, **common_kwargs)
