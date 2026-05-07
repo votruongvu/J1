@@ -595,6 +595,47 @@ def create_rest_api(
             )
         return value
 
+    def _resolve_optional_processor_kind(
+        provided: str | None,
+        registered: frozenset[str],
+        field_name: str,
+    ) -> str | None:
+        """Resolve an optional processor-kind field with auto-default
+        semantics for the user-facing upload path.
+
+        Three rules:
+          1. Caller provided → validate against `registered` (same as
+             `_validate_optional_processor_kind`).
+          2. Caller omitted AND exactly one kind is registered for the
+             role → return that kind. The user-facing FE upload sends
+             only a file; without this, the workflow's `available_steps`
+             collapses to `{compile}` and every other stage is silently
+             skipped — even though the deployment had wired them.
+          3. Caller omitted AND zero or multiple kinds registered →
+             return None (the stage stays unrunnable; operator chooses
+             explicitly when ambiguous).
+
+        This is the bug fix for "uploaded runs only execute compile":
+        the previous helper returned None on every omission regardless
+        of what the deployment had registered. The validation path on
+        provided values is unchanged.
+        """
+        if provided is not None:
+            value = provided.strip()
+            if value:
+                if registered and value not in registered:
+                    raise ValueError(
+                        f"unknown {field_name} {value!r}; the worker has "
+                        f"registered: {sorted(registered)}"
+                    )
+                return value
+        # Caller omitted — auto-pick only when the choice is
+        # unambiguous (one registered kind). Multiple registered =
+        # operator must choose; none = stage stays skipped.
+        if len(registered) == 1:
+            return next(iter(registered))
+        return None
+
     # Header-typed parameters surface in OpenAPI / Swagger UI as
     # editable per-endpoint inputs, so operators can test the API
     # interactively. The actual extraction logic still goes through
@@ -1726,20 +1767,28 @@ def create_rest_api(
 
         # 2. Validate / resolve processor kinds at the boundary so a
         # typo fails fast rather than as a workflow failure 5s later.
+        # The optional kinds use `_resolve_optional_processor_kind`
+        # (NOT `_validate_*`): the FE upload omits all kinds, so
+        # without auto-defaulting from the deployment registry the
+        # workflow's `available_steps` collapses to `{compile}` and
+        # every other stage gets silently skipped. Auto-pick when the
+        # deployment has exactly one registered kind for the role; on
+        # ambiguity (multiple registered) leave None for the operator
+        # to choose explicitly.
         resolved_compiler = _resolve_compiler_kind(compiler_kind)
-        resolved_enricher = _validate_optional_processor_kind(
+        resolved_enricher = _resolve_optional_processor_kind(
             enricher_kind,
             (processing_capabilities.enricher_kinds
              if processing_capabilities else frozenset()),
             "enricherKind",
         )
-        resolved_graph = _validate_optional_processor_kind(
+        resolved_graph = _resolve_optional_processor_kind(
             graph_builder_kind,
             (processing_capabilities.graph_builder_kinds
              if processing_capabilities else frozenset()),
             "graphBuilderKind",
         )
-        resolved_indexer = _validate_optional_processor_kind(
+        resolved_indexer = _resolve_optional_processor_kind(
             indexer_kind,
             (processing_capabilities.indexer_kinds
              if processing_capabilities else frozenset()),
