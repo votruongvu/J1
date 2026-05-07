@@ -71,21 +71,21 @@ so reloading half-edited modules into a running worker can corrupt
 in-flight workflows). A rebuild is only needed when you change
 `pyproject.toml`, the `Dockerfile`, or another build-time input.
 
-> **First build downloads ~2.4 GB of MinerU model weights.** RAGAnything's
-> default `parse_method=auto` drives MinerU's hybrid-auto VLM
-> (`opendatalab/MinerU2.5-Pro-2604-1.2B`), and the Dockerfile pre-caches
-> it at build time so the first document compile doesn't stall for
-> ~50 s waiting on a HuggingFace download. Override via:
+> **The default stack offloads VLM inference to an OpenAI-compat endpoint**
+> (LM Studio / vLLM / hosted) via `J1_RAGANYTHING_BACKEND=vlm-http-client`,
+> so the worker image does **not** ship MinerU model weights — image
+> builds stay fast and ~5 GB smaller. The first compile hits your VLM
+> server over HTTP per page (seconds), not the in-process 1.2 B-param
+> model on CPU (~5 min/page).
 >
-> ```bash
-> # all (≈5 GB): also include pipeline sub-models — fully air-gapped
-> docker compose -f deploy/dev/docker-compose.yml build \
->   --build-arg J1_PRECACHE_MINERU_MODELS=all worker
+> To run MinerU's local VLM backend instead (air-gapped or no remote VLM
+> available), unset `J1_RAGANYTHING_BACKEND` (or set it to a non-`vlm-*`
+> value), and add a precache layer in your downstream Dockerfile so the
+> ~2.4 GB of weights land in the `j1_huggingface_cache` volume at build
+> time rather than during the first parse:
 >
-> # none (~2.4 GB lighter image): skip precache. First compile pays
-> # the download cost; useful for CI images or remote-VLM deployments.
-> docker compose -f deploy/dev/docker-compose.yml build \
->   --build-arg J1_PRECACHE_MINERU_MODELS=none worker
+> ```dockerfile
+> RUN mineru-models-download -s huggingface -m all
 > ```
 
 Services that come up:
