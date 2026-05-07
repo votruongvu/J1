@@ -503,10 +503,16 @@ class CompositeEnricher:
         *,
         enrichers: tuple[_StructuredEnricher, ...] | None = None,
         content_source: Callable[[ProjectContext, str], bytes] | None = None,
+        vision_client: Any | None = None,
     ) -> None:
         if enrichers is None:
             enrichers = tuple(
-                cls_(profile, content_source=content_source)
+                _construct_child(
+                    cls_,
+                    profile=profile,
+                    content_source=content_source,
+                    vision_client=vision_client,
+                )
                 for cls_ in GENERIC_ENRICHERS
             )
         self._profile = profile
@@ -518,8 +524,13 @@ class CompositeEnricher:
         profile: Profile,
         *,
         content_source: Callable[[ProjectContext, str], bytes] | None = None,
+        vision_client: Any | None = None,
     ) -> "CompositeEnricher":
-        return cls(profile, content_source=content_source)
+        return cls(
+            profile,
+            content_source=content_source,
+            vision_client=vision_client,
+        )
 
     def enrich(
         self, ctx: ProjectContext, artifact_id: str,
@@ -575,3 +586,36 @@ class CompositeEnricher:
                 "failed_kinds": failed_kinds,
             },
         )
+
+
+def _construct_child(
+    cls_: type[_StructuredEnricher],
+    *,
+    profile: Profile,
+    content_source: Callable[[ProjectContext, str], bytes] | None,
+    vision_client: Any | None,
+) -> _StructuredEnricher:
+    """Build one composite child, forwarding `vision_client` only to
+    enrichers that accept it.
+
+    Currently only `VisualContentDescriber` accepts a `vision_client`
+    constructor kwarg — every other generic enricher's signature is
+    `(profile, *, enabled=..., version=..., confidence=...,
+    review_required=..., content_source=..., model=...)`. Passing a
+    spurious `vision_client=` to those would raise `TypeError` at
+    construction.
+
+    Without this dispatch, the composite either:
+      * builds VCD with `vision_client=None` → emits the
+        'No vision LLM configured — visual enrichment skipped'
+        markdown stub on every run, OR
+      * passes `vision_client=` to every child → every other enricher
+        crashes the composite at startup.
+    """
+    if cls_ is VisualContentDescriber:
+        return cls_(
+            profile,
+            content_source=content_source,
+            vision_client=vision_client,
+        )
+    return cls_(profile, content_source=content_source)

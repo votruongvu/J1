@@ -59,6 +59,13 @@ async def _run() -> None:
         compilers=boot.compilers,
         graph_builders=boot.graph_builders,
         query_providers=boot.retrieval_providers,
+        # Pass the LLM registry through so the auto-registered
+        # composite enricher gets the configured vision client. Without
+        # this, `VisualContentDescriber` constructs with
+        # `vision_client=None` and the FE's Results > Assets tab shows
+        # the 'No vision LLM configured' markdown stub for every run
+        # even when J1_VISION_LLM_* is set.
+        llm_registry=boot.llm_registry,
     )
 
     # Every J1 activity is synchronous; the Temporal SDK requires

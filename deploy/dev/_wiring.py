@@ -208,6 +208,7 @@ def build_worker_spec(
     graph_builders: Mapping[str, object] | None = None,
     indexers: Mapping[str, object] | None = None,
     query_providers: Mapping[str, object] | None = None,
+    llm_registry: object | None = None,
 ) -> WorkerSpec:
     """Build the `WorkerSpec` registered by the dev worker.
 
@@ -216,6 +217,13 @@ def build_worker_spec(
     `CompositeEnricher` so the FE's Results > Assets tab can light up
     out of the box. Real deployments override `enrichers=` with a
     deliberately-curated map.
+
+    `llm_registry` (the `LLMProviderRegistry` from `bootstrap_from_env`)
+    is consulted for the auto-registered composite — without it,
+    `VisualContentDescriber` constructs with `vision_client=None` and
+    emits the 'No vision LLM configured' markdown stub on every run.
+    Pass through `boot.llm_registry` from worker.py and visual
+    enrichment will route through the configured vision LLM.
 
     Real processor wiring is deployment-specific (vendor SDKs, model
     providers, etc.) and lives elsewhere.
@@ -303,7 +311,19 @@ def build_worker_spec(
         except Exception:
             from j1.profiles.model import Profile
             profile = Profile(profile_id="default", metadata={})
-        composite = CompositeEnricher.from_default(profile)
+        # Pull the vision client from the bootstrap registry so the
+        # `VisualContentDescriber` child gets a real LLM instead of
+        # falling through to the 'No vision LLM configured' stub.
+        # `try_vision()` returns None when J1_VISION_LLM_* isn't set;
+        # the composite handles that gracefully.
+        vision_client = (
+            llm_registry.try_vision()
+            if llm_registry is not None and hasattr(llm_registry, "try_vision")
+            else None
+        )
+        composite = CompositeEnricher.from_default(
+            profile, vision_client=vision_client,
+        )
         resolved_enrichers = {composite.kind: composite}
     else:
         resolved_enrichers = enrichers

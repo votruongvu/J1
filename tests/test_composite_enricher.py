@@ -194,3 +194,115 @@ def test_constructs_with_empty_profile_no_crash(empty_profile, ctx):
     # still SUCCEEDED with drafts.
     assert result.status is ResultStatus.SUCCEEDED
     assert len(result.drafts) > 0
+
+
+# ---- Vision-client forwarding (the "No vision LLM configured" fix) -
+
+
+class _StubVisionClient:
+    """Minimal vision client double — returns a fixed description so
+    we can assert the composite actually called through to the
+    client instead of falling back to the stub markdown."""
+
+    provider = "stub"
+    model = "stub-vision"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def analyze_image(self, image_data: bytes, *, prompt: str, metadata: dict):
+        self.calls.append({
+            "image_bytes": len(image_data),
+            "prompt": prompt,
+            "metadata": metadata,
+        })
+        # The vision client contract: returns (description, usage).
+        return ("Stub description for testing.", None)
+
+
+def test_composite_forwards_vision_client_only_to_visual_describer(
+    default_profile,
+):
+    """The fix for 'No vision LLM configured' bug: the composite must
+    pass the vision client to `VisualContentDescriber` AND must NOT
+    pass it to other children (which would crash with TypeError —
+    no other generic enricher accepts a `vision_client` kwarg)."""
+    from j1.enrichers import VisualContentDescriber
+    composite = CompositeEnricher.from_default(
+        default_profile, vision_client=_StubVisionClient(),
+    )
+    # The composite should construct cleanly (no TypeError from
+    # passing vision_client to a child that doesn't accept it).
+    vcd = next(
+        (e for e in composite._enrichers if isinstance(e, VisualContentDescriber)),
+        None,
+    )
+    assert vcd is not None, "VisualContentDescriber missing from composite"
+    # And the vision client should be wired into VCD specifically.
+    assert vcd._vision_client is not None
+    # No other child stores a vision client (defensive — would
+    # mean we're forwarding too aggressively).
+    other_clients = [
+        getattr(e, "_vision_client", "<sentinel>")
+        for e in composite._enrichers
+        if not isinstance(e, VisualContentDescriber)
+    ]
+    # The sentinel matches the missing-attribute case (correct for
+    # non-VCD children), so any actual client would stand out.
+    assert all(c == "<sentinel>" for c in other_clients)
+
+
+def test_composite_with_vision_client_does_not_emit_no_vision_stub(
+    default_profile, ctx, tmp_path,
+):
+    """End-to-end: a composite WITH a vision client and image bytes
+    must NOT emit 'No vision LLM configured — visual enrichment
+    skipped' markdown. It should call the vision client and embed
+    the description."""
+    # Stub `content_source` returns image bytes so VCD takes the
+    # 'analyze' branch instead of 'no bytes available'.
+    def _content_source(_ctx, _artifact_id: str) -> bytes:
+        return b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # minimal PNG header
+
+    vision = _StubVisionClient()
+    composite = CompositeEnricher.from_default(
+        default_profile,
+        vision_client=vision,
+        content_source=_content_source,
+    )
+    result = composite.enrich(ctx, "art-1")
+    assert result.status is ResultStatus.SUCCEEDED
+
+    # Find the visual draft. It exists per the union-of-kinds rule.
+    visual_drafts = [d for d in result.drafts if d.kind == "enriched.visuals"]
+    md_drafts = [d for d in visual_drafts if d.suggested_extension == ".md"]
+    assert md_drafts, "expected a markdown visual draft"
+    md_text = md_drafts[0].content.decode("utf-8")
+    # The bug we're fixing: this exact sentence appearing in the FE
+    # means the vision client wasn't wired through.
+    assert "No vision LLM configured" not in md_text
+    # And the stub description from our vision client made it through.
+    assert "Stub description for testing" in md_text
+    # The vision client was called with the image bytes.
+    assert vision.calls
+    assert vision.calls[0]["image_bytes"] > 0
+
+
+def test_composite_without_vision_client_emits_no_vision_stub(
+    default_profile, ctx,
+):
+    """Counter-test: when the deployment has no vision client
+    configured (no `J1_VISION_LLM_*` env vars), the composite must
+    still construct but VCD emits the 'No vision LLM configured'
+    stub. Pinning this so the fallback contract stays explicit."""
+    composite = CompositeEnricher.from_default(
+        default_profile, vision_client=None,
+    )
+    result = composite.enrich(ctx, "art-1")
+    visual_md = next(
+        (d for d in result.drafts
+         if d.kind == "enriched.visuals" and d.suggested_extension == ".md"),
+        None,
+    )
+    assert visual_md is not None
+    assert "No vision LLM configured" in visual_md.content.decode("utf-8")
