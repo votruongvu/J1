@@ -39,3 +39,26 @@ class LLMRoleNotRegistered(LLMError):
         )
         self.role = role
         self.registered = registered
+
+
+class LLMContextOverflowError(LLMProviderUnavailable):
+    """Raised by the LLM client BEFORE sending an HTTP request when
+    the assembled prompt's estimated tokens would exceed the
+    configured context window's available input budget.
+
+    Subclasses `LLMProviderUnavailable` so existing error handling
+    that catches "LLM is not usable for this call" (and surfaces
+    a controlled error to the user instead of a workflow crash)
+    catches this case too. Callers that want to branch on overflow
+    specifically should test `isinstance(exc, LLMContextOverflowError)`
+    and inspect `exc.diagnostic` for the budget arithmetic.
+    """
+
+    def __init__(self, message: str, *, diagnostic: dict | None = None) -> None:
+        super().__init__(message)
+        # `diagnostic` carries `estimatedInputTokens`,
+        # `availableInputTokens`, `contextWindowTokens`,
+        # `reservedOutputTokens`, `safetyMarginTokens`, `messageCount`,
+        # `model`. Operators read this off the exception (or the log)
+        # to know exactly which knob to turn.
+        self.diagnostic = diagnostic or {}

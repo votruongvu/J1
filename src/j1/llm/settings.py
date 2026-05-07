@@ -36,6 +36,8 @@ ENV_TEXT_TIMEOUT = "J1_TEXT_LLM_TIMEOUT_SECONDS"
 ENV_TEXT_MAX_RETRIES = "J1_TEXT_LLM_MAX_RETRIES"
 ENV_TEXT_TEMPERATURE = "J1_TEXT_LLM_TEMPERATURE"
 ENV_TEXT_MAX_OUTPUT_TOKENS = "J1_TEXT_LLM_MAX_OUTPUT_TOKENS"
+ENV_TEXT_CONTEXT_WINDOW_TOKENS = "J1_TEXT_LLM_CONTEXT_WINDOW_TOKENS"
+ENV_TEXT_SAFETY_MARGIN_TOKENS = "J1_TEXT_LLM_SAFETY_MARGIN_TOKENS"
 ENV_TEXT_LANGCHAIN_CONFIG = "J1_TEXT_LLM_LANGCHAIN_CONFIG"
 
 # Vision role
@@ -47,6 +49,8 @@ ENV_VISION_TIMEOUT = "J1_VISION_LLM_TIMEOUT_SECONDS"
 ENV_VISION_MAX_RETRIES = "J1_VISION_LLM_MAX_RETRIES"
 ENV_VISION_TEMPERATURE = "J1_VISION_LLM_TEMPERATURE"
 ENV_VISION_MAX_OUTPUT_TOKENS = "J1_VISION_LLM_MAX_OUTPUT_TOKENS"
+ENV_VISION_CONTEXT_WINDOW_TOKENS = "J1_VISION_LLM_CONTEXT_WINDOW_TOKENS"
+ENV_VISION_SAFETY_MARGIN_TOKENS = "J1_VISION_LLM_SAFETY_MARGIN_TOKENS"
 ENV_VISION_LANGCHAIN_CONFIG = "J1_VISION_LLM_LANGCHAIN_CONFIG"
 
 # Embedding role
@@ -72,6 +76,8 @@ ENV_FAST_TIMEOUT = "J1_FAST_LLM_TIMEOUT_SECONDS"
 ENV_FAST_MAX_RETRIES = "J1_FAST_LLM_MAX_RETRIES"
 ENV_FAST_TEMPERATURE = "J1_FAST_LLM_TEMPERATURE"
 ENV_FAST_MAX_OUTPUT_TOKENS = "J1_FAST_LLM_MAX_OUTPUT_TOKENS"
+ENV_FAST_CONTEXT_WINDOW_TOKENS = "J1_FAST_LLM_CONTEXT_WINDOW_TOKENS"
+ENV_FAST_SAFETY_MARGIN_TOKENS = "J1_FAST_LLM_SAFETY_MARGIN_TOKENS"
 ENV_FAST_LANGCHAIN_CONFIG = "J1_FAST_LLM_LANGCHAIN_CONFIG"
 
 
@@ -108,13 +114,46 @@ class _CommonLLMSettings:
 
 
 @dataclass(frozen=True)
-class TextLLMSettings(_CommonLLMSettings):
+class _BudgetedLLMSettings(_CommonLLMSettings):
+    """Mixin shared by every chat-completion role (text / vision /
+    fast). Carries the prompt-budget knobs so the OpenAI-compat
+    client can defend against context-window overflow uniformly.
+
+    `context_window_tokens=None` disables the check (legacy /
+    don't-know-the-window deployments). When set, the boundary
+    enforces:
+
+        available_input_tokens =
+            context_window_tokens
+            - max_output_tokens     # reserved for the response
+            - safety_margin_tokens  # accounting for tokenizer drift
+
+    Estimated prompt tokens above `available_input_tokens` raise
+    `LLMContextOverflowError` BEFORE the HTTP request leaves J1 —
+    operators see an actionable J1 error instead of LM Studio's
+    terse 'Context size has been exceeded' HTTP 400.
+    """
+
+    # Total tokens the model can hold in one turn. Operator-supplied
+    # because we can't introspect it from the endpoint reliably
+    # across LM Studio / vLLM / OpenAI / etc. Set this to whatever
+    # the model card / `context_length` of the loaded model says.
+    context_window_tokens: int | None = None
+    # Conservative buffer to absorb tokenizer-estimate drift (we
+    # don't ship `tiktoken`; the fallback estimator is approximate).
+    # 256 is a safe default for ≤32K-window models; bump for
+    # tighter windows or when you know the prompts pack non-ASCII.
+    safety_margin_tokens: int = 256
+
+
+@dataclass(frozen=True)
+class TextLLMSettings(_BudgetedLLMSettings):
     temperature: float = 0.2
     max_output_tokens: int = 4096
 
 
 @dataclass(frozen=True)
-class VisionLLMSettings(_CommonLLMSettings):
+class VisionLLMSettings(_BudgetedLLMSettings):
     temperature: float = 0.1
     max_output_tokens: int = 4096
 
@@ -127,7 +166,7 @@ class EmbeddingSettings(_CommonLLMSettings):
 
 
 @dataclass(frozen=True)
-class FastLLMSettings(_CommonLLMSettings):
+class FastLLMSettings(_BudgetedLLMSettings):
     """FAST role — same shape as text but tighter defaults.
 
     Consumed by the adaptive ingestion planner for short structured
@@ -184,6 +223,8 @@ def _load_text_settings(env: Mapping[str, str]) -> TextLLMSettings:
         provider_config=_json(env, ENV_TEXT_LANGCHAIN_CONFIG),
         temperature=_float(env, ENV_TEXT_TEMPERATURE, 0.2),
         max_output_tokens=_int(env, ENV_TEXT_MAX_OUTPUT_TOKENS, 4096),
+        context_window_tokens=_int_or_none(env, ENV_TEXT_CONTEXT_WINDOW_TOKENS),
+        safety_margin_tokens=_int(env, ENV_TEXT_SAFETY_MARGIN_TOKENS, 256),
     )
 
 
@@ -199,6 +240,8 @@ def _load_vision_settings(env: Mapping[str, str]) -> VisionLLMSettings:
         provider_config=_json(env, ENV_VISION_LANGCHAIN_CONFIG),
         temperature=_float(env, ENV_VISION_TEMPERATURE, 0.1),
         max_output_tokens=_int(env, ENV_VISION_MAX_OUTPUT_TOKENS, 4096),
+        context_window_tokens=_int_or_none(env, ENV_VISION_CONTEXT_WINDOW_TOKENS),
+        safety_margin_tokens=_int(env, ENV_VISION_SAFETY_MARGIN_TOKENS, 256),
     )
 
 
@@ -221,6 +264,8 @@ def _load_fast_settings(env: Mapping[str, str]) -> FastLLMSettings:
         provider_config=_json(env, ENV_FAST_LANGCHAIN_CONFIG),
         temperature=_float(env, ENV_FAST_TEMPERATURE, 0.0),
         max_output_tokens=_int(env, ENV_FAST_MAX_OUTPUT_TOKENS, 512),
+        context_window_tokens=_int_or_none(env, ENV_FAST_CONTEXT_WINDOW_TOKENS),
+        safety_margin_tokens=_int(env, ENV_FAST_SAFETY_MARGIN_TOKENS, 256),
     )
 
 

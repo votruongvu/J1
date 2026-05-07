@@ -296,9 +296,19 @@ class _LLMBackedEnricher(_StructuredEnricher):
             text = content.decode("utf-8", errors="replace")
         except Exception:  # noqa: BLE001 — defensive, never observed
             text = ""
-        # Truncate aggressively — see _MAX_CONTENT_CHARS rationale.
+        # Char-cap as a first-line defence (the legacy behaviour) —
+        # caps wildly oversized inputs (a 5MB markdown file) at
+        # 20K chars before we hand it to the budget helper, which
+        # is O(log n) but no faster than not running on a 5MB body.
         body = text[:_MAX_CONTENT_CHARS]
         prompt = self._profile_prompt() or self._DEFAULT_PROMPT
+        # When the LLM client carries a context-window budget,
+        # shrink `body` further so prompt + schema + instructions
+        # fit. The 25% buffer accommodates the schema serialisation
+        # the `extract()` wrapper appends + safety drift in the
+        # fallback estimator. With no configured window this is a
+        # no-op (body stays at the char cap above).
+        body = self._fit_body_to_budget(body, prompt)
         full_prompt = (
             f"{prompt}\n\n"
             "Respond ONLY with JSON matching the schema. "
@@ -338,6 +348,64 @@ class _LLMBackedEnricher(_StructuredEnricher):
         items = parsed.get(self._OUTPUT_KEY) if isinstance(parsed, dict) else None
         json_data[self._OUTPUT_KEY] = list(items) if isinstance(items, list) else []
         return json_data, self._render_md(json_data)
+
+    # ---- Token-budget helpers -----------------------------------
+
+    def _fit_body_to_budget(self, body: str, profile_prompt: str) -> str:
+        """Shrink `body` so the assembled prompt fits the LLM's
+        configured context window (when one is set).
+
+        The prompt the enricher sends has three components:
+        `profile_prompt` (with schema appended by `extract()`),
+        boilerplate instructions, and `body`. Reserve a bookkeeping
+        budget for everything that ISN'T body and then truncate
+        body to fit. Falls back gracefully when no context window
+        is configured (returns body unchanged).
+        """
+        text_client = self._text_client
+        context_window = getattr(
+            getattr(text_client, "_settings", None),
+            "context_window_tokens", None,
+        )
+        if context_window is None:
+            # No budget configured — preserve legacy behaviour.
+            return body
+        from j1.llm.budget import (
+            TokenBudget,
+            estimate_tokens,
+            pack_text_for_budget,
+        )
+        settings = text_client._settings  # type: ignore[union-attr]
+        budget = TokenBudget(
+            context_window_tokens=context_window,
+            reserved_output_tokens=getattr(settings, "max_output_tokens", 0),
+            safety_margin_tokens=getattr(settings, "safety_margin_tokens", 0),
+        )
+        available = budget.available_input_tokens
+        if available is None or available <= 0:
+            return body
+        # Reserve room for the wrapper text the enricher appends
+        # AROUND the body (profile prompt, instructions, schema
+        # boilerplate). Estimating the actual schema cost would
+        # require the wrapped prompt the client builds — fine to
+        # over-estimate here since being conservative is the goal.
+        wrapper_tokens = estimate_tokens(profile_prompt) + estimate_tokens(
+            "Respond ONLY with JSON matching the schema. "
+            "Do not include prose around the JSON.\n\n---\n\n"
+        )
+        # Reserve an extra schema-serialisation margin: `extract()`
+        # serialises the JSON schema into the prompt, which can
+        # be 200-1500 tokens depending on shape. Use 25% of the
+        # available budget as a safe reservation.
+        schema_reserve = max(256, int(available * 0.25))
+        body_budget = available - wrapper_tokens - schema_reserve
+        if body_budget <= 0:
+            # The wrapper alone exceeds the budget — don't try to
+            # send anything; the boundary check will raise the
+            # actionable LLMContextOverflowError when the prompt
+            # is built.
+            return ""
+        return pack_text_for_budget(body, body_budget)
 
     # ---- Hooks subclasses customise -----------------------------
 

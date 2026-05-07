@@ -125,7 +125,51 @@ class _BaseOpenAICompatClient:
     def model(self) -> str:
         return self._settings.model
 
+    def _enforce_token_budget(self, body: Mapping[str, Any]) -> None:
+        """Pre-flight context-window check.
+
+        Only fires for chat-completion calls (`body["messages"]`).
+        Embedding calls skip — they have their own per-item token cap
+        (`max_input_tokens`) handled in `embed_batch`. When the role's
+        settings don't carry a `context_window_tokens` (legacy /
+        operator-didn't-set-it), the helper is a no-op so backwards
+        compatibility is preserved.
+        """
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return
+        context_window = getattr(
+            self._settings, "context_window_tokens", None,
+        )
+        if context_window is None:
+            return
+        # Late import keeps the budget module out of the cold path
+        # for callers that never trip the check (embeddings, no-context-
+        # window deployments).
+        from j1.llm.budget import TokenBudget, enforce_budget
+        budget = TokenBudget(
+            context_window_tokens=context_window,
+            reserved_output_tokens=getattr(
+                self._settings, "max_output_tokens", 0,
+            ),
+            safety_margin_tokens=getattr(
+                self._settings, "safety_margin_tokens", 0,
+            ),
+        )
+        enforce_budget(
+            messages=messages,
+            budget=budget,
+            model=self._settings.model,
+        )
+
     def _post(self, path: str, body: Mapping[str, Any]) -> Mapping[str, Any]:
+        # Pre-flight token-budget check. Raises
+        # `LLMContextOverflowError` BEFORE any HTTP request leaves
+        # J1 when the assembled prompt would exceed the configured
+        # context window. Replaces the HTTP-400-from-LM-Studio path
+        # with an actionable J1 error that names the relevant knobs.
+        self._enforce_token_budget(body)
+
         # Lazy import — httpx is in `[dev]` extras but should be
         # available wherever the framework actually runs.
         try:

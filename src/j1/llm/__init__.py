@@ -27,6 +27,7 @@ from j1.llm.clients import (
 )
 from j1.llm.errors import (
     LLMConfigError,
+    LLMContextOverflowError,
     LLMError,
     LLMProviderUnavailable,
     LLMRoleNotRegistered,
@@ -74,6 +75,7 @@ __all__ = [
     "LLM_ROLE_VISION",
     "LLMCapabilityError",
     "LLMConfigError",
+    "LLMContextOverflowError",
     "LLMError",
     "LLMProviderRegistry",
     "LLMProviderUnavailable",

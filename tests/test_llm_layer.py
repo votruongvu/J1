@@ -36,6 +36,7 @@ from j1.llm import (
     LLM_ROLE_VISION,
     LLMCapabilityError,
     LLMConfigError,
+    LLMContextOverflowError,
     LLMProviderRegistry,
     LLMProviderUnavailable,
     LLMRoleNotRegistered,
@@ -736,3 +737,133 @@ def test_non_404_4xx_still_raises_clean_error(monkeypatch):
     assert "https://api.example.com/v1/chat/completions" in msg
     # The version-segment hint is reserved for 404s.
     assert "Common causes" not in msg
+
+
+# ---- Token budget enforcement (Phase budget-1) ---------------------
+
+
+def test_text_client_no_op_when_no_context_window_configured(monkeypatch):
+    """Backward-compat: deployments without
+    `context_window_tokens` set must NOT see new errors. Big
+    prompts go through the same path they always did (tested
+    against a stub that records the body)."""
+    calls = _stub_httpx(monkeypatch, response_json={
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {},
+    })
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="m",
+        # context_window_tokens NOT set → check disabled
+    ))
+    huge = "x " * 5000
+    text, _usage = client.generate(huge)
+    assert text == "ok"
+    # The HTTP request actually went through.
+    assert len(calls) == 1
+
+
+def test_text_client_raises_overflow_before_http(monkeypatch):
+    """The headline regression: an oversized prompt against a
+    small configured window raises `LLMContextOverflowError`
+    BEFORE hitting the HTTP layer. The mock provider must NOT
+    receive the oversized payload."""
+    calls = _stub_httpx(monkeypatch, response_json={"choices": []})
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="tiny",
+        max_output_tokens=1024,
+        context_window_tokens=4096,
+        safety_margin_tokens=256,
+    ))
+
+    with pytest.raises(LLMContextOverflowError) as excinfo:
+        client.generate("alpha " * 4000)  # ~5500 tokens
+
+    # Critical: the boundary fired BEFORE the HTTP request.
+    assert calls == [], (
+        "boundary protection failed: oversized request reached the "
+        "HTTP layer (LM Studio would have returned a 400)"
+    )
+    err = excinfo.value
+    assert err.diagnostic["contextWindowTokens"] == 4096
+    assert err.diagnostic["model"] == "tiny"
+    # Message names actionable knobs.
+    msg = str(err).lower()
+    assert "context_window" in msg or "context window" in msg
+
+
+def test_text_client_passes_through_when_under_budget(monkeypatch):
+    """Boundary check enabled but prompt fits → no raise, request
+    goes through normally. Locks the contract that the budget
+    check doesn't accidentally block well-sized prompts."""
+    calls = _stub_httpx(monkeypatch, response_json={
+        "choices": [{"message": {"content": "answer"}}],
+        "usage": {},
+    })
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="m",
+        max_output_tokens=1024,
+        context_window_tokens=8192,
+        safety_margin_tokens=256,
+    ))
+    text, _ = client.generate("hello?")
+    assert text == "answer"
+    assert len(calls) == 1
+
+
+def test_text_client_raises_on_oversize_extract(monkeypatch):
+    """`extract()` is the prompt path enrichers + judge use. Same
+    boundary protection must fire there too — the budget check
+    sits at `_post`, common to all chat-completion call types."""
+    calls = _stub_httpx(monkeypatch, response_json={"choices": []})
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="tiny",
+        max_output_tokens=1024,
+        context_window_tokens=2048,
+    ))
+    with pytest.raises(LLMContextOverflowError):
+        client.extract(
+            "alpha " * 3000,
+            schema={"type": "object", "properties": {}},
+        )
+    assert calls == []
+
+
+def test_text_client_overflow_when_window_smaller_than_output(monkeypatch):
+    """Misconfiguration regression: window < max_output_tokens
+    means available input clamps to zero. EVERY call should fail
+    fast with the actionable error rather than appearing to work
+    on tiny prompts."""
+    calls = _stub_httpx(monkeypatch, response_json={"choices": []})
+    client = OpenAICompatTextLLMClient(TextLLMSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="m",
+        max_output_tokens=4096,
+        context_window_tokens=1024,  # smaller than output reserve
+        safety_margin_tokens=256,
+    ))
+    with pytest.raises(LLMContextOverflowError):
+        client.generate("hi")
+    assert calls == []
+
+
+def test_embedding_client_skips_chat_budget_check(monkeypatch):
+    """The boundary check is for `messages[]` payloads only. The
+    embeddings endpoint sends a different shape; the check must
+    not accidentally engage there."""
+    calls = _stub_httpx(monkeypatch, response_json={
+        "data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}],
+        "usage": {},
+    })
+    client = OpenAICompatEmbeddingClient(EmbeddingSettings(
+        provider="openai_compat",
+        base_url="https://x", api_key="k", model="m",
+        dimension=3,
+    ))
+    # Big text — no exception, request goes through.
+    vectors, _ = client.embed_batch(["x " * 1000])
+    assert len(vectors) == 1
+    assert len(calls) == 1
