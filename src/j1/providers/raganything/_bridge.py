@@ -262,15 +262,26 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # — the typical path for callers that haven't opted into the
     # runs surface — `attach_mineru_progress_handler` is a no-op.
     from j1.providers.raganything._log_bridge import attach_mineru_progress_handler
+    from j1.providers.raganything._persistent_loop import get_persistent_loop
 
+    # IMPORTANT: dispatch onto the process-persistent event loop.
+    # `asyncio.run(...)` would create a fresh loop per call and
+    # collide with LightRAG's module-level cached `asyncio.Lock`s,
+    # producing `RuntimeError: ... is bound to a different event
+    # loop` on the second compile invocation in the same worker
+    # process. See _persistent_loop.py for the full rationale.
+    loop = get_persistent_loop()
     try:
         with attach_mineru_progress_handler(
             request.progress_reporter, request.ctx, request.run_id or "",
         ):
-            asyncio.run(_run_compile())
+            loop.run_coroutine(_run_compile())
     except RuntimeError as exc:
         # "asyncio.run() cannot be called from a running event loop"
-        # is the most likely RuntimeError here.
+        # used to be the most likely RuntimeError here. We've moved
+        # off `asyncio.run` so this branch is mostly historical —
+        # leaving the actionable message in case some downstream
+        # callable still triggers nested-loop issues.
         if "running event loop" in str(exc):
             raise ProviderUnavailable(
                 "RAGAnything's async API can't be driven from inside a "
@@ -420,8 +431,13 @@ def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
             f"{type(rag).__name__}). Override via "
             "J1_RAGANYTHING_RETRIEVAL_PROCESSOR or query_callable=."
         )
+    # Same persistent-loop dispatch as default_compile — LightRAG's
+    # module-level cached locks must stay bound to one loop across
+    # calls. See _persistent_loop.py.
+    from j1.providers.raganything._persistent_loop import get_persistent_loop
+    loop = get_persistent_loop()
     try:
-        answer = asyncio.run(aquery(request.question, mode="hybrid"))
+        answer = loop.run_coroutine(aquery(request.question, mode="hybrid"))
     except RuntimeError as exc:
         if "running event loop" in str(exc):
             raise ProviderUnavailable(
