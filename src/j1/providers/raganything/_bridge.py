@@ -77,7 +77,16 @@ _log = logging.getLogger(__name__)
 # CPU core for tens of seconds even on a 10-character file. For these
 # extensions the bridge reads the bytes directly and feeds them to
 # LightRAG, skipping mineru entirely.
-_NATIVE_TEXT_EXTENSIONS = frozenset({".txt", ".md", ".markdown"})
+#
+# Kept in lock-step with `_PLAIN_TEXT_EXTENSIONS` in
+# `j1.processing.planning`. The planner uses the same set to pick the
+# `TEXT_ONLY` mode; if the bridge's set is narrower the planner routes
+# (e.g.) `.rst` / `.log` files through the slow MinerU path instead of
+# the fast plaintext path. Touch both files together when adding a
+# new extension.
+_NATIVE_TEXT_EXTENSIONS = frozenset({
+    ".txt", ".md", ".markdown", ".rst", ".log",
+})
 
 
 class _LibreOfficeConversionError(RuntimeError):
@@ -862,7 +871,7 @@ async def _insert_plain_text_directly(
         try:
             await mark(document_id)
         except Exception:  # noqa: BLE001 — bookkeeping must not fail compile
-            _log.debug("doc-status bookkeeping failed (non-fatal)", exc_info=True)
+            _log.warning("doc-status bookkeeping failed (non-fatal)", exc_info=True)
 
     # Persist the text so the standard output-dir draft walker picks it up.
     out_path = output_dir / f"{document_id}.md"
@@ -918,7 +927,7 @@ async def _insert_pdf_text_directly(
         try:
             await mark(document_id)
         except Exception:  # noqa: BLE001
-            _log.debug("doc-status bookkeeping failed (non-fatal)", exc_info=True)
+            _log.warning("doc-status bookkeeping failed (non-fatal)", exc_info=True)
 
     # Persist the extracted text for the draft walker.
     out_path = output_dir / f"{document_id}.md"

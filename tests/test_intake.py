@@ -8,12 +8,14 @@ from j1.audit.sink import AUDIT_LOG_FILENAME
 from j1.errors.exceptions import (
     DuplicateDocumentError,
     IntakeError,
+    UnsupportedFileTypeError,
     UploadTooLargeError,
 )
 from j1.intake.service import (
     ACTION_DUPLICATE,
     ACTION_REGISTERED,
     CHECKSUM_PREFIX,
+    DEFAULT_ALLOWED_UPLOAD_EXTENSIONS,
     DEFAULT_MAX_UPLOAD_BYTES,
     DocumentIntakeService,
 )
@@ -171,7 +173,9 @@ def test_audit_event_written_on_duplicate(intake_service, workspace, ctx, tmp_pa
 
 
 def test_explicit_mime_type_wins(intake_service, ctx, tmp_path):
-    src = _write_sample(tmp_path, "doc.bin")
+    # Use an allow-listed extension so the test exercises the
+    # explicit-mime override rather than the extension boundary.
+    src = _write_sample(tmp_path, "doc.txt")
     record = intake_service.register_from_path(
         ctx, src, mime_type="application/x-custom"
     )
@@ -246,5 +250,72 @@ def test_undersize_stream_passes_with_cap(
     )
     record = intake.register_from_stream(
         ctx, io.BytesIO(b"small"), original_filename="ok.txt",
+    )
+    assert record.file_size == 5
+
+
+# ---- Extension allow-list (regression: C11) -----------------------
+
+
+def _intake_with_allowed(
+    workspace, registry, audit_sink, fixed_clock, id_factory, allowed,
+):
+    return DocumentIntakeService(
+        workspace=workspace,
+        registry=registry,
+        audit_sink=audit_sink,
+        clock=fixed_clock,
+        id_factory=id_factory,
+        allowed_extensions=allowed,
+    )
+
+
+def test_default_allow_list_includes_pdf_and_text():
+    assert ".pdf" in DEFAULT_ALLOWED_UPLOAD_EXTENSIONS
+    assert ".txt" in DEFAULT_ALLOWED_UPLOAD_EXTENSIONS
+    assert ".md" in DEFAULT_ALLOWED_UPLOAD_EXTENSIONS
+
+
+def test_disallowed_extension_raises_typed_error(
+    workspace, registry, audit_sink, fixed_clock, id_factory, ctx,
+):
+    intake = _intake_with_allowed(
+        workspace, registry, audit_sink, fixed_clock, id_factory,
+        allowed=(".txt", ".md"),
+    )
+    with pytest.raises(UnsupportedFileTypeError) as excinfo:
+        intake.register_from_stream(
+            ctx, io.BytesIO(b"hi"), original_filename="malicious.exe",
+        )
+    err = excinfo.value
+    assert err.extension == ".exe"
+    assert ".txt" in err.allowed_extensions
+    # No bytes written for a rejected type.
+    assert list(workspace.raw(ctx).iterdir()) == [] if workspace.raw(ctx).exists() else True
+
+
+def test_extension_check_is_case_insensitive(
+    workspace, registry, audit_sink, fixed_clock, id_factory, ctx,
+):
+    intake = _intake_with_allowed(
+        workspace, registry, audit_sink, fixed_clock, id_factory,
+        allowed=(".PDF",),  # operator wrote uppercase in env
+    )
+    record = intake.register_from_stream(
+        ctx, io.BytesIO(b"bytes"), original_filename="upload.pdf",
+    )
+    assert record.original_filename == "upload.pdf"
+
+
+def test_empty_allow_list_disables_boundary(
+    workspace, registry, audit_sink, fixed_clock, id_factory, ctx,
+):
+    """Operator opt-out: pass an empty tuple to accept anything."""
+    intake = _intake_with_allowed(
+        workspace, registry, audit_sink, fixed_clock, id_factory,
+        allowed=(),
+    )
+    record = intake.register_from_stream(
+        ctx, io.BytesIO(b"bytes"), original_filename="anything.weird",
     )
     assert record.file_size == 5

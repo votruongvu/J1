@@ -9,7 +9,10 @@ way to wire it.
 import os
 from collections.abc import Mapping
 
-from j1.intake.service import DEFAULT_MAX_UPLOAD_BYTES
+from j1.intake.service import (
+    DEFAULT_ALLOWED_UPLOAD_EXTENSIONS,
+    DEFAULT_MAX_UPLOAD_BYTES,
+)
 from j1 import (
     AccountingActivities,
     AnswerService,
@@ -91,6 +94,21 @@ def _resolve_max_upload_bytes() -> int:
     return value if value > 0 else DEFAULT_MAX_UPLOAD_BYTES
 
 
+def _resolve_allowed_upload_extensions() -> tuple[str, ...]:
+    """Resolve the upload allow-list, honouring
+    `J1_ALLOWED_UPLOAD_EXTENSIONS` (comma-separated, with or without
+    leading dots). The literal value `*` disables the boundary
+    (allow-anything mode); empty / unset uses the framework default.
+    """
+    raw = os.environ.get("J1_ALLOWED_UPLOAD_EXTENSIONS", "").strip()
+    if not raw:
+        return DEFAULT_ALLOWED_UPLOAD_EXTENSIONS
+    if raw == "*":
+        return ()
+    parts = [p.strip() for p in raw.split(",")]
+    return tuple(p for p in parts if p)
+
+
 def build_settings() -> Settings:
     """Reads `J1_DATA_ROOT` and friends from the process environment."""
     from j1.config.settings import load_settings
@@ -121,6 +139,7 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     intake = DocumentIntakeService(
         workspace=workspace, registry=sources, audit_sink=audit_sink,
         max_upload_bytes=_resolve_max_upload_bytes(),
+        allowed_extensions=_resolve_allowed_upload_extensions(),
     )
     processing = ProcessingService(
         workspace=workspace, artifact_registry=artifacts,
@@ -367,6 +386,7 @@ def build_worker_spec(
     intake = DocumentIntakeService(
         workspace=workspace, registry=sources, audit_sink=audit_sink,
         max_upload_bytes=_resolve_max_upload_bytes(),
+        allowed_extensions=_resolve_allowed_upload_extensions(),
     )
     processing = ProcessingService(
         workspace=workspace, artifact_registry=artifacts,

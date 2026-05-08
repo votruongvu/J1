@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -133,6 +134,7 @@ from j1.errors.exceptions import (
     InvalidIdentifierError,
     J1Error,
     PathTraversalError,
+    UnsupportedFileTypeError,
     UploadTooLargeError,
 )
 from j1.integration.dto import (
@@ -204,9 +206,40 @@ def _default_context_resolver(request: Request) -> ProjectContext:
             detail=f"{TENANT_HEADER} and {PROJECT_HEADER} headers required",
         )
     try:
-        return ProjectContext(tenant_id=tenant_id, project_id=project_id)
+        ctx = ProjectContext(tenant_id=tenant_id, project_id=project_id)
     except InvalidIdentifierError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _enforce_tenant_binding(request, ctx)
+    return ctx
+
+
+def _enforce_tenant_binding(request: Request, ctx: ProjectContext) -> None:
+    """Reject `X-Tenant-Id` headers that don't match an authenticated
+    key's tenant binding.
+
+    When a deployment configures `J1_AUTH_API_KEYS` and binds a key
+    to a specific tenant, the request's `X-Tenant-Id` header MUST
+    match that binding. Anonymous keys (`tenant_id=None`) and
+    unauthenticated requests pass through — those code paths are
+    governed by scope checks, not tenant-pinning.
+
+    Without this check, an authenticated key bound to tenant A could
+    pass `X-Tenant-Id: B` and access tenant B's data; the per-tenant
+    workspace path scoping doesn't catch it because the path is
+    derived from the (now-mismatched) header value.
+    """
+    security = getattr(request.state, "security_context", None)
+    if security is None or security.tenant_id is None:
+        return
+    if security.tenant_id != ctx.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"credential is bound to tenant "
+                f"{security.tenant_id!r}; cannot operate on tenant "
+                f"{ctx.tenant_id!r}"
+            ),
+        )
 
 
 def _install_openapi_security(
@@ -421,6 +454,25 @@ def create_rest_api(
     # happens in `_security_middleware` below.
     if policy.enabled:
         _install_openapi_security(app, anonymous_paths=policy.anonymous_paths)
+    else:
+        # Insecure-by-default trap: when no `authenticator` is wired,
+        # the scope-required dependency factory no-ops, so admin
+        # endpoints (POST /projects, review decisions, control
+        # signals) run anonymously. Surface a loud one-time warning at
+        # startup so a missing `J1_AUTH_API_KEYS` doesn't sail past
+        # operations review. Operators who deliberately want
+        # anonymous mode (local dev, ephemeral test stacks) suppress
+        # the warning by setting `J1_ALLOW_ANONYMOUS_ADMIN=1`.
+        if os.environ.get("J1_ALLOW_ANONYMOUS_ADMIN", "").strip() not in (
+            "1", "true", "True", "yes",
+        ):
+            _log.warning(
+                "auth disabled: no authenticator configured; admin "
+                "endpoints (POST /projects, /reviews/*/decision, "
+                "ingestion-job control signals) run anonymously. "
+                "Set J1_AUTH_API_KEYS to require credentials, or set "
+                "J1_ALLOW_ANONYMOUS_ADMIN=1 to suppress this warning."
+            )
 
     # ---- Middleware --------------------------------------------------
     # Registration order matters: the last-registered middleware is the
@@ -536,6 +588,25 @@ def create_rest_api(
             details={
                 "sizeBytes": exc.size_bytes,
                 "maxBytes": exc.max_bytes,
+            },
+        )
+
+    @app.exception_handler(UnsupportedFileTypeError)
+    async def _unsupported_file_type(
+        request, exc: UnsupportedFileTypeError,
+    ) -> JSONResponse:
+        # Boundary check runs before the streaming copy — a rejected
+        # type doesn't even get bytes written to disk. 415 carries
+        # the offending suffix and the allow-list so the FE can show
+        # the user a precise error.
+        return error_response(
+            status_code=415,
+            code="UNSUPPORTED_FILE_TYPE",
+            message=str(exc),
+            request_id=_req_id(request),
+            details={
+                "extension": exc.extension,
+                "allowedExtensions": list(exc.allowed_extensions),
             },
         )
 

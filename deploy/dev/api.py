@@ -144,6 +144,13 @@ def _build_app():
     job_control = TemporalJobControlService(
         client_provider=client_provider,
         task_queue=temporal_settings.task_queue,
+        # Idempotent bulk-job start: a duplicate `POST /ingestion-jobs`
+        # (operator double-click, retry after a network blip) attaches
+        # to the in-flight workflow instead of spawning a parallel
+        # one. Without this, two parallel workflows would re-process
+        # every PENDING document — doubling parse cost and racing the
+        # registry writes.
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
     )
     job_status = TemporalJobStatusService(client_provider=client_provider)
 

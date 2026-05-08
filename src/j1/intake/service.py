@@ -13,6 +13,7 @@ from j1.documents.models import DocumentRecord
 from j1.errors.exceptions import (
     DuplicateDocumentError,
     IntakeError,
+    UnsupportedFileTypeError,
     UploadTooLargeError,
 )
 from j1.intake.registry import SourceRegistry
@@ -34,6 +35,35 @@ _CHUNK_SIZE = 64 * 1024
 # don't disagree.
 DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
+# Default allow-list for upload filename extensions. Tracks the
+# Execution Console's `accept=` attribute plus the planner's plain-
+# text extensions, so the boundary accepts every shape the bundled
+# pipeline knows how to compile. Operators with broader / narrower
+# needs override via the `allowed_extensions=` constructor arg
+# (typically wired from `J1_ALLOWED_UPLOAD_EXTENSIONS`). Pass an
+# empty tuple to disable the boundary check entirely; pass the
+# default to keep it.
+DEFAULT_ALLOWED_UPLOAD_EXTENSIONS: tuple[str, ...] = (
+    # Documents
+    ".pdf",
+    ".docx",
+    ".doc",
+    # Spreadsheets / tables (compile path supports these)
+    ".xlsx",
+    ".xls",
+    ".csv",
+    ".ods",
+    # Web
+    ".html",
+    ".htm",
+    # Plain text (planner's `_PLAIN_TEXT_EXTENSIONS`)
+    ".txt",
+    ".md",
+    ".markdown",
+    ".rst",
+    ".log",
+)
+
 
 def _default_clock() -> datetime:
     return datetime.now(timezone.utc)
@@ -52,6 +82,7 @@ class DocumentIntakeService:
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
         max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+        allowed_extensions: tuple[str, ...] = DEFAULT_ALLOWED_UPLOAD_EXTENSIONS,
     ) -> None:
         self._workspace = workspace
         self._registry = registry
@@ -59,6 +90,13 @@ class DocumentIntakeService:
         self._clock = clock or _default_clock
         self._id_factory = id_factory or _default_id
         self._max_upload_bytes = max_upload_bytes
+        # Empty tuple = boundary disabled. Otherwise normalise to
+        # lowercase + leading dot so the check is case-insensitive
+        # (`.PDF` and `.pdf` map to the same allow entry).
+        self._allowed_extensions: frozenset[str] = frozenset(
+            ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+            for ext in allowed_extensions
+        )
 
     def register_from_path(
         self,
@@ -114,6 +152,7 @@ class DocumentIntakeService:
         actor: str,
         correlation_id: str | None,
     ) -> DocumentRecord:
+        self._enforce_extension(original_filename)
         raw_dir = self._workspace.raw(ctx)
         raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -183,6 +222,29 @@ class DocumentIntakeService:
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
             raise
+
+    def _enforce_extension(self, original_filename: str) -> None:
+        """Reject filenames whose extension isn't in the allow-list.
+
+        Empty allow-list disables the boundary entirely (operator
+        opt-out). Otherwise compares case-insensitively. Raised
+        before the streaming copy starts so an oversize-of-the-wrong-
+        type upload doesn't waste bytes — the typed error surfaces as
+        a 415 at the REST adapter.
+        """
+        if not self._allowed_extensions:
+            return
+        suffix = Path(original_filename).suffix.lower()
+        if suffix in self._allowed_extensions:
+            return
+        # Sort the allowed set for a deterministic message (tests +
+        # operator-readable response details).
+        allowed_sorted = tuple(sorted(self._allowed_extensions))
+        raise UnsupportedFileTypeError(
+            f"file extension {suffix!r} is not in the upload allow-list",
+            extension=suffix,
+            allowed_extensions=allowed_sorted,
+        )
 
     def _emit_registered(
         self,

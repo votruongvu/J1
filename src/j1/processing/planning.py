@@ -301,9 +301,12 @@ class IngestPlanner:
 
 
 # Plain-text extensions where compile + index is always sufficient.
-# Mirrors `_NATIVE_TEXT_EXTENSIONS` in the raganything bridge — kept
-# in sync at review time, not via import (the planner intentionally
-# has no dependency on any specific provider).
+# Kept in lock-step with `_NATIVE_TEXT_EXTENSIONS` in
+# `j1.providers.raganything._bridge` (the planner intentionally has
+# no import dependency on any specific provider). Touch both files
+# together when adding a new extension; the bridge file's comment
+# explains why a mismatch routes plaintext through the slow MinerU
+# path instead of the fast direct-feed.
 _PLAIN_TEXT_EXTENSIONS: frozenset[str] = frozenset({
     ".txt", ".md", ".markdown", ".rst", ".log",
 })

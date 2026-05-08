@@ -613,7 +613,7 @@ class IngestionValidationService:
                 },
             )
         except Exception:  # noqa: BLE001
-            _log.debug("audit write failed for set generation", exc_info=True)
+            _log.warning("audit write failed for set generation", exc_info=True)
 
     def _audit_verdict_recorded(
         self,
@@ -644,7 +644,7 @@ class IngestionValidationService:
                 },
             )
         except Exception:  # noqa: BLE001
-            _log.debug("audit write failed for verdict recording", exc_info=True)
+            _log.warning("audit write failed for verdict recording", exc_info=True)
 
     def _audit_run_completed(
         self,
@@ -675,7 +675,7 @@ class IngestionValidationService:
                 },
             )
         except Exception:  # noqa: BLE001
-            _log.debug("audit write failed for run completion", exc_info=True)
+            _log.warning("audit write failed for run completion", exc_info=True)
 
     # ---- Internals -----------------------------------------------------
 
@@ -727,7 +727,7 @@ class IngestionValidationService:
             )
         except Exception:  # noqa: BLE001
             # Telemetry never fails the user-facing call.
-            _log.debug("audit write failed for manual test query", exc_info=True)
+            _log.warning("audit write failed for manual test query", exc_info=True)
 
 
 # ---- Module-level helpers (easy to unit-test) --------------------------

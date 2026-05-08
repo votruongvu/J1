@@ -577,11 +577,20 @@ class ProcessingActivities:
             return
         if run is None or run.is_terminal():
             return
-        # Don't regress the run away from a stickier in-flight status
-        # (e.g. PLAN_READY / WAITING_FOR_CONFIRMATION). RUNNING wins
-        # only over CREATED / ASSESSING.
+        # Forward-only status promotion. Once the workflow advances
+        # past the confirm gate, the next activity legitimately moves
+        # PLAN_READY / WAITING_FOR_CONFIRMATION → RUNNING; without the
+        # transitional states in this set the run stays visually
+        # stuck at PLAN_READY until terminal. CANCELLING and PAUSED
+        # are deliberately omitted: an in-flight activity must not
+        # un-cancel or un-pause a run that operations explicitly
+        # halted.
         promote_from = (
-            RunStatus.CREATED, RunStatus.ASSESSING, RunStatus.RUNNING,
+            RunStatus.CREATED,
+            RunStatus.ASSESSING,
+            RunStatus.PLAN_READY,
+            RunStatus.WAITING_FOR_CONFIRMATION,
+            RunStatus.RUNNING,
         )
         if run.status in promote_from:
             run.status = status
@@ -594,6 +603,15 @@ class ProcessingActivities:
             run.progress_percent = max(run.progress_percent, progress_percent)
         run.updated_at = datetime.now(timezone.utc)
         try:
+            # Re-read immediately before upsert. The JSONL store is
+            # append-only with last-snapshot semantics, so a workflow
+            # finalize that writes a terminal status between our
+            # initial read (line 575) and this point would otherwise
+            # be clobbered by our non-terminal write. Cheap re-read
+            # tightens (but doesn't eliminate) the race window.
+            latest = self._run_store.get(ctx, run_id)
+            if latest is not None and latest.is_terminal():
+                return
             self._run_store.upsert(ctx, run)
         except Exception:  # noqa: BLE001 — telemetry never blocks ingest
             pass
