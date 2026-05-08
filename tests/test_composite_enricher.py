@@ -555,15 +555,17 @@ def test_default_keeps_every_child_when_no_modality_flags(default_profile):
     assert len(composite._enrichers) == len(GENERIC_ENRICHERS)
 
 
-def test_images_disabled_drops_visual_content_describer(default_profile):
+def test_images_alone_off_keeps_visual_describer(default_profile):
+    """The three visual flags collectively gate VCD. With only
+    `images=False` and the other two unset (None), VCD still runs
+    because diagrams / scanned_pages haven't been opted out."""
     composite = CompositeEnricher.from_default(
         default_profile, images_enabled=False,
     )
     child_classes = {type(c) for c in composite._enrichers}
-    assert VisualContentDescriber not in child_classes
-    # Non-image enrichers still run.
+    assert VisualContentDescriber in child_classes
     assert TableExtractor in child_classes
-    assert len(composite._enrichers) == len(GENERIC_ENRICHERS) - 1
+    assert len(composite._enrichers) == len(GENERIC_ENRICHERS)
 
 
 def test_tables_disabled_drops_table_extractor(default_profile):
@@ -576,10 +578,15 @@ def test_tables_disabled_drops_table_extractor(default_profile):
     assert len(composite._enrichers) == len(GENERIC_ENRICHERS) - 1
 
 
-def test_both_modalities_disabled_drops_both(default_profile):
+def test_all_visual_off_plus_tables_off_drops_both(default_profile):
+    """Master visual kill switch: all three visual flags False
+    drops VCD. Combined with tables=False both visuals + tables
+    sub-enrichers are removed."""
     composite = CompositeEnricher.from_default(
         default_profile,
         images_enabled=False,
+        diagrams_enabled=False,
+        scanned_pages_enabled=False,
         tables_enabled=False,
     )
     child_classes = {type(c) for c in composite._enrichers}
@@ -600,3 +607,33 @@ def test_explicit_true_keeps_modality(default_profile):
     child_classes = {type(c) for c in composite._enrichers}
     assert TableExtractor in child_classes
     assert VisualContentDescriber in child_classes
+
+
+def test_visual_describer_runs_when_only_diagrams_enabled(default_profile):
+    """The three visual flags collectively gate VCD: any True keeps
+    it. Operator with `images=false, diagrams=true, scanned=false`
+    still gets visual enrichment because diagrams need it."""
+    composite = CompositeEnricher.from_default(
+        default_profile,
+        images_enabled=False,
+        diagrams_enabled=True,
+        scanned_pages_enabled=False,
+    )
+    child_classes = {type(c) for c in composite._enrichers}
+    assert VisualContentDescriber in child_classes
+
+
+def test_visual_describer_dropped_only_when_all_three_visual_flags_off(
+    default_profile,
+):
+    """When images AND diagrams AND scanned_pages are explicitly
+    False, the visual describer is dropped — that's the operator-
+    facing 'kill all visual enrichment' semantic."""
+    composite = CompositeEnricher.from_default(
+        default_profile,
+        images_enabled=False,
+        diagrams_enabled=False,
+        scanned_pages_enabled=False,
+    )
+    child_classes = {type(c) for c in composite._enrichers}
+    assert VisualContentDescriber not in child_classes

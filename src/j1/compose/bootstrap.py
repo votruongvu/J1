@@ -245,12 +245,12 @@ class Bootstrap:
         # scanned page; both are billable. Honor the opt-out by
         # forcing `parse_method=txt` so MinerU skips OCR entirely —
         # but only when the operator left `J1_RAGANYTHING_PARSE_METHOD`
-        # at its default (`auto`). If they explicitly chose a method,
+        # at its default ("auto"). If they explicitly chose a method,
         # respect that; the explicit value wins over the higher-level
         # enrichment kill switch.
         if (
             not enrichment.scanned_pages
-            and raganything_settings.parse_method == DEFAULT_PARSE_METHOD_VALUE
+            and raganything_settings.parse_method == "auto"
         ):
             from dataclasses import replace as _replace
             raganything_settings = _replace(
