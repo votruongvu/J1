@@ -540,3 +540,63 @@ def test_composite_forwards_all_three_clients_independently(default_profile):
         assert not hasattr(child, "_vision_client"), (
             f"{type(child).__name__} unexpectedly carries _vision_client"
         )
+
+
+# ---- Per-modality kill switches (J1_ENRICH_IMAGES / _TABLES) -----
+
+
+def test_default_keeps_every_child_when_no_modality_flags(default_profile):
+    """Sanity: existing callers that don't pass per-modality flags
+    get the legacy "run everything" composite."""
+    composite = CompositeEnricher.from_default(default_profile)
+    child_classes = {type(c) for c in composite._enrichers}
+    assert TableExtractor in child_classes
+    assert VisualContentDescriber in child_classes
+    assert len(composite._enrichers) == len(GENERIC_ENRICHERS)
+
+
+def test_images_disabled_drops_visual_content_describer(default_profile):
+    composite = CompositeEnricher.from_default(
+        default_profile, images_enabled=False,
+    )
+    child_classes = {type(c) for c in composite._enrichers}
+    assert VisualContentDescriber not in child_classes
+    # Non-image enrichers still run.
+    assert TableExtractor in child_classes
+    assert len(composite._enrichers) == len(GENERIC_ENRICHERS) - 1
+
+
+def test_tables_disabled_drops_table_extractor(default_profile):
+    composite = CompositeEnricher.from_default(
+        default_profile, tables_enabled=False,
+    )
+    child_classes = {type(c) for c in composite._enrichers}
+    assert TableExtractor not in child_classes
+    assert VisualContentDescriber in child_classes
+    assert len(composite._enrichers) == len(GENERIC_ENRICHERS) - 1
+
+
+def test_both_modalities_disabled_drops_both(default_profile):
+    composite = CompositeEnricher.from_default(
+        default_profile,
+        images_enabled=False,
+        tables_enabled=False,
+    )
+    child_classes = {type(c) for c in composite._enrichers}
+    assert TableExtractor not in child_classes
+    assert VisualContentDescriber not in child_classes
+    assert len(composite._enrichers) == len(GENERIC_ENRICHERS) - 2
+
+
+def test_explicit_true_keeps_modality(default_profile):
+    """Passing `True` is the same as the default `None` — modality
+    runs. Locked here so a future refactor that flips the flag's
+    meaning can't silently regress."""
+    composite = CompositeEnricher.from_default(
+        default_profile,
+        images_enabled=True,
+        tables_enabled=True,
+    )
+    child_classes = {type(c) for c in composite._enrichers}
+    assert TableExtractor in child_classes
+    assert VisualContentDescriber in child_classes
