@@ -79,14 +79,36 @@ def test_default_retry_excludes_validation_and_config_errors():
         assert name in policy.non_retryable_error_types
 
 
-def test_default_retry_keeps_provider_and_network_errors_retryable():
-    """Counter-test: transient errors (provider 5xx, connection
-    blips) MUST stay retryable so we don't lose resilience."""
+def test_default_retry_keeps_transient_network_errors_retryable():
+    """Counter-test: actually-transient errors (connection blips,
+    HTTP timeouts, LLM endpoint 5xx) MUST stay retryable so we don't
+    lose resilience. Note `LLMProviderUnavailable` covers the HTTP
+    transient path; the related `ProviderUnavailable` covers
+    permanent vendor-init failures and IS non-retryable (see
+    `test_default_retry_excludes_provider_init_failures`)."""
     policy = DEFAULT_RETRY.to_temporal()
     for transient_name in (
         "ConnectionError",
         "TimeoutError",
-        "ProviderUnavailable",
+        "LLMProviderUnavailable",
         "HTTPError",
     ):
         assert transient_name not in policy.non_retryable_error_types
+
+
+def test_default_retry_excludes_provider_init_failures():
+    """Regression for C7: `ProviderUnavailable` is raised for
+    deterministic vendor-init failures (vendor module not installed,
+    LibreOffice binary missing, persistent loop dead). Retrying with
+    the same env burns the budget for nothing."""
+    policy = DEFAULT_RETRY.to_temporal()
+    assert "ProviderUnavailable" in policy.non_retryable_error_types
+
+
+def test_default_retry_excludes_deterministic_llm_errors():
+    """Regression for C7: context overflow is a pure function of
+    the prompt; missing LLM role is a config error. Both reproduce
+    on every retry — exclude from the budget."""
+    policy = DEFAULT_RETRY.to_temporal()
+    for name in ("LLMContextOverflowError", "LLMRoleNotRegistered"):
+        assert name in policy.non_retryable_error_types

@@ -4,8 +4,11 @@
  * fixed during the integration audit:
  *
  *   - Backend `RunStatus` is lowercase on the wire (StrEnum). The
- *     translator must upper-case it AND remap SUCCEEDED →
- *     COMPLETED so the existing display map continues to work.
+ *     translator must upper-case it. It does NOT collapse
+ *     `SUCCEEDED → COMPLETED`: predicate sets in
+ *     `lib/constants/runStatus.ts` carry both spellings, and a
+ *     collapse silently disables status checks against the
+ *     `SUCCEEDED` constants.
  *   - The backend wraps unknown payload keys into `metadata` as a
  *     plain dict, which preserves snake_case (`failure_code`,
  *     `failure_message`, `error_type`, `error_message`, `reason`,
@@ -39,8 +42,14 @@ describe("runFromApi", () => {
     expect(run.status).toBe("RUNNING");
   });
 
-  it("remaps SUCCEEDED → COMPLETED so the display map matches", () => {
-    const completed = runFromApi({
+  it("preserves both SUCCEEDED and COMPLETED spellings (no collapse)", () => {
+    // Regression for C13: the translator used to collapse
+    // SUCCEEDED → COMPLETED, REQUIRES_HUMAN_REVIEW → AWAITING_HUMAN_REVIEW,
+    // which silently broke any FE check against `RUN_STATUS.SUCCEEDED`
+    // / `RUN_STATUS.REQUIRES_HUMAN_REVIEW`. The display map and the
+    // predicate sets handle both spellings, so the translator only
+    // needs to upper-case.
+    const succeeded = runFromApi({
       runId: "r1",
       documentId: "d1",
       workflowId: "r1",
@@ -51,7 +60,7 @@ describe("runFromApi", () => {
       progressPercent: 100,
       warningCount: 0,
     });
-    expect(completed.status).toBe("COMPLETED");
+    expect(succeeded.status).toBe("SUCCEEDED");
 
     const warned = runFromApi({
       runId: "r1",
@@ -63,7 +72,7 @@ describe("runFromApi", () => {
       progressPercent: 100,
       warningCount: 2,
     });
-    expect(warned.status).toBe("COMPLETED_WITH_WARNINGS");
+    expect(warned.status).toBe("SUCCEEDED_WITH_WARNINGS");
 
     const review = runFromApi({
       runId: "r1",
@@ -75,7 +84,7 @@ describe("runFromApi", () => {
       progressPercent: 80,
       warningCount: 0,
     });
-    expect(review.status).toBe("AWAITING_HUMAN_REVIEW");
+    expect(review.status).toBe("REQUIRES_HUMAN_REVIEW");
   });
 
   it("populates final.failure_* from camelCase top-level fields", () => {
@@ -128,7 +137,7 @@ describe("runListItemFromApi", () => {
       updatedAt: "2026-05-01T00:00:01Z",
     });
     expect(item.documentName).toBe("doc-1");
-    expect(item.status).toBe("COMPLETED");
+    expect(item.status).toBe("SUCCEEDED");
   });
 
   it("threads mode/policy through and falls back when missing", () => {

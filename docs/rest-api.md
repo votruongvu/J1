@@ -166,6 +166,7 @@ call.
 | `ARTIFACT_NOT_FOUND`  | 404     | `ArtifactNotFoundError`                     |
 | `REVIEW_ITEM_NOT_FOUND` | 404   | `ReviewItemNotFoundError`                   |
 | `REVIEW_NOT_FOUND`    | 404     | `ingestion_review.ReviewNotFound` — raised by the result-review surface (`/ingestion-runs/{id}/summary`, …); covers missing run AND cross-tenant access (uniform 404 to avoid existence leak) |
+| `UPLOAD_TOO_LARGE`    | 413     | `UploadTooLargeError` — multipart upload exceeded the configured `J1_MAX_UPLOAD_BYTES` cap (default 200 MiB). Response `details` carries `sizeBytes` and `maxBytes` so the client can render an actionable message. |
 | `APPLICATION_ERROR`   | 400     | Temporal `ApplicationError`                 |
 | `J1_ERROR`            | 400     | Any other `J1Error` subclass                |
 

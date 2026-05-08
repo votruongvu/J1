@@ -170,6 +170,66 @@ def test_get_status_exposes_final_status_only_after_terminal_exit(monkeypatch):
     assert post.final_status == FinalStatus.COMPLETED
 
 
+# ---- Completion validator (regression: C8) ------------------------
+#
+# `_validate_completion` is the last-mile gate that catches false-
+# success runs: degenerate cases the per-stage error handling
+# doesn't cover. Unit-tested here against a hand-built workflow
+# instance because the surrounding flow is too long to drive end-to-
+# end for one small predicate.
+
+
+def _validator_request(*, indexer_kind: str | None) -> ProjectProcessingRequest:
+    return ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        indexer_kind=indexer_kind,
+    )
+
+
+def test_validate_completion_flags_index_skipped_when_indexer_requested():
+    """C8 regression: indexer_kind set + artifacts produced + no
+    index StepResult ⇒ false-success. The validator catches it so
+    the workflow lands in FAILED instead of SUCCEEDED."""
+    wf = ProjectProcessingWorkflow()
+    wf._produced_artifact_ids = ["art-1"]
+    # Compile recorded; index never ran.
+    wf._step_results = []
+    errors = wf._validate_completion(_validator_request(indexer_kind="i"))
+    assert errors, "expected validation to surface the missing index step"
+    assert any("indexer_kind is set" in e for e in errors)
+
+
+def test_validate_completion_passes_when_index_completed():
+    """Sibling positive path: indexer_kind set + artifacts produced +
+    an index StepResult of COMPLETED ⇒ no validation error."""
+    from j1.processing.step_result import StepResult
+    wf = ProjectProcessingWorkflow()
+    wf._produced_artifact_ids = ["art-1"]
+    wf._step_results = [
+        StepResult(
+            step="index",
+            status=StepStatus.COMPLETED,
+            required=True,
+            source=StepSource.CALLER,
+            artifact_count=1,
+        ),
+    ]
+    errors = wf._validate_completion(_validator_request(indexer_kind="i"))
+    assert errors == []
+
+
+def test_validate_completion_skips_index_check_when_indexer_not_requested():
+    """When the caller doesn't set indexer_kind, no index step is
+    expected. The validator must not synthesise a false error."""
+    wf = ProjectProcessingWorkflow()
+    wf._produced_artifact_ids = ["art-1"]
+    wf._step_results = []
+    errors = wf._validate_completion(_validator_request(indexer_kind=None))
+    # The "no artifacts" branch doesn't fire either since we set one.
+    assert errors == []
+
+
 # ---- Step records survive the workflow's raise --------------------
 
 
