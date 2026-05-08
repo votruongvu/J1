@@ -198,10 +198,21 @@ def _build_app():
     # with `build_worker_spec`'s registrations — if a kind ships in
     # the worker but isn't surfaced here, FE uploads won't auto-pick
     # it and the corresponding stage stays unrunnable.
+    #
+    # When `J1_ENRICH_ENABLED=false`, omit the enricher kind entirely
+    # so `_resolve_optional_processor_kind` returns None and the
+    # workflow's `_stage_enabled` skips enrich. Without this gate,
+    # the env var only feeds startup diagnostics — the auto-pick still
+    # selects the registered kind and enrich runs anyway.
     from j1.enrichers import COMPOSITE_ENRICHER_KIND
+    enricher_kinds = (
+        frozenset({COMPOSITE_ENRICHER_KIND})
+        if boot.enrichment.enabled
+        else frozenset()
+    )
     capabilities = capabilities_from_bootstrap(
         boot,
-        enricher_kinds=frozenset({COMPOSITE_ENRICHER_KIND}),
+        enricher_kinds=enricher_kinds,
         indexer_kinds=frozenset({SqliteSearchIndexer.kind}),
     )
 

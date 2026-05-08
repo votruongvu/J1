@@ -54,9 +54,17 @@ async def _run() -> None:
         temporal_settings.task_queue,
     )
     client = await build_client(temporal_settings)
+    # When `J1_ENRICH_ENABLED=false`, pass an empty enrichers map so
+    # the auto-register-composite path is skipped. Stays paired with
+    # the API capabilities gate so both layers agree: API surfaces no
+    # enricher kind → workflow skips enrich → worker has no enricher
+    # registered. Setting it true (default) leaves the auto-register
+    # behaviour intact.
+    enrichers_override = None if boot.enrichment.enabled else {}
     spec = build_worker_spec(
         workspace,
         compilers=boot.compilers,
+        enrichers=enrichers_override,
         graph_builders=boot.graph_builders,
         query_providers=boot.retrieval_providers,
         # Pass the LLM registry through so the auto-registered

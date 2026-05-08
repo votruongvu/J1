@@ -112,6 +112,22 @@ class ProcessingSelection:
 
 @dataclass(frozen=True)
 class EnrichmentSettings:
+    """Enrichment gating settings.
+
+    `enabled` is the master switch — when False, deployment wiring
+    MUST omit the enricher kind from both the API capabilities surface
+    AND the worker's enricher registry. Otherwise the workflow's
+    `_stage_enabled` will still pick up the auto-resolved enricher
+    kind from the request and run enrich anyway. The dev stack does
+    this in `deploy/dev/api.py` and `deploy/dev/worker.py`; production
+    deployments wiring their own bootstrap must mirror the gate.
+
+    Per-modality flags (`images` / `tables` / `diagrams` /
+    `scanned_pages`) currently feed only the visual-modality
+    validation and `enabled_modalities()`. Honouring them within the
+    composite enricher (so e.g. images run while tables don't) is a
+    separate concern — today the composite is bundled all-or-nothing.
+    """
     enabled: bool = True
     confidence_threshold: float = 0.75
     images: bool = True
