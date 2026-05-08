@@ -13,4 +13,4 @@ htmlcov/
 .claude/
 
 # Local development env file — copy from .env.example
-.env
+.env*
