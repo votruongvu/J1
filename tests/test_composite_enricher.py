@@ -27,6 +27,8 @@ from j1.enrichers import (
     COMPOSITE_ENRICHER_KIND,
     CompositeEnricher,
     GENERIC_ENRICHERS,
+    TableExtractor,
+    VisualContentDescriber,
 )
 from j1.processing.results import ArtifactDraft, ArtifactProcessingResult
 from j1.processing.status import ResultStatus

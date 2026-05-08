@@ -1151,6 +1151,38 @@ GENERIC_ENRICHERS: tuple[type[_StructuredEnricher], ...] = (
 COMPOSITE_ENRICHER_KIND = "j1.enricher.composite"
 
 
+def _filter_generic_enrichers(
+    classes: tuple[type[_StructuredEnricher], ...],
+    *,
+    images_enabled: bool | None,
+    tables_enabled: bool | None,
+) -> tuple[type[_StructuredEnricher], ...]:
+    """Drop sub-enrichers whose modality the deployment disabled.
+
+    Only the modalities mapped to a single sub-enricher are gated:
+
+      * `images_enabled=False` → `VisualContentDescriber` is the
+        only generic enricher that consumes the vision LLM today;
+        skipping it removes every `enriched.visuals` artifact.
+      * `tables_enabled=False` → `TableExtractor` is the only one
+        producing `enriched.tables`; skipping it stops table
+        extraction.
+
+    `None` (the default) means "no opinion — keep the enricher" so
+    callers that don't pass settings get the legacy "run everything"
+    behaviour. Anything not explicitly mapped here always runs.
+    """
+    if images_enabled is False:
+        classes = tuple(
+            c for c in classes if c is not VisualContentDescriber
+        )
+    if tables_enabled is False:
+        classes = tuple(
+            c for c in classes if c is not TableExtractor
+        )
+    return classes
+
+
 class CompositeEnricher:
     """Bundles every generic enricher and runs them in sequence,
     returning the union of their `ArtifactDraft`s.
@@ -1184,8 +1216,21 @@ class CompositeEnricher:
         text_client: Any | None = None,
         embedding_client: Any | None = None,
         artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+        # Per-modality kill switches. `None` (the default) keeps every
+        # generic enricher in the bundle — that's the legacy behaviour.
+        # Pass `False` for a modality to skip its enricher entirely.
+        # Plumbed from `EnrichmentSettings` at the deployment-wiring
+        # layer; the composite stays loose-typed so no import cycle
+        # with `j1.compose`.
+        images_enabled: bool | None = None,
+        tables_enabled: bool | None = None,
     ) -> None:
         if enrichers is None:
+            child_classes = _filter_generic_enrichers(
+                GENERIC_ENRICHERS,
+                images_enabled=images_enabled,
+                tables_enabled=tables_enabled,
+            )
             enrichers = tuple(
                 _construct_child(
                     cls_,
@@ -1196,7 +1241,7 @@ class CompositeEnricher:
                     embedding_client=embedding_client,
                     artifact_lookup=artifact_lookup,
                 )
-                for cls_ in GENERIC_ENRICHERS
+                for cls_ in child_classes
             )
         self._profile = profile
         self._enrichers = enrichers
@@ -1211,6 +1256,8 @@ class CompositeEnricher:
         text_client: Any | None = None,
         embedding_client: Any | None = None,
         artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+        images_enabled: bool | None = None,
+        tables_enabled: bool | None = None,
     ) -> "CompositeEnricher":
         return cls(
             profile,
@@ -1219,6 +1266,8 @@ class CompositeEnricher:
             text_client=text_client,
             embedding_client=embedding_client,
             artifact_lookup=artifact_lookup,
+            images_enabled=images_enabled,
+            tables_enabled=tables_enabled,
         )
 
     def enrich(

@@ -74,6 +74,10 @@ async def _run() -> None:
         # the 'No vision LLM configured' markdown stub for every run
         # even when J1_VISION_LLM_* is set.
         llm_registry=boot.llm_registry,
+        # Per-modality flags (J1_ENRICH_IMAGES / J1_ENRICH_TABLES)
+        # plumbed through to the composite so disabled modalities skip
+        # their sub-enricher at construction time.
+        enrichment_settings=boot.enrichment,
     )
 
     # Every J1 activity is synchronous; the Temporal SDK requires
