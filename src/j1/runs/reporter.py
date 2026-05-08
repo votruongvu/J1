@@ -52,6 +52,7 @@ __all__ = [
     "ACTION_PROGRESS_HUMAN_REVIEW_REQUIRED",
     "ACTION_PROGRESS_PLAN_CONFIRMED",
     "ACTION_PROGRESS_PLAN_GENERATED",
+    "ACTION_PROGRESS_PLAN_REVISED",
     "ACTION_PROGRESS_RUN_CANCELLED",
     "ACTION_PROGRESS_RUN_COMPLETED",
     "ACTION_PROGRESS_RUN_CREATED",
@@ -85,6 +86,7 @@ PROGRESS_EVENT_DOCUMENT_RECEIVED = "document.received"
 PROGRESS_EVENT_ASSESSMENT_STARTED = "assessment.started"
 PROGRESS_EVENT_ASSESSMENT_COMPLETED = "assessment.completed"
 PROGRESS_EVENT_PLAN_GENERATED = "plan.generated"
+PROGRESS_EVENT_PLAN_REVISED = "plan.revised"
 PROGRESS_EVENT_PLAN_CONFIRMED = "plan.confirmed"
 PROGRESS_EVENT_STEP_STARTED = "step.started"
 PROGRESS_EVENT_STEP_PROGRESS = "step.progress"
@@ -104,6 +106,7 @@ ACTION_PROGRESS_DOCUMENT_RECEIVED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_DOCU
 ACTION_PROGRESS_ASSESSMENT_STARTED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_ASSESSMENT_STARTED
 ACTION_PROGRESS_ASSESSMENT_COMPLETED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_ASSESSMENT_COMPLETED
 ACTION_PROGRESS_PLAN_GENERATED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_PLAN_GENERATED
+ACTION_PROGRESS_PLAN_REVISED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_PLAN_REVISED
 ACTION_PROGRESS_PLAN_CONFIRMED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_PLAN_CONFIRMED
 ACTION_PROGRESS_STEP_STARTED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_STARTED
 ACTION_PROGRESS_STEP_PROGRESS = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_PROGRESS
@@ -200,6 +203,16 @@ class ProgressReporter(Protocol):
         ctx: ProjectContext,
         *,
         run_id: str,
+        actor: str = "system",
+    ) -> str: ...
+
+    def report_plan_revised(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        plan_payload: dict[str, Any],
+        reason: str,
         actor: str = "system",
     ) -> str: ...
 
@@ -445,6 +458,36 @@ class AuditProgressReporter:
             action=ACTION_PROGRESS_PLAN_CONFIRMED,
             run_id=run_id,
             payload={"severity": PROGRESS_SEVERITY_INFO},
+        )
+
+    def report_plan_revised(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        plan_payload: dict[str, Any],
+        reason: str,
+        actor: str = "system",
+    ) -> str:
+        """Post-compile plan revision.
+
+        Emitted when the workflow replans after compile and the new
+        plan differs from the initial one — e.g. compile content
+        stats revealed images/tables/scanned pages the deterministic
+        profile missed. The payload mirrors `plan.generated` so the
+        FE can swap its plan card from the initial decision to the
+        revised one without bespoke code.
+        """
+        return self._record(
+            ctx,
+            actor=actor,
+            action=ACTION_PROGRESS_PLAN_REVISED,
+            run_id=run_id,
+            payload={
+                "severity": PROGRESS_SEVERITY_INFO,
+                "plan": plan_payload,
+                "reason": reason,
+            },
         )
 
     # ---- Step events --------------------------------------------------
@@ -817,6 +860,16 @@ class TemporalHeartbeatReporter:
         self._hb(event=PROGRESS_EVENT_PLAN_CONFIRMED, run_id=run_id)
         return ""
 
+    def report_plan_revised(
+        self, _ctx, *, run_id, plan_payload, reason, actor="system",
+    ):
+        self._hb(
+            event=PROGRESS_EVENT_PLAN_REVISED, run_id=run_id,
+            mode=plan_payload.get("mode") if isinstance(plan_payload, dict) else None,
+            reason=reason,
+        )
+        return ""
+
     def report_step_started(
         self, _ctx, *, run_id, stage, step,
         engine=None, provider=None, actor="system",
@@ -925,6 +978,9 @@ class CompositeProgressReporter:
         return self._fanout("report_assessment_started", *a, **kw)
     def report_assessment_completed(self, *a, **kw):
         return self._fanout("report_assessment_completed", *a, **kw)
+    def report_plan_revised(self, *a, **kw):
+        return self._fanout("report_plan_revised", *a, **kw)
+
     def report_plan_generated(self, *a, **kw):
         return self._fanout("report_plan_generated", *a, **kw)
     def report_plan_confirmed(self, *a, **kw):
@@ -960,6 +1016,7 @@ class NoopProgressReporter:
     def report_assessment_completed(self, *_, **__): return ""
     def report_plan_generated(self, *_, **__): return ""
     def report_plan_confirmed(self, *_, **__): return ""
+    def report_plan_revised(self, *_, **__): return ""
     def report_step_started(self, *_, **__): return ""
     def report_step_progress(self, *_, **__): return None
     def report_step_skipped(self, *_, **__): return ""

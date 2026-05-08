@@ -13,10 +13,18 @@ from j1.processing.status import ResultStatus
 # releases — renaming silently breaks every consumer that reads them.
 ARTIFACT_KIND_CHUNK = "chunk"
 ARTIFACT_KIND_COMPILED_TEXT = "compiled.text"
+# Stable parser-output boundary. The compile activity persists a
+# normalized snapshot of post-parse stats (text/image/table/equation
+# counts, page count, quality scores, per-image triage) under this
+# kind so the post-compile replan + the FE quality surface can read
+# it without re-walking the storage_dir. Independent of vendor
+# internals — see `j1.processing.manifest` for the canonical schema.
+ARTIFACT_KIND_PARSED_CONTENT_MANIFEST = "parsed_content_manifest"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
+    "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ArtifactDraft",
     "ArtifactProcessingResult",
     "CostBreakdown",

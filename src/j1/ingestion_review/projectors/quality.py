@@ -79,6 +79,18 @@ class QualityReportProjector:
         )
         skipped, failed_optional = _project_step_outcomes(step_results)
 
+        # Surface confidence-assessor LLM failures as quality
+        # warnings. Without this, an LLM call that errored produced
+        # an artifact with no `overall_confidence` AND (since the
+        # enricher recently stopped fabricating `default_confidence`
+        # on error) no fallback — the FE would show "—" with no
+        # explanation. Synthesising an explicit warning per failed
+        # assessment keeps the UX honest and operator-actionable.
+        merged_warnings = list(warnings)
+        merged_warnings.extend(
+            _project_confidence_assessment_failures(confidence_payloads),
+        )
+
         raw_debug: dict[str, Any] | None = None
         if include_raw:
             raw_debug = {
@@ -89,7 +101,7 @@ class QualityReportProjector:
         return QualityReportDTO(
             overall_confidence=overall,
             modality_confidences=modality,
-            warnings=list(warnings),
+            warnings=merged_warnings,
             skipped_steps=skipped,
             failed_optional_steps=failed_optional,
             low_confidence_findings=findings,
@@ -244,6 +256,37 @@ def _project_overall_confidence(
             continue
 
     return None
+
+
+def _project_confidence_assessment_failures(
+    confidence_payloads: list[_ArtifactPayload],
+) -> list[WarningDTO]:
+    """Synthesise a warning per confidence-assessment artifact whose
+    payload carries an `error` field (LLM call failed).
+
+    Producers (the `ConfidenceAssessor` enricher) record `error` when
+    the structured-output extraction raised. The projector previously
+    consumed only the happy path — readers couldn't tell whether a
+    missing `overall_confidence` meant "LLM said so" or "LLM didn't
+    run". Surfacing as a warning keeps the Quality tab honest without
+    pretending the assessment was healthy.
+    """
+    out: list[WarningDTO] = []
+    for payload in confidence_payloads:
+        error = payload.payload.get("error")
+        if not error:
+            continue
+        out.append(WarningDTO(
+            code="CONFIDENCE_ASSESSMENT_UNAVAILABLE",
+            message=(
+                "Confidence assessment unavailable: the LLM extraction "
+                f"failed ({error})."
+            ),
+            severity="warning",
+            step="enrich",
+            artifact_id=payload.artifact_id,
+        ))
+    return out
 
 
 def _project_low_confidence_findings(

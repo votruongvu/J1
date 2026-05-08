@@ -546,10 +546,22 @@ def build_worker_spec(
             scanned_pages_enabled = bool(
                 getattr(enrichment_settings, "scanned_pages", True),
             )
+        # Closure for VCD's per-image triage. Returns the full
+        # `ArtifactRecord` so VCD can read `metadata["vision_decision"]`
+        # and short-circuit decorative images.
+        def _artifact_record_lookup(
+            artifact_ctx, artifact_id: str,
+        ):
+            try:
+                return artifacts.get(artifact_ctx, artifact_id)
+            except Exception:  # noqa: BLE001 — registry miss is treated as "no triage data"
+                return None
+
         composite = CompositeEnricher.from_default(
             profile,
             content_source=_artifact_content_source,
             artifact_lookup=_artifact_lookup,
+            artifact_record_lookup=_artifact_record_lookup,
             vision_client=vision_client,
             text_client=text_client,
             embedding_client=embedding_client,

@@ -26,12 +26,15 @@ from j1.runs.store import IngestionRunStore
 ACTIVITY_REPORT_RUN_TERMINAL = "j1.runs.report_terminal"
 ACTIVITY_REPORT_STEP_SKIPPED = "j1.runs.report_step_skipped"
 ACTIVITY_REPORT_PLAN_GENERATED = "j1.runs.report_plan_generated"
+ACTIVITY_REPORT_PLAN_REVISED = "j1.runs.report_plan_revised"
 
 __all__ = [
     "ACTIVITY_REPORT_PLAN_GENERATED",
+    "ACTIVITY_REPORT_PLAN_REVISED",
     "ACTIVITY_REPORT_RUN_TERMINAL",
     "ACTIVITY_REPORT_STEP_SKIPPED",
     "ReportPlanGeneratedInput",
+    "ReportPlanRevisedInput",
     "ReportRunTerminalInput",
     "ReportStepSkippedInput",
     "RunsActivities",
@@ -94,6 +97,23 @@ class ReportPlanGeneratedInput:
 
 
 @dataclass(frozen=True)
+class ReportPlanRevisedInput:
+    """Workflow → activity payload for `plan.revised` events.
+
+    Emitted after a successful post-compile replan that changed at
+    least one step's enabled state. Carries the same plan shape as
+    `ReportPlanGeneratedInput` plus a human-readable `reason` string
+    summarising what changed (used by the FE plan card to explain
+    "why did this run unlock the graph step?")."""
+
+    scope: ProjectScope
+    run_id: str
+    plan_payload: dict[str, Any]
+    reason: str
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class ReportStepSkippedInput:
     """Workflow → activity payload for step.skipped events that fire
     at workflow time (planner / policy / config decided to skip),
@@ -137,6 +157,7 @@ class RunsActivities:
             self.report_run_terminal,
             self.report_step_skipped,
             self.report_plan_generated,
+            self.report_plan_revised,
         ]
 
     @activity.defn(name=ACTIVITY_REPORT_PLAN_GENERATED)
@@ -154,6 +175,27 @@ class RunsActivities:
             self._reporter.report_plan_generated(
                 ctx, run_id=input.run_id,
                 plan_payload=dict(input.plan_payload),
+                actor=input.actor,
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+            pass
+
+    @activity.defn(name=ACTIVITY_REPORT_PLAN_REVISED)
+    def report_plan_revised(self, input: ReportPlanRevisedInput) -> None:
+        """Write `j1.progress.plan.revised` to the audit log.
+
+        Same best-effort contract as `report_plan_generated`. The
+        FE polls `GET /ingestion-runs/{id}/plan` after a revision
+        event and reads the latest `plan.revised` if present (else
+        falls back to `plan.generated`)."""
+        if self._reporter is None:
+            return
+        ctx = input.scope.to_context()
+        try:
+            self._reporter.report_plan_revised(
+                ctx, run_id=input.run_id,
+                plan_payload=dict(input.plan_payload),
+                reason=input.reason,
                 actor=input.actor,
             )
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow

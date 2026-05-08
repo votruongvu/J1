@@ -301,8 +301,13 @@ def test_extension_check_is_case_insensitive(
         workspace, registry, audit_sink, fixed_clock, id_factory,
         allowed=(".PDF",),  # operator wrote uppercase in env
     )
+    # Real PDF magic header — the magic-byte sniff also runs and
+    # would reject `b"bytes"` even though the extension allow-list
+    # would accept the suffix.
     record = intake.register_from_stream(
-        ctx, io.BytesIO(b"bytes"), original_filename="upload.pdf",
+        ctx,
+        io.BytesIO(b"%PDF-1.4\n%fake content"),
+        original_filename="upload.pdf",
     )
     assert record.original_filename == "upload.pdf"
 
@@ -319,3 +324,54 @@ def test_empty_allow_list_disables_boundary(
         ctx, io.BytesIO(b"bytes"), original_filename="anything.weird",
     )
     assert record.file_size == 5
+
+
+# ---- Magic-byte sniff (regression: A.5) ---------------------------
+
+
+def test_magic_byte_sniff_accepts_real_pdf(intake_service, ctx):
+    record = intake_service.register_from_stream(
+        ctx,
+        io.BytesIO(b"%PDF-1.4\nhello"),
+        original_filename="real.pdf",
+    )
+    assert record.original_filename == "real.pdf"
+
+
+def test_magic_byte_sniff_rejects_pdf_extension_without_pdf_bytes(
+    intake_service, ctx,
+):
+    """Defense-in-depth: extension allow-list passed (.pdf is allowed),
+    but the bytes don't carry the `%PDF-` header → 415."""
+    with pytest.raises(UnsupportedFileTypeError) as excinfo:
+        intake_service.register_from_stream(
+            ctx,
+            io.BytesIO(b"MZ\x00\x00not-a-pdf"),  # PE/EXE-like magic
+            original_filename="impostor.pdf",
+        )
+    assert excinfo.value.extension == ".pdf"
+    assert "magic" in str(excinfo.value).lower()
+
+
+def test_magic_byte_sniff_passes_text_extensions_with_any_bytes(
+    intake_service, ctx,
+):
+    """Text formats have no stable magic bytes — extension check is
+    the only signal. Random bytes with .txt extension still register."""
+    record = intake_service.register_from_stream(
+        ctx,
+        io.BytesIO(b"\x00\x01\x02 binary-looking bytes"),
+        original_filename="weird.txt",
+    )
+    assert record.original_filename == "weird.txt"
+
+
+def test_magic_byte_sniff_accepts_zip_based_office_formats(
+    intake_service, ctx,
+):
+    record = intake_service.register_from_stream(
+        ctx,
+        io.BytesIO(b"PK\x03\x04\x14\x00\x00\x00fake-docx"),
+        original_filename="report.docx",
+    )
+    assert record.original_filename == "report.docx"

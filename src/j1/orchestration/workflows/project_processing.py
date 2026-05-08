@@ -2,6 +2,7 @@ from dataclasses import dataclass, field, replace as _replace_request
 from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 from temporalio import workflow
 from temporalio.exceptions import ApplicationError
@@ -28,6 +29,7 @@ with workflow.unsafe.imports_passed_through():
     from j1.orchestration.activities.project import ProjectActivities
     from j1.orchestration.activities.runs import (
         ReportPlanGeneratedInput,
+        ReportPlanRevisedInput,
         ReportRunTerminalInput,
         ReportStepSkippedInput,
         RunsActivities,
@@ -305,6 +307,59 @@ def _merge_compile_signals(
     if not overrides:
         return profile
     return _replace_request(profile, **overrides)
+
+
+def _summarise_plan_diff(
+    initial: "IngestPlan", revised: "IngestPlan",
+) -> dict[str, Any]:
+    """Compute a minimal step-enablement diff between two plans.
+
+    Returns an empty dict when no step's enabled flag changed —
+    callers treat that as "no observable change, skip the audit
+    event". Otherwise returns a dict keyed by step name with
+    `{before, after}` booleans, plus the new mode if it shifted.
+
+    The diff intentionally ignores fields that don't change
+    pipeline behaviour (confidence numbers, vision_decisions detail,
+    reasons): we want a coarse "does this revision unlock a step?"
+    signal, not a deep equality check.
+    """
+    out: dict[str, Any] = {}
+    initial_steps = {s.name: s for s in initial.steps}
+    revised_steps = {s.name: s for s in revised.steps}
+    for name in sorted(set(initial_steps) | set(revised_steps)):
+        before = initial_steps.get(name)
+        after = revised_steps.get(name)
+        before_enabled = bool(before and before.enabled)
+        after_enabled = bool(after and after.enabled)
+        if before_enabled != after_enabled:
+            out[name] = {"before": before_enabled, "after": after_enabled}
+    if initial.mode != revised.mode:
+        out["mode"] = {"before": initial.mode.value, "after": revised.mode.value}
+    return out
+
+
+def _format_plan_diff_reason(diff: dict[str, Any]) -> str:
+    """Render a `_summarise_plan_diff` result as a one-line reason.
+
+    Operator-readable; lands in the audit payload's `reason` field
+    so the FE timeline shows e.g.
+    `Post-compile signals: graph re-enabled, mode multimodal_light`
+    without bespoke FE rendering.
+    """
+    bits: list[str] = []
+    for key, change in sorted(diff.items()):
+        if not isinstance(change, dict):
+            continue
+        before = change.get("before")
+        after = change.get("after")
+        if key == "mode":
+            bits.append(f"mode {before}->{after}")
+        elif before is False and after is True:
+            bits.append(f"{key} re-enabled")
+        elif before is True and after is False:
+            bits.append(f"{key} disabled")
+    return "Post-compile replan: " + ", ".join(bits) if bits else "Post-compile replan"
 
 
 @workflow.defn
@@ -927,6 +982,43 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001
             pass
 
+    async def _emit_plan_revised(
+        self,
+        request: ProjectProcessingRequest,
+        plan: IngestPlan,
+        *,
+        diff: dict[str, Any],
+    ) -> None:
+        """Persist the revised plan via `j1.progress.plan.revised`.
+
+        Same best-effort contract as `_emit_plan_generated`. The
+        `diff` summary is folded into the audit payload's `reason`
+        so operators reading the timeline see exactly what changed
+        between initial and revised plans (e.g. "graph step
+        re-enabled by post-compile signals: image_count=8").
+        """
+        if not request.correlation_id:
+            return
+        plan_payload = to_jsonable(plan)
+        if isinstance(plan_payload, dict):
+            plan_payload.setdefault("document_id", plan.document_id)
+        reason = _format_plan_diff_reason(diff)
+        try:
+            await workflow.execute_activity_method(
+                RunsActivities.report_plan_revised,
+                ReportPlanRevisedInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    plan_payload=plan_payload,
+                    reason=reason,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _set_search_attribute(self, name: str, value: str) -> None:
         """Opt-in keyword search-attribute upsert.
 
@@ -1102,6 +1194,48 @@ class ProjectProcessingWorkflow:
             caller_overrides=overrides,
         )
 
+    async def _maybe_replan_after_compile(
+        self,
+        request: ProjectProcessingRequest,
+        document_id: str,
+        *,
+        initial_plan: IngestPlan,
+        compile_content_stats: dict,
+    ) -> IngestPlan | None:
+        """Re-run the planner with parser-derived stats overlaid on
+        the deterministic profile. Returns the revised plan when it
+        differs from `initial_plan`, otherwise None.
+
+        The revised plan can ONLY affect downstream optional stages
+        (enrich / graph / index): compile already ran. We never
+        revisit a step the initial plan reported as completed.
+        Caller-supplied kinds keep winning via `caller_overrides`.
+
+        Persists the revision via `j1.progress.plan.revised` so the
+        FE plan card swaps from initial → revised, and operators can
+        see the reason in the audit timeline.
+        """
+        try:
+            revised = await self._build_plan(
+                request,
+                document_id,
+                compile_content_stats=compile_content_stats,
+            )
+        except Exception as exc:  # noqa: BLE001 — replan is best-effort
+            workflow.logger.warning(
+                "post-compile replan failed; keeping initial plan: %s", exc,
+            )
+            return None
+
+        diff = _summarise_plan_diff(initial_plan, revised)
+        if not diff:
+            # No effective change in step enablement — keep the
+            # initial plan and skip the audit event noise.
+            return None
+
+        await self._emit_plan_revised(request, revised, diff=diff)
+        return revised
+
     def _stage_enabled(
         self, plan: IngestPlan | None, stage: str, request_kind: str | None,
     ) -> tuple[bool, str | None, StepSource]:
@@ -1255,6 +1389,29 @@ class ProjectProcessingWorkflow:
         )
         self._complete(compile_op)
 
+        # Post-compile replan. The compile activity returns
+        # `content_stats` with parser-derived signals (image/table/
+        # equation counts, page count, scanned-page hints). Re-feed
+        # them into the planner so a misclassified document (e.g. a
+        # PDF whose deterministic profile said `has_images=False`
+        # but compile actually found embedded figures) can trigger
+        # a downstream stage that the initial plan skipped. The
+        # revised plan is allowed to ENABLE optional stages only —
+        # compile already ran and is not re-evaluated.
+        if (
+            request.planner_enabled
+            and plan is not None
+            and compile_result.content_stats
+        ):
+            revised = await self._maybe_replan_after_compile(
+                request,
+                document_id,
+                initial_plan=plan,
+                compile_content_stats=compile_result.content_stats,
+            )
+            if revised is not None:
+                plan = revised
+
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:
             return
@@ -1297,6 +1454,15 @@ class ProjectProcessingWorkflow:
                             correlation_id=request.correlation_id,
                         ),
                         start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
+                        # Long enrich children — vision / table-LLM
+                        # paths — routinely run minutes per artifact.
+                        # Without a heartbeat budget, Temporal has no
+                        # liveness check; a hung worker would blow the
+                        # 10-minute total timeout instead of failing
+                        # fast on a missed heartbeat. Compile and
+                        # build_graph already pair their timeouts the
+                        # same way; enrich was the outlier.
+                        heartbeat_timeout=HEARTBEAT_TIMEOUT,
                         retry_policy=DEFAULT_RETRY.to_temporal(),
                     )
                 )

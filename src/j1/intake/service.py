@@ -35,6 +35,31 @@ _CHUNK_SIZE = 64 * 1024
 # don't disagree.
 DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
+# Magic-byte signatures for the binary formats in the default
+# allow-list. Plain-text extensions map to None — text has no stable
+# magic bytes, so the extension check is the only signal. The sniff
+# runs AFTER the streaming copy lands in the temp file (cheap re-read
+# of the first 16 bytes) and BEFORE the rename to final. Mismatch
+# raises the same `UnsupportedFileTypeError` the extension allow-list
+# uses, surfacing as 415 at the REST boundary.
+#
+# The signatures are defense-in-depth — they protect against renamed-
+# extension uploads (a `.exe` posted as `.pdf`) that would otherwise
+# slip past the extension filter and crash MinerU mid-parse with a
+# vendor exception. Format choices below cover the common confused-
+# deputy cases; format-specific magic libraries (python-magic) would
+# be more thorough but add a system-level dependency.
+_BINARY_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    ".pdf": (b"%PDF-",),
+    # ZIP-based formats (Office Open XML + ODF).
+    ".docx": (b"PK\x03\x04",),
+    ".xlsx": (b"PK\x03\x04",),
+    ".ods": (b"PK\x03\x04",),
+    # Legacy OLE2 compound documents.
+    ".doc": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),
+    ".xls": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),
+}
+
 # Default allow-list for upload filename extensions. Tracks the
 # Execution Console's `accept=` attribute plus the planner's plain-
 # text extensions, so the boundary accepts every shape the bundled
@@ -172,6 +197,15 @@ class DocumentIntakeService:
             finally:
                 tmp.close()
 
+            # Defense-in-depth: the extension allow-list passed before
+            # the copy started. Now that we have bytes on disk, sniff
+            # the first 16 to confirm a binary format actually carries
+            # its expected magic. Catches the renamed-extension case
+            # (`malware.exe` posted as `report.pdf`) before the parser
+            # gets a chance to crash on garbage input. Plain-text
+            # extensions are exempted — text has no stable magic.
+            self._enforce_magic_bytes(original_filename, tmp_path)
+
             existing = self._registry.find_by_checksum(ctx, checksum)
             if existing is not None:
                 tmp_path.unlink(missing_ok=True)
@@ -222,6 +256,39 @@ class DocumentIntakeService:
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
             raise
+
+    def _enforce_magic_bytes(
+        self, original_filename: str, tmp_path: Path,
+    ) -> None:
+        """Reject files whose magic bytes don't match their extension.
+
+        Looks up the suffix in `_BINARY_MAGIC_SIGNATURES`; absent →
+        no-op (text formats and rare binaries fall through). Reads
+        the first 16 bytes and matches against any of the expected
+        prefixes — Office Open XML is a ZIP, OLE2 has its own header,
+        PDF starts with `%PDF-`. On mismatch raises the same typed
+        error the extension allow-list uses, so the REST adapter
+        surfaces it as 415 with a consistent shape.
+        """
+        suffix = Path(original_filename).suffix.lower()
+        signatures = _BINARY_MAGIC_SIGNATURES.get(suffix)
+        if signatures is None:
+            return
+        try:
+            head = tmp_path.read_bytes()[:16]
+        except OSError:
+            # Best-effort; an unreadable temp file would be caught
+            # downstream when the staging rename fails. Don't double-
+            # surface here.
+            return
+        if any(head.startswith(sig) for sig in signatures):
+            return
+        raise UnsupportedFileTypeError(
+            f"file content does not match extension {suffix!r} "
+            f"(expected magic bytes for that format were not present)",
+            extension=suffix,
+            allowed_extensions=tuple(sorted(self._allowed_extensions)),
+        )
 
     def _enforce_extension(self, original_filename: str) -> None:
         """Reject filenames whose extension isn't in the allow-list.

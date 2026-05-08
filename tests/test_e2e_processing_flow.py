@@ -69,17 +69,22 @@ from j1.orchestration.activities.review import ReviewActivities
 # ---- Sample documents --------------------------------------------------
 
 SAMPLE_DOCUMENTS = (
+    # Magic-byte prefixes (`%PDF-` and `PK\x03\x04`) are required by
+    # the intake service's defense-in-depth sniff. Real parsers
+    # would reject these stub bodies anyway; this test stubs the
+    # compile/enrich/graph activities, so the magic prefix is
+    # purely satisfying the intake boundary check.
     ("requirements.pdf",
-     b"Section 1. The system shall accept input via API. "
+     b"%PDF-1.4\nSection 1. The system shall accept input via API. "
      b"Section 2. The system shall persist data durably."),
     ("specification.pdf",
-     b"Specification: the input pipeline accepts JSON payloads up to 4 MB. "
+     b"%PDF-1.4\nSpecification: the input pipeline accepts JSON payloads up to 4 MB. "
      b"Outputs are written to durable storage with a SHA-256 checksum."),
     ("data-table.xlsx",
-     b"id,name,value\n"
+     b"PK\x03\x04id,name,value\n"
      b"1,alpha,12\n2,beta,34\n3,gamma,56\n"),
     ("diagram.pdf",
-     b"Diagram caption: figure 1 shows the request lifecycle. "
+     b"%PDF-1.4\nDiagram caption: figure 1 shows the request lifecycle. "
      b"Arrows indicate the flow between intake, processing, and storage."),
 )
 

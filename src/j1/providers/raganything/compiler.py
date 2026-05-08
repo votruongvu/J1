@@ -14,6 +14,7 @@ Two construction paths:
     needed.
 """
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +35,13 @@ from j1.providers.errors import ProviderUnavailable
 from j1.providers.raganything.settings import RAGAnythingSettings
 
 PROVIDER_NAME = "raganything"
+
+# Adapter-side schema version. Bump when the J1 bridge changes the
+# shape of artifacts it produces (e.g. new ARTIFACT_KIND added to
+# the compile output, chunk-metadata change). Independent from the
+# vendor `raganything` package version, which we capture separately
+# at runtime when available.
+_ADAPTER_SCHEMA_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -67,13 +75,6 @@ CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult
 
 class RAGAnythingCompiler:
     kind: str = PROVIDER_NAME
-    # Bump when the produced artifact shape changes — e.g. a new
-    # raganything release or a content-format migration. The
-    # processing-result cache uses this to partition cache rows so
-    # cross-version artifacts don't get reused. `version` is part of
-    # the `KnowledgeCompiler` informal interface; activities read it
-    # via `getattr(compiler, "version", "")`.
-    version: str = "1"
 
     def __init__(
         self,
@@ -85,6 +86,26 @@ class RAGAnythingCompiler:
         self._llm_registry = llm_registry
         self._settings = settings
         self._compile_callable = compile_callable
+
+    @property
+    def version(self) -> str:
+        """Cache-partitioning version string.
+
+        Composed of the adapter-side schema version plus a stable
+        hash of the settings fields that change parser output:
+        `parse_method`, `backend`, and the VLM-HTTP-client wiring.
+        The vendor `raganything` package version is captured at
+        runtime when importable; otherwise omitted (the adapter
+        schema version is sufficient to invalidate cache on J1-side
+        upgrades).
+
+        Two compiles with the same `(document_hash, processor_kind,
+        version, mode)` are guaranteed to produce equivalent
+        artifacts. Changing any of: `parse_method`, `backend`,
+        `vlm_http_*` settings, or the `raganything` package version
+        — forces a fresh parse instead of reusing stale rows.
+        """
+        return _build_compiler_version(self._settings)
 
     @property
     def mode(self) -> str:
@@ -159,6 +180,44 @@ class RAGAnythingCompiler:
                 drafts=[],
                 metadata={"provider": PROVIDER_NAME},
             )
+
+
+def _vendor_version() -> str:
+    """Return the installed `raganything` package version, or empty
+    string when the package isn't importable at this moment.
+
+    Read once via `importlib.metadata` — no I/O on the import path.
+    Failures are silent: the cache key falls back to the adapter
+    schema version alone, which is the same partition behaviour as
+    before the version field existed.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("raganything")
+        except PackageNotFoundError:
+            return ""
+    except Exception:  # noqa: BLE001 — version sniff must never crash compile
+        return ""
+
+
+def _build_compiler_version(settings: RAGAnythingSettings) -> str:
+    """Compose the cache-partitioning version string.
+
+    Format: `{adapter_schema}|{vendor_version}|{settings_hash}` —
+    short, stable, deterministic across runs. The settings hash
+    intentionally excludes paths (workdir/storage_dir/cache_dir) and
+    LibreOffice plumbing — those don't change parser output.
+    """
+    parts = "|".join((
+        getattr(settings, "parse_method", "") or "",
+        getattr(settings, "backend", "") or "",
+        getattr(settings, "vlm_http_server_url", "") or "",
+        getattr(settings, "vlm_http_model_name", "") or "",
+    ))
+    settings_hash = hashlib.sha256(parts.encode("utf-8")).hexdigest()[:8]
+    return f"{_ADAPTER_SCHEMA_VERSION}|{_vendor_version()}|{settings_hash}"
 
 
 def _build_default_compile_callable() -> CompileCallable:

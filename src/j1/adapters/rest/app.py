@@ -1968,6 +1968,27 @@ def create_rest_api(
     # `/ingestion-jobs/` raw-signal variants stay in place for CLI /
     # script use.
 
+    def _signal_meta(
+        delivered: bool, error: str | None,
+    ) -> dict[str, Any] | None:
+        """Build the response envelope's `meta.signal` block.
+
+        Returns None on success so untouched response shape is
+        preserved when the signal landed cleanly. On failure carries
+        `delivered=False` plus the exception class + message so the
+        FE can render a "run record updated, but the workflow may
+        not have caught the signal" advisory instead of a misleading
+        success toast.
+        """
+        if delivered:
+            return None
+        return {
+            "signal": {
+                "delivered": False,
+                "error": error or "signal delivery failed",
+            },
+        }
+
     def _control_action(
         action: str,
         target_status: RunStatus,
@@ -2066,14 +2087,22 @@ def create_rest_api(
             signal_name="pause",
             request=request, run_id=run_id, ctx=ctx, security=security,
         )
+        signal_delivered = True
+        signal_error: str | None = None
         try:
             await control.pause_job(ctx, signal_id)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            signal_delivered = False
+            signal_error = f"{type(exc).__name__}: {exc}"
             _log.exception(
                 "pause signal failed for run_id=%s; run record is "
                 "PAUSED but workflow may not be paused yet", run_id,
             )
-        return envelope(record.model_dump(by_alias=True), _req_id(request))
+        return envelope(
+            record.model_dump(by_alias=True),
+            _req_id(request),
+            meta=_signal_meta(signal_delivered, signal_error),
+        )
 
     @app.post(
         "/ingestion-runs/{run_id}/resume",
@@ -2095,14 +2124,22 @@ def create_rest_api(
             signal_name="resume",
             request=request, run_id=run_id, ctx=ctx, security=security,
         )
+        signal_delivered = True
+        signal_error: str | None = None
         try:
             await control.resume_job(ctx, signal_id)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            signal_delivered = False
+            signal_error = f"{type(exc).__name__}: {exc}"
             _log.exception(
                 "resume signal failed for run_id=%s; run record is "
                 "RUNNING but workflow may not have resumed", run_id,
             )
-        return envelope(record.model_dump(by_alias=True), _req_id(request))
+        return envelope(
+            record.model_dump(by_alias=True),
+            _req_id(request),
+            meta=_signal_meta(signal_delivered, signal_error),
+        )
 
     @app.post(
         "/ingestion-runs/{run_id}/cancel",
@@ -2132,14 +2169,22 @@ def create_rest_api(
             signal_name="cancel",
             request=request, run_id=run_id, ctx=ctx, security=security,
         )
+        signal_delivered = True
+        signal_error: str | None = None
         try:
             await control.cancel_job(ctx, signal_id)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            signal_delivered = False
+            signal_error = f"{type(exc).__name__}: {exc}"
             _log.exception(
                 "cancel signal failed for run_id=%s; run record is "
                 "CANCELLING but workflow signal may not have arrived", run_id,
             )
-        return envelope(record.model_dump(by_alias=True), _req_id(request))
+        return envelope(
+            record.model_dump(by_alias=True),
+            _req_id(request),
+            meta=_signal_meta(signal_delivered, signal_error),
+        )
 
     @app.get(
         "/ingestion-runs/{run_id}/events",

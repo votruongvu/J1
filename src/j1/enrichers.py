@@ -695,6 +695,7 @@ class VisualContentDescriber(_StructuredEnricher):
         *,
         vision_client: Any | None = None,
         artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+        artifact_record_lookup: Callable[[ProjectContext, str], Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(profile, **kwargs)
@@ -708,6 +709,13 @@ class VisualContentDescriber(_StructuredEnricher):
         # artifact in the run. None disables the skip — falls back
         # to the legacy behaviour where VCD runs on everything.
         self._artifact_lookup = artifact_lookup
+        # When set, called per artifact_id to fetch the full
+        # `ArtifactRecord`. VCD reads `metadata["vision_decision"]`
+        # off the record to short-circuit decorative / icon images
+        # (decision == "skip"). The bridge stamps these decisions
+        # at parse time via `_stamp_image_decisions`. None disables
+        # per-image triage and falls back to "describe every image".
+        self._artifact_record_lookup = artifact_record_lookup
 
     def enrich(self, ctx, artifact_id):
         """Override to short-circuit non-image artifacts BEFORE
@@ -735,6 +743,36 @@ class VisualContentDescriber(_StructuredEnricher):
                         "artifact_kind": kind,
                     },
                 )
+        # Per-image triage: skip artifacts the parser-side classifier
+        # tagged as decorative (logos, icons, watermarks) so we don't
+        # burn vision-LLM tokens describing them. The decision was
+        # made at compile time in `_classify_image`; we read it back
+        # from artifact metadata here. When the lookup isn't wired
+        # OR the artifact wasn't tagged (e.g. a non-bridge producer
+        # wrote it), VCD falls through to describing everything —
+        # the legacy behaviour.
+        if self._artifact_record_lookup is not None:
+            record = self._artifact_record_lookup(ctx, artifact_id)
+            metadata = (
+                record.metadata if record is not None and hasattr(record, "metadata")
+                else None
+            )
+            if isinstance(metadata, dict):
+                vision_decision = metadata.get("vision_decision")
+                if vision_decision == "skip":
+                    return ArtifactProcessingResult(
+                        status=ResultStatus.SKIPPED,
+                        message=(
+                            f"{self.kind} skipped: vision_decision=skip "
+                            f"({metadata.get('vision_reason') or 'decorative image'})"
+                        ),
+                        metadata={
+                            "processor_name": self.kind,
+                            "skip_reason": "decorative_image",
+                            "vision_role": metadata.get("vision_role"),
+                            "vision_score": metadata.get("vision_score"),
+                        },
+                    )
         return super().enrich(ctx, artifact_id)
 
     def _produce(self, ctx, artifact_id):
@@ -1105,21 +1143,36 @@ class ConfidenceAssessor(_LLMBackedEnricher):
 
     def _produce(self, ctx, artifact_id):
         json_data, _md = super()._produce(ctx, artifact_id)
-        # Carry the deployment-configured default through so the
-        # quality projector has a non-null fallback when the LLM
-        # didn't surface its own overall_confidence value.
-        json_data.setdefault("default_confidence", self.confidence_default)
+        # Honest fallback: only carry `default_confidence` through when
+        # the LLM call actually ran. The parent's `_error_response`
+        # records an `error` field on failure; in that case let the
+        # quality projector fall through to a real "no measurement"
+        # state ("—" in the FE) instead of a fabricated 0.7-0.8 score
+        # that masks the failure. Operators see the assessment
+        # artifact's `error` and the projector surfaces it as a
+        # quality warning rather than a healthy-looking score.
+        if "error" not in json_data:
+            json_data.setdefault("default_confidence", self.confidence_default)
         return json_data, self._render_md(json_data)
 
     def _render_md(self, json_data: dict[str, Any]) -> str:
         assessments = json_data.get("assessments") or []
         overall = json_data.get("overall_confidence")
-        default = json_data.get("default_confidence", self.confidence_default)
+        default = json_data.get("default_confidence")
+        error = json_data.get("error")
         lines = ["# Confidence assessment", ""]
-        if overall is not None:
+        if error:
+            # LLM failure path — keep the markdown honest. Without
+            # this branch the renderer falls back to "Default
+            # confidence: 0.800" which reads as a healthy measurement.
+            lines.append("Confidence assessment unavailable (LLM extraction failed).")
+            lines.append(f"Error: {error}")
+        elif overall is not None:
             lines.append(f"Overall confidence: {float(overall):.2f}")
-        else:
+        elif default is not None:
             lines.append(f"Default confidence: {float(default):.3f}")
+        else:
+            lines.append("Confidence not measured.")
         lines.append("")
         if assessments:
             lines.append(f"Modality assessments ({len(assessments)}):")
@@ -1228,6 +1281,12 @@ class CompositeEnricher:
         text_client: Any | None = None,
         embedding_client: Any | None = None,
         artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+        # Optional record-fetcher for per-image triage. When set,
+        # `VisualContentDescriber` reads `metadata["vision_decision"]`
+        # off the artifact record and short-circuits decorative
+        # images. Wiring layer typically passes a closure that calls
+        # `artifact_registry.get(ctx, artifact_id)`.
+        artifact_record_lookup: Callable[[ProjectContext, str], Any] | None = None,
         # Per-modality kill switches. `None` (the default) keeps every
         # generic enricher in the bundle — that's the legacy behaviour.
         # Pass `False` for a modality to skip its enricher entirely.
@@ -1260,6 +1319,7 @@ class CompositeEnricher:
                     text_client=text_client,
                     embedding_client=embedding_client,
                     artifact_lookup=artifact_lookup,
+                    artifact_record_lookup=artifact_record_lookup,
                 )
                 for cls_ in child_classes
             )
@@ -1276,6 +1336,7 @@ class CompositeEnricher:
         text_client: Any | None = None,
         embedding_client: Any | None = None,
         artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+        artifact_record_lookup: Callable[[ProjectContext, str], Any] | None = None,
         images_enabled: bool | None = None,
         tables_enabled: bool | None = None,
         diagrams_enabled: bool | None = None,
@@ -1288,6 +1349,7 @@ class CompositeEnricher:
             text_client=text_client,
             embedding_client=embedding_client,
             artifact_lookup=artifact_lookup,
+            artifact_record_lookup=artifact_record_lookup,
             images_enabled=images_enabled,
             tables_enabled=tables_enabled,
             diagrams_enabled=diagrams_enabled,
@@ -1359,6 +1421,7 @@ def _construct_child(
     text_client: Any | None = None,
     embedding_client: Any | None = None,
     artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
+    artifact_record_lookup: Callable[[ProjectContext, str], Any] | None = None,
 ) -> _StructuredEnricher:
     """Build one composite child, forwarding clients per child class.
 
@@ -1397,6 +1460,7 @@ def _construct_child(
             profile,
             vision_client=vision_client,
             artifact_lookup=artifact_lookup,
+            artifact_record_lookup=artifact_record_lookup,
             **common_kwargs,
         )
     return cls_(profile, **common_kwargs)

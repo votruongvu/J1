@@ -602,11 +602,14 @@ def test_compiler_default_path_invokes_real_raganything_when_installed(
     assert "embedding_func" in captured["rag_kwargs"]
     assert captured["compile_call"]["file_path"] == str(source_file)
     assert captured["compile_call"]["parse_method"] == "auto"
-    # Bridge walked the output dir → drafts.
-    assert len(result.drafts) == 2
+    # Bridge walked the output dir → drafts. Plus one
+    # `parsed_content_manifest` draft persisted alongside so the
+    # parser-output stats are queryable post-run.
+    assert len(result.drafts) == 3
     kinds = {d.kind for d in result.drafts}
     assert "compiled.text" in kinds
     assert "compiled.text.metadata" in kinds
+    assert "parsed_content_manifest" in kinds
 
 
 def test_query_provider_default_path_invokes_real_aquery_when_installed(

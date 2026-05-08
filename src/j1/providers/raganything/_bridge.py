@@ -54,6 +54,7 @@ from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.processing.results import (
     ARTIFACT_KIND_CHUNK,
     ARTIFACT_KIND_COMPILED_TEXT,
+    ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
     ArtifactDraft,
     ArtifactProcessingResult,
     QueryResult,
@@ -370,15 +371,129 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # activity layer projects the recognised keys into `content_stats`
     # which the planner then merges into the DocumentProfile.
     manifest = _build_content_manifest(output_dir)
+    # Tag image drafts with their per-image triage decision so the
+    # `VisualContentDescriber` enricher can skip decorative images
+    # without re-running the heuristics later. The bridge already
+    # ran `_classify_image` per file when building the manifest;
+    # propagating the decision via artifact metadata keeps the cost
+    # in one place (the parse stage) and lets VCD short-circuit.
+    drafts = _stamp_image_decisions(drafts, manifest.get("images") or [])
     metadata: dict[str, Any] = {
         "provider": "raganything",
         "output_dir": str(output_dir),
     }
     metadata.update(manifest)
+
+    # Persist a normalized `ParsedContentManifest` alongside the
+    # compile output so downstream consumers (post-compile replan,
+    # quality projector, future tools) can read the parser's findings
+    # without re-walking the storage_dir or coupling to MinerU's
+    # output shape. See `j1.processing.manifest` for the schema.
+    drafts.append(_build_manifest_draft(
+        document_id=request.document_id,
+        document_hash=getattr(request, "document_hash", None) or "",
+        parser="raganything",
+        parser_version=metadata.get("provider_version"),
+        parse_method=getattr(request.settings, "parse_method", None),
+        compile_stats=manifest,
+    ))
+
     return ArtifactProcessingResult(
         status=ResultStatus.SUCCEEDED,
         drafts=drafts,
         metadata=metadata,
+    )
+
+
+def _stamp_image_decisions(
+    drafts: list[ArtifactDraft],
+    image_decisions: list[dict[str, Any]],
+) -> list[ArtifactDraft]:
+    """Annotate image drafts with their per-image triage decision.
+
+    Reads the manifest's `images[]` entries (each carries
+    `image_id` = the relative path under output_dir, and a
+    `decision` of `skip|triage|enrich`). For each draft whose
+    `metadata.relative_path` matches an entry's `image_id`, returns
+    a copy of the draft with `vision_decision`/`vision_role`/
+    `vision_score`/`vision_reason` merged into its metadata.
+
+    Drafts without a matching entry pass through unchanged.
+    `ArtifactDraft` is frozen, so we rebuild rather than mutate.
+    """
+    if not image_decisions:
+        return drafts
+    by_image_id: dict[str, dict[str, Any]] = {}
+    for entry in image_decisions:
+        image_id = entry.get("image_id")
+        if isinstance(image_id, str) and image_id:
+            by_image_id[image_id] = entry
+    if not by_image_id:
+        return drafts
+    out: list[ArtifactDraft] = []
+    for draft in drafts:
+        relative_path = draft.metadata.get("relative_path") if isinstance(draft.metadata, dict) else None
+        decision_entry = by_image_id.get(relative_path) if relative_path else None
+        if decision_entry is None:
+            out.append(draft)
+            continue
+        merged_metadata = dict(draft.metadata or {})
+        merged_metadata["vision_decision"] = decision_entry.get("decision")
+        merged_metadata["vision_role"] = decision_entry.get("role")
+        merged_metadata["vision_score"] = decision_entry.get("score")
+        merged_metadata["vision_reason"] = decision_entry.get("reason")
+        out.append(ArtifactDraft(
+            kind=draft.kind,
+            content=draft.content,
+            suggested_extension=draft.suggested_extension,
+            source_document_ids=list(draft.source_document_ids),
+            source_artifact_ids=list(draft.source_artifact_ids),
+            metadata=merged_metadata,
+            review_required=draft.review_required,
+        ))
+    return out
+
+
+def _build_manifest_draft(
+    *,
+    document_id: str,
+    document_hash: str,
+    parser: str,
+    parser_version: str | None,
+    parse_method: str | None,
+    compile_stats: dict[str, Any],
+) -> ArtifactDraft:
+    """Wrap the existing compile-stats dict in a canonical
+    `ParsedContentManifest` and return it as an `ArtifactDraft` of
+    kind `ARTIFACT_KIND_PARSED_CONTENT_MANIFEST`.
+
+    Lazy-imports `j1.processing.manifest` to keep the bridge module
+    importable in environments where the manifest module hasn't
+    landed yet.
+    """
+    from j1.processing.manifest import manifest_from_compile_stats
+
+    manifest_obj = manifest_from_compile_stats(
+        document_id=document_id,
+        document_hash=document_hash,
+        parser=parser,
+        parser_version=parser_version,
+        parse_method=parse_method,
+        # `profile` is unknown at the bridge layer (it lives on the
+        # workflow's IngestPlan). Leaving None; the workflow can
+        # backfill via metadata when it persists the artifact.
+        profile=None,
+        compile_stats=compile_stats,
+    )
+    return ArtifactDraft(
+        kind=ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
+        content=manifest_obj.to_json_bytes(),
+        suggested_extension=".json",
+        metadata={
+            "filename": f"{document_id}.parsed_content_manifest.json",
+            "parser": parser,
+            "parse_method": parse_method or "",
+        },
     )
 
 
