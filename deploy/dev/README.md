@@ -149,6 +149,84 @@ If a deployment needs any of these, add them in a separate
 `deploy/<env>/docker-compose.yml` (e.g. `deploy/staging/`) — keeping
 the dev stack minimal is by design.
 
+### Volume strategy (Apple Silicon performance notes)
+
+Docker Desktop on macOS routes bind-mount I/O through gRPC FUSE,
+which is **~10× slower** than I/O against a named Docker volume
+(stored inside the Linux VM's overlay disk) or against `tmpfs`. The
+worker is wired so heavy-write paths NEVER land on a bind mount:
+
+| Path | Backing | Why |
+|---|---|---|
+| `j1_workspace` named volume → `/var/lib/j1` | Linux VM overlay disk | All persistent state (audit JSONL, run records, artifact registry, FTS index, RAGAnything workdir, MinerU per-doc outputs). |
+| `j1_huggingface_cache` named volume → `/opt/huggingface` | Linux VM overlay disk | MinerU model weights when running a local backend. |
+| `tmpfs` → `/tmp` (1 GiB cap) | RAM | Python `tempfile`, MinerU intermediate scratch, soffice's `j1-soffice-*` mkdtemps. RAM-backed for hottest-path I/O. |
+| `j1_postgres` named volume | Linux VM overlay disk | Temporal's storage. |
+| `../../src` / `../../deploy` bind mounts → `/app/src`, `/app/deploy` | macOS via gRPC FUSE | Source code only — read-mostly, the bind cost is acceptable. |
+
+**The default `J1_RAGANYTHING_WORKDIR=/var/lib/j1/raganything`** puts
+LightRAG's `kv_store_*.json` files and MinerU's per-document outputs
+inside the named volume. State persists across `docker compose up
+--build`, and writes are fast.
+
+Recommended settings to keep parse times low on Apple Silicon:
+
+- Run **LM Studio natively on macOS** (not in Docker) and reach it
+  via `http://host.docker.internal:1234`. The VLM/text-LLM workload
+  benefits from native Metal acceleration; running it inside the
+  Linux VM forfeits GPU offload.
+- Use **`J1_RAGANYTHING_BACKEND=pipeline`** for simple text-layer
+  documents (the default fast path); only use
+  `vlm-http-client` / `hybrid-http-client` when MinerU's vision
+  passes are required (scanned PDFs, complex diagrams).
+- Keep **`MAX_ASYNC=1`** when LM Studio is a single inference
+  process — concurrent requests just queue at the same model.
+- Ingest one or two documents through the dev stack, then check
+  `time` — anything over a minute per page strongly indicates the
+  vision LLM is the bottleneck, not Docker volumes.
+
+### Inspecting / cleaning volumes
+
+```bash
+# List all volumes the dev stack creates
+docker volume ls | grep '^local *j1_'
+
+# Inspect a specific volume (mountpoint, size, driver)
+docker volume inspect j1_workspace
+
+# Wipe everything (volumes + their contents)
+docker compose -f deploy/dev/docker-compose.yml down -v
+```
+
+`down -v` is destructive: every project's audit JSONL, every
+ingested document, every artifact, and the entire RAGAnything
+workdir all go with the named volumes. Reserve for "from-scratch"
+reproducers.
+
+### Benchmarking MinerU: Docker vs native
+
+If you suspect Docker is the bottleneck, compare like-for-like:
+
+```bash
+# Inside Docker (uses tmpfs /tmp + named-volume workspace)
+time docker compose -f deploy/dev/docker-compose.yml exec worker \
+    mineru -p /var/lib/j1/tenants/<tenant>/projects/<project>/raw/<doc>.pdf \
+           -o /tmp/j1-mineru/benchmark-output \
+           -b vlm-http-client \
+           -u http://host.docker.internal:1234
+
+# Native macOS (requires `pip install raganything` host-side)
+time mineru -p ./test.pdf \
+            -o ./benchmark-output \
+            -b vlm-http-client \
+            -u http://127.0.0.1:1234
+```
+
+Compare the wall-clock numbers. Docker should be within ~5–10 % of
+native for compute-bound work; if Docker is dramatically slower,
+the gap is almost certainly LM Studio reachability latency, not
+filesystem.
+
 ### Temporal search attributes (automated)
 
 The workflow upserts two custom search attributes — `J1IngestStage`
@@ -336,6 +414,8 @@ Every variable lives in [`.env.example`](../../.env.example). Highlights:
 | Var | Default | Notes |
 |---|---|---|
 | `J1_DATA_ROOT` | `/var/lib/j1` | Inside the container; mapped to the `j1_workspace` volume |
+| `J1_RAGANYTHING_WORKDIR` | `/var/lib/j1/raganything` | Lives inside the workspace volume (fast Linux-VM disk on macOS, persists across `docker compose up --build`). Override only to point at a host bind mount for offline inspection. |
+| `J1_KEEP_FAILED_INGEST_ARTIFACTS` | unset | When truthy, suppresses cleanup of MinerU's per-document `outputs/` dir on the SUCCESS path. Failed compiles always preserve their output dir regardless. |
 | `J1_TEMPORAL_TARGET` | `temporal:7233` | Docker network DNS — don't use `localhost` from inside the container |
 | `J1_TEMPORAL_NAMESPACE` | `default` | The Temporal `auto-setup` image creates this on boot |
 | `J1_TEMPORAL_TASK_QUEUE` | `j1-processing` | Generic, stable; both API + worker read this |

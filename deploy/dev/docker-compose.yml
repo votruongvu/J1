@@ -60,6 +60,12 @@ services:
       dockerfile: deploy/dev/Dockerfile
     env_file: ../../.env
     volumes:
+      # Persistent workspace state (audit JSONL, run records,
+      # artifact registry, FTS index, RAGAnything workdir under
+      # `/var/lib/j1/raganything`). Named volume → fast Linux-VM
+      # disk on macOS Docker Desktop, NOT a bind mount through
+      # gRPC FUSE. All ingestion writes (chunks, kv_store_*.json,
+      # MinerU per-document outputs) land here.
       - j1_workspace:/var/lib/j1
       # MinerU's HuggingFace cache. Mounted at `$HF_HOME` (set in
       # the Dockerfile). Empty by default — the dev stack offloads
@@ -69,9 +75,21 @@ services:
       # operator can flip back to a local backend without losing
       # downloaded weights between rebuilds.
       - j1_huggingface_cache:/opt/huggingface
-      # Same bind mounts as api — see comment above.
+      # Source-code bind mounts. Read-mostly: the bind read costs
+      # are tolerable; write-heavy paths live elsewhere (see
+      # j1_workspace + tmpfs above/below). Restart the worker
+      # after editing — Temporal workflow code is replay-sensitive.
       - ../../src:/app/src
       - ../../deploy:/app/deploy
+    tmpfs:
+      # RAM-backed `/tmp` for the worker. MinerU + RAGAnything
+      # touch a lot of small ephemeral files (intermediate page
+      # captures, soffice's `j1-soffice-*` mkdtemp, Python's
+      # default tempdir). Putting `/tmp` on tmpfs avoids both the
+      # Linux-VM disk hop AND any chance of operator misconfig
+      # routing tempfiles into a slow filesystem. 1 GiB cap stops
+      # a runaway parse from OOM-ing the host.
+      - /tmp:size=1g,mode=1777
     depends_on:
       temporal:
         condition: service_healthy

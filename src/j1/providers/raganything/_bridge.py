@@ -45,6 +45,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from pathlib import Path
@@ -159,6 +160,13 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # No-op for the default `auto` parse method.
     _apply_vlm_http_client_env(request.settings)
     rag, output_dir, source_path = _prepare_compile(request)
+    # Operator-readable path log — folks debugging slow MinerU runs
+    # on macOS Docker Desktop want to confirm the parse output is
+    # NOT landing in a bind-mounted folder. Prints once per compile.
+    _log.info(
+        "compile paths: workdir=%s output_dir=%s source=%s",
+        request.settings.workdir, output_dir, source_path.name,
+    )
 
     # Pre-conversion: legacy/non-OOXML → PDF via LibreOffice headless.
     # The conversion is no-op (passthrough) for formats raganything
@@ -284,6 +292,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # loop` on the second compile invocation in the same worker
     # process. See _persistent_loop.py for the full rationale.
     loop = get_persistent_loop()
+    parse_start = time.monotonic()
     try:
         with attach_mineru_progress_handler(
             request.progress_reporter, request.ctx, request.run_id or "",
@@ -304,6 +313,11 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             ) from exc
         raise
     finally:
+        parse_elapsed_ms = int((time.monotonic() - parse_start) * 1000)
+        _log.info(
+            "MinerU parse complete: document=%s parse_elapsed_ms=%d output_dir=%s",
+            request.document_id, parse_elapsed_ms, output_dir,
+        )
         # Best-effort cleanup of the converted intermediate; raganything
         # has already consumed it by this point. Failure to clean up
         # is non-fatal — the temp directory will get reaped eventually.
@@ -398,10 +412,60 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
         compile_stats=manifest,
     ))
 
+    # Per-document MinerU output cleanup. By this point the bridge
+    # has walked `output_dir` and turned every useful file into an
+    # `ArtifactDraft`; the registry will materialise those into the
+    # workspace's `compiled/` area. The original output_dir is
+    # disposable scratch — leaving it grows the raganything workdir
+    # unbounded across runs. Operator can opt into preservation for
+    # debugging via `J1_KEEP_FAILED_INGEST_ARTIFACTS=true`; this
+    # branch covers the SUCCEEDED path only, so failed compiles
+    # leave their output_dir intact regardless of the flag (failed
+    # runs always preserve evidence).
+    _cleanup_output_dir(output_dir, document_id=request.document_id)
+
     return ArtifactProcessingResult(
         status=ResultStatus.SUCCEEDED,
         drafts=drafts,
         metadata=metadata,
+    )
+
+
+def _cleanup_output_dir(output_dir: Path, *, document_id: str) -> None:
+    """Best-effort delete of MinerU's per-document output directory.
+
+    Runs only on the SUCCEEDED compile path. Failed compiles preserve
+    the output_dir so operators can grep through MinerU's intermediate
+    files. Honors `J1_KEEP_FAILED_INGEST_ARTIFACTS` when set to a
+    truthy value: skips even successful-path cleanup, useful when an
+    operator wants to inspect a successful parse's intermediate
+    layout/OCR files.
+
+    Failures are non-fatal — the disposable scratch will eventually
+    get GCd via `docker compose down -v` if nothing else."""
+    keep_raw = os.environ.get("J1_KEEP_FAILED_INGEST_ARTIFACTS", "").strip().lower()
+    if keep_raw in ("1", "true", "yes", "on"):
+        _log.info(
+            "compile cleanup skipped: J1_KEEP_FAILED_INGEST_ARTIFACTS=%s "
+            "preserving %s for document %s",
+            keep_raw, output_dir, document_id,
+        )
+        return
+    if not output_dir.exists():
+        return
+    cleanup_start = time.monotonic()
+    try:
+        shutil.rmtree(output_dir)
+    except OSError as exc:
+        _log.warning(
+            "compile cleanup failed for document %s output_dir=%s: %s",
+            document_id, output_dir, exc,
+        )
+        return
+    cleanup_elapsed_ms = int((time.monotonic() - cleanup_start) * 1000)
+    _log.info(
+        "compile cleanup complete: document=%s cleanup_elapsed_ms=%d",
+        document_id, cleanup_elapsed_ms,
     )
 
 
