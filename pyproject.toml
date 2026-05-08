@@ -13,11 +13,17 @@ dependencies = [
     "fastapi>=0.100",
     "pydantic>=2.0",
     "python-multipart>=0.0.7",
+    # `httpx` is the runtime HTTP client for the OpenAI-compat LLM
+    # bridge (`j1.llm.openai_compat`) and webhook delivery
+    # (`j1.adapters.webhook.client`). Both lazy-import it; install
+    # without it would ImportError on the first LLM/webhook call.
+    "httpx>=0.24",
 ]
 
 [project.optional-dependencies]
-# Test deps. `pytest` for the suite; `httpx` for FastAPI's TestClient.
-dev = ["pytest>=8.0", "httpx>=0.24"]
+# Test deps. `pytest` for the suite (FastAPI's TestClient is part of
+# the FastAPI dependency tree; `httpx` is a core dep).
+dev = ["pytest>=8.0"]
 
 # Local-dev ASGI server. Required by `python -m deploy.dev.api`
 # (the bundled FastAPI launcher) and by anyone running the dev

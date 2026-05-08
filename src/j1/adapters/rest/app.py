@@ -133,6 +133,7 @@ from j1.errors.exceptions import (
     InvalidIdentifierError,
     J1Error,
     PathTraversalError,
+    UploadTooLargeError,
 )
 from j1.integration.dto import (
     AnswerRequestDTO,
@@ -520,6 +521,22 @@ def create_rest_api(
             code="REVIEW_NOT_FOUND",
             message="artifact content not found",
             request_id=_req_id(request),
+        )
+
+    @app.exception_handler(UploadTooLargeError)
+    async def _upload_too_large(request, exc: UploadTooLargeError) -> JSONResponse:
+        # Streaming intake stops writing as soon as the byte count
+        # passes the cap. Surface a 413 with the limit so the FE can
+        # tell the user what the cap is.
+        return error_response(
+            status_code=413,
+            code="UPLOAD_TOO_LARGE",
+            message=str(exc),
+            request_id=_req_id(request),
+            details={
+                "sizeBytes": exc.size_bytes,
+                "maxBytes": exc.max_bytes,
+            },
         )
 
     @app.exception_handler(AuthorizationError)

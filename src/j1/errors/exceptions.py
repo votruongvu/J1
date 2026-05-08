@@ -61,6 +61,25 @@ class DuplicateDocumentError(IntakeError):
         self.checksum = checksum
 
 
+class UploadTooLargeError(IntakeError):
+    """Raised when an upload exceeds the configured size cap.
+
+    Carries the observed size + the cap so the REST adapter can
+    surface a 413 response with actionable diagnostics.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        size_bytes: int,
+        max_bytes: int,
+    ) -> None:
+        super().__init__(message)
+        self.size_bytes = size_bytes
+        self.max_bytes = max_bytes
+
+
 class DocumentNotFoundError(J1Error):
     pass
 

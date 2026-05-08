@@ -48,8 +48,10 @@ class RetryPolicySpec:
 #     `exception.__class__.__name__` against this list when no typed
 #     `ApplicationError` was raised.
 #
-# Provider / network / 5xx errors are deliberately NOT here — those
-# are transient and benefit from retry.
+# Network / HTTP-5xx LLM errors are deliberately NOT here — those are
+# transient and benefit from retry. The list distinguishes between
+# `LLMProviderUnavailable` (transient HTTP 5xx, ReadTimeout — keep
+# retryable) and the permanent variants below.
 _NON_RETRYABLE_ERROR_TYPES: tuple[str, ...] = (
     # Typed ApplicationError emissions from J1 workflows / activities.
     "J1_INGEST_REQUIRED_STEP_FAILED",
@@ -59,6 +61,15 @@ _NON_RETRYABLE_ERROR_TYPES: tuple[str, ...] = (
     "DocumentNotFoundError",
     "UnknownProcessorError",
     "LLMConfigError",
+    # Provider-init failures (vendor module missing, LibreOffice
+    # binary missing, persistent loop dead). These are deterministic
+    # config errors — retrying with the same env burns the budget.
+    "ProviderUnavailable",
+    # Deterministic LLM failures. Context overflow is a pure function
+    # of the prompt; role-missing is a config error. Both reproduce
+    # on every retry.
+    "LLMContextOverflowError",
+    "LLMRoleNotRegistered",
     # Parser / source-document failures. These are deterministic with
     # respect to the input bytes — re-running the same parser against
     # the same source produces the same failure. Retrying just wastes

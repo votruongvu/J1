@@ -180,19 +180,18 @@ deterministic planning works without it.
 ## 9. Adaptive ingestion planning (optional)
 
 Loader: planner reads these via `ProjectProcessingRequest` /
-[`bootstrap.py`](../../src/j1/compose/bootstrap.py); off by default
-to preserve legacy ingestion behaviour exactly.
+[`bootstrap.py`](../../src/j1/compose/bootstrap.py).
 
 | Name | Required | Default | Used by | Description |
 |---|---|---|---|---|
-| `J1_INGEST_PLANNER_ENABLED` | No | `false` | Workflow request defaults | When `true`, each document is profiled and run through `DefaultIngestPlanner`; the resulting `IngestPlan` decides which configured stages to attempt. Caller-supplied `compilerKind` / `enricherKind` / `graphBuilderKind` / `indexerKind` always override planner decisions. |
+| `J1_INGEST_PLANNER_ENABLED` | No | `true` | Workflow request defaults | When `true`, each document is profiled and run through `DefaultIngestPlanner`; the resulting `IngestPlan` decides which configured stages to attempt. Caller-supplied `compilerKind` / `enricherKind` / `graphBuilderKind` / `indexerKind` always override planner decisions. Read by the dev API entrypoint at `deploy/dev/api.py`; production deployments wire planner usage at their own bootstrap layer. Set to `false` to skip profiling and run in legacy "kind is None → skip" mode. |
 | `J1_INGEST_DEFAULT_POLICY` | No | `auto` | Workflow request defaults | One of `auto`, `cost_saving`, `balanced`, `high_accuracy`, `force_full`, `text_only`. Per-job `policy` field on the ingest request overrides this. |
-| `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED` | No | `false` | Workflow request defaults | When `true`, the workflow upserts `J1IngestStage` (and `J1IngestMode` when adaptive planning is on) so operators can filter workflows by stage / mode in the Temporal UI. **Pre-register the attributes first** (see [`docs/operations/temporal.md`](../operations/temporal.md) § 5.1) — the Temporal cluster rejects upserts for unregistered attributes at activation completion, and the worker can't recover from it. |
+| `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED` | No | `false` | Workflow request defaults | When `true`, the workflow upserts `J1IngestStage` (and `J1IngestMode` when adaptive planning is on) so operators can filter workflows by stage / mode in the Temporal UI. **Pre-register the attributes first** (see [`docs/operations/temporal.md`](../operations/temporal.md) § 5.1) — the Temporal cluster rejects upserts for unregistered attributes at activation completion, and the worker can't recover from it. The dev compose stack auto-registers them via the `temporal-init` service. |
 
-When `J1_INGEST_PLANNER_ENABLED=false` (default), the workflow uses
-the same gate logic it always has: a stage runs if and only if its
-corresponding `*_kind` field is set on the ingest request. The
-planner-disabled path also benefits from the
+When `J1_INGEST_PLANNER_ENABLED=false`, the workflow uses the same
+gate logic as the legacy mode: a stage runs if and only if its
+corresponding `*_kind` field is set on the ingest request. Both
+planner-enabled and planner-disabled paths benefit from the
 [failure-propagation contract](../architecture.md#6-temporal-orchestration):
 required-step failures raise `ApplicationError` instead of silently
 returning a result with a failure-encoded status field.

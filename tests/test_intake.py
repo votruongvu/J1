@@ -5,11 +5,17 @@ from pathlib import Path
 import pytest
 
 from j1.audit.sink import AUDIT_LOG_FILENAME
-from j1.errors.exceptions import DuplicateDocumentError, IntakeError
+from j1.errors.exceptions import (
+    DuplicateDocumentError,
+    IntakeError,
+    UploadTooLargeError,
+)
 from j1.intake.service import (
     ACTION_DUPLICATE,
     ACTION_REGISTERED,
     CHECKSUM_PREFIX,
+    DEFAULT_MAX_UPLOAD_BYTES,
+    DocumentIntakeService,
 )
 from j1.jobs.status import ProcessingStatus
 
@@ -177,3 +183,68 @@ def test_correlation_id_propagates_to_audit(intake_service, workspace, ctx, tmp_
     intake_service.register_from_path(ctx, src, correlation_id="run-42")
     events = _read_audit(workspace, ctx)
     assert events[0]["correlation_id"] == "run-42"
+
+
+# ---- Upload size cap (regression: C3) -----------------------------
+
+
+def _intake_with_cap(workspace, registry, audit_sink, fixed_clock, id_factory, cap):
+    return DocumentIntakeService(
+        workspace=workspace,
+        registry=registry,
+        audit_sink=audit_sink,
+        clock=fixed_clock,
+        id_factory=id_factory,
+        max_upload_bytes=cap,
+    )
+
+
+def test_upload_size_cap_default_value():
+    """The default cap matches the FE-stated 200 MiB ceiling."""
+    assert DEFAULT_MAX_UPLOAD_BYTES == 200 * 1024 * 1024
+
+
+def test_oversize_stream_raises_typed_error(
+    workspace, registry, audit_sink, fixed_clock, id_factory, ctx,
+):
+    """Boundary check trips during the streaming copy, not after."""
+    intake = _intake_with_cap(
+        workspace, registry, audit_sink, fixed_clock, id_factory, cap=64,
+    )
+    payload = b"x" * 200
+    with pytest.raises(UploadTooLargeError) as excinfo:
+        intake.register_from_stream(
+            ctx, io.BytesIO(payload), original_filename="big.txt",
+        )
+    err = excinfo.value
+    assert err.max_bytes == 64
+    assert err.size_bytes > 64
+
+
+def test_oversize_stream_does_not_register(
+    workspace, registry, audit_sink, fixed_clock, id_factory, ctx,
+):
+    """A rejected upload leaves no registry entry and no orphaned tmp."""
+    intake = _intake_with_cap(
+        workspace, registry, audit_sink, fixed_clock, id_factory, cap=64,
+    )
+    with pytest.raises(UploadTooLargeError):
+        intake.register_from_stream(
+            ctx, io.BytesIO(b"x" * 200), original_filename="big.txt",
+        )
+    raw_files = list(workspace.raw(ctx).iterdir()) if workspace.raw(ctx).exists() else []
+    assert raw_files == []
+    assert registry.list_documents(ctx) == []
+
+
+def test_undersize_stream_passes_with_cap(
+    workspace, registry, audit_sink, fixed_clock, id_factory, ctx,
+):
+    """Streams that fit under the cap register normally."""
+    intake = _intake_with_cap(
+        workspace, registry, audit_sink, fixed_clock, id_factory, cap=1024,
+    )
+    record = intake.register_from_stream(
+        ctx, io.BytesIO(b"small"), original_filename="ok.txt",
+    )
+    assert record.file_size == 5

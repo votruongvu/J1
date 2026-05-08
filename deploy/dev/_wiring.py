@@ -6,8 +6,10 @@ The framework remains a library; this file demonstrates one concrete
 way to wire it.
 """
 
+import os
 from collections.abc import Mapping
 
+from j1.intake.service import DEFAULT_MAX_UPLOAD_BYTES
 from j1 import (
     AccountingActivities,
     AnswerService,
@@ -73,6 +75,22 @@ from j1.runs import (
 DEFAULT_PROFILE_ID = "default"
 
 
+def _resolve_max_upload_bytes() -> int:
+    """Resolve the per-upload size cap, honouring `J1_MAX_UPLOAD_BYTES`.
+
+    A non-positive override falls back to the framework default so a
+    misconfigured value doesn't accidentally disable the boundary.
+    """
+    raw = os.environ.get("J1_MAX_UPLOAD_BYTES", "").strip()
+    if not raw:
+        return DEFAULT_MAX_UPLOAD_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_UPLOAD_BYTES
+    return value if value > 0 else DEFAULT_MAX_UPLOAD_BYTES
+
+
 def build_settings() -> Settings:
     """Reads `J1_DATA_ROOT` and friends from the process environment."""
     from j1.config.settings import load_settings
@@ -102,6 +120,7 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
 
     intake = DocumentIntakeService(
         workspace=workspace, registry=sources, audit_sink=audit_sink,
+        max_upload_bytes=_resolve_max_upload_bytes(),
     )
     processing = ProcessingService(
         workspace=workspace, artifact_registry=artifacts,
@@ -347,6 +366,7 @@ def build_worker_spec(
 
     intake = DocumentIntakeService(
         workspace=workspace, registry=sources, audit_sink=audit_sink,
+        max_upload_bytes=_resolve_max_upload_bytes(),
     )
     processing = ProcessingService(
         workspace=workspace, artifact_registry=artifacts,

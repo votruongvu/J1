@@ -81,7 +81,11 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun, pushToast }: AllRunsPage
     setLoading(true);
     setError(null);
     try {
-      const all = await client.listRuns(ctx, { page: 1, pageSize: 10 });
+      // Server cap is 200 (`adapters/rest/app.py:1059`). Pull the
+      // full page so quick-filter chip counts and client-side
+      // pagination reflect the actual run set; without this the
+      // dashboard silently truncates above ~10 runs.
+      const all = await client.listRuns(ctx, { page: 1, pageSize: 200 });
       setAllData(all);
     } catch (e) {
       const status = e instanceof ApiError ? e.status : 500;

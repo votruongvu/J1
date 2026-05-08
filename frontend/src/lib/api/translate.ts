@@ -144,18 +144,18 @@ export interface ApiProgressEvent {
 // ---- Translators ----------------------------------------------------
 
 /**
- * Map J1 RunStatus to the prototype's status enum (which uses
- * COMPLETED / COMPLETED_WITH_WARNINGS / AWAITING_HUMAN_REVIEW).
- * `StatusDisplay` carries entries for both shapes already, so the
- * UI handles either — but we normalise here for consistency.
+ * Convert the backend's lowercase `RunStatus` wire value (`"running"`,
+ * `"succeeded"`, …) into the FE's uppercase domain string. The
+ * backend emits both `SUCCEEDED` and `COMPLETED` families, and
+ * `RUN_STATUS` carries entries for both — collapsing `SUCCEEDED →
+ * COMPLETED` here would silently disable status checks against the
+ * `SUCCEEDED` constants. `StatusDisplay` and the predicate sets in
+ * `lib/constants/runStatus.ts` both handle either spelling, so the
+ * UI tolerates whichever form arrives.
  */
 function translateStatus(s: string | undefined): RunStatus {
   if (!s) return "ASSESSING";
-  const upper = String(s).toUpperCase() as RunStatus;
-  if (upper === "SUCCEEDED") return "COMPLETED";
-  if (upper === "SUCCEEDED_WITH_WARNINGS") return "COMPLETED_WITH_WARNINGS";
-  if (upper === "REQUIRES_HUMAN_REVIEW") return "AWAITING_HUMAN_REVIEW";
-  return upper;
+  return String(s).toUpperCase() as RunStatus;
 }
 
 export function runListItemFromApi(api: ApiRunListItem): RunListItem {

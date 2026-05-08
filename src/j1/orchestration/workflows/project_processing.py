@@ -464,7 +464,7 @@ class ProjectProcessingWorkflow:
                 # nothing, a required step's StepResult was never
                 # recorded, etc.). Without this gate the workflow
                 # would mark SUCCEEDED on a degenerate run.
-                validation_errors = self._validate_completion()
+                validation_errors = self._validate_completion(request)
                 if validation_errors:
                     raise _BusinessRejection(
                         "completion validation failed: "
@@ -749,7 +749,9 @@ class ProjectProcessingWorkflow:
                 count += 1
         return count
 
-    def _validate_completion(self) -> list[str]:
+    def _validate_completion(
+        self, request: ProjectProcessingRequest,
+    ) -> list[str]:
         """Last-mile gate: don't mark SUCCEEDED unless the required
         artifacts are actually present.
 
@@ -761,7 +763,10 @@ class ProjectProcessingWorkflow:
           * a required step's `StepResult` was never recorded because
             of a coding-level miss in a new branch;
           * the workflow drained all documents but produced nothing
-            indexable.
+            indexable;
+          * `indexer_kind` was set, artifacts were produced, but no
+            index `StepResult` exists — the document would be reported
+            SUCCEEDED while remaining unsearchable.
 
         Returns a list of human-readable validation errors. An empty
         list = OK, callers proceed to the SUCCEEDED transition. Any
@@ -787,6 +792,18 @@ class ProjectProcessingWorkflow:
                 errors.append(
                     f"required step {r.step!r} ended in status "
                     f"{r.status.value!r} without aborting the workflow"
+                )
+        # When INDEX was requested AND artifacts were produced, the
+        # workflow MUST have recorded an index step. Without this the
+        # job exits SUCCEEDED but the search index never received the
+        # artifacts — the run looks green but search returns nothing.
+        if request.indexer_kind and self._produced_artifact_ids:
+            saw_index = any(r.step == "index" for r in self._step_results)
+            if not saw_index:
+                errors.append(
+                    "indexer_kind is set and artifacts were produced, "
+                    "but no index step ran; the run would be reported "
+                    "SUCCEEDED while remaining unsearchable"
                 )
         return errors
 

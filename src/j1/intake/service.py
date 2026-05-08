@@ -10,7 +10,11 @@ from typing import BinaryIO
 from j1.audit.events import AuditEvent
 from j1.audit.sink import AuditSink
 from j1.documents.models import DocumentRecord
-from j1.errors.exceptions import DuplicateDocumentError, IntakeError
+from j1.errors.exceptions import (
+    DuplicateDocumentError,
+    IntakeError,
+    UploadTooLargeError,
+)
 from j1.intake.registry import SourceRegistry
 from j1.jobs.status import ProcessingStatus
 from j1.projects.context import ProjectContext
@@ -21,6 +25,14 @@ ACTION_DUPLICATE = "document.duplicate_detected"
 TARGET_KIND = "document"
 CHECKSUM_PREFIX = "sha256:"
 _CHUNK_SIZE = 64 * 1024
+
+# Default upload size cap. Stops a single multipart request from
+# filling the workspace volume. Override with `max_upload_bytes=` on
+# `DocumentIntakeService`. Operators wiring an `J1_MAX_UPLOAD_BYTES`
+# env var should plumb it at construction time. 200 MiB matches the
+# UI's stated cap so the user-visible limit and the boundary check
+# don't disagree.
+DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 def _default_clock() -> datetime:
@@ -39,12 +51,14 @@ class DocumentIntakeService:
         audit_sink: AuditSink,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
+        max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ) -> None:
         self._workspace = workspace
         self._registry = registry
         self._audit = audit_sink
         self._clock = clock or _default_clock
         self._id_factory = id_factory or _default_id
+        self._max_upload_bytes = max_upload_bytes
 
     def register_from_path(
         self,
@@ -113,7 +127,9 @@ class DocumentIntakeService:
         tmp_path = Path(tmp.name)
         try:
             try:
-                checksum, file_size = _copy_and_hash(stream, tmp)
+                checksum, file_size = _copy_and_hash(
+                    stream, tmp, max_bytes=self._max_upload_bytes,
+                )
             finally:
                 tmp.close()
 
@@ -224,14 +240,30 @@ class DocumentIntakeService:
         )
 
 
-def _copy_and_hash(src: BinaryIO, dest: BinaryIO) -> tuple[str, int]:
+def _copy_and_hash(
+    src: BinaryIO, dest: BinaryIO, *, max_bytes: int,
+) -> tuple[str, int]:
+    """Stream-copy `src` into `dest` while computing the SHA-256.
+
+    Raises `UploadTooLargeError` as soon as the cumulative byte count
+    exceeds `max_bytes`. The boundary check happens during the copy
+    rather than after, so an oversize stream stops writing immediately
+    instead of filling the disk first. The temp file is left for the
+    caller's outer try/except to unlink.
+    """
     hasher = hashlib.sha256()
     size = 0
     while True:
         chunk = src.read(_CHUNK_SIZE)
         if not chunk:
             break
+        size += len(chunk)
+        if size > max_bytes:
+            raise UploadTooLargeError(
+                f"upload exceeds {max_bytes}-byte cap (read {size} so far)",
+                size_bytes=size,
+                max_bytes=max_bytes,
+            )
         dest.write(chunk)
         hasher.update(chunk)
-        size += len(chunk)
     return f"{CHECKSUM_PREFIX}{hasher.hexdigest()}", size
