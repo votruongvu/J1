@@ -527,14 +527,25 @@ def build_worker_spec(
 
         # Per-modality kill switches from `EnrichmentSettings`. When
         # the operator sets `J1_ENRICH_IMAGES=false` /
-        # `J1_ENRICH_TABLES=false`, the composite drops the
-        # corresponding sub-enricher at construction time. None when
-        # no settings were passed → legacy "run everything" behaviour.
+        # `J1_ENRICH_TABLES=false` / `J1_ENRICH_DIAGRAMS=false` /
+        # `J1_ENRICH_SCANNED_PAGES=false`, the composite drops the
+        # corresponding sub-enricher at construction time. The three
+        # visual flags collectively gate `VisualContentDescriber`
+        # (see `_filter_generic_enrichers`). None when no settings
+        # were passed → legacy "run everything" behaviour.
         images_enabled: bool | None = None
         tables_enabled: bool | None = None
+        diagrams_enabled: bool | None = None
+        scanned_pages_enabled: bool | None = None
         if enrichment_settings is not None:
             images_enabled = bool(getattr(enrichment_settings, "images", True))
             tables_enabled = bool(getattr(enrichment_settings, "tables", True))
+            diagrams_enabled = bool(
+                getattr(enrichment_settings, "diagrams", True),
+            )
+            scanned_pages_enabled = bool(
+                getattr(enrichment_settings, "scanned_pages", True),
+            )
         composite = CompositeEnricher.from_default(
             profile,
             content_source=_artifact_content_source,
@@ -544,6 +555,8 @@ def build_worker_spec(
             embedding_client=embedding_client,
             images_enabled=images_enabled,
             tables_enabled=tables_enabled,
+            diagrams_enabled=diagrams_enabled,
+            scanned_pages_enabled=scanned_pages_enabled,
         )
         resolved_enrichers = {composite.kind: composite}
     else:

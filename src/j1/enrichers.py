@@ -1156,23 +1156,35 @@ def _filter_generic_enrichers(
     *,
     images_enabled: bool | None,
     tables_enabled: bool | None,
+    diagrams_enabled: bool | None = None,
+    scanned_pages_enabled: bool | None = None,
 ) -> tuple[type[_StructuredEnricher], ...]:
     """Drop sub-enrichers whose modality the deployment disabled.
 
-    Only the modalities mapped to a single sub-enricher are gated:
+    Mapping (only modalities with a single owning enricher are
+    gated here; per-modality split for the rest is design-future):
 
-      * `images_enabled=False` → `VisualContentDescriber` is the
-        only generic enricher that consumes the vision LLM today;
-        skipping it removes every `enriched.visuals` artifact.
-      * `tables_enabled=False` → `TableExtractor` is the only one
-        producing `enriched.tables`; skipping it stops table
-        extraction.
+      * `tables_enabled=False` → drop `TableExtractor`. Sole
+        producer of `enriched.tables`.
+      * `images_enabled` / `diagrams_enabled` / `scanned_pages_enabled`
+        — `VisualContentDescriber` (VCD) is the only generic
+        enricher that consumes the vision LLM, and it doesn't
+        differentiate photos from diagrams from scanned-page
+        captures (vendor parser tags artifacts uniformly). VCD
+        runs when **any** of the three visual flags is enabled and
+        is dropped only when **all three** are explicitly False.
+        That matches the operator-facing semantic "kill all visual
+        enrichment" without falsely promising fine-grained control
+        the parser doesn't provide today.
 
-    `None` (the default) means "no opinion — keep the enricher" so
-    callers that don't pass settings get the legacy "run everything"
-    behaviour. Anything not explicitly mapped here always runs.
+    `None` (the default for any flag) means "no opinion — keep the
+    enricher". Callers that don't pass settings see the legacy
+    "run everything" behaviour. Anything not mapped above always
+    runs.
     """
-    if images_enabled is False:
+    visual_flags = (images_enabled, diagrams_enabled, scanned_pages_enabled)
+    visual_explicit_off = all(flag is False for flag in visual_flags)
+    if visual_explicit_off:
         classes = tuple(
             c for c in classes if c is not VisualContentDescriber
         )
@@ -1222,14 +1234,22 @@ class CompositeEnricher:
         # Plumbed from `EnrichmentSettings` at the deployment-wiring
         # layer; the composite stays loose-typed so no import cycle
         # with `j1.compose`.
+        #
+        # `images` / `diagrams` / `scanned_pages` collectively gate
+        # the visual content describer — see `_filter_generic_enrichers`
+        # for the rationale.
         images_enabled: bool | None = None,
         tables_enabled: bool | None = None,
+        diagrams_enabled: bool | None = None,
+        scanned_pages_enabled: bool | None = None,
     ) -> None:
         if enrichers is None:
             child_classes = _filter_generic_enrichers(
                 GENERIC_ENRICHERS,
                 images_enabled=images_enabled,
                 tables_enabled=tables_enabled,
+                diagrams_enabled=diagrams_enabled,
+                scanned_pages_enabled=scanned_pages_enabled,
             )
             enrichers = tuple(
                 _construct_child(
@@ -1258,6 +1278,8 @@ class CompositeEnricher:
         artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
         images_enabled: bool | None = None,
         tables_enabled: bool | None = None,
+        diagrams_enabled: bool | None = None,
+        scanned_pages_enabled: bool | None = None,
     ) -> "CompositeEnricher":
         return cls(
             profile,
@@ -1268,6 +1290,8 @@ class CompositeEnricher:
             artifact_lookup=artifact_lookup,
             images_enabled=images_enabled,
             tables_enabled=tables_enabled,
+            diagrams_enabled=diagrams_enabled,
+            scanned_pages_enabled=scanned_pages_enabled,
         )
 
     def enrich(

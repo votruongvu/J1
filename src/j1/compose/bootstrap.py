@@ -239,6 +239,24 @@ class Bootstrap:
         raganything_settings = load_raganything_settings(self._env)
         graphify_settings = load_graphify_settings(self._env)
 
+        # `J1_ENRICH_SCANNED_PAGES=false` is an operator opt-out from
+        # OCR-style content extraction. MinerU's `parse_method=ocr`
+        # (and `auto`'s OCR-fallback) call the vision LLM on every
+        # scanned page; both are billable. Honor the opt-out by
+        # forcing `parse_method=txt` so MinerU skips OCR entirely —
+        # but only when the operator left `J1_RAGANYTHING_PARSE_METHOD`
+        # at its default (`auto`). If they explicitly chose a method,
+        # respect that; the explicit value wins over the higher-level
+        # enrichment kill switch.
+        if (
+            not enrichment.scanned_pages
+            and raganything_settings.parse_method == DEFAULT_PARSE_METHOD_VALUE
+        ):
+            from dataclasses import replace as _replace
+            raganything_settings = _replace(
+                raganything_settings, parse_method="txt",
+            )
+
         llm_registry = (
             self._llm_registry_override
             if self._llm_registry_override is not None
