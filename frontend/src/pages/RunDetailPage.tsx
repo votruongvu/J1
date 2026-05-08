@@ -17,6 +17,7 @@ import {
   type ProgressEvent,
   isTerminalEvent,
 } from "@/types/ingestion";
+import { EVENT_TYPES } from "@/lib/constants/events";
 import type { ProjectContext, RuntimeStepStatus, StreamStatus, Toast } from "@/types/ui";
 import { Banner } from "@/components/Banner";
 import { RunHeader } from "./run-detail/RunHeader";
@@ -102,14 +103,14 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
 
       const stepKey = e.data?.step;
       if (stepKey) {
-        if (t === "step.started") setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "running" }));
-        if (t === "step.completed")
+        if (t === EVENT_TYPES.STEP_STARTED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "running" }));
+        if (t === EVENT_TYPES.STEP_COMPLETED)
           setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "completed" }));
-        if (t === "step.failed") setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "failed" }));
-        if (t === "step.skipped") setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "skipped" }));
+        if (t === EVENT_TYPES.STEP_FAILED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "failed" }));
+        if (t === EVENT_TYPES.STEP_SKIPPED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "skipped" }));
       }
 
-      if (t === "plan.generated") {
+      if (t === EVENT_TYPES.PLAN_GENERATED) {
         void client
           .getPlan(runId)
           .then((p) => setPlan(p))
@@ -208,7 +209,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         // The 600 ms eager fetch below can lose this race when the
         // plan was written just before page-load; scanning history is
         // the reliable alternative.
-        if (hist.some((e) => e.event === "plan.generated") && !cancelled) {
+        if (hist.some((e) => e.event === EVENT_TYPES.PLAN_GENERATED) && !cancelled) {
           void client
             .getPlan(runId)
             .then((p) => {

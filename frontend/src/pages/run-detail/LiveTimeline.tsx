@@ -7,6 +7,7 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "@/components/icons";
 import { EngineBadge } from "@/components/badges";
+import { EVENT_TYPES } from "@/lib/constants/events";
 import { eventTypeLabel } from "@/lib/display";
 import type { ProgressEvent } from "@/types/ingestion";
 import type { StreamStatus as StreamStatusKind } from "@/types/ui";
@@ -88,13 +89,15 @@ interface TimelineEventItemProps {
 function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
   const t = event.event;
   const sev = event.data?.severity || "INFO";
-  const isProgress = t === "step.progress";
-  const isWarning = t === "step.warning" || sev === "WARNING";
-  const isError = t === "step.failed" || t === "run.failed" || sev === "ERROR";
-  const isReview = t === "human_review.required";
-  const isRunning = t === "step.started";
+  const isProgress = t === EVENT_TYPES.STEP_PROGRESS;
+  const isWarning = t === EVENT_TYPES.STEP_WARNING || sev === "WARNING";
+  const isError = t === EVENT_TYPES.STEP_FAILED || t === EVENT_TYPES.RUN_FAILED || sev === "ERROR";
+  const isReview = t === EVENT_TYPES.HUMAN_REVIEW_REQUIRED;
+  const isRunning = t === EVENT_TYPES.STEP_STARTED;
   const isSuccess =
-    t === "step.completed" || t === "run.completed" || t === "assessment.completed";
+    t === EVENT_TYPES.STEP_COMPLETED ||
+    t === EVENT_TYPES.RUN_COMPLETED ||
+    t === EVENT_TYPES.ASSESSMENT_COMPLETED;
 
   let kind: "info" | "warning" | "error" | "review" | "running" | "success" = "info";
   if (isError) kind = "error";
@@ -156,12 +159,12 @@ function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
         </div>
       )}
 
-      {t === "step.warning" && event.data?.warning && (
+      {t === EVENT_TYPES.STEP_WARNING && event.data?.warning && (
         <div className="tl-item__warn">
           <Icon.Alert className="icon-sm" /> {event.data.warning}
         </div>
       )}
-      {(t === "step.failed" || t === "run.failed") && event.data?.failure_message && (
+      {(t === EVENT_TYPES.STEP_FAILED || t === EVENT_TYPES.RUN_FAILED) && event.data?.failure_message && (
         <div className="tl-item__error">
           <strong className="mono">{event.data.failure_code}</strong> ·{" "}
           {event.data.failure_message}

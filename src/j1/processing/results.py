@@ -6,7 +6,17 @@ from j1.cost.breakdown import CostBreakdown, CostResult
 from j1.jobs.status import ReviewStatus
 from j1.processing.status import ResultStatus
 
+# Canonical artifact-kind strings shared across providers, projectors,
+# and the validation/review surface. Each kind names the contract a
+# producer claims to satisfy; consumers (review projectors, retrieval,
+# the FE Assets/Chunks/Graph tabs) match on these. Stable across
+# releases — renaming silently breaks every consumer that reads them.
+ARTIFACT_KIND_CHUNK = "chunk"
+ARTIFACT_KIND_COMPILED_TEXT = "compiled.text"
+
 __all__ = [
+    "ARTIFACT_KIND_CHUNK",
+    "ARTIFACT_KIND_COMPILED_TEXT",
     "ArtifactDraft",
     "ArtifactProcessingResult",
     "CostBreakdown",

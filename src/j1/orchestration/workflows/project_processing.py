@@ -105,6 +105,40 @@ OPERATION_FINALIZE = "finalize"
 OPERATION_BUDGET_CHECK = "budget_check"
 OPERATION_REVIEW_GATE = "review_gate"
 
+# Temporal search-attribute names. Must match the registrations in
+# `deploy/dev/docker-compose.yml` (temporal-init service) — writing
+# an unregistered attribute crashes workflow activation when
+# `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true`.
+SEARCH_ATTR_INGEST_STAGE = "J1IngestStage"
+SEARCH_ATTR_INGEST_MODE = "J1IngestMode"
+SEARCH_ATTR_DOCUMENT_ID = "J1DocumentId"
+SEARCH_ATTR_WORKSPACE_ID = "J1WorkspaceId"
+SEARCH_ATTR_PARSER_NAME = "J1ParserName"
+SEARCH_ATTR_REQUIRES_VISION = "J1RequiresVision"
+SEARCH_ATTR_REQUIRES_PREMIUM_LLM = "J1RequiresPremiumLLM"
+
+# Values written into `SEARCH_ATTR_INGEST_STAGE`. Operators filter
+# Temporal histories on these — keep in sync with the values quoted
+# in deployment runbooks.
+INGEST_STAGE_STARTING = "starting"
+INGEST_STAGE_CANCELLED = "cancelled"
+INGEST_STAGE_COMPLETED = "completed"
+INGEST_STAGE_FAILED = "failed"
+
+# Workflow signal names. Must match the `@workflow.signal`-decorated
+# method names on `ProjectProcessingWorkflow` since Temporal infers
+# the signal name from the Python identifier. Senders elsewhere in
+# the codebase (`integration/services.py`) MUST use these constants
+# rather than re-spelling the strings — a typo silently sends the
+# signal to nowhere.
+SIGNAL_PAUSE = "pause"
+SIGNAL_RESUME = "resume"
+SIGNAL_CANCEL = "cancel"
+SIGNAL_APPROVE_BUDGET = "approve_budget"
+SIGNAL_REJECT_BUDGET = "reject_budget"
+SIGNAL_APPROVE_REVIEW = "approve_review"
+SIGNAL_REJECT_REVIEW = "reject_review"
+
 
 @dataclass(frozen=True)
 class ProjectProcessingRequest:
@@ -334,7 +368,7 @@ class ProjectProcessingWorkflow:
             stage="workflow",
             status="running",
         )
-        self._set_search_attribute("J1IngestStage", "starting")
+        self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_STARTING)
 
         try:
             if not is_continuation:
@@ -418,7 +452,7 @@ class ProjectProcessingWorkflow:
                     stage="workflow",
                     status="cancelled",
                 )
-                self._set_search_attribute("J1IngestStage", "cancelled")
+                self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_CANCELLED)
                 await self._emit_run_terminal(
                     request, final_status="cancelled",
                 )
@@ -443,7 +477,7 @@ class ProjectProcessingWorkflow:
                     stage="workflow",
                     status="completed",
                 )
-                self._set_search_attribute("J1IngestStage", "completed")
+                self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_COMPLETED)
                 # `final_status` distinguishes succeeded vs.
                 # succeeded_with_warnings using the recorded
                 # `step_results` warning_count semantic. Today the
@@ -474,7 +508,7 @@ class ProjectProcessingWorkflow:
                 reason=self._error,
                 error_type=ERROR_TYPE_REQUIRED_STEP_FAILED,
             )
-            self._set_search_attribute("J1IngestStage", "failed")
+            self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -501,7 +535,7 @@ class ProjectProcessingWorkflow:
                 reason=self._error,
                 error_type=getattr(exc, "type", None) or "ApplicationError",
             )
-            self._set_search_attribute("J1IngestStage", "failed")
+            self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -528,7 +562,7 @@ class ProjectProcessingWorkflow:
                 reason=self._error,
                 error_type=ERROR_TYPE_UNEXPECTED_ERROR,
             )
-            self._set_search_attribute("J1IngestStage", "failed")
+            self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -587,7 +621,7 @@ class ProjectProcessingWorkflow:
         # attributes so the UI can group/filter active workflows by
         # stage. Best-effort — fails silently if the attribute isn't
         # registered with the namespace.
-        self._set_search_attribute("J1IngestStage", op)
+        self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, op)
 
     def _complete(self, op: str) -> None:
         self._completed_operations.append(op)
@@ -1090,10 +1124,10 @@ class ProjectProcessingWorkflow:
         # `search_attributes_enabled` like every other upsert; the
         # `temporal-init` service registers all of these at cluster
         # boot for the dev stack.
-        self._set_search_attribute("J1DocumentId", document_id)
-        self._set_search_attribute("J1WorkspaceId", request.scope.project_id)
+        self._set_search_attribute(SEARCH_ATTR_DOCUMENT_ID, document_id)
+        self._set_search_attribute(SEARCH_ATTR_WORKSPACE_ID, request.scope.project_id)
         if request.compiler_kind:
-            self._set_search_attribute("J1ParserName", request.compiler_kind)
+            self._set_search_attribute(SEARCH_ATTR_PARSER_NAME, request.compiler_kind)
 
         # Build the plan BEFORE compile so the FE's plan card resolves
         # within seconds of upload — operators see "what will run" up
@@ -1115,17 +1149,18 @@ class ProjectProcessingWorkflow:
         plan: IngestPlan | None = None
         if request.planner_enabled:
             plan = await self._build_plan(request, document_id)
-            self._set_search_attribute("J1IngestMode", plan.mode.value)
+            self._set_search_attribute(SEARCH_ATTR_INGEST_MODE, plan.mode.value)
             # Surface the LLM/vision policy decisions as search
             # attributes so operators can filter Temporal histories
             # for "all runs that needed the premium model" without
             # re-reading the audit log. Both gated on the same
             # `search_attributes_enabled` flag as the existing upserts.
             self._set_search_attribute(
-                "J1RequiresVision", "true" if plan.requires_vision else "false",
+                SEARCH_ATTR_REQUIRES_VISION,
+                "true" if plan.requires_vision else "false",
             )
             self._set_search_attribute(
-                "J1RequiresPremiumLLM",
+                SEARCH_ATTR_REQUIRES_PREMIUM_LLM,
                 "true" if plan.requires_premium_llm else "false",
             )
             self._log_step(

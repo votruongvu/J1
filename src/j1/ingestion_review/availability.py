@@ -11,7 +11,9 @@ from __future__ import annotations
 from typing import Iterable
 
 from j1.artifacts.models import ArtifactRecord
+from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.ingestion_review.dtos import AvailabilityDTO, AvailableViewsDTO
+from j1.processing.results import ARTIFACT_KIND_CHUNK
 from j1.runs.models import IngestionRun
 
 
@@ -30,8 +32,8 @@ _QUALITY_KINDS = frozenset({
     "enriched.consistency_findings",
 })
 
-_GRAPH_KIND = "graph_json"
-_CHUNK_KIND = "chunk"
+_GRAPH_KIND = ARTIFACT_KIND_GRAPH_JSON
+_CHUNK_KIND = ARTIFACT_KIND_CHUNK
 
 
 def resolve_available_views(

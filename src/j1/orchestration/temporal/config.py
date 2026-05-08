@@ -6,7 +6,10 @@ from j1.errors.exceptions import ConfigError
 
 DEFAULT_TARGET = "localhost:7233"
 DEFAULT_NAMESPACE = "default"
-DEFAULT_TASK_QUEUE = "j1-default"
+# Must match the value documented in .env.example. A developer who
+# starts the worker without a .env still lands on the same queue the
+# api submits to.
+DEFAULT_TASK_QUEUE = "j1-processing"
 
 ENV_TARGET = "J1_TEMPORAL_TARGET"
 ENV_NAMESPACE = "J1_TEMPORAL_NAMESPACE"

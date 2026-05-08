@@ -13,6 +13,7 @@ import type {
   Severity,
   Stage,
 } from "@/types/ingestion";
+import type { ValidationStatus, ValidationResultStatus } from "@/types/review";
 
 // ---- Status display -------------------------------------------------
 
@@ -30,7 +31,7 @@ export const StatusDisplay: Readonly<Record<RunStatus, StatusMeta>> = {
   CREATED: { label: "Created", tone: "neutral", pulse: false },
   ASSESSING: { label: "Assessing", tone: "info", pulse: true },
   PLAN_READY: { label: "Plan ready", tone: "accent", pulse: false },
-  WAITING_FOR_CONFIRMATION: { label: "Awaiting confirm", tone: "accent", pulse: true },
+  WAITING_FOR_CONFIRMATION: { label: "Awaiting confirmation", tone: "accent", pulse: true },
   RUNNING: { label: "Running", tone: "info", pulse: true },
   PAUSED: { label: "Paused", tone: "warning", pulse: false },
   CANCELLING: { label: "Cancelling", tone: "neutral", pulse: true },
@@ -116,4 +117,70 @@ export function eventTypeLabel(type: string): string {
     return EventTypeDisplay[type as ProgressEventType];
   }
   return type;
+}
+
+// ---- Validation status display --------------------------------------
+//
+// `ValidationStatus` is the run-level outcome (passed / failed / etc).
+// `ValidationResultStatus` is the per-test-case outcome. The two
+// vocabularies overlap but are distinct types — keep both maps so a
+// rename only touches this file.
+
+export interface ValidationStatusMeta {
+  label: string;
+  className: string;
+}
+
+const _NOT_RUN_LABEL = "Not run";
+
+/**
+ * Run-level validation outcome. The "not_run" key isn't part of the
+ * `ValidationStatus` union — it's the synthetic value for a run that
+ * has no validation attached yet. Look it up via
+ * `validationStatusMeta(undefined | "not_run")`.
+ */
+export const ValidationStatusDisplay: Readonly<
+  Record<ValidationStatus, ValidationStatusMeta>
+> = {
+  passed: { label: "Passed", className: "validation-status--ok" },
+  passed_with_warnings: {
+    label: "Passed with warnings",
+    className: "validation-status--warn",
+  },
+  failed: { label: "Failed", className: "validation-status--fail" },
+  inconclusive: { label: "Inconclusive", className: "validation-status--unknown" },
+};
+
+export function validationStatusMeta(
+  status: ValidationStatus | "not_run" | null | undefined,
+): ValidationStatusMeta {
+  if (!status || status === "not_run") {
+    return { label: _NOT_RUN_LABEL, className: "validation-status--unknown" };
+  }
+  if (status in ValidationStatusDisplay) {
+    return ValidationStatusDisplay[status as ValidationStatus];
+  }
+  return { label: status, className: "validation-status--unknown" };
+}
+
+/** Per-test-case outcome — the table-row status. */
+export const ValidationResultDisplay: Readonly<
+  Record<ValidationResultStatus, ValidationStatusMeta>
+> = {
+  passed: { label: "Passed", className: "validation-status--ok" },
+  warning: { label: "Warning", className: "validation-status--warn" },
+  failed: { label: "Failed", className: "validation-status--fail" },
+  skipped: { label: "Skipped", className: "validation-status--unknown" },
+};
+
+export function validationResultMeta(
+  status: ValidationResultStatus | null | undefined,
+): ValidationStatusMeta {
+  if (!status) {
+    return { label: "—", className: "validation-status--unknown" };
+  }
+  if (status in ValidationResultDisplay) {
+    return ValidationResultDisplay[status as ValidationResultStatus];
+  }
+  return { label: status, className: "validation-status--unknown" };
 }

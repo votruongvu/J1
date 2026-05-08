@@ -3,6 +3,7 @@ from typing import Any
 
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactRegistry
+from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.enrichers import ARTIFACT_TYPE_CONSISTENCY_FINDINGS
 from j1.errors.exceptions import DocumentNotFoundError
 from j1.intake.registry import SourceRegistry
@@ -40,7 +41,7 @@ def _filter_by_scope(
         ]
     return records
 
-GRAPH_JSON_KIND = "graph_json"
+GRAPH_JSON_KIND = ARTIFACT_KIND_GRAPH_JSON
 DEFAULT_REPORT_TEMPLATE_NAME = "default"
 PROVIDER_KIND_PREFIX = "query"
 

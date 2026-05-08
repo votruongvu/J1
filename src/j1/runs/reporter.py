@@ -77,24 +77,53 @@ __all__ = [
 # so consumers can filter the audit log to "just the progress timeline".
 PROGRESS_ACTION_PREFIX = "j1.progress."
 
-# Event-type strings (also used as audit `action` values) — these are
-# the canonical names a frontend filters on. Stable across releases.
-ACTION_PROGRESS_RUN_CREATED = PROGRESS_ACTION_PREFIX + "run.created"
-ACTION_PROGRESS_DOCUMENT_RECEIVED = PROGRESS_ACTION_PREFIX + "document.received"
-ACTION_PROGRESS_ASSESSMENT_STARTED = PROGRESS_ACTION_PREFIX + "assessment.started"
-ACTION_PROGRESS_ASSESSMENT_COMPLETED = PROGRESS_ACTION_PREFIX + "assessment.completed"
-ACTION_PROGRESS_PLAN_GENERATED = PROGRESS_ACTION_PREFIX + "plan.generated"
-ACTION_PROGRESS_PLAN_CONFIRMED = PROGRESS_ACTION_PREFIX + "plan.confirmed"
-ACTION_PROGRESS_STEP_STARTED = PROGRESS_ACTION_PREFIX + "step.started"
-ACTION_PROGRESS_STEP_PROGRESS = PROGRESS_ACTION_PREFIX + "step.progress"
-ACTION_PROGRESS_STEP_SKIPPED = PROGRESS_ACTION_PREFIX + "step.skipped"
-ACTION_PROGRESS_STEP_WARNING = PROGRESS_ACTION_PREFIX + "step.warning"
-ACTION_PROGRESS_STEP_COMPLETED = PROGRESS_ACTION_PREFIX + "step.completed"
-ACTION_PROGRESS_STEP_FAILED = PROGRESS_ACTION_PREFIX + "step.failed"
-ACTION_PROGRESS_RUN_COMPLETED = PROGRESS_ACTION_PREFIX + "run.completed"
-ACTION_PROGRESS_RUN_FAILED = PROGRESS_ACTION_PREFIX + "run.failed"
-ACTION_PROGRESS_RUN_CANCELLED = PROGRESS_ACTION_PREFIX + "run.cancelled"
-ACTION_PROGRESS_HUMAN_REVIEW_REQUIRED = PROGRESS_ACTION_PREFIX + "human_review.required"
+# Bare event-type strings — the canonical names that flow into the
+# SSE timeline + are written into the heartbeat payload. The frontend
+# matches on these (without the audit prefix). Stable across releases.
+PROGRESS_EVENT_RUN_CREATED = "run.created"
+PROGRESS_EVENT_DOCUMENT_RECEIVED = "document.received"
+PROGRESS_EVENT_ASSESSMENT_STARTED = "assessment.started"
+PROGRESS_EVENT_ASSESSMENT_COMPLETED = "assessment.completed"
+PROGRESS_EVENT_PLAN_GENERATED = "plan.generated"
+PROGRESS_EVENT_PLAN_CONFIRMED = "plan.confirmed"
+PROGRESS_EVENT_STEP_STARTED = "step.started"
+PROGRESS_EVENT_STEP_PROGRESS = "step.progress"
+PROGRESS_EVENT_STEP_SKIPPED = "step.skipped"
+PROGRESS_EVENT_STEP_WARNING = "step.warning"
+PROGRESS_EVENT_STEP_COMPLETED = "step.completed"
+PROGRESS_EVENT_STEP_FAILED = "step.failed"
+PROGRESS_EVENT_RUN_COMPLETED = "run.completed"
+PROGRESS_EVENT_RUN_FAILED = "run.failed"
+PROGRESS_EVENT_RUN_CANCELLED = "run.cancelled"
+PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED = "human_review.required"
+
+# Audit `action` values — prefix + bare event name. These are what
+# the audit log records and the audit-history filter accepts.
+ACTION_PROGRESS_RUN_CREATED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_RUN_CREATED
+ACTION_PROGRESS_DOCUMENT_RECEIVED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_DOCUMENT_RECEIVED
+ACTION_PROGRESS_ASSESSMENT_STARTED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_ASSESSMENT_STARTED
+ACTION_PROGRESS_ASSESSMENT_COMPLETED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_ASSESSMENT_COMPLETED
+ACTION_PROGRESS_PLAN_GENERATED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_PLAN_GENERATED
+ACTION_PROGRESS_PLAN_CONFIRMED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_PLAN_CONFIRMED
+ACTION_PROGRESS_STEP_STARTED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_STARTED
+ACTION_PROGRESS_STEP_PROGRESS = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_PROGRESS
+ACTION_PROGRESS_STEP_SKIPPED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_SKIPPED
+ACTION_PROGRESS_STEP_WARNING = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_WARNING
+ACTION_PROGRESS_STEP_COMPLETED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_COMPLETED
+ACTION_PROGRESS_STEP_FAILED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_STEP_FAILED
+ACTION_PROGRESS_RUN_COMPLETED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_RUN_COMPLETED
+ACTION_PROGRESS_RUN_FAILED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_RUN_FAILED
+ACTION_PROGRESS_RUN_CANCELLED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_RUN_CANCELLED
+ACTION_PROGRESS_HUMAN_REVIEW_REQUIRED = PROGRESS_ACTION_PREFIX + PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED
+
+# Frozen set of terminal event types. The SSE handler stops streaming
+# once any of these has been observed.
+PROGRESS_TERMINAL_EVENT_TYPES = frozenset({
+    PROGRESS_EVENT_RUN_COMPLETED,
+    PROGRESS_EVENT_RUN_FAILED,
+    PROGRESS_EVENT_RUN_CANCELLED,
+    PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED,
+})
 
 
 # Audit `target_kind` for progress entries. Stable so consumers can
@@ -760,39 +789,39 @@ class TemporalHeartbeatReporter:
     # All methods route through `_hb` and discard return values.
 
     def report_run_created(self, _ctx, *, run_id, document_id, actor="system"):
-        self._hb(event="run.created", run_id=run_id, document_id=document_id)
+        self._hb(event=PROGRESS_EVENT_RUN_CREATED, run_id=run_id, document_id=document_id)
         return ""
 
     def report_document_received(self, _ctx, *, run_id, document_id, actor="system"):
-        self._hb(event="document.received", run_id=run_id, document_id=document_id)
+        self._hb(event=PROGRESS_EVENT_DOCUMENT_RECEIVED, run_id=run_id, document_id=document_id)
         return ""
 
     def report_assessment_started(self, _ctx, *, run_id, actor="system"):
-        self._hb(event="assessment.started", run_id=run_id)
+        self._hb(event=PROGRESS_EVENT_ASSESSMENT_STARTED, run_id=run_id)
         return ""
 
     def report_assessment_completed(
         self, _ctx, *, run_id, profile_metadata=None, actor="system",
     ):
-        self._hb(event="assessment.completed", run_id=run_id)
+        self._hb(event=PROGRESS_EVENT_ASSESSMENT_COMPLETED, run_id=run_id)
         return ""
 
     def report_plan_generated(self, _ctx, *, run_id, plan_payload, actor="system"):
         self._hb(
-            event="plan.generated", run_id=run_id,
+            event=PROGRESS_EVENT_PLAN_GENERATED, run_id=run_id,
             mode=plan_payload.get("mode") if isinstance(plan_payload, dict) else None,
         )
         return ""
 
     def report_plan_confirmed(self, _ctx, *, run_id, actor="system"):
-        self._hb(event="plan.confirmed", run_id=run_id)
+        self._hb(event=PROGRESS_EVENT_PLAN_CONFIRMED, run_id=run_id)
         return ""
 
     def report_step_started(
         self, _ctx, *, run_id, stage, step,
         engine=None, provider=None, actor="system",
     ):
-        self._hb(event="step.started", run_id=run_id, stage=stage, step=step,
+        self._hb(event=PROGRESS_EVENT_STEP_STARTED, run_id=run_id, stage=stage, step=step,
                  engine=engine, provider=provider)
         return ""
 
@@ -801,7 +830,7 @@ class TemporalHeartbeatReporter:
         current=None, total=None, message=None, engine=None, actor="system",
     ):
         self._hb(
-            event="step.progress", run_id=run_id, stage=stage, step=step,
+            event=PROGRESS_EVENT_STEP_PROGRESS, run_id=run_id, stage=stage, step=step,
             progress_percent=progress_percent, current=current, total=total,
             engine=engine,
         )
@@ -810,7 +839,7 @@ class TemporalHeartbeatReporter:
     def report_step_skipped(
         self, _ctx, *, run_id, stage, step, reason, actor="system",
     ):
-        self._hb(event="step.skipped", run_id=run_id, stage=stage, step=step,
+        self._hb(event=PROGRESS_EVENT_STEP_SKIPPED, run_id=run_id, stage=stage, step=step,
                  reason=reason)
         return ""
 
@@ -818,14 +847,14 @@ class TemporalHeartbeatReporter:
         self, _ctx, *, run_id, stage, step, message,
         engine=None, actor="system",
     ):
-        self._hb(event="step.warning", run_id=run_id, stage=stage, step=step,
+        self._hb(event=PROGRESS_EVENT_STEP_WARNING, run_id=run_id, stage=stage, step=step,
                  message=message)
         return ""
 
     def report_step_completed(
         self, _ctx, *, run_id, stage, step, artifact_count=0, actor="system",
     ):
-        self._hb(event="step.completed", run_id=run_id, stage=stage, step=step,
+        self._hb(event=PROGRESS_EVENT_STEP_COMPLETED, run_id=run_id, stage=stage, step=step,
                  artifact_count=artifact_count)
         return ""
 
@@ -833,7 +862,7 @@ class TemporalHeartbeatReporter:
         self, _ctx, *, run_id, stage, step, error_type, error_message,
         retryable=False, actor="system",
     ):
-        self._hb(event="step.failed", run_id=run_id, stage=stage, step=step,
+        self._hb(event=PROGRESS_EVENT_STEP_FAILED, run_id=run_id, stage=stage, step=step,
                  error_type=error_type, error_message=error_message,
                  retryable=retryable)
         return ""
@@ -841,22 +870,22 @@ class TemporalHeartbeatReporter:
     def report_run_completed(
         self, _ctx, *, run_id, final_status, warning_count=0, actor="system",
     ):
-        self._hb(event="run.completed", run_id=run_id, final_status=final_status,
+        self._hb(event=PROGRESS_EVENT_RUN_COMPLETED, run_id=run_id, final_status=final_status,
                  warning_count=warning_count)
         return ""
 
     def report_run_failed(
         self, _ctx, *, run_id, failure_code, failure_message, actor="system",
     ):
-        self._hb(event="run.failed", run_id=run_id, failure_code=failure_code)
+        self._hb(event=PROGRESS_EVENT_RUN_FAILED, run_id=run_id, failure_code=failure_code)
         return ""
 
     def report_run_cancelled(self, _ctx, *, run_id, reason=None, actor="system"):
-        self._hb(event="run.cancelled", run_id=run_id, reason=reason)
+        self._hb(event=PROGRESS_EVENT_RUN_CANCELLED, run_id=run_id, reason=reason)
         return ""
 
     def report_human_review_required(self, _ctx, *, run_id, gate, actor="system"):
-        self._hb(event="human_review.required", run_id=run_id, gate=gate)
+        self._hb(event=PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED, run_id=run_id, gate=gate)
         return ""
 
 

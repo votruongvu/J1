@@ -26,22 +26,13 @@
  * entries for both so either is rendered correctly without
  * normalisation.
  */
-export type RunStatus =
-  | "CREATED"
-  | "ASSESSING"
-  | "PLAN_READY"
-  | "WAITING_FOR_CONFIRMATION"
-  | "RUNNING"
-  | "PAUSED"
-  | "CANCELLING"
-  | "COMPLETED"
-  | "COMPLETED_WITH_WARNINGS"
-  | "SUCCEEDED"
-  | "SUCCEEDED_WITH_WARNINGS"
-  | "FAILED"
-  | "AWAITING_HUMAN_REVIEW"
-  | "REQUIRES_HUMAN_REVIEW"
-  | "CANCELLED";
+// Re-exported from `lib/constants/runStatus.ts`. New code should
+// import the `RUN_STATUS` constant + predicate sets directly. The
+// type alias here keeps in-file references (interfaces below) and
+// existing imports of `RunStatus` from this module both working.
+import type { RunStatus as _RunStatus } from "@/lib/constants/runStatus";
+export { RUN_STATUS } from "@/lib/constants/runStatus";
+export type RunStatus = _RunStatus;
 
 // ---- Stage / decision / severity ------------------------------------
 
@@ -156,44 +147,18 @@ export interface ExecutionPlan {
 
 // ---- Progress events ------------------------------------------------
 
-export type ProgressEventType =
-  | "run.created"
-  | "document.received"
-  | "assessment.started"
-  | "assessment.completed"
-  | "plan.generated"
-  | "plan.confirmed"
-  | "step.started"
-  | "step.progress"
-  | "step.skipped"
-  | "step.warning"
-  | "step.completed"
-  | "step.failed"
-  | "run.completed"
-  | "run.failed"
-  | "run.cancelled"
-  | "human_review.required";
-
-/**
- * Event types that close the SSE stream. Mirrors the backend's
- * `_TERMINAL_PROGRESS_TYPES` (in `j1.adapters.rest.app`) — keep in
- * sync. The FE uses this in two places:
- *
- *   - `RunDetailPage` to flip the "stay closed" flag so a clean
- *     stream end after a terminal event doesn't trigger a reconnect.
- *   - `MockClient.openStream` to end the scripted timeline so mock
- *     mode behaves identically to live mode.
- */
-export const TERMINAL_EVENT_TYPES: ReadonlySet<ProgressEventType> = new Set([
-  "run.completed",
-  "run.failed",
-  "run.cancelled",
-  "human_review.required",
-]);
-
-export function isTerminalEvent(eventType: ProgressEventType | string): boolean {
-  return TERMINAL_EVENT_TYPES.has(eventType as ProgressEventType);
-}
+// Re-exported from `lib/constants/events.ts` so existing imports of
+// `ProgressEventType` / `TERMINAL_EVENT_TYPES` / `isTerminalEvent`
+// from this module keep working. New code should import from the
+// constants module directly. The type alias keeps in-file
+// references in the interfaces below resolving.
+import type { ProgressEventType as _ProgressEventType } from "@/lib/constants/events";
+export {
+  EVENT_TYPES,
+  TERMINAL_EVENT_TYPES,
+  isTerminalEvent,
+} from "@/lib/constants/events";
+export type ProgressEventType = _ProgressEventType;
 
 /**
  * Free-form payload carried by every progress event. Optional fields

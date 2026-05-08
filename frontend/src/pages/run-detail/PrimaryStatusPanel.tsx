@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 import { Icon } from "@/components/icons";
+import { EVENT_TYPES } from "@/lib/constants/events";
 import type { ExecutionPlan, IngestionRun, ProgressEvent } from "@/types/ingestion";
 
 interface PrimaryStatusPanelProps {
@@ -29,7 +30,7 @@ interface OutputMetrics {
 function deriveOutputs(events: ProgressEvent[]): OutputMetrics {
   const out: OutputMetrics = {};
   for (const e of events) {
-    if (e.event !== "step.completed") continue;
+    if (e.event !== EVENT_TYPES.STEP_COMPLETED) continue;
     const msg = e.data?.message || "";
     let m: RegExpMatchArray | null;
     if ((m = msg.match(/(\d[\d,]*)\s+chunks?\s+indexed/i))) out.chunks = m[1];
@@ -91,7 +92,7 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
     //
     // When neither signal is present (the genuine pre-plan window),
     // fall through to the original "Building execution plan…" copy.
-    const lastStarted = [...events].reverse().find((e) => e.event === "step.started");
+    const lastStarted = [...events].reverse().find((e) => e.event === EVENT_TYPES.STEP_STARTED);
     if (lastStarted) {
       const stage = (lastStarted.data?.stage as string | undefined) ?? "—";
       const step = (lastStarted.data?.step as string | undefined) ?? "—";

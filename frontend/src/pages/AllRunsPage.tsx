@@ -15,22 +15,17 @@ import { StatusBadge } from "@/components/badges";
 import { useClient } from "@/lib/hooks/useClient";
 import { StatusDisplay } from "@/lib/display";
 import { RunControls } from "./run-detail/RunControls";
+import {
+  AWAITING_STATUSES,
+  COMPLETED_STATUSES,
+  LIST_STATUSES,
+  RUN_STATUS,
+  RUNNING_STATUSES,
+} from "@/lib/constants/runStatus";
 import { relativeTime } from "@/lib/format";
 import type { RunListItem, RunListResult, RunStatus, Stage } from "@/types/ingestion";
 import type { ProjectContext, Toast } from "@/types/ui";
 
-const LIST_STATUSES: RunStatus[] = [
-  "CREATED",
-  "ASSESSING",
-  "PLAN_READY",
-  "WAITING_FOR_CONFIRMATION",
-  "RUNNING",
-  "SUCCEEDED",
-  "SUCCEEDED_WITH_WARNINGS",
-  "FAILED",
-  "CANCELLED",
-  "REQUIRES_HUMAN_REVIEW",
-];
 const LIST_STAGES: Stage[] = ["COMPILE", "ENRICH", "GRAPH", "INDEX"];
 
 type QuickFilter =
@@ -56,12 +51,12 @@ interface AllRunsPageProps {
 
 const QUICK_PREDICATES: Record<QuickFilter, (x: RunListItem) => boolean> = {
   all: () => true,
-  running: (x) => ["RUNNING", "ASSESSING"].includes(x.status),
-  awaiting: (x) => ["PLAN_READY", "WAITING_FOR_CONFIRMATION"].includes(x.status),
-  warnings: (x) => x.status === "SUCCEEDED_WITH_WARNINGS" || (x.warningCount ?? 0) > 0,
-  failed: (x) => x.status === "FAILED",
-  review: (x) => x.status === "REQUIRES_HUMAN_REVIEW",
-  completed: (x) => ["SUCCEEDED", "SUCCEEDED_WITH_WARNINGS"].includes(x.status),
+  running: (x) => RUNNING_STATUSES.has(x.status),
+  awaiting: (x) => AWAITING_STATUSES.has(x.status),
+  warnings: (x) => x.status === RUN_STATUS.SUCCEEDED_WITH_WARNINGS || (x.warningCount ?? 0) > 0,
+  failed: (x) => x.status === RUN_STATUS.FAILED,
+  review: (x) => x.status === RUN_STATUS.REQUIRES_HUMAN_REVIEW,
+  completed: (x) => COMPLETED_STATUSES.has(x.status),
 };
 
 export function AllRunsPage({ ctx, onOpenRun, onNewRun, pushToast }: AllRunsPageProps) {
@@ -108,8 +103,8 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun, pushToast }: AllRunsPage
   // Auto-refresh while there's a live run.
   useEffect(() => {
     if (!allData) return;
-    const hasLive = allData.items.some((x) =>
-      ["RUNNING", "ASSESSING", "PLAN_READY", "WAITING_FOR_CONFIRMATION"].includes(x.status),
+    const hasLive = allData.items.some(
+      (x) => RUNNING_STATUSES.has(x.status) || AWAITING_STATUSES.has(x.status),
     );
     if (!hasLive) return;
     const t = setInterval(() => void load(), 4000);
@@ -143,18 +138,14 @@ export function AllRunsPage({ ctx, onOpenRun, onNewRun, pushToast }: AllRunsPage
     const items = allData?.items ?? [];
     return {
       total: items.length,
-      running: items.filter((x) => ["RUNNING", "ASSESSING"].includes(x.status)).length,
-      awaiting: items.filter((x) =>
-        ["PLAN_READY", "WAITING_FOR_CONFIRMATION"].includes(x.status),
-      ).length,
+      running: items.filter((x) => RUNNING_STATUSES.has(x.status)).length,
+      awaiting: items.filter((x) => AWAITING_STATUSES.has(x.status)).length,
       warnings: items.filter(
-        (x) => x.status === "SUCCEEDED_WITH_WARNINGS" || (x.warningCount ?? 0) > 0,
+        (x) => x.status === RUN_STATUS.SUCCEEDED_WITH_WARNINGS || (x.warningCount ?? 0) > 0,
       ).length,
-      failed: items.filter((x) => x.status === "FAILED").length,
-      review: items.filter((x) => x.status === "REQUIRES_HUMAN_REVIEW").length,
-      completed: items.filter((x) =>
-        ["SUCCEEDED", "SUCCEEDED_WITH_WARNINGS"].includes(x.status),
-      ).length,
+      failed: items.filter((x) => x.status === RUN_STATUS.FAILED).length,
+      review: items.filter((x) => x.status === RUN_STATUS.REQUIRES_HUMAN_REVIEW).length,
+      completed: items.filter((x) => COMPLETED_STATUSES.has(x.status)).length,
     };
   }, [allData]);
 
@@ -470,23 +461,23 @@ interface RunRowProps {
 }
 
 function RunRow({ item, onClick, onRefresh, pushToast }: RunRowProps) {
-  const isRunning = ["RUNNING", "ASSESSING"].includes(item.status);
-  const isFailed = item.status === "FAILED";
+  const isRunning = RUNNING_STATUSES.has(item.status);
+  const isFailed = item.status === RUN_STATUS.FAILED;
 
   const accent =
-    item.status === "FAILED"
+    item.status === RUN_STATUS.FAILED
       ? "run-row--failed"
-      : item.status === "SUCCEEDED_WITH_WARNINGS"
+      : item.status === RUN_STATUS.SUCCEEDED_WITH_WARNINGS
         ? "run-row--warnings"
-        : item.status === "SUCCEEDED"
+        : item.status === RUN_STATUS.SUCCEEDED
           ? "run-row--succeeded"
-          : item.status === "REQUIRES_HUMAN_REVIEW"
+          : item.status === RUN_STATUS.REQUIRES_HUMAN_REVIEW
             ? "run-row--review"
-            : item.status === "WAITING_FOR_CONFIRMATION" || item.status === "PLAN_READY"
+            : AWAITING_STATUSES.has(item.status)
               ? "run-row--awaiting"
               : isRunning
                 ? "run-row--running"
-                : item.status === "CANCELLED"
+                : item.status === RUN_STATUS.CANCELLED
                   ? "run-row--cancelled"
                   : "";
 

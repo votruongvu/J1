@@ -13,6 +13,7 @@
 import { useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
 import { ApiError } from "@/lib/api/client";
+import { validationStatusMeta } from "@/lib/display";
 import type {
   ValidationRun,
   ValidationSetListItem,
@@ -34,22 +35,6 @@ interface KnowledgeReadinessCardProps {
    * without going back through ValidationTab. */
   runId: string;
 }
-
-const _STATUS_LABEL: Record<ValidationStatus | "not_run", string> = {
-  not_run: "Not run",
-  passed: "Passed",
-  passed_with_warnings: "Passed with warnings",
-  failed: "Failed",
-  inconclusive: "Inconclusive",
-};
-
-const _STATUS_CLASS: Record<ValidationStatus | "not_run", string> = {
-  not_run: "validation-status--unknown",
-  passed: "validation-status--ok",
-  passed_with_warnings: "validation-status--warn",
-  failed: "validation-status--fail",
-  inconclusive: "validation-status--unknown",
-};
 
 export function KnowledgeReadinessCard({
   latestRun,
@@ -116,10 +101,10 @@ export function KnowledgeReadinessCard({
         </div>
         <div>
           <span
-            className={`validation-status ${_STATUS_CLASS[status]}`}
-            aria-label={`Validation status: ${_STATUS_LABEL[status]}`}
+            className={`validation-status ${validationStatusMeta(status).className}`}
+            aria-label={`Validation status: ${validationStatusMeta(status).label}`}
           >
-            {_STATUS_LABEL[status]}
+            {validationStatusMeta(status).label}
           </span>
         </div>
       </div>

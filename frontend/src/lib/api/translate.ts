@@ -8,6 +8,7 @@
  * stay untouched.
  */
 
+import { EVENT_TYPES } from "@/lib/constants/events";
 import type {
   CostTier,
   Decision,
@@ -635,7 +636,7 @@ export function eventFromApi(api: ApiProgressEvent): ProgressEvent {
   // timeline component looks for `data.warning` to render the
   // emphasised warning panel, so mirror it here.
   const warning =
-    eventType === "step.warning"
+    eventType === EVENT_TYPES.STEP_WARNING
       ? (api.message ?? undefined)
       : ((meta["warning"] as string | undefined) ?? undefined);
 

@@ -50,7 +50,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.processing.results import (
+    ARTIFACT_KIND_CHUNK,
+    ARTIFACT_KIND_COMPILED_TEXT,
     ArtifactDraft,
     ArtifactProcessingResult,
     QueryResult,
@@ -337,7 +340,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
         )
 
     drafts = _drafts_from_output_dir(
-        output_dir, document_id=request.document_id, kind="compiled.text",
+        output_dir, document_id=request.document_id, kind=ARTIFACT_KIND_COMPILED_TEXT,
     )
     # LightRAG persists per-chunk text into
     # `kv_store_text_chunks.json` inside its storage dir during
@@ -1122,7 +1125,7 @@ def _graph_drafts_from_storage(
             if not content:
                 continue
             drafts.append(ArtifactDraft(
-                kind="graph_json",
+                kind=ARTIFACT_KIND_GRAPH_JSON,
                 content=content,
                 suggested_extension=path.suffix or ".json",
                 source_artifact_ids=list(artifact_ids),
@@ -1245,7 +1248,7 @@ def _chunk_drafts_from_storage(
         # ingest's document so the lineage fallback resolves it
         # cleanly even on legacy untagged runs.
         drafts.append(ArtifactDraft(
-            kind="chunk",
+            kind=ARTIFACT_KIND_CHUNK,
             content=json.dumps(chunk_payload, ensure_ascii=False).encode("utf-8"),
             suggested_extension=".json",
             source_document_ids=[document_id],

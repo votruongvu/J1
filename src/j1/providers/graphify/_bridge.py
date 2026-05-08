@@ -36,6 +36,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.processing.results import (
     ArtifactDraft,
     ArtifactProcessingResult,
@@ -249,7 +250,7 @@ def _drafts_from_graph_payload(
         "edge_count": str(len(edges)),
     }
     drafts = [ArtifactDraft(
-        kind="graph_json",
+        kind=ARTIFACT_KIND_GRAPH_JSON,
         content=json.dumps(payload).encode("utf-8"),
         suggested_extension=".json",
         source_artifact_ids=request_artifact_ids,

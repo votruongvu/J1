@@ -17,7 +17,13 @@
 import { useCallback, useState } from "react";
 import { ApiError, type RunControlResult } from "@/lib/api/client";
 import { useClient } from "@/lib/hooks/useClient";
-import type { IngestionRun, RunStatus } from "@/types/ingestion";
+import {
+  CANCELLABLE_STATUSES,
+  PAUSABLE_STATUSES,
+  RESUMABLE_STATUSES,
+  RUN_STATUS,
+} from "@/lib/constants/runStatus";
+import type { IngestionRun } from "@/types/ingestion";
 import type { Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 
@@ -31,15 +37,9 @@ interface RunControlsProps {
   compact?: boolean;
 }
 
-const PAUSE_FROM: ReadonlySet<RunStatus> = new Set(["RUNNING", "ASSESSING"]);
-const RESUME_FROM: ReadonlySet<RunStatus> = new Set(["PAUSED"]);
-const CANCEL_FROM: ReadonlySet<RunStatus> = new Set([
-  "RUNNING",
-  "ASSESSING",
-  "PAUSED",
-  "PLAN_READY",
-  "WAITING_FOR_CONFIRMATION",
-]);
+const PAUSE_FROM = PAUSABLE_STATUSES;
+const RESUME_FROM = RESUMABLE_STATUSES;
+const CANCEL_FROM = CANCELLABLE_STATUSES;
 
 export function RunControls({ run, onRefresh, pushToast, compact = false }: RunControlsProps) {
   const client = useClient();
@@ -90,10 +90,10 @@ export function RunControls({ run, onRefresh, pushToast, compact = false }: RunC
   const showPause = PAUSE_FROM.has(status);
   const showResume = RESUME_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
-  if (!showPause && !showResume && !showCancel && status !== "CANCELLING") {
+  if (!showPause && !showResume && !showCancel && status !== RUN_STATUS.CANCELLING) {
     return null;
   }
-  if (status === "CANCELLING") {
+  if (status === RUN_STATUS.CANCELLING) {
     return (
       <span className="run-controls__cancelling" aria-live="polite">
         <Icon.RefreshCw className="icon-sm spin" /> Cancelling…

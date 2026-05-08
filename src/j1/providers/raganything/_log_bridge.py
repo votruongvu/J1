@@ -21,7 +21,11 @@ from typing import Iterator
 
 from j1.projects.context import ProjectContext
 from j1.providers.raganything._progress import MinerUProgressParser
-from j1.runs.reporter import ProgressReporter
+from j1.runs.reporter import (
+    PROGRESS_EVENT_STEP_COMPLETED,
+    PROGRESS_EVENT_STEP_PROGRESS,
+    ProgressReporter,
+)
 
 __all__ = ["attach_mineru_progress_handler"]
 
@@ -67,7 +71,7 @@ class _ProgressLoggingHandler(logging.Handler):
             return
         # Map MinerUProgressEvent → ProgressReporter call.
         try:
-            if event.event_type == "step.progress":
+            if event.event_type == PROGRESS_EVENT_STEP_PROGRESS:
                 self._reporter.report_step_progress(
                     self._ctx,
                     run_id=self._run_id,
@@ -79,7 +83,7 @@ class _ProgressLoggingHandler(logging.Handler):
                     message=event.message,
                     engine=event.engine,
                 )
-            elif event.event_type == "step.completed":
+            elif event.event_type == PROGRESS_EVENT_STEP_COMPLETED:
                 self._reporter.report_step_completed(
                     self._ctx,
                     run_id=self._run_id,

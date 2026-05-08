@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from j1.artifacts.models import ArtifactRecord
+from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.ingestion_review.dtos import (
     GraphEntityDTO,
     GraphRelationDTO,
@@ -42,7 +43,7 @@ from j1.ingestion_review.dtos import (
 
 _log = logging.getLogger("j1.ingestion_review.graph")
 
-GRAPH_KIND = "graph_json"
+GRAPH_KIND = ARTIFACT_KIND_GRAPH_JSON
 
 # Filename pattern hints. Matched case-insensitively against the
 # `location` basename. Order matters when a file matches multiple

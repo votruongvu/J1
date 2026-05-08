@@ -209,15 +209,14 @@ services:
     # mutating cluster commands. The `|| true` swallows the
     # "attribute already exists" error so the service is idempotent
     # across `down` / `up` cycles. Each attribute is registered
-    # under a Temporal-supported type:
-    #
-    #   Keyword — exact-match string filters (most J1 attributes).
-    #   Int     — numeric filters / ordering (J1CurrentAttempt).
+    # as a Keyword (exact-match string filter).
     #
     # Adding a new attribute below requires a matching upsert call
     # in the workflow (`_set_search_attribute` in
     # `project_processing.py`); registration alone has no operator-
-    # visible effect until the workflow writes values.
+    # visible effect until the workflow writes values. Conversely,
+    # writing without registering crashes workflow activation when
+    # `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true`.
     command:
       - |
         set -e
@@ -228,31 +227,17 @@ services:
             --name "$$1" --type Keyword \
           || echo "[temporal-init] $$1 already registered — skipping"
         }
-        register_int() {
-          tctl --auto_confirm --address temporal:7233 \
-            admin cluster add-search-attributes \
-            --name "$$1" --type Int \
-          || echo "[temporal-init] $$1 already registered — skipping"
-        }
-        # Stage / mode — already used by the workflow today.
+        # Stage / mode — written on every workflow.
         register_keyword J1IngestStage
         register_keyword J1IngestMode
-        # Document identity — surfaced on every workflow so operators
-        # can find the workflow that processed a given document or
-        # content hash without scanning histories.
+        # Document + workspace identity — written on every workflow.
         register_keyword J1DocumentId
-        register_keyword J1DocumentHash
-        # Workspace scope — useful when one Temporal cluster serves
-        # multiple tenants / projects.
         register_keyword J1WorkspaceId
-        # Parser identity — answers "which parser version produced
-        # this output?" when output shape changes across upgrades.
+        # Parser identity — written when a compiler kind is chosen.
         register_keyword J1ParserName
-        register_keyword J1ParserVersion
-        register_keyword J1ParseMode
-        # Activity attempt counter — visible on the workflow so
-        # operators see retry depth without opening event history.
-        register_int     J1CurrentAttempt
+        # Adaptive-plan signals — written when the planner runs.
+        register_keyword J1RequiresVision
+        register_keyword J1RequiresPremiumLLM
         echo "[temporal-init] done."
 
   temporal-ui:
@@ -260,9 +245,11 @@ services:
     container_name: j1-temporal-ui
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+      # CORS origin must match the published port — both derive from
+      # the same env var so an override flips both halves at once.
+      - TEMPORAL_CORS_ORIGINS=http://localhost:${J1_TEMPORAL_UI_PORT:-8080}
     ports:
-      - "8080:8080"
+      - "${J1_TEMPORAL_UI_PORT:-8080}:8080"
     depends_on:
       temporal:
         condition: service_healthy

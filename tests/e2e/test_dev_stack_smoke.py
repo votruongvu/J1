@@ -101,7 +101,7 @@ def _wait_terminal(httpx_mod, base: str, run_id: str, headers: dict[str, str]):
 def test_dev_stack_smoke(dev_stack):
     httpx = pytest.importorskip("httpx")
     base = dev_stack
-    headers = {"X-J1-Tenant": "acme", "X-J1-Project": "alpha"}
+    headers = {"X-Tenant-Id": "acme", "X-Project-Id": "alpha"}
 
     fixture = b"# hello\n\nThis is a tiny smoke-test document.\n"
     upload = httpx.post(

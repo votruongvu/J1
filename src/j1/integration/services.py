@@ -49,6 +49,9 @@ from j1.orchestration.activities.review import ReviewActivities
 from j1.orchestration.workflows.project_processing import (
     ProjectProcessingRequest,
     ProjectProcessingWorkflow,
+    SIGNAL_CANCEL,
+    SIGNAL_PAUSE,
+    SIGNAL_RESUME,
 )
 from j1.projects.context import ProjectContext
 from j1.query.engine import HybridQueryEngine
@@ -506,19 +509,19 @@ class TemporalJobControlService:
     async def pause_job(
         self, ctx: ProjectContext, job_id: str
     ) -> JobActionResultDTO:
-        await self._signal(job_id, "pause")
+        await self._signal(job_id, SIGNAL_PAUSE)
         return JobActionResultDTO(job_id=job_id, action="pause")
 
     async def resume_job(
         self, ctx: ProjectContext, job_id: str
     ) -> JobActionResultDTO:
-        await self._signal(job_id, "resume")
+        await self._signal(job_id, SIGNAL_RESUME)
         return JobActionResultDTO(job_id=job_id, action="resume")
 
     async def cancel_job(
         self, ctx: ProjectContext, job_id: str
     ) -> JobActionResultDTO:
-        await self._signal(job_id, "cancel")
+        await self._signal(job_id, SIGNAL_CANCEL)
         return JobActionResultDTO(job_id=job_id, action="cancel")
 
     async def _signal(self, job_id: str, name: str) -> None:

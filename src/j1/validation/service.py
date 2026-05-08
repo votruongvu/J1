@@ -20,8 +20,10 @@ from typing import Any
 
 from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
+from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.ingestion_review.exceptions import ReviewNotFound
 from j1.ingestion_review.projectors.chunks import ChunkProjector, _ChunkRecord
+from j1.processing.results import ARTIFACT_KIND_CHUNK
 from j1.projects.context import ProjectContext
 from j1.query.engine import HybridQueryEngine
 from j1.query.models import QueryMode, QueryRequest
@@ -525,7 +527,7 @@ class IngestionValidationService:
         # in `_resolve_run_artifacts` (we don't need that here yet).
         artifacts = [
             a for a in self._artifacts.list_artifacts(ctx)
-            if a.kind == "chunk" and a.metadata.get("run_id") == run.run_id
+            if a.kind == ARTIFACT_KIND_CHUNK and a.metadata.get("run_id") == run.run_id
         ]
         # Closure binds `ctx` so the projector can resolve paths
         # without knowing about the workspace.
@@ -565,7 +567,7 @@ class IngestionValidationService:
                 tables.append(record)
             elif record.kind == "enriched.visuals":
                 visuals.append(record)
-            elif record.kind == "graph_json":
+            elif record.kind == ARTIFACT_KIND_GRAPH_JSON:
                 graphs.append(record)
         return tables, visuals, graphs
 

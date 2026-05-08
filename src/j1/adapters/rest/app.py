@@ -122,6 +122,7 @@ from j1.runs import (
     IngestionRun,
     IngestionRunStore,
     PROGRESS_ACTION_PREFIX,
+    PROGRESS_TERMINAL_EVENT_TYPES,
     ProgressReporter,
     RunStatus,
 )
@@ -3480,18 +3481,15 @@ import asyncio as _asyncio
 
 _SSE_TAIL_INTERVAL_SECONDS = 1.0
 _SSE_MAX_DURATION_SECONDS = 60 * 60  # 1 hour — clients reconnect after.
-_TERMINAL_PROGRESS_TYPES = frozenset({
-    # Stream closes when the run reaches one of these. Mirrors the
-    # set of `RunStatus` terminal values so the SSE doesn't idle-loop
-    # for an hour after a non-success terminal:
-    #   run.completed         → status SUCCEEDED / SUCCEEDED_WITH_WARNINGS
-    #   run.failed            → status FAILED
-    #   run.cancelled         → status CANCELLED
-    #   human_review.required → status REQUIRES_HUMAN_REVIEW (terminal
-    #                           per the run state machine; the user
-    #                           continues via a separate review API)
-    "run.completed", "run.failed", "run.cancelled", "human_review.required",
-})
+# Stream closes when the run reaches one of these. Mirrors the set of
+# `RunStatus` terminal values so the SSE doesn't idle-loop for an hour
+# after a non-success terminal:
+#   run.completed         → SUCCEEDED / SUCCEEDED_WITH_WARNINGS
+#   run.failed            → FAILED
+#   run.cancelled         → CANCELLED
+#   human_review.required → REQUIRES_HUMAN_REVIEW (terminal per the run
+#                           state machine; user continues via the review API)
+_TERMINAL_PROGRESS_TYPES = PROGRESS_TERMINAL_EVENT_TYPES
 
 
 async def _stream_progress_events(

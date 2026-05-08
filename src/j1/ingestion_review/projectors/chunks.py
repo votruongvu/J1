@@ -28,6 +28,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 
 from j1.artifacts.models import ArtifactRecord
+from j1.processing.results import ARTIFACT_KIND_CHUNK
 from j1.ingestion_review.dtos import (
     ChunkDetailDTO,
     ChunkPreviewDTO,
@@ -36,7 +37,7 @@ from j1.ingestion_review.dtos import (
 
 _log = logging.getLogger("j1.ingestion_review.chunks")
 
-CHUNK_KIND = "chunk"
+CHUNK_KIND = ARTIFACT_KIND_CHUNK
 PREVIEW_MAX_CHARS = 240
 _NDJSON_SUFFIXES = frozenset({".ndjson", ".jsonl"})
 

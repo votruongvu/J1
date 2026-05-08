@@ -29,11 +29,18 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from j1.runs import (
+    PROGRESS_EVENT_STEP_COMPLETED,
+    PROGRESS_EVENT_STEP_PROGRESS,
+)
+
 __all__ = [
     "MinerUProgressEvent",
     "MinerUProgressParser",
     "parse_mineru_line",
 ]
+
+_ENGINE_NAME = "MinerU"
 
 
 @dataclass(frozen=True)
@@ -99,10 +106,10 @@ def _build_layout_event(m: re.Match) -> MinerUProgressEvent:
     tot = int(m.group("tot"))
     pct = int(m.group("pct"))
     return MinerUProgressEvent(
-        event_type="step.progress",
+        event_type=PROGRESS_EVENT_STEP_PROGRESS,
         stage="COMPILE",
         step="LAYOUT_PREPARATION",
-        engine="MinerU",
+        engine=_ENGINE_NAME,
         progress_percent=pct,
         current=cur,
         total=tot,
@@ -115,10 +122,10 @@ def _build_fetch_event(m: re.Match) -> MinerUProgressEvent:
     tot = int(m.group("tot"))
     pct = int(m.group("pct"))
     return MinerUProgressEvent(
-        event_type="step.progress",
+        event_type=PROGRESS_EVENT_STEP_PROGRESS,
         stage="COMPILE",
         step="MODEL_FETCH",
-        engine="MinerU",
+        engine=_ENGINE_NAME,
         progress_percent=pct,
         current=cur,
         total=tot,
@@ -129,10 +136,10 @@ def _build_fetch_event(m: re.Match) -> MinerUProgressEvent:
 def _build_predictor_loaded(m: re.Match) -> MinerUProgressEvent:
     seconds = m.group("seconds")
     return MinerUProgressEvent(
-        event_type="step.completed",
+        event_type=PROGRESS_EVENT_STEP_COMPLETED,
         stage="COMPILE",
         step="MODEL_LOAD",
-        engine="MinerU",
+        engine=_ENGINE_NAME,
         progress_percent=100,
         message=f"Model loaded in {seconds}s",
     )
