@@ -51,8 +51,47 @@ cp .env.example .env
 docker compose -f deploy/dev/docker-compose.yml up --build
 ```
 
-The first run takes a couple of minutes (image build + Temporal
-schema init). Subsequent runs are fast.
+The first run takes 3–5 minutes (image build + Temporal schema init).
+Subsequent runs are fast — the build is layered to keep the heavy
+work cached:
+
+| Layer | Re-runs when… | First-build cost | Cached cost |
+|---|---|---|---|
+| `apt-get install …` (LibreOffice, OpenCV libs) | Dockerfile system-deps change | ~60s | ~5s |
+| `pip install -e .[all-providers]` (torch, transformers, mineru, langchain-*) | `pyproject.toml` changes | ~3min | ~30–60s |
+| `COPY src/`, `COPY deploy/` | Source edits | ~1s | ~1s |
+
+Both heavy layers use **BuildKit cache mounts** (`--mount=type=cache`)
+so even when their layer is invalidated by a `pyproject.toml` edit,
+the wheel + apt-archive caches survive and rebuilds drop to ~30–60s
+instead of re-downloading ~2 GB of dependencies.
+
+A `.dockerignore` at the repo root excludes `.venv/`,
+`frontend/node_modules/`, `.git/`, `__pycache__/`, and `tests/` from
+the build context — without it, `docker compose build` ships ~2 GB
+of dead bytes through Docker Desktop's FUSE bridge to the Linux VM
+on every build.
+
+### If your build is still slow
+
+Common causes and fixes:
+
+1. **Build context is huge** — run
+   `du -sh .venv frontend/node_modules .git` and confirm
+   `.dockerignore` actually excludes them. Then re-check Docker
+   Desktop's "Resources → File sharing" → only `/Users/<you>` should
+   be shared, not whole-disk.
+2. **BuildKit isn't enabled** — Docker Desktop ≥4.0 enables it by
+   default; older setups need `DOCKER_BUILDKIT=1` in the env. Check
+   for the `# syntax=docker/dockerfile:1.6` directive in build
+   output: if BuildKit is off you'll see a parsing warning.
+3. **Cache was wiped** — `docker builder prune` or `docker system
+   prune -a` clears the BuildKit cache. Next build will re-download.
+4. **Apple Silicon emulation** — verify your image platform matches
+   the host: `docker version` should show your arch (arm64 on M-series).
+   Building an `amd64` image on M-series triggers QEMU emulation,
+   which is **5–10× slower**. Add `platform: linux/arm64` to the
+   service if the base image supports it (`python:3.13-slim` does).
 
 ### Editing Python code
 

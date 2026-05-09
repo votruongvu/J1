@@ -1,0 +1,91 @@
+# Build context exclusions for Docker builds.
+#
+# Without this file, `docker compose build` ships the ENTIRE repo to
+# the daemon — on this repo that's ~2 GB of `.venv/` + `node_modules/`
+# + git history that the build never reads. Excluding them shaves
+# 1-3 minutes off every build on macOS Docker Desktop, where the
+# build context crosses the FUSE bridge from macOS to the Linux VM.
+#
+# Pattern syntax mirrors `.gitignore`. The Dockerfile only needs:
+#   * pyproject.toml + README.md   (early COPY for dep cache)
+#   * src/                         (Python source)
+#   * deploy/                      (entrypoint scripts)
+# Everything else is dead weight.
+
+# ---- Python virtual envs (the big one) ----------------------------
+# Local .venv is 1.5-2 GB on a developer laptop. The Dockerfile
+# rebuilds its own venv inside the image; the host one is
+# irrelevant.
+.venv/
+venv/
+env/
+.python-version
+
+# ---- Python build artefacts ---------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---- Node / frontend ----------------------------------------------
+# Frontend is built in its own multi-stage block in
+# deploy/dev/docker-compose.yml; the worker/api image never reads it.
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+
+# ---- Git / SCM ----------------------------------------------------
+.git/
+.gitignore
+.gitattributes
+
+# ---- Docker (don't recurse into compose state) --------------------
+# Compose project state Docker writes into the repo on macOS.
+# Including these in the context loops the build through its own
+# output dir.
+deploy/dev/.docker/
+
+# ---- Local dev state ----------------------------------------------
+data/
+logs/
+*.log
+.env
+.env.*
+!.env.example
+!.env1
+
+# ---- Editor / IDE -------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- CI / repo metadata -------------------------------------------
+.github/
+.claude/
+.cursor/
+.continue/
+
+# ---- Documentation (image doesn't serve it) -----------------------
+docs/
+*.md
+!README.md
+
+# ---- Tests (not needed in runtime image) --------------------------
+tests/
