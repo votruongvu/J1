@@ -1737,3 +1737,231 @@ def test_available_views_parsed_content_reason_when_compile_in_progress(
     summary = service.summarize_run(ctx, "run-1")
     assert summary.available_views.parsed_content.available is False
     assert "manifest" in summary.available_views.parsed_content.reason.lower()
+
+
+# ---- Planning Report ----------------------------------------------
+
+
+def _emit_plan_generated(reporter, ctx, *, run_id: str, plan_payload: dict):
+    """Test-only helper: write a `plan.generated` audit entry the
+    Planning Report projector picks up."""
+    reporter.report_plan_generated(ctx, run_id=run_id, plan_payload=plan_payload)
+
+
+def _basic_plan_payload(*, fast_llm_used: bool = False) -> dict:
+    """Minimum-shape plan payload mirroring what
+    `_emit_plan_generated` writes in the workflow."""
+    return {
+        "document_id": "doc-1",
+        "mode": "text_only",
+        "policy": "auto",
+        "confidence": 0.85,
+        "estimated_cost_level": "low",
+        "fast_llm_used": fast_llm_used,
+        "requires_vision": False,
+        "requires_premium_llm": False,
+        "warnings": [],
+        "steps": [
+            {
+                "name": "compile",
+                "step_id": "compile",
+                "stage": "COMPILE",
+                "decision": "RUN",
+                "enabled": True,
+                "required": True,
+                "source": "planner",
+                "estimated_cost_tier": "MEDIUM",
+                "risk_level": "low",
+                "llm_class": "none",
+                "dependency_step_ids": [],
+            },
+            {
+                "name": "enrich",
+                "step_id": "enrich",
+                "stage": "ENRICH",
+                "decision": "SKIP",
+                "enabled": False,
+                "required": False,
+                "source": "planner",
+                "reason": "mode text_only does not include enrichment",
+                "estimated_cost_tier": "MEDIUM",
+                "risk_level": "low",
+                "llm_class": "none",
+                "dependency_step_ids": ["compile"],
+            },
+        ],
+        "profile": {"extension": ".txt"},
+        "vision_decisions": [],
+    }
+
+
+def test_get_run_planning_unavailable_for_run_without_plan_event(
+    service, run_store, ctx,
+):
+    """Run exists but planner never emitted → status=unavailable
+    with the operator-readable reason from the availability resolver."""
+    run_store.upsert(ctx, _make_run())
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.status == "unavailable"
+    assert report.unavailable_reason
+    assert report.decisions == []
+    assert report.assessment is None
+
+
+def test_get_run_planning_404_for_missing_run(service, ctx):
+    with pytest.raises(ReviewNotFound):
+        service.get_run_planning(ctx, "nope")
+
+
+def test_get_run_planning_does_not_leak_cross_project(
+    service, run_store, ctx, other_ctx,
+):
+    run_store.upsert(ctx, _make_run(run_id="leak"))
+    with pytest.raises(ReviewNotFound):
+        service.get_run_planning(other_ctx, "leak")
+
+
+def test_get_run_planning_projects_assessment_and_decisions(
+    service, run_store, reporter, ctx,
+):
+    """When a `plan.generated` event exists, the projector returns
+    `status=completed` and projects every PlannedStep into a
+    PlanningStepDecisionDTO."""
+    run_store.upsert(ctx, _make_run())
+    _emit_plan_generated(
+        reporter, ctx,
+        run_id="run-1",
+        plan_payload=_basic_plan_payload(),
+    )
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.status == "completed"
+    assert report.assessment is not None
+    assert report.assessment.mode == "text_only"
+    assert report.assessment.policy == "auto"
+    assert report.assessment.confidence == pytest.approx(0.85)
+    assert report.revised is False
+
+    by_step = {d.step_id: d for d in report.decisions}
+    assert by_step["compile"].decision == "RUN"
+    assert by_step["compile"].required is True
+    assert by_step["enrich"].decision == "SKIP"
+    assert by_step["enrich"].reason
+    # Decision reasons surface in the assessment block too — useful
+    # for the FE's "why this plan" panel.
+    assert any("does not include enrichment" in r for r in report.assessment.reasons)
+
+
+def test_get_run_planning_marks_revised_when_replan_event_seen(
+    service, run_store, reporter, ctx,
+):
+    """A subsequent `plan.revised` overrides `plan.generated` and
+    flips the `revised` flag so the FE can badge the report."""
+    run_store.upsert(ctx, _make_run())
+    payload = _basic_plan_payload()
+    _emit_plan_generated(reporter, ctx, run_id="run-1", plan_payload=payload)
+    revised = {**payload, "confidence": 0.91, "mode": "table_aware"}
+    reporter.report_plan_revised(
+        ctx, run_id="run-1",
+        plan_payload=revised,
+        reason="post-compile signals updated mode",
+    )
+
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.status == "completed"
+    assert report.revised is True
+    assert report.assessment.mode == "table_aware"
+    assert report.assessment.confidence == pytest.approx(0.91)
+
+
+def test_get_run_planning_includes_content_digest_when_manifest_exists(
+    service, run_store, reporter, artifact_registry, workspace, ctx,
+):
+    """The digest panel pulls counts from the parsed-content manifest
+    (when present) and records the deployment's privacy caps so
+    reviewers can audit what an LLM planner would see."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    location = _write_parsed_content_manifest(
+        workspace, ctx,
+        artifact_id="m1",
+        payload=_make_manifest_payload(
+            document_id="doc-A", text_blocks=50, images=1, tables=1,
+        ),
+    )
+    _register_parsed_content_manifest(
+        artifact_registry, ctx,
+        artifact_id="m1", location=location, document_id="doc-A",
+    )
+    _emit_plan_generated(
+        reporter, ctx,
+        run_id="run-1",
+        plan_payload=_basic_plan_payload(),
+    )
+
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.digest is not None
+    assert report.digest.text_block_count == 50
+    # Default cap from PlanningSettings — sample never exceeds the cap.
+    assert report.digest.sampled_block_count == 20
+    assert report.digest.max_preview_chars == 300
+
+
+def test_get_run_planning_llm_recommendation_disabled_by_default(
+    service, run_store, reporter, ctx,
+):
+    """Default settings → llm_planning_enabled=False → status=disabled
+    so the FE renders the rule-based-only copy."""
+    run_store.upsert(ctx, _make_run())
+    _emit_plan_generated(
+        reporter, ctx,
+        run_id="run-1",
+        plan_payload=_basic_plan_payload(),
+    )
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.llm_recommendation.status == "disabled"
+
+
+def test_get_run_planning_llm_recommendation_advisory_when_enabled(
+    run_store, artifact_registry, workspace, reporter, ctx,
+):
+    """Feature-flagged: when J1_LLM_PLANNING_ENABLED=true, the
+    projector surfaces an advisory recommendation block. Phase 2
+    will replace the placeholder copy with a real LLM call."""
+    from j1.ingestion_review import IngestionResultReviewService
+    from j1.processing.planning_settings import PlanningSettings
+
+    enabled = IngestionResultReviewService(
+        run_store=run_store,
+        artifact_registry=artifact_registry,
+        workspace=workspace,
+        planning_settings=PlanningSettings(llm_planning_enabled=True),
+    )
+    run_store.upsert(ctx, _make_run())
+    _emit_plan_generated(
+        reporter, ctx,
+        run_id="run-1",
+        plan_payload=_basic_plan_payload(fast_llm_used=True),
+    )
+    report = enabled.get_run_planning(ctx, "run-1")
+    assert report.llm_recommendation.status == "advisory"
+    assert report.llm_recommendation.model_profile == "fast_planner"
+
+
+def test_summary_available_views_planning_flips_when_event_seen(
+    service, run_store, reporter, ctx,
+):
+    """`/summary` picks up the planning event for tab gating without
+    a separate fetch — same progressive-availability contract the
+    Content Inventory tab uses."""
+    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
+    summary_before = service.summarize_run(ctx, "run-1")
+    assert summary_before.available_views.planning.available is False
+    assert summary_before.available_views.planning.reason
+
+    _emit_plan_generated(
+        reporter, ctx,
+        run_id="run-1",
+        plan_payload=_basic_plan_payload(),
+    )
+    summary_after = service.summarize_run(ctx, "run-1")
+    assert summary_after.available_views.planning.available is True
+    assert summary_after.available_views.planning.reason is None

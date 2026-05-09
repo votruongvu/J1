@@ -190,12 +190,18 @@ def build_review_service(workspace: WorkspaceResolver):
     artifact registry is the same JSONL the worker writes to. No
     external services. Without this wired, the REST adapter degrades
     `/ingestion-runs/{id}/summary` (and the rest of the review surface
-    as it ships) to 503."""
+    as it ships) to 503.
+
+    Reads `J1_PLANNING_*` env vars at construction so the Planning
+    Report projector knows the privacy caps; misconfigured values
+    surface as `ConfigError` at startup rather than at request time."""
     from j1.ingestion_review import IngestionResultReviewService
+    from j1.processing.planning_settings import load_planning_settings
     return IngestionResultReviewService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=JsonArtifactRegistry(workspace),
         workspace=workspace,
+        planning_settings=load_planning_settings(),
     )
 
 

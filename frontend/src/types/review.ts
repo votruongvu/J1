@@ -62,6 +62,9 @@ export interface ReviewAvailableViews {
   // Older API responses omit it; the FE handles `undefined` by
   // showing the tab as disabled with a generic reason.
   parsedContent?: ReviewAvailability;
+  // Optional: backend added this in the Planning Report release.
+  // Same forward-compat treatment as `parsedContent`.
+  planning?: ReviewAvailability;
 }
 
 // ---- Content Inventory (parsed-content manifest projection) ---
@@ -109,6 +112,80 @@ export interface ContentInventory {
   summary: ContentInventorySummary;
   items: ContentInventoryItem[];
   rawArtifactId?: string | null;
+  unavailableReason?: string | null;
+}
+
+// ---- Planning Report (richer projection over IngestPlan) -------
+
+export interface PlanningStepDecision {
+  stepId: string;
+  stage: string;
+  /** "RUN" | "SKIP" | "CONDITIONAL" */
+  decision: string;
+  enabled: boolean;
+  required: boolean;
+  source: string;
+  reason?: string | null;
+  /** "low" | "medium" | "high" */
+  riskLevel: string;
+  /** "NONE" | "LOW" | "MEDIUM" | "HIGH" */
+  estimatedCostTier: string;
+  /** "none" | "fast" | "standard" | "premium" */
+  llmClass: string;
+  expectedEngine?: string | null;
+  expectedProvider?: string | null;
+  dependencyStepIds: string[];
+  warning?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface PlanningContentDigest {
+  pageCount?: number | null;
+  textBlockCount: number;
+  tableCount: number;
+  imageCount: number;
+  formulaCount: number;
+  headingCount?: number | null;
+  totalItems: number;
+  /** Number of text blocks that would be sampled into an LLM digest. */
+  sampledBlockCount: number;
+  /** Per-block character cap enforced when sampling. */
+  maxPreviewChars: number;
+}
+
+export interface PlanningAssessment {
+  mode: string;
+  policy: string;
+  confidence: number;
+  /** "low" | "medium" | "high" */
+  estimatedCostLevel: string;
+  fastLlmUsed: boolean;
+  requiresVision: boolean;
+  requiresPremiumLlm: boolean;
+  reasons: string[];
+  warnings: string[];
+}
+
+export interface PlanningLLMRecommendation {
+  /** "disabled" | "applied" | "advisory" | "failed" */
+  status: string;
+  modelProfile?: string | null;
+  summary?: string | null;
+  failureReason?: string | null;
+}
+
+export interface PlanningResult {
+  runId: string;
+  documentId?: string | null;
+  documentName?: string | null;
+  /** "completed" | "unavailable" */
+  status: string;
+  generatedAt?: string | null;
+  revised: boolean;
+  assessment?: PlanningAssessment | null;
+  decisions: PlanningStepDecision[];
+  digest?: PlanningContentDigest | null;
+  llmRecommendation: PlanningLLMRecommendation;
   unavailableReason?: string | null;
 }
 

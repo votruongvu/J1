@@ -24,12 +24,14 @@ import { ChunksTab } from "./ChunksTab";
 import { ContentInventoryTab } from "./ContentInventoryTab";
 import { GraphTab } from "./GraphTab";
 import { OverviewTab } from "./OverviewTab";
+import { PlanningReportTab } from "./PlanningReportTab";
 import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
 import { ValidationTab } from "./ValidationTab";
 
 type ResultsTab =
   | "overview"
+  | "planning"
   | "parsedContent"
   | "chunks"
   | "assets"
@@ -165,6 +167,15 @@ export function ResultsSection({
   }> = [
     { key: "overview", label: "Overview", available: true },
     {
+      key: "planning",
+      label: "Planning Report",
+      // Optional like `parsedContent` — older API responses omit it.
+      available: views?.planning?.available ?? false,
+      reason:
+        views?.planning?.reason ??
+        (views ? "Waiting for planner to finish." : "Loading…"),
+    },
+    {
       key: "parsedContent",
       label: "Content Inventory",
       // `parsedContent` is optional on older API responses — fall
@@ -260,6 +271,7 @@ export function ResultsSection({
             error={qualityError}
           />
         )}
+        {tab === "planning" && <PlanningReportTab runId={runId} />}
         {tab === "parsedContent" && <ContentInventoryTab runId={runId} />}
         {tab === "chunks" && <ChunksTab runId={runId} />}
         {tab === "assets" && <AssetsTab runId={runId} />}

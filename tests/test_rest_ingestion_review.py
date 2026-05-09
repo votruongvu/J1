@@ -1107,3 +1107,94 @@ def test_summary_surfaces_step_results_after_workflow_terminal(
     # because Phase 4 persisted the step_results that Phase 1's
     # availability resolver inspects.
     assert "policy" in data["availableViews"]["graph"]["reason"].lower()
+
+
+# ---- /planning endpoint -------------------------------------------
+
+
+def test_get_planning_returns_404_for_missing_run(client):
+    resp = client.get("/ingestion-runs/missing/planning", headers=_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "REVIEW_NOT_FOUND"
+
+
+def test_get_planning_returns_unavailable_for_run_without_plan_event(
+    client, run_store, ctx,
+):
+    """Run exists but no plan.generated event yet → 200 with
+    `status="unavailable"` and an operator-readable reason."""
+    run_store.upsert(ctx, _make_run(run_id="np"))
+    resp = client.get("/ingestion-runs/np/planning", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["status"] == "unavailable"
+    assert data["unavailableReason"]
+    assert data["decisions"] == []
+
+
+def test_get_planning_endpoint_projects_plan_payload(
+    client, run_store, reporter, ctx,
+):
+    """End-to-end: a `plan.generated` event lands in the audit log,
+    the endpoint returns the projection in canonical camelCase."""
+    run_store.upsert(ctx, _make_run(run_id="pl"))
+    reporter.report_plan_generated(
+        ctx, run_id="pl",
+        plan_payload={
+            "document_id": "doc-1",
+            "mode": "table_aware",
+            "policy": "auto",
+            "confidence": 0.9,
+            "estimated_cost_level": "medium",
+            "fast_llm_used": False,
+            "requires_vision": False,
+            "requires_premium_llm": False,
+            "warnings": [],
+            "steps": [
+                {
+                    "name": "compile", "step_id": "compile", "stage": "COMPILE",
+                    "decision": "RUN", "enabled": True, "required": True,
+                    "source": "planner", "estimated_cost_tier": "MEDIUM",
+                    "risk_level": "low", "llm_class": "none",
+                    "dependency_step_ids": [],
+                },
+                {
+                    "name": "enrich", "step_id": "enrich", "stage": "ENRICH",
+                    "decision": "RUN", "enabled": True, "required": False,
+                    "source": "planner", "estimated_cost_tier": "MEDIUM",
+                    "risk_level": "low", "llm_class": "fast",
+                    "dependency_step_ids": ["compile"],
+                },
+            ],
+            "profile": {"extension": ".xlsx"},
+        },
+    )
+
+    resp = client.get("/ingestion-runs/pl/planning", headers=_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "requestId" in body and "data" in body
+    data = body["data"]
+    assert data["status"] == "completed"
+    assert data["assessment"]["mode"] == "table_aware"
+    assert data["assessment"]["estimatedCostLevel"] == "medium"
+    assert data["revised"] is False
+    decisions_by_step = {d["stepId"]: d for d in data["decisions"]}
+    assert decisions_by_step["enrich"]["llmClass"] == "fast"
+    assert decisions_by_step["enrich"]["dependencyStepIds"] == ["compile"]
+    # LLM recommendation is disabled by default (J1_LLM_PLANNING_ENABLED off).
+    assert data["llmRecommendation"]["status"] == "disabled"
+
+
+def test_get_planning_returns_503_when_review_service_not_configured(
+    application_facade, workspace, run_store,
+):
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        review_service=None,
+    )
+    test_client = TestClient(app)
+    resp = test_client.get("/ingestion-runs/run-1/planning", headers=_HEADERS)
+    assert resp.status_code == 503

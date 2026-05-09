@@ -43,12 +43,19 @@ _PARSED_CONTENT_KIND = ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
 def resolve_available_views(
     run: IngestionRun,
     artifacts: Iterable[ArtifactRecord],
+    *,
+    planning_present: bool = False,
 ) -> AvailableViewsDTO:
     """Compute per-tab availability for the given run.
 
     Inputs are intentionally minimal — the resolver is pure and
     cheap; callers (the service) gather everything once and pass it
-    in. No I/O happens here."""
+    in. No I/O happens here.
+
+    `planning_present` is the only signal the resolver can't derive
+    from the artifact list — the planner's output lives in the audit
+    log (`plan.generated` event), not the artifact registry. The
+    service caller looks it up and passes the boolean down."""
     artifact_kinds = {a.kind for a in artifacts}
 
     chunks_present = _CHUNK_KIND in artifact_kinds
@@ -106,6 +113,13 @@ def resolve_available_views(
             reason=(
                 None if parsed_content_present
                 else _parsed_content_reason(run)
+            ),
+        ),
+        planning=AvailabilityDTO(
+            available=planning_present,
+            reason=(
+                None if planning_present
+                else _planning_reason(run)
             ),
         ),
     )
@@ -217,6 +231,30 @@ def _parsed_content_reason(run: IngestionRun) -> str:
     return (
         "This run was created before Content Inventory tracking "
         "was added."
+    )
+
+
+def _planning_reason(run: IngestionRun) -> str:
+    """Operator-readable reason when the Planning Report tab is
+    unavailable.
+
+    Three precedence rules mirror `_parsed_content_reason`:
+      1. Run failed/cancelled before the planner emitted anything.
+      2. Run is still pre-plan (created / assessing / waiting for
+         confirmation) — the planner hasn't run yet.
+      3. Terminal run with no plan event — typically a legacy run
+         from before adaptive planning shipped, or a deployment that
+         disabled planning entirely.
+    """
+    if str(run.status) in _FAILED_OR_CANCELLED_STATUSES:
+        return (
+            "Planner did not produce a plan before the run ended."
+        )
+    if str(run.status) in {"created", "assessing"}:
+        return "Planner has not produced a plan yet."
+    return (
+        "Planning report is not available for this run "
+        "(planner may be disabled or the run pre-dates the feature)."
     )
 
 

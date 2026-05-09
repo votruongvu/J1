@@ -154,6 +154,17 @@ Selection / policy:
 | `J1_INGEST_PLANNER_ENABLED` | `true` (dev) | Master switch. Off = legacy "kind=None → skip" mode. |
 | `J1_INGEST_DEFAULT_POLICY` | `auto` | One of `auto`, `cost_saving`, `balanced`, `high_accuracy`, `force_full`, `text_only`. |
 
+Planning Report stage (consumed by `GET /ingestion-runs/{id}/planning` and the FE Planning Report tab):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `J1_PLANNING_ENABLED` | `true` | Surface the Planning Report projection. Off → tab stays disabled even if a plan was generated. |
+| `J1_LLM_PLANNING_ENABLED` | `false` | Enable optional LLM-assisted planning. Default OFF — rule-based planning is the documented baseline. |
+| `J1_PLANNING_MODEL_PROFILE` | `fast_planner` | Named LLM role used when LLM-assisted planning runs. |
+| `J1_PLANNING_MAX_SAMPLE_BLOCKS` | `20` | Privacy cap — max text blocks sampled into the planner LLM digest. |
+| `J1_PLANNING_MAX_PREVIEW_CHARS` | `300` | Privacy cap — max characters per sampled block. |
+| `J1_PLANNING_FAIL_OPEN` | `true` | When LLM planning fails, keep the rule-based decision and continue. |
+
 Enrichment kill switches:
 
 | Variable | Default | Effect |
@@ -222,7 +233,7 @@ Only for offline benchmarking and accuracy comparisons. Set policy=`force_full` 
 
 ### Debugging "wrong profile selected"
 
-1. **Check the run's plan card** — the FE displays the planner's chosen `mode` and per-step `reason`. The plan reason often points directly at the offending signal.
+1. **Check the run's Planning Report tab** — the FE renders the planner's chosen `mode`, per-step `decision` + `reason`, and (when `J1_LLM_PLANNING_ENABLED=true`) the LLM advisory. The reason often points directly at the offending signal. Backed by `GET /ingestion-runs/{id}/planning`.
 2. **Inspect the run's audit log** for `j1.progress.plan.generated` and `j1.progress.plan.revised` events. The `payload.plan` field carries the full plan.
 3. **Look at `compile_content_stats`** — it's persisted alongside compile artifacts as a `parsed_content_manifest` artifact. The Quality tab summarises it; for raw access read the JSON directly.
 4. **Verify `_NATIVE_TEXT_EXTENSIONS` is up to date** — if a new plain-text extension produces the slow path, the bridge's set may have drifted from the planner's `_PLAIN_TEXT_EXTENSIONS`.

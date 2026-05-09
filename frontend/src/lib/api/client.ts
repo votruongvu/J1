@@ -12,9 +12,11 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  ContentInventory,
   GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
+  PlanningResult,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -150,6 +152,20 @@ export interface IngestionClient {
     runId: string,
     opts?: ReviewGraphQuery,
   ): Promise<ReviewGraphSnapshot>;
+
+  /**
+   * GET the parsed-content manifest projection (Content Inventory tab).
+   * Returns `status="unavailable"` with a reason when no manifest
+   * exists (legacy / mid-compile / failed-compile runs).
+   */
+  getRunContentInventory(runId: string): Promise<ContentInventory>;
+
+  /**
+   * GET the Planning Report (Planning tab) — richer projection over
+   * the planner's output. Returns `status="unavailable"` with a
+   * reason when no plan exists yet (legacy / pre-plan / disabled).
+   */
+  getRunPlanning(runId: string): Promise<PlanningResult>;
 
   // ---- Validation (Phase 1) ---------------------------------------
 

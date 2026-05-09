@@ -1502,6 +1502,35 @@ def create_rest_api(
         return envelope(inventory.model_dump(by_alias=True), _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/planning",
+        tags=["ingestion-runs"],
+        summary="Get the Planning Report for an ingestion run",
+        description=(
+            "Returns the Planning Report — a richer projection over "
+            "the raw `IngestPlan` returned by `/plan`. Composes the "
+            "planner's per-step decisions, a rule-based assessment "
+            "summary, a privacy-capped digest of the parsed-content "
+            "manifest, and (when `J1_LLM_PLANNING_ENABLED=true`) the "
+            "LLM-assisted recommendation block. Available as soon as "
+            "the planner emits a `plan.generated` event, even while "
+            "downstream stages are still running. Returns "
+            "`status=\"unavailable\"` with an operator-readable reason "
+            "when no plan exists yet (legacy run, planner disabled, "
+            "or run hasn't reached the assessment stage). Returns 404 "
+            "if the run does not exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_planning(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        report = service.get_run_planning(ctx, run_id)
+        return envelope(report.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/graph",
         tags=["ingestion-runs"],
         summary="Get the neutral graph snapshot for an ingestion run",

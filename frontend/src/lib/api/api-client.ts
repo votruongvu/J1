@@ -29,6 +29,7 @@ import type {
   ManualTestQueryRequest,
   ContentInventory,
   ManualTestQueryResponse,
+  PlanningResult,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -299,6 +300,18 @@ export class ApiClient implements IngestionClient {
       { headers: this.headers() },
     );
     return (await this.json<ContentInventory>(resp));
+  }
+
+  async getRunPlanning(runId: string): Promise<PlanningResult> {
+    // Same field-for-field shape mirroring as `getRunContentInventory`.
+    // Backend DTO (`PlanningResultDTO`) is camelCased via `CamelModel`
+    // — see tests/test_rest_run_review.py::test_planning_endpoint
+    // for the contract assertion.
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/planning`),
+      { headers: this.headers() },
+    );
+    return (await this.json<PlanningResult>(resp));
   }
 
   async listRunChunks(

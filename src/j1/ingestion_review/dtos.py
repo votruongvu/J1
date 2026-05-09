@@ -118,6 +118,15 @@ class AvailableViewsDTO(CamelModel):
         available=False,
         reason="No parsed-content manifest is available for this run.",
     )
+    # Planning Report tab — visible as soon as the planner has emitted
+    # a `plan.generated` audit entry. Surfaces the planner's mode,
+    # policy, per-step decisions, and (when LLM-assisted planning is
+    # enabled) the LLM recommendation. Optional default keeps older
+    # FE bundles + legacy runs forward-compatible.
+    planning: AvailabilityDTO = AvailabilityDTO(
+        available=False,
+        reason="No planning report is available for this run.",
+    )
 
 
 # ---- Quality summary --------------------------------------------
@@ -466,4 +475,126 @@ class ContentInventoryDTO(CamelModel):
     summary: ContentInventorySummaryDTO = Field(default_factory=ContentInventorySummaryDTO)
     items: list[ContentInventoryItemDTO] = Field(default_factory=list)
     raw_artifact_id: str | None = None
+    unavailable_reason: str | None = None
+
+
+# ---- Planning Report (richer projection over IngestPlan) ----------
+
+
+class PlanningStepDecisionDTO(CamelModel):
+    """One per-stage decision in the Planning Report.
+
+    Mirrors the workflow-gate fields of `PlannedStep` but in the
+    camelCase DTO shape and with the projector-friendly names the FE
+    Planning Report tab expects."""
+
+    step_id: str
+    stage: str
+    decision: str  # "RUN" | "SKIP" | "CONDITIONAL"
+    enabled: bool
+    required: bool
+    source: str
+    reason: str | None = None
+    risk_level: str = "low"
+    estimated_cost_tier: str = "NONE"
+    llm_class: str = "none"
+    expected_engine: str | None = None
+    expected_provider: str | None = None
+    dependency_step_ids: list[str] = Field(default_factory=list)
+    warning: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanningContentDigestDTO(CamelModel):
+    """Lightweight digest of the parsed-content manifest, used both as
+    the "evidence" the rule-based assessment cites AND, when LLM-
+    assisted planning is enabled, as the bounded sample fed to the
+    planner LLM.
+
+    Privacy: the digest is sampled — it never includes the full raw
+    document. The two cap fields (`sampled_block_count`,
+    `max_preview_chars`) record the boundary the projector enforced
+    so reviewers can audit what was sent."""
+
+    page_count: int | None = None
+    text_block_count: int = 0
+    table_count: int = 0
+    image_count: int = 0
+    formula_count: int = 0
+    heading_count: int | None = None
+    total_items: int = 0
+    sampled_block_count: int = 0
+    max_preview_chars: int = 0
+
+
+class PlanningAssessmentDTO(CamelModel):
+    """The rule-based assessment that backed the plan.
+
+    `mode` and `policy` come from the planner; `confidence` is the
+    planner's own confidence in the decision; `reasons` is a short
+    list of operator-readable strings explaining the decision (one
+    per major signal — extension, scanned-pages, table-extension,
+    high-risk content, …)."""
+
+    mode: str
+    policy: str
+    confidence: float
+    estimated_cost_level: str
+    fast_llm_used: bool = False
+    requires_vision: bool = False
+    requires_premium_llm: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PlanningLLMRecommendationDTO(CamelModel):
+    """Optional LLM-assisted planning recommendation.
+
+    Populated only when `J1_LLM_PLANNING_ENABLED=true` AND the LLM
+    pass actually ran. The FE renders this beside the rule-based
+    assessment so reviewers can compare.
+
+    `status` semantics:
+      * `"applied"` — LLM ran and the planner accepted its hint.
+      * `"advisory"` — LLM ran but the planner kept its own decision
+        (rule-based wins on disagreement; the LLM hint is shown for
+        transparency).
+      * `"failed"` — LLM call failed and `fail_open=true` kept the
+        rule-based decision in place.
+      * `"disabled"` — feature flag is off (default)."""
+
+    status: str  # "disabled" | "applied" | "advisory" | "failed"
+    model_profile: str | None = None
+    summary: str | None = None
+    failure_reason: str | None = None
+
+
+class PlanningResultDTO(CamelModel):
+    """Top-level Planning Report payload.
+
+    Returned by `GET /ingestion-runs/{run_id}/planning`. Composed from
+    the `plan.generated` audit entry, the parsed-content manifest
+    artifact (when available), and the deployment's planning
+    settings.
+
+    `status` semantics:
+      * `"completed"` — a plan was generated and the report is
+        populated.
+      * `"unavailable"` — no `plan.generated` event exists for this
+        run (planner disabled, run hasn't reached the assessment
+        stage yet, or this is a legacy run).
+    """
+
+    run_id: str
+    document_id: str | None = None
+    document_name: str | None = None
+    status: str
+    generated_at: str | None = None
+    revised: bool = False
+    assessment: PlanningAssessmentDTO | None = None
+    decisions: list[PlanningStepDecisionDTO] = Field(default_factory=list)
+    digest: PlanningContentDigestDTO | None = None
+    llm_recommendation: PlanningLLMRecommendationDTO = Field(
+        default_factory=lambda: PlanningLLMRecommendationDTO(status="disabled"),
+    )
     unavailable_reason: str | None = None

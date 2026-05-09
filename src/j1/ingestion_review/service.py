@@ -16,7 +16,10 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from j1.processing.planning_settings import PlanningSettings
 
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactNotFoundError, ArtifactRegistry
@@ -36,6 +39,11 @@ from j1.ingestion_review.dtos import (
     ContentInventorySourceDTO,
     ContentInventorySummaryDTO,
     GraphSnapshotDTO,
+    PlanningAssessmentDTO,
+    PlanningContentDigestDTO,
+    PlanningLLMRecommendationDTO,
+    PlanningResultDTO,
+    PlanningStepDecisionDTO,
     QualityReportDTO,
     QualitySummaryDTO,
     RunSummaryDTO,
@@ -52,7 +60,11 @@ from j1.ingestion_review.projectors import (
 from j1.ingestion_review.projectors.chunks import _ChunkRecord
 from j1.ingestion_review.projectors.graph import GRAPH_KIND
 from j1.projects.context import ProjectContext
-from j1.runs import PROGRESS_ACTION_PREFIX
+from j1.runs import (
+    ACTION_PROGRESS_PLAN_GENERATED,
+    ACTION_PROGRESS_PLAN_REVISED,
+    PROGRESS_ACTION_PREFIX,
+)
 from j1.runs.models import IngestionRun
 from j1.runs.store import IngestionRunStore
 from j1.workspace.layout import WorkspaceArea
@@ -147,10 +159,19 @@ class IngestionResultReviewService:
         run_store: IngestionRunStore,
         artifact_registry: ArtifactRegistry,
         workspace: WorkspaceResolver,
+        planning_settings: "PlanningSettings | None" = None,
     ) -> None:
+        from j1.processing.planning_settings import (
+            PlanningSettings as _PlanningSettings,
+        )
+
         self._run_store = run_store
         self._artifacts = artifact_registry
         self._workspace = workspace
+        # `planning_settings=None` keeps existing call sites working;
+        # we substitute the safe defaults so the projector always has
+        # the cap fields it needs.
+        self._planning_settings = planning_settings or _PlanningSettings()
 
     # ---- Run summary --------------------------------------------------
 
@@ -166,6 +187,7 @@ class IngestionResultReviewService:
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         warnings = self._read_warnings(ctx, run_id)
+        planning_present = self._planning_event_present(ctx, run_id)
 
         steps = _coerce_step_results(run.metadata.get("step_results"))
         artifact_counts = _count_by_kind(artifacts)
@@ -184,7 +206,9 @@ class IngestionResultReviewService:
             total_bytes=total_bytes,
             warnings=warnings,
             quality_summary=quality_summary,
-            available_views=resolve_available_views(run, artifacts),
+            available_views=resolve_available_views(
+                run, artifacts, planning_present=planning_present,
+            ),
         )
 
     # ---- Run-scoped artifact list ------------------------------------
@@ -574,6 +598,271 @@ class IngestionResultReviewService:
             raw_artifact_id=first_artifact_id,
         )
 
+    # ---- Planning Report --------------------------------------------
+
+    def get_run_planning(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> PlanningResultDTO:
+        """Project the run's `plan.generated` audit entry into a
+        Planning Report payload.
+
+        The Planning Report is a richer projection over the raw
+        `IngestPlan`. It composes:
+          * The planner's per-step decisions + reasons + risk-level
+            (`PlanningStepDecisionDTO`).
+          * A rule-based assessment summary (mode, policy, confidence,
+            reasons) — `PlanningAssessmentDTO`.
+          * A lightweight digest of the parsed-content manifest
+            sampled within the deployment's privacy caps —
+            `PlanningContentDigestDTO`.
+          * An optional LLM recommendation block — populated only
+            when `J1_LLM_PLANNING_ENABLED=true` AND the LLM pass ran
+            (skeleton today; actual call deferred to Phase 2).
+
+        Returns `status="unavailable"` when no plan event exists for
+        the run (legacy run, planner disabled, run hasn't reached the
+        assessment stage). The empty-state `unavailable_reason` mirrors
+        the same copy used in `availableViews.planning.reason` so the
+        FE shows a single source of truth.
+
+        Raises `ReviewNotFound` when the run doesn't exist in the
+        caller's tenant/project."""
+        run = self._load_run(ctx, run_id)
+        plan_payload, plan_action = self._read_latest_plan_payload(ctx, run_id)
+        if plan_payload is None:
+            from j1.ingestion_review.availability import _planning_reason
+            return PlanningResultDTO(
+                run_id=run_id,
+                document_id=run.document_id or None,
+                document_name=run.metadata.get("document_name"),
+                status="unavailable",
+                unavailable_reason=_planning_reason(run),
+                llm_recommendation=PlanningLLMRecommendationDTO(
+                    status="disabled",
+                ),
+            )
+        plan_dict = plan_payload.get("plan") or {}
+
+        # Decisions: project each PlannedStep into the DTO shape.
+        decisions: list[PlanningStepDecisionDTO] = []
+        for step in plan_dict.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            decisions.append(PlanningStepDecisionDTO(
+                step_id=str(step.get("step_id") or step.get("name") or ""),
+                stage=str(step.get("stage") or ""),
+                decision=str(step.get("decision") or "RUN"),
+                enabled=bool(step.get("enabled", True)),
+                required=bool(step.get("required") or False),
+                source=str(step.get("source") or "default"),
+                reason=step.get("reason"),
+                risk_level=str(step.get("risk_level") or "low"),
+                estimated_cost_tier=str(step.get("estimated_cost_tier") or "NONE"),
+                llm_class=str(step.get("llm_class") or "none"),
+                expected_engine=step.get("expected_engine"),
+                expected_provider=step.get("expected_provider"),
+                dependency_step_ids=list(step.get("dependency_step_ids") or []),
+                warning=step.get("warning"),
+                metadata=dict(step.get("metadata") or {}),
+            ))
+
+        assessment = PlanningAssessmentDTO(
+            mode=str(plan_dict.get("mode") or ""),
+            policy=str(plan_dict.get("policy") or ""),
+            confidence=float(plan_dict.get("confidence") or 0.0),
+            estimated_cost_level=str(plan_dict.get("estimated_cost_level") or "low"),
+            fast_llm_used=bool(plan_dict.get("fast_llm_used") or False),
+            requires_vision=bool(plan_dict.get("requires_vision") or False),
+            requires_premium_llm=bool(plan_dict.get("requires_premium_llm") or False),
+            reasons=_collect_plan_reasons(plan_dict),
+            warnings=[
+                str(w) for w in (plan_dict.get("warnings") or [])
+                if w
+            ],
+        )
+
+        digest = self._build_content_digest(ctx, run)
+        llm_rec = self._build_llm_recommendation(plan_dict)
+
+        return PlanningResultDTO(
+            run_id=run_id,
+            document_id=str(plan_dict.get("document_id") or run.document_id or "") or None,
+            document_name=run.metadata.get("document_name"),
+            status="completed",
+            generated_at=plan_payload.get("occurred_at") or plan_payload.get("generated_at"),
+            revised=plan_action == ACTION_PROGRESS_PLAN_REVISED,
+            assessment=assessment,
+            decisions=decisions,
+            digest=digest,
+            llm_recommendation=llm_rec,
+        )
+
+    def _read_latest_plan_payload(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> tuple[dict | None, str | None]:
+        """Walk the audit log and return the most recent
+        `plan.generated` / `plan.revised` payload for `run_id`.
+
+        Single source of truth for "what plan does the FE render?".
+        Mirrors the REST adapter's `_read_run_plan` but stays in the
+        service so the projector can return a richer DTO without
+        leaking parsing logic into the adapter."""
+        path = self._workspace.audit(ctx) / AUDIT_LOG_FILENAME
+        if not path.exists():
+            return None, None
+        latest_payload: dict | None = None
+        latest_action: str | None = None
+        latest_occurred_at: str | None = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("correlation_id") != run_id:
+                continue
+            action = data.get("action") or ""
+            if action not in (
+                ACTION_PROGRESS_PLAN_GENERATED,
+                ACTION_PROGRESS_PLAN_REVISED,
+            ):
+                continue
+            payload = data.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            occurred_at = data.get("occurred_at")
+            # Last-write-wins by occurred_at; the audit log appends in
+            # order so a string compare is safe (ISO-8601 ordering).
+            if (
+                latest_occurred_at is None
+                or (occurred_at or "") >= latest_occurred_at
+            ):
+                latest_payload = {**payload, "occurred_at": occurred_at}
+                latest_action = action
+                latest_occurred_at = occurred_at or ""
+        return latest_payload, latest_action
+
+    def _planning_event_present(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> bool:
+        """Cheap existence check used by `summarize_run` to set
+        `availableViews.planning`. Avoids reshaping the payload."""
+        path = self._workspace.audit(ctx) / AUDIT_LOG_FILENAME
+        if not path.exists():
+            return False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("correlation_id") != run_id:
+                continue
+            if data.get("action") in (
+                ACTION_PROGRESS_PLAN_GENERATED,
+                ACTION_PROGRESS_PLAN_REVISED,
+            ):
+                return True
+        return False
+
+    def _build_content_digest(
+        self, ctx: ProjectContext, run: IngestionRun,
+    ) -> PlanningContentDigestDTO | None:
+        """Build the lightweight content digest from the parsed-content
+        manifest artifact, capped by the deployment's planning settings.
+
+        Returns None when no manifest exists yet — typical when the
+        Planning Report is consumed mid-run, before compile finishes.
+        The DTO's `digest=None` lets the FE render the rule-based
+        assessment without a digest panel."""
+        from j1.processing.manifest import ParsedContentManifest
+        from j1.processing.results import (
+            ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
+        )
+
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        manifest_artifacts = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
+        ]
+        if not manifest_artifacts:
+            return None
+
+        max_blocks = self._planning_settings.max_sample_blocks
+        max_chars = self._planning_settings.max_preview_chars
+
+        path_resolver = self._artifact_path_resolver(ctx)
+        manifests: list[ParsedContentManifest] = []
+        for artifact in manifest_artifacts:
+            try:
+                path = path_resolver(artifact)
+            except Exception:  # noqa: BLE001
+                continue
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                manifests.append(ParsedContentManifest.from_dict(payload))
+
+        if not manifests:
+            return None
+
+        text_blocks = sum(m.stats.text_blocks for m in manifests)
+        return PlanningContentDigestDTO(
+            page_count=_sum_optional(m.stats.page_count for m in manifests),
+            text_block_count=text_blocks,
+            table_count=sum(m.stats.tables for m in manifests),
+            image_count=sum(m.stats.images for m in manifests),
+            formula_count=sum(m.stats.equations for m in manifests),
+            heading_count=None,
+            total_items=sum(m.stats.total_items for m in manifests),
+            sampled_block_count=min(text_blocks, max_blocks),
+            max_preview_chars=max_chars,
+        )
+
+    def _build_llm_recommendation(
+        self, plan_dict: dict,
+    ) -> PlanningLLMRecommendationDTO:
+        """Assemble the LLM-recommendation block.
+
+        Today this is a thin skeleton driven by:
+          * The plan payload's `fast_llm_used` flag — if the rule-based
+            planner already consulted a fast LLM hint, surface that.
+          * The deployment's `J1_LLM_PLANNING_ENABLED` setting.
+
+        Phase 2 will swap in a real LLM-assisted planner that produces
+        a structured recommendation; the DTO shape is forwards
+        compatible so adding the call doesn't break consumers."""
+        if not self._planning_settings.llm_planning_enabled:
+            return PlanningLLMRecommendationDTO(
+                status="disabled",
+                model_profile=self._planning_settings.model_profile,
+            )
+        if plan_dict.get("fast_llm_used"):
+            return PlanningLLMRecommendationDTO(
+                status="advisory",
+                model_profile=self._planning_settings.model_profile,
+                summary=(
+                    "Rule-based planner consulted the fast LLM role "
+                    "for an advisory hint."
+                ),
+            )
+        return PlanningLLMRecommendationDTO(
+            status="advisory",
+            model_profile=self._planning_settings.model_profile,
+            summary=(
+                "LLM-assisted planning is enabled but the planner did "
+                "not invoke the model for this document."
+            ),
+        )
+
     # ---- Internals ----------------------------------------------------
 
     def _project_chunks(
@@ -930,6 +1219,28 @@ def _quality_summary(
         warning_count=len(warnings),
         low_confidence_count=low_confidence_count,
     )
+
+
+def _collect_plan_reasons(plan_dict: dict) -> list[str]:
+    """Pull per-step reasons + plan-level warnings into a single
+    operator-readable list for the Planning Report's assessment block.
+
+    Dedupes preserving order — a planner that names the same reason
+    on two steps (e.g. 'mode text_only does not include enrichment'
+    on enrich + graph) is normalised to one entry."""
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for step in plan_dict.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        reason = step.get("reason")
+        if not reason:
+            continue
+        text = str(reason).strip()
+        if text and text not in seen_set:
+            seen_set.add(text)
+            seen.append(text)
+    return seen
 
 
 def _sum_optional(values) -> int | None:
