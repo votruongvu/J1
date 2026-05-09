@@ -60,6 +60,41 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_text(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+_GRAPHML_SAMPLE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="d0" for="node" attr.name="entity_type" attr.type="string"/>
+  <key id="d1" for="node" attr.name="description" attr.type="string"/>
+  <key id="d2" for="node" attr.name="source_id" attr.type="string"/>
+  <key id="d3" for="edge" attr.name="weight" attr.type="double"/>
+  <key id="d4" for="edge" attr.name="description" attr.type="string"/>
+  <key id="d5" for="edge" attr.name="keywords" attr.type="string"/>
+  <graph edgedefault="undirected">
+    <node id="Acme Corp">
+      <data key="d0">ORGANIZATION</data>
+      <data key="d1">A logistics company.</data>
+      <data key="d2">chunk-1;chunk-2</data>
+    </node>
+    <node id="Jane Doe">
+      <data key="d0">PERSON</data>
+      <data key="d1">CEO of Acme.</data>
+      <data key="d2">chunk-1</data>
+    </node>
+    <edge source="Acme Corp" target="Jane Doe">
+      <data key="d3">8.5</data>
+      <data key="d4">Jane is CEO of Acme.</data>
+      <data key="d5">leadership, role</data>
+    </edge>
+  </graph>
+</graphml>
+"""
+
+
 # ---- Unavailable path -----------------------------------------------
 
 
@@ -441,8 +476,9 @@ def test_project_skips_invalid_json(tmp_path):
     assert snapshot.stats.entity_count == 0
 
 
-def test_project_skips_graphml_files(tmp_path):
-    """LightRAG also writes `.graphml` (XML); we only handle JSON."""
+def test_project_handles_empty_graphml_gracefully(tmp_path):
+    """Empty `.graphml` (no <node>/<edge>) yields 0 entities + 0
+    relations rather than crashing the projector."""
     path = tmp_path / "graph_chunk_entity_relation.graphml"
     path.write_text("<graphml/>", encoding="utf-8")
     projector = GraphSnapshotProjector(path_resolver=_resolver({"a1": path}))
@@ -452,3 +488,41 @@ def test_project_skips_graphml_files(tmp_path):
         )],
     )
     assert snapshot.stats.entity_count == 0
+    assert snapshot.stats.relation_count == 0
+
+
+def test_project_extracts_entities_and_relations_from_graphml(tmp_path):
+    """LightRAG's canonical entity-relation graph lives in
+    `graph_chunk_entity_relation.graphml`. The projector must read
+    `<node>` elements as entities and `<edge>` elements as relations,
+    pulling attributes from `<data key="dN">` children whose `dN`
+    references the corresponding `<key attr.name=...>` declaration."""
+    path = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_text(path, _GRAPHML_SAMPLE)
+
+    projector = GraphSnapshotProjector(path_resolver=_resolver({"a1": path}))
+    snapshot = projector.project(
+        artifacts=[_record(
+            "a1", "graph/graph_chunk_entity_relation.graphml",
+            metadata={"filename": "graph_chunk_entity_relation.graphml"},
+        )],
+    )
+
+    assert snapshot.stats.entity_count == 2
+    assert snapshot.stats.relation_count == 1
+
+    entities_by_id = {e.id: e for e in snapshot.entities}
+    assert "Acme Corp" in entities_by_id
+    assert "Jane Doe" in entities_by_id
+    assert entities_by_id["Acme Corp"].type == "ORGANIZATION"
+    assert entities_by_id["Acme Corp"].description == "A logistics company."
+    # `source_id` semicolon-separated values get split into a list.
+    assert "chunk-1" in entities_by_id["Acme Corp"].source_chunk_ids
+    assert "chunk-2" in entities_by_id["Acme Corp"].source_chunk_ids
+
+    rel = snapshot.relations[0]
+    assert rel.source_entity_id == "Acme Corp"
+    assert rel.target_entity_id == "Jane Doe"
+    assert rel.weight == 8.5
+    assert rel.label == "leadership, role"
+    assert rel.description == "Jane is CEO of Acme."

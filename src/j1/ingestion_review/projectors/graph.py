@@ -150,35 +150,52 @@ class GraphSnapshotProjector:
             if kind is None:
                 continue
 
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                _log.warning(
-                    "graph artifact %s has invalid JSON: %s",
-                    artifact.artifact_id, exc,
-                )
-                continue
-
             new_entities = 0
             new_relations = 0
-            if kind == "entities":
-                projected = list(_iter_entities(payload, artifact))
-                entity_records.extend(projected)
-                new_entities = len(projected)
-            elif kind == "relations":
-                projected = list(_iter_relations(payload, artifact))
-                relation_records.extend(projected)
-                new_relations = len(projected)
-            elif kind == "mixed":
-                # Some LightRAG variants put both entities + relations
-                # in the same `graph_chunk_entity_relation.json` file
-                # under top-level keys.
-                ents = list(_iter_entities(payload, artifact))
-                rels = list(_iter_relations(payload, artifact))
+            if kind == "graphml":
+                # GraphML is the canonical LightRAG entity-relation
+                # graph output (`graph_chunk_entity_relation.graphml`).
+                # Read as XML and extract <node>/<edge> elements.
+                try:
+                    ents, rels = _parse_graphml(path, artifact)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "graph artifact %s graphml parse failed: %s",
+                        artifact.artifact_id, exc,
+                    )
+                    continue
                 entity_records.extend(ents)
                 relation_records.extend(rels)
                 new_entities = len(ents)
                 new_relations = len(rels)
+            else:
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    _log.warning(
+                        "graph artifact %s has invalid JSON: %s",
+                        artifact.artifact_id, exc,
+                    )
+                    continue
+
+                if kind == "entities":
+                    projected = list(_iter_entities(payload, artifact))
+                    entity_records.extend(projected)
+                    new_entities = len(projected)
+                elif kind == "relations":
+                    projected = list(_iter_relations(payload, artifact))
+                    relation_records.extend(projected)
+                    new_relations = len(projected)
+                elif kind == "mixed":
+                    # Some LightRAG variants put both entities + relations
+                    # in the same `graph_chunk_entity_relation.json` file
+                    # under top-level keys.
+                    ents = list(_iter_entities(payload, artifact))
+                    rels = list(_iter_relations(payload, artifact))
+                    entity_records.extend(ents)
+                    relation_records.extend(rels)
+                    new_entities = len(ents)
+                    new_relations = len(rels)
 
             if new_entities or new_relations:
                 contributing_artifact_ids.append(artifact.artifact_id)
@@ -222,19 +239,25 @@ def _classify_artifact(
 ) -> str | None:
     """Decide which sub-projector to apply.
 
-    Returns `"entities"`, `"relations"`, `"mixed"`, or None to skip.
-    Decision uses (1) filename hints from the location, (2) explicit
-    `metadata["filename"]` set by `_graph_drafts_from_storage`, (3)
-    file extension (only `.json` is supported — `.graphml` files are
-    skipped)."""
+    Returns `"entities"`, `"relations"`, `"mixed"`, `"graphml"`, or
+    None to skip. Decision uses (1) filename hints from the location,
+    (2) explicit `metadata["filename"]` set by
+    `_graph_drafts_from_storage`, (3) file extension."""
     suffix = PurePosixPath(path.name).suffix.lower()
-    if suffix != ".json":
-        return None
-
     name = (
         artifact.metadata.get("filename")
         or PurePosixPath(artifact.location).name
     ).lower()
+
+    # `.graphml` is the canonical LightRAG entity-relation graph
+    # output. It's an XML file that contains both entities (nodes)
+    # and relations (edges) — by far the most authoritative source
+    # when present. Process it as `mixed`-equivalent.
+    if suffix == ".graphml":
+        return "graphml"
+
+    if suffix != ".json":
+        return None
 
     # Internal LightRAG KV stores carry no graph data — skip cleanly.
     for pat in _INTERNAL_KV_PATTERNS:
@@ -456,3 +479,148 @@ def _float_field(d: dict, *keys: str) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+# ---- GraphML projection ---------------------------------------------
+#
+# LightRAG writes its canonical entity-relation graph to
+# `graph_chunk_entity_relation.graphml`. The file is XML with
+# `<key id="dN" attr.name="..." />` declarations followed by `<node>`
+# and `<edge>` elements that reference those keys via `<data key="dN">`.
+# We don't bring in `networkx` (would add a dep just for this); the
+# stdlib `xml.etree.ElementTree` is sufficient — the file is a single
+# `<graph>` with hundreds (not millions) of children.
+
+_GRAPHML_NS = {"g": "http://graphml.graphdrawing.org/xmlns"}
+
+
+def _parse_graphml(
+    path: Path, artifact: ArtifactRecord,
+) -> tuple[list[GraphEntityDTO], list[GraphRelationDTO]]:
+    """Parse a `.graphml` file into neutral entity/relation DTOs.
+
+    Tolerates the file being malformed or empty — returns empty
+    lists rather than raising. Caller logs the artifact id so the
+    skip is visible to operators."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        tree = ET.parse(str(path))
+    except (OSError, ET.ParseError):
+        return [], []
+    root = tree.getroot()
+
+    # `<key>` declarations map `id="dN"` → human attribute name.
+    # Build for both node and edge scopes since the same `dN` id is
+    # reused across scopes only sometimes.
+    node_keys: dict[str, str] = {}
+    edge_keys: dict[str, str] = {}
+    for key_el in root.iter():
+        if not key_el.tag.endswith("}key"):
+            continue
+        key_id = key_el.get("id")
+        attr_name = key_el.get("attr.name") or key_id
+        for_attr = key_el.get("for") or ""
+        if not key_id:
+            continue
+        if for_attr == "node":
+            node_keys[key_id] = attr_name
+        elif for_attr == "edge":
+            edge_keys[key_id] = attr_name
+        else:
+            node_keys[key_id] = attr_name
+            edge_keys[key_id] = attr_name
+
+    entities: list[GraphEntityDTO] = []
+    relations: list[GraphRelationDTO] = []
+
+    for graph_el in root.iter():
+        if not graph_el.tag.endswith("}graph"):
+            continue
+        for child in list(graph_el):
+            tag = child.tag
+            if tag.endswith("}node"):
+                entity = _graphml_node_to_entity(child, node_keys, artifact)
+                if entity is not None:
+                    entities.append(entity)
+            elif tag.endswith("}edge"):
+                relation = _graphml_edge_to_relation(child, edge_keys, artifact)
+                if relation is not None:
+                    relations.append(relation)
+    return entities, relations
+
+
+def _graphml_collect_data(
+    el, key_map: dict[str, str],
+) -> dict[str, str]:
+    """Read every `<data key="dN">` child into `{attr_name: value}`."""
+    out: dict[str, str] = {}
+    for data_el in list(el):
+        if not data_el.tag.endswith("}data"):
+            continue
+        key_id = data_el.get("key")
+        if not key_id:
+            continue
+        attr_name = key_map.get(key_id, key_id)
+        out[attr_name] = (data_el.text or "").strip()
+    return out
+
+
+def _graphml_node_to_entity(
+    el, key_map: dict[str, str], artifact: ArtifactRecord,
+) -> GraphEntityDTO | None:
+    node_id = el.get("id")
+    if not node_id:
+        return None
+    data = _graphml_collect_data(el, key_map)
+    label = data.get("entity_name") or data.get("name") or node_id
+    return GraphEntityDTO(
+        id=node_id,
+        label=label,
+        type=data.get("entity_type") or data.get("type"),
+        description=data.get("description"),
+        source_chunk_ids=_split_sources(data.get("source_id")),
+        source_artifact_ids=[artifact.artifact_id],
+        metadata={
+            k: v for k, v in data.items()
+            if k not in {
+                "entity_name", "entity_type", "description", "source_id",
+            } and v
+        },
+    )
+
+
+def _graphml_edge_to_relation(
+    el, key_map: dict[str, str], artifact: ArtifactRecord,
+) -> GraphRelationDTO | None:
+    src = el.get("source")
+    tgt = el.get("target")
+    if not src or not tgt:
+        return None
+    data = _graphml_collect_data(el, key_map)
+    weight: float | None = None
+    raw_weight = data.get("weight")
+    if raw_weight:
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError):
+            weight = None
+    rel_id = data.get("id") or f"{src}->{tgt}"
+    return GraphRelationDTO(
+        id=rel_id,
+        source_entity_id=src,
+        target_entity_id=tgt,
+        label=data.get("keywords") or data.get("label"),
+        type=data.get("rel_type") or data.get("type"),
+        description=data.get("description"),
+        weight=weight,
+        source_chunk_ids=_split_sources(data.get("source_id")),
+        source_artifact_ids=[artifact.artifact_id],
+        metadata={
+            k: v for k, v in data.items()
+            if k not in {
+                "keywords", "rel_type", "description", "weight",
+                "source_id", "id",
+            } and v
+        },
+    )
