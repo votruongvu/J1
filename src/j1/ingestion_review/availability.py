@@ -16,6 +16,7 @@ from j1.ingestion_review.dtos import AvailabilityDTO, AvailableViewsDTO
 from j1.processing.results import (
     ARTIFACT_KIND_CHUNK,
     ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
+    ARTIFACT_KIND_PLANNING_RESULT,
 )
 from j1.runs.models import IngestionRun
 
@@ -38,6 +39,7 @@ _QUALITY_KINDS = frozenset({
 _GRAPH_KIND = ARTIFACT_KIND_GRAPH_JSON
 _CHUNK_KIND = ARTIFACT_KIND_CHUNK
 _PARSED_CONTENT_KIND = ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
+_PLANNING_RESULT_KIND = ARTIFACT_KIND_PLANNING_RESULT
 
 
 def resolve_available_views(
@@ -64,11 +66,29 @@ def resolve_available_views(
     quality_present = bool(artifact_kinds & _QUALITY_KINDS)
     raw_present = bool(artifact_kinds)
     parsed_content_present = _PARSED_CONTENT_KIND in artifact_kinds
+    # Planning tab unlocks when EITHER signal is present:
+    #   * the post-compile `planning_result` artifact landed, OR
+    #   * a `plan.generated` / `plan.revised` audit event was written.
+    # Either alone is sufficient to render the Planning Report tab —
+    # the service's `get_run_planning` already handles both sources.
+    # Without this OR-gate, deployments where the post-compile
+    # planning activity persists the artifact but the audit-event
+    # reporter is None (or fails) would leave the tab disabled even
+    # though the data exists. The two paths are written by
+    # independent code, so requiring both is overly strict.
+    planning_artifact_present = _PLANNING_RESULT_KIND in artifact_kinds
 
-    # Quality is also available when the run carries warnings, even if
-    # no quality artifact was emitted — the Quality tab can still
-    # surface those.
+    # Quality also surfaces when the run carries:
+    #   * warnings — the Quality tab renders them as a list, OR
+    #   * skipped / failed-optional step_results — the projector
+    #     emits `skippedSteps[]` / `failedOptionalSteps[]` from
+    #     `run.metadata.step_results` regardless of whether any
+    #     quality artifact landed. A run that skipped optional
+    #     stages cleanly (no warnings, no enrichment artifacts)
+    #     still has actionable rows for reviewers.
     if not quality_present and (run.warning_count or 0) > 0:
+        quality_present = True
+    if not quality_present and _has_actionable_step_results(run):
         quality_present = True
 
     # Validation tab gates: terminal-success run with at least one
@@ -116,9 +136,9 @@ def resolve_available_views(
             ),
         ),
         planning=AvailabilityDTO(
-            available=planning_present,
+            available=planning_present or planning_artifact_present,
             reason=(
-                None if planning_present
+                None if (planning_present or planning_artifact_present)
                 else _planning_reason(run)
             ),
         ),
@@ -132,6 +152,25 @@ def resolve_available_views(
 # tab tooltip on the FE.
 
 _FAILED_OR_CANCELLED_STATUSES = frozenset({"failed", "cancelled"})
+
+
+def _has_actionable_step_results(run: IngestionRun) -> bool:
+    """True when the run's `metadata.step_results` carries entries
+    the Quality projector would surface (skipped steps or failed
+    optional steps). Lets the Quality tab unlock on those signals
+    even when no warnings or enrichment artifacts exist."""
+    raw = run.metadata.get("step_results")
+    if not isinstance(raw, list):
+        return False
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or "").lower()
+        if status == "skipped":
+            return True
+        if status == "failed" and not entry.get("required", True):
+            return True
+    return False
 
 
 def _chunks_reason(run: IngestionRun) -> str:

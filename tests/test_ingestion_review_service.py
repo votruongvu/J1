@@ -386,6 +386,88 @@ def test_summarize_run_assets_available_for_enriched_kinds(
     assert views.assets.available is True
 
 
+def test_summarize_run_planning_available_when_artifact_exists_without_audit_event(
+    service, run_store, artifact_registry, ctx,
+):
+    """The planning_result artifact and the plan.revised audit event
+    are written by INDEPENDENT code paths in the post-compile
+    planning activity. If the audit-event reporter is None (or fails
+    silently), the artifact still lands. The Planning Report tab
+    must unlock on the artifact alone — gating it on the audit event
+    only would leave the data invisible."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    artifact_registry.add(
+        _make_artifact(
+            ctx, artifact_id="planning-1", kind="planning_result",
+            source_document_ids=["doc-A"],
+        )
+    )
+
+    views = service.summarize_run(ctx, "run-1").available_views
+
+    assert views.planning.available is True
+    assert views.planning.reason is None
+
+
+def test_summarize_run_quality_available_for_skipped_step_results(
+    service, run_store, ctx,
+):
+    """Quality projector emits `skippedSteps[]` /
+    `failedOptionalSteps[]` from step_results regardless of whether
+    enrichment artifacts or warnings landed. The gate must unlock
+    accordingly so reviewers can see those rows; otherwise a clean
+    optional-skip leaves the data invisible."""
+    run_store.upsert(ctx, _make_run(metadata={
+        "step_results": [
+            {"step": "ENRICH", "status": "skipped", "source": "planner",
+             "required": False, "reason": "text-only profile"},
+        ],
+    }))
+
+    views = service.summarize_run(ctx, "run-1").available_views
+
+    assert views.quality.available is True
+
+
+def test_summarize_run_quality_available_for_failed_optional_step(
+    service, run_store, ctx,
+):
+    """Failed-but-optional step result alone unlocks the Quality tab
+    so reviewers see it under `failedOptionalSteps[]` even when no
+    artifact or warning was emitted."""
+    run_store.upsert(ctx, _make_run(metadata={
+        "step_results": [
+            {"step": "GRAPH", "status": "failed", "source": "planner",
+             "required": False, "error": {"type": "ActivityFailure",
+                                            "message": "x"}},
+        ],
+    }))
+
+    views = service.summarize_run(ctx, "run-1").available_views
+
+    assert views.quality.available is True
+
+
+def test_summarize_run_quality_stays_unavailable_when_only_required_failure(
+    service, run_store, ctx,
+):
+    """A required-step failure is not actionable in the Quality tab
+    (the run has FAILED status; the failure surfaces on Overview).
+    Don't unlock Quality on it alone — without artifacts/warnings/
+    skipped/optional-failed, there's nothing to render."""
+    run_store.upsert(ctx, _make_run(metadata={
+        "step_results": [
+            {"step": "COMPILE", "status": "failed", "source": "default",
+             "required": True, "error": {"type": "ActivityFailure",
+                                          "message": "x"}},
+        ],
+    }))
+
+    views = service.summarize_run(ctx, "run-1").available_views
+
+    assert views.quality.available is False
+
+
 # ---- Step results ---------------------------------------------------
 
 
