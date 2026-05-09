@@ -100,34 +100,43 @@ class _LibreOfficeConversionError(RuntimeError):
     "binary not installed" infrastructure case."""
 
 
-def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
-    """When `backend=vlm-http-client`, propagate J1's vision-LLM
-    config into the env vars MinerU's `mineru_vl_utils.MinerUClient`
-    reads at runtime: `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`,
-    `MINERU_VL_MODEL_NAME`.
+_HTTP_CLIENT_BACKENDS = frozenset({"vlm-http-client", "hybrid-http-client"})
 
-    The CLI accepts `-u/--vlm-url` for the server URL (we pass that
-    as a kwarg to `process_document_complete`), but the API key and
+
+def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
+    """When `backend` is one of the HTTP-client variants
+    (`vlm-http-client`, `hybrid-http-client`), propagate J1's
+    vision-LLM config into the env vars MinerU's
+    `mineru_vl_utils.MinerUClient` reads at runtime:
+    `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`, `MINERU_VL_MODEL_NAME`.
+
+    Both backend names route VLM requests to the same OpenAI-compatible
+    HTTP server; only the local-computation strategy differs. Either
+    one without `MINERU_VL_SERVER` set crashes with
+    "Environment variable MINERU_VL_SERVER is not set."
+
+    The CLI accepts `-u/--vlm-url` for the server URL (we also pass
+    that as a kwarg to the parse call), but the API key and
     model-name fields have no CLI flag — mineru-vl-utils reads them
     directly from the environment. Without this propagation the
     request reaches LM Studio with no Authorization header and an
     auto-detected model name (which on multi-model servers picks the
     wrong one).
 
-    With it, the existing `J1_VISION_LLM_*` config (already wired for
-    the rest of the stack) is the only thing the operator needs in
-    place — flipping `J1_RAGANYTHING_BACKEND=vlm-http-client` is the
-    sole additional change.
+    With it, the existing `J1_RAGANYTHING_VLM_HTTP_*` config (already
+    wired for the rest of the stack) is the only thing the operator
+    needs in place — flipping `J1_RAGANYTHING_BACKEND` to either
+    HTTP-client variant is the sole additional change.
 
-    Idempotent — only sets each env var when (a) the backend is
-    `vlm-http-client`, (b) we have a value, and (c) the operator
+    Idempotent — only sets each env var when (a) the backend is an
+    HTTP-client variant, (b) we have a value, and (c) the operator
     hasn't already exported the var directly. Operator-supplied
     `MINERU_VL_*` always wins so existing deployments keep their
     tuning.
 
     No-op when backend is anything else (default `None` lets MinerU
     pick its own engine and never reads these vars)."""
-    if settings.backend != "vlm-http-client":
+    if settings.backend not in _HTTP_CLIENT_BACKENDS:
         return
     mapping = {
         "MINERU_VL_SERVER": settings.vlm_http_server_url,
@@ -284,9 +293,14 @@ def _default_compile_complete(
         mineru_kwargs: dict[str, Any] = {}
         if request.settings.backend:
             mineru_kwargs["backend"] = request.settings.backend
-        if request.settings.backend == "vlm-http-client" and request.settings.vlm_http_server_url:
+        if (
+            request.settings.backend in _HTTP_CLIENT_BACKENDS
+            and request.settings.vlm_http_server_url
+        ):
             # `-u/--vlm-url` is the CLI flag for the VLM server URL.
             # raganything's parser forwards this kwarg verbatim.
+            # Both `vlm-http-client` and `hybrid-http-client` route
+            # vision calls to the same OpenAI-compatible server.
             mineru_kwargs["vlm_url"] = request.settings.vlm_http_server_url
 
         _log.info(
@@ -718,7 +732,7 @@ def default_parse_source(
         if request.settings.backend:
             mineru_kwargs["backend"] = request.settings.backend
         if (
-            request.settings.backend == "vlm-http-client"
+            request.settings.backend in _HTTP_CLIENT_BACKENDS
             and request.settings.vlm_http_server_url
         ):
             mineru_kwargs["vlm_url"] = request.settings.vlm_http_server_url
