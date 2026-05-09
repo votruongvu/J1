@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import json as _json
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -554,11 +555,34 @@ def _extract_text(
         raise LLMProviderUnavailable(
             f"{provider} response had no choices: {response!r}"
         )
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    message = choice.get("message") or {}
     content = message.get("content")
     if not isinstance(content, str):
         raise LLMProviderUnavailable(
             f"{provider} response message.content was not a string"
+        )
+    # When the response is empty (LM Studio sometimes returns "" with
+    # `finish_reason="length"` if max_tokens cut off the very first
+    # token, or `"stop"` when the model stalled), surface that detail
+    # to the caller via a logger so operators can diagnose without
+    # adding their own instrumentation. Empty + finish_reason is the
+    # "should I bump max_output_tokens?" signal we'd otherwise miss.
+    if not content.strip():
+        finish_reason = choice.get("finish_reason") or "unknown"
+        usage = response.get("usage") or {}
+        _log = logging.getLogger("j1.llm.openai_compat")
+        _log.warning(
+            "%s/%s returned empty content (finish_reason=%s, "
+            "prompt_tokens=%s, completion_tokens=%s). "
+            "If you're hitting this on the FAST/planner role, try: "
+            "(1) raise J1_FAST_LLM_MAX_OUTPUT_TOKENS, "
+            "(2) raise J1_FAST_LLM_CONTEXT_WINDOW_TOKENS to match "
+            "the loaded model's window, "
+            "(3) set J1_FAST_LLM_TEMPERATURE>0 (some models stall "
+            "at temperature=0 with strict-JSON prompts).",
+            provider, model, finish_reason,
+            usage.get("prompt_tokens"), usage.get("completion_tokens"),
         )
     usage = response.get("usage") or {}
     return content, LLMUsage(

@@ -1075,11 +1075,44 @@ def default_insert_content(
             "split-mode insert: cleared prior LightRAG state for doc_id=%s",
             doc_id,
         )
-        await rag.insert_content_list(
-            content_list=content_list,
-            file_path=source_filename or request.document_id,
-            doc_id=doc_id,
-        )
+
+        # Last-resort dedupe bypass for THIS insert call only.
+        # `apipeline_enqueue_documents` calls `doc_status.filter_keys`
+        # to decide which incoming doc_ids are "new". When the
+        # in-memory shared dict carries a residual entry that our
+        # cleanup couldn't pop (multiprocess Manager dict, sanitize-
+        # then-reload race in `index_done_callback`, or any backend
+        # variant where the pop doesn't propagate), the resulting
+        # "Duplicate document detected" path silently skips
+        # processing. The activity ran our cleanup, so we know
+        # there's no valid prior state to honour — wrap filter_keys
+        # to FORCE-include our doc_id in the "new" set for the
+        # duration of this call, then restore the original method.
+        # Surgical: only our doc_id is whitelisted; concurrent
+        # inserts of OTHER docs are unaffected.
+        # Guard with hasattr so test fakes that don't expose the
+        # full LightRAG object hierarchy still work — the bypass is
+        # only meaningful against a real LightRAG anyway.
+        original_filter_keys = None
+        doc_status = getattr(getattr(rag, "lightrag", None), "doc_status", None)
+        if doc_status is not None and hasattr(doc_status, "filter_keys"):
+            original_filter_keys = doc_status.filter_keys
+
+            async def _filter_keys_force_unique(keys):
+                base = await original_filter_keys(keys)
+                if doc_id in keys:
+                    base = set(base) | {doc_id}
+                return base
+            doc_status.filter_keys = _filter_keys_force_unique
+        try:
+            await rag.insert_content_list(
+                content_list=content_list,
+                file_path=source_filename or request.document_id,
+                doc_id=doc_id,
+            )
+        finally:
+            if original_filter_keys is not None and doc_status is not None:
+                doc_status.filter_keys = original_filter_keys
 
     from j1.providers.raganything._persistent_loop import get_persistent_loop
     loop = get_persistent_loop()
