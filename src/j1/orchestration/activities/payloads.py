@@ -36,6 +36,25 @@ class CompileActivityInput:
 
 
 @dataclass(frozen=True)
+class InsertContentActivityInput:
+    """Workflow → activity payload for the split-mode insert step.
+
+    Drives `RAGAnything.insert_content_list` from a previously-
+    persisted `parsed_source` artifact. The `parsed_source_artifact_id`
+    is the artifact id the parse activity registered upstream — the
+    insert activity reads its bytes back from disk to recover the
+    content_list + doc_id without re-parsing the source file."""
+
+    scope: ProjectScope
+    document_id: str
+    processor_kind: str
+    parsed_source_artifact_id: str
+    source_filename: str | None = None
+    actor: str = "system"
+    correlation_id: str | None = None
+
+
+@dataclass(frozen=True)
 class EnrichActivityInput:
     scope: ProjectScope
     artifact_id: str

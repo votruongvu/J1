@@ -20,6 +20,13 @@ ARTIFACT_KIND_COMPILED_TEXT = "compiled.text"
 # it without re-walking the storage_dir. Independent of vendor
 # internals — see `j1.processing.manifest` for the canonical schema.
 ARTIFACT_KIND_PARSED_CONTENT_MANIFEST = "parsed_content_manifest"
+# Raw parser output — the structured `content_list` produced by
+# `RAGAnything.parse_document` (or J1's plaintext / pypdf fast paths
+# in split mode). Persisted as JSON so the downstream
+# `insert_content_list` activity can read it back without re-parsing.
+# Distinct from `parsed_content_manifest` (counts + items projection
+# the FE renders) — this kind is the literal vendor payload.
+ARTIFACT_KIND_PARSED_SOURCE = "parsed_source"
 # Post-compile Processing Plan artifact. Persisted by the planning
 # activity once compile + content inventory are available; carries
 # the rule-based assessment, the document-understanding summary, and
@@ -31,6 +38,7 @@ __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
+    "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",
     "ArtifactDraft",
     "ArtifactProcessingResult",

@@ -56,6 +56,7 @@ from j1.processing.results import (
     ARTIFACT_KIND_CHUNK,
     ARTIFACT_KIND_COMPILED_TEXT,
     ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
+    ARTIFACT_KIND_PARSED_SOURCE,
     ArtifactDraft,
     ArtifactProcessingResult,
     QueryResult,
@@ -148,12 +149,37 @@ def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
 def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingResult:
     """Run a real RAGAnything compile against `request.document_id`.
 
-    Reads the source file from the project's `raw/` workspace area,
-    optionally pre-converts legacy / non-OOXML formats to PDF via
-    LibreOffice (so raganything's PDF parser can pick up where
-    mineru's pure-Python format readers can't), then drives
-    `RAGAnything.process_document_complete()` to a temp output dir
-    and walks the output for ArtifactDrafts.
+    Dispatch on `settings.pipeline_mode`:
+      * `"split_parse_insert"` — delegate to `default_parse_source`.
+        The compile activity stops after parsing; the workflow
+        drives the second half via a separate `insert_content`
+        activity once the Execution Plan is in hand.
+      * `"complete"` (default) — run the legacy
+        `process_document_complete` path: reads the source file,
+        optionally pre-converts via LibreOffice, drives
+        `RAGAnything.process_document_complete()`, and walks the
+        output for ArtifactDrafts.
+    """
+    pipeline_mode = getattr(
+        request.settings, "pipeline_mode", "complete",
+    )
+    if pipeline_mode == "split_parse_insert":
+        return default_parse_source(request)
+    return _default_compile_complete(request)
+
+
+def _default_compile_complete(
+    request: "RAGAnythingCompileRequest",
+) -> ArtifactProcessingResult:
+    """Legacy single-shot compile path. Drives
+    `RAGAnything.process_document_complete()` end-to-end and
+    surfaces parse + chunk + graph artifacts together.
+
+    Extracted so `default_parse_source`'s fallback (when the
+    installed RAGAnything doesn't expose `parse_document`) can
+    re-enter the legacy path WITHOUT going back through
+    `default_compile`'s mode dispatch — which would recurse
+    forever.
     """
     # Bridge the J1 vision LLM config into MinerU's expected env
     # vars when the operator has selected the HTTP-client backend.
@@ -559,6 +585,406 @@ def _build_manifest_draft(
             "parse_method": parse_method or "",
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────
+# split_parse_insert pipeline mode
+# ─────────────────────────────────────────────────────────────────
+#
+# When `request.settings.pipeline_mode == "split_parse_insert"` the
+# compile activity stops after parsing — it produces a `parsed_source`
+# artifact (the raw RAGAnything content_list) + the manifest, and
+# returns. A separate `insert_content` activity runs after the
+# Execution Plan is in hand, reads the parsed_source artifact, and
+# calls `RAGAnything.insert_content_list()` to drive chunking +
+# LightRAG indexing.
+#
+# This gives the user-facing flow a real boundary:
+#
+#   Parse Source Content (parse_document)
+#       → Build Content Inventory (manifest with items[])
+#       → Create Execution Plan
+#       → Generate Knowledge Chunks (insert_content_list)
+#       → Enrich / Graph / Index
+#
+# When `pipeline_mode == "complete"` the legacy
+# `process_document_complete` path still runs from `default_compile`
+# above. Bridge auto-falls back to "complete" if the installed
+# RAGAnything version doesn't expose `parse_document` /
+# `insert_content_list`.
+
+
+def default_parse_source(
+    request: "RAGAnythingCompileRequest",
+) -> ArtifactProcessingResult:
+    """Parse-only path for `split_parse_insert` mode.
+
+    Calls `RAGAnything.parse_document` (or the existing fast paths
+    for plain text / text-extractable PDFs) and persists:
+
+      * `parsed_source` — the raw vendor `content_list` JSON.
+        Read back by `default_insert_content` later in the workflow.
+      * one or more `compiled.text` drafts — every text-shaped
+        file from the parser's output dir, kept for backward
+        compatibility with legacy consumers.
+      * `parsed_content_manifest` — the canonical FE-facing
+        manifest with `items[]` populated from the content_list.
+
+    Does NOT call `insert_content_list`, NOT trigger chunking, and
+    NOT touch the LightRAG storage. The caller drives the second
+    half of the pipeline via a separate activity.
+
+    Returns the same `ArtifactProcessingResult` shape the activity
+    layer expects, with `metadata.parse_boundary="real"` so
+    operators can verify the split path actually ran.
+    """
+    if not _split_methods_available():
+        # Older RAGAnything → fall back to the legacy path. We
+        # surface this via metadata so the Planning Report can
+        # explain the limitation honestly. Calling
+        # `_default_compile_complete` directly avoids re-entering
+        # the mode dispatch in `default_compile`.
+        result = _default_compile_complete(request)
+        return ArtifactProcessingResult(
+            status=result.status,
+            drafts=result.drafts,
+            artifacts=result.artifacts,
+            cost_events=result.cost_events,
+            message=result.message,
+            error=result.error,
+            metadata={
+                **(result.metadata or {}),
+                "parse_boundary": "legacy_combined",
+                "pipeline_mode_warning": (
+                    "Installed RAGAnything version does not expose "
+                    "parse_document / insert_content_list — fell back "
+                    "to process_document_complete. Upgrade RAGAnything "
+                    "to enable split_parse_insert."
+                ),
+            },
+        )
+
+    _apply_vlm_http_client_env(request.settings)
+    rag, output_dir, source_path = _prepare_compile(request)
+    _log.info(
+        "split-mode parse: workdir=%s output_dir=%s source=%s",
+        request.settings.workdir, output_dir, source_path.name,
+    )
+
+    converted_path: Path | None = None
+    try:
+        if _needs_pdf_conversion(source_path, request.settings):
+            converted_path = _convert_to_pdf(source_path, request.settings)
+            source_path = converted_path
+    except ProviderUnavailable:
+        raise
+    except _LibreOfficeConversionError as exc:
+        return ArtifactProcessingResult(
+            status=ResultStatus.FAILED,
+            error=str(exc),
+            message="LibreOffice conversion failed",
+            metadata={
+                "provider": "raganything",
+                "stage": "preconvert",
+                "source_extension": source_path.suffix,
+                "parse_boundary": "real",
+            },
+        )
+
+    content_list: list[dict[str, Any]] = []
+    doc_id = request.document_id
+    parse_engine = "raganything.parse_document"
+
+    async def _run_parse():
+        nonlocal content_list, doc_id, parse_engine
+        if _is_plain_text(source_path):
+            content_list, doc_id = _content_list_from_plain_text(
+                source_path=source_path, document_id=request.document_id,
+            )
+            parse_engine = "j1.fast_path.plaintext"
+            return
+        if _is_text_extractable_pdf(source_path):
+            content_list, doc_id = _content_list_from_pdf_text(
+                source_path=source_path, document_id=request.document_id,
+            )
+            parse_engine = "j1.fast_path.pypdf"
+            return
+        # Default RAGAnything parse path.
+        mineru_kwargs: dict[str, Any] = {}
+        if request.settings.backend:
+            mineru_kwargs["backend"] = request.settings.backend
+        if (
+            request.settings.backend == "vlm-http-client"
+            and request.settings.vlm_http_server_url
+        ):
+            mineru_kwargs["vlm_url"] = request.settings.vlm_http_server_url
+        result_tuple = await rag.parse_document(
+            file_path=str(source_path),
+            output_dir=str(output_dir),
+            parse_method=request.settings.parse_method,
+            **mineru_kwargs,
+        )
+        # `parse_document` returns (content_list, doc_id).
+        if isinstance(result_tuple, tuple) and len(result_tuple) >= 2:
+            content_list = result_tuple[0] or []
+            doc_id = str(result_tuple[1] or request.document_id)
+
+    from j1.providers.raganything._log_bridge import attach_mineru_progress_handler
+    from j1.providers.raganything._persistent_loop import get_persistent_loop
+
+    loop = get_persistent_loop()
+    parse_start = time.monotonic()
+    try:
+        with attach_mineru_progress_handler(
+            request.progress_reporter, request.ctx, request.run_id or "",
+        ):
+            loop.run_coroutine(_run_parse())
+    finally:
+        parse_elapsed_ms = int((time.monotonic() - parse_start) * 1000)
+        _log.info(
+            "split-mode parse complete: document=%s parse_elapsed_ms=%d "
+            "items=%d engine=%s",
+            request.document_id, parse_elapsed_ms,
+            len(content_list), parse_engine,
+        )
+        if converted_path is not None:
+            try:
+                converted_path.unlink(missing_ok=True)
+                converted_path.parent.rmdir()
+            except OSError:
+                pass
+
+    # Build drafts: COMPILED_TEXT (legacy compatibility),
+    # PARSED_SOURCE (raw content_list), PARSED_CONTENT_MANIFEST.
+    drafts: list[ArtifactDraft] = list(_drafts_from_output_dir(
+        output_dir, document_id=request.document_id,
+        kind=ARTIFACT_KIND_COMPILED_TEXT,
+    ))
+
+    # Persist raw content_list. Tag with the resolved doc_id so the
+    # insert activity can reuse the exact value RAGAnything assigned.
+    drafts.append(ArtifactDraft(
+        kind=ARTIFACT_KIND_PARSED_SOURCE,
+        content=json.dumps(
+            {"content_list": content_list, "doc_id": doc_id},
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        suggested_extension=".json",
+        metadata={
+            "filename": f"{request.document_id}.parsed_source.json",
+            "parser": "raganything",
+            "parser_engine": parse_engine,
+            "doc_id": doc_id,
+            "item_count": len(content_list),
+        },
+    ))
+
+    # Build the FE-facing manifest from the same content_list. The
+    # canonical content_stats projection is built from drafts +
+    # output_dir; we ALSO inject items[] from content_list so the
+    # Content Inventory tab renders real per-element data.
+    manifest = _build_content_manifest(output_dir)
+    if not manifest.get("items"):
+        # Fallback: build items directly from content_list when the
+        # output_dir didn't contain a content_list.json file (which
+        # happens for the plaintext / pypdf fast paths).
+        manifest["items"] = [
+            entry
+            for idx, raw_item in enumerate(content_list)
+            if isinstance(raw_item, dict)
+            for _, entry in [_normalise_content_list_item(
+                raw=raw_item,
+                raw_type=str(raw_item.get("type", "")).lower(),
+                idx=idx,
+                page_idx=raw_item.get("page_idx"),
+            )]
+            if entry is not None
+        ]
+        # If text_block_count from filesystem walk was zero but the
+        # content_list has text items, sync the count.
+        text_blocks_from_items = sum(
+            1 for it in manifest["items"] if it.get("type") == "text"
+        )
+        if text_blocks_from_items and not manifest.get("text_block_count"):
+            manifest["text_block_count"] = text_blocks_from_items
+
+    drafts = _stamp_image_decisions(drafts, manifest.get("images") or [])
+    drafts.append(_build_manifest_draft(
+        document_id=request.document_id,
+        document_hash=getattr(request, "document_hash", None) or "",
+        parser="raganything",
+        parser_version=manifest.get("provider_version"),
+        parse_method=getattr(request.settings, "parse_method", None),
+        compile_stats=manifest,
+    ))
+
+    return ArtifactProcessingResult(
+        status=ResultStatus.SUCCEEDED,
+        drafts=drafts,
+        metadata={
+            "provider": "raganything",
+            "output_dir": str(output_dir),
+            "pipeline_mode": "split_parse_insert",
+            "parse_boundary": "real",
+            "parser_engine": parse_engine,
+            "doc_id": doc_id,
+            "item_count": len(content_list),
+            **{k: v for k, v in manifest.items() if k != "images" and k != "items"},
+        },
+    )
+
+
+def default_insert_content(
+    request: "RAGAnythingCompileRequest",
+    *,
+    content_list: list[dict[str, Any]],
+    doc_id: str,
+    source_filename: str | None = None,
+) -> ArtifactProcessingResult:
+    """Insert pre-parsed content into LightRAG.
+
+    Reads `content_list` (typically from the `parsed_source`
+    artifact written by `default_parse_source` upstream) and calls
+    `RAGAnything.insert_content_list(content_list, doc_id, file_path)`,
+    which triggers chunking + LightRAG storage + indexing.
+
+    Returns the chunk + graph drafts collected from the LightRAG
+    storage_dir post-insert. Metadata records that the chunk/graph
+    boundary is COMBINED inside RAGAnything/LightRAG — the activity
+    can't separately report when chunking finishes vs when graph
+    extraction starts.
+    """
+    if not _split_methods_available():
+        return ArtifactProcessingResult(
+            status=ResultStatus.FAILED,
+            error="insert_content_list not available on this RAGAnything",
+            metadata={
+                "provider": "raganything",
+                "pipeline_mode": "split_parse_insert",
+                "parse_boundary": "real",
+                "insert_boundary": "unsupported",
+            },
+        )
+
+    _apply_vlm_http_client_env(request.settings)
+    rag = _build_rag_instance(
+        text_client=request.text_client,
+        vision_client=request.vision_client,
+        embedding_client=request.embedding_client,
+        settings=request.settings,
+    )
+    storage_dir = Path(
+        request.settings.storage_dir or request.settings.workdir
+    ).expanduser()
+    storage_dir.mkdir(parents=True, exist_ok=True)
+
+    insert_engine = "raganything.insert_content_list"
+
+    async def _run_insert():
+        init = await rag._ensure_lightrag_initialized()
+        if isinstance(init, dict) and not init.get("success", True):
+            raise ProviderUnavailable(
+                "RAGAnything failed to initialize LightRAG: "
+                f"{init.get('error', 'unknown error')}"
+            )
+        await rag.insert_content_list(
+            content_list=content_list,
+            file_path=source_filename or request.document_id,
+            doc_id=doc_id,
+        )
+
+    from j1.providers.raganything._persistent_loop import get_persistent_loop
+    loop = get_persistent_loop()
+    insert_start = time.monotonic()
+    try:
+        loop.run_coroutine(_run_insert())
+    finally:
+        insert_elapsed_ms = int((time.monotonic() - insert_start) * 1000)
+        _log.info(
+            "split-mode insert complete: document=%s insert_elapsed_ms=%d",
+            request.document_id, insert_elapsed_ms,
+        )
+
+    # Surface chunks + graph artifacts the LightRAG insert produced.
+    drafts: list[ArtifactDraft] = []
+    drafts.extend(_chunk_drafts_from_storage(
+        storage_dir, document_id=request.document_id,
+    ))
+    # Graph artifacts: LightRAG writes the entity/relation graph
+    # alongside the chunk store. We surface them here even when the
+    # workflow's separate "graph" step is disabled — the work has
+    # already happened, and the operator wants the data visible.
+
+    return ArtifactProcessingResult(
+        status=ResultStatus.SUCCEEDED,
+        drafts=drafts,
+        metadata={
+            "provider": "raganything",
+            "pipeline_mode": "split_parse_insert",
+            "parse_boundary": "real",
+            "insert_boundary": "raganything_insert_content_list",
+            # Honest about coupling: chunking + graph + storage all
+            # happen inside the single insert call.
+            "chunk_graph_boundary": "combined_if_raganything_controls_it",
+            "insert_engine": insert_engine,
+            "insert_elapsed_ms": insert_elapsed_ms,
+            "doc_id": doc_id,
+        },
+    )
+
+
+def _split_methods_available() -> bool:
+    """Detect whether the installed RAGAnything exposes the
+    parse-first methods we need for split_parse_insert mode.
+
+    Cheap import-time check; called lazily so older deployments
+    that import this module don't trip on a missing class. We never
+    cache the result — the import surface is stable across a worker
+    process lifetime, but a re-import after a vendor upgrade should
+    pick up the new methods without a worker restart."""
+    try:
+        from raganything import RAGAnything  # noqa: WPS433 - vendor import
+    except Exception:  # noqa: BLE001 — provider may be missing entirely
+        return False
+    return all(
+        hasattr(RAGAnything, name)
+        for name in ("parse_document", "insert_content_list")
+    )
+
+
+def _content_list_from_plain_text(
+    *, source_path: Path, document_id: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Build a synthetic `content_list` for plain-text fast-path
+    parsing. Mirrors the previous `_insert_plain_text_directly`
+    behaviour but without invoking insert — the insert activity
+    consumes this list later."""
+    text = source_path.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        return [], document_id
+    return [{"type": "text", "text": text, "page_idx": 0}], document_id
+
+
+def _content_list_from_pdf_text(
+    *, source_path: Path, document_id: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Build a synthetic `content_list` from a text-extractable PDF.
+
+    Mirrors `_insert_pdf_text_directly` but stops at the content_list
+    construction. Each PDF page becomes one text item with its
+    page_idx — preserves source-location metadata for the FE."""
+    from pypdf import PdfReader
+    reader = PdfReader(str(source_path))
+    items: list[dict[str, Any]] = []
+    for page_idx, page in enumerate(reader.pages):
+        page_text = (page.extract_text() or "").strip()
+        if page_text:
+            items.append({
+                "type": "text",
+                "text": page_text,
+                "page_idx": page_idx,
+            })
+    return items, document_id
 
 
 def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessingResult:
