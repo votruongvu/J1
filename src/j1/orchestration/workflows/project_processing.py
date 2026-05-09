@@ -435,7 +435,33 @@ def _apply_post_compile_planning(
     Returns `(new_plan, diff)`. `diff` is empty when the post-compile
     plan agrees with the initial plan; non-empty diff is suitable for
     `_format_plan_diff_reason`."""
-    steps = (planning.execution_plan or {}).get("steps") or {}
+    # Defensive: `execution_plan.steps` is contractually a dict
+    # keyed by step name. LLM-emitted plans occasionally emit it as
+    # a list of `{name, enabled, ...}` objects instead. Without this
+    # guard the next `.get()` call raises
+    # `AttributeError: 'list' object has no attribute 'get'` and the
+    # whole workflow fails with `J1_INGEST_UNEXPECTED_ERROR` —
+    # exactly the BUILD_CONTENT_INVENTORY-stage crash operators have
+    # hit. Coerce a list to its dict equivalent (keyed by `name` /
+    # `step_id`) so downstream lookups work; fall back to an empty
+    # dict when the shape is genuinely unrecognised.
+    raw_steps = (planning.execution_plan or {}).get("steps")
+    if isinstance(raw_steps, dict):
+        steps = raw_steps
+    elif isinstance(raw_steps, list):
+        steps = {}
+        for entry in raw_steps:
+            if not isinstance(entry, dict):
+                continue
+            key = (
+                entry.get("name")
+                or entry.get("step_id")
+                or entry.get("id")
+            )
+            if key:
+                steps[str(key)] = entry
+    else:
+        steps = {}
     enrich_drivers = (
         "table_enrichment", "vision_enrichment", "image_captioning",
         "requirement_extraction", "risk_extraction", "quality_assessment",

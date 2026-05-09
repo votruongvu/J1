@@ -1298,7 +1298,31 @@ def _planning_artifact_to_dto(
     `decisions` keep working — the rich fields live on top, optional.
     """
     plan = dict(result.execution_plan or {})
-    steps = plan.get("steps") or {}
+    # Defensive: `steps` is contractually a dict keyed by step name.
+    # An LLM-emitted plan occasionally returns a list of step
+    # objects; treating it as a list crashes the downstream `.get()`
+    # / `.items()` calls with
+    # `AttributeError: 'list' object has no attribute 'get'` —
+    # observed mid-run as the BUILD_CONTENT_INVENTORY-stage failure.
+    # Coerce list-shaped input by keying off `name` / `step_id`;
+    # leave empty when the shape is unrecognised.
+    raw_steps = plan.get("steps")
+    if isinstance(raw_steps, dict):
+        steps = raw_steps
+    elif isinstance(raw_steps, list):
+        steps = {}
+        for entry in raw_steps:
+            if not isinstance(entry, dict):
+                continue
+            key = (
+                entry.get("name")
+                or entry.get("step_id")
+                or entry.get("id")
+            )
+            if key:
+                steps[str(key)] = entry
+    else:
+        steps = {}
 
     # `decisions` for legacy FE: map each post-compile step into the
     # PlanningStepDecisionDTO shape (with `decision=RUN/SKIP`).
