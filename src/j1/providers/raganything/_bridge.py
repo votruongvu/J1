@@ -926,9 +926,40 @@ def default_insert_content(
         #      otherwise still triggers "Duplicate document detected".
         # `delete_llm_cache=False` keeps the entity-extraction LLM
         # cache for graph rebuild.
+        # Cascading cleanup of any prior state for `doc_id`.
+        # LightRAG's de-dupe gate (`apipeline_enqueue_documents` →
+        # `doc_status.filter_keys`) checks `_data.keys()` regardless
+        # of value-truthiness. If ANY residual record exists for
+        # this `doc_id` — successful prior run, partial-write stub,
+        # `dup-*` record from a concurrent retry — the next insert
+        # short-circuits with "Duplicate document detected" and no
+        # chunks land. Three steps so the path is robust:
+        #
+        #   1. `adelete_by_doc_id` — best-effort cascade through
+        #      chunks, vectors, graph, LLM cache. Early-returns when
+        #      the doc_status entry is falsy, so the in-memory map
+        #      may still hold the key after this call.
+        #   2. `doc_status.delete([doc_id])` — pops the key from
+        #      `_data` regardless of value-truthiness. Mandatory
+        #      because step 1 doesn't always touch the map.
+        #   3. `index_done_callback()` — flushes the deletion to
+        #      `kv_store_doc_status.json` so a parallel reader (or
+        #      a re-init of LightRAG mid-flight) sees the cleared
+        #      state. Without this the on-disk file lags; an insert
+        #      that triggers a load-from-disk during enqueue can
+        #      pull the stale entry back into `_data`.
+        #
+        # Verify post-cleanup that `doc_id` is gone from `_data`;
+        # if it's somehow still there, log loudly so operators can
+        # see what they're up against (a parallel writer, or a bug
+        # in LightRAG's state machine).
         try:
-            await rag.lightrag.adelete_by_doc_id(
+            result = await rag.lightrag.adelete_by_doc_id(
                 doc_id, delete_llm_cache=False,
+            )
+            _log.debug(
+                "split-mode insert: adelete_by_doc_id status=%s doc_id=%s",
+                getattr(result, "status", "unknown"), doc_id,
             )
         except Exception as exc:  # noqa: BLE001 — doc may not exist; that's fine
             _log.debug(
@@ -942,10 +973,62 @@ def default_insert_content(
                 "split-mode insert: doc_status.delete no-op for doc_id=%s: %s",
                 doc_id, exc,
             )
-        _log.info(
-            "split-mode insert: cleared prior LightRAG state for doc_id=%s",
-            doc_id,
-        )
+        # Sweep `dup-*` bookkeeping records that reference this
+        # doc_id. LightRAG creates one per duplicate-detection
+        # event and never garbage-collects them; over multiple
+        # retries they accumulate into "Preserving N failed
+        # document entries" noise on every subsequent insert.
+        # Removing them keeps the doc_status file lean and avoids
+        # confusing operators reading the raw artifact.
+        try:
+            data = getattr(rag.lightrag.doc_status, "_data", None) or {}
+            stale_dup_ids = [
+                dup_id for dup_id, entry in data.items()
+                if isinstance(dup_id, str)
+                and dup_id.startswith("dup-")
+                and isinstance(entry, dict)
+                and entry.get("metadata", {}).get("original_doc_id") == doc_id
+            ]
+            if stale_dup_ids:
+                await rag.lightrag.doc_status.delete(stale_dup_ids)
+                _log.info(
+                    "split-mode insert: cleared %d stale dup-* records "
+                    "for doc_id=%s",
+                    len(stale_dup_ids), doc_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — sweep is best-effort
+            _log.debug(
+                "split-mode insert: dup-* sweep failed for doc_id=%s: %s",
+                doc_id, exc,
+            )
+        try:
+            await rag.lightrag.doc_status.index_done_callback()
+        except Exception as exc:  # noqa: BLE001 — flush is best-effort
+            _log.debug(
+                "split-mode insert: doc_status flush no-op for doc_id=%s: %s",
+                doc_id, exc,
+            )
+        # Post-cleanup verification. `_data` is a shared multiprocess
+        # dict on some LightRAG storage backends — guard the access
+        # with hasattr so we don't hard-crash on backend variants.
+        try:
+            data = getattr(rag.lightrag.doc_status, "_data", None)
+            still_present = bool(data) and doc_id in data
+        except Exception:  # noqa: BLE001
+            still_present = False
+        if still_present:
+            _log.warning(
+                "split-mode insert: doc_id=%s still in doc_status after "
+                "adelete_by_doc_id + delete + flush — LightRAG will "
+                "treat this insert as a duplicate. Investigate parallel "
+                "writers (Temporal activity retry?) or stale shared-mp dict.",
+                doc_id,
+            )
+        else:
+            _log.info(
+                "split-mode insert: cleared prior LightRAG state for doc_id=%s",
+                doc_id,
+            )
         await rag.insert_content_list(
             content_list=content_list,
             file_path=source_filename or request.document_id,
@@ -1781,25 +1864,19 @@ def _graph_drafts_from_storage(
     interesting = (
         "*graph*", "*relation*", "*entit*", "kv_store*.json",
     )
-    # Files we exclude from graph_json — they're surfaced under their
-    # own kind elsewhere or are not graph data at all. Match by
-    # lowercased filename so case variants both filter correctly.
+    # Files we exclude from graph_json. Match by lowercased filename
+    # so case variants filter correctly.
     #   * `kv_store_text_chunks.json`  → emitted as `kind="chunk"`
     #     via `_chunk_drafts_from_storage` (canonical chunk DTO).
     #   * `kv_store_doc_status.json`   → per-document state machine
     #     (PENDING/HANDLING/PROCESSED/FAILED + duplicate-detection
     #     records). Internal LightRAG bookkeeping; surfacing it as
-    #     `graph_json` puts confusing `[DUPLICATE]` rows in the
-    #     Knowledge Graph tab even though no graph data exists.
-    #   * `kv_store_full_docs.json` / `kv_store_llm_response_cache.json`
-    #     → blob stores; reviewer-facing graph tab doesn't need them.
+    #     `graph_json` puts confusing `[DUPLICATE] Original document`
+    #     rows in the Knowledge Graph tab even though no graph data
+    #     exists in the file.
     chunk_filenames = {
         "kv_store_text_chunks.json",
         "kv_store_doc_status.json",
-        "kv_store_full_docs.json",
-        "kv_store_llm_response_cache.json",
-        "kv_store_parse_cache.json",
-        "kv_store_multimodal_status.json",
     }
     seen: set[Path] = set()
     for pattern in interesting:

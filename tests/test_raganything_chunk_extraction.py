@@ -173,8 +173,21 @@ def test_graph_drafts_excludes_chunks_file(tmp_path):
     matched the `kv_store*.json` pattern). Now that chunks have
     their own kind, the graph extractor must skip that file —
     otherwise the FE sees the chunks twice (once under graph,
-    once under chunks)."""
+    once under chunks).
+
+    Also excludes `kv_store_doc_status.json` — it's a per-document
+    state machine + duplicate-detection record store, not graph
+    data. Surfacing it under graph put `[DUPLICATE] Original
+    document: ...` rows in the Knowledge Graph tab for runs that
+    re-uploaded the same checksum."""
     _write(tmp_path / "kv_store_text_chunks.json", {"ch": {"content": "x"}})
+    _write(tmp_path / "kv_store_doc_status.json", {
+        "d0d59aaf": {"status": "processed", "content": ""},
+        "dup-9deade": {
+            "status": "failed",
+            "content_summary": "[DUPLICATE] Original document: d0d59aaf",
+        },
+    })
     _write(tmp_path / "kv_store_full_docs.json", {"d": {"id": "d"}})
     _write(tmp_path / "vdb_entities.json", {"e1": {"__id__": "e1"}})
 
@@ -185,7 +198,9 @@ def test_graph_drafts_excludes_chunks_file(tmp_path):
     filenames = {
         d.metadata.get("filename") for d in graph_drafts if d.kind == "graph_json"
     }
-    # Chunks file is excluded; the other KV files + entities are surfaced.
+    # Chunks + doc_status files are excluded; other KV files + entities
+    # surface as graph_json.
     assert "kv_store_text_chunks.json" not in filenames
+    assert "kv_store_doc_status.json" not in filenames
     assert "kv_store_full_docs.json" in filenames
     assert "vdb_entities.json" in filenames
