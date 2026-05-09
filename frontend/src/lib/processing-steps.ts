@@ -15,8 +15,8 @@
  *   index / finalize / complete → "Finalize Ingestion"
  *
  * Use the helper functions everywhere a step name reaches the user
- * — Timeline, PrimaryStatusPanel, ProcessingStepper, tab labels —
- * so a backend rename only changes ONE place.
+ * — Timeline, PrimaryStatusPanel, tab labels — so a backend rename
+ * only changes ONE place.
  */
 
 export const PROCESSING_STEP_IDS = [
@@ -38,9 +38,9 @@ export interface ProcessingStepDef {
 }
 
 /**
- * The seven user-facing steps in their canonical order. The
- * ProcessingStepper renders one card per entry; tabs are gated on
- * the matching availability in the run summary.
+ * The seven user-facing steps in their canonical order. Result
+ * tabs are gated on the matching availability in the run summary;
+ * the timeline + status panel project events onto these ids.
  */
 export const PROCESSING_STEPS: readonly ProcessingStepDef[] = [
   {
@@ -209,7 +209,7 @@ export function userFacingStepLabel(raw: string | null | undefined): string {
 }
 
 /**
- * Derived per-step status the ProcessingStepper renders.
+ * Derived per-step status used across the run-detail surfaces.
  *
  * `pending`   — the run hasn't reached this step yet
  * `running`   — the most recent event for this step is `step.started`
@@ -218,7 +218,7 @@ export function userFacingStepLabel(raw: string | null | undefined): string {
  * `skipped`   — `step.skipped` event OR the run summary records skipped
  * `failed`    — `step.failed` event
  *
- * Centralised here so the stepper, status badges, and the
+ * Centralised here so the timeline, status badges, and the
  * Execution Plan tab all classify status the same way.
  */
 export type ProcessingStepStatus =

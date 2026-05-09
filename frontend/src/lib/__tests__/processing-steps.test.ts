@@ -1,9 +1,9 @@
 /**
  * Tests for the user-facing step-name mapping. The mapping is the
  * single source of truth that drives Timeline labels, the
- * PrimaryStatusPanel "Running …" copy, the ProcessingStepper, and
- * the Result tab grouping. Pinning each internal-name → user-facing
- * id keeps backend renames from silently changing UI copy.
+ * PrimaryStatusPanel "Running …" copy, and the Result tab
+ * grouping. Pinning each internal-name → user-facing id keeps
+ * backend renames from silently changing UI copy.
  */
 
 import { describe, expect, it } from "vitest";

@@ -22,7 +22,6 @@ import type { ProjectContext, RuntimeStepStatus, StreamStatus, Toast } from "@/t
 import { Banner } from "@/components/Banner";
 import { RunHeader } from "./run-detail/RunHeader";
 import { PlanCard } from "./run-detail/PlanCard";
-import { ProcessingStepper } from "./run-detail/ProcessingStepper";
 import { LiveTimeline } from "./run-detail/LiveTimeline";
 import { PrimaryStatusPanel } from "./run-detail/PrimaryStatusPanel";
 import { ResultsSection } from "./run-detail/results";
@@ -323,22 +322,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
 
       <div style={{ marginBottom: 20 }}>
         <PrimaryStatusPanel run={run} plan={plan} events={events} />
-      </div>
-
-      {/* Processing journey — the user-facing seven-step stepper.
-          Sits above the legacy plan + timeline grid so operators see
-          the full processing arc at a glance, with each step's
-          status driven by SSE + summary + planning artifacts. */}
-      <div style={{ marginBottom: 20 }}>
-        <ProcessingStepper
-          runId={runId}
-          events={events}
-          latestEvent={
-            events.length > 0
-              ? (events[events.length - 1] ?? null)
-              : null
-          }
-        />
       </div>
 
       <div className="run-body">
