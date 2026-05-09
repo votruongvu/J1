@@ -97,6 +97,11 @@ class PlanningResult:
     Planning Report can compare LLM vs. rule decisions), while the
     top-level `recommended_profile` / `execution_plan` reflect the
     final winning decision (LLM if accepted, rule-based otherwise).
+
+    `domain_context` is always populated — at minimum with the
+    generic-fallback shape so consumers don't have to special-case
+    its absence. The pack id + selection source explain how the
+    plan got produced.
     """
 
     run_id: str
@@ -116,6 +121,7 @@ class PlanningResult:
     rule_based_comparison: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     next_actions: list[str] = field(default_factory=list)
+    domain_context: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -165,6 +171,7 @@ class PlanningResult:
                 str(a) for a in (data.get("next_actions") or [])
                 if isinstance(a, str)
             ],
+            domain_context=dict(data.get("domain_context") or {}),
         )
 
 
@@ -244,6 +251,7 @@ def validate_planning_result_dict(
     data: dict[str, Any],
     *,
     page_count: int | None = None,
+    extended_document_types: frozenset[str] | None = None,
 ) -> None:
     """Validate a parsed planning-result payload.
 
@@ -256,6 +264,12 @@ def validate_planning_result_dict(
     enabled per-page lists must be subsets of `range(1, page_count+1)`.
     Pass None when the page count is unknown; the page-bound check
     is skipped in that case.
+
+    `extended_document_types` widens the allowed taxonomy with any
+    types contributed by registered domain packs. Pass the union
+    from `DomainRegistry.extended_document_types()` so a domain-
+    pack-specific document_type validates without mutating the core
+    enum. Defaults to None → only generic types are accepted.
     """
     if not isinstance(data, dict):
         raise PlanningValidationError("planning result must be a JSON object")
@@ -274,11 +288,15 @@ def validate_planning_result_dict(
             f"confidence {confidence} not in [0.0, 1.0]"
         )
 
+    allowed_types: frozenset[str] = (
+        DOCUMENT_TYPES | (extended_document_types or frozenset())
+    )
     understanding = data.get("document_understanding") or {}
     doc_type = understanding.get("document_type")
-    if doc_type not in DOCUMENT_TYPES:
+    if doc_type not in allowed_types:
         raise PlanningValidationError(
-            f"document_understanding.document_type {doc_type!r} not in taxonomy"
+            f"document_understanding.document_type {doc_type!r} "
+            f"not in taxonomy (registered types: {len(allowed_types)})"
         )
 
     plan = data.get("execution_plan") or {}

@@ -267,6 +267,27 @@ export interface PlanningRuleBasedComparison {
   }>;
 }
 
+export interface PlanningDomainContext {
+  /** "general" | "civil_engineering" | future packs. */
+  selectedDomain: string;
+  /** "user" | "workspace" | "auto_detected" | "fallback_general" */
+  selectionSource: string;
+  confidence: number;
+  domainPackVersion?: string;
+  evidence?: string[];
+  appliedDomainRules?: string[];
+  warnings?: string[];
+  recommendedButUnsupported?: Array<{
+    capability: string;
+    reason: string;
+  }>;
+  candidates?: Array<{
+    domainId: string;
+    confidence: number;
+    evidence?: string[];
+  }>;
+}
+
 export interface PlanningResult {
   runId: string;
   documentId?: string | null;
@@ -302,6 +323,7 @@ export interface PlanningResult {
   nextActions?: string[];
   warnings?: string[];
   rawArtifactId?: string | null;
+  domainContext?: PlanningDomainContext | null;
 }
 
 // ---- Validation (Phase 1: manual test query) --------------------

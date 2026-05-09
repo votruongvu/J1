@@ -33,6 +33,7 @@ from temporalio import activity
 
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactRegistry
+from j1.domains import DomainRegistry, default_registry
 from j1.jobs.status import ProcessingStatus, ReviewStatus
 from j1.llm.registry import LLMProviderRegistry
 from j1.orchestration.activities.payloads import ProjectScope
@@ -99,6 +100,13 @@ class BuildPlanningResultInput:
     # Temporal data converter handles correctly, but we keep it loose
     # here for forward compatibility.
     profile_payload: dict[str, Any] | None = None
+    # Per-run domain selection. `domain_override` (when set) is the
+    # operator's upload-time choice — wins over workspace_default.
+    # `workspace_default_domain` is the workspace/project's default
+    # — wins over auto-detection. Both are validated against the
+    # `J1_ALLOWED_DOMAIN_OVERRIDES` allow-list.
+    domain_override: str | None = None
+    workspace_default_domain: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +126,11 @@ class BuildPlanningResultOutput:
     document_type: str
     execution_plan: dict[str, Any]
     warnings: tuple[str, ...]
+    # Domain pack metadata so the workflow can attribute its plan
+    # revision event ("post-compile planning, civil_engineering pack").
+    selected_domain: str = "general"
+    domain_selection_source: str = "fallback_general"
+    domain_confidence: float = 0.0
 
 
 # ---- Activity ---------------------------------------------------------
@@ -139,6 +152,7 @@ class PlanningActivities:
         planning_settings: PlanningSettings,
         progress_reporter: ProgressReporter | None = None,
         clock=datetime.now,
+        domain_registry: DomainRegistry | None = None,
     ) -> None:
         self._workspace = workspace
         self._artifacts = artifacts
@@ -146,6 +160,11 @@ class PlanningActivities:
         self._settings = planning_settings
         self._reporter = progress_reporter
         self._clock = clock
+        # Default registry is process-wide; tests inject their own.
+        self._domain_registry = (
+            domain_registry if domain_registry is not None
+            else default_registry()
+        )
 
     def all_activities(self) -> list:
         return [self.build_planning_result]
@@ -201,6 +220,9 @@ class PlanningActivities:
                 llm_planner=llm_planner,
                 now=self._clock(timezone.utc) if _accepts_tz(self._clock)
                     else datetime.now(timezone.utc),
+                domain_registry=self._domain_registry,
+                domain_override=input.domain_override,
+                workspace_default_domain=input.workspace_default_domain,
             )
         except PlanningValidationError as exc:
             # `fail_open=False` reaches here. Re-raise so the workflow
@@ -246,6 +268,7 @@ class PlanningActivities:
         self._maybe_emit_progress(ctx, input.run_id, result)
 
         plan_dict = dict(result.execution_plan or {})
+        domain = result.domain_context or {}
         return BuildPlanningResultOutput(
             artifact_id=artifact.artifact_id,
             source=result.source,
@@ -257,6 +280,11 @@ class PlanningActivities:
             ),
             execution_plan=plan_dict,
             warnings=tuple(result.warnings),
+            selected_domain=str(domain.get("selected_domain") or "general"),
+            domain_selection_source=str(
+                domain.get("selection_source") or "fallback_general",
+            ),
+            domain_confidence=float(domain.get("confidence") or 0.0),
         )
 
     # ---- Manifest read --------------------------------------------------

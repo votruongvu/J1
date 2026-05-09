@@ -17,6 +17,7 @@ import { useClient } from "@/lib/hooks/useClient";
 import type {
   PlanningContentReport,
   PlanningDocumentUnderstanding,
+  PlanningDomainContext,
   PlanningExecutionPlan,
   PlanningQualityReport,
   PlanningResult,
@@ -90,7 +91,7 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
     assessment, digest, llmRecommendation, decisions,
     documentUnderstanding, contentReport, qualityReport,
     executionPlan, ruleBasedComparison, decisionSummary,
-    nextActions, warnings,
+    nextActions, warnings, domainContext,
   } = report;
   const isPostCompile = report.planningPhase === "post_compile";
 
@@ -181,6 +182,9 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
           ) : null}
         </>
       ) : null}
+
+      {/* Domain pack context — always present on post-compile runs. */}
+      {domainContext ? <DomainContextPanel data={domainContext} /> : null}
 
       {/* Document Understanding (post-compile only) */}
       {documentUnderstanding ? (
@@ -447,6 +451,110 @@ function formatTimestamp(value: string | null | undefined): string {
 }
 
 // ---- Post-compile section components ---------------------------
+
+function DomainContextPanel({
+  data,
+}: {
+  data: PlanningDomainContext;
+}) {
+  const isGeneral = data.selectedDomain === "general";
+  const tone =
+    data.selectionSource === "fallback_general" ? "muted"
+    : data.selectionSource === "user" ? "accent"
+    : "info";
+  return (
+    <section className="results-content-inventory__items">
+      <h4 style={{ margin: "8px 0 6px" }}>Domain pack</h4>
+      <div className="results-content-inventory__summary">
+        <SummaryCard
+          label="Domain"
+          value={data.selectedDomain}
+          tone={isGeneral ? undefined : "accent"}
+        />
+        <SummaryCard
+          label="Source"
+          value={data.selectionSource.replace(/_/g, " ")}
+        />
+        <SummaryCard
+          label="Confidence"
+          value={`${Math.round((data.confidence ?? 0) * 100)}%`}
+        />
+        {data.domainPackVersion ? (
+          <SummaryCard label="Pack version" value={data.domainPackVersion} />
+        ) : null}
+      </div>
+      {data.evidence && data.evidence.length > 0 ? (
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {data.evidence.map((e, idx) => (
+            <li key={idx} style={{ color: "var(--text-muted)" }}>
+              {e}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {data.appliedDomainRules && data.appliedDomainRules.length > 0 ? (
+        <p style={{ marginTop: 6 }}>
+          <strong>Applied rules:</strong>{" "}
+          {data.appliedDomainRules.map((r) => (
+            <span
+              key={r}
+              className={`results-tag results-tag--${tone}`}
+              style={{ marginRight: 4 }}
+            >
+              {r}
+            </span>
+          ))}
+        </p>
+      ) : null}
+      {data.warnings && data.warnings.length > 0 ? (
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {data.warnings.map((w, idx) => (
+            <li
+              key={idx}
+              style={{ color: "var(--text-warning, #b8860b)" }}
+            >
+              {w}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {data.recommendedButUnsupported &&
+       data.recommendedButUnsupported.length > 0 ? (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer" }}>
+            Recommended but unsupported (
+            {data.recommendedButUnsupported.length})
+          </summary>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {data.recommendedButUnsupported.map((u, idx) => (
+              <li key={idx}>
+                <code className="results-graph__id">{u.capability}</code>
+                <span style={{ color: "var(--text-muted)" }}>
+                  {" "}— {u.reason}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {data.candidates && data.candidates.length > 1 ? (
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ cursor: "pointer" }}>
+            Detection candidates ({data.candidates.length})
+          </summary>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {data.candidates.map((c, idx) => (
+              <li key={idx}>
+                <strong>{c.domainId}</strong> —{" "}
+                {Math.round((c.confidence ?? 0) * 100)}%
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </section>
+  );
+}
 
 function DocumentUnderstandingPanel({
   data,

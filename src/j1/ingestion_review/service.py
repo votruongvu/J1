@@ -1385,6 +1385,9 @@ def _planning_artifact_to_dto(
         next_actions=list(result.next_actions or []),
         warnings=list(result.warnings or []),
         raw_artifact_id=artifact_id,
+        domain_context=(
+            dict(result.domain_context) if result.domain_context else None
+        ),
     )
 
 

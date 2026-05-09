@@ -20,13 +20,26 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from dataclasses import dataclass
+
+from j1.domains import (
+    DOMAIN_GENERAL,
+    DomainContext,
+    DomainPack,
+    DomainPlanningOverlay,
+    DomainRegistry,
+)
+from j1.domains.registry import select_domain
 from j1.processing.content_digest import ContentDigest, build_content_digest
 from j1.processing.document_understanding import (
     DocumentMetadata,
     DocumentUnderstanding,
     assess_document_understanding,
 )
-from j1.processing.manifest import ParsedContentManifest
+from j1.processing.manifest import (
+    ParsedContentItem,
+    ParsedContentManifest,
+)
 from j1.processing.planning_result import (
     PLANNING_RESULT_SCHEMA_VERSION,
     PLANNING_SOURCE_LLM,
@@ -129,15 +142,26 @@ def build_planning_result(
     settings: PlanningSettings,
     llm_planner: LLMPlanner | None = None,
     now: datetime | None = None,
+    domain_registry: DomainRegistry | None = None,
+    domain_override: str | None = None,
+    workspace_default_domain: str | None = None,
 ) -> PlanningResult:
     """Build the full `PlanningResult` from compile outputs.
 
-    Pure function — caller injects the LLM planner; we don't bind a
-    transport here. Returns a result whose `source` field is one of:
+    Pure function — caller injects the LLM planner and the domain
+    registry; we don't bind a transport here. Returns a result whose
+    `source` field is one of:
       * `rule_based` — LLM disabled or no planner provided.
       * `llm` — LLM ran and its output validated.
       * `rule_based_fallback` — LLM ran but failed validation /
         threw / produced unsafe output and `fail_open=True`.
+
+    Domain selection runs after the generic Document Understanding +
+    rule-based assessment. When a non-generic pack wins (auto-detect
+    confidence ≥ threshold OR an operator override), its overlay is
+    applied on top of the rule-based plan; otherwise the generic
+    decisions stand. The chosen domain is recorded on the result's
+    `domain_context` either way.
 
     Raises `PlanningValidationError` when LLM output fails validation
     AND `settings.fail_open=False`.
@@ -163,12 +187,39 @@ def build_planning_result(
         digest=digest,
     )
 
+    # Resolve the domain pack (or fall back to generic).
+    domain_context, domain_pack = _resolve_domain(
+        registry=domain_registry,
+        settings=settings,
+        document=document,
+        understanding=understanding,
+        manifest=manifest,
+        digest=digest,
+        domain_override=domain_override,
+        workspace_default_domain=workspace_default_domain,
+    )
+
+    # Apply the matching domain-pack overlay (when one was
+    # selected). Generic returns the rule-based plan unchanged.
+    rule_based_with_domain, applied_rule_ids = _apply_domain_overlay(
+        rule_based=rule_based,
+        domain_context=domain_context,
+        pack=domain_pack,
+    )
+    if applied_rule_ids:
+        domain_context = _attach_applied_rules(
+            domain_context, applied_rule_ids,
+        )
+
     rule_based_result = assessment_to_planning_result(
         run_id=run_id,
         document_id=document.document_id,
         created_at=timestamp,
-        assessment=rule_based,
+        assessment=rule_based_with_domain,
         source=PLANNING_SOURCE_RULE_BASED,
+    )
+    rule_based_result = _with_domain_context(
+        rule_based_result, domain_context,
     )
 
     # No LLM path? Done.
@@ -243,6 +294,7 @@ def _to_fallback(rule: PlanningResult, *, reason: str) -> PlanningResult:
         rule_based_comparison=rule.rule_based_comparison,
         warnings=warnings,
         next_actions=list(rule.next_actions),
+        domain_context=dict(rule.domain_context),
     )
 
 
@@ -289,6 +341,13 @@ def _merge_llm_into_rule_based(
         next_actions=[
             str(a) for a in (llm_payload.get("next_actions") or []) if a
         ] or list(rule_based_result.next_actions),
+        # LLM payload may also carry a `domain_context` block when
+        # the prompt addon told it to. Prefer that; fall back to the
+        # rule-based context.
+        domain_context=dict(
+            llm_payload.get("domain_context")
+            or rule_based_result.domain_context
+        ),
     )
 
 
@@ -484,6 +543,305 @@ def _page_inventory_payload(
         entry["block_types"] = sorted(entry["block_types"])
         out.append(entry)
     return out
+
+
+# ---- Domain pack integration ----------------------------------------
+
+
+@dataclass(frozen=True)
+class _PlannerDetectionContext:
+    """Lightweight `DetectionContext` that satisfies the protocol
+    declared in `j1.domains.models`. Built fresh per planning call —
+    no caching, the per-document inputs are what matter."""
+
+    title: str
+    title_quality: str
+    filename: str | None
+    early_page_text: str
+    heading_outline: tuple[tuple[int, str, int | None], ...]
+    table_captions: tuple[str, ...]
+    image_captions: tuple[str, ...]
+    document_type_hint: str | None
+    table_header_rows: tuple[tuple[str, ...], ...]
+
+
+def _build_detection_context(
+    *,
+    document: DocumentMetadata,
+    understanding: DocumentUnderstanding,
+    manifest: ParsedContentManifest | None,
+    digest: ContentDigest,
+) -> _PlannerDetectionContext:
+    """Project everything the post-compile planner already has into
+    the shape domain detectors consume."""
+    table_captions: list[str] = []
+    image_captions: list[str] = []
+    table_header_rows: list[tuple[str, ...]] = []
+    if manifest is not None:
+        for item in manifest.items:
+            kind = (item.type or "").lower()
+            if kind.startswith("table"):
+                if item.caption:
+                    table_captions.append(item.caption)
+                if item.text_preview:
+                    # Table preview often = header row joined by `|`
+                    # or `,`; split it back into cells so detectors
+                    # can match BOQ-shaped rows.
+                    cells = _split_header_row(item.text_preview)
+                    if cells:
+                        table_header_rows.append(cells)
+            elif kind in {"image", "figure", "diagram", "chart"}:
+                if item.caption:
+                    image_captions.append(item.caption)
+
+    early_page_text = " ".join(
+        " ".join(p.paragraph_previews)
+        for p in digest.early_page_digest
+    )
+    return _PlannerDetectionContext(
+        title=understanding.detected_title or "",
+        title_quality=understanding.title_quality,
+        filename=document.filename,
+        early_page_text=early_page_text,
+        heading_outline=digest.heading_outline,
+        table_captions=tuple(table_captions),
+        image_captions=tuple(image_captions),
+        document_type_hint=understanding.document_type.value,
+        table_header_rows=tuple(table_header_rows),
+    )
+
+
+def _split_header_row(preview: str) -> tuple[str, ...]:
+    """Split a table preview into header cells. The bridge surfaces
+    table previews as `'col1 | col2 | col3'` for plaintext or
+    `'<th>col1</th>...'` for HTML; handle both shapes."""
+    if not preview:
+        return ()
+    raw = preview
+    # Quick HTML strip — looking only for header-like cells.
+    raw = raw.replace("</th>", "|").replace("<th>", "")
+    raw = raw.replace("</td>", "|").replace("<td>", "")
+    candidates = [c.strip() for c in raw.split("|") if c.strip()]
+    # Header-row heuristic: short cells, not too many of them.
+    if 2 <= len(candidates) <= 12 and all(
+        len(c) <= 32 for c in candidates
+    ):
+        return tuple(candidates[:12])
+    return ()
+
+
+def _resolve_domain(
+    *,
+    registry: DomainRegistry | None,
+    settings: PlanningSettings,
+    document: DocumentMetadata,
+    understanding: DocumentUnderstanding,
+    manifest: ParsedContentManifest | None,
+    digest: ContentDigest,
+    domain_override: str | None,
+    workspace_default_domain: str | None,
+) -> tuple[DomainContext, DomainPack | None]:
+    """Run domain selection and return `(context, pack)`.
+
+    `pack` is None when `general` wins (legacy planner stays in
+    charge). The context always represents the chosen state — even
+    a generic-fallback run gets a populated `domain_context`."""
+    if not settings.domain_packs_enabled or registry is None:
+        return _generic_fallback_context(reason=(
+            "Domain packs disabled by configuration."
+            if not settings.domain_packs_enabled
+            else "No domain registry wired."
+        )), None
+
+    detection_context = _build_detection_context(
+        document=document,
+        understanding=understanding,
+        manifest=manifest,
+        digest=digest,
+    )
+    context = select_domain(
+        registry=registry,
+        detection_context=detection_context,
+        user_override=domain_override,
+        workspace_default=(
+            workspace_default_domain
+            or settings.workspace_default_domain
+        ),
+        detection_enabled=settings.domain_detection_enabled,
+        detection_threshold=settings.domain_detection_min_confidence,
+        allowed_overrides=frozenset(settings.allowed_domain_overrides),
+    )
+    pack = (
+        registry.get(context.selected_domain)
+        if context.selected_domain != DOMAIN_GENERAL else None
+    )
+    return context, pack
+
+
+def _generic_fallback_context(*, reason: str) -> DomainContext:
+    return DomainContext(
+        selected_domain=DOMAIN_GENERAL,
+        selection_source="fallback_general",
+        confidence=0.0,
+        domain_pack_version="generic",
+        warnings=(reason,) if reason else (),
+    )
+
+
+def _apply_domain_overlay(
+    *,
+    rule_based: PostCompileAssessment,
+    domain_context: DomainContext,
+    pack: DomainPack | None,
+) -> tuple[PostCompileAssessment, list[str]]:
+    """Layer the matching domain overlay on top of the rule-based
+    assessment.
+
+    Returns `(updated_assessment, applied_rule_ids)`. When no pack
+    matches (or no overlay exists for the detected type), returns
+    the input unchanged + empty list.
+    """
+    if pack is None:
+        return rule_based, []
+
+    detected_type = _detected_type_from_context(domain_context)
+    overlay: DomainPlanningOverlay | None = None
+    if detected_type:
+        overlay = pack.overlays.get(detected_type)
+    if overlay is None:
+        return rule_based, []
+
+    applied = [overlay.applied_rule_id] if overlay.applied_rule_id else []
+
+    # Project recommended_profile + chunking onto the assessment.
+    new_profile = (
+        overlay.recommended_profile or rule_based.recommended_profile
+    )
+    chunking = rule_based.execution_plan.chunking
+    if overlay.chunking_strategy and overlay.chunking_strategy != chunking.strategy:
+        chunking = _replace_dataclass(
+            chunking,
+            strategy=overlay.chunking_strategy,
+            reason=(
+                f"Domain pack {pack.id} requires {overlay.chunking_strategy} "
+                f"chunking for {detected_type}."
+            ),
+        )
+
+    # Apply step overrides — replace the matching `StepRecommendation`
+    # in the rule-based plan when an overlay carries the step.
+    new_steps = list(rule_based.execution_plan.steps)
+    for idx, step in enumerate(new_steps):
+        override = overlay.step_overrides.get(step.step)
+        if not override:
+            continue
+        new_steps[idx] = _step_with_override(step, override, pack=pack)
+        applied.append(
+            f"{pack.id}.plan.{detected_type}.{step.step}"
+        )
+
+    new_plan = _replace_dataclass(
+        rule_based.execution_plan,
+        chunking=chunking,
+        steps=tuple(new_steps),
+    )
+
+    new_assessment = _replace_dataclass(
+        rule_based,
+        recommended_profile=new_profile,
+        execution_plan=new_plan,
+    )
+    return new_assessment, applied
+
+
+def _step_with_override(step, override: dict[str, Any], *, pack: DomainPack):
+    """Return a copy of `step` updated by the overlay dict."""
+    enabled = bool(override.get("enabled", step.enabled))
+    scope = str(
+        override.get("scope") or step.scope or ("document" if enabled else "none")
+    )
+    reason = str(
+        override.get("reason") or step.reason
+        or f"Domain pack {pack.id} adjusted this step."
+    )
+    pages = override.get("pages")
+    if pages is None:
+        pages_tuple = step.pages
+    else:
+        pages_tuple = tuple(int(p) for p in pages if p is not None)
+    candidate_entity_types = override.get("candidate_entity_types")
+    return _replace_dataclass(
+        step,
+        enabled=enabled,
+        scope=scope,
+        reason=reason,
+        pages=pages_tuple,
+        candidate_entity_types=(
+            tuple(str(t) for t in candidate_entity_types)
+            if candidate_entity_types is not None
+            else step.candidate_entity_types
+        ),
+    )
+
+
+def _detected_type_from_context(context: DomainContext) -> str | None:
+    """Find the detected document_type from the candidate that won."""
+    for cand in context.candidates:
+        if cand.domain_id == context.selected_domain and cand.detected_document_type:
+            return cand.detected_document_type
+    return None
+
+
+def _attach_applied_rules(
+    context: DomainContext, applied: list[str],
+) -> DomainContext:
+    """Append overlay-derived rule ids to the context's
+    `applied_domain_rules` list, preserving order + deduping."""
+    seen: set[str] = set(context.applied_domain_rules)
+    out: list[str] = list(context.applied_domain_rules)
+    for rule_id in applied:
+        if rule_id and rule_id not in seen:
+            seen.add(rule_id)
+            out.append(rule_id)
+    return _replace_dataclass(context, applied_domain_rules=tuple(out))
+
+
+def _with_domain_context(
+    result: PlanningResult, context: DomainContext,
+) -> PlanningResult:
+    """Attach the domain context to a `PlanningResult` and project
+    the pack's detected document_type into document_understanding.
+
+    When the pack detected a domain-specific type (e.g. `boq`,
+    `inspection_report` from a construction pack) we overwrite the
+    generic detector's `document_type` so the FE Planning Report
+    and downstream consumers see the more specific value. The
+    generic type stays accessible via `rule_based_assessment` if
+    reviewers need to diff."""
+    detected = _detected_type_from_context(context)
+    understanding = dict(result.document_understanding or {})
+    if detected:
+        understanding["document_type"] = detected
+        # Confidence: take the domain pack's confidence as the
+        # type-detection confidence — the generic detector's
+        # value applied to the generic taxonomy, not this one.
+        understanding["document_type_confidence"] = context.confidence
+    return _replace_dataclass(
+        result,
+        document_understanding=understanding,
+        domain_context=context.to_dict(),
+    )
+
+
+def _replace_dataclass(obj, **kwargs):
+    """Frozen-dataclass-friendly replacement helper. Used in lieu of
+    `dataclasses.replace` so we don't have to import it at every
+    call site."""
+    from dataclasses import replace
+    return replace(obj, **kwargs)
+
+
+# ---- Existing helpers continue below --------------------------------
 
 
 def _rule_based_assessment_payload(

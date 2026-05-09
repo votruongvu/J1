@@ -13,8 +13,10 @@ from j1.processing.planning_settings import (
 
 def test_defaults_when_env_empty():
     """Default behaviour: rule-based planning enabled, LLM-assisted
-    planning OFF. These defaults define the baseline contract — flipping
-    them in code should be a deliberate, separately-reviewed change."""
+    planning OFF, generic domain default with civil_engineering
+    in the override allow-list. These defaults define the baseline
+    contract — flipping them in code should be a deliberate,
+    separately-reviewed change."""
     s = load_planning_settings({})
     assert s == PlanningSettings(
         enabled=True,
@@ -27,6 +29,12 @@ def test_defaults_when_env_empty():
         fail_open=True,
         trace_enabled=False,
         trace_body=False,
+        domain_packs_enabled=True,
+        default_domain="general",
+        domain_detection_enabled=True,
+        domain_detection_min_confidence=0.65,
+        allowed_domain_overrides=("general", "civil_engineering"),
+        workspace_default_domain="general",
     )
 
 
@@ -90,3 +98,26 @@ def test_empty_string_falls_back_to_default():
     })
     assert s.model_profile == "fast_planner"
     assert s.max_sample_blocks == 20
+
+
+def test_domain_pack_overrides_parse_correctly():
+    s = load_planning_settings({
+        "J1_DOMAIN_PACKS_ENABLED": "false",
+        "J1_DOMAIN_DETECTION_ENABLED": "false",
+        "J1_DOMAIN_DETECTION_MIN_CONFIDENCE": "0.8",
+        "J1_DEFAULT_DOMAIN": "civil_engineering",
+        "J1_ALLOWED_DOMAIN_OVERRIDES": "general,civil_engineering,medical",
+        "J1_WORKSPACE_DEFAULT_DOMAIN": "civil_engineering",
+    })
+    assert s.domain_packs_enabled is False
+    assert s.domain_detection_enabled is False
+    assert s.domain_detection_min_confidence == 0.8
+    assert s.default_domain == "civil_engineering"
+    assert s.allowed_domain_overrides == ("general", "civil_engineering", "medical")
+    assert s.workspace_default_domain == "civil_engineering"
+
+
+def test_domain_detection_threshold_rejected_when_out_of_range():
+    from j1.errors.exceptions import ConfigError
+    with pytest.raises(ConfigError):
+        load_planning_settings({"J1_DOMAIN_DETECTION_MIN_CONFIDENCE": "1.5"})

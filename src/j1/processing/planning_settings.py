@@ -38,8 +38,22 @@ ENV_PLANNING_FAIL_OPEN = "J1_PLANNING_FAIL_OPEN"
 ENV_PLANNING_TRACE_ENABLED = "J1_PLANNING_TRACE_ENABLED"
 ENV_PLANNING_TRACE_BODY = "J1_PLANNING_TRACE_BODY"
 
+# ---- Domain pack envs ------------------------------------------------
+
+ENV_DOMAIN_PACKS_ENABLED = "J1_DOMAIN_PACKS_ENABLED"
+ENV_DEFAULT_DOMAIN = "J1_DEFAULT_DOMAIN"
+ENV_DOMAIN_DETECTION_ENABLED = "J1_DOMAIN_DETECTION_ENABLED"
+ENV_DOMAIN_DETECTION_MIN_CONFIDENCE = "J1_DOMAIN_DETECTION_MIN_CONFIDENCE"
+ENV_ALLOWED_DOMAIN_OVERRIDES = "J1_ALLOWED_DOMAIN_OVERRIDES"
+ENV_WORKSPACE_DEFAULT_DOMAIN = "J1_WORKSPACE_DEFAULT_DOMAIN"
+
 
 __all__ = [
+    "ENV_ALLOWED_DOMAIN_OVERRIDES",
+    "ENV_DEFAULT_DOMAIN",
+    "ENV_DOMAIN_DETECTION_ENABLED",
+    "ENV_DOMAIN_DETECTION_MIN_CONFIDENCE",
+    "ENV_DOMAIN_PACKS_ENABLED",
     "ENV_LLM_PLANNING_ENABLED",
     "ENV_PLANNING_ENABLED",
     "ENV_PLANNING_FAIL_OPEN",
@@ -50,6 +64,7 @@ __all__ = [
     "ENV_PLANNING_TRACE_BODY",
     "ENV_PLANNING_TRACE_ENABLED",
     "ENV_POST_COMPILE_PLANNING_ENABLED",
+    "ENV_WORKSPACE_DEFAULT_DOMAIN",
     "PlanningSettings",
     "load_planning_settings",
 ]
@@ -100,6 +115,25 @@ class PlanningSettings:
     # `trace_enabled=True` to take effect.
     trace_enabled: bool = False
     trace_body: bool = False
+    # ---- Domain pack settings -----------------------------------
+    # Master switch for the domain-pack subsystem. Off → planner
+    # behaves as if no packs were registered (always selects
+    # `general`). The Planning Report still surfaces the empty
+    # domain_context block so the wire shape stays stable.
+    domain_packs_enabled: bool = True
+    # Default domain when no override / detection signal applies.
+    default_domain: str = "general"
+    # Auto-detection switch. Off → only operator overrides can
+    # select a non-generic domain.
+    domain_detection_enabled: bool = True
+    # Confidence floor for auto-detection. 0.65 matches the spec.
+    domain_detection_min_confidence: float = 0.65
+    # Allowlist of domain ids operators can request via override.
+    # Comma-separated env value; defaults cover what's bundled.
+    allowed_domain_overrides: tuple[str, ...] = ("general", "civil_engineering")
+    # Workspace / project default domain. Falls below user override
+    # but above auto-detection.
+    workspace_default_domain: str = "general"
 
 
 def load_planning_settings(
@@ -137,6 +171,27 @@ def load_planning_settings(
             source, ENV_PLANNING_TRACE_ENABLED, default=False,
         ),
         trace_body=_bool(source, ENV_PLANNING_TRACE_BODY, default=False),
+        domain_packs_enabled=_bool(
+            source, ENV_DOMAIN_PACKS_ENABLED, default=True,
+        ),
+        default_domain=(
+            source.get(ENV_DEFAULT_DOMAIN, "").strip().lower()
+            or "general"
+        ),
+        domain_detection_enabled=_bool(
+            source, ENV_DOMAIN_DETECTION_ENABLED, default=True,
+        ),
+        domain_detection_min_confidence=_float_in_unit_interval(
+            source, ENV_DOMAIN_DETECTION_MIN_CONFIDENCE, default=0.65,
+        ),
+        allowed_domain_overrides=_csv(
+            source, ENV_ALLOWED_DOMAIN_OVERRIDES,
+            default=("general", "civil_engineering"),
+        ),
+        workspace_default_domain=(
+            source.get(ENV_WORKSPACE_DEFAULT_DOMAIN, "").strip().lower()
+            or "general"
+        ),
     )
 
 
@@ -175,3 +230,32 @@ def _positive_int(env: Mapping[str, str], key: str, *, default: int) -> int:
     if value <= 0:
         raise ConfigError(f"{key} must be > 0, got {value}")
     return value
+
+
+def _float_in_unit_interval(
+    env: Mapping[str, str], key: str, *, default: float,
+) -> float:
+    raw = env.get(key)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{key} must be a number, got {raw!r}") from exc
+    if not (0.0 <= value <= 1.0):
+        raise ConfigError(f"{key} must be in [0.0, 1.0], got {value}")
+    return value
+
+
+def _csv(
+    env: Mapping[str, str], key: str, *, default: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Parse a comma-separated list, lower-casing + stripping each
+    entry. Empty value falls back to the default."""
+    raw = env.get(key)
+    if raw is None or not raw.strip():
+        return default
+    parts = tuple(
+        p.strip().lower() for p in raw.split(",") if p.strip()
+    )
+    return parts or default

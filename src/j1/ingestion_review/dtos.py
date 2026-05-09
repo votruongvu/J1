@@ -619,3 +619,9 @@ class PlanningResultDTO(CamelModel):
     next_actions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     raw_artifact_id: str | None = None
+    # Domain pack context — selected domain, selection source,
+    # confidence, evidence, applied rules, recommended-but-unsupported
+    # capabilities. Always populated for post-compile artifacts;
+    # `None` for legacy / audit-log fallback runs that pre-date
+    # domain packs.
+    domain_context: dict[str, Any] | None = None

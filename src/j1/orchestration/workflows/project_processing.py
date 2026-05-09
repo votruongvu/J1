@@ -205,6 +205,16 @@ class ProjectProcessingRequest:
     produced_artifact_ids: tuple[str, ...] = ()
     documents_completed: int = 0
     workflow_run_id: str | None = None
+    # Domain pack selection.
+    #   `domain_override` — operator's per-upload choice. None
+    #   means "no override; let the workflow apply the workspace
+    #   default + auto-detect chain". `workspace_default_domain`
+    #   carries the workspace/project default. Both are validated
+    #   against the deployment's allow-list inside the planning
+    #   activity; an unrecognised value falls back to `general`
+    #   with a warning recorded on `domain_context`.
+    domain_override: str | None = None
+    workspace_default_domain: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1535,6 +1545,8 @@ class ProjectProcessingWorkflow:
                             run_id=request.correlation_id or "",
                             document_id=document_id,
                             profile_payload=_profile_payload(plan.profile),
+                            domain_override=request.domain_override,
+                            workspace_default_domain=request.workspace_default_domain,
                         ),
                         start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                         retry_policy=DEFAULT_RETRY.to_temporal(),

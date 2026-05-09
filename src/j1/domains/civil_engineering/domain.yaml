@@ -1,0 +1,786 @@
+# Civil Engineering Domain Pack v0.1
+#
+# Format (loaded by `j1.domains.civil_engineering.pack._load_pack_data`):
+#
+#   id            stable wire id; see `DomainPack.id`
+#   display_name  shown in FE Planning Report
+#   version       SemVer-ish; bumped on schema-breaking changes
+#   document_types  pack-extended `document_type` taxonomy entries
+#   keyword_signals  list of {text, weight, category}
+#   extraction_targets  free-text catalogue of preferred extraction targets
+#   graph_entity_types / graph_relationship_types  ontology v0.1
+#   overlays  per-document-type planning overrides (PlanCard rules)
+#   detection_rules  ordered table — first-match wins, see _score_pack
+#   unsupported_capabilities  capabilities the pack would use but
+#                             which the framework doesn't ship today
+#   prompt_addon  appended to the LLM planner system prompt when
+#                 selected_domain == civil_engineering
+#
+# Keep entries sorted within each block for diff-friendliness.
+
+id: civil_engineering
+display_name: Civil Engineering
+version: "0.1"
+
+document_types:
+  - construction_drawing
+  - structural_drawing
+  - architectural_drawing
+  - mep_drawing
+  - boq
+  - quantity_takeoff
+  - tender_document
+  - bid_proposal
+  - method_statement
+  - inspection_report
+  - site_report
+  - daily_site_report
+  - progress_report
+  - rfi
+  - material_submittal
+  - shop_drawing_submittal
+  - test_report
+  - structural_calculation
+  - design_specification
+  - technical_specification
+  - variation_order
+  - change_order
+  - non_conformance_report
+  - safety_report
+  - quality_report
+  - handover_document
+  - as_built_document
+  - unknown_civil_document
+
+# ---- Detection signals ----
+#
+# Strong signals trigger civil with confidence ≥ 0.65.
+# Medium signals only contribute partial confidence — must combine
+# with another medium signal or a structural cue (BOQ-shaped table
+# headers, drawing title block) to push past threshold.
+# Weak signals never select civil on their own — their role is to
+# add residual evidence on top of stronger signals.
+
+keyword_signals:
+  # ---- Strong (1.0) — single hit can carry detection ----
+  - { text: "bill of quantities", weight: 1.0, category: strong }
+  - { text: "boq", weight: 0.85, category: strong }
+  - { text: "quantity takeoff", weight: 1.0, category: strong }
+  - { text: "method statement", weight: 1.0, category: strong }
+  - { text: "construction drawing", weight: 1.0, category: strong }
+  - { text: "structural drawing", weight: 1.0, category: strong }
+  - { text: "architectural drawing", weight: 1.0, category: strong }
+  - { text: "shop drawing", weight: 1.0, category: strong }
+  - { text: "structural calculation", weight: 1.0, category: strong }
+  - { text: "design calculation", weight: 0.9, category: strong }
+  - { text: "site inspection", weight: 1.0, category: strong }
+  - { text: "inspection report", weight: 0.9, category: strong }
+  - { text: "request for information", weight: 1.0, category: strong }
+  - { text: "rfi-", weight: 0.85, category: strong }
+  - { text: "material submittal", weight: 1.0, category: strong }
+  - { text: "non-conformance report", weight: 1.0, category: strong }
+  - { text: "non conformance report", weight: 0.95, category: strong }
+  - { text: "ncr-", weight: 0.85, category: strong }
+  - { text: "variation order", weight: 1.0, category: strong }
+  - { text: "change order", weight: 0.9, category: strong }
+  - { text: "as-built", weight: 0.9, category: strong }
+  - { text: "tender document", weight: 1.0, category: strong }
+  - { text: "invitation to bid", weight: 0.9, category: strong }
+  - { text: "bid proposal", weight: 0.9, category: strong }
+  - { text: "test report", weight: 0.7, category: strong }
+
+  # ---- Strong domain vocabulary (0.6) — terms that almost always
+  # appear in civil docs but also rarely show up elsewhere.
+  - { text: "rebar", weight: 0.7, category: structural }
+  - { text: "reinforcement", weight: 0.5, category: structural }
+  - { text: "formwork", weight: 0.7, category: structural }
+  - { text: "foundation", weight: 0.5, category: structural }
+  - { text: "footing", weight: 0.6, category: structural }
+  - { text: "retaining wall", weight: 0.7, category: structural }
+  - { text: "earthwork", weight: 0.7, category: civil_works }
+  - { text: "embankment", weight: 0.7, category: civil_works }
+  - { text: "culvert", weight: 0.7, category: civil_works }
+  - { text: "pavement", weight: 0.6, category: civil_works }
+  - { text: "asphalt", weight: 0.5, category: civil_works }
+  - { text: "drainage", weight: 0.4, category: civil_works }
+  - { text: "compressive strength", weight: 0.7, category: testing }
+  - { text: "slump test", weight: 0.8, category: testing }
+  - { text: "compaction test", weight: 0.8, category: testing }
+  - { text: "soil test", weight: 0.7, category: testing }
+  - { text: "concrete", weight: 0.5, category: structural }
+  - { text: "slab", weight: 0.4, category: structural }
+  - { text: "drawing number", weight: 0.7, category: drawing }
+  - { text: "title block", weight: 0.7, category: drawing }
+
+  # ---- Medium (0.3) — combines with other signals ----
+  - { text: "specification reference", weight: 0.4, category: medium }
+  - { text: "scope of work", weight: 0.3, category: medium }
+  - { text: "work package", weight: 0.4, category: medium }
+  - { text: "discipline", weight: 0.3, category: medium }
+  - { text: "contractor", weight: 0.3, category: medium }
+  - { text: "consultant", weight: 0.3, category: medium }
+  - { text: "engineer approval", weight: 0.4, category: medium }
+  - { text: "punch list", weight: 0.5, category: medium }
+  - { text: "defect", weight: 0.3, category: medium }
+  - { text: "acceptance criteria", weight: 0.4, category: medium }
+  - { text: "site", weight: 0.15, category: medium }
+  - { text: "project", weight: 0.1, category: medium }
+
+  # ---- Weak (0.1) — never selects civil on its own ----
+  - { text: "specification", weight: 0.1, category: weak }
+  - { text: "schedule", weight: 0.1, category: weak }
+
+# ---- Detection rules ----
+#
+# First-match wins. Each rule scores its `signals` (combined weight,
+# capped at 1.0) and emits the named document_type when the score
+# clears `min_score`. The ordering matters: more specific rules
+# come first so e.g. a drawing-shaped BOQ stays a BOQ.
+#
+# `bonus` adds to the final score when the rule fires — used to
+# push a strong-signal hit past the detection threshold even if the
+# generic content corpus is short.
+
+detection_rules:
+  - id: detect.boq
+    document_type: boq
+    min_score: 0.45
+    bonus: 0.25
+    signals:
+      - "bill of quantities"
+      - "boq"
+      - "quantity takeoff"
+    table_header_signals:
+      - ["item", "description", "unit", "quantity", "rate", "amount"]
+      - ["item", "description", "qty", "unit", "rate"]
+      - ["no", "description", "unit", "quantity", "rate"]
+
+  - id: detect.method_statement
+    document_type: method_statement
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "method statement"
+
+  - id: detect.inspection_report
+    document_type: inspection_report
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "inspection report"
+      - "site inspection"
+
+  - id: detect.structural_calculation
+    document_type: structural_calculation
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "structural calculation"
+      - "design calculation"
+      - "load combination"
+
+  - id: detect.tender_document
+    document_type: tender_document
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "tender document"
+      - "invitation to bid"
+      - "bid proposal"
+
+  - id: detect.rfi
+    document_type: rfi
+    min_score: 0.45
+    bonus: 0.25
+    signals:
+      - "request for information"
+      - "rfi-"
+
+  - id: detect.material_submittal
+    document_type: material_submittal
+    min_score: 0.5
+    bonus: 0.15
+    signals:
+      - "material submittal"
+      - "product data sheet"
+
+  - id: detect.shop_drawing_submittal
+    document_type: shop_drawing_submittal
+    min_score: 0.5
+    bonus: 0.15
+    signals:
+      - "shop drawing"
+
+  - id: detect.test_report
+    document_type: test_report
+    min_score: 0.5
+    bonus: 0.15
+    signals:
+      - "test report"
+      - "compressive strength"
+      - "compaction test"
+      - "slump test"
+      - "soil test"
+
+  - id: detect.variation_order
+    document_type: variation_order
+    min_score: 0.45
+    bonus: 0.25
+    signals:
+      - "variation order"
+      - "change order"
+
+  - id: detect.non_conformance_report
+    document_type: non_conformance_report
+    min_score: 0.45
+    bonus: 0.25
+    signals:
+      - "non-conformance report"
+      - "non conformance report"
+      - "ncr-"
+
+  - id: detect.structural_drawing
+    document_type: structural_drawing
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "structural drawing"
+      - "rebar detail"
+      - "reinforcement detail"
+
+  - id: detect.architectural_drawing
+    document_type: architectural_drawing
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "architectural drawing"
+      - "floor plan"
+      - "elevation"
+      - "section view"
+
+  - id: detect.mep_drawing
+    document_type: mep_drawing
+    min_score: 0.5
+    bonus: 0.2
+    signals:
+      - "mep drawing"
+      - "hvac"
+      - "plumbing layout"
+      - "electrical layout"
+
+  - id: detect.construction_drawing
+    document_type: construction_drawing
+    min_score: 0.5
+    bonus: 0.15
+    signals:
+      - "construction drawing"
+      - "drawing number"
+      - "title block"
+
+  - id: detect.unknown_civil_document
+    document_type: unknown_civil_document
+    min_score: 0.4
+    bonus: 0.0
+    signals:
+      - "construction"
+      - "civil works"
+      - "site"
+
+# ---- Per-document-type planning overlays ----
+#
+# When a detection rule fires, the matching overlay is applied on
+# top of the generic rule-based assessment. Steps not listed in the
+# overlay fall through to generic.
+
+overlays:
+  boq:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types: [Project, WorkPackage, Material]
+    extraction_targets:
+      - boq_item_number
+      - item_description
+      - unit
+      - quantity
+      - rate
+      - amount
+      - work_item
+    step_overrides:
+      table_enrichment:
+        enabled: true
+        scope: tables_only
+        reason: "BOQ tables are the primary content."
+      vision_enrichment:
+        enabled: false
+        scope: none
+        reason: "BOQ is text + tables; vision unnecessary unless drawings included."
+      risk_extraction:
+        enabled: false
+        scope: none
+        reason: "BOQ is quantity/cost data; risk extraction not required by default."
+      graph_extraction:
+        enabled: false
+        scope: none
+        reason: "BOQ rarely encodes entity relationships."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "Table integrity matters; flag low-quality rows for review."
+
+  inspection_report:
+    recommended_profile: premium
+    chunking_strategy: page_aware
+    candidate_entity_types:
+      - Location
+      - StructuralElement
+      - InspectionFinding
+      - Defect
+      - ActionItem
+      - ResponsibleParty
+    extraction_targets:
+      - inspection_date
+      - inspection_location
+      - finding
+      - defect_type
+      - severity
+      - affected_component
+      - recommended_action
+      - responsible_party
+      - photo_reference
+    step_overrides:
+      table_enrichment:
+        enabled: true
+        scope: selected_pages
+        reason: "Inspection checklists / finding tables carry status data."
+      vision_enrichment:
+        enabled: true
+        scope: all_image_pages
+        reason: "Inspection photos are primary defect evidence."
+      image_captioning:
+        enabled: true
+        scope: selected_images
+        reason: "Caption defect / location photos for retrieval and review."
+      risk_extraction:
+        enabled: true
+        scope: document
+        reason: "Defects + recommended actions are risk material."
+      graph_extraction:
+        enabled: true
+        scope: document
+        reason: "Findings link to locations, components, defects, and actions."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "Photo OCR / structured data extraction is failure-prone."
+
+  construction_drawing:
+    recommended_profile: premium
+    chunking_strategy: page_aware
+    candidate_entity_types:
+      - Drawing
+      - Revision
+      - StructuralElement
+      - Specification
+    extraction_targets:
+      - drawing_title
+      - drawing_number
+      - revision
+      - scale
+      - discipline
+      - sheet_number
+      - title_block
+    step_overrides:
+      vision_enrichment:
+        enabled: true
+        scope: all_image_pages
+        reason: "Drawings are the primary content."
+      image_captioning:
+        enabled: true
+        scope: all_images
+        reason: "Caption every drawing sheet for retrieval."
+      table_enrichment:
+        enabled: true
+        scope: selected_pages
+        reason: "Drawing schedules are tabular."
+      graph_extraction:
+        enabled: true
+        scope: document
+        reason: "Drawings reference components, levels, and zones."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "OCR / vision confidence on drawings is failure-prone."
+
+  structural_drawing:
+    recommended_profile: premium
+    chunking_strategy: page_aware
+    candidate_entity_types:
+      - Drawing
+      - Revision
+      - StructuralElement
+    step_overrides:
+      vision_enrichment:
+        enabled: true
+        scope: all_image_pages
+        reason: "Structural drawings are the primary content."
+      graph_extraction:
+        enabled: true
+        scope: document
+        reason: "Structural elements link to details and revisions."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "Detail-level OCR on drawings is failure-prone."
+
+  architectural_drawing:
+    recommended_profile: premium
+    chunking_strategy: page_aware
+    candidate_entity_types: [Drawing, Revision, Zone, Level]
+    step_overrides:
+      vision_enrichment:
+        enabled: true
+        scope: all_image_pages
+        reason: "Architectural drawings are the primary content."
+      image_captioning:
+        enabled: true
+        scope: all_images
+        reason: "Caption floor plans / elevations for retrieval."
+
+  mep_drawing:
+    recommended_profile: premium
+    chunking_strategy: page_aware
+    candidate_entity_types: [Drawing, Revision, StructuralElement]
+    step_overrides:
+      vision_enrichment:
+        enabled: true
+        scope: all_image_pages
+        reason: "MEP drawings are the primary content."
+
+  method_statement:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types:
+      - ConstructionActivity
+      - Material
+      - StructuralElement
+      - Risk
+      - ResponsibleParty
+    extraction_targets:
+      - work_method
+      - sequence_of_work
+      - equipment
+      - manpower
+      - material
+      - safety_measure
+      - quality_control_step
+      - risk_control
+    step_overrides:
+      risk_extraction:
+        enabled: true
+        scope: document
+        reason: "Method statements describe risk controls."
+      table_enrichment:
+        enabled: true
+        scope: selected_pages
+        reason: "Equipment / manpower / material tables carry plan data."
+      graph_extraction:
+        enabled: true
+        scope: document
+        reason: "Process flow + responsibilities + dependencies."
+
+  structural_calculation:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types: [StructuralElement, Standard, Specification]
+    extraction_targets:
+      - load_combination
+      - design_check
+      - code_reference
+    step_overrides:
+      table_enrichment:
+        enabled: true
+        scope: tables_only
+        reason: "Calculation worksheets are tabular."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "Calculation accuracy matters; flag low-confidence regions."
+
+  tender_document:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types:
+      - Project
+      - Contractor
+      - Consultant
+      - Specification
+      - Risk
+    extraction_targets:
+      - scope_of_work
+      - submission_requirements
+      - acceptance_criteria
+      - responsibilities
+    step_overrides:
+      requirement_extraction:
+        enabled: true
+        scope: document
+        reason: "Tender documents enumerate technical/commercial requirements."
+      risk_extraction:
+        enabled: true
+        scope: document
+        reason: "Tenders often surface contractual / scope risks."
+      table_enrichment:
+        enabled: true
+        scope: selected_pages
+        reason: "BOQ / pricing schedules accompany tenders."
+
+  rfi:
+    recommended_profile: balanced
+    candidate_entity_types: [Drawing, ResponsibleParty, ActionItem]
+    extraction_targets:
+      - question
+      - response
+      - reference_drawing
+      - responsible_party
+      - response_date
+
+  material_submittal:
+    recommended_profile: balanced
+    candidate_entity_types: [Material, Specification, Approval]
+    extraction_targets:
+      - material
+      - manufacturer
+      - specification_reference
+      - approval_status
+    step_overrides:
+      table_enrichment:
+        enabled: true
+        scope: selected_pages
+        reason: "Submittals carry product/spec tables."
+      vision_enrichment:
+        enabled: true
+        scope: selected_pages
+        reason: "Product photos and shop drawings may need vision."
+
+  shop_drawing_submittal:
+    recommended_profile: premium
+    chunking_strategy: page_aware
+    candidate_entity_types: [Drawing, Material, StructuralElement, Approval]
+    step_overrides:
+      vision_enrichment:
+        enabled: true
+        scope: all_image_pages
+        reason: "Shop drawings are primary content."
+
+  test_report:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types: [Material, TestResult, Standard]
+    extraction_targets:
+      - sample_id
+      - test_method
+      - test_standard
+      - result_value
+      - acceptance_limit
+      - pass_fail_status
+    step_overrides:
+      table_enrichment:
+        enabled: true
+        scope: tables_only
+        reason: "Test results are tabular."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "Lab results need integrity checks."
+
+  variation_order:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types: [VariationOrder, Risk, ResponsibleParty]
+    step_overrides:
+      risk_extraction:
+        enabled: true
+        scope: document
+        reason: "Cost/time impact carries risk."
+
+  change_order:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types: [ChangeOrder, Risk, ResponsibleParty]
+    step_overrides:
+      risk_extraction:
+        enabled: true
+        scope: document
+        reason: "Change orders alter scope and carry risk."
+
+  non_conformance_report:
+    recommended_profile: premium
+    chunking_strategy: section_aware
+    candidate_entity_types:
+      - NCR
+      - Defect
+      - InspectionFinding
+      - ActionItem
+      - ResponsibleParty
+    extraction_targets:
+      - root_cause
+      - corrective_action
+      - preventive_action
+      - responsible_party
+    step_overrides:
+      risk_extraction:
+        enabled: true
+        scope: document
+        reason: "NCRs are risk material."
+      graph_extraction:
+        enabled: true
+        scope: document
+        reason: "NCRs link defects to locations, components, owners."
+      quality_assessment:
+        enabled: true
+        scope: document
+        reason: "NCR data drives defect tracking — flag any low-confidence content."
+
+# ---- Extraction targets — generic catalogue ----
+#
+# Pack-level catalogue, additive to the per-overlay lists above.
+# These are planning hints — the workflow records them on the
+# planning result so future enrichers know what to extract.
+
+extraction_targets:
+  - project_name
+  - project_location
+  - client
+  - contractor
+  - consultant
+  - engineer
+  - subcontractor
+  - discipline
+  - document_number
+  - drawing_number
+  - revision
+  - issue_date
+  - approval_status
+  - work_package
+  - scope_of_work
+  - specification_reference
+  - standard_or_code_reference
+  - acceptance_criteria
+  - responsibilities
+  - approvals
+  - open_issues
+  - risks
+  - assumptions
+  - constraints
+
+# ---- Graph ontology v0.1 ----
+
+graph_entity_types:
+  - Project
+  - Site
+  - Location
+  - Zone
+  - Level
+  - WorkPackage
+  - Drawing
+  - Revision
+  - Specification
+  - Standard
+  - Material
+  - StructuralElement
+  - ConstructionActivity
+  - Inspection
+  - InspectionFinding
+  - Defect
+  - TestReport
+  - TestResult
+  - Contractor
+  - Consultant
+  - Client
+  - Engineer
+  - Approval
+  - RFI
+  - VariationOrder
+  - ChangeOrder
+  - NCR
+  - Risk
+  - ActionItem
+
+graph_relationship_types:
+  - Project_has_site_Site
+  - Project_contains_WorkPackage
+  - Drawing_describes_StructuralElement
+  - Drawing_has_revision_Revision
+  - Specification_references_Standard
+  - Material_used_in_StructuralElement
+  - ConstructionActivity_uses_Material
+  - Inspection_inspects_StructuralElement
+  - InspectionFinding_affects_StructuralElement
+  - Defect_located_at_Location
+  - Defect_requires_ActionItem
+  - TestReport_validates_Material
+  - TestResult_compared_to_AcceptanceCriteria
+  - Contractor_responsible_for_WorkPackage
+  - Consultant_reviews_Drawing
+  - Engineer_approves_Submittal
+  - RFI_references_Drawing
+  - VariationOrder_changes_ScopeOfWork
+  - NCR_caused_by_Defect
+  - Risk_affects_ConstructionActivity
+
+# ---- Capabilities the pack would use but framework doesn't ship ----
+#
+# Surfaced on planning_result.json so reviewers see the backlog.
+
+unsupported_capabilities:
+  - capability: action_item_extraction
+    reason: "No dedicated action-item extractor wired today; method statement / NCR / inspection report would benefit."
+  - capability: responsibility_extraction
+    reason: "No dedicated responsibility extractor; relies on entity extraction in the graph step."
+  - capability: process_step_extraction
+    reason: "Method statement step sequencing relies on chunking + downstream LLM analysis; no dedicated extractor today."
+  - capability: drawing_title_block_extraction
+    reason: "Title-block fields (drawing_number, revision, scale, discipline) require a vision-driven structured extractor; not yet implemented."
+  - capability: boq_table_normalisation
+    reason: "BOQ tables are extracted as generic tables; no BOQ-specific row-level normaliser yet."
+  - capability: code_or_standard_reference_extraction
+    reason: "No dedicated extractor for standards (ACI/EN/BS/AASHTO); generic entity extraction may capture these."
+
+# ---- LLM planner prompt addon ----
+
+prompt_addon: |
+  You are planning ingestion for a Civil Engineering / Construction document.
+
+  Use Civil Engineering domain understanding when deciding the processing plan.
+
+  Pay special attention to:
+  - drawings
+  - BOQ / quantity tables
+  - inspection findings
+  - site photos
+  - defects
+  - structural elements
+  - construction activities
+  - materials
+  - test results
+  - method statements
+  - responsibilities
+  - approvals
+  - RFIs
+  - variation/change orders
+  - non-conformance reports
+  - acceptance criteria
+  - standards/specifications
+  - project location and work packages
+
+  Do not assume every Civil Engineering document needs full premium processing.
+  Use selective enrichment.
+
+  Prefer:
+  - table enrichment for BOQ, quantity, test result, schedule, checklist, or cost tables
+  - vision enrichment for drawings, diagrams, scanned sheets, and inspection photos
+  - risk/action extraction for method statements, NCRs, inspection reports, tender documents, and variation orders
+  - graph extraction when there are meaningful relationships between projects, locations, drawings, components, defects, responsibilities, activities, and approvals
+  - generic fast indexing when the document is clean text and has no strong domain-specific analysis need
+
+  If the document does not clearly belong to Civil Engineering, recommend fallback to generic planning.

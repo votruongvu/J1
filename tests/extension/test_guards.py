@@ -88,15 +88,24 @@ def test_no_domain_terms_in_extension_layer():
 
 
 def test_no_domain_terms_in_j1_core():
-    """Core (everything outside `profiles/`) must not reference domain terms.
+    """Core (everything outside `profiles/` and `domains/`) must not
+    reference domain terms.
 
-    The bundled `default` profile is *intentionally* generic; the
-    profiles subdirectory is exempt because profiles are how
-    deployments inject domain content WITHOUT touching core.
+    Two exemptions:
+
+    1. `profiles/` — the bundled `default` profile is intentionally
+       generic; the directory is the documented place for
+       deployments to inject domain content WITHOUT touching core.
+    2. `domains/` — domain packs (e.g. Civil Engineering) live
+       here. Pack code is allowed to reference its own domain
+       vocabulary; the abstraction in `domains/models.py` and
+       `domains/registry.py` may name specific packs in
+       documentation. The wider core (everything outside
+       `domains/`) still must stay domain-neutral.
     """
     offenders: list[tuple[Path, str]] = []
     for path in _python_files(SRC_ROOT):
-        if "profiles" in path.parts:
+        if "profiles" in path.parts or "domains" in path.parts:
             continue
         text = path.read_text(encoding="utf-8").lower()
         for term in _DOMAIN_TERMS:

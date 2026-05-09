@@ -51,6 +51,14 @@ Title sources are walked in declining-quality order — explicit metadata title,
 
 The post-compile plan is a "decide when NOT to run LLM" mechanism. Same baseline retrieval (chunking + embedding + indexing always run); expensive enrichers (vision, graph, requirement / risk / quality extraction) gate on type-aware evidence. A clean text knowledge article gets fast profile + no enrichment; an SRS gets premium profile with requirement + risk + graph; an invoice gets table extraction only.
 
+### Domain packs
+
+The post-compile planner can layer **domain packs** on top of its generic decisions. A domain pack is a pluggable bundle that supplies an extended document-type taxonomy, keyword-based detection rules, and per-document-type planning overlays. The bundled `civil_engineering` pack recognises BOQs, drawings, inspection reports, method statements, and 25 other construction document types and tunes planning accordingly (e.g. BOQ → premium profile + table-only enrichment; inspection report with photos → vision + risk + graph enabled).
+
+Selection precedence: per-run override → workspace default → auto-detect (with confidence threshold) → fallback to `general`. The selected pack is recorded on `planning_result.json`'s `domain_context` block and rendered in the FE Planning Report's Domain pack panel.
+
+See [DOMAIN_PACKS.md](DOMAIN_PACKS.md) for the full architecture, the Civil Engineering v0.1 catalogue, and instructions for adding new packs.
+
 ### Why profiles matter
 
 Running every stage on every file is wasteful: an entity-extraction LLM call for a one-page memo costs the same as one for a complex spec. Skipping the wrong stage, on the other hand, produces an unsearchable document. The profile mechanism is the framework's answer — pick the cheapest profile that satisfies the document's actual content shape, then use post-compile signals to upgrade if reality disagreed with the deterministic profile.
@@ -199,6 +207,17 @@ Planning Report stage (consumed by `GET /ingestion-runs/{id}/planning` and the F
 | `J1_PLANNING_FAIL_OPEN` | `true` | When LLM planning fails, keep the rule-based decision and continue. |
 | `J1_PLANNING_TRACE_ENABLED` | `false` | Log planning timing/decisions. Operator diagnostic only — leaves prompt bodies out. |
 | `J1_PLANNING_TRACE_BODY` | `false` | Logs the digest body alongside the trace. **Off in production** — the digest is privacy-capped but reviewers are the right place to inspect it. |
+
+Domain packs (selected during post-compile planning; see [DOMAIN_PACKS.md](DOMAIN_PACKS.md) for the full architecture):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `J1_DOMAIN_PACKS_ENABLED` | `true` | Master switch. Off → planner always selects `general`. |
+| `J1_DEFAULT_DOMAIN` | `general` | Used when no override / workspace default / auto-detect signal applies. |
+| `J1_DOMAIN_DETECTION_ENABLED` | `true` | Auto-detection switch. Off → only operator overrides can pick a non-generic domain. |
+| `J1_DOMAIN_DETECTION_MIN_CONFIDENCE` | `0.65` | Confidence floor for auto-detection. |
+| `J1_ALLOWED_DOMAIN_OVERRIDES` | `general,civil_engineering` | Comma-separated allowlist of domain ids operators may force. |
+| `J1_WORKSPACE_DEFAULT_DOMAIN` | `general` | Workspace / project default. Falls below user override but above auto-detection. |
 
 Enrichment kill switches:
 
