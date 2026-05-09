@@ -7,9 +7,16 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "@/components/icons";
 import { EngineBadge } from "@/components/badges";
+import {
+  IngestionStepIcon,
+  type StepStatus,
+} from "@/components/ingestion-icons";
 import { EVENT_TYPES } from "@/lib/constants/events";
 import { eventTypeLabel } from "@/lib/display";
-import { userFacingStepLabel } from "@/lib/processing-steps";
+import {
+  internalStepToUserFacing,
+  userFacingStepLabel,
+} from "@/lib/processing-steps";
 import type { ProgressEvent } from "@/types/ingestion";
 import type { StreamStatus as StreamStatusKind } from "@/types/ui";
 
@@ -116,13 +123,41 @@ function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
   else if (isRunning) kind = "running";
   else if (isSuccess) kind = "success";
 
+  // Project the timeline event onto a step-icon status so the row
+  // shows the matching pixel icon instead of a generic dot. Only
+  // step.* events carry a `step` field; non-step events fall back
+  // to the existing dot/icon glyph so the column shape stays
+  // consistent.
+  const stepRaw = (event.data?.step as string | null | undefined) ?? null;
+  const stepId = internalStepToUserFacing(stepRaw);
+  const iconStatus: StepStatus | null = (() => {
+    if (!stepId) return null;
+    if (t === EVENT_TYPES.STEP_STARTED) return "running";
+    if (t === EVENT_TYPES.STEP_COMPLETED) return "completed";
+    if (t === EVENT_TYPES.STEP_FAILED) return "failed";
+    if (t === EVENT_TYPES.STEP_SKIPPED) return "skipped";
+    if (t === EVENT_TYPES.STEP_PROGRESS) return "running";
+    return null;
+  })();
+
   return (
     <div className={`tl-item tl-item--${kind}`} onClick={onClick} style={{ cursor: "pointer" }}>
       <div className="tl-item__dot">
-        {kind === "success" && <Icon.Check className="icon-sm" />}
-        {kind === "warning" && <Icon.Alert className="icon-sm" />}
-        {kind === "error" && <Icon.X className="icon-sm" />}
-        {kind === "review" && <Icon.UserCheck className="icon-sm" />}
+        {iconStatus !== null ? (
+          <IngestionStepIcon
+            step={stepId}
+            status={iconStatus}
+            size="xs"
+            ariaLabel={`${userFacingStepLabel(stepRaw)} — ${iconStatus}`}
+          />
+        ) : (
+          <>
+            {kind === "success" && <Icon.Check className="icon-sm" />}
+            {kind === "warning" && <Icon.Alert className="icon-sm" />}
+            {kind === "error" && <Icon.X className="icon-sm" />}
+            {kind === "review" && <Icon.UserCheck className="icon-sm" />}
+          </>
+        )}
       </div>
       <div className="tl-item__head">
         <span className="tl-item__type">{eventTypeLabel(t)}</span>

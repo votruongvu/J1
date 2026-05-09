@@ -1,0 +1,272 @@
+/*
+ * Pixel Ingestion Icons
+ * Ported from the J1-Step-Animation-Icon design bundle
+ * (j1-step-animation-icon/project/icons.css + styles.css).
+ *
+ * Self-contained: every variable used here is namespaced under
+ * `--pix-*` so the icons can drop into any host theme without
+ * leaking colors. Animations are CSS-only — no JS frame loop.
+ */
+
+.pix-icon-frame {
+  /* warm cream / pastel palette — internal to the icons */
+  --pix-line: #d6cdb4;
+  --pix-ok: #6cc28e;
+  --pix-warn: #e7a956;
+
+  --pix-size: 56px;
+  width: var(--pix-size);
+  height: var(--pix-size);
+  border-radius: 11px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(31, 34, 51, 0.04) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(circle at 30% 25%, #fffefa 0%, #f0e6cd 100%);
+  border: 1px solid var(--pix-line);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -2px 0 rgba(31, 34, 51, 0.04);
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.pix-icon-frame.size-xs { --pix-size: 24px; border-radius: 6px; }
+.pix-icon-frame.size-sm { --pix-size: 32px; border-radius: 8px; }
+.pix-icon-frame.size-md { --pix-size: 48px; border-radius: 11px; }
+.pix-icon-frame.size-lg { --pix-size: 72px; }
+
+.pix-icon-frame.flat {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.pix-icon-frame.flat::after { display: none; }
+
+.pix-icon-frame svg {
+  display: block;
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+  width: 78%;
+  height: 78%;
+}
+.pix-icon-frame.size-xs svg,
+.pix-icon-frame.size-sm svg { width: 84%; height: 84%; }
+
+/* tiny scanline shimmer — fakes a CRT screen */
+.pix-icon-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 35%);
+  pointer-events: none;
+}
+
+/* state tints — each state shifts background + filter so the
+   currently-running step pops without needing extra DOM. */
+.pix-icon-frame.state-completed {
+  background:
+    repeating-linear-gradient(0deg, rgba(47, 122, 74, 0.06) 0 1px, transparent 1px 3px),
+    radial-gradient(circle at 30% 25%, #f3fbf5 0%, #d6efde 100%);
+  border-color: #b6dec0;
+}
+.pix-icon-frame.state-failed {
+  background:
+    repeating-linear-gradient(0deg, rgba(156, 101, 21, 0.07) 0 1px, transparent 1px 3px),
+    radial-gradient(circle at 30% 25%, #fdf6e6 0%, #f4dfa8 100%);
+  border-color: #e6cd8a;
+}
+.pix-icon-frame.state-pending,
+.pix-icon-frame.state-skipped {
+  background:
+    repeating-linear-gradient(0deg, rgba(31, 34, 51, 0.03) 0 1px, transparent 1px 3px),
+    radial-gradient(circle at 30% 25%, #f5f1e4 0%, #e6dec7 100%);
+  filter: saturate(0.35);
+}
+.pix-icon-frame.state-skipped { opacity: 0.7; }
+
+/* state badge in the lower-right corner */
+.pix-state-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 22%;
+  height: 22%;
+  min-width: 14px;
+  min-height: 14px;
+  background: var(--pix-ok);
+  border-radius: 4px;
+  border: 2px solid #fffaee;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+  z-index: 1;
+}
+.pix-state-badge.warn { background: var(--pix-warn); }
+.pix-state-badge svg {
+  width: 70%;
+  height: 70%;
+  display: block;
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+
+/* completed → freeze the running animation, soften saturation */
+.pix-icon-frame.state-completed svg * {
+  animation-play-state: paused !important;
+}
+.pix-icon-frame.state-completed svg {
+  filter: saturate(0.65) brightness(1.02);
+}
+
+.pix-icon-frame.state-failed svg {
+  filter: saturate(0.45) sepia(0.25);
+}
+.pix-icon-frame.state-failed svg * {
+  animation-play-state: paused !important;
+}
+
+.pix-icon-frame.state-pending svg *,
+.pix-icon-frame.state-skipped svg * {
+  animation-play-state: paused !important;
+}
+
+/* ----- shared keyframes ------------------------------------ */
+@keyframes pix-blink     { 0%, 60% { opacity: 1; } 70%, 100% { opacity: 0.25; } }
+@keyframes pix-pulse     { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+/* ----- 1. ParseIcon — scan beam crosses doc, lines reveal -- */
+.pix-ic-parse .scan {
+  animation: pix-parse-scan 1.6s steps(8) infinite;
+  transform-origin: 50% 50%;
+}
+.pix-ic-parse .ln-1 { animation: pix-parse-ln 1.6s steps(1) infinite; animation-delay: 0.0s; }
+.pix-ic-parse .ln-2 { animation: pix-parse-ln 1.6s steps(1) infinite; animation-delay: 0.2s; }
+.pix-ic-parse .ln-3 { animation: pix-parse-ln 1.6s steps(1) infinite; animation-delay: 0.4s; }
+.pix-ic-parse .ln-4 { animation: pix-parse-ln 1.6s steps(1) infinite; animation-delay: 0.6s; }
+@keyframes pix-parse-scan {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(16px); }
+}
+@keyframes pix-parse-ln {
+  0%, 24% { opacity: 0; }
+  25%, 100% { opacity: 1; }
+}
+
+/* ----- 2. InventoryIcon — items drop into a tray ----------- */
+.pix-ic-inv .item-1 { animation: pix-inv-drop 1.6s ease-in infinite; animation-delay: 0.0s; }
+.pix-ic-inv .item-2 { animation: pix-inv-drop 1.6s ease-in infinite; animation-delay: 0.4s; }
+.pix-ic-inv .item-3 { animation: pix-inv-drop 1.6s ease-in infinite; animation-delay: 0.8s; }
+@keyframes pix-inv-drop {
+  0%       { transform: translateY(-12px); opacity: 0; }
+  20%      { opacity: 1; }
+  60%, 70% { transform: translateY(0); }
+  85%      { transform: translateY(-1px); }
+  100%     { transform: translateY(0); }
+}
+
+/* ----- 3. PlanIcon — checklist rows draw in ---------------- */
+.pix-ic-plan .row-1 { animation: pix-plan-row 1.8s steps(1) infinite; animation-delay: 0.0s; }
+.pix-ic-plan .row-2 { animation: pix-plan-row 1.8s steps(1) infinite; animation-delay: 0.45s; }
+.pix-ic-plan .row-3 { animation: pix-plan-row 1.8s steps(1) infinite; animation-delay: 0.9s; }
+@keyframes pix-plan-row {
+  0%, 14%   { opacity: 0; transform: translateX(-2px); }
+  20%, 100% { opacity: 1; transform: translateX(0); }
+}
+.pix-ic-plan .check-1 { animation: pix-plan-check 1.8s steps(1) infinite; animation-delay: 0.15s; }
+.pix-ic-plan .check-2 { animation: pix-plan-check 1.8s steps(1) infinite; animation-delay: 0.6s; }
+.pix-ic-plan .check-3 { animation: pix-plan-check 1.8s steps(1) infinite; animation-delay: 1.05s; }
+@keyframes pix-plan-check {
+  0%, 28%   { opacity: 0; }
+  34%, 100% { opacity: 1; }
+}
+
+/* ----- 4. ChunkIcon — doc splits into 4 glowing blocks ----- */
+.pix-ic-chunk .src    { animation: pix-chunk-src 1.6s ease-in-out infinite; transform-origin: 50% 30%; }
+@keyframes pix-chunk-src {
+  0%, 30%  { transform: translateY(0) scale(1); opacity: 1; }
+  55%      { transform: translateY(-1px) scale(0.98); opacity: 0.7; }
+  100%     { transform: translateY(0) scale(1); opacity: 1; }
+}
+.pix-ic-chunk .blk { transform-origin: center; }
+.pix-ic-chunk .blk-1 { animation: pix-chunk-blk 1.6s ease-out infinite; animation-delay: 0.40s; }
+.pix-ic-chunk .blk-2 { animation: pix-chunk-blk 1.6s ease-out infinite; animation-delay: 0.55s; }
+.pix-ic-chunk .blk-3 { animation: pix-chunk-blk 1.6s ease-out infinite; animation-delay: 0.70s; }
+.pix-ic-chunk .blk-4 { animation: pix-chunk-blk 1.6s ease-out infinite; animation-delay: 0.85s; }
+@keyframes pix-chunk-blk {
+  0%, 22%  { transform: translateY(-2px); opacity: 0; }
+  40%      { opacity: 1; transform: translateY(0); }
+  70%      { opacity: 1; }
+  100%     { opacity: 0.65; }
+}
+
+/* ----- 5. EnrichIcon — central block, sparkles + tag ------- */
+.pix-ic-enrich .core { animation: pix-pulse 1.4s ease-in-out infinite; }
+.pix-ic-enrich .spk-1 { animation: pix-enrich-spk 1.5s ease-in-out infinite; animation-delay: 0.0s; }
+.pix-ic-enrich .spk-2 { animation: pix-enrich-spk 1.5s ease-in-out infinite; animation-delay: 0.5s; }
+.pix-ic-enrich .spk-3 { animation: pix-enrich-spk 1.5s ease-in-out infinite; animation-delay: 1.0s; }
+@keyframes pix-enrich-spk {
+  0%, 100% { opacity: 0; transform: translate(0, 0) scale(0.6); }
+  40%      { opacity: 1; transform: translate(0, 0) scale(1); }
+  70%      { opacity: 0; }
+}
+.pix-ic-enrich .tag { animation: pix-enrich-tag 1.5s ease-out infinite; transform-origin: center; }
+@keyframes pix-enrich-tag {
+  0%, 30%  { opacity: 0; transform: translateY(2px); }
+  45%, 90% { opacity: 1; transform: translateY(0); }
+  100%     { opacity: 0; }
+}
+
+/* ----- 6. GraphIcon — nodes light up, edges pulse ---------- */
+.pix-ic-graph .node { transform-origin: center; }
+.pix-ic-graph .n-1 { animation: pix-graph-node 1.6s ease-in-out infinite; animation-delay: 0.0s; }
+.pix-ic-graph .n-2 { animation: pix-graph-node 1.6s ease-in-out infinite; animation-delay: 0.3s; }
+.pix-ic-graph .n-3 { animation: pix-graph-node 1.6s ease-in-out infinite; animation-delay: 0.6s; }
+.pix-ic-graph .n-4 { animation: pix-graph-node 1.6s ease-in-out infinite; animation-delay: 0.9s; }
+@keyframes pix-graph-node {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+.pix-ic-graph .edge { animation: pix-graph-edge 1.6s ease-in-out infinite; }
+.pix-ic-graph .e-1 { animation-delay: 0.15s; }
+.pix-ic-graph .e-2 { animation-delay: 0.45s; }
+.pix-ic-graph .e-3 { animation-delay: 0.75s; }
+.pix-ic-graph .e-4 { animation-delay: 1.05s; }
+@keyframes pix-graph-edge {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 0.95; }
+}
+
+/* ----- 7. FinalizeIcon — capsule glints + sparkles --------- */
+.pix-ic-final .capsule { animation: pix-final-bob 1.6s ease-in-out infinite; transform-origin: center; }
+@keyframes pix-final-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-1px); }
+}
+.pix-ic-final .glint { animation: pix-final-glint 1.6s ease-in-out infinite; }
+@keyframes pix-final-glint {
+  0%, 60%   { opacity: 0; }
+  72%       { opacity: 1; }
+  100%      { opacity: 0; }
+}
+.pix-ic-final .spark { animation: pix-final-spark 1.6s ease-in-out infinite; }
+.pix-ic-final .sp-1 { animation-delay: 0.0s; }
+.pix-ic-final .sp-2 { animation-delay: 0.5s; }
+.pix-ic-final .sp-3 { animation-delay: 1.0s; }
+@keyframes pix-final-spark {
+  0%, 30%, 80%, 100% { opacity: 0; }
+  40%, 70%           { opacity: 1; }
+}
+
+/* Reduced motion — pause all icon animations. The frame
+   tints + state badges still convey state without movement. */
+@media (prefers-reduced-motion: reduce) {
+  .pix-icon-frame svg * {
+    animation-play-state: paused !important;
+  }
+}

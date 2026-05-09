@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 import { Icon } from "@/components/icons";
+import { IngestionStepIcon } from "@/components/ingestion-icons";
 import { EVENT_TYPES } from "@/lib/constants/events";
 import { userFacingStepLabel } from "@/lib/processing-steps";
 import type { ExecutionPlan, IngestionRun, ProgressEvent } from "@/types/ingestion";
@@ -100,7 +101,9 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
       return (
         <div className="psp psp--running">
           <div className="psp__icon">
-            <Icon.RefreshCw className="icon spin" />
+            {/* Step-specific pixel icon replaces the generic
+                refresh spinner — animation is the running state. */}
+            <IngestionStepIcon step={step} status="running" size="md" />
           </div>
           <div className="psp__body">
             <div className="psp__eyebrow">Running</div>
@@ -121,7 +124,14 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
       return (
         <div className="psp psp--assessing">
           <div className="psp__icon">
-            <Icon.RefreshCw className="icon spin" />
+            {/* Plan exists, pipeline about to start — show a
+                completed PlanIcon to telegraph the just-finished
+                planning phase. */}
+            <IngestionStepIcon
+              step="create_execution_plan"
+              status="completed"
+              size="md"
+            />
           </div>
           <div className="psp__body">
             <div className="psp__eyebrow">Plan ready</div>
@@ -139,7 +149,14 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
     return (
       <div className="psp psp--assessing">
         <div className="psp__icon">
-          <Icon.RefreshCw className="icon spin" />
+          {/* Pre-plan window — the parser is about to fire. Show
+              the ParseIcon in running state so the user sees the
+              first phase before the first step.started lands. */}
+          <IngestionStepIcon
+            step="parse_source_content"
+            status="running"
+            size="md"
+          />
         </div>
         <div className="psp__body">
           <div className="psp__eyebrow">Assessing</div>
@@ -160,7 +177,10 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
     return (
       <div className="psp psp--running">
         <div className="psp__icon">
-          <Icon.RefreshCw className="icon spin" />
+          {/* Animated step-specific pixel icon — replaces the
+              generic spinner so the panel telegraphs which step
+              is actively running, not just "something". */}
+          <IngestionStepIcon step={step} status="running" size="md" />
         </div>
         <div className="psp__body">
           <div className="psp__eyebrow">Running · {pct}%</div>

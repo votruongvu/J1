@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Icon } from "@/components/icons";
+import { IngestionStepIcon } from "@/components/ingestion-icons";
 import { useClient } from "@/lib/hooks/useClient";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import {
@@ -112,7 +112,12 @@ export function ProcessingStepper({
                 className={`processing-stepper__item processing-stepper__item--${status}`}
               >
                 <div className="processing-stepper__icon">
-                  <StatusIcon status={status} />
+                  <IngestionStepIcon
+                    step={step.id}
+                    status={status}
+                    size="md"
+                    ariaLabel={`${step.label} — ${status}`}
+                  />
                 </div>
                 <div className="processing-stepper__body">
                   <div className="processing-stepper__title">{step.label}</div>
@@ -128,14 +133,6 @@ export function ProcessingStepper({
       </div>
     </section>
   );
-}
-
-function StatusIcon({ status }: { status: ProcessingStepStatus }) {
-  if (status === "completed") return <Icon.Check className="icon-sm" />;
-  if (status === "failed") return <Icon.X className="icon-sm" />;
-  if (status === "running") return <Icon.RefreshCw className="icon-sm spin" />;
-  if (status === "skipped") return <Icon.Alert className="icon-sm" />;
-  return <span className="processing-stepper__dot" />;
 }
 
 function StatusPill({ status }: { status: ProcessingStepStatus }) {

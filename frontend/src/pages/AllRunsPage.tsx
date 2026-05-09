@@ -11,6 +11,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError } from "@/lib/api/client";
 import { Banner } from "@/components/Banner";
 import { Icon } from "@/components/icons";
+import { IngestionStepIcon } from "@/components/ingestion-icons";
+import { userFacingStepLabel } from "@/lib/processing-steps";
 import { StatusBadge } from "@/components/badges";
 import { useClient } from "@/lib/hooks/useClient";
 import { StatusDisplay } from "@/lib/display";
@@ -515,12 +517,32 @@ function RunRow({ item, onClick, onRefresh, pushToast }: RunRowProps) {
             <span>{item.mode}</span>
             <span className="run-row__sep">·</span>
             <span className="mono">{item.policy}</span>
-            {item.currentStage && (
+            {item.currentStep && (
               <>
                 <span className="run-row__sep">·</span>
-                <span>
-                  {item.currentStage}
-                  {item.currentStep ? ` / ${item.currentStep}` : ""}
+                <span
+                  className="run-row__step"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  {/* Running rows show the active step's pixel icon
+                      so operators can scan the list and see *what*
+                      each in-flight run is doing. Non-running rows
+                      omit the icon — current_step is stale otherwise. */}
+                  {isRunning ? (
+                    <IngestionStepIcon
+                      step={item.currentStep}
+                      status="running"
+                      size="xs"
+                      ariaLabel={
+                        userFacingStepLabel(item.currentStep) + " — running"
+                      }
+                    />
+                  ) : null}
+                  <span>{userFacingStepLabel(item.currentStep)}</span>
                 </span>
               </>
             )}
