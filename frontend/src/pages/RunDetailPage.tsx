@@ -333,7 +333,11 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         <ProcessingStepper
           runId={runId}
           events={events}
-          latestEvent={events.length > 0 ? events[events.length - 1] : null}
+          latestEvent={
+            events.length > 0
+              ? (events[events.length - 1] ?? null)
+              : null
+          }
         />
       </div>
 

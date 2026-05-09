@@ -203,8 +203,9 @@ export function userFacingStepLabel(raw: string | null | undefined): string {
   // mislabel. The Timeline already shows the raw stage badge for
   // diagnostic context.
   const trimmed = raw.trim();
-  if (!trimmed) return "—";
-  return trimmed[0].toUpperCase() + trimmed.slice(1);
+  if (trimmed.length === 0) return "—";
+  const first = trimmed.charAt(0);
+  return first.toUpperCase() + trimmed.slice(1);
 }
 
 /**
