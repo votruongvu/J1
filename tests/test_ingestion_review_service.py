@@ -468,6 +468,47 @@ def test_summarize_run_quality_stays_unavailable_when_only_required_failure(
     assert views.quality.available is False
 
 
+def test_summarize_run_unlocks_content_inventory_and_planning_for_full_split_run(
+    service, run_store, artifact_registry, ctx,
+):
+    """End-to-end gate test mirroring the actual user scenario:
+    a successful split-mode run produces three artifacts (parsed_source,
+    parsed_content_manifest, planning_result) all tagged with the
+    run's `run_id`. Both Content Inventory + Execution Plan tabs
+    must unlock. The Knowledge Chunks tab stays gated on chunk
+    artifacts (separate path).
+
+    Pins the gating contract so a future regression that breaks
+    either tab gets caught at PR time, not in production."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+
+    for art_id, kind in [
+        ("ps-1", "parsed_source"),
+        ("manifest-1", "parsed_content_manifest"),
+        ("planning-1", "planning_result"),
+    ]:
+        artifact_registry.add(_make_artifact(
+            ctx, artifact_id=art_id, kind=kind,
+            source_document_ids=["doc-A"],
+            metadata={"run_id": "run-1"},
+        ))
+
+    views = service.summarize_run(ctx, "run-1").available_views
+
+    assert views.parsed_content.available is True, (
+        f"Content Inventory should unlock when parsed_content_manifest "
+        f"is tagged with the run's run_id. Reason: {views.parsed_content.reason}"
+    )
+    assert views.parsed_content.reason is None
+    assert views.planning.available is True, (
+        f"Execution Plan should unlock when planning_result artifact "
+        f"is tagged with the run's run_id, even without an audit "
+        f"event. Reason: {views.planning.reason}"
+    )
+    assert views.planning.reason is None
+    assert views.raw_artifacts.available is True
+
+
 # ---- Step results ---------------------------------------------------
 
 
