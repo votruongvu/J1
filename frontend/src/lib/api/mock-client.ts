@@ -24,9 +24,11 @@ import {
   isTerminalEvent,
 } from "@/types/ingestion";
 import type {
+  ContentInventory,
   GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
+  PlanningResult,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -1569,6 +1571,58 @@ export class MockClient implements IngestionClient {
     return mockGraphUnavailable(
       "Graph generation was skipped by policy.", opts,
     );
+  }
+
+  async getRunContentInventory(runId: string): Promise<ContentInventory> {
+    await delay(120);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    // Mock surface returns the empty-state shape — the parsed-content
+    // manifest comes from real compile output, which the mock pipeline
+    // doesn't simulate. The FE's Content Inventory tab handles
+    // `status="unavailable"` gracefully.
+    return {
+      runId,
+      documentId: null,
+      documentName: null,
+      status: "unavailable",
+      source: {},
+      summary: {
+        textBlockCount: 0,
+        tableCount: 0,
+        imageCount: 0,
+        formulaCount: 0,
+        otherCount: 0,
+        totalItems: 0,
+      },
+      items: [],
+      rawArtifactId: null,
+      unavailableReason:
+        "Mock mode does not produce parsed-content manifests.",
+    };
+  }
+
+  async getRunPlanning(runId: string): Promise<PlanningResult> {
+    await delay(140);
+    if (!this.currentRun) throw new ApiError(404, "Run not found.");
+    // Same empty-state pattern as getRunContentInventory — the mock
+    // pipeline doesn't run the post-compile planning activity, so
+    // there's no PlanningResult to return.
+    return {
+      runId,
+      documentId: null,
+      documentName: null,
+      status: "unavailable",
+      generatedAt: null,
+      revised: false,
+      source: null,
+      planningPhase: null,
+      assessment: null,
+      decisions: [],
+      digest: null,
+      llmRecommendation: { status: "disabled" },
+      unavailableReason:
+        "Mock mode does not run the post-compile planning activity.",
+    };
   }
 
   async runManualTestQuery(
