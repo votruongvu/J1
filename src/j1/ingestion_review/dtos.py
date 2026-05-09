@@ -106,6 +106,18 @@ class AvailableViewsDTO(CamelModel):
     # produced at least one chunk artifact (otherwise there's nothing
     # to query). Manual test query is the Phase 1 entry point.
     validation: AvailabilityDTO
+    # Content Inventory tab — visible as soon as the compile activity
+    # has emitted a `parsed_content_manifest` artifact, even while
+    # downstream stages (enrich / graph / index) are still running.
+    # Lets reviewers inspect what the parser actually found while the
+    # rest of the pipeline finishes. Optional with default for
+    # backward compatibility — runs that pre-date the manifest
+    # artifact carry the legacy availability set without crashing
+    # older FE bundles.
+    parsed_content: AvailabilityDTO = AvailabilityDTO(
+        available=False,
+        reason="No parsed-content manifest is available for this run.",
+    )
 
 
 # ---- Quality summary --------------------------------------------
@@ -379,3 +391,79 @@ class RunSummaryDTO(CamelModel):
     warnings: list[WarningDTO] = Field(default_factory=list)
     quality_summary: QualitySummaryDTO | None = None
     available_views: AvailableViewsDTO
+
+
+# ---- Content Inventory (parsed-content manifest projection) -----
+
+
+class ContentInventorySourceDTO(CamelModel):
+    """Provenance for the parsed content — which compiler / parser
+    produced the manifest. The FE shows this in the Content
+    Inventory tab's metadata strip."""
+
+    compiler: str | None = None
+    parser: str | None = None
+    parser_version: str | None = None
+    parse_method: str | None = None
+    profile: str | None = None
+
+
+class ContentInventorySummaryDTO(CamelModel):
+    """Aggregate counts the parser surfaced. Each field is optional
+    so older runs without a particular signal don't crash the FE.
+
+    Mirrors the shape of `ParsedContentStats` in
+    `j1.processing.manifest`, but renamed for FE clarity (and
+    camelCase on the wire)."""
+
+    page_count: int | None = None
+    text_block_count: int = 0
+    table_count: int = 0
+    image_count: int = 0
+    formula_count: int = 0
+    heading_count: int | None = None
+    other_count: int = 0
+    total_items: int = 0
+
+
+class ContentInventoryItemDTO(CamelModel):
+    """One per-element entry. Producers (the compile bridge) may
+    populate `items[]` selectively — typically only the first N
+    images and tables for triage UI. Items present here are NOT a
+    contract that all parser output is enumerable; the
+    `summary` counts are the authoritative aggregates."""
+
+    item_id: str
+    type: str  # "text" | "table" | "image" | "formula" | "heading" | "other"
+    page: int | None = None
+    location: str | None = None
+    preview: str | None = None
+    confidence: float | None = None
+    passed_to_enrichment: bool | None = None
+    skipped: bool = False
+    skip_reason: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContentInventoryDTO(CamelModel):
+    """Normalized view of the run's `parsed_content_manifest`
+    artifact. The FE's Content Inventory tab consumes this directly.
+
+    `status` semantics:
+      * `"completed"` — manifest exists, parser produced something.
+      * `"empty"` — manifest exists but every count is 0 (parser
+        ran but found nothing extractable; shouldn't happen with
+        non-trivial input).
+      * `"unavailable"` — no manifest artifact for this run. The
+        FE renders the empty state with the corresponding reason.
+    """
+
+    run_id: str
+    document_id: str | None = None
+    document_name: str | None = None
+    status: str
+    source: ContentInventorySourceDTO = Field(default_factory=ContentInventorySourceDTO)
+    summary: ContentInventorySummaryDTO = Field(default_factory=ContentInventorySummaryDTO)
+    items: list[ContentInventoryItemDTO] = Field(default_factory=list)
+    raw_artifact_id: str | None = None
+    unavailable_reason: str | None = None

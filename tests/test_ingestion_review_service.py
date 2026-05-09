@@ -1487,3 +1487,253 @@ def test_get_run_graph_isolates_runs_via_artifact_tagging(
     # Run B has no graph artifacts → unavailable.
     assert snapshot_b.unavailable is not None
     assert snapshot_b.entities == []
+
+
+# ---- Content Inventory (parsed-content manifest) -----------------
+
+
+def _write_parsed_content_manifest(
+    workspace, ctx,
+    *,
+    artifact_id: str,
+    payload: dict,
+) -> str:
+    """Write a parsed_content_manifest artifact under COMPILED.
+    Returns the location string for registry registration."""
+    filename = f"{artifact_id}.parsed_content_manifest.json"
+    location = f"compiled/{filename}"
+    full = workspace.area(ctx, WorkspaceArea.COMPILED) / filename
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(_json.dumps(payload), encoding="utf-8")
+    return location
+
+
+def _register_parsed_content_manifest(
+    artifact_registry, ctx,
+    *,
+    artifact_id: str,
+    location: str,
+    document_id: str,
+) -> None:
+    from j1.processing.results import ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
+
+    record = _make_artifact(
+        ctx,
+        artifact_id=artifact_id,
+        kind=ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
+        source_document_ids=[document_id],
+    )
+    record = ArtifactRecord(
+        artifact_id=record.artifact_id,
+        project=record.project,
+        kind=record.kind,
+        location=location,
+        content_hash=record.content_hash,
+        byte_size=record.byte_size,
+        status=record.status,
+        review_status=record.review_status,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        source_document_ids=record.source_document_ids,
+        source_artifact_ids=record.source_artifact_ids,
+        metadata=record.metadata,
+    )
+    artifact_registry.add(record)
+
+
+def _make_manifest_payload(
+    *,
+    document_id: str = "doc-1",
+    parser: str = "raganything",
+    parse_method: str = "auto",
+    text_blocks: int = 5,
+    images: int = 2,
+    tables: int = 1,
+    equations: int = 0,
+    page_count: int | None = 4,
+    items: list[dict] | None = None,
+) -> dict:
+    return {
+        "document_id": document_id,
+        "document_hash": "sha256:abc",
+        "parser": parser,
+        "parser_version": "0.1",
+        "parse_method": parse_method,
+        "profile": None,
+        "stats": {
+            "text_blocks": text_blocks,
+            "images": images,
+            "tables": tables,
+            "equations": equations,
+            "scanned_pages": None,
+            "decorative_images": None,
+            "diagrams": None,
+            "total_items": text_blocks + images + tables + equations,
+            "page_count": page_count,
+            "text_chars": 0,
+            "text_extractable_ratio": None,
+            "parse_quality_score": None,
+            "text_sufficiency_score": None,
+            "layout_complexity_score": None,
+        },
+        "items": items or [],
+        "warnings": [],
+        "manifest_schema_version": "1",
+    }
+
+
+def test_get_run_content_inventory_unavailable_when_no_manifest(
+    service, run_store, ctx,
+):
+    """Legacy run / mid-compile run / failed run → unavailable status
+    with the operator-readable reason from the availability resolver."""
+    run_store.upsert(ctx, _make_run())
+    inventory = service.get_run_content_inventory(ctx, "run-1")
+    assert inventory.status == "unavailable"
+    assert inventory.unavailable_reason
+    assert inventory.summary.total_items == 0
+    assert inventory.items == []
+
+
+def test_get_run_content_inventory_404_for_missing_run(service, ctx):
+    with pytest.raises(ReviewNotFound):
+        service.get_run_content_inventory(ctx, "nope")
+
+
+def test_get_run_content_inventory_does_not_leak_cross_project(
+    service, run_store, ctx, other_ctx,
+):
+    run_store.upsert(ctx, _make_run(run_id="leak"))
+    with pytest.raises(ReviewNotFound):
+        service.get_run_content_inventory(other_ctx, "leak")
+
+
+def test_get_run_content_inventory_returns_completed_with_summary(
+    service, run_store, artifact_registry, workspace, ctx,
+):
+    """Manifest exists with non-zero items → status=completed,
+    summary populated, source identifies the parser."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    location = _write_parsed_content_manifest(
+        workspace, ctx,
+        artifact_id="m1",
+        payload=_make_manifest_payload(
+            document_id="doc-A",
+            text_blocks=10,
+            images=3,
+            tables=2,
+        ),
+    )
+    _register_parsed_content_manifest(
+        artifact_registry, ctx,
+        artifact_id="m1", location=location, document_id="doc-A",
+    )
+
+    inventory = service.get_run_content_inventory(ctx, "run-1")
+    assert inventory.status == "completed"
+    assert inventory.summary.text_block_count == 10
+    assert inventory.summary.image_count == 3
+    assert inventory.summary.table_count == 2
+    assert inventory.summary.page_count == 4
+    assert inventory.source.parser == "raganything"
+    assert inventory.source.compiler == "raganything"
+    assert inventory.source.parse_method == "auto"
+    assert inventory.raw_artifact_id == "m1"
+
+
+def test_get_run_content_inventory_marks_empty_when_zero_items(
+    service, run_store, artifact_registry, workspace, ctx,
+):
+    """Manifest exists but parser produced nothing → status=empty
+    (distinct from unavailable). FE can render a different empty
+    state for this case."""
+    run_store.upsert(ctx, _make_run(document_id="doc-empty"))
+    location = _write_parsed_content_manifest(
+        workspace, ctx,
+        artifact_id="m1",
+        payload=_make_manifest_payload(
+            document_id="doc-empty",
+            text_blocks=0, images=0, tables=0, equations=0,
+            page_count=0,
+        ),
+    )
+    _register_parsed_content_manifest(
+        artifact_registry, ctx,
+        artifact_id="m1", location=location, document_id="doc-empty",
+    )
+
+    inventory = service.get_run_content_inventory(ctx, "run-1")
+    assert inventory.status == "empty"
+    assert inventory.summary.total_items == 0
+
+
+def test_get_run_content_inventory_aggregates_across_documents(
+    service, run_store, artifact_registry, workspace, ctx,
+):
+    """Multi-document run → counts are summed across manifests.
+    The run's `target_document_ids` metadata declares which docs the
+    run covered; the resolver scopes artifact lookup to that set."""
+    run_store.upsert(ctx, _make_run(
+        document_id="doc-A",
+        metadata={"target_document_ids": ["doc-A", "doc-B"]},
+    ))
+    for i, doc_id in enumerate(("doc-A", "doc-B"), start=1):
+        location = _write_parsed_content_manifest(
+            workspace, ctx,
+            artifact_id=f"m{i}",
+            payload=_make_manifest_payload(
+                document_id=doc_id,
+                text_blocks=4, images=1, tables=0,
+                page_count=3,
+            ),
+        )
+        _register_parsed_content_manifest(
+            artifact_registry, ctx,
+            artifact_id=f"m{i}", location=location, document_id=doc_id,
+        )
+
+    inventory = service.get_run_content_inventory(ctx, "run-1")
+    assert inventory.status == "completed"
+    assert inventory.summary.text_block_count == 8
+    assert inventory.summary.image_count == 2
+    assert inventory.summary.page_count == 6  # 3 + 3
+
+
+def test_available_views_includes_parsed_content_when_manifest_present(
+    service, run_store, artifact_registry, workspace, ctx,
+):
+    """The summary endpoint's `availableViews.parsedContent.available`
+    flips to True the moment the compile bridge emits a manifest
+    artifact. This is the contract the Content Inventory tab
+    depends on for progressive visibility — tab unlocks while
+    enrich/graph/index are still running."""
+    run_store.upsert(ctx, _make_run(
+        document_id="doc-A",
+        status=RunStatus.RUNNING,  # mid-flight, NOT terminal
+    ))
+    location = _write_parsed_content_manifest(
+        workspace, ctx,
+        artifact_id="m1",
+        payload=_make_manifest_payload(),
+    )
+    _register_parsed_content_manifest(
+        artifact_registry, ctx,
+        artifact_id="m1", location=location, document_id="doc-A",
+    )
+
+    summary = service.summarize_run(ctx, "run-1")
+    assert summary.available_views.parsed_content.available is True
+    assert summary.available_views.parsed_content.reason is None
+
+
+def test_available_views_parsed_content_reason_when_compile_in_progress(
+    service, run_store, ctx,
+):
+    """Mid-compile run with no manifest yet → reason explains the
+    in-progress state so the FE shows a "waiting for parser"
+    message rather than the generic empty state."""
+    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
+    summary = service.summarize_run(ctx, "run-1")
+    assert summary.available_views.parsed_content.available is False
+    assert "manifest" in summary.available_views.parsed_content.reason.lower()

@@ -27,6 +27,7 @@ import type {
 import type {
   GenerateValidationSetRequest,
   ManualTestQueryRequest,
+  ContentInventory,
   ManualTestQueryResponse,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
@@ -285,6 +286,19 @@ export class ApiClient implements IngestionClient {
       { headers: this.headers() },
     );
     return qualityReportFromApi(await this.json<unknown>(resp));
+  }
+
+  async getRunContentInventory(runId: string): Promise<ContentInventory> {
+    // Backend returns the canonical Pydantic camelCase shape via the
+    // standard envelope. Type assertion is safe because the
+    // `ContentInventory` interface mirrors the BE DTO field-for-field
+    // — verified by the contract test in
+    // tests/test_rest_run_review.py::test_parsed_content_endpoint.
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/parsed-content`),
+      { headers: this.headers() },
+    );
+    return (await this.json<ContentInventory>(resp));
   }
 
   async listRunChunks(

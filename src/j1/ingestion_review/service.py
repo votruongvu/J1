@@ -31,6 +31,10 @@ from j1.ingestion_review.dtos import (
     ArtifactRecordDTO,
     ChunkDetailDTO,
     ChunkPageDTO,
+    ContentInventoryDTO,
+    ContentInventoryItemDTO,
+    ContentInventorySourceDTO,
+    ContentInventorySummaryDTO,
     GraphSnapshotDTO,
     QualityReportDTO,
     QualitySummaryDTO,
@@ -426,6 +430,150 @@ class IngestionResultReviewService:
             unavailable_reason=unavailable_reason,
         )
 
+    # ---- Content Inventory (parsed-content manifest) ----------------
+
+    def get_run_content_inventory(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> ContentInventoryDTO:
+        """Project the run's `parsed_content_manifest` artifact into
+        a normalized DTO the FE consumes for the Content Inventory
+        tab.
+
+        Reads ALL parsed-content manifest artifacts produced by this
+        run and aggregates them — typically there's one per document,
+        but a multi-document run combines them so the FE can show
+        a single "what did the parser find?" view.
+
+        When no manifest artifact exists (legacy runs, runs that
+        haven't reached the manifest-emit step yet, runs that failed
+        during compile), returns a `status="unavailable"` payload
+        with the same operator-readable reason the availability
+        resolver uses — single source of truth for the empty-state
+        copy."""
+        from j1.processing.manifest import ParsedContentManifest
+        from j1.processing.results import ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
+
+        run = self._load_run(ctx, run_id)
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        manifest_artifacts = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
+        ]
+
+        if not manifest_artifacts:
+            from j1.ingestion_review.availability import (
+                _parsed_content_reason,
+            )
+            return ContentInventoryDTO(
+                run_id=run_id,
+                document_id=None,
+                document_name=run.metadata.get("document_name"),
+                status="unavailable",
+                unavailable_reason=_parsed_content_reason(run),
+            )
+
+        # Read each manifest payload from disk + aggregate. Most runs
+        # have one manifest per document; we sum the stats and union
+        # the items lists. Reads are JSON file reads, cheap.
+        path_resolver = self._artifact_path_resolver(ctx)
+        manifests: list[ParsedContentManifest] = []
+        first_artifact_id: str | None = None
+        for artifact in manifest_artifacts:
+            try:
+                path = path_resolver(artifact)
+            except Exception:  # noqa: BLE001
+                continue
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                _log.warning(
+                    "parsed-content manifest %s unreadable: %s",
+                    artifact.artifact_id, exc,
+                )
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if first_artifact_id is None:
+                first_artifact_id = artifact.artifact_id
+            manifests.append(ParsedContentManifest.from_dict(payload))
+
+        if not manifests:
+            from j1.ingestion_review.availability import (
+                _parsed_content_reason,
+            )
+            return ContentInventoryDTO(
+                run_id=run_id,
+                document_name=run.metadata.get("document_name"),
+                status="unavailable",
+                unavailable_reason=_parsed_content_reason(run),
+                raw_artifact_id=manifest_artifacts[0].artifact_id,
+            )
+
+        # Aggregate. Single-document runs hit the trivial path.
+        first = manifests[0]
+        summary = ContentInventorySummaryDTO(
+            page_count=_sum_optional(m.stats.page_count for m in manifests),
+            text_block_count=sum(m.stats.text_blocks for m in manifests),
+            table_count=sum(m.stats.tables for m in manifests),
+            image_count=sum(m.stats.images for m in manifests),
+            formula_count=sum(m.stats.equations for m in manifests),
+            heading_count=_sum_optional(
+                # `headings` field doesn't exist on ParsedContentStats
+                # today — left as None until a producer surfaces it.
+                None for _ in manifests
+            ),
+            other_count=0,
+            total_items=sum(m.stats.total_items for m in manifests),
+        )
+        # Build the items list from every manifest. Producers cap
+        # their own item lists; we surface them all so the FE can
+        # filter / paginate client-side.
+        items: list[ContentInventoryItemDTO] = []
+        for manifest in manifests:
+            for entry in manifest.items:
+                items.append(ContentInventoryItemDTO(
+                    item_id=entry.item_id,
+                    type=entry.type,
+                    page=entry.page_idx,
+                    location=entry.source_path,
+                    preview=entry.text_preview,
+                    confidence=None,  # not on the per-element model today
+                    passed_to_enrichment=None,
+                    skipped=False,
+                    skip_reason=None,
+                    metadata=dict(entry.metadata),
+                ))
+
+        # `status` reflects whether the parser found anything, not
+        # whether the run itself succeeded. A SUCCEEDED run with an
+        # empty document still gets `status="empty"` — distinct from
+        # `"unavailable"` (no manifest at all).
+        if summary.total_items == 0:
+            status = "empty"
+        else:
+            status = "completed"
+
+        return ContentInventoryDTO(
+            run_id=run_id,
+            document_id=first.document_id or None,
+            document_name=run.metadata.get("document_name"),
+            status=status,
+            source=ContentInventorySourceDTO(
+                compiler="raganything" if first.parser == "raganything" else None,
+                parser=first.parser or None,
+                parser_version=first.parser_version,
+                parse_method=first.parse_method,
+                profile=first.profile,
+            ),
+            summary=summary,
+            items=items,
+            raw_artifact_id=first_artifact_id,
+        )
+
     # ---- Internals ----------------------------------------------------
 
     def _project_chunks(
@@ -782,6 +930,18 @@ def _quality_summary(
         warning_count=len(warnings),
         low_confidence_count=low_confidence_count,
     )
+
+
+def _sum_optional(values) -> int | None:
+    """Sum a stream of `int | None`. Returns None when EVERY value
+    is None (e.g. no producer surfaced page_count); otherwise sums
+    the populated entries. Used by the Content Inventory aggregator
+    so a missing per-document signal doesn't zero out the aggregate
+    silently."""
+    materialized = [v for v in values if v is not None]
+    if not materialized:
+        return None
+    return sum(materialized)
 
 
 def _str_or_none(value: object) -> str | None:

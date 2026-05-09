@@ -335,10 +335,17 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         </div>
       </div>
 
-      {/* Results section — visible only when the run is terminal.
+      {/* Results section — visible progressively as steps complete.
           The component handles the visibility check internally so
-          the page tree stays declarative. */}
-      <ResultsSection run={run} runId={runId} />
+          the page tree stays declarative. `latestEvent` lets the
+          section refresh its summary on step.completed events,
+          unlocking newly-available result tabs without a manual
+          reload. */}
+      <ResultsSection
+        run={run}
+        runId={runId}
+        latestEvent={events.length > 0 ? events[events.length - 1] : null}
+      />
 
       <TechDrawer
         open={drawerOpen}

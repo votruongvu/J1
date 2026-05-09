@@ -1473,6 +1473,35 @@ def create_rest_api(
         return envelope(report.model_dump(by_alias=True), _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/parsed-content",
+        tags=["ingestion-runs"],
+        summary="Get the parsed-content manifest (Content Inventory)",
+        description=(
+            "Returns a normalized projection of the run's "
+            "`parsed_content_manifest` artifact — what the parser "
+            "actually found in the source document (text blocks, "
+            "tables, images, formulas, page count, per-image triage "
+            "decisions). The Content Inventory tab in the FE consumes "
+            "this directly. Available as soon as the compile activity "
+            "emits the manifest, even while downstream stages are "
+            "still running. Returns `status=\"unavailable\"` with an "
+            "operator-readable reason when no manifest artifact exists "
+            "(legacy runs, mid-compile, or compile-failed runs). "
+            "Returns 404 if the run does not exist in the caller's "
+            "tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_parsed_content(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        inventory = service.get_run_content_inventory(ctx, run_id)
+        return envelope(inventory.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/graph",
         tags=["ingestion-runs"],
         summary="Get the neutral graph snapshot for an ingestion run",

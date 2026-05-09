@@ -58,6 +58,58 @@ export interface ReviewAvailableViews {
   quality: ReviewAvailability;
   rawArtifacts: ReviewAvailability;
   validation: ReviewAvailability;
+  // Optional: backend added this in the Content Inventory release.
+  // Older API responses omit it; the FE handles `undefined` by
+  // showing the tab as disabled with a generic reason.
+  parsedContent?: ReviewAvailability;
+}
+
+// ---- Content Inventory (parsed-content manifest projection) ---
+
+export interface ContentInventorySource {
+  compiler?: string | null;
+  parser?: string | null;
+  parserVersion?: string | null;
+  parseMethod?: string | null;
+  profile?: string | null;
+}
+
+export interface ContentInventorySummary {
+  pageCount?: number | null;
+  textBlockCount: number;
+  tableCount: number;
+  imageCount: number;
+  formulaCount: number;
+  headingCount?: number | null;
+  otherCount: number;
+  totalItems: number;
+}
+
+export interface ContentInventoryItem {
+  itemId: string;
+  /** "text" | "table" | "image" | "formula" | "heading" | "other" */
+  type: string;
+  page?: number | null;
+  location?: string | null;
+  preview?: string | null;
+  confidence?: number | null;
+  passedToEnrichment?: boolean | null;
+  skipped: boolean;
+  skipReason?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface ContentInventory {
+  runId: string;
+  documentId?: string | null;
+  documentName?: string | null;
+  /** "completed" | "empty" | "unavailable" */
+  status: string;
+  source: ContentInventorySource;
+  summary: ContentInventorySummary;
+  items: ContentInventoryItem[];
+  rawArtifactId?: string | null;
+  unavailableReason?: string | null;
 }
 
 // ---- Validation (Phase 1: manual test query) --------------------

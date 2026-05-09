@@ -13,7 +13,10 @@ from typing import Iterable
 from j1.artifacts.models import ArtifactRecord
 from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
 from j1.ingestion_review.dtos import AvailabilityDTO, AvailableViewsDTO
-from j1.processing.results import ARTIFACT_KIND_CHUNK
+from j1.processing.results import (
+    ARTIFACT_KIND_CHUNK,
+    ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
+)
 from j1.runs.models import IngestionRun
 
 
@@ -34,6 +37,7 @@ _QUALITY_KINDS = frozenset({
 
 _GRAPH_KIND = ARTIFACT_KIND_GRAPH_JSON
 _CHUNK_KIND = ARTIFACT_KIND_CHUNK
+_PARSED_CONTENT_KIND = ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
 
 
 def resolve_available_views(
@@ -52,6 +56,7 @@ def resolve_available_views(
     assets_present = bool(artifact_kinds & _ASSET_KINDS)
     quality_present = bool(artifact_kinds & _QUALITY_KINDS)
     raw_present = bool(artifact_kinds)
+    parsed_content_present = _PARSED_CONTENT_KIND in artifact_kinds
 
     # Quality is also available when the run carries warnings, even if
     # no quality artifact was emitted — the Quality tab can still
@@ -94,6 +99,13 @@ def resolve_available_views(
             reason=(
                 None if validation_available
                 else _validation_reason(run, chunks_present)
+            ),
+        ),
+        parsed_content=AvailabilityDTO(
+            available=parsed_content_present,
+            reason=(
+                None if parsed_content_present
+                else _parsed_content_reason(run)
             ),
         ),
     )
@@ -175,6 +187,37 @@ def _is_terminal_success(run: IngestionRun) -> bool:
     qualify — even if some chunks slipped through, exposing a 'test
     a broken run' surface confuses operators more than it helps."""
     return str(run.status) in _TERMINAL_SUCCESS_STATUSES
+
+
+def _parsed_content_reason(run: IngestionRun) -> str:
+    """Operator-readable reason for an unavailable Content Inventory.
+
+    Three precedence rules:
+      1. Run failed/cancelled before compile produced a manifest →
+         dedicated copy so reviewers don't go looking for parser output.
+      2. Run is still in compile / hasn't reached the manifest-emit
+         step yet → "compile in progress" so the FE can decide
+         whether to show a spinner vs an empty state.
+      3. Compile completed but no manifest artifact exists — typically
+         a legacy run from before this feature shipped.
+    """
+    if str(run.status) in _FAILED_OR_CANCELLED_STATUSES:
+        return (
+            "Compile stage did not produce a parsed-content manifest "
+            "before the run ended."
+        )
+    if str(run.status) in {"created", "assessing", "running",
+                            "plan_ready", "waiting_for_confirmation"}:
+        return (
+            "Compile stage has not yet produced a parsed-content "
+            "manifest."
+        )
+    # Terminal run, no manifest artifact — almost certainly a run
+    # that pre-dates the feature.
+    return (
+        "This run was created before Content Inventory tracking "
+        "was added."
+    )
 
 
 def _validation_reason(run: IngestionRun, chunks_present: bool) -> str:

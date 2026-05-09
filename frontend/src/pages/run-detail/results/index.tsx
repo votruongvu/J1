@@ -1,24 +1,28 @@
 /**
- * Results section — visible only when the run is terminal.
+ * Results section — visible progressively as steps complete.
  *
- * Owns data fetching for the Results sub-tabs. As of Phase 10:
- * every Results sub-tab ships. Each tab button is gated by
- * `summary.availableViews` so disabled tabs render with a tooltip
- * carrying the unavailable reason.
+ * Tabs gate on `summary.availableViews`, which in turn gates on
+ * artifact presence in the workspace. As soon as the compile
+ * activity emits the parsed-content manifest, the Content Inventory
+ * tab unlocks; the moment chunk artifacts land, the Chunks tab
+ * unlocks. The user no longer waits for the workflow to reach a
+ * terminal state to inspect partial results.
  *
  * Lazy fetching: the summary loads as soon as the section renders;
  * sub-tab data loads on first activation and is cached for the
- * session.
+ * session. SSE step events refresh the summary so newly-unlocked
+ * tabs appear without a manual reload.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
-import type { IngestionRun } from "@/types/ingestion";
+import type { IngestionRun, ProgressEvent } from "@/types/ingestion";
+import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ReviewQualityReport, ReviewRunSummary } from "@/types/review";
 import { AssetsTab } from "./AssetsTab";
 import { ChunksTab } from "./ChunksTab";
+import { ContentInventoryTab } from "./ContentInventoryTab";
 import { GraphTab } from "./GraphTab";
-import { isTerminalRunStatus } from "./lifecycle";
 import { OverviewTab } from "./OverviewTab";
 import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
@@ -26,6 +30,7 @@ import { ValidationTab } from "./ValidationTab";
 
 type ResultsTab =
   | "overview"
+  | "parsedContent"
   | "chunks"
   | "assets"
   | "graph"
@@ -36,9 +41,15 @@ type ResultsTab =
 interface ResultsSectionProps {
   run: IngestionRun | null;
   runId: string;
+  // Parent supplies the latest progress event so the Results
+  // section can refresh its summary on `step.completed` events.
+  // Undefined when no event has fired yet (initial mount).
+  latestEvent?: ProgressEvent | null;
 }
 
-export function ResultsSection({ run, runId }: ResultsSectionProps) {
+export function ResultsSection({
+  run, runId, latestEvent,
+}: ResultsSectionProps) {
   const client = useClient();
   const [tab, setTab] = useState<ResultsTab>("overview");
 
@@ -61,16 +72,19 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
     setTab("overview");
   }, [runId]);
 
-  // Auto-load summary when the run flips to terminal. Sub-tab data
-  // is loaded lazily on first activation.
+  // Load the summary as soon as the section mounts. Previous
+  // behavior gated this on `isTerminalRunStatus(run?.status)` so
+  // the Results section was hidden mid-run; now we render
+  // progressively. The summary endpoint already handles in-flight
+  // runs — `availableViews` derives from artifacts present at
+  // call time, regardless of run status.
   //
   // Deliberately NOT listing `summary` / `summaryLoading` in the
   // deps array: doing so would create a feedback loop where
   // `setSummaryLoading(true)` re-runs the effect, the cleanup fires
   // `cancelled=true` on the prior in-flight fetch, and the FE sits
-  // on the loading state forever. Caught by the Phase 11 e2e smoke.
-  useEffect(() => {
-    if (!isTerminalRunStatus(run?.status)) return;
+  // on the loading state forever.
+  const loadSummary = useCallback(() => {
     let cancelled = false;
     setSummaryLoading(true);
     setSummaryError(null);
@@ -89,7 +103,30 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
     return () => {
       cancelled = true;
     };
-  }, [client, run?.status, runId]);
+  }, [client, runId]);
+
+  // Initial load when the run id resolves.
+  useEffect(() => {
+    if (!run) return;
+    return loadSummary();
+  }, [run?.runId, loadSummary]);
+
+  // SSE-driven refresh: re-fetch the summary on every step.completed
+  // and on the terminal events. The summary is small (one HTTP call
+  // returning a few hundred bytes); the cost of re-fetching it on
+  // each step boundary is negligible and the UX win is large
+  // (newly-unlocked tabs appear without a manual reload).
+  useEffect(() => {
+    if (!latestEvent) return;
+    const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_COMPLETED,
+      EVENT_TYPES.STEP_FAILED,
+      EVENT_TYPES.STEP_SKIPPED,
+    ]);
+    if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
+      loadSummary();
+    }
+  }, [latestEvent, loadSummary]);
 
   // Lazy quality-report load — only on first Quality tab open.
   const loadQuality = useCallback(() => {
@@ -108,9 +145,11 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
     })();
   }, [client, runId, quality, qualityLoading]);
 
-  // Hide entirely while the run is still running. Reviewers shouldn't
-  // see partial-state Results until the workflow has terminated.
-  if (!isTerminalRunStatus(run?.status)) {
+  // Render the section as long as we have a run reference at all.
+  // Hiding it pre-CREATED only — once the run record exists, the
+  // Overview tab renders immediately and other tabs unlock as their
+  // artifacts land.
+  if (!run) {
     return null;
   }
 
@@ -125,6 +164,18 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
     reason?: string | null;
   }> = [
     { key: "overview", label: "Overview", available: true },
+    {
+      key: "parsedContent",
+      label: "Content Inventory",
+      // `parsedContent` is optional on older API responses — fall
+      // back to false + a generic reason when absent so an old
+      // bundle running against a newer backend (or vice-versa)
+      // doesn't crash on `undefined.available`.
+      available: views?.parsedContent?.available ?? false,
+      reason:
+        views?.parsedContent?.reason ??
+        (views ? "Waiting for parser to finish." : "Loading…"),
+    },
     {
       key: "chunks",
       label: "Chunks",
@@ -209,6 +260,7 @@ export function ResultsSection({ run, runId }: ResultsSectionProps) {
             error={qualityError}
           />
         )}
+        {tab === "parsedContent" && <ContentInventoryTab runId={runId} />}
         {tab === "chunks" && <ChunksTab runId={runId} />}
         {tab === "assets" && <AssetsTab runId={runId} />}
         {tab === "graph" && <GraphTab runId={runId} />}
