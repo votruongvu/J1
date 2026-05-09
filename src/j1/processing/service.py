@@ -100,6 +100,62 @@ class ProcessingService:
             source_document_ids=[document.document_id],
         )
 
+    def insert_content(
+        self,
+        ctx: ProjectContext,
+        compiler,  # KnowledgeCompiler-shaped — RAGAnythingCompiler concretely
+        document: DocumentRecord,
+        *,
+        content_list: list,
+        doc_id: str,
+        source_filename: str | None = None,
+        actor: str = "system",
+        correlation_id: str | None = None,
+    ) -> ArtifactProcessingResult:
+        """Drive the second-half (`insert_content_list`) of the
+        split RAGAnything pipeline.
+
+        Reads pre-parsed `content_list` (from the upstream
+        `parsed_source` artifact) and the resolved `doc_id`,
+        calls the compiler's `insert_content` method, materialises
+        chunk + graph drafts into the workspace.
+
+        Mirrors `compile()`'s shape — same workspace area, same
+        audit action — so callers consume one consistent
+        ArtifactProcessingResult shape regardless of pipeline mode.
+        """
+        try:
+            output = compiler.insert_content(
+                ctx,
+                document.document_id,
+                content_list=content_list,
+                doc_id=doc_id,
+                source_filename=source_filename,
+            )
+        except Exception as exc:
+            return self._fail_artifact(
+                ctx,
+                action=ACTION_COMPILE_FAIL,
+                target_kind=TARGET_DOCUMENT,
+                target_id=document.document_id,
+                exc=exc,
+                actor=actor,
+                correlation_id=correlation_id,
+                processor_kind=getattr(compiler, "kind", None),
+            )
+        return self._handle_artifact_output(
+            ctx,
+            output,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document.document_id,
+            actor=actor,
+            correlation_id=correlation_id,
+            processor_kind=getattr(compiler, "kind", None),
+            source_document_ids=[document.document_id],
+        )
+
     def enrich(
         self,
         ctx: ProjectContext,

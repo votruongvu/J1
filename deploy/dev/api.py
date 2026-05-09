@@ -54,6 +54,7 @@ def make_per_document_starter(
     client_provider,
     task_queue: str,
     planner_enabled: bool,
+    pipeline_mode: str = "complete",
 ):
     """Build the `JobStarter` closure used by `POST /documents/{id}/ingest`.
 
@@ -102,6 +103,7 @@ def make_per_document_starter(
                 correlation_id=body.correlation_id,
                 target_document_ids=(document_id,),
                 planner_enabled=planner_enabled,
+                pipeline_mode=pipeline_mode,
             ),
             id=workflow_id,
             task_queue=task_queue,
@@ -179,10 +181,20 @@ def _build_app():
         not in {"false", "0", "no", "off"}
     )
 
+    # Propagate the RAGAnything pipeline mode (legacy `complete` or
+    # `split_parse_insert`) so the workflow knows whether to invoke
+    # the dedicated `insert_content` activity after planning. Reading
+    # via the loader keeps validation + env-name handling identical
+    # to what the worker uses when it builds the compiler.
+    from j1.providers.raganything.settings import load_raganything_settings
+    raganything_settings = load_raganything_settings()
+    pipeline_mode = raganything_settings.pipeline_mode
+
     _start_project_workflow = make_per_document_starter(
         client_provider=client_provider,
         task_queue=temporal_settings.task_queue,
         planner_enabled=planner_enabled,
+        pipeline_mode=pipeline_mode,
     )
 
     # Compose the env-declared providers so the API can default

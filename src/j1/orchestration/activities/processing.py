@@ -25,6 +25,7 @@ from j1.orchestration.activities.payloads import (
     EnrichActivityInput,
     GraphActivityInput,
     IndexActivityInput,
+    InsertContentActivityInput,
     ProcessingActivityResult,
     QueryActivityInput,
     QueryActivityResult,
@@ -37,6 +38,7 @@ from j1.processing.contracts import (
     SearchIndexer,
 )
 from j1.processing.results import (
+    ARTIFACT_KIND_PARSED_SOURCE,
     ArtifactProcessingResult,
     ProcessingResult,
     QueryResult,
@@ -44,6 +46,7 @@ from j1.processing.results import (
 from j1.processing.service import ProcessingService
 
 ACTIVITY_COMPILE = "j1.processing.compile"
+ACTIVITY_INSERT_CONTENT = "j1.processing.insert_content"
 ACTIVITY_ENRICH = "j1.processing.enrich"
 ACTIVITY_BUILD_GRAPH = "j1.processing.build_graph"
 ACTIVITY_INDEX = "j1.processing.index"
@@ -103,6 +106,7 @@ class ProcessingActivities:
     def all_activities(self) -> list:
         return [
             self.compile,
+            self.insert_content,
             self.enrich,
             self.build_graph,
             self.index,
@@ -320,6 +324,117 @@ class ProcessingActivities:
             )
         except Exception:  # noqa: BLE001 — telemetry never blocks retry
             pass
+
+    @activity.defn(name=ACTIVITY_INSERT_CONTENT)
+    def insert_content(
+        self, input: InsertContentActivityInput,
+    ) -> ArtifactActivityResult:
+        """Drive `RAGAnything.insert_content_list` for the document
+        whose `parsed_source` artifact was registered upstream.
+
+        Used by the workflow when
+        `pipeline_mode=split_parse_insert`. The compile activity
+        ran first (parse-only) and registered a `parsed_source`
+        artifact; this activity reads it back, calls the compiler's
+        `insert_content` method, materialises chunk + graph drafts.
+        """
+        import json
+        from pathlib import Path
+        from j1.workspace.layout import WorkspaceArea
+
+        ctx = input.scope.to_context()
+        compiler = self._lookup(
+            self._compilers, input.processor_kind, "compiler",
+        )
+        if not hasattr(compiler, "insert_content"):
+            raise UnknownProcessorError(
+                f"compiler {input.processor_kind!r} does not expose "
+                "`insert_content` — split_parse_insert mode requires "
+                "RAGAnythingCompiler ≥ this release. Set "
+                "J1_RAGANYTHING_PIPELINE_MODE=complete to use the legacy "
+                "single-shot path."
+            )
+        document = self._sources.get(ctx, input.document_id)
+
+        # Read the parsed_source artifact and parse content_list +
+        # doc_id. The artifact was registered by the parse activity
+        # upstream; we resolve its on-disk path the same way the
+        # ingestion-review service does.
+        parsed_record = self._artifacts.get(
+            ctx, input.parsed_source_artifact_id,
+        )
+        location = (parsed_record.location or "").strip()
+        if "/" not in location:
+            raise UnknownProcessorError(
+                f"parsed_source artifact {input.parsed_source_artifact_id!r} "
+                f"has malformed location {location!r}"
+            )
+        area_name, _, rest = location.partition("/")
+        # Walk relative to the workspace's compiled area. The compile
+        # activity emitted parsed_source under WorkspaceArea.COMPILED
+        # via `_handle_artifact_output`.
+        # NOTE: ProcessingService doesn't expose its workspace
+        # resolver directly; reach in via the registry's ctx-bound
+        # path resolution (we use the same `area_name` the registry
+        # wrote).
+        try:
+            area = WorkspaceArea(area_name)
+        except ValueError as exc:
+            raise UnknownProcessorError(
+                f"parsed_source artifact area {area_name!r} not recognised"
+            ) from exc
+        # The ProcessingService has the workspace resolver bound;
+        # delegate the read through it via a small helper.
+        artifact_path = (
+            self._processing._workspace.area(ctx, area) / rest  # noqa: SLF001
+        )
+        try:
+            payload = json.loads(
+                Path(artifact_path).read_text(encoding="utf-8"),
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise UnknownProcessorError(
+                f"failed to read parsed_source artifact {input.parsed_source_artifact_id!r}: {exc}"
+            ) from exc
+        content_list = payload.get("content_list") or []
+        doc_id = str(payload.get("doc_id") or input.document_id)
+
+        self._report_step_start(
+            ctx, input, stage="INSERT_CONTENT", step="insert_content",
+            engine=input.processor_kind,
+        )
+        try:
+            with _heartbeating({
+                "stage": "insert_content",
+                "document_id": input.document_id,
+                "processor_kind": input.processor_kind,
+            }):
+                result = self._processing.insert_content(
+                    ctx,
+                    compiler,
+                    document,
+                    content_list=content_list,
+                    doc_id=doc_id,
+                    source_filename=input.source_filename,
+                    actor=input.actor,
+                    correlation_id=input.correlation_id,
+                )
+        except Exception as exc:
+            self._report_step_failure(
+                ctx, input, stage="INSERT_CONTENT", step="insert_content",
+                exc=exc,
+            )
+            raise
+        _safe_heartbeat({
+            "stage": "insert_content",
+            "document_id": input.document_id,
+            "status": result.status.value,
+        })
+        self._report_step_outcome(
+            ctx, input, stage="INSERT_CONTENT", step="insert_content",
+            result=result,
+        )
+        return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_ENRICH)
     def enrich(self, input: EnrichActivityInput) -> ArtifactActivityResult:
@@ -633,12 +748,14 @@ class ProcessingActivities:
 # reaches 95% so `_persist_run_terminal` can land the final 100%.
 _STAGE_START_PROGRESS: dict[str, int] = {
     "COMPILE": 10,
+    "INSERT_CONTENT": 35,
     "ENRICH": 45,
     "GRAPH": 65,
     "INDEX": 85,
 }
 _STAGE_END_PROGRESS: dict[str, int] = {
-    "COMPILE": 40,
+    "COMPILE": 30,
+    "INSERT_CONTENT": 42,
     "ENRICH": 60,
     "GRAPH": 80,
     "INDEX": 95,
@@ -792,12 +909,22 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
         }
         if picked:
             content_stats = picked
+    # Surface the parsed_source artifact id when present — split-mode
+    # handoff for the workflow's `insert_content` activity. In legacy
+    # `complete` mode the bridge produces chunk + graph artifacts only;
+    # this scan returns None and the workflow keeps the existing path.
+    parsed_source_artifact_id: str | None = None
+    for record in result.artifacts:
+        if getattr(record, "kind", None) == ARTIFACT_KIND_PARSED_SOURCE:
+            parsed_source_artifact_id = record.artifact_id
+            break
     return ArtifactActivityResult(
         status=result.status.value,
         artifact_ids=[r.artifact_id for r in result.artifacts],
         error=result.error,
         message=result.message,
         content_stats=content_stats,
+        parsed_source_artifact_id=parsed_source_artifact_id,
     )
 
 

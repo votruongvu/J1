@@ -104,6 +104,12 @@ class ArtifactActivityResult:
     # content rather than extension heuristics. None = processor did
     # not populate; planner falls back to the deterministic profile.
     content_stats: dict[str, Any] | None = None
+    # Split-mode handoff: id of the `parsed_source` artifact when the
+    # compile activity ran in `split_parse_insert` mode. The workflow
+    # passes this to the `insert_content` activity so it can read the
+    # pre-parsed content_list back without re-parsing the source. None
+    # in legacy `complete` mode (compile produces chunks directly).
+    parsed_source_artifact_id: str | None = None
 
 
 @dataclass(frozen=True)

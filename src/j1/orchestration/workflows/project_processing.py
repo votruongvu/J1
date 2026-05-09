@@ -15,6 +15,7 @@ with workflow.unsafe.imports_passed_through():
         FinalizeInput,
         GraphActivityInput,
         IndexActivityInput,
+        InsertContentActivityInput,
         ProcessingActivityResult,
         ProjectScope,
         SetDocumentStatusInput,
@@ -107,12 +108,21 @@ COMPILE_ACTIVITY_TIMEOUT = timedelta(hours=1)
 OPERATION_VALIDATE = "validate"
 OPERATION_LIST_DOCUMENTS = "list_documents"
 OPERATION_COMPILE = "compile"
+OPERATION_INSERT_CONTENT = "insert_content"
 OPERATION_ENRICH = "enrich"
 OPERATION_BUILD_GRAPH = "build_graph"
 OPERATION_INDEX = "index"
 OPERATION_FINALIZE = "finalize"
 OPERATION_BUDGET_CHECK = "budget_check"
 OPERATION_REVIEW_GATE = "review_gate"
+
+# Pipeline mode values mirrored from `RAGAnythingSettings`. The
+# workflow code branches on these strings to decide whether to invoke
+# the split-mode `insert_content` activity. Hard-coding the literals
+# avoids pulling the raganything-specific module into a workflow
+# that should stay provider-agnostic.
+PIPELINE_MODE_COMPLETE = "complete"
+PIPELINE_MODE_SPLIT_PARSE_INSERT = "split_parse_insert"
 
 # Temporal search-attribute names. Must match the registrations in
 # `deploy/dev/docker-compose.yml` (temporal-init service) — writing
@@ -216,6 +226,24 @@ class ProjectProcessingRequest:
     #   with a warning recorded on `domain_context`.
     domain_override: str | None = None
     workspace_default_domain: str | None = None
+    # Pipeline mode for the compile/insert split. Mirrors
+    # `RAGAnythingSettings.pipeline_mode` and is propagated by the
+    # REST adapter from raganything settings. Two values are
+    # recognised:
+    #   * "complete" (default) — the compile activity runs the
+    #     legacy single-shot `process_document_complete` path; no
+    #     separate insert step; chunk+graph artifacts are produced
+    #     by compile itself.
+    #   * "split_parse_insert" — the compile activity parses ONLY
+    #     and registers a `parsed_source` artifact; the workflow
+    #     then runs `insert_content` (RAGAnything.insert_content_list)
+    #     after the post-compile planning step. Chunk artifacts come
+    #     from insert; the upstream `parsed_source` is what unlocks
+    #     the Content Inventory tab.
+    # Defaults to "complete" so existing tests + deployments keep
+    # working unchanged. Production opts into split mode via
+    # `J1_RAGANYTHING_PIPELINE_MODE=split_parse_insert`.
+    pipeline_mode: str = "complete"
 
 
 @dataclass(frozen=True)
@@ -1676,37 +1704,125 @@ class ProjectProcessingWorkflow:
                     },
                 )
 
-        # ── Synthetic step: Generate Knowledge Chunks ────────────
-        # Like Build Content Inventory above, knowledge chunks are
-        # produced inside the compile activity. We synthesise the
-        # step.* events HERE — after the Execution Plan is in hand —
-        # so the user-facing ordering reads "Plan → Chunks", even
-        # though the chunk artifacts already existed when compile
-        # returned. The Chunks tab unlocks on the chunk artifacts'
-        # presence, which has been true since compile completed; the
-        # event ordering tells operators when each step "logically"
-        # finished from the user's point of view.
-        await self._emit_step_lifecycle(
-            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
-            step="generate_knowledge_chunks", action="started",
-        )
-        self._record_step(
-            step="generate_knowledge_chunks",
-            status=StepStatus.COMPLETED,
-            required=True,
-            source=StepSource.CALLER,
-            artifact_count=len(compile_result.artifact_ids),
-            metadata={
-                "document_id": document_id,
-                "synthetic": True,
-                "synthesised_from": "compile",
-            },
-        )
-        await self._emit_step_lifecycle(
-            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
-            step="generate_knowledge_chunks", action="completed",
-            artifact_count=len(compile_result.artifact_ids),
-        )
+        # ── Generate Knowledge Chunks ────────────────────────────
+        # Two paths:
+        #
+        #   * `pipeline_mode == "complete"` (legacy default):
+        #     compile already produced chunk artifacts; emit
+        #     synthetic step.* events so the user-facing ordering
+        #     reads "Plan → Chunks" even though chunks landed at
+        #     compile-time. The Chunks tab has been unlocked since
+        #     compile.completed; the events here only set the
+        #     timeline ordering.
+        #
+        #   * `pipeline_mode == "split_parse_insert"`:
+        #     compile parsed the source and registered a
+        #     `parsed_source` artifact only — no chunks yet. The
+        #     workflow now runs the `insert_content` activity which
+        #     calls `RAGAnything.insert_content_list` and produces
+        #     real chunk drafts. Step.* events wrap the activity
+        #     execution so the timeline shows actual work, not a
+        #     synthetic.
+        if (
+            request.pipeline_mode == PIPELINE_MODE_SPLIT_PARSE_INSERT
+            and compile_result.parsed_source_artifact_id
+        ):
+            insert_op = f"{OPERATION_INSERT_CONTENT}:{document_id}"
+            self._begin(insert_op)
+            try:
+                insert_result: ArtifactActivityResult = (
+                    await workflow.execute_activity_method(
+                        ProcessingActivities.insert_content,
+                        InsertContentActivityInput(
+                            scope=request.scope,
+                            document_id=document_id,
+                            processor_kind=request.compiler_kind,
+                            parsed_source_artifact_id=(
+                                compile_result.parsed_source_artifact_id
+                            ),
+                            actor=request.actor,
+                            correlation_id=request.correlation_id,
+                        ),
+                        # Insert drives chunking + LightRAG graph
+                        # storage; matches compile's heartbeat
+                        # ceiling because it can be similarly long
+                        # on large docs.
+                        start_to_close_timeout=COMPILE_ACTIVITY_TIMEOUT,
+                        heartbeat_timeout=HEARTBEAT_TIMEOUT,
+                        retry_policy=DEFAULT_RETRY.to_temporal(),
+                    )
+                )
+            except Exception as exc:
+                self._record_step(
+                    step="generate_knowledge_chunks",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason=str(exc),
+                    error=StepError(
+                        type=type(exc).__name__,
+                        message=str(exc),
+                        retryable=False,
+                    ),
+                    metadata={"document_id": document_id},
+                )
+                raise
+            if insert_result.status != "succeeded":
+                self._record_step(
+                    step="generate_knowledge_chunks",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason=insert_result.error or "insert_content activity returned non-succeeded status",
+                    error=StepError(
+                        type="ActivityFailure",
+                        message=insert_result.error or "unspecified",
+                        retryable=False,
+                    ),
+                    metadata={"document_id": document_id},
+                )
+                raise _BusinessRejection(
+                    f"insert_content failed for {document_id}: {insert_result.error}"
+                )
+            self._produced_artifact_ids.extend(insert_result.artifact_ids)
+            self._record_step(
+                step="generate_knowledge_chunks",
+                status=StepStatus.COMPLETED,
+                required=True,
+                source=StepSource.CALLER,
+                artifact_count=len(insert_result.artifact_ids),
+                metadata={
+                    "document_id": document_id,
+                    "synthetic": False,
+                    "pipeline_mode": PIPELINE_MODE_SPLIT_PARSE_INSERT,
+                },
+            )
+            self._complete(insert_op)
+        else:
+            # Legacy synthetic path. Keep behaviour identical to
+            # before split mode existed so deployments running
+            # `complete` mode see no timeline change.
+            await self._emit_step_lifecycle(
+                request, stage="GENERATE_KNOWLEDGE_CHUNKS",
+                step="generate_knowledge_chunks", action="started",
+            )
+            self._record_step(
+                step="generate_knowledge_chunks",
+                status=StepStatus.COMPLETED,
+                required=True,
+                source=StepSource.CALLER,
+                artifact_count=len(compile_result.artifact_ids),
+                metadata={
+                    "document_id": document_id,
+                    "synthetic": True,
+                    "synthesised_from": "compile",
+                },
+            )
+            await self._emit_step_lifecycle(
+                request, stage="GENERATE_KNOWLEDGE_CHUNKS",
+                step="generate_knowledge_chunks", action="completed",
+                artifact_count=len(compile_result.artifact_ids),
+            )
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:
