@@ -891,6 +891,47 @@ def default_insert_content(
                 "RAGAnything failed to initialize LightRAG: "
                 f"{init.get('error', 'unknown error')}"
             )
+        # Idempotent insert: LightRAG keeps a `kv_store_doc_status.json`
+        # entry per `doc_id`. Any prior PENDING / FAILED record for
+        # this doc (e.g. a previous run that crashed mid-embedding)
+        # makes the next `insert_content_list` short-circuit with
+        # "Duplicate document detected; preserving failed entries"
+        # — chunks never land, no entity extraction runs, the graph
+        # never builds.
+        #
+        # Two-phase cleanup:
+        #   1. `adelete_by_doc_id` — best-effort cascade through chunks,
+        #      graph, vector stores, LLM cache. Early-returns with
+        #      "Document not found" if `doc_status.get_by_id(doc_id)`
+        #      returns a falsy value, which happens when a previous
+        #      crash left an EMPTY doc_status entry behind.
+        #   2. `doc_status.delete([doc_id])` — forcibly pop the key
+        #      from the in-memory map. Required because `filter_keys`
+        #      (LightRAG's de-dupe gate) consults `_data.keys()`
+        #      regardless of value-truthiness; a stale empty entry
+        #      otherwise still triggers "Duplicate document detected".
+        # `delete_llm_cache=False` keeps the entity-extraction LLM
+        # cache for graph rebuild.
+        try:
+            await rag.lightrag.adelete_by_doc_id(
+                doc_id, delete_llm_cache=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — doc may not exist; that's fine
+            _log.debug(
+                "split-mode insert: adelete_by_doc_id no-op for doc_id=%s: %s",
+                doc_id, exc,
+            )
+        try:
+            await rag.lightrag.doc_status.delete([doc_id])
+        except Exception as exc:  # noqa: BLE001 — pop is value-agnostic
+            _log.debug(
+                "split-mode insert: doc_status.delete no-op for doc_id=%s: %s",
+                doc_id, exc,
+            )
+        _log.info(
+            "split-mode insert: cleared prior LightRAG state for doc_id=%s",
+            doc_id,
+        )
         await rag.insert_content_list(
             content_list=content_list,
             file_path=source_filename or request.document_id,
