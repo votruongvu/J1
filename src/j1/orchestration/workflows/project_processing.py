@@ -37,6 +37,7 @@ with workflow.unsafe.imports_passed_through():
         ReportPlanGeneratedInput,
         ReportPlanRevisedInput,
         ReportRunTerminalInput,
+        ReportStepLifecycleInput,
         ReportStepSkippedInput,
         RunsActivities,
         StepSummaryEntry,
@@ -1058,6 +1059,45 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001
             pass
 
+    async def _emit_step_lifecycle(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        stage: str,
+        step: str,
+        action: str,
+        artifact_count: int = 0,
+        engine: str | None = None,
+    ) -> None:
+        """Synthesise a `step.started` / `step.completed` event for
+        a user-facing sub-step that doesn't run as a standalone
+        activity.
+
+        Used for `build_content_inventory` and `generate_knowledge_chunks`
+        — both happen inside the compile activity but the FE
+        renders them as separate steps. Best-effort like every
+        emit helper; failure never blocks the workflow."""
+        if not request.correlation_id:
+            return
+        try:
+            await workflow.execute_activity_method(
+                RunsActivities.report_step_lifecycle,
+                ReportStepLifecycleInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    stage=stage,
+                    step=step,
+                    action=action,
+                    artifact_count=artifact_count,
+                    engine=engine,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _emit_plan_generated(
         self,
         request: ProjectProcessingRequest,
@@ -1505,6 +1545,38 @@ class ProjectProcessingWorkflow:
         )
         self._complete(compile_op)
 
+        # ── Synthetic step: Build Content Inventory ──────────────
+        # The compile activity bundles parse + chunk in one shot
+        # (RAGAnything's `process_document_complete` is one call),
+        # but the user-facing flow lists Build Content Inventory as
+        # an independent step. We synthesise its lifecycle events
+        # here — immediately after compile.completed — so the
+        # timeline shows the right ordering even though the work
+        # was actually done inside compile. The Content Inventory
+        # tab unlocks on the underlying parsed-content manifest
+        # artifact (which is already present at this point).
+        await self._emit_step_lifecycle(
+            request, stage="BUILD_CONTENT_INVENTORY",
+            step="build_content_inventory", action="started",
+        )
+        self._record_step(
+            step="build_content_inventory",
+            status=StepStatus.COMPLETED,
+            required=True,
+            source=StepSource.CALLER,
+            artifact_count=len(compile_result.artifact_ids),
+            metadata={
+                "document_id": document_id,
+                "synthetic": True,
+                "synthesised_from": "compile",
+            },
+        )
+        await self._emit_step_lifecycle(
+            request, stage="BUILD_CONTENT_INVENTORY",
+            step="build_content_inventory", action="completed",
+            artifact_count=len(compile_result.artifact_ids),
+        )
+
         # Post-compile replan. The compile activity returns
         # `content_stats` with parser-derived signals (image/table/
         # equation counts, page count, scanned-page hints). Re-feed
@@ -1587,6 +1659,38 @@ class ProjectProcessingWorkflow:
                         },
                     },
                 )
+
+        # ── Synthetic step: Generate Knowledge Chunks ────────────
+        # Like Build Content Inventory above, knowledge chunks are
+        # produced inside the compile activity. We synthesise the
+        # step.* events HERE — after the Execution Plan is in hand —
+        # so the user-facing ordering reads "Plan → Chunks", even
+        # though the chunk artifacts already existed when compile
+        # returned. The Chunks tab unlocks on the chunk artifacts'
+        # presence, which has been true since compile completed; the
+        # event ordering tells operators when each step "logically"
+        # finished from the user's point of view.
+        await self._emit_step_lifecycle(
+            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
+            step="generate_knowledge_chunks", action="started",
+        )
+        self._record_step(
+            step="generate_knowledge_chunks",
+            status=StepStatus.COMPLETED,
+            required=True,
+            source=StepSource.CALLER,
+            artifact_count=len(compile_result.artifact_ids),
+            metadata={
+                "document_id": document_id,
+                "synthetic": True,
+                "synthesised_from": "compile",
+            },
+        )
+        await self._emit_step_lifecycle(
+            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
+            step="generate_knowledge_chunks", action="completed",
+            artifact_count=len(compile_result.artifact_ids),
+        )
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:

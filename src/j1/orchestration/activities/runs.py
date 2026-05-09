@@ -27,15 +27,18 @@ ACTIVITY_REPORT_RUN_TERMINAL = "j1.runs.report_terminal"
 ACTIVITY_REPORT_STEP_SKIPPED = "j1.runs.report_step_skipped"
 ACTIVITY_REPORT_PLAN_GENERATED = "j1.runs.report_plan_generated"
 ACTIVITY_REPORT_PLAN_REVISED = "j1.runs.report_plan_revised"
+ACTIVITY_REPORT_STEP_LIFECYCLE = "j1.runs.report_step_lifecycle"
 
 __all__ = [
     "ACTIVITY_REPORT_PLAN_GENERATED",
     "ACTIVITY_REPORT_PLAN_REVISED",
     "ACTIVITY_REPORT_RUN_TERMINAL",
+    "ACTIVITY_REPORT_STEP_LIFECYCLE",
     "ACTIVITY_REPORT_STEP_SKIPPED",
     "ReportPlanGeneratedInput",
     "ReportPlanRevisedInput",
     "ReportRunTerminalInput",
+    "ReportStepLifecycleInput",
     "ReportStepSkippedInput",
     "RunsActivities",
     "StepSummaryEntry",
@@ -128,6 +131,35 @@ class ReportStepSkippedInput:
     actor: str = "system"
 
 
+@dataclass(frozen=True)
+class ReportStepLifecycleInput:
+    """Workflow → activity payload for synthetic `step.started` /
+    `step.completed` events.
+
+    Some user-facing steps (e.g. `build_content_inventory`,
+    `generate_knowledge_chunks`) don't run as standalone activities
+    — they're sub-phases of `compile`. The workflow synthesises
+    their step.* events through this activity so the audit timeline,
+    SSE stream, and FE all see them as first-class steps with
+    accurate ordering. The underlying compile activity still emits
+    its own `compile` events; the synthetic events are additive
+    and use distinct step names so consumers don't see duplicates.
+    """
+
+    scope: ProjectScope
+    run_id: str
+    stage: str
+    step: str
+    # `started` or `completed`. Failed/skipped sub-phases keep
+    # using the existing dedicated activities — keeping this
+    # action-string narrow guards against the workflow synthesising
+    # contradictory events.
+    action: str
+    artifact_count: int = 0
+    engine: str | None = None
+    actor: str = "system"
+
+
 class RunsActivities:
     """Bundle of run-progress activities. Registered alongside the
     other activity classes at worker startup. The workflow calls
@@ -156,6 +188,7 @@ class RunsActivities:
         return [
             self.report_run_terminal,
             self.report_step_skipped,
+            self.report_step_lifecycle,
             self.report_plan_generated,
             self.report_plan_revised,
         ]
@@ -177,6 +210,47 @@ class RunsActivities:
                 plan_payload=dict(input.plan_payload),
                 actor=input.actor,
             )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+            pass
+
+    @activity.defn(name=ACTIVITY_REPORT_STEP_LIFECYCLE)
+    def report_step_lifecycle(
+        self, input: ReportStepLifecycleInput,
+    ) -> None:
+        """Write a synthetic `step.started` / `step.completed` to
+        the audit log.
+
+        Synthesised by the workflow for user-facing sub-steps that
+        don't have their own activity (e.g. `build_content_inventory`,
+        `generate_knowledge_chunks` — both happen inside compile but
+        the FE renders them as separate steps). Best-effort like
+        every reporter activity — failure is logged, never raised."""
+        if self._reporter is None:
+            return
+        ctx = input.scope.to_context()
+        try:
+            if input.action == "started":
+                self._reporter.report_step_started(
+                    ctx,
+                    run_id=input.run_id,
+                    stage=input.stage,
+                    step=input.step,
+                    engine=input.engine,
+                    actor=input.actor,
+                )
+            elif input.action == "completed":
+                self._reporter.report_step_completed(
+                    ctx,
+                    run_id=input.run_id,
+                    stage=input.stage,
+                    step=input.step,
+                    artifact_count=input.artifact_count,
+                    actor=input.actor,
+                )
+            # Unknown actions are ignored — the contract is narrow
+            # by design (started / completed only). Failures + skips
+            # use their own dedicated activities so callers can't
+            # synthesise contradictory state via this entrypoint.
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow
             pass
 
