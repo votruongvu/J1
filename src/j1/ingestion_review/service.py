@@ -188,6 +188,19 @@ class IngestionResultReviewService:
         artifacts = self._resolve_run_artifacts(ctx, run)
         warnings = self._read_warnings(ctx, run_id)
         planning_present = self._planning_event_present(ctx, run_id)
+        # Diagnostic log — when a tab is showing as empty/disabled but
+        # the artifact appears in Raw Artifacts, this line is the
+        # one-shot view of "what kinds did the resolver actually find
+        # for this run, and was the planner audit event there?"
+        # Operators can grep `summarize_run` in the API logs and
+        # eyeball the kinds list against availableViews.
+        import logging as _logging
+        _logging.getLogger("j1.ingestion_review").info(
+            "summarize_run: run_id=%s status=%s kinds=%s planning_present=%s",
+            run_id, run.status,
+            sorted({a.kind for a in artifacts}),
+            planning_present,
+        )
 
         steps = _coerce_step_results(run.metadata.get("step_results"))
         artifact_counts = _count_by_kind(artifacts)

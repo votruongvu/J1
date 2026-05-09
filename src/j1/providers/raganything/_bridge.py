@@ -965,9 +965,12 @@ def default_insert_content(
         )
 
     # Surface chunks + graph artifacts the LightRAG insert produced.
+    # Filter by `doc_id` so chunks from prior inserts of OTHER files
+    # (LightRAG shares one workdir across documents) don't leak into
+    # this run's Knowledge Chunks tab.
     drafts: list[ArtifactDraft] = []
     drafts.extend(_chunk_drafts_from_storage(
-        storage_dir, document_id=request.document_id,
+        storage_dir, document_id=request.document_id, doc_id=doc_id,
     ))
     # Graph artifacts: LightRAG writes the entity/relation graph
     # alongside the chunk store. We surface them here even when the
@@ -1858,19 +1861,29 @@ def _chunk_drafts_from_storage(
     storage_dir: Path,
     *,
     document_id: str,
+    doc_id: str | None = None,
 ) -> list[ArtifactDraft]:
     """Project LightRAG's `kv_store_text_chunks.json` into canonical
-    `kind="chunk"` ArtifactDrafts — one per chunk entry.
+    `kind="chunk"` ArtifactDrafts — one per chunk entry **belonging
+    to the document we just inserted**.
 
-    The file is a top-level dict keyed by chunk id; each value carries
-    `{tokens, content, full_doc_id, chunk_order_index, file_path}`.
-    We map onto the neutral chunk shape the `ChunkProjector` expects
-    (`{chunkId, body, tokenCount}`) so the Results > Chunks tab gets
-    real reviewable text from real runs.
+    LightRAG's storage is shared across all documents in the workdir
+    (`kv_store_text_chunks.json` is a top-level dict of `chunk_id →
+    {tokens, content, full_doc_id, chunk_order_index, file_path}`).
+    Without filtering, every prior insert's chunks would surface
+    under the current run — exactly the "Chunks tab shows another
+    file" bug operators hit when they re-run after a failed insert.
 
-    Without this, the Chunks tab is correctly empty for every run
-    (no producer in the dev stack emitted `kind="chunk"`) — even
-    though LightRAG had the chunks on disk all along.
+    Filter rule: `entry.full_doc_id == doc_id` (LightRAG's id, which
+    we pass through verbatim from `parse_document` / `insert_content_list`).
+    When `doc_id` is None we fall back to including every chunk —
+    legacy callers + tests that don't pre-resolve the LightRAG doc
+    id keep working unchanged. Production split-mode + complete-mode
+    paths always pass `doc_id` so cross-document leakage is impossible.
+
+    Without this projector, the Chunks tab is correctly empty for
+    every run (no producer in the dev stack emitted `kind="chunk"`)
+    — even though LightRAG had the chunks on disk all along.
     """
     drafts: list[ArtifactDraft] = []
     if not storage_dir.exists():
@@ -1895,6 +1908,13 @@ def _chunk_drafts_from_storage(
     for chunk_id, entry in payload.items():
         if not isinstance(entry, dict):
             continue
+        # Doc-scoped filter: only include chunks whose `full_doc_id`
+        # matches the document we just inserted. Without this, the
+        # shared LightRAG workdir leaks chunks across documents.
+        if doc_id is not None:
+            chunk_full_doc_id = entry.get("full_doc_id")
+            if chunk_full_doc_id != doc_id:
+                continue
         body = entry.get("content")
         if not isinstance(body, str) or not body.strip():
             # Skip empty chunks — LightRAG sometimes emits

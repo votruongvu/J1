@@ -311,7 +311,7 @@ def test_insert_content_drives_insert_content_list(tmp_path, monkeypatch):
     # LightRAG kv_store_text_chunks.json on disk.
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._chunk_drafts_from_storage",
-        lambda storage_dir, document_id: [],
+        lambda storage_dir, document_id, doc_id=None: [],
     )
 
     result = default_insert_content(
