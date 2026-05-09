@@ -80,8 +80,10 @@ def test_wrapper_forwards_system_prompt():
 
     assert len(client.calls) == 1
     assert client.calls[0]["system_prompt"] == "ENTITY EXTRACTION TEMPLATE"
-    # Prompt arg unchanged when no history.
-    assert client.calls[0]["prompt"] == "user content"
+    # User content is forwarded. Wrapper prepends `/no_think` to
+    # suppress qwen3 reasoning; original content must remain.
+    assert "user content" in client.calls[0]["prompt"]
+    assert "/no_think" in client.calls[0]["prompt"]
 
 
 def test_wrapper_folds_history_into_prompt():
@@ -115,14 +117,15 @@ def test_wrapper_folds_history_into_prompt():
 
 def test_wrapper_skips_empty_history():
     """`history_messages=[]` or None → wrapper passes prompt
-    through unchanged. No accidental 'USER:' prefix on the
-    first turn."""
+    through without folding history (no 'USER:' label). The
+    `/no_think` prefix is unconditional; the user's original
+    content must still be present and unaltered."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
     _run(callable_(prompt="just user", system_prompt="sys"))
 
-    assert client.calls[0]["prompt"] == "just user"
+    assert "just user" in client.calls[0]["prompt"]
     assert "USER:" not in client.calls[0]["prompt"]
 
 

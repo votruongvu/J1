@@ -101,6 +101,8 @@ Do not include extra prose outside JSON.
 
 
 PLANNING_LLM_USER_PROMPT = """\
+/no_think
+
 Analyze the following J1 ingestion planning context and return a Planning Report plus executable Execution Plan.
 
 Input:
@@ -109,6 +111,15 @@ Input:
 
 Return a JSON object that matches the J1 PlanningResult schema (top-level keys: planning_version, recommended_profile, confidence, document_understanding, decision_summary, content_report, quality_report, execution_plan, rule_based_comparison, warnings, next_actions). Every enabled or disabled step in execution_plan.steps MUST carry a non-empty reason. Use only the page numbers present in the planning context. Return JSON only — no prose or markdown.
 """
+
+# `/no_think` — qwen3 family hint to skip the chain-of-thought
+# reasoning block. Without it, qwen3.5-9b emits up to 2K thinking
+# tokens BEFORE the visible answer; hitting `max_tokens=2048` cap
+# (LM Studio default) leaves the response.content empty and the
+# planner falls back to rule-based even though the model "did
+# something". The `/no_think` token is recognised by qwen3 chat
+# templates and ignored by other models, so it's a safe hint to
+# embed in the prompt unconditionally.
 
 
 class PlanningLLMError(RuntimeError):

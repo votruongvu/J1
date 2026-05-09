@@ -778,4 +778,9 @@ def test_make_text_callable_returns_async_callable_that_unwraps_usage():
     callable_ = _make_text_callable(_FakeText())
     result = asyncio.run(callable_("hi there"))
     assert result == "hello back"
-    assert seen == [{"prompt": "hi there", "system_prompt": None}]
+    # Wrapper prepends `/no_think` (qwen3 reasoning suppression) but
+    # the original user content must still be present unmodified.
+    assert len(seen) == 1
+    assert "hi there" in seen[0]["prompt"]
+    assert "/no_think" in seen[0]["prompt"]
+    assert seen[0]["system_prompt"] is None

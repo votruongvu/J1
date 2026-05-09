@@ -1452,6 +1452,18 @@ def _make_text_callable(text_client) -> Callable[..., Any]:
             )
             if history_text:
                 full_prompt = f"{history_text}\n\nUSER: {prompt}"
+        # Prepend `/no_think` so qwen3 models skip their chain-of-
+        # thought reasoning block. Without it, qwen3 emits up to
+        # ~2K reasoning tokens BEFORE the visible answer; on local
+        # 2048-cap setups (LM Studio default), the answer never
+        # arrives — `content=""`, `finish_reason=length`, and
+        # LightRAG's entity-extraction parser sees an empty result
+        # ("Complete delimiter can not be found in extraction
+        # result; 0 Ent + 0 Rel"). Models that don't recognise
+        # `/no_think` (most non-qwen3 chat templates) just treat it
+        # as a leading comment and ignore it. Safe to prepend
+        # unconditionally.
+        full_prompt = f"/no_think\n\n{full_prompt}"
         text, _usage = await asyncio.to_thread(
             text_client.generate,
             full_prompt,
