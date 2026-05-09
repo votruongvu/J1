@@ -20,11 +20,18 @@ ARTIFACT_KIND_COMPILED_TEXT = "compiled.text"
 # it without re-walking the storage_dir. Independent of vendor
 # internals — see `j1.processing.manifest` for the canonical schema.
 ARTIFACT_KIND_PARSED_CONTENT_MANIFEST = "parsed_content_manifest"
+# Post-compile Processing Plan artifact. Persisted by the planning
+# activity once compile + content inventory are available; carries
+# the rule-based assessment, the document-understanding summary, and
+# (when LLM-assisted planning ran) the validated LLM output. Read by
+# `/ingestion-runs/{id}/planning` and the FE Planning Report tab.
+ARTIFACT_KIND_PLANNING_RESULT = "planning_result"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
+    "ARTIFACT_KIND_PLANNING_RESULT",
     "ArtifactDraft",
     "ArtifactProcessingResult",
     "CostBreakdown",

@@ -573,16 +573,23 @@ class PlanningResultDTO(CamelModel):
     """Top-level Planning Report payload.
 
     Returned by `GET /ingestion-runs/{run_id}/planning`. Composed from
-    the `plan.generated` audit entry, the parsed-content manifest
-    artifact (when available), and the deployment's planning
-    settings.
+    the `planning_result` artifact (preferred) or the
+    `plan.generated` audit entry as a fallback.
 
     `status` semantics:
       * `"completed"` — a plan was generated and the report is
         populated.
-      * `"unavailable"` — no `plan.generated` event exists for this
-        run (planner disabled, run hasn't reached the assessment
-        stage yet, or this is a legacy run).
+      * `"unavailable"` — no plan exists for this run (planner
+        disabled, run hasn't reached the assessment stage yet, or
+        this is a legacy run).
+
+    `source` reflects how the plan was produced:
+      * `"rule_based"` — deterministic post-compile assessment.
+      * `"llm"` — LLM-assisted plan accepted.
+      * `"rule_based_fallback"` — LLM ran but failed validation;
+        rule-based output was kept.
+      * `"audit_log"` — projection from the legacy `plan.generated`
+        event (no post-compile artifact for this run).
     """
 
     run_id: str
@@ -591,6 +598,8 @@ class PlanningResultDTO(CamelModel):
     status: str
     generated_at: str | None = None
     revised: bool = False
+    source: str | None = None
+    planning_phase: str | None = None
     assessment: PlanningAssessmentDTO | None = None
     decisions: list[PlanningStepDecisionDTO] = Field(default_factory=list)
     digest: PlanningContentDigestDTO | None = None
@@ -598,3 +607,15 @@ class PlanningResultDTO(CamelModel):
         default_factory=lambda: PlanningLLMRecommendationDTO(status="disabled"),
     )
     unavailable_reason: str | None = None
+    # Post-compile fields. All optional so older bundles + audit-log-only
+    # responses keep working.
+    document_understanding: dict[str, Any] | None = None
+    decision_summary: dict[str, Any] | None = None
+    content_report: dict[str, Any] | None = None
+    quality_report: dict[str, Any] | None = None
+    execution_plan: dict[str, Any] | None = None
+    rule_based_assessment: dict[str, Any] | None = None
+    rule_based_comparison: dict[str, Any] | None = None
+    next_actions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    raw_artifact_id: str | None = None

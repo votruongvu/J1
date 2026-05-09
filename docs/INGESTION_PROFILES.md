@@ -8,17 +8,48 @@ This document is the operator's lens onto J1's existing ingestion pipeline — i
 
 ## 1. Overview
 
-J1 ingestion runs through six stages:
+J1 ingestion runs through these stages:
 
 ```
-upload → profile → plan → compile → (post-compile replan) → enrich → graph → index → review
+upload → profile → initial plan → compile → content inventory →
+  post-compile planning → (selective) enrich → graph → index → review
 ```
 
-The framework does **not** run every stage for every document. The planner reads cheap deterministic signals (file extension, size, native-text PDF detection) and picks an `IngestMode` that determines which optional stages run. The compile stage is always required; everything else is gated by the plan.
+The framework does **not** run every stage for every document. The **initial planner** (`DefaultIngestPlanner`) reads cheap deterministic signals (file extension, size, native-text PDF detection) and picks an `IngestMode` that determines which optional stages run. The compile stage is always required; everything else is gated by the plan.
 
-After compile, the parser (RAGAnything / MinerU) returns content statistics — image count, table count, scanned-page hints — that may not have been visible from the deterministic profile alone. The workflow re-runs the planner with these post-compile signals and emits a `j1.progress.plan.revised` event when the new plan unlocks downstream stages the original plan skipped.
+After compile, the parser (RAGAnything / MinerU) returns content statistics — image count, table count, scanned-page hints — that may not have been visible from the deterministic profile alone. Two things happen with that signal:
 
-The parser-output boundary is captured as a `ParsedContentManifest` artifact, persisted alongside compile output. Downstream consumers (post-compile replan, the Quality tab, future tools) read it without re-walking the storage directory.
+1. **Plan revision** — the workflow re-runs `DefaultIngestPlanner` with the new signals via `_merge_compile_signals` and emits `j1.progress.plan.revised` when the resulting plan unlocks (or removes) optional stages.
+2. **Post-compile Processing Plan (`planning_result.json`)** — the `PlanningActivities.build_planning_result` activity composes Document Understanding + Lightweight Content Digest + Rule-based Post-Compile Assessment, optionally consults a planner LLM, validates the output, and persists the result as a `planning_result` artifact. This drives the Planning Report tab and provides per-step `enabled / scope / pages / reason` hints downstream.
+
+The parser-output boundary is captured as a `ParsedContentManifest` artifact, persisted alongside compile output. Downstream consumers (post-compile planning, the Quality tab, future tools) read it without re-walking the storage directory.
+
+### Initial plan vs. Post-compile Processing Plan
+
+| | Initial plan | Post-compile Processing Plan |
+|---|---|---|
+| **When** | Pre-compile, after deterministic profile | After compile + content inventory |
+| **Inputs** | `DocumentProfile` (extension, size, page count, OCR hints) | Initial plan + parsed-content manifest + Document Understanding |
+| **Output** | `IngestPlan` audit event | `planning_result.json` artifact + `plan.revised` event |
+| **Surfaces** | `GET /ingestion-runs/{id}/plan` (legacy plan card) | `GET /ingestion-runs/{id}/planning` (Planning Report tab) |
+| **Drives** | Coarse stage gates (enrich/graph/index on/off) | Per-step recommendations (chunking strategy, table/vision pages, requirement/risk/quality/graph) |
+| **Override-ability** | Caller-supplied `compilerKind` etc. always wins | Recommendations honor caller overrides; LLM-assist may override rules |
+| **LLM cost** | None (deterministic) | None when `J1_LLM_PLANNING_ENABLED=false` (default) |
+
+### Document Understanding
+
+The post-compile planner runs a "title-first" Document Understanding pass to infer:
+
+* What kind of document this is (`document_type` from a 25-entry taxonomy).
+* What it's mainly about (`primary_topic`, `business_domain`).
+* Who it's for (`intended_audience`).
+* Which analysis bias is appropriate (prefer requirement/risk/table/graph/visual extraction).
+
+Title sources are walked in declining-quality order — explicit metadata title, parser title block, first heading, filename, then early-page heading text. A title is graded `clear / ambiguous / generic / missing`; when the title is unclear, the planner inspects up to `J1_PLANNING_MAX_EARLY_PAGES` of digest content. The full document is **never** read.
+
+### Why this matters: cost control through skipping
+
+The post-compile plan is a "decide when NOT to run LLM" mechanism. Same baseline retrieval (chunking + embedding + indexing always run); expensive enrichers (vision, graph, requirement / risk / quality extraction) gate on type-aware evidence. A clean text knowledge article gets fast profile + no enrichment; an SRS gets premium profile with requirement + risk + graph; an invoice gets table extraction only.
 
 ### Why profiles matter
 
@@ -159,11 +190,15 @@ Planning Report stage (consumed by `GET /ingestion-runs/{id}/planning` and the F
 | Variable | Default | Effect |
 |---|---|---|
 | `J1_PLANNING_ENABLED` | `true` | Surface the Planning Report projection. Off → tab stays disabled even if a plan was generated. |
+| `J1_POST_COMPILE_PLANNING_ENABLED` | `true` | Run the post-compile planning activity that produces `planning_result.json`. Off → workflow falls back to the initial `IngestPlan` only (no Document Understanding, no rich Execution Plan). |
 | `J1_LLM_PLANNING_ENABLED` | `false` | Enable optional LLM-assisted planning. Default OFF — rule-based planning is the documented baseline. |
-| `J1_PLANNING_MODEL_PROFILE` | `fast_planner` | Named LLM role used when LLM-assisted planning runs. |
+| `J1_PLANNING_MODEL_PROFILE` | `fast_planner` | Named LLM role used when LLM-assisted planning runs. `fast_planner` → fast role with text fallback; `premium_planner` → premium role with text fallback; `text` → text role. |
 | `J1_PLANNING_MAX_SAMPLE_BLOCKS` | `20` | Privacy cap — max text blocks sampled into the planner LLM digest. |
 | `J1_PLANNING_MAX_PREVIEW_CHARS` | `300` | Privacy cap — max characters per sampled block. |
+| `J1_PLANNING_MAX_EARLY_PAGES` | `3` | Max early pages whose digest is built when title is unclear. |
 | `J1_PLANNING_FAIL_OPEN` | `true` | When LLM planning fails, keep the rule-based decision and continue. |
+| `J1_PLANNING_TRACE_ENABLED` | `false` | Log planning timing/decisions. Operator diagnostic only — leaves prompt bodies out. |
+| `J1_PLANNING_TRACE_BODY` | `false` | Logs the digest body alongside the trace. **Off in production** — the digest is privacy-capped but reviewers are the right place to inspect it. |
 
 Enrichment kill switches:
 
@@ -233,7 +268,7 @@ Only for offline benchmarking and accuracy comparisons. Set policy=`force_full` 
 
 ### Debugging "wrong profile selected"
 
-1. **Check the run's Planning Report tab** — the FE renders the planner's chosen `mode`, per-step `decision` + `reason`, and (when `J1_LLM_PLANNING_ENABLED=true`) the LLM advisory. The reason often points directly at the offending signal. Backed by `GET /ingestion-runs/{id}/planning`.
+1. **Check the run's Planning Report tab** — the FE renders the planner's chosen `mode`, per-step `decision` + `reason`, the Document Understanding section, and (when `J1_LLM_PLANNING_ENABLED=true`) the LLM advisory. The reason often points directly at the offending signal. Backed by `GET /ingestion-runs/{id}/planning`, which prefers the `planning_result` artifact when present and falls back to the `plan.generated` audit entry.
 2. **Inspect the run's audit log** for `j1.progress.plan.generated` and `j1.progress.plan.revised` events. The `payload.plan` field carries the full plan.
 3. **Look at `compile_content_stats`** — it's persisted alongside compile artifacts as a `parsed_content_manifest` artifact. The Quality tab summarises it; for raw access read the JSON directly.
 4. **Verify `_NATIVE_TEXT_EXTENSIONS` is up to date** — if a new plain-text extension produces the slow path, the bridge's set may have drifted from the planner's `_PLAIN_TEXT_EXTENSIONS`.
@@ -267,3 +302,6 @@ The JSON is the canonical post-parse stats — text/image/table/equation counts,
 - **Post-compile replan does not re-run compile.** Compile already executed; the revised plan only affects downstream optional stages. If the parser produced poor output (e.g. wrong `parse_method` was chosen), the operator must restart the run with corrected settings.
 - **Premium LLM role is not wired today.** `requires_premium_llm=True` on the plan is a flag; without a premium role configured it routes to TEXT. Adding a premium role is straightforward but out of scope for the current framework.
 - **MIME content sniffing covers only the common binary formats.** Magic-byte signatures for PDF, OOXML, and OLE2 are checked; other formats fall through to the extension allow-list.
+- **Selective-page enricher gating is best-effort.** The post-compile plan emits per-page recommendations (e.g. `vision_enrichment.pages=[6, 12]`) but the current `CompositeEnricher` applies modality flags at startup, not per-document. The recommendations are recorded on the artifact + Planning Report tab and inform per-image triage via the existing `metadata["vision_decision"]` mechanism, but the enricher does not strictly limit work to those pages today. A future iteration that builds a per-document enricher instance can honor the page lists exactly.
+- **LLM-assisted planning is feature-flagged and skeleton-tested.** When `J1_LLM_PLANNING_ENABLED=true`, the planner activity calls the configured `model_profile` role with a strict-JSON prompt and validates the output against the PlanningResult schema. The privacy contract is enforced two ways: only the digest (capped via `J1_PLANNING_MAX_*`) reaches the prompt, and the validator rejects any string > 4 KB on the way back so an LLM that echoes raw content is caught. Default is OFF until deployments wire a planner-tuned model.
+- **The post-compile artifact is per-document, not per-run.** Multi-document runs produce one `planning_result.json` per document; the FE Planning Report currently renders the latest one. Aggregating multiple documents into a single run-level Planning Report is future work.

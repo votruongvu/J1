@@ -28,20 +28,28 @@ from j1.errors.exceptions import ConfigError
 # ---- Env var names -----------------------------------------------------
 
 ENV_PLANNING_ENABLED = "J1_PLANNING_ENABLED"
+ENV_POST_COMPILE_PLANNING_ENABLED = "J1_POST_COMPILE_PLANNING_ENABLED"
 ENV_LLM_PLANNING_ENABLED = "J1_LLM_PLANNING_ENABLED"
 ENV_PLANNING_MODEL_PROFILE = "J1_PLANNING_MODEL_PROFILE"
 ENV_PLANNING_MAX_SAMPLE_BLOCKS = "J1_PLANNING_MAX_SAMPLE_BLOCKS"
 ENV_PLANNING_MAX_PREVIEW_CHARS = "J1_PLANNING_MAX_PREVIEW_CHARS"
+ENV_PLANNING_MAX_EARLY_PAGES = "J1_PLANNING_MAX_EARLY_PAGES"
 ENV_PLANNING_FAIL_OPEN = "J1_PLANNING_FAIL_OPEN"
+ENV_PLANNING_TRACE_ENABLED = "J1_PLANNING_TRACE_ENABLED"
+ENV_PLANNING_TRACE_BODY = "J1_PLANNING_TRACE_BODY"
 
 
 __all__ = [
     "ENV_LLM_PLANNING_ENABLED",
     "ENV_PLANNING_ENABLED",
     "ENV_PLANNING_FAIL_OPEN",
+    "ENV_PLANNING_MAX_EARLY_PAGES",
     "ENV_PLANNING_MAX_PREVIEW_CHARS",
     "ENV_PLANNING_MAX_SAMPLE_BLOCKS",
     "ENV_PLANNING_MODEL_PROFILE",
+    "ENV_PLANNING_TRACE_BODY",
+    "ENV_PLANNING_TRACE_ENABLED",
+    "ENV_POST_COMPILE_PLANNING_ENABLED",
     "PlanningSettings",
     "load_planning_settings",
 ]
@@ -74,11 +82,24 @@ class PlanningSettings:
     treat planning as a hard gate."""
 
     enabled: bool = True
+    # Master switch for the post-compile planning stage. The Planning
+    # Report tab can be enabled (`enabled=True`) without producing a
+    # post-compile artifact when this flag is false — useful for
+    # operators who only want the FE projection over the existing
+    # `plan.generated` audit entries.
+    post_compile_enabled: bool = True
     llm_planning_enabled: bool = False
     model_profile: str = "fast_planner"
     max_sample_blocks: int = 20
     max_preview_chars: int = 300
+    max_early_pages: int = 3
     fail_open: bool = True
+    # Diagnostic toggles. Default off — production deployments
+    # should keep both flipped to avoid leaking planning context
+    # bodies into operator logs. `trace_body` requires
+    # `trace_enabled=True` to take effect.
+    trace_enabled: bool = False
+    trace_body: bool = False
 
 
 def load_planning_settings(
@@ -92,6 +113,9 @@ def load_planning_settings(
     source = env if env is not None else os.environ
     return PlanningSettings(
         enabled=_bool(source, ENV_PLANNING_ENABLED, default=True),
+        post_compile_enabled=_bool(
+            source, ENV_POST_COMPILE_PLANNING_ENABLED, default=True,
+        ),
         llm_planning_enabled=_bool(
             source, ENV_LLM_PLANNING_ENABLED, default=False,
         ),
@@ -105,7 +129,14 @@ def load_planning_settings(
         max_preview_chars=_positive_int(
             source, ENV_PLANNING_MAX_PREVIEW_CHARS, default=300,
         ),
+        max_early_pages=_positive_int(
+            source, ENV_PLANNING_MAX_EARLY_PAGES, default=3,
+        ),
         fail_open=_bool(source, ENV_PLANNING_FAIL_OPEN, default=True),
+        trace_enabled=_bool(
+            source, ENV_PLANNING_TRACE_ENABLED, default=False,
+        ),
+        trace_body=_bool(source, ENV_PLANNING_TRACE_BODY, default=False),
     )
 
 

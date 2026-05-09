@@ -605,31 +605,33 @@ class IngestionResultReviewService:
         ctx: ProjectContext,
         run_id: str,
     ) -> PlanningResultDTO:
-        """Project the run's `plan.generated` audit entry into a
-        Planning Report payload.
+        """Build the Planning Report response for the given run.
 
-        The Planning Report is a richer projection over the raw
-        `IngestPlan`. It composes:
-          * The planner's per-step decisions + reasons + risk-level
-            (`PlanningStepDecisionDTO`).
-          * A rule-based assessment summary (mode, policy, confidence,
-            reasons) — `PlanningAssessmentDTO`.
-          * A lightweight digest of the parsed-content manifest
-            sampled within the deployment's privacy caps —
-            `PlanningContentDigestDTO`.
-          * An optional LLM recommendation block — populated only
-            when `J1_LLM_PLANNING_ENABLED=true` AND the LLM pass ran
-            (skeleton today; actual call deferred to Phase 2).
-
-        Returns `status="unavailable"` when no plan event exists for
-        the run (legacy run, planner disabled, run hasn't reached the
-        assessment stage). The empty-state `unavailable_reason` mirrors
-        the same copy used in `availableViews.planning.reason` so the
-        FE shows a single source of truth.
+        Resolution order:
+          1. **`planning_result` artifact (preferred).** When the
+             post-compile planning activity ran, it persists the full
+             Processing Plan as an artifact. We project that into the
+             DTO and surface every section the FE renders (Document
+             Understanding, Content Report, Quality Report, Execution
+             Plan, rule-based comparison).
+          2. **Audit-log fallback.** Older runs (pre-Phase 2 of
+             post-compile planning, or runs where the activity was
+             disabled / failed) only have `plan.generated` events in
+             the audit log. We project those into the same DTO with
+             `source="audit_log"`.
+          3. **Unavailable.** Neither source yielded a plan — return
+             `status="unavailable"` + an operator-readable reason.
 
         Raises `ReviewNotFound` when the run doesn't exist in the
         caller's tenant/project."""
         run = self._load_run(ctx, run_id)
+
+        # 1. Try the post-compile planning_result artifact first.
+        artifact_dto = self._read_planning_artifact_dto(ctx, run, run_id)
+        if artifact_dto is not None:
+            return artifact_dto
+
+        # 2. Audit-log fallback.
         plan_payload, plan_action = self._read_latest_plan_payload(ctx, run_id)
         if plan_payload is None:
             from j1.ingestion_review.availability import _planning_reason
@@ -693,10 +695,55 @@ class IngestionResultReviewService:
             status="completed",
             generated_at=plan_payload.get("occurred_at") or plan_payload.get("generated_at"),
             revised=plan_action == ACTION_PROGRESS_PLAN_REVISED,
+            source="audit_log",
+            planning_phase="initial",
             assessment=assessment,
             decisions=decisions,
             digest=digest,
             llm_recommendation=llm_rec,
+        )
+
+    def _read_planning_artifact_dto(
+        self, ctx: ProjectContext, run, run_id: str,
+    ) -> "PlanningResultDTO | None":
+        """Return a `PlanningResultDTO` projected from the run's
+        `planning_result` artifact, or None when no artifact exists.
+
+        Production path for runs whose post-compile planning activity
+        ran. The projector translates the artifact's persistent shape
+        into the DTO in one place so the audit-log fallback and the
+        artifact path don't drift.
+        """
+        from j1.processing.planning_result import PlanningResult
+        from j1.processing.results import ARTIFACT_KIND_PLANNING_RESULT
+
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        candidates = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_PLANNING_RESULT
+        ]
+        if not candidates:
+            return None
+        # Prefer the most recent one (by `updated_at`) — replays may
+        # produce duplicates that share an artifact_id but differ in
+        # mtime. A stable sort makes the projection deterministic.
+        candidates.sort(key=lambda a: a.updated_at, reverse=True)
+        artifact = candidates[0]
+        path_resolver = self._artifact_path_resolver(ctx)
+        try:
+            path = path_resolver(artifact)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ReviewNotFound):
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        result = PlanningResult.from_dict(payload)
+        return _planning_artifact_to_dto(
+            run_id=run_id,
+            document_name=run.metadata.get("document_name"),
+            result=result,
+            artifact_id=artifact.artifact_id,
         )
 
     def _read_latest_plan_payload(
@@ -1218,6 +1265,126 @@ def _quality_summary(
         overall_confidence=overall_value,
         warning_count=len(warnings),
         low_confidence_count=low_confidence_count,
+    )
+
+
+def _planning_artifact_to_dto(
+    *,
+    run_id: str,
+    document_name: str | None,
+    result,
+    artifact_id: str,
+) -> PlanningResultDTO:
+    """Project a `PlanningResult` artifact into the wire DTO.
+
+    Surfaces every section the FE Planning Report renders:
+      * `assessment` — same compact summary the audit-log path emits
+        so downstream code (Planning Report tab, badges) can read one
+        DTO regardless of source.
+      * `decisions` — projected from `execution_plan.steps` so the FE
+        renders one consistent table.
+      * `document_understanding`, `content_report`, `quality_report`,
+        `execution_plan`, `rule_based_assessment`,
+        `rule_based_comparison` — surfaced verbatim as dicts; the FE
+        knows the shape.
+
+    Designed so older bundles that only consume `assessment` /
+    `decisions` keep working — the rich fields live on top, optional.
+    """
+    plan = dict(result.execution_plan or {})
+    steps = plan.get("steps") or {}
+
+    # `decisions` for legacy FE: map each post-compile step into the
+    # PlanningStepDecisionDTO shape (with `decision=RUN/SKIP`).
+    decisions: list[PlanningStepDecisionDTO] = []
+    for step_name, entry in steps.items():
+        if step_name == "chunking":
+            continue
+        if not isinstance(entry, dict):
+            continue
+        enabled = bool(entry.get("enabled"))
+        decisions.append(PlanningStepDecisionDTO(
+            step_id=step_name,
+            stage=step_name.upper(),
+            decision="RUN" if enabled else "SKIP",
+            enabled=enabled,
+            required=bool(entry.get("required", False)),
+            source=str(result.source or "rule_based"),
+            reason=entry.get("reason"),
+            risk_level="low",
+            estimated_cost_tier="NONE",
+            llm_class=str(entry.get("model_profile") or "none"),
+            dependency_step_ids=[],
+            metadata={"scope": entry.get("scope"), "pages": entry.get("pages") or []},
+        ))
+
+    # `assessment` summary mirrors the audit-log path so the FE's
+    # scorecards work without branching on source.
+    understanding = result.document_understanding or {}
+    bias = (understanding.get("recommended_analysis_bias") or {}) if isinstance(
+        understanding, dict
+    ) else {}
+    assessment = PlanningAssessmentDTO(
+        mode=str(plan.get("estimated_time") or ""),
+        policy=str(result.recommended_profile or ""),
+        confidence=float(result.confidence or 0.0),
+        estimated_cost_level=str(plan.get("estimated_cost") or "low"),
+        fast_llm_used=result.source == "llm",
+        requires_vision=bool(
+            (steps.get("vision_enrichment") or {}).get("enabled"),
+        ),
+        requires_premium_llm=str(result.recommended_profile) == "premium",
+        reasons=list(
+            (result.decision_summary or {}).get("main_reasoning") or []
+        ),
+        warnings=list(result.warnings or []),
+    )
+
+    # LLM recommendation: status follows `source`.
+    if result.source == "llm":
+        llm_status = "applied"
+    elif result.source == "rule_based_fallback":
+        llm_status = "failed"
+    else:
+        llm_status = "disabled"
+    llm_rec = PlanningLLMRecommendationDTO(
+        status=llm_status,
+        summary=(result.decision_summary or {}).get("overall_assessment"),
+        failure_reason=next(
+            (
+                w for w in (result.warnings or [])
+                if "fallback" in str(w).lower()
+                or "unavailable" in str(w).lower()
+            ),
+            None,
+        ) if llm_status == "failed" else None,
+    )
+
+    return PlanningResultDTO(
+        run_id=run_id,
+        document_id=result.document_id or None,
+        document_name=document_name,
+        status="completed",
+        generated_at=result.created_at,
+        revised=False,
+        source=result.source,
+        planning_phase=result.planning_phase,
+        assessment=assessment,
+        decisions=decisions,
+        digest=None,  # rich digest stays inside the planning context;
+                      # the artifact does not duplicate it. The FE has
+                      # the full execution plan instead.
+        llm_recommendation=llm_rec,
+        document_understanding=dict(understanding) if understanding else None,
+        decision_summary=dict(result.decision_summary or {}) or None,
+        content_report=dict(result.content_report or {}) or None,
+        quality_report=dict(result.quality_report or {}) or None,
+        execution_plan=plan or None,
+        rule_based_assessment=dict(result.rule_based_assessment or {}) or None,
+        rule_based_comparison=dict(result.rule_based_comparison or {}) or None,
+        next_actions=list(result.next_actions or []),
+        warnings=list(result.warnings or []),
+        raw_artifact_id=artifact_id,
     )
 
 

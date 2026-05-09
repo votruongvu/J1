@@ -452,6 +452,21 @@ def build_worker_spec(
     activities += ReviewActivities(
         review_queue=reviews, audit=audit_recorder,
     ).all_activities()
+    # Post-compile planning activity. Reads the parsed-content
+    # manifest, builds the rule-based Processing Plan + Document
+    # Understanding, optionally calls the registered LLM planner
+    # (when J1_LLM_PLANNING_ENABLED=true), persists `planning_result.json`.
+    # Best-effort — when J1_POST_COMPILE_PLANNING_ENABLED=false the
+    # activity returns None and the workflow keeps the existing plan.
+    from j1.orchestration.activities.planning import PlanningActivities
+    from j1.processing.planning_settings import load_planning_settings
+    activities += PlanningActivities(
+        workspace=workspace,
+        artifacts=artifacts,
+        llm_registry=llm_registry,
+        planning_settings=load_planning_settings(),
+        progress_reporter=progress_reporter,
+    ).all_activities()
     # Auto-register the composite enricher when the caller didn't
     # pass an enrichers map. Without this the dev stack's Results >
     # Assets tab stays disabled because no enricher is registered to

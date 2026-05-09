@@ -111,6 +111,14 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
             return ProcessingActivityResult(status="succeeded")
         if name.endswith("finalize"):
             return None
+        if name.endswith("build_planning_result"):
+            # Post-compile planning is best-effort: when no manifest
+            # is available the activity returns None and the workflow
+            # keeps the existing IngestPlan unchanged. Tests that
+            # don't pre-stage a manifest get the None path.
+            return None
+        if name.endswith("report_plan_revised"):
+            return None
         raise AssertionError(f"unexpected activity: {name}")
     return handler
 

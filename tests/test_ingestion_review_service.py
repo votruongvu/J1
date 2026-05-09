@@ -1965,3 +1965,171 @@ def test_summary_available_views_planning_flips_when_event_seen(
     summary_after = service.summarize_run(ctx, "run-1")
     assert summary_after.available_views.planning.available is True
     assert summary_after.available_views.planning.reason is None
+
+
+# ---- Post-compile planning_result artifact projection -----------
+
+
+def _write_planning_result_artifact(
+    workspace, artifact_registry, ctx, *,
+    run_id: str, document_id: str,
+    source: str = "rule_based",
+    document_type: str = "system_requirement_specification",
+):
+    """Persist a minimal `planning_result.json` and register it."""
+    payload = {
+        "run_id": run_id,
+        "document_id": document_id,
+        "planning_version": "1.0",
+        "planning_phase": "post_compile",
+        "source": source,
+        "created_at": "2026-05-09T00:00:00Z",
+        "recommended_profile": "premium",
+        "confidence": 0.84,
+        "document_understanding": {
+            "title_source": "title_block",
+            "detected_title": "System Requirement Specification for J1",
+            "title_quality": "clear",
+            "document_type": document_type,
+            "document_type_confidence": 0.85,
+            "intended_audience": "technical_team",
+            "document_importance": "high",
+            "expected_information_types": ["requirements", "risks"],
+            "recommended_analysis_bias": {
+                "prefer_requirement_extraction": True,
+                "prefer_risk_extraction": True,
+                "reason": "SRS — requirement + risk extraction.",
+            },
+        },
+        "decision_summary": {
+            "overall_assessment": "Premium ingestion for SRS.",
+            "main_reasoning": ["High-value requirements document."],
+        },
+        "content_report": {
+            "page_count": 12, "structure_quality": "good",
+            "has_tables": True, "has_images": False,
+        },
+        "quality_report": {
+            "parse_confidence": "high", "risk_level": "low",
+            "manual_review_required": False,
+            "detected_issues": [], "manual_review_candidates": [],
+        },
+        "execution_plan": {
+            "estimated_time": "medium",
+            "estimated_cost": "medium",
+            "steps": {
+                "chunking": {
+                    "enabled": True, "strategy": "section_aware",
+                    "reason": "Clear headings.",
+                },
+                "table_enrichment": {
+                    "enabled": True, "scope": "selected_pages",
+                    "pages": [4, 5], "reason": "Requirements tables.",
+                },
+                "vision_enrichment": {
+                    "enabled": False, "scope": "none",
+                    "pages": [], "reason": "No images.",
+                },
+                "graph_extraction": {
+                    "enabled": True, "scope": "document",
+                    "reason": "SRS — relationships.",
+                    "candidate_entity_types": ["requirement", "actor"],
+                },
+                "embedding": {
+                    "enabled": True, "scope": "document",
+                    "reason": "Required for retrieval.",
+                },
+                "indexing": {
+                    "enabled": True, "scope": "document",
+                    "reason": "Required for retrieval.",
+                },
+            },
+        },
+        "rule_based_assessment": {
+            "recommended_profile": "premium",
+            "signals": {"has_meaningful_tables": True},
+        },
+        "rule_based_comparison": {},
+        "warnings": [],
+        "next_actions": [],
+    }
+    filename = f"planning_{run_id}_{document_id}.json"
+    full = workspace.area(ctx, WorkspaceArea.COMPILED) / filename
+    full.parent.mkdir(parents=True, exist_ok=True)
+    import json as _json
+    full.write_text(_json.dumps(payload), encoding="utf-8")
+
+    from j1.processing.results import ARTIFACT_KIND_PLANNING_RESULT
+    record = _make_artifact(
+        ctx,
+        artifact_id=f"planning_{run_id}_{document_id}",
+        kind=ARTIFACT_KIND_PLANNING_RESULT,
+        source_document_ids=[document_id],
+        metadata={"run_id": run_id},
+    )
+    record = ArtifactRecord(
+        artifact_id=record.artifact_id,
+        project=record.project,
+        kind=record.kind,
+        location=f"compiled/{filename}",
+        content_hash=record.content_hash,
+        byte_size=record.byte_size,
+        status=record.status,
+        review_status=record.review_status,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        source_document_ids=record.source_document_ids,
+        source_artifact_ids=record.source_artifact_ids,
+        metadata=record.metadata,
+    )
+    artifact_registry.add(record)
+    return record.artifact_id
+
+
+def test_get_run_planning_prefers_artifact_over_audit_log(
+    service, run_store, reporter, artifact_registry, workspace, ctx,
+):
+    """Both an artifact AND a `plan.generated` event exist — the
+    artifact wins and the FE sees the post-compile fields."""
+    run_store.upsert(ctx, _make_run(document_id="doc-1"))
+    _emit_plan_generated(
+        reporter, ctx, run_id="run-1",
+        plan_payload=_basic_plan_payload(),
+    )
+    _write_planning_result_artifact(
+        workspace, artifact_registry, ctx,
+        run_id="run-1", document_id="doc-1",
+    )
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.status == "completed"
+    assert report.source == "rule_based"
+    assert report.planning_phase == "post_compile"
+    # Document understanding surfaces.
+    assert report.document_understanding["document_type"] == \
+        "system_requirement_specification"
+    # Execution plan has selective-page recommendations.
+    table_step = (report.execution_plan or {}).get("steps", {}).get(
+        "table_enrichment"
+    )
+    assert table_step["pages"] == [4, 5]
+    assert report.raw_artifact_id
+
+
+def test_get_run_planning_audit_log_fallback_marks_source(
+    service, run_store, reporter, ctx,
+):
+    """Without an artifact, the audit-log path produces a DTO with
+    `source="audit_log"` so the FE can label its provenance."""
+    run_store.upsert(ctx, _make_run())
+    _emit_plan_generated(
+        reporter, ctx, run_id="run-1",
+        plan_payload=_basic_plan_payload(),
+    )
+    report = service.get_run_planning(ctx, "run-1")
+    assert report.status == "completed"
+    assert report.source == "audit_log"
+    assert report.planning_phase == "initial"
+    # Post-compile-only fields stay None on the audit-log path.
+    assert report.document_understanding is None
+    assert report.execution_plan is None

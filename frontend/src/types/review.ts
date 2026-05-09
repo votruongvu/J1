@@ -174,6 +174,99 @@ export interface PlanningLLMRecommendation {
   failureReason?: string | null;
 }
 
+export interface PlanningDocumentUnderstanding {
+  titleSource?: string | null;
+  detectedTitle?: string | null;
+  /** "clear" | "ambiguous" | "missing" | "generic" */
+  titleQuality?: string | null;
+  documentType?: string | null;
+  documentTypeConfidence?: number | null;
+  businessDomain?: string | null;
+  primaryTopic?: string | null;
+  documentPurpose?: string | null;
+  intendedAudience?: string | null;
+  /** "low" | "medium" | "high" | "unknown" */
+  documentImportance?: string | null;
+  expectedInformationTypes?: string[];
+  recommendedAnalysisBias?: {
+    preferRequirementExtraction?: boolean;
+    preferRiskExtraction?: boolean;
+    preferTableEnrichment?: boolean;
+    preferGraphExtraction?: boolean;
+    preferVisualEnrichment?: boolean;
+    preferQualityReview?: boolean;
+    reason?: string;
+  };
+  evidence?: Array<{
+    source: string;
+    page?: number | null;
+    textPreview?: string;
+    reason?: string;
+  }>;
+  warnings?: string[];
+}
+
+export interface PlanningContentReport {
+  language?: string | null;
+  pageCount?: number | null;
+  structureQuality?: string;
+  layoutComplexity?: string;
+  contentDensity?: string;
+  hasClearSections?: boolean;
+  hasTables?: boolean;
+  hasImages?: boolean;
+  hasFormulas?: boolean;
+  hasOcrPages?: boolean;
+  importantObservations?: string[];
+}
+
+export interface PlanningQualityIssue {
+  issue: string;
+  severity: string;
+  affectedPages?: number[];
+  recommendation?: string;
+}
+
+export interface PlanningQualityReport {
+  parseConfidence?: string;
+  riskLevel?: string;
+  detectedIssues?: PlanningQualityIssue[];
+  manualReviewRequired?: boolean;
+  manualReviewCandidates?: Array<{
+    page: number;
+    reason: string;
+    blockTypes?: string[];
+  }>;
+}
+
+export interface PlanningStepEntry {
+  enabled: boolean;
+  scope?: string;
+  pages?: number[];
+  reason?: string;
+  /** Only present on chunking entries. */
+  strategy?: string;
+  settings?: Record<string, unknown>;
+  candidateEntityTypes?: string[];
+  modelProfile?: string;
+}
+
+export interface PlanningExecutionPlan {
+  estimatedTime?: string;
+  estimatedCost?: string;
+  steps?: Record<string, PlanningStepEntry>;
+}
+
+export interface PlanningRuleBasedComparison {
+  acceptedRuleRecommendations?: string[];
+  overriddenRuleRecommendations?: Array<{
+    rule: string;
+    originalRecommendation: string;
+    llmRecommendation: string;
+    reason?: string;
+  }>;
+}
+
 export interface PlanningResult {
   runId: string;
   documentId?: string | null;
@@ -182,11 +275,33 @@ export interface PlanningResult {
   status: string;
   generatedAt?: string | null;
   revised: boolean;
+  /** "rule_based" | "llm" | "rule_based_fallback" | "audit_log" */
+  source?: string | null;
+  /** "post_compile" | "initial" */
+  planningPhase?: string | null;
   assessment?: PlanningAssessment | null;
   decisions: PlanningStepDecision[];
   digest?: PlanningContentDigest | null;
   llmRecommendation: PlanningLLMRecommendation;
   unavailableReason?: string | null;
+  // Post-compile fields. Optional — older runs / audit-log responses
+  // omit them.
+  documentUnderstanding?: PlanningDocumentUnderstanding | null;
+  decisionSummary?: {
+    overallAssessment?: string;
+    documentComplexity?: string;
+    parseQuality?: string;
+    recommendedStrategy?: string;
+    mainReasoning?: string[];
+  } | null;
+  contentReport?: PlanningContentReport | null;
+  qualityReport?: PlanningQualityReport | null;
+  executionPlan?: PlanningExecutionPlan | null;
+  ruleBasedAssessment?: Record<string, unknown> | null;
+  ruleBasedComparison?: PlanningRuleBasedComparison | null;
+  nextActions?: string[];
+  warnings?: string[];
+  rawArtifactId?: string | null;
 }
 
 // ---- Validation (Phase 1: manual test query) --------------------

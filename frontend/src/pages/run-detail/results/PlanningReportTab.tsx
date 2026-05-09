@@ -15,8 +15,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
 import type {
+  PlanningContentReport,
+  PlanningDocumentUnderstanding,
+  PlanningExecutionPlan,
+  PlanningQualityReport,
   PlanningResult,
+  PlanningRuleBasedComparison,
   PlanningStepDecision,
+  PlanningStepEntry,
 } from "@/types/review";
 
 interface PlanningReportTabProps {
@@ -80,11 +86,17 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
     );
   }
 
-  const { assessment, digest, llmRecommendation, decisions } = report;
+  const {
+    assessment, digest, llmRecommendation, decisions,
+    documentUnderstanding, contentReport, qualityReport,
+    executionPlan, ruleBasedComparison, decisionSummary,
+    nextActions, warnings,
+  } = report;
+  const isPostCompile = report.planningPhase === "post_compile";
 
   return (
     <div className="results-content-inventory">
-      {/* Header strip — document + plan timestamp */}
+      {/* Header strip — document + plan timestamp + source */}
       <section className="results-content-inventory__source">
         <SourceField label="Document">
           {report.documentName ?? report.documentId ?? "—"}
@@ -100,6 +112,18 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
             </span>
           ) : null}
         </SourceField>
+        {report.source ? (
+          <SourceField label="Source">
+            <span className="results-tag results-tag--info">
+              {report.source}
+            </span>
+          </SourceField>
+        ) : null}
+        {isPostCompile ? (
+          <SourceField label="Phase">
+            <span className="results-tag results-tag--info">post-compile</span>
+          </SourceField>
+        ) : null}
       </section>
 
       {/* Assessment scorecards */}
@@ -158,6 +182,14 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
         </>
       ) : null}
 
+      {/* Document Understanding (post-compile only) */}
+      {documentUnderstanding ? (
+        <DocumentUnderstandingPanel data={documentUnderstanding} />
+      ) : null}
+
+      {/* Content Report (post-compile only) */}
+      {contentReport ? <ContentReportPanel data={contentReport} /> : null}
+
       {/* Per-step decisions table */}
       {decisions.length > 0 ? (
         <section className="results-content-inventory__items">
@@ -180,6 +212,62 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
               ))}
             </tbody>
           </table>
+        </section>
+      ) : null}
+
+      {/* Execution Plan with selective scopes (post-compile only) */}
+      {executionPlan ? <ExecutionPlanPanel plan={executionPlan} /> : null}
+
+      {/* Quality Report (post-compile only) */}
+      {qualityReport ? <QualityReportPanel data={qualityReport} /> : null}
+
+      {/* Decision summary main reasoning */}
+      {decisionSummary?.mainReasoning &&
+       decisionSummary.mainReasoning.length > 0 ? (
+        <section className="results-content-inventory__items">
+          <h4 style={{ margin: "8px 0 6px" }}>Decision summary</h4>
+          {decisionSummary.overallAssessment ? (
+            <p style={{ marginTop: 0 }}>{decisionSummary.overallAssessment}</p>
+          ) : null}
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {decisionSummary.mainReasoning.map((reason, idx) => (
+              <li key={idx} style={{ color: "var(--text-muted)" }}>
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {/* Rule-based vs LLM comparison */}
+      {ruleBasedComparison &&
+       (ruleBasedComparison.acceptedRuleRecommendations?.length ||
+        ruleBasedComparison.overriddenRuleRecommendations?.length) ? (
+        <RuleBasedComparisonPanel data={ruleBasedComparison} />
+      ) : null}
+
+      {/* Warnings & next actions */}
+      {warnings && warnings.length > 0 ? (
+        <section className="results-content-inventory__items">
+          <h4 style={{ margin: "8px 0 6px" }}>Warnings</h4>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {warnings.map((w, idx) => (
+              <li key={idx} style={{ color: "var(--text-warning, #b8860b)" }}>
+                {w}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {nextActions && nextActions.length > 0 ? (
+        <section className="results-content-inventory__items">
+          <h4 style={{ margin: "8px 0 6px" }}>Next actions</h4>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {nextActions.map((a, idx) => (
+              <li key={idx}>{a}</li>
+            ))}
+          </ul>
         </section>
       ) : null}
 
@@ -356,4 +444,311 @@ function formatTimestamp(value: string | null | undefined): string {
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return value;
   return new Date(parsed).toLocaleString();
+}
+
+// ---- Post-compile section components ---------------------------
+
+function DocumentUnderstandingPanel({
+  data,
+}: {
+  data: PlanningDocumentUnderstanding;
+}) {
+  const bias = data.recommendedAnalysisBias;
+  return (
+    <section className="results-content-inventory__items">
+      <h4 style={{ margin: "8px 0 6px" }}>Document understanding</h4>
+      <div className="results-content-inventory__summary">
+        <SummaryCard label="Type" value={data.documentType ?? "—"} />
+        <SummaryCard
+          label="Type confidence"
+          value={
+            data.documentTypeConfidence != null
+              ? `${Math.round((data.documentTypeConfidence ?? 0) * 100)}%`
+              : "—"
+          }
+        />
+        <SummaryCard
+          label="Title quality"
+          value={data.titleQuality ?? "—"}
+          tone={data.titleQuality === "clear" ? "accent" : undefined}
+        />
+        <SummaryCard label="Importance" value={data.documentImportance ?? "—"} />
+        <SummaryCard label="Audience" value={data.intendedAudience ?? "—"} />
+        <SummaryCard label="Domain" value={data.businessDomain || "—"} />
+      </div>
+      <dl
+        style={{
+          display: "grid",
+          gridTemplateColumns: "max-content 1fr",
+          gap: "4px 12px",
+          margin: "8px 0 0",
+        }}
+      >
+        <dt style={{ color: "var(--text-muted)" }}>Detected title</dt>
+        <dd style={{ margin: 0 }}>{data.detectedTitle || "—"}</dd>
+        <dt style={{ color: "var(--text-muted)" }}>Primary topic</dt>
+        <dd style={{ margin: 0 }}>{data.primaryTopic || "—"}</dd>
+        <dt style={{ color: "var(--text-muted)" }}>Document purpose</dt>
+        <dd style={{ margin: 0 }}>{data.documentPurpose || "—"}</dd>
+      </dl>
+      {bias?.reason ? (
+        <p style={{ marginTop: 8, color: "var(--text-muted)" }}>
+          <strong>Analysis bias:</strong> {bias.reason}
+        </p>
+      ) : null}
+      {data.expectedInformationTypes &&
+       data.expectedInformationTypes.length > 0 ? (
+        <p style={{ marginTop: 4 }}>
+          <strong>Expected information:</strong>{" "}
+          {data.expectedInformationTypes.map((t, i) => (
+            <span
+              key={i}
+              className="results-tag results-tag--info"
+              style={{ marginRight: 4 }}
+            >
+              {t}
+            </span>
+          ))}
+        </p>
+      ) : null}
+      {data.evidence && data.evidence.length > 0 ? (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer" }}>
+            Evidence ({data.evidence.length})
+          </summary>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {data.evidence.map((e, idx) => (
+              <li key={idx}>
+                <code className="results-graph__id">{e.source}</code>
+                {e.page != null ? <span> — page {e.page}</span> : null}
+                {e.reason ? (
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {" "}— {e.reason}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+function ContentReportPanel({ data }: { data: PlanningContentReport }) {
+  return (
+    <section className="results-content-inventory__items">
+      <h4 style={{ margin: "8px 0 6px" }}>Content report</h4>
+      <div className="results-content-inventory__summary">
+        <SummaryCard label="Pages" value={data.pageCount ?? "—"} />
+        <SummaryCard label="Structure" value={data.structureQuality ?? "—"} />
+        <SummaryCard label="Layout" value={data.layoutComplexity ?? "—"} />
+        <SummaryCard label="Density" value={data.contentDensity ?? "—"} />
+        <SummaryCard
+          label="Tables"
+          value={data.hasTables ? "yes" : "no"}
+        />
+        <SummaryCard
+          label="Images"
+          value={data.hasImages ? "yes" : "no"}
+        />
+        <SummaryCard
+          label="OCR pages"
+          value={data.hasOcrPages ? "yes" : "no"}
+        />
+      </div>
+      {data.importantObservations && data.importantObservations.length > 0 ? (
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {data.importantObservations.map((o, idx) => (
+            <li key={idx} style={{ color: "var(--text-muted)" }}>
+              {o}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function ExecutionPlanPanel({ plan }: { plan: PlanningExecutionPlan }) {
+  const steps = plan.steps ?? {};
+  const ordered = Object.entries(steps);
+  const chunking = steps.chunking;
+  return (
+    <section className="results-content-inventory__items">
+      <h4 style={{ margin: "8px 0 6px" }}>Execution plan</h4>
+      <div className="results-content-inventory__summary">
+        <SummaryCard label="Estimated time" value={plan.estimatedTime ?? "—"} />
+        <SummaryCard label="Estimated cost" value={plan.estimatedCost ?? "—"} />
+        {chunking?.strategy ? (
+          <SummaryCard label="Chunking" value={chunking.strategy} />
+        ) : null}
+      </div>
+      {ordered.length > 0 ? (
+        <table className="results-graph__table" role="table">
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Enabled</th>
+              <th>Scope</th>
+              <th>Pages</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ordered.map(([name, entry]) => (
+              <ExecutionStepRow key={name} name={name} entry={entry} />
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </section>
+  );
+}
+
+function ExecutionStepRow({
+  name, entry,
+}: { name: string; entry: PlanningStepEntry }) {
+  const pages = entry.pages ?? [];
+  return (
+    <tr>
+      <td>
+        <strong>{name}</strong>
+        {entry.strategy ? (
+          <span
+            className="results-tag results-tag--info"
+            style={{ marginLeft: 6 }}
+          >
+            {entry.strategy}
+          </span>
+        ) : null}
+      </td>
+      <td>
+        <span
+          className={`results-tag results-tag--${entry.enabled ? "info" : "muted"}`}
+        >
+          {entry.enabled ? "RUN" : "SKIP"}
+        </span>
+      </td>
+      <td>{entry.scope ?? "—"}</td>
+      <td>
+        {pages.length === 0 ? (
+          <span className="results-graph__placeholder">—</span>
+        ) : pages.length <= 8 ? (
+          pages.join(", ")
+        ) : (
+          `${pages.slice(0, 8).join(", ")}… (+${pages.length - 8})`
+        )}
+      </td>
+      <td className="results-graph__desc">
+        {entry.reason ?? <span className="results-graph__placeholder">—</span>}
+      </td>
+    </tr>
+  );
+}
+
+function QualityReportPanel({ data }: { data: PlanningQualityReport }) {
+  return (
+    <section className="results-content-inventory__items">
+      <h4 style={{ margin: "8px 0 6px" }}>Parse quality &amp; risk</h4>
+      <div className="results-content-inventory__summary">
+        <SummaryCard
+          label="Parse confidence"
+          value={data.parseConfidence ?? "—"}
+        />
+        <SummaryCard label="Risk" value={data.riskLevel ?? "—"} />
+        <SummaryCard
+          label="Manual review"
+          value={data.manualReviewRequired ? "required" : "no"}
+          tone={data.manualReviewRequired ? "accent" : undefined}
+        />
+      </div>
+      {data.detectedIssues && data.detectedIssues.length > 0 ? (
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {data.detectedIssues.map((iss, idx) => (
+            <li key={idx}>
+              <span
+                className={`results-tag results-tag--${iss.severity === "high" ? "warning" : "info"}`}
+                style={{ marginRight: 6 }}
+              >
+                {iss.severity}
+              </span>
+              <strong>{iss.issue}</strong>
+              {iss.recommendation ? (
+                <div style={{ color: "var(--text-muted)", marginTop: 2 }}>
+                  {iss.recommendation}
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {data.manualReviewCandidates && data.manualReviewCandidates.length > 0 ? (
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ cursor: "pointer" }}>
+            Review candidates ({data.manualReviewCandidates.length})
+          </summary>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {data.manualReviewCandidates.map((c, idx) => (
+              <li key={idx}>
+                <strong>page {c.page}</strong> — {c.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+function RuleBasedComparisonPanel({
+  data,
+}: {
+  data: PlanningRuleBasedComparison;
+}) {
+  return (
+    <section className="results-content-inventory__items">
+      <h4 style={{ margin: "8px 0 6px" }}>Rule-based vs LLM</h4>
+      {data.acceptedRuleRecommendations &&
+       data.acceptedRuleRecommendations.length > 0 ? (
+        <p style={{ marginTop: 0 }}>
+          <strong>Accepted:</strong>{" "}
+          {data.acceptedRuleRecommendations.map((r) => (
+            <span
+              key={r}
+              className="results-tag results-tag--info"
+              style={{ marginRight: 4 }}
+            >
+              {r}
+            </span>
+          ))}
+        </p>
+      ) : null}
+      {data.overriddenRuleRecommendations &&
+       data.overriddenRuleRecommendations.length > 0 ? (
+        <table className="results-graph__table" role="table">
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Rule-based</th>
+              <th>LLM</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.overriddenRuleRecommendations.map((o, idx) => (
+              <tr key={idx}>
+                <td>
+                  <strong>{o.rule}</strong>
+                </td>
+                <td>{o.originalRecommendation}</td>
+                <td>{o.llmRecommendation}</td>
+                <td className="results-graph__desc">{o.reason ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </section>
+  );
 }

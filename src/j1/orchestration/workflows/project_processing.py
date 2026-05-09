@@ -21,6 +21,12 @@ with workflow.unsafe.imports_passed_through():
         SpendSummary,
         ValidateContextResult,
     )
+    from j1.orchestration.activities.planning import (
+        ACTIVITY_BUILD_PLANNING_RESULT,
+        BuildPlanningResultInput,
+        BuildPlanningResultOutput,
+        PlanningActivities,
+    )
     from j1.orchestration.activities.processing import ProcessingActivities
     from j1.orchestration.activities.profiling import (
         ProfileDocumentInput,
@@ -337,6 +343,106 @@ def _summarise_plan_diff(
     if initial.mode != revised.mode:
         out["mode"] = {"before": initial.mode.value, "after": revised.mode.value}
     return out
+
+
+def _profile_payload(profile: "DocumentProfile | None") -> dict[str, Any] | None:
+    """Serialise a `DocumentProfile` to a Temporal-data-converter
+    friendly dict for the planning activity. Lossy on tuple fields
+    (e.g. `images`, `warnings`) — the planning activity only reads
+    scalar signals, so we keep this compact."""
+    if profile is None:
+        return None
+    return {
+        "document_id": profile.document_id,
+        "extension": profile.extension,
+        "mime_type": profile.mime_type,
+        "file_size_bytes": profile.file_size_bytes,
+        "page_count": profile.page_count,
+        "text_extractable_ratio": profile.text_extractable_ratio,
+        "has_images": profile.has_images,
+        "has_tables": profile.has_tables,
+        "has_scanned_pages": profile.has_scanned_pages,
+        "estimated_tokens": profile.estimated_tokens,
+        "language": profile.language,
+        "parser_confidence": profile.parser_confidence,
+        "parse_quality_score": profile.parse_quality_score,
+        "text_sufficiency_score": profile.text_sufficiency_score,
+        "layout_complexity_score": profile.layout_complexity_score,
+    }
+
+
+def _apply_post_compile_planning(
+    plan: "IngestPlan", planning: "BuildPlanningResultOutput",
+) -> tuple["IngestPlan", dict[str, Any]]:
+    """Overlay the post-compile planning result onto the existing
+    `IngestPlan` and return the updated plan plus a diff dict.
+
+    The post-compile planning result speaks `execution_plan.steps`
+    (rich shape with reasons / scopes) but the workflow's gating logic
+    only consults `IngestPlan.steps[*].enabled`. Translate the rich
+    decisions into per-step enable/disable overrides — this is the
+    minimal safe wiring that lets the downstream gates honor the
+    planner's recommendations without rewriting `_stage_enabled`.
+
+    Mapping (post-compile → workflow step):
+      * `enrich` is enabled when ANY of `table_enrichment`,
+        `vision_enrichment`, `image_captioning`,
+        `requirement_extraction`, `risk_extraction`,
+        `quality_assessment` is enabled. Disabled when all of them
+        are disabled — saves the cost of a no-op enrich call.
+      * `graph` follows `graph_extraction.enabled` directly.
+      * `index` follows `indexing.enabled` (defaults True).
+
+    Returns `(new_plan, diff)`. `diff` is empty when the post-compile
+    plan agrees with the initial plan; non-empty diff is suitable for
+    `_format_plan_diff_reason`."""
+    steps = (planning.execution_plan or {}).get("steps") or {}
+    enrich_drivers = (
+        "table_enrichment", "vision_enrichment", "image_captioning",
+        "requirement_extraction", "risk_extraction", "quality_assessment",
+    )
+    enrich_should_run = any(
+        bool((steps.get(name) or {}).get("enabled"))
+        for name in enrich_drivers
+    )
+    graph_entry = steps.get("graph_extraction") or {}
+    graph_should_run = bool(graph_entry.get("enabled"))
+    index_entry = steps.get("indexing") or {}
+    index_should_run = bool(index_entry.get("enabled", True))
+
+    desired = {
+        STEP_ENRICH: enrich_should_run,
+        STEP_GRAPH: graph_should_run,
+        STEP_INDEX: index_should_run,
+    }
+
+    diff: dict[str, Any] = {}
+    new_steps: list = []
+    for step in plan.steps:
+        if step.name in desired:
+            target = desired[step.name]
+            if step.enabled != target:
+                diff[step.name] = {"before": step.enabled, "after": target}
+                new_steps.append(_replace_request(
+                    step,
+                    enabled=target,
+                    required=step.required and target,
+                    decision=("RUN" if target else "SKIP"),
+                    reason=(
+                        step.reason if target
+                        else (
+                            (steps.get(step.name) or {}).get("reason")
+                            or step.reason
+                        )
+                    ),
+                ))
+                continue
+        new_steps.append(step)
+
+    if not diff:
+        return plan, {}
+
+    return _replace_request(plan, steps=tuple(new_steps)), diff
 
 
 def _format_plan_diff_reason(diff: dict[str, Any]) -> str:
@@ -1411,6 +1517,49 @@ class ProjectProcessingWorkflow:
             )
             if revised is not None:
                 plan = revised
+
+        # Post-compile Processing Plan. Reads the parsed-content
+        # manifest the compile activity emitted, runs Document
+        # Understanding + Lightweight Content Digest + Rule-based
+        # Post-Compile Assessment, optionally consults a planner LLM,
+        # and persists `planning_result.json`. Best-effort: when the
+        # activity fails or no manifest is available the workflow
+        # falls back to the existing IngestPlan unchanged.
+        if plan is not None:
+            try:
+                planning_result: "BuildPlanningResultOutput | None" = (
+                    await workflow.execute_activity_method(
+                        PlanningActivities.build_planning_result,
+                        BuildPlanningResultInput(
+                            scope=request.scope,
+                            run_id=request.correlation_id or "",
+                            document_id=document_id,
+                            profile_payload=_profile_payload(plan.profile),
+                        ),
+                        start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
+                        retry_policy=DEFAULT_RETRY.to_temporal(),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — planning is best-effort
+                workflow.logger.warning(
+                    "post-compile planning activity failed; keeping existing plan: %s",
+                    exc,
+                )
+                planning_result = None
+
+            if planning_result is not None:
+                updated, diff = _apply_post_compile_planning(plan, planning_result)
+                if diff:
+                    plan = updated
+                    await self._emit_plan_revised(
+                        request, plan,
+                        diff={
+                            **diff,
+                            "post_compile_source": {
+                                "after": planning_result.source,
+                            },
+                        },
+                    )
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:
