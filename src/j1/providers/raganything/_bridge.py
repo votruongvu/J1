@@ -1533,19 +1533,35 @@ def _build_content_manifest(output_dir: Path) -> dict[str, Any]:
     # per-element page indices, captions, and types we can't infer
     # from filenames alone.
     images_from_list: list[dict[str, Any]] = []
+    # `items` carries the canonical per-element list (text /
+    # table / image / equation / heading) the FE Content Inventory
+    # tab renders. Without these the tab can only display summary
+    # counts; the user sees an empty items table.
+    items: list[dict[str, Any]] = []
+    text_block_count_from_list = 0
     if content_list_path is not None:
         try:
             payload = json.loads(content_list_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             payload = None
         if isinstance(payload, list):
-            for item in payload:
+            for idx, item in enumerate(payload):
                 if not isinstance(item, dict):
                     continue
                 item_type = str(item.get("type", "")).lower()
                 page_idx = item.get("page_idx")
                 if isinstance(page_idx, int):
                     page_indices.add(page_idx)
+
+                normalised_type, item_entry = _normalise_content_list_item(
+                    raw=item,
+                    raw_type=item_type,
+                    idx=idx,
+                    page_idx=page_idx,
+                )
+                if item_entry is not None:
+                    items.append(item_entry)
+
                 if item_type in ("image", "img"):
                     images_from_list.append(item)
                 elif item_type == "table":
@@ -1553,9 +1569,13 @@ def _build_content_manifest(output_dir: Path) -> dict[str, Any]:
                 elif item_type in ("equation", "formula"):
                     equation_count += 1
                 elif item_type == "text":
-                    body = item.get("text") or ""
-                    if isinstance(body, str):
-                        text_chars = max(text_chars, text_chars)  # already counted via files
+                    text_block_count_from_list += 1
+
+    # If the parser surfaced text blocks via the content_list but
+    # didn't write per-block files, prefer the content_list count —
+    # filename walks miss inline text-only documents.
+    if text_block_count_from_list and not text_block_count:
+        text_block_count = text_block_count_from_list
 
     image_count = max(len(image_files), len(images_from_list))
     page_count = max(page_indices) + 1 if page_indices else None
@@ -1580,10 +1600,94 @@ def _build_content_manifest(output_dir: Path) -> dict[str, Any]:
         "text_sufficiency_score": text_sufficiency_score,
         "layout_complexity_score": layout_complexity_score,
         "images": images,
+        # Canonical per-element list. Empty when the parser produced
+        # no content_list.json — the FE renders the unavailable /
+        # empty state in that case.
+        "items": items,
     }
     if page_count is not None:
         manifest["page_count"] = page_count
     return manifest
+
+
+# Per-block preview cap for the Content Inventory items list. Long
+# text bodies + many blocks would balloon the artifact size. 280
+# chars is enough for a useful preview; the FE truncates further at
+# render time.
+_MAX_ITEM_PREVIEW_CHARS = 280
+
+
+def _normalise_content_list_item(
+    *,
+    raw: dict[str, Any],
+    raw_type: str,
+    idx: int,
+    page_idx: int | None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Project one MinerU `content_list` entry into the canonical
+    `ParsedContentItem` shape.
+
+    Returns `(normalised_type, item_entry_dict)`. `item_entry` is
+    None when the entry should be dropped (empty / unrecognised
+    type).
+    """
+    type_map: dict[str, str] = {
+        "text": "text",
+        "paragraph": "text",
+        "title": "heading",
+        "heading": "heading",
+        "h1": "heading",
+        "h2": "heading",
+        "h3": "heading",
+        "table": "table",
+        "image": "image",
+        "img": "image",
+        "figure": "image",
+        "equation": "formula",
+        "formula": "formula",
+    }
+    normalised = type_map.get(raw_type, "other")
+
+    text = raw.get("text") or raw.get("content") or ""
+    caption = raw.get("img_caption") or raw.get("table_caption") or raw.get("caption")
+    if isinstance(caption, list):
+        caption = " ".join(str(c) for c in caption if c)
+    elif caption is None:
+        caption = ""
+    if not isinstance(text, str):
+        text = str(text)
+    if not isinstance(caption, str):
+        caption = str(caption)
+
+    preview_source = text or caption
+    preview = preview_source[:_MAX_ITEM_PREVIEW_CHARS]
+    if len(preview_source) > _MAX_ITEM_PREVIEW_CHARS:
+        preview = preview.rstrip() + "…"
+
+    if not preview and normalised in ("text", "heading", "formula"):
+        # No usable content for a text-shaped item — drop it
+        # rather than emit a blank row.
+        return normalised, None
+
+    item_id = str(raw.get("item_id") or raw.get("id") or f"item-{idx:04d}")
+    location = raw.get("img_path") or raw.get("source_path")
+    metadata: dict[str, Any] = {
+        "raw_type": raw_type or "unknown",
+    }
+    # Optional structured fields the FE / future enrichers can read.
+    for key in ("text_level", "img_path", "row_count", "column_count"):
+        if key in raw and raw[key] is not None:
+            metadata[key] = raw[key]
+
+    return normalised, {
+        "item_id": item_id,
+        "type": normalised,
+        "page_idx": page_idx if isinstance(page_idx, int) else None,
+        "source_path": str(location) if location else None,
+        "text_preview": preview if preview else None,
+        "caption": caption if caption else None,
+        "metadata": metadata,
+    }
 
 
 def _build_image_triage(

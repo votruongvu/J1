@@ -201,3 +201,78 @@ def test_classify_image_returns_score_and_reason():
     assert role == "decorative"
     assert 0 <= score <= 1
     assert reason  # non-empty
+
+
+# ---- Per-element items ---------------------------------------------
+
+
+def test_manifest_items_populated_from_content_list(tmp_path):
+    """The bridge must surface per-element items so the FE Content
+    Inventory tab can render text blocks, tables, images, headings —
+    not just summary counts. The user-visible bug we're guarding
+    against: tab loaded but the items table is empty."""
+    content_list = [
+        {"type": "title", "text": "Quarterly Report Q1", "text_level": 1, "page_idx": 0},
+        {"type": "text", "text": "Revenue grew 12% over the prior period.", "page_idx": 0},
+        {"type": "image", "img_path": "img_1.png", "img_caption": "Pipeline chart",
+         "page_idx": 1},
+        {"type": "table", "caption": "Sales by region", "page_idx": 2},
+        {"type": "equation", "text": "y = mx + b", "page_idx": 3},
+    ]
+    (tmp_path / "doc_content_list.json").write_text(json.dumps(content_list))
+
+    manifest = _build_content_manifest(tmp_path)
+
+    items = manifest["items"]
+    assert len(items) == 5
+    by_type: dict[str, dict] = {it["type"]: it for it in items}
+    # Heading projected from `title` raw type.
+    assert by_type["heading"]["text_preview"] == "Quarterly Report Q1"
+    # Text body comes through as a preview.
+    assert "Revenue grew" in by_type["text"]["text_preview"]
+    # Image carries caption + path.
+    assert by_type["image"]["caption"] == "Pipeline chart"
+    assert by_type["image"]["source_path"] == "img_1.png"
+    # Table caption surfaces as preview.
+    assert by_type["table"]["text_preview"] == "Sales by region"
+    # Formula projected from `equation` raw type.
+    assert by_type["formula"]["text_preview"] == "y = mx + b"
+
+
+def test_manifest_items_empty_when_no_content_list(tmp_path):
+    """No content_list.json on disk → empty items list, not a crash.
+    The FE Content Inventory tab handles the empty state via its
+    `status="empty"` projection."""
+    manifest = _build_content_manifest(tmp_path)
+    assert manifest["items"] == []
+
+
+def test_manifest_items_drop_empty_text_blocks(tmp_path):
+    """Empty text-shaped entries are dropped — emitting blank rows
+    in the FE table is worse than omitting them."""
+    content_list = [
+        {"type": "text", "text": "", "page_idx": 0},
+        {"type": "text", "text": "Real content here.", "page_idx": 1},
+    ]
+    (tmp_path / "doc_content_list.json").write_text(json.dumps(content_list))
+    manifest = _build_content_manifest(tmp_path)
+    items = manifest["items"]
+    assert len(items) == 1
+    assert "Real content" in items[0]["text_preview"]
+
+
+def test_manifest_items_truncate_long_previews(tmp_path):
+    """Long text bodies get truncated to keep the manifest artifact
+    bounded — a 100-page PDF with full text would otherwise balloon
+    the artifact JSON beyond what the audit log can comfortably
+    serve."""
+    long_body = "x" * 5_000
+    content_list = [
+        {"type": "text", "text": long_body, "page_idx": 0},
+    ]
+    (tmp_path / "doc_content_list.json").write_text(json.dumps(content_list))
+    manifest = _build_content_manifest(tmp_path)
+    preview = manifest["items"][0]["text_preview"]
+    # Cap is 280 chars; tolerate a small ellipsis suffix.
+    assert len(preview) <= 290
+    assert preview.endswith("…")

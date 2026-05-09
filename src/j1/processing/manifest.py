@@ -198,9 +198,32 @@ def manifest_from_compile_stats(
 
     `compile_stats` is whatever the bridge's `_build_content_manifest`
     surfaced — empty dict / None when the parser produced nothing.
+
+    `compile_stats["items"]`, when populated, is the per-element
+    list (text blocks, tables, images, formulas) the parser found.
+    Producers that surface this list make the FE Content Inventory
+    tab non-empty — without it the tab can only show summary counts.
     """
     raw = compile_stats or {}
-    images_list = raw.get("images") if isinstance(raw.get("images"), list) else []
+    items_raw = raw.get("items") if isinstance(raw.get("items"), list) else []
+    items: list[ParsedContentItem] = []
+    for entry in items_raw:
+        if not isinstance(entry, dict):
+            continue
+        items.append(ParsedContentItem(
+            item_id=str(entry.get("item_id") or entry.get("id") or ""),
+            type=str(entry.get("type") or "other"),
+            page_idx=_int_or_none(entry.get("page_idx") or entry.get("page")),
+            source_path=_str_or_none(
+                entry.get("source_path") or entry.get("location"),
+            ),
+            text_preview=_str_or_none(
+                entry.get("text_preview") or entry.get("preview"),
+            ),
+            caption=_str_or_none(entry.get("caption")),
+            metadata=dict(entry.get("metadata") or {}),
+        ))
+
     return ParsedContentManifest(
         document_id=document_id,
         document_hash=document_hash,
@@ -238,11 +261,7 @@ def manifest_from_compile_stats(
                 raw.get("layout_complexity_score"),
             ),
         ),
-        # Items intentionally empty — image triage decisions live on
-        # the IngestPlan's `vision_decisions` field; persisting them
-        # again here would duplicate. A future producer that wants
-        # full per-element passthrough can fill items[] explicitly.
-        items=[],
+        items=items,
         warnings=[],
     )
 

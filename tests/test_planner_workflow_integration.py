@@ -407,6 +407,98 @@ def test_workflow_emits_generate_knowledge_chunks_after_planning(monkeypatch):
     # assert the lifecycle ordering above.)
 
 
+def test_apply_post_compile_planning_preserves_caller_graph_kind(monkeypatch):
+    """When the operator supplied `graph_builder_kind`, the post-
+    compile planning overlay must NOT silently flip graph back to
+    skipped — even if the rule-based planner classified the document
+    as a non-graph candidate. Caller wins.
+
+    Mirrors the user-reported scenario: 'when enrich is disabled, we
+    still want LightRAG's graph build to surface' — i.e. the
+    operator-supplied graph_builder_kind keeps the graph step alive
+    regardless of the planner's recommendation.
+    """
+    from j1.orchestration.workflows.project_processing import (
+        _apply_post_compile_planning,
+    )
+    from j1.orchestration.activities.planning import (
+        BuildPlanningResultOutput,
+    )
+    from j1.processing.planning import (
+        IngestPlan, PlannedStep, IngestMode, IngestPolicy,
+        STEP_COMPILE, STEP_ENRICH, STEP_GRAPH, STEP_INDEX,
+    )
+    from j1.processing.profiling import DocumentProfile
+    from j1.processing.status import StepSource
+
+    profile = DocumentProfile(
+        document_id="doc-1", extension=".pdf",
+        mime_type="application/pdf", file_size_bytes=10_000,
+    )
+    # Caller forced graph by supplying graph_builder_kind, so the
+    # initial plan has graph enabled with source=CALLER.
+    plan = IngestPlan(
+        document_id="doc-1",
+        mode=IngestMode.MULTIMODAL_LIGHT,
+        policy=IngestPolicy.AUTO,
+        steps=(
+            PlannedStep(name=STEP_COMPILE, enabled=True, required=True,
+                        source=StepSource.CALLER),
+            PlannedStep(name=STEP_ENRICH, enabled=False, required=False,
+                        source=StepSource.PLANNER, reason="text-only mode"),
+            PlannedStep(name=STEP_GRAPH, enabled=True, required=False,
+                        source=StepSource.CALLER),
+            PlannedStep(name=STEP_INDEX, enabled=True, required=True,
+                        source=StepSource.CALLER),
+        ),
+        confidence=1.0,
+        estimated_cost_level="low",
+        profile=profile,
+    )
+
+    # Post-compile result wants to skip both enrich AND graph.
+    planning_result = BuildPlanningResultOutput(
+        artifact_id="plan-art",
+        source="rule_based",
+        recommended_profile="fast",
+        confidence=0.8,
+        document_type="report",
+        execution_plan={
+            "steps": {
+                # All enrich-driver flags off → enrich gets skipped.
+                "table_enrichment": {"enabled": False, "reason": "no tables"},
+                "vision_enrichment": {"enabled": False, "reason": "no images"},
+                "image_captioning": {"enabled": False, "reason": "skip"},
+                "requirement_extraction": {"enabled": False, "reason": "skip"},
+                "risk_extraction": {"enabled": False, "reason": "skip"},
+                "quality_assessment": {"enabled": False, "reason": "skip"},
+                # Graph also gets skipped by the planner.
+                "graph_extraction": {"enabled": False, "reason": "no relationships"},
+                "indexing": {"enabled": True, "reason": "always run"},
+            },
+        },
+        warnings=(),
+    )
+
+    updated, diff = _apply_post_compile_planning(plan, planning_result)
+    graph_step = next(s for s in updated.steps if s.name == STEP_GRAPH)
+    enrich_step = next(s for s in updated.steps if s.name == STEP_ENRICH)
+
+    # Graph stays enabled because caller forced it via
+    # `graph_builder_kind`. Enrich was already disabled (source=PLANNER)
+    # so the post-compile decision lines up — no override needed.
+    assert graph_step.enabled is True, (
+        "caller-supplied graph_builder_kind must survive the post-"
+        "compile overlay even when the rule-based planner says skip"
+    )
+    assert graph_step.source == StepSource.CALLER
+
+    # Diff only flags steps where the overlay actually flipped a bit.
+    # Graph was kept, enrich didn't change → only steps that needed
+    # to flip appear.
+    assert STEP_GRAPH not in diff
+
+
 def test_synthetic_steps_fire_in_user_facing_order(monkeypatch):
     """Pin the full sub-step order around compile:
 

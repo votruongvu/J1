@@ -432,6 +432,22 @@ def _apply_post_compile_planning(
     for step in plan.steps:
         if step.name in desired:
             target = desired[step.name]
+            # Caller-supplied kinds become forced-enables in the
+            # initial plan (`_build_plan` sets `overrides[name]=True`,
+            # which marks `step.source=CALLER` + `step.enabled=True`).
+            # The post-compile overlay must NOT silently flip those
+            # back to skipped — the operator's per-run intent wins
+            # over the planner's rule-based recommendation.
+            if step.source == StepSource.CALLER and step.enabled and not target:
+                # Caller wants this step; the planner wanted to
+                # skip it. Honor the caller. The Light-/RAG-Anything
+                # graph build is the canonical example — when
+                # `graph_builder_kind` is set, the operator wants
+                # graph artifacts surfaced even on a document the
+                # rule-based planner classified as a non-graph
+                # candidate.
+                new_steps.append(step)
+                continue
             if step.enabled != target:
                 diff[step.name] = {"before": step.enabled, "after": target}
                 new_steps.append(_replace_request(
