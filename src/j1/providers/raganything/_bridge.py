@@ -1024,11 +1024,57 @@ def default_insert_content(
                 "writers (Temporal activity retry?) or stale shared-mp dict.",
                 doc_id,
             )
-        else:
-            _log.info(
-                "split-mode insert: cleared prior LightRAG state for doc_id=%s",
-                doc_id,
+
+        # Belt-and-suspenders: also rewrite `kv_store_doc_status.json`
+        # on disk and reset the in-memory `_data` to match. This is
+        # the bulletproof path for cases where:
+        #   * LightRAG re-loads state from disk between our flush and
+        #     the upcoming `filter_keys` (mid-pipeline init paths),
+        #   * a parallel writer (Temporal retry, multi-process worker)
+        #     re-added the entry between our pop and the insert,
+        #   * `index_done_callback`'s sanitize-then-reload path
+        #     undoes our delete because the cleaned data still has
+        #     the entry.
+        # Reasoning is operator-readable: we own this doc_id for the
+        # duration of the insert; nothing else has business owning it
+        # too. If it's there at all, it's stale.
+        try:
+            file_name = getattr(
+                rag.lightrag.doc_status, "_file_name", None,
             )
+            if file_name:
+                _force_clear_doc_status_for_id(file_name, doc_id)
+                # Reset the in-memory shared dict too so the next
+                # `filter_keys` reads the cleaned state. Iterate
+                # explicitly so multiprocess-Manager dicts (which
+                # don't support .clear()) work.
+                data = getattr(rag.lightrag.doc_status, "_data", None)
+                if data is not None:
+                    keys_to_drop = [
+                        k for k in list(data.keys())
+                        if k == doc_id
+                        or (isinstance(k, str) and k.startswith("dup-")
+                            and isinstance(data.get(k), dict)
+                            and data[k].get("metadata", {}).get(
+                                "original_doc_id"
+                            ) == doc_id)
+                    ]
+                    for k in keys_to_drop:
+                        try:
+                            del data[k]
+                        except KeyError:
+                            pass
+        except Exception as exc:  # noqa: BLE001 — defensive belt; never block
+            _log.debug(
+                "split-mode insert: forced kv_store_doc_status rewrite "
+                "no-op for doc_id=%s: %s",
+                doc_id, exc,
+            )
+
+        _log.info(
+            "split-mode insert: cleared prior LightRAG state for doc_id=%s",
+            doc_id,
+        )
         await rag.insert_content_list(
             content_list=content_list,
             file_path=source_filename or request.document_id,
@@ -1903,6 +1949,60 @@ def _graph_drafts_from_storage(
                 },
             ))
     return drafts
+
+
+def _force_clear_doc_status_for_id(
+    file_name: str, doc_id: str,
+) -> None:
+    """Rewrite `kv_store_doc_status.json` to drop `doc_id` and any
+    `dup-*` records that reference it.
+
+    Bulletproof path for the "Duplicate document detected" symptom
+    that survives `adelete_by_doc_id + delete + index_done_callback`.
+    LightRAG's in-memory state can lag behind disk (or vice-versa)
+    when storage is shared across processes; rewriting the file
+    directly removes any possibility that stale state leaks back.
+
+    Best-effort: file missing, malformed JSON, or write errors all
+    silently no-op so the caller proceeds with the regular cleanup
+    path. If both fail, the worst case is the original "Duplicate
+    document detected" symptom — same as before this helper existed.
+    """
+    import json as _json
+    import os as _os
+
+    if not file_name or not _os.path.exists(file_name):
+        return
+    try:
+        with open(file_name, "r", encoding="utf-8") as fh:
+            data = _json.load(fh)
+    except (OSError, _json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    cleaned = {
+        k: v for k, v in data.items()
+        if k != doc_id
+        and not (
+            isinstance(k, str) and k.startswith("dup-")
+            and isinstance(v, dict)
+            and v.get("metadata", {}).get("original_doc_id") == doc_id
+        )
+    }
+    if cleaned == data:
+        return
+    # Atomic-ish write: write to temp, then rename. Avoids leaving a
+    # half-written file if the process dies mid-write.
+    tmp = file_name + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(cleaned, fh, ensure_ascii=False)
+        _os.replace(tmp, file_name)
+    except OSError:
+        try:
+            _os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _detect_lightrag_doc_failure(
