@@ -386,16 +386,20 @@ def test_summarize_run_assets_available_for_enriched_kinds(
     assert views.assets.available is True
 
 
-def test_summarize_run_planning_available_when_artifact_exists_without_audit_event(
+def test_summarize_run_planning_always_available_regardless_of_artifact(
     service, run_store, artifact_registry, ctx,
 ):
-    """The planning_result artifact and the plan.revised audit event
-    are written by INDEPENDENT code paths in the post-compile
-    planning activity. If the audit-event reporter is None (or fails
-    silently), the artifact still lands. The Planning Report tab
-    must unlock on the artifact alone — gating it on the audit event
-    only would leave the data invisible."""
+    """Planning Report tab is always available — independent of
+    whether `planning_result` artifact exists or `plan.revised`
+    audit event was written. The tab content endpoint owns the
+    empty-state messaging when no plan data is available."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    # No planning_result artifact, no audit event — tab still
+    # available.
+    views_empty = service.summarize_run(ctx, "run-1").available_views
+    assert views_empty.planning.available is True
+    assert views_empty.planning.reason is None
+
     artifact_registry.add(
         _make_artifact(
             ctx, artifact_id="planning-1", kind="planning_result",
@@ -403,10 +407,9 @@ def test_summarize_run_planning_available_when_artifact_exists_without_audit_eve
         )
     )
 
-    views = service.summarize_run(ctx, "run-1").available_views
-
-    assert views.planning.available is True
-    assert views.planning.reason is None
+    views_with_artifact = service.summarize_run(ctx, "run-1").available_views
+    assert views_with_artifact.planning.available is True
+    assert views_with_artifact.planning.reason is None
 
 
 def test_summarize_run_quality_available_for_skipped_step_results(
@@ -1850,16 +1853,19 @@ def test_available_views_includes_parsed_content_when_manifest_present(
     assert summary.available_views.parsed_content.reason is None
 
 
-def test_available_views_parsed_content_reason_when_compile_in_progress(
+def test_available_views_parsed_content_always_available(
     service, run_store, ctx,
 ):
-    """Mid-compile run with no manifest yet → reason explains the
-    in-progress state so the FE shows a "waiting for parser"
-    message rather than the generic empty state."""
+    """Content Inventory tab is always-available now: the tab content
+    endpoint owns the empty-state messaging, the resolver no longer
+    gates the tab button. This was the only way to stop the gating
+    bug class (run_id mismatch / lineage fallback / split-source
+    audit-vs-artifact disagreements) from intermittently disabling
+    the tab when the data actually existed."""
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     summary = service.summarize_run(ctx, "run-1")
-    assert summary.available_views.parsed_content.available is False
-    assert "manifest" in summary.available_views.parsed_content.reason.lower()
+    assert summary.available_views.parsed_content.available is True
+    assert summary.available_views.parsed_content.reason is None
 
 
 # ---- Planning Report ----------------------------------------------
@@ -2069,16 +2075,19 @@ def test_get_run_planning_llm_recommendation_advisory_when_enabled(
     assert report.llm_recommendation.model_profile == "fast_planner"
 
 
-def test_summary_available_views_planning_flips_when_event_seen(
+def test_summary_available_views_planning_always_available(
     service, run_store, reporter, ctx,
 ):
-    """`/summary` picks up the planning event for tab gating without
-    a separate fetch — same progressive-availability contract the
-    Content Inventory tab uses."""
+    """Execution Plan tab is always-available now: same rationale as
+    Content Inventory — the gating logic was the source of multiple
+    bug classes, and the tab content endpoint already returns an
+    `unavailable` payload with an operator-readable reason when no
+    plan exists. We drop the gate entirely; the FE shows whatever
+    `get_run_planning` returns."""
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     summary_before = service.summarize_run(ctx, "run-1")
-    assert summary_before.available_views.planning.available is False
-    assert summary_before.available_views.planning.reason
+    assert summary_before.available_views.planning.available is True
+    assert summary_before.available_views.planning.reason is None
 
     _emit_plan_generated(
         reporter, ctx,
