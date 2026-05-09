@@ -163,6 +163,10 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     pipeline_mode = getattr(
         request.settings, "pipeline_mode", "complete",
     )
+    _log.info(
+        "raganything compile dispatch: pipeline_mode=%s document=%s",
+        pipeline_mode, request.document_id,
+    )
     if pipeline_mode == "split_parse_insert":
         return default_parse_source(request)
     return _default_compile_complete(request)
