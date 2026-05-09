@@ -1563,15 +1563,30 @@ class ProjectProcessingWorkflow:
                 updated, diff = _apply_post_compile_planning(plan, planning_result)
                 if diff:
                     plan = updated
-                    await self._emit_plan_revised(
-                        request, plan,
-                        diff={
-                            **diff,
-                            "post_compile_source": {
-                                "after": planning_result.source,
-                            },
+                # Always re-emit `plan.revised` after a successful
+                # post-compile planning activity — even when the
+                # overlay didn't flip an enable bit. Two reasons:
+                # (a) the activity's planning_result.json artifact
+                #     just landed; the audit-log event is the FE's
+                #     trigger to refresh the run summary so the new
+                #     Planning Report tab unlocks promptly.
+                # (b) when no enable bits flipped but scope/pages
+                #     did (e.g. a domain-pack overlay narrowed
+                #     `vision_enrichment.pages`), `/plan` should
+                #     still surface the latest canonical IngestPlan
+                #     so the plan card stays accurate.
+                await self._emit_plan_revised(
+                    request, plan,
+                    diff={
+                        **diff,
+                        "post_compile_source": {
+                            "after": planning_result.source,
                         },
-                    )
+                        "post_compile_domain": {
+                            "after": planning_result.selected_domain,
+                        },
+                    },
+                )
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:

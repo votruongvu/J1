@@ -13,6 +13,7 @@ export const EVENT_TYPES = {
   ASSESSMENT_STARTED: "assessment.started",
   ASSESSMENT_COMPLETED: "assessment.completed",
   PLAN_GENERATED: "plan.generated",
+  PLAN_REVISED: "plan.revised",
   PLAN_CONFIRMED: "plan.confirmed",
   STEP_STARTED: "step.started",
   STEP_PROGRESS: "step.progress",

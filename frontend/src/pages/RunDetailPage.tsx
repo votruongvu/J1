@@ -110,7 +110,15 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         if (t === EVENT_TYPES.STEP_SKIPPED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "skipped" }));
       }
 
-      if (t === EVENT_TYPES.PLAN_GENERATED) {
+      if (
+        t === EVENT_TYPES.PLAN_GENERATED ||
+        t === EVENT_TYPES.PLAN_REVISED
+      ) {
+        // Both events update the plan card. `plan.revised` lands
+        // when the post-compile planner adjusted the plan (domain
+        // overlay, post-compile signals merge, etc.) — we re-fetch
+        // so the card shows the latest canonical IngestPlan
+        // instead of sticking to the initial plan.
         void client
           .getPlan(runId)
           .then((p) => setPlan(p))

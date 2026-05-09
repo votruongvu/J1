@@ -260,12 +260,17 @@ class PlanningActivities:
             result=result,
         )
 
-        # Best-effort: emit a planning.completed-style audit event
-        # via the existing plan.revised reporter. The FE Planning
-        # Report tab unlocks via `availableViews.planning` which is
-        # driven off the artifact's presence, so this is purely a
-        # timeline nicety.
-        self._maybe_emit_progress(ctx, input.run_id, result)
+        # Intentionally NOT emitting `plan.revised` from here.
+        #
+        # The workflow's `_emit_plan_revised` is the only canonical
+        # emitter — it carries the full `IngestPlan` shape (steps[],
+        # mode, policy, …) that `/ingestion-runs/{id}/plan` projects
+        # to the FE plan card. Emitting a stripped-down planning
+        # summary here used to clobber the canonical entry on
+        # last-write-wins lookups, leaving the plan card and the
+        # PrimaryStatusPanel reading empty `steps`. The Planning
+        # Report tab + the workflow's plan.revised together are
+        # enough surfaces for the post-compile decision.
 
         plan_dict = dict(result.execution_plan or {})
         domain = result.domain_context or {}

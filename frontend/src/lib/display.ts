@@ -99,6 +99,7 @@ export const EventTypeDisplay: Readonly<Record<ProgressEventType, string>> = {
   "assessment.started": "Assessment started",
   "assessment.completed": "Assessment completed",
   "plan.generated": "Plan generated",
+  "plan.revised": "Plan revised",
   "plan.confirmed": "Plan confirmed",
   "step.started": "Step started",
   "step.progress": "Progress",

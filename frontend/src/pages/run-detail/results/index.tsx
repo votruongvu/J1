@@ -113,7 +113,11 @@ export function ResultsSection({
     return loadSummary();
   }, [run?.runId, loadSummary]);
 
-  // SSE-driven refresh: re-fetch the summary on every step.completed
+  // SSE-driven refresh: re-fetch the summary on every step.completed,
+  // on plan.generated/plan.revised (the post-compile planning
+  // activity emits the latter when the planning_result artifact
+  // lands — without this trigger the Planning Report and Content
+  // Inventory tabs stay locked until the next step.completed),
   // and on the terminal events. The summary is small (one HTTP call
   // returning a few hundred bytes); the cost of re-fetching it on
   // each step boundary is negligible and the UX win is large
@@ -124,6 +128,8 @@ export function ResultsSection({
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,
+      EVENT_TYPES.PLAN_GENERATED,
+      EVENT_TYPES.PLAN_REVISED,
     ]);
     if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
       loadSummary();
