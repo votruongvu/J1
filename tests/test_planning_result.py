@@ -295,3 +295,85 @@ def test_no_raw_document_content_in_result_payload():
     )
     # Walking the dict: validator catches large strings.
     validate_planning_result_dict(result.to_dict(), page_count=8)
+
+
+# ---- plannerMode propagation ---------------------------------------
+
+
+def test_planner_mode_rule_based_default():
+    """Default settings → planner_mode='rule_based' on the result."""
+    result = build_planning_result(
+        run_id="r1",
+        document=DocumentMetadata(document_id="doc-1", filename="doc.pdf"),
+        file_size_bytes=1024, profile=None, manifest=_manifest(),
+        settings=PlanningSettings(),
+    )
+    assert result.planner_mode == "rule_based"
+
+
+def test_planner_mode_llm_when_llm_path_runs_successfully():
+    payload = _good_payload(page_count=8)
+
+    def stub(_):
+        return payload
+
+    result = build_planning_result(
+        run_id="r1",
+        document=DocumentMetadata(document_id="doc-1", filename="doc.pdf"),
+        file_size_bytes=1024, profile=None, manifest=_manifest(),
+        settings=PlanningSettings(llm_planning_enabled=True),
+        llm_planner=stub,
+    )
+    assert result.planner_mode == "llm"
+    assert result.source == "llm"
+
+
+def test_planner_mode_hybrid_when_plan_mode_hybrid_and_llm_runs():
+    """Hybrid mode + accepted LLM output → plannerMode='hybrid'."""
+    payload = _good_payload(page_count=8)
+
+    def stub(_):
+        return payload
+
+    result = build_planning_result(
+        run_id="r1",
+        document=DocumentMetadata(document_id="doc-1", filename="doc.pdf"),
+        file_size_bytes=1024, profile=None, manifest=_manifest(),
+        settings=PlanningSettings(
+            llm_planning_enabled=True,
+            plan_mode="hybrid",
+        ),
+        llm_planner=stub,
+    )
+    assert result.planner_mode == "hybrid"
+
+
+def test_planner_mode_rule_based_fallback_when_llm_fails():
+    def boom(_):
+        raise RuntimeError("planner LLM down")
+
+    result = build_planning_result(
+        run_id="r1",
+        document=DocumentMetadata(document_id="doc-1", filename="doc.pdf"),
+        file_size_bytes=1024, profile=None, manifest=_manifest(),
+        settings=PlanningSettings(
+            llm_planning_enabled=True, fail_open=True,
+        ),
+        llm_planner=boom,
+    )
+    assert result.planner_mode == "rule_based_fallback"
+
+
+def test_planning_result_round_trips_planner_mode():
+    """Serialise/deserialise preserves plannerMode."""
+    a = _basic_assessment()
+    result = assessment_to_planning_result(
+        run_id="r1", document_id="doc-1",
+        created_at="2026-05-09T00:00:00Z", assessment=a,
+    )
+    # Default rule-based path keeps planner_mode aligned with source.
+    rebuilt = result.to_dict()
+    assert "planner_mode" in rebuilt
+    from j1.processing.planning_result import PlanningResult
+    again = PlanningResult.from_dict(rebuilt)
+    assert again.planner_mode == result.planner_mode

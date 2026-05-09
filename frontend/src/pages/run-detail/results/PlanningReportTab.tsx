@@ -1,15 +1,19 @@
 /**
- * Results > Planning Report tab.
+ * Results > Execution Plan tab.
  *
- * Renders the Planning Report from
+ * Renders the Execution Plan from
  * `GET /ingestion-runs/{id}/planning`. Available as soon as the
- * planner emits a `plan.generated` event, even while downstream
- * stages are still running.
+ * planner emits a `plan.generated` / `plan.revised` event, even
+ * while downstream stages are still running.
  *
  * Three states:
  *   * `status="completed"` → assessment + decisions + (optional) digest.
  *   * `status="unavailable"` → backend's `unavailableReason` copy.
  *   * load error → inline alert.
+ *
+ * The card surfaces a `Planner mode` badge (Rule-based / LLM /
+ * Hybrid / Rule-based fallback) so operators can see at a glance
+ * whether an LLM was consulted for this particular run.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -113,10 +117,26 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
             </span>
           ) : null}
         </SourceField>
-        {report.source ? (
-          <SourceField label="Source">
+        {report.plannerMode ? (
+          <SourceField label="Planner mode">
+            <span
+              className={`results-tag results-tag--${
+                report.plannerMode === "rule_based_fallback"
+                  ? "warning"
+                  : "info"
+              }`}
+              title={plannerModeTooltip(report.plannerMode)}
+            >
+              {plannerModeLabel(report.plannerMode)}
+            </span>
+          </SourceField>
+        ) : report.source ? (
+          // Backward compat: older artifacts only carry `source`.
+          // Surface it as the planner-mode badge so the FE shows
+          // the same field regardless of payload version.
+          <SourceField label="Planner mode">
             <span className="results-tag results-tag--info">
-              {report.source}
+              {plannerModeLabel(report.source)}
             </span>
           </SourceField>
         ) : null}
@@ -448,6 +468,38 @@ function formatTimestamp(value: string | null | undefined): string {
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return value;
   return new Date(parsed).toLocaleString();
+}
+
+function plannerModeLabel(mode: string | null | undefined): string {
+  switch (mode) {
+    case "rule_based":
+      return "Rule-based";
+    case "llm":
+      return "LLM-assisted";
+    case "hybrid":
+      return "Hybrid";
+    case "rule_based_fallback":
+      return "Rule-based fallback";
+    case "audit_log":
+      return "Audit-log projection";
+    default:
+      return mode ?? "—";
+  }
+}
+
+function plannerModeTooltip(mode: string | null | undefined): string {
+  switch (mode) {
+    case "rule_based":
+      return "Deterministic planner only — no LLM was consulted.";
+    case "llm":
+      return "LLM-assisted planner ran and its output was accepted.";
+    case "hybrid":
+      return "Hybrid: rule-based ran first; LLM augmented the plan.";
+    case "rule_based_fallback":
+      return "LLM planner failed; rule-based decision was kept.";
+    default:
+      return "";
+  }
 }
 
 // ---- Post-compile section components ---------------------------

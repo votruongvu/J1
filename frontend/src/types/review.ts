@@ -324,6 +324,14 @@ export interface PlanningResult {
   warnings?: string[];
   rawArtifactId?: string | null;
   domainContext?: PlanningDomainContext | null;
+  /**
+   * Operator-facing planner mode.
+   *   "rule_based"           — deterministic only
+   *   "llm"                  — LLM-assisted; rule-based runs first
+   *   "hybrid"               — both run; rule-based is the safety net
+   *   "rule_based_fallback"  — LLM ran but failed/invalid; kept rules
+   */
+  plannerMode?: string | null;
 }
 
 // ---- Validation (Phase 1: manual test query) --------------------

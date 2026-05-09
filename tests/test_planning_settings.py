@@ -121,3 +121,50 @@ def test_domain_detection_threshold_rejected_when_out_of_range():
     from j1.errors.exceptions import ConfigError
     with pytest.raises(ConfigError):
         load_planning_settings({"J1_DOMAIN_DETECTION_MIN_CONFIDENCE": "1.5"})
+
+
+# ---- J1_INGEST_PLAN_MODE -------------------------------------------
+
+
+def test_default_plan_mode_is_rule_based():
+    s = load_planning_settings({})
+    assert s.plan_mode == "rule_based"
+    assert s.llm_planning_enabled is False
+
+
+def test_plan_mode_llm_enables_llm_planning():
+    s = load_planning_settings({"J1_INGEST_PLAN_MODE": "llm"})
+    assert s.plan_mode == "llm"
+    assert s.llm_planning_enabled is True
+
+
+def test_plan_mode_hybrid_also_enables_llm_planning():
+    s = load_planning_settings({"J1_INGEST_PLAN_MODE": "hybrid"})
+    assert s.plan_mode == "hybrid"
+    assert s.llm_planning_enabled is True
+
+
+def test_plan_mode_unrecognised_value_raises():
+    from j1.errors.exceptions import ConfigError
+    with pytest.raises(ConfigError, match="J1_INGEST_PLAN_MODE"):
+        load_planning_settings({"J1_INGEST_PLAN_MODE": "magical"})
+
+
+def test_legacy_llm_planning_enabled_flag_still_honored_when_plan_mode_unset():
+    """Backward compat: deployments that flipped J1_LLM_PLANNING_ENABLED
+    before J1_INGEST_PLAN_MODE existed must continue working."""
+    s = load_planning_settings({"J1_LLM_PLANNING_ENABLED": "true"})
+    assert s.plan_mode == "rule_based"
+    assert s.llm_planning_enabled is True
+
+
+def test_explicit_llm_planning_disabled_overrides_plan_mode_llm():
+    """Explicit J1_LLM_PLANNING_ENABLED=false wins over the
+    derived default — useful for staged rollouts where operators
+    want plan_mode set for telemetry but LLM disabled."""
+    s = load_planning_settings({
+        "J1_INGEST_PLAN_MODE": "llm",
+        "J1_LLM_PLANNING_ENABLED": "false",
+    })
+    assert s.plan_mode == "llm"
+    assert s.llm_planning_enabled is False

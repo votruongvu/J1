@@ -9,6 +9,7 @@ import { Icon } from "@/components/icons";
 import { EngineBadge } from "@/components/badges";
 import { EVENT_TYPES } from "@/lib/constants/events";
 import { eventTypeLabel } from "@/lib/display";
+import { userFacingStepLabel } from "@/lib/processing-steps";
 import type { ProgressEvent } from "@/types/ingestion";
 import type { StreamStatus as StreamStatusKind } from "@/types/ui";
 
@@ -27,25 +28,34 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
     }
   }, [events.length]);
 
+  // Hide the legacy `plan.generated` ("Initial Plan") row from the
+  // user-facing timeline. The user-facing flow starts with parsing —
+  // the operator sees the Execution Plan card on the right after
+  // post-compile planning fires its `plan.revised` event. The raw
+  // event still ships through SSE for diagnostic consumers.
+  const visibleEvents = events.filter(
+    (e) => e.event !== EVENT_TYPES.PLAN_GENERATED,
+  );
+
   return (
     <div className="card">
       <div className="card__header">
         <div>
           <h3 className="card__title">Live timeline</h3>
           <p className="card__subtitle">
-            {events.length} event{events.length === 1 ? "" : "s"}
+            {visibleEvents.length} event{visibleEvents.length === 1 ? "" : "s"}
           </p>
         </div>
         <StreamStatus status={streamStatus} />
       </div>
       <div className="card__body" ref={scrollRef} style={{ maxHeight: 520, overflow: "auto" }}>
-        {events.length === 0 ? (
+        {visibleEvents.length === 0 ? (
           <div className="tl-empty">
             No events yet. They&apos;ll appear here as the run progresses.
           </div>
         ) : (
           <div className="timeline">
-            {events.map((e) => (
+            {visibleEvents.map((e) => (
               <TimelineEventItem key={e.eventId} event={e} onClick={() => onSelectEvent?.(e)} />
             ))}
           </div>
@@ -116,11 +126,29 @@ function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
       </div>
       <div className="tl-item__head">
         <span className="tl-item__type">{eventTypeLabel(t)}</span>
-        {event.data?.stage && (
-          <span className="badge badge--outline mono">{event.data.stage}</span>
-        )}
+        {event.data?.step ? (
+          // User-facing step label first; the original internal
+          // step badge stays visible (mono / outline) for operator
+          // traceability when the user-facing label differs.
+          <span className="badge">
+            {userFacingStepLabel(event.data.step as string)}
+          </span>
+        ) : null}
         {event.data?.step && (
-          <span className="badge badge--outline mono">{event.data.step}</span>
+          <span
+            className="badge badge--outline mono"
+            title="Internal step name"
+          >
+            {event.data.step}
+          </span>
+        )}
+        {event.data?.stage && (
+          <span
+            className="badge badge--outline mono"
+            title="Internal stage label"
+          >
+            {event.data.stage}
+          </span>
         )}
         <span className="tl-item__time">{formatTimeShort(event.ts)}</span>
       </div>

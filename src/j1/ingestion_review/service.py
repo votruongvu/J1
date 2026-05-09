@@ -1388,6 +1388,7 @@ def _planning_artifact_to_dto(
         domain_context=(
             dict(result.domain_context) if result.domain_context else None
         ),
+        planner_mode=getattr(result, "planner_mode", None) or result.source,
     )
 
 

@@ -37,6 +37,15 @@ ENV_PLANNING_MAX_EARLY_PAGES = "J1_PLANNING_MAX_EARLY_PAGES"
 ENV_PLANNING_FAIL_OPEN = "J1_PLANNING_FAIL_OPEN"
 ENV_PLANNING_TRACE_ENABLED = "J1_PLANNING_TRACE_ENABLED"
 ENV_PLANNING_TRACE_BODY = "J1_PLANNING_TRACE_BODY"
+# Operator-facing plan mode. Maps to the legacy `*_planning_enabled`
+# flags below; carried as a single env so docs and dashboards have
+# one knob to point at.
+#   rule_based  → deterministic only (default; cheap + safe)
+#   llm         → LLM-assisted; deterministic plan still ships as
+#                  the rule_based comparison block
+#   hybrid      → both run; LLM result wins on agreement, rule-based
+#                  is the safety net on disagreement / failure
+ENV_INGEST_PLAN_MODE = "J1_INGEST_PLAN_MODE"
 
 # ---- Domain pack envs ------------------------------------------------
 
@@ -48,12 +57,23 @@ ENV_ALLOWED_DOMAIN_OVERRIDES = "J1_ALLOWED_DOMAIN_OVERRIDES"
 ENV_WORKSPACE_DEFAULT_DOMAIN = "J1_WORKSPACE_DEFAULT_DOMAIN"
 
 
+PLAN_MODE_RULE_BASED = "rule_based"
+PLAN_MODE_LLM = "llm"
+PLAN_MODE_HYBRID = "hybrid"
+
+ALLOWED_PLAN_MODES: frozenset[str] = frozenset({
+    PLAN_MODE_RULE_BASED, PLAN_MODE_LLM, PLAN_MODE_HYBRID,
+})
+
+
 __all__ = [
+    "ALLOWED_PLAN_MODES",
     "ENV_ALLOWED_DOMAIN_OVERRIDES",
     "ENV_DEFAULT_DOMAIN",
     "ENV_DOMAIN_DETECTION_ENABLED",
     "ENV_DOMAIN_DETECTION_MIN_CONFIDENCE",
     "ENV_DOMAIN_PACKS_ENABLED",
+    "ENV_INGEST_PLAN_MODE",
     "ENV_LLM_PLANNING_ENABLED",
     "ENV_PLANNING_ENABLED",
     "ENV_PLANNING_FAIL_OPEN",
@@ -65,6 +85,9 @@ __all__ = [
     "ENV_PLANNING_TRACE_ENABLED",
     "ENV_POST_COMPILE_PLANNING_ENABLED",
     "ENV_WORKSPACE_DEFAULT_DOMAIN",
+    "PLAN_MODE_HYBRID",
+    "PLAN_MODE_LLM",
+    "PLAN_MODE_RULE_BASED",
     "PlanningSettings",
     "load_planning_settings",
 ]
@@ -115,6 +138,11 @@ class PlanningSettings:
     # `trace_enabled=True` to take effect.
     trace_enabled: bool = False
     trace_body: bool = False
+    # Operator-facing plan mode. Source of truth; the legacy
+    # `llm_planning_enabled` flag is derived from it. `rule_based`
+    # is the default — it's cheap, deterministic, and never spends
+    # LLM tokens on planning.
+    plan_mode: str = PLAN_MODE_RULE_BASED
     # ---- Domain pack settings -----------------------------------
     # Master switch for the domain-pack subsystem. Off → planner
     # behaves as if no packs were registered (always selects
@@ -143,15 +171,32 @@ def load_planning_settings(
 
     Always returns a `PlanningSettings`. Bad numeric values raise
     `ConfigError` so misconfiguration surfaces at startup rather than
-    silently degrading at runtime."""
+    silently degrading at runtime.
+
+    `J1_INGEST_PLAN_MODE` is the operator-facing knob; when set it
+    overrides `J1_LLM_PLANNING_ENABLED`. The legacy env stays
+    supported for deployments that haven't migrated. Resolution rule:
+      * `J1_INGEST_PLAN_MODE=llm`     → llm_planning_enabled=True
+      * `J1_INGEST_PLAN_MODE=hybrid`  → llm_planning_enabled=True
+                                         (rule-based runs first; LLM
+                                         augments — same code path)
+      * `J1_INGEST_PLAN_MODE=rule_based` (default) → llm_planning_enabled=False
+      * unset → fall through to `J1_LLM_PLANNING_ENABLED` legacy default
+    """
     source = env if env is not None else os.environ
+    plan_mode = _plan_mode(source)
+    if plan_mode is not None:
+        llm_enabled_default = plan_mode in (PLAN_MODE_LLM, PLAN_MODE_HYBRID)
+    else:
+        llm_enabled_default = False
+        plan_mode = PLAN_MODE_RULE_BASED
     return PlanningSettings(
         enabled=_bool(source, ENV_PLANNING_ENABLED, default=True),
         post_compile_enabled=_bool(
             source, ENV_POST_COMPILE_PLANNING_ENABLED, default=True,
         ),
         llm_planning_enabled=_bool(
-            source, ENV_LLM_PLANNING_ENABLED, default=False,
+            source, ENV_LLM_PLANNING_ENABLED, default=llm_enabled_default,
         ),
         model_profile=(
             source.get(ENV_PLANNING_MODEL_PROFILE, "").strip()
@@ -171,6 +216,7 @@ def load_planning_settings(
             source, ENV_PLANNING_TRACE_ENABLED, default=False,
         ),
         trace_body=_bool(source, ENV_PLANNING_TRACE_BODY, default=False),
+        plan_mode=plan_mode,
         domain_packs_enabled=_bool(
             source, ENV_DOMAIN_PACKS_ENABLED, default=True,
         ),
@@ -259,3 +305,24 @@ def _csv(
         p.strip().lower() for p in raw.split(",") if p.strip()
     )
     return parts or default
+
+
+def _plan_mode(env: Mapping[str, str]) -> str | None:
+    """Resolve the operator-facing plan mode.
+
+    Returns None when the env var is unset (caller falls back to
+    `rule_based` + the legacy `J1_LLM_PLANNING_ENABLED` flag).
+    Raises `ConfigError` on a recognisable-but-invalid value so a
+    typo doesn't silently degrade to rule_based."""
+    raw = env.get(ENV_INGEST_PLAN_MODE)
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if not text:
+        return None
+    if text not in ALLOWED_PLAN_MODES:
+        raise ConfigError(
+            f"{ENV_INGEST_PLAN_MODE}={raw!r} is not a recognised plan "
+            f"mode (accepted: {sorted(ALLOWED_PLAN_MODES)})"
+        )
+    return text

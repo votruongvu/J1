@@ -625,3 +625,7 @@ class PlanningResultDTO(CamelModel):
     # `None` for legacy / audit-log fallback runs that pre-date
     # domain packs.
     domain_context: dict[str, Any] | None = None
+    # Operator-facing planner mode. Mirrors the spec:
+    #   `rule_based` / `llm` / `hybrid` / `rule_based_fallback`.
+    # None on legacy / audit-log responses that pre-date the field.
+    planner_mode: str | None = None

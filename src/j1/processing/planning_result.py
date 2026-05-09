@@ -122,6 +122,14 @@ class PlanningResult:
     warnings: list[str] = field(default_factory=list)
     next_actions: list[str] = field(default_factory=list)
     domain_context: dict[str, Any] = field(default_factory=dict)
+    # Operator-facing planner mode. Mirrors the spec's
+    # `plannerMode` wire field. One of:
+    #   * `rule_based`           — deterministic only
+    #   * `llm`                  — LLM ran and its output was accepted
+    #   * `hybrid`               — both ran; rule-based + LLM merge
+    #   * `rule_based_fallback`  — LLM ran but failed/invalid, kept
+    #                              rule-based output
+    planner_mode: str = "rule_based"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -172,6 +180,15 @@ class PlanningResult:
                 if isinstance(a, str)
             ],
             domain_context=dict(data.get("domain_context") or {}),
+            planner_mode=str(
+                data.get("planner_mode")
+                # Backward compat with older artifacts that only set
+                # `source`. Project the legacy value when planner_mode
+                # is absent: `llm` → llm, `rule_based_fallback` →
+                # rule_based_fallback, `rule_based` → rule_based.
+                or data.get("source")
+                or "rule_based"
+            ),
         )
 
 

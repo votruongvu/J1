@@ -221,6 +221,13 @@ def build_planning_result(
     rule_based_result = _with_domain_context(
         rule_based_result, domain_context,
     )
+    rule_based_result = _replace_dataclass(
+        rule_based_result,
+        planner_mode=_planner_mode_for(
+            settings=settings,
+            source=PLANNING_SOURCE_RULE_BASED,
+        ),
+    )
 
     # No LLM path? Done.
     if not settings.llm_planning_enabled or llm_planner is None:
@@ -262,10 +269,17 @@ def build_planning_result(
             raise
         return _to_fallback(rule_based_result, reason=f"LLM output invalid: {exc}")
 
-    return _merge_llm_into_rule_based(
+    merged = _merge_llm_into_rule_based(
         rule_based_result=rule_based_result,
         llm_payload=llm_payload,
         timestamp=timestamp,
+    )
+    return _replace_dataclass(
+        merged,
+        planner_mode=_planner_mode_for(
+            settings=settings,
+            source=PLANNING_SOURCE_LLM,
+        ),
     )
 
 
@@ -295,7 +309,29 @@ def _to_fallback(rule: PlanningResult, *, reason: str) -> PlanningResult:
         warnings=warnings,
         next_actions=list(rule.next_actions),
         domain_context=dict(rule.domain_context),
+        planner_mode=PLANNING_SOURCE_RULE_BASED_FALLBACK,
     )
+
+
+def _planner_mode_for(*, settings: PlanningSettings, source: str) -> str:
+    """Project the (settings.plan_mode, source) pair onto the wire-
+    facing `plannerMode` vocabulary the FE renders.
+
+    `settings.plan_mode` is the operator's intent (`rule_based` /
+    `llm` / `hybrid`); `source` is the actual outcome
+    (`rule_based` / `llm` / `rule_based_fallback`). The wire field
+    summarises both so the FE never has to derive it."""
+    if source == PLANNING_SOURCE_RULE_BASED_FALLBACK:
+        return PLANNING_SOURCE_RULE_BASED_FALLBACK
+    if source == PLANNING_SOURCE_LLM:
+        # Hybrid is operationally LLM with rule-based as the safety
+        # net — surface the operator's intent so the badge reads
+        # "Hybrid" when the deployment opted in.
+        if settings.plan_mode == "hybrid":
+            return "hybrid"
+        return "llm"
+    # Pure rule-based outcome.
+    return "rule_based"
 
 
 def _merge_llm_into_rule_based(

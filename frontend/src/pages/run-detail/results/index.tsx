@@ -171,16 +171,12 @@ export function ResultsSection({
     available: boolean;
     reason?: string | null;
   }> = [
+    // Tab order mirrors the user-facing processing journey:
+    //   Overview → Content Inventory → Execution Plan →
+    //   Knowledge Chunks → Enrichment → Knowledge Graph → Quality →
+    //   Raw → Validation. Operators read top-to-bottom in the same
+    //   sequence the run produces them.
     { key: "overview", label: "Overview", available: true },
-    {
-      key: "planning",
-      label: "Planning Report",
-      // Optional like `parsedContent` — older API responses omit it.
-      available: views?.planning?.available ?? false,
-      reason:
-        views?.planning?.reason ??
-        (views ? "Waiting for planner to finish." : "Loading…"),
-    },
     {
       key: "parsedContent",
       label: "Content Inventory",
@@ -194,20 +190,29 @@ export function ResultsSection({
         (views ? "Waiting for parser to finish." : "Loading…"),
     },
     {
+      key: "planning",
+      label: "Execution Plan",
+      // Optional like `parsedContent` — older API responses omit it.
+      available: views?.planning?.available ?? false,
+      reason:
+        views?.planning?.reason ??
+        (views ? "Waiting for planner to finish." : "Loading…"),
+    },
+    {
       key: "chunks",
-      label: "Chunks",
+      label: "Knowledge Chunks",
       available: views?.chunks.available ?? false,
       reason: views?.chunks.reason ?? "Loading…",
     },
     {
       key: "assets",
-      label: "Assets",
+      label: "Enrichment",
       available: views?.assets.available ?? false,
       reason: views?.assets.reason ?? "Loading…",
     },
     {
       key: "graph",
-      label: "Graph",
+      label: "Knowledge Graph",
       available: views?.graph.available ?? false,
       reason: views?.graph.reason ?? "Loading…",
     },

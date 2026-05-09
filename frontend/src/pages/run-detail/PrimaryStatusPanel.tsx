@@ -10,6 +10,7 @@
 import { useMemo } from "react";
 import { Icon } from "@/components/icons";
 import { EVENT_TYPES } from "@/lib/constants/events";
+import { userFacingStepLabel } from "@/lib/processing-steps";
 import type { ExecutionPlan, IngestionRun, ProgressEvent } from "@/types/ingestion";
 
 interface PrimaryStatusPanelProps {
@@ -94,8 +95,8 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
     // fall through to the original "Building execution plan…" copy.
     const lastStarted = [...events].reverse().find((e) => e.event === EVENT_TYPES.STEP_STARTED);
     if (lastStarted) {
-      const stage = (lastStarted.data?.stage as string | undefined) ?? "—";
       const step = (lastStarted.data?.step as string | undefined) ?? "—";
+      const friendly = userFacingStepLabel(step);
       return (
         <div className="psp psp--running">
           <div className="psp__icon">
@@ -104,7 +105,7 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
           <div className="psp__body">
             <div className="psp__eyebrow">Running</div>
             <h2 className="psp__title">
-              Executing {stage} · <span className="psp__step">{step}</span>
+              <span className="psp__step">{friendly}</span>
             </h2>
             <p className="psp__lede">
               Streaming events live from the pipeline. Watch the timeline on the right for
@@ -153,8 +154,8 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
   }
 
   if (status === "RUNNING") {
-    const stage = run.current_stage || "—";
     const step = run.current_step || "—";
+    const friendly = userFacingStepLabel(step);
     const pct = Math.round(run.progress_pct || 0);
     return (
       <div className="psp psp--running">
@@ -164,7 +165,7 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
         <div className="psp__body">
           <div className="psp__eyebrow">Running · {pct}%</div>
           <h2 className="psp__title">
-            Executing {stage} · <span className="psp__step">{step}</span>
+            <span className="psp__step">{friendly}</span>
           </h2>
           <p className="psp__lede">
             Streaming events live from the pipeline. Watch the timeline on the right for
