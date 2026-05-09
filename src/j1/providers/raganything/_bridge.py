@@ -1782,10 +1782,25 @@ def _graph_drafts_from_storage(
         "*graph*", "*relation*", "*entit*", "kv_store*.json",
     )
     # Files we exclude from graph_json — they're surfaced under their
-    # own kind elsewhere. Match by lowercased filename so a
-    # `kv_store_text_chunks.json` (canonical) and a hypothetical
-    # `KV_STORE_TEXT_CHUNKS.JSON` both filter correctly.
-    chunk_filenames = {"kv_store_text_chunks.json"}
+    # own kind elsewhere or are not graph data at all. Match by
+    # lowercased filename so case variants both filter correctly.
+    #   * `kv_store_text_chunks.json`  → emitted as `kind="chunk"`
+    #     via `_chunk_drafts_from_storage` (canonical chunk DTO).
+    #   * `kv_store_doc_status.json`   → per-document state machine
+    #     (PENDING/HANDLING/PROCESSED/FAILED + duplicate-detection
+    #     records). Internal LightRAG bookkeeping; surfacing it as
+    #     `graph_json` puts confusing `[DUPLICATE]` rows in the
+    #     Knowledge Graph tab even though no graph data exists.
+    #   * `kv_store_full_docs.json` / `kv_store_llm_response_cache.json`
+    #     → blob stores; reviewer-facing graph tab doesn't need them.
+    chunk_filenames = {
+        "kv_store_text_chunks.json",
+        "kv_store_doc_status.json",
+        "kv_store_full_docs.json",
+        "kv_store_llm_response_cache.json",
+        "kv_store_parse_cache.json",
+        "kv_store_multimodal_status.json",
+    }
     seen: set[Path] = set()
     for pattern in interesting:
         for path in storage_dir.rglob(pattern):
