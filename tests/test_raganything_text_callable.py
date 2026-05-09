@@ -69,7 +69,11 @@ class _RecordingClient:
 def test_wrapper_forwards_system_prompt():
     """LightRAG passes the entity-extraction template via
     `system_prompt=`. Wrapper MUST forward it; before the fix
-    it dropped the kwarg."""
+    it dropped the kwarg.
+
+    Wrapper also injects `/no_think` into both system + user
+    prompts to suppress qwen3 reasoning mode. Original content
+    must still reach the model unmodified."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
@@ -79,9 +83,10 @@ def test_wrapper_forwards_system_prompt():
     ))
 
     assert len(client.calls) == 1
-    assert client.calls[0]["system_prompt"] == "ENTITY EXTRACTION TEMPLATE"
-    # User content is forwarded. Wrapper prepends `/no_think` to
-    # suppress qwen3 reasoning; original content must remain.
+    forwarded_system = client.calls[0]["system_prompt"]
+    assert "ENTITY EXTRACTION TEMPLATE" in forwarded_system
+    assert "/no_think" in forwarded_system
+    # User content is forwarded; `/no_think` prepended.
     assert "user content" in client.calls[0]["prompt"]
     assert "/no_think" in client.calls[0]["prompt"]
 
@@ -111,8 +116,10 @@ def test_wrapper_folds_history_into_prompt():
     assert "(entity1, entity2)" in forwarded
     # Original user content is also present (folded after history).
     assert "continue extracting" in forwarded
-    # System prompt forwarded separately, not folded.
-    assert client.calls[0]["system_prompt"] == "extract entities"
+    # System prompt forwarded with `/no_think` prepended; original
+    # template content must still reach the model.
+    assert "extract entities" in client.calls[0]["system_prompt"]
+    assert "/no_think" in client.calls[0]["system_prompt"]
 
 
 def test_wrapper_skips_empty_history():
