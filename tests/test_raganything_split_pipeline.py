@@ -155,7 +155,27 @@ def test_parse_source_persists_parsed_source_and_manifest(tmp_path, monkeypatch)
     ]
     fake = _FakeRAG(content_list, doc_id="rag-doc-99")
 
-    request = _make_request(tmp_path, monkeypatch=monkeypatch)
+    # Use a non-text-extension source so the bridge takes the
+    # `rag.parse_document` path (not the plaintext / pypdf
+    # fast paths).
+    raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "doc-1.docx").write_bytes(b"PK\x03\x04binarydocxbody")
+    monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
+    settings = _settings(tmp_path)
+    request = RAGAnythingCompileRequest(
+        ctx=SimpleNamespace(tenant_id="acme", project_id="alpha"),
+        document_id="doc-1",
+        settings=settings,
+        text_client=SimpleNamespace(provider="stub", model="stub"),
+        vision_client=None,
+        embedding_client=SimpleNamespace(provider="stub", model="stub"),
+    )
+    # Disable PDF pre-conversion so docx → docx (no soffice call).
+    monkeypatch.setattr(
+        "j1.providers.raganything._bridge._needs_pdf_conversion",
+        lambda *a, **k: False,
+    )
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._build_rag_instance",
         lambda **kw: fake,
@@ -412,6 +432,8 @@ def test_default_compile_uses_legacy_path_in_complete_mode(
         _spy,
     )
 
-    request = _make_request(tmp_path, mode=PIPELINE_MODE_COMPLETE)
+    request = _make_request(
+        tmp_path, mode=PIPELINE_MODE_COMPLETE, monkeypatch=monkeypatch,
+    )
     default_compile(request)
     assert captured.get("called") is True
