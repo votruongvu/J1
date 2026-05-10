@@ -26,6 +26,7 @@ from j1.orchestration.activities.payloads import (
     GraphActivityInput,
     IndexActivityInput,
     InsertContentActivityInput,
+    PersistCompileStrategyReportInput,
     PersistErrorReportInput,
     PersistFinalSummaryInput,
     PersistValidationReportInput,
@@ -59,6 +60,7 @@ ACTIVITY_QUERY = "j1.processing.query"
 ACTIVITY_PERSIST_ERROR_REPORT = "j1.processing.persist_error_report"
 ACTIVITY_PERSIST_VALIDATION_REPORT = "j1.processing.persist_validation_report"
 ACTIVITY_PERSIST_FINAL_SUMMARY = "j1.processing.persist_final_summary"
+ACTIVITY_PERSIST_COMPILE_STRATEGY_REPORT = "j1.processing.persist_compile_strategy_report"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 
 
@@ -123,6 +125,7 @@ class ProcessingActivities:
             self.persist_error_report,
             self.persist_validation_report,
             self.persist_final_summary,
+            self.persist_compile_strategy_report,
             self.validate_stage,
         ]
 
@@ -684,6 +687,36 @@ class ProcessingActivities:
                 warning_count=input.warning_count,
                 failure_code=input.failure_code,
                 failure_message=input.failure_message,
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_COMPILE_STRATEGY_REPORT)
+    def persist_compile_strategy_report(
+        self, input: PersistCompileStrategyReportInput,
+    ) -> ArtifactActivityResult:
+        """Persist the AssessmentPlan + retry-attempts +
+        final-quality verdict as a `compile_strategy_report`
+        artifact. Best-effort — any persistence error is logged
+        inside the activity and the workflow proceeds; the run's
+        compile result is the durable signal, this artifact is
+        purely observability."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_compile_strategy_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=dict(input.payload),
                 actor=input.actor,
             )
         except Exception as exc:  # noqa: BLE001
@@ -1268,6 +1301,33 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
     kinds = tuple(
         str(getattr(r, "kind", "") or "") for r in result.artifacts
     )
+    # Compile-safety-retry signals — read from the bridge's manifest
+    # metadata. `chunks_count` falls back to counting `kinds` when
+    # the manifest didn't surface it. The retry layer treats missing
+    # `extracted_text_chars` as "unknown" + skips the chars-below-
+    # threshold rule rather than retrying defensively.
+    compile_metrics: dict[str, Any] = {}
+    if result.metadata:
+        chunks_count = result.metadata.get(
+            "chunks_count",
+            result.metadata.get("text_block_count"),
+        )
+        if not isinstance(chunks_count, int):
+            chunks_count = sum(1 for k in kinds if k == "chunk")
+        text_chars = result.metadata.get("total_text_chars")
+        compile_metrics["chunks_count"] = int(chunks_count)
+        if isinstance(text_chars, int):
+            compile_metrics["extracted_text_chars"] = text_chars
+        # Surface plan-derived warnings + unhandled capabilities
+        # (already on metadata via the bridge) so the workflow
+        # doesn't have to re-fetch the artifact.
+        for key in (
+            "plan_warnings",
+            "unhandled_capabilities",
+            "assessment_mode",
+        ):
+            if key in result.metadata:
+                compile_metrics[key] = result.metadata[key]
     return ArtifactActivityResult(
         status=result.status.value,
         artifact_ids=[r.artifact_id for r in result.artifacts],
@@ -1276,6 +1336,7 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
         content_stats=content_stats,
         parsed_source_artifact_id=parsed_source_artifact_id,
         kinds=kinds,
+        compile_metrics=compile_metrics,
     )
 
 

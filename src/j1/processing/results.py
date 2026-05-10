@@ -62,6 +62,12 @@ ARTIFACT_KIND_FINAL_SUMMARY = "final_summary"
 # at terminal transition). See
 # [`docs/ingestion-stage-validation.md`](../../docs/ingestion-stage-validation.md).
 ARTIFACT_KIND_STAGE_VALIDATION_REPORT = "stage_validation_report"
+# Compile-strategy + safety-retry summary. One artifact per
+# compile-stage execution (or sequence of retries) carrying the
+# AssessmentPlan, the resolved CompileConfig, the per-attempt
+# audit list, and the final-quality verdict. The FE's run-detail
+# Compile Strategy tab reads this to render the timeline.
+ARTIFACT_KIND_COMPILE_STRATEGY_REPORT = "compile_strategy_report"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
@@ -71,6 +77,7 @@ __all__ = [
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",
+    "ARTIFACT_KIND_COMPILE_STRATEGY_REPORT",
     "ARTIFACT_KIND_STAGE_VALIDATION_REPORT",
     "ARTIFACT_KIND_VALIDATION_REPORT",
     "ArtifactDraft",

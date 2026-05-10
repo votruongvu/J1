@@ -323,6 +323,73 @@ class ProcessingService:
             f"failed to persist validation_report artifact for run {run_id!r}"
         )
 
+    def persist_compile_strategy_report(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        payload: dict,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write a `compile_strategy_report` artifact summarising the
+        AssessmentPlan + CompileConfig + per-attempt timeline + final
+        quality verdict for one document's compile stage. Mirrors
+        `persist_validation_report`'s shape so the FE artifact-listing
+        surface picks it up uniformly.
+
+        `payload` is the JSON-serialisable dict the workflow builds
+        — the service doesn't import the assessment / retry
+        dataclasses to keep the dependency tree thin."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_COMPILE_STRATEGY_REPORT,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+
+        attempts = payload.get("attempts") or []
+        attempts_count = len(attempts)
+        final_quality = str(payload.get("final_compile_quality") or "unknown")
+        retry_used = bool(payload.get("retry_used"))
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_COMPILE_STRATEGY_REPORT,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"compile_strategy_{run_id}.json",
+                "attempts_count": attempts_count,
+                "retry_used": retry_used,
+                "final_compile_quality": final_quality,
+                "initial_mode": payload.get("initial_mode"),
+                "final_mode": payload.get("final_mode"),
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            "failed to persist compile_strategy_report artifact for "
+            f"run {run_id!r}"
+        )
+
     def persist_stage_validation_report(
         self,
         ctx: ProjectContext,

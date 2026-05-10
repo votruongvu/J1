@@ -135,6 +135,21 @@ class PersistFinalSummaryInput:
 
 
 @dataclass(frozen=True)
+class PersistCompileStrategyReportInput:
+    """Workflow → activity payload for the
+    `compile_strategy_report` artifact. Carries the AssessmentPlan
+    + per-attempt audit + final-quality verdict in plain-dict form;
+    the activity passes it straight to
+    `ProcessingService.persist_compile_strategy_report`."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class ValidateStageInput:
     """Workflow → activity payload for `validate_stage`. Carries the
     stage name + the artifacts the stage produced + the scope keys
@@ -231,6 +246,13 @@ class ArtifactActivityResult:
     # by hand keep working; the validation only fires when the field
     # is populated.
     kinds: tuple[str, ...] = field(default_factory=tuple)
+    # Quality signals the compile-safety-retry layer reads to decide
+    # whether to escalate to a higher mode. Populated by the activity
+    # from the bridge's manifest (`total_text_chars` etc.); empty
+    # when the producer didn't surface them. The retry layer treats
+    # missing signals as "unknown" and skips the corresponding rule
+    # rather than retrying defensively.
+    compile_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

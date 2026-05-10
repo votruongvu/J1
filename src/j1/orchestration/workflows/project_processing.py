@@ -16,6 +16,7 @@ with workflow.unsafe.imports_passed_through():
         GraphActivityInput,
         IndexActivityInput,
         InsertContentActivityInput,
+        PersistCompileStrategyReportInput,
         PersistErrorReportInput,
         PersistFinalSummaryInput,
         PersistValidationReportInput,
@@ -66,9 +67,25 @@ with workflow.unsafe.imports_passed_through():
     from j1.processing.assessment import (
         ASSESSMENT_FAILURE_POLICY_FAIL_CLOSED,
         AssessmentPlan,
+        Capability,
+        CompileMode,
         DefaultAssessmentPlanner,
         load_assessment_failure_policy,
     )
+    from j1.processing.compile_quality import (
+        QUALITY_FAILED,
+        QUALITY_GOOD,
+        QUALITY_LOW,
+        QualityVerdict,
+        evaluate_compile_quality,
+    )
+    from j1.processing.compile_retry import (
+        CompileAttemptRecord,
+        CompileRetrySettings,
+        DEFAULT_MAX_ATTEMPTS,
+        next_compile_mode,
+    )
+    from j1.processing.results import ArtifactProcessingResult, ResultStatus
     from j1.processing.profiling import DocumentProfile
     from j1.processing.status import (
         FailurePolicy,
@@ -286,6 +303,15 @@ class ProjectProcessingRequest:
     # for the value vocabulary. Default `fail_open` keeps ingest
     # robust to a degenerate profile.
     assessment_failure_policy: str = "fail_open"
+    # Compile-safety-retry knobs. Read once at REST/dev-wiring
+    # boundary via `load_compile_retry_settings()` and threaded
+    # through; the workflow rebuilds a `CompileRetrySettings`
+    # from these fields for the evaluator. Defaults match
+    # `compile_retry.DEFAULT_*`.
+    compile_retry_enabled: bool = True
+    compile_max_attempts: int = 2
+    compile_retry_min_text_chars: int = 200
+    compile_retry_min_chunks: int = 1
 
 
 @dataclass(frozen=True)
@@ -424,6 +450,31 @@ def _summarise_plan_diff(
     if initial.mode != revised.mode:
         out["mode"] = {"before": initial.mode.value, "after": revised.mode.value}
     return out
+
+
+def _safe_now_iso() -> str:
+    """Return an ISO-8601 timestamp string. Uses `workflow.now()`
+    when running inside Temporal so replay sees the same value;
+    falls back to `datetime.now(timezone.utc)` when called outside
+    a workflow event loop (e.g. unit tests that monkeypatch
+    `execute_activity_method` but not `workflow.now`)."""
+    try:
+        return workflow.now().isoformat()
+    except Exception:  # noqa: BLE001 — outside workflow runtime
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_method_for_mode(mode: str | None) -> str | None:
+    """Mirror the RAGAnything mapper's mode→parse_method table at the
+    workflow layer. Used only for the per-attempt audit record so
+    the FE can render `parse_method=txt|auto|ocr` without re-running
+    the mapper. Vendor-neutral string IO — the workflow doesn't import
+    the mapper directly to avoid circular dep with the providers
+    layer."""
+    if mode is None:
+        return None
+    return {"fast": "txt", "standard": "auto", "deep": "auto"}.get(mode)
 
 
 def _profile_payload(profile: "DocumentProfile | None") -> dict[str, Any] | None:
@@ -1450,6 +1501,117 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
             pass
 
+    async def _persist_compile_strategy_report(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        document_id: str,
+        initial_assessment: dict | None,
+        final_assessment: dict | None,
+        initial_mode: str | None,
+        final_mode: str | None,
+        attempts: list[dict],
+        final_quality: str,
+        final_retry_reason: str | None,
+        final_warnings: list[str],
+        unhandled_capabilities: list[str],
+        plan_warnings: list[str],
+    ) -> None:
+        """Schedule the `persist_compile_strategy_report` activity.
+        Best-effort — any persistence error inside the activity is
+        swallowed there, and a Temporal-side failure here is also
+        swallowed so observability never blocks ingest."""
+        if not request.correlation_id:
+            return
+        retry_used = bool(
+            initial_mode is not None
+            and final_mode is not None
+            and initial_mode != final_mode
+        )
+        payload = {
+            "schema_version": "1",
+            "run_id": request.correlation_id,
+            "document_id": document_id,
+            "initial_mode": initial_mode,
+            "final_mode": final_mode,
+            "retry_used": retry_used,
+            "attempts_count": len(attempts),
+            "attempts": list(attempts),
+            "final_compile_quality": final_quality,
+            "final_retry_reason": final_retry_reason,
+            "final_warnings": list(final_warnings),
+            "assessment_plan": dict(final_assessment or initial_assessment or {}),
+            "initial_assessment_plan": dict(initial_assessment or {}),
+            "plan_warnings": list(plan_warnings),
+            "unhandled_capabilities": list(unhandled_capabilities),
+        }
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_compile_strategy_report,
+                PersistCompileStrategyReportInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    payload=payload,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — never block compile success on telemetry
+            pass
+
+    def _evaluate_compile_attempt(
+        self,
+        compile_result: "ArtifactActivityResult",
+        *,
+        retry_settings: "CompileRetrySettings",
+        assessment_payload: dict | None,
+    ) -> "QualityVerdict":
+        """Wrap `evaluate_compile_quality` with the workflow's
+        per-attempt context (signals from `compile_metrics`, the
+        plan's OCR-required hint, the resolved parse_method). Pure
+        — never re-invokes any activity."""
+        # Build a synthetic ArtifactProcessingResult from the
+        # ArtifactActivityResult so the evaluator's primary signature
+        # (which reads metadata + status from a result dataclass)
+        # works without a duplicate code path.
+        metrics = dict(compile_result.compile_metrics or {})
+        synthetic = ArtifactProcessingResult(
+            status=(
+                ResultStatus.SUCCEEDED
+                if str(compile_result.status) == "succeeded"
+                else ResultStatus.FAILED
+            ),
+            drafts=[],
+            artifacts=[],
+            error=compile_result.error,
+            message=compile_result.message,
+            metadata={
+                "chunks_count": int(metrics.get("chunks_count", 0)),
+                **(
+                    {"total_text_chars": metrics["extracted_text_chars"]}
+                    if isinstance(metrics.get("extracted_text_chars"), int)
+                    else {}
+                ),
+            },
+        )
+        plan_required_ocr = bool(
+            assessment_payload
+            and "ocr" in (
+                assessment_payload.get("required_capabilities") or ()
+            )
+        )
+        mode = (assessment_payload or {}).get("mode") if assessment_payload else None
+        parse_method = _parse_method_for_mode(mode) if mode else None
+        return evaluate_compile_quality(
+            synthetic,
+            min_text_chars=retry_settings.min_text_chars,
+            min_chunks=retry_settings.min_chunks,
+            plan_required_ocr=plan_required_ocr,
+            parse_method_used=parse_method,
+        )
+
     async def _validate_stage_output(
         self,
         request: ProjectProcessingRequest,
@@ -2144,9 +2306,37 @@ class ProjectProcessingWorkflow:
         if await self._gate_before_expensive(request, compile_op):
             return
 
+        # ---- Compile-safety retry loop --------------------------
+        # One attempt is the legacy path. When
+        # `request.compile_retry_enabled` is True (default) AND the
+        # `CompileQualityEvaluator` flags the result for retry, we
+        # escalate the AssessmentPlan's mode (fast→standard→deep)
+        # and dispatch the activity again. Idempotency: the activity-
+        # side cache key includes `mode`, so escalating gets a
+        # fresh cache row + no double-write of artifacts; same-mode
+        # Temporal-level retries hit the cache and short-circuit.
         self._begin(compile_op)
-        compile_result: ArtifactActivityResult = (
-            await workflow.execute_activity_method(
+        compile_attempts_payload: list[dict] = []
+        current_assessment_payload = assessment_payload
+        initial_mode = (
+            (assessment_payload or {}).get("mode") if assessment_payload
+            else None
+        )
+        retry_settings = CompileRetrySettings(
+            enabled=request.compile_retry_enabled,
+            max_attempts=request.compile_max_attempts,
+            min_text_chars=request.compile_retry_min_text_chars,
+            min_chunks=request.compile_retry_min_chunks,
+        )
+        max_attempts = retry_settings.max_attempts if retry_settings.enabled else 1
+        compile_result: "ArtifactActivityResult | None" = None
+        final_quality = QUALITY_GOOD  # downgraded if retry layer says so
+        final_retry_reason: str | None = None
+        final_attempt_warnings: list[str] = []
+
+        for attempt_n in range(1, max_attempts + 1):
+            attempt_started_at = _safe_now_iso()
+            compile_result = await workflow.execute_activity_method(
                 ProcessingActivities.compile,
                 CompileActivityInput(
                     scope=request.scope,
@@ -2154,7 +2344,7 @@ class ProjectProcessingWorkflow:
                     processor_kind=request.compiler_kind,
                     actor=request.actor,
                     correlation_id=request.correlation_id,
-                    assessment_plan_payload=assessment_payload,
+                    assessment_plan_payload=current_assessment_payload,
                 ),
                 # Compile is the most expensive activity (MinerU parse
                 # is minutes per real PDF). Wider timeout absorbs
@@ -2167,7 +2357,116 @@ class ProjectProcessingWorkflow:
                 heartbeat_timeout=HEARTBEAT_TIMEOUT,
                 retry_policy=COMPILE_RETRY.to_temporal(),
             )
-        )
+            attempt_completed_at = _safe_now_iso()
+            verdict = self._evaluate_compile_attempt(
+                compile_result,
+                retry_settings=retry_settings,
+                assessment_payload=current_assessment_payload,
+            )
+            current_mode = (
+                (current_assessment_payload or {}).get("mode")
+                if current_assessment_payload else None
+            )
+            current_parse_method = (
+                _parse_method_for_mode(current_mode)
+                if current_mode else None
+            )
+            attempt_record = {
+                "attempt_number": attempt_n,
+                "mode": current_mode,
+                "parser": request.compiler_kind,
+                "parse_method": current_parse_method,
+                "started_at": attempt_started_at,
+                "completed_at": attempt_completed_at,
+                "status": str(compile_result.status),
+                "chunks_count": int(
+                    compile_result.compile_metrics.get("chunks_count", 0)
+                ) if compile_result.compile_metrics else 0,
+                "extracted_text_chars": (
+                    compile_result.compile_metrics.get("extracted_text_chars")
+                    if compile_result.compile_metrics else None
+                ),
+                "quality": verdict.quality,
+                "retry_reason": verdict.retry_reason,
+                "warnings": list(
+                    (compile_result.compile_metrics or {}).get(
+                        "plan_warnings", []
+                    )
+                ),
+                "mapped_compile_config": {
+                    "parse_method": current_parse_method,
+                    "assessment_mode": current_mode,
+                    "unhandled_capabilities": list(
+                        (compile_result.compile_metrics or {}).get(
+                            "unhandled_capabilities", []
+                        )
+                    ),
+                },
+            }
+            compile_attempts_payload.append(attempt_record)
+            final_quality = verdict.quality
+
+            # Decide retry. Stop on the last allowed attempt or when
+            # the verdict says no retry. `next_compile_mode` returns
+            # None for `deep` — that's the "no further escalation"
+            # terminus the spec calls out.
+            if not verdict.should_retry() or attempt_n >= max_attempts:
+                final_retry_reason = (
+                    verdict.retry_reason
+                    if attempt_n >= max_attempts and verdict.should_retry()
+                    else None
+                )
+                if attempt_n >= max_attempts and verdict.should_retry():
+                    final_attempt_warnings.append(
+                        f"max_compile_attempts={max_attempts} reached; "
+                        f"final quality={verdict.quality}"
+                    )
+                break
+            try:
+                current_mode_enum = CompileMode(current_mode or "")
+            except ValueError:
+                # No initial plan → no mode to escalate from. Treat
+                # the failure as terminal (legacy path falls through
+                # to the existing failure handling).
+                break
+            next_mode = next_compile_mode(current_mode_enum)
+            if next_mode is None:
+                # Already at deep; the verdict requested retry but
+                # there's no higher mode. Terminate with low/failed
+                # quality + record the reason.
+                final_retry_reason = verdict.retry_reason
+                final_attempt_warnings.append(
+                    "deep mode failed; no higher mode to escalate to"
+                )
+                break
+
+            attempt_record["status"] = "retried"
+            # Build a fresh AssessmentPlan payload with the escalated
+            # mode. Required-capability sets get the OCR augmentation
+            # when the verdict was "ocr likely needed" so the deeper
+            # mode locks OCR on at the mapper.
+            new_payload = dict(current_assessment_payload or {})
+            new_payload["mode"] = next_mode.value
+            if verdict.retry_reason == "ocr_likely_needed":
+                required = set(new_payload.get("required_capabilities") or ())
+                required.add("ocr")
+                new_payload["required_capabilities"] = sorted(required)
+            new_payload["reason"] = (
+                f"escalated to {next_mode.value} after "
+                f"{verdict.retry_reason} on attempt {attempt_n}"
+            )
+            current_assessment_payload = new_payload
+            self._log_step(
+                request,
+                event="ingestion.compile.retry.scheduled",
+                stage="compile",
+                status="warning",
+                document_id=document_id,
+                reason=(
+                    f"retrying compile: attempt={attempt_n} reason="
+                    f"{verdict.retry_reason} → next_mode={next_mode.value}"
+                ),
+            )
         if compile_result.status != "succeeded":
             self._record_step(
                 step="compile",
@@ -2226,6 +2525,38 @@ class ProjectProcessingWorkflow:
             metadata={"document_id": document_id},
         )
         self._complete(compile_op)
+
+        # ── Compile-strategy report ────────────────────────────────
+        # Persist the AssessmentPlan + per-attempt audit + final
+        # quality verdict as a `compile_strategy_report` artifact so
+        # the FE's run-detail page can render the timeline + banners.
+        # Best-effort: any persistence error is logged inside the
+        # activity, the run still succeeds.
+        await self._persist_compile_strategy_report(
+            request,
+            document_id=document_id,
+            initial_assessment=assessment_payload,
+            final_assessment=current_assessment_payload,
+            initial_mode=initial_mode,
+            final_mode=(
+                (current_assessment_payload or {}).get("mode")
+                if current_assessment_payload else None
+            ),
+            attempts=compile_attempts_payload,
+            final_quality=final_quality,
+            final_retry_reason=final_retry_reason,
+            final_warnings=final_attempt_warnings,
+            unhandled_capabilities=list(
+                (compile_result.compile_metrics or {}).get(
+                    "unhandled_capabilities", []
+                )
+            ),
+            plan_warnings=list(
+                (compile_result.compile_metrics or {}).get(
+                    "plan_warnings", []
+                )
+            ),
+        )
 
         # ── Synthetic step: Build Content Inventory ──────────────
         # The compile activity bundles parse + chunk in one shot
