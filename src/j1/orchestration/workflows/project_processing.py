@@ -63,6 +63,12 @@ with workflow.unsafe.imports_passed_through():
         IngestPlanner,
         IngestPolicy,
     )
+    from j1.processing.assessment import (
+        ASSESSMENT_FAILURE_POLICY_FAIL_CLOSED,
+        AssessmentPlan,
+        DefaultAssessmentPlanner,
+        load_assessment_failure_policy,
+    )
     from j1.processing.profiling import DocumentProfile
     from j1.processing.status import (
         FailurePolicy,
@@ -270,6 +276,16 @@ class ProjectProcessingRequest:
     # Requires `indexer_kind` to be set; rejects at workflow start
     # otherwise.
     rebuild_index_only: bool = False
+    # How the workflow reacts when AssessmentPlan construction
+    # itself fails (planner raised, profile incomplete). Read from
+    # `J1_ASSESSMENT_FAILURE_POLICY` at request-build time (REST
+    # adapter / dev wiring), NOT inside the workflow — Temporal
+    # sandbox forbids reading os.environ from workflow code.
+    #
+    # See `j1.processing.assessment.ASSESSMENT_FAILURE_POLICY_*`
+    # for the value vocabulary. Default `fail_open` keeps ingest
+    # robust to a degenerate profile.
+    assessment_failure_policy: str = "fail_open"
 
 
 @dataclass(frozen=True)
@@ -2064,6 +2080,66 @@ class ProjectProcessingWorkflow:
             # progress reporter.
             await self._emit_plan_generated(request, document_id, plan)
 
+        # Build the vendor-neutral AssessmentPlan from the same
+        # profile the IngestPlanner saw. The bridge consumes it via
+        # `map_assessment_to_raganything_config` to derive
+        # parse_method (and per-capability toggles) instead of
+        # using the static `settings.parse_method` for every
+        # document. Only built when planner_enabled — the legacy
+        # bulk-job path skips profiling and thus skips assessment
+        # too; the bridge falls back to settings in that case.
+        #
+        # Failure handling is governed by
+        # `request.assessment_failure_policy` (read from
+        # `J1_ASSESSMENT_FAILURE_POLICY` at request-build time):
+        #
+        #   * `fail_open` (default) — assessment failure logs +
+        #     leaves payload None; bridge falls back to
+        #     settings.parse_method. Production-friendly.
+        #   * `fail_closed` — assessment failure raises
+        #     `_BusinessRejection`; compile step recorded FAILED;
+        #     run lands at FAILED_FINAL. For compliance setups that
+        #     require explicit per-document plans.
+        assessment_payload: dict | None = None
+        if plan is not None:
+            try:
+                assessment = DefaultAssessmentPlanner().assess(plan.profile)
+                assessment_payload = assessment.to_payload()
+            except Exception as exc:  # noqa: BLE001 — handled per policy
+                if request.assessment_failure_policy == \
+                        ASSESSMENT_FAILURE_POLICY_FAIL_CLOSED:
+                    self._record_step(
+                        step="compile",
+                        status=StepStatus.FAILED,
+                        required=True,
+                        source=StepSource.CALLER,
+                        reason=(
+                            f"AssessmentPlan build failed under "
+                            f"fail_closed policy: {exc}"
+                        ),
+                        error=StepError(
+                            type="AssessmentPlanFailed",
+                            message=str(exc),
+                            retryable=False,
+                        ),
+                        metadata={"document_id": document_id},
+                    )
+                    raise _BusinessRejection(
+                        f"AssessmentPlan build failed for {document_id}: "
+                        f"{exc}"
+                    )
+                # fail_open: log via the structured-log facility +
+                # proceed with settings.parse_method.
+                self._log_step(
+                    request,
+                    event="ingestion.assessment.failed",
+                    stage="plan",
+                    status="warning",
+                    document_id=document_id,
+                    reason=f"assessment build failed (fail_open): {exc}",
+                )
+                assessment_payload = None
+
         compile_op = f"{OPERATION_COMPILE}:{document_id}"
         if await self._gate_before_expensive(request, compile_op):
             return
@@ -2078,6 +2154,7 @@ class ProjectProcessingWorkflow:
                     processor_kind=request.compiler_kind,
                     actor=request.actor,
                     correlation_id=request.correlation_id,
+                    assessment_plan_payload=assessment_payload,
                 ),
                 # Compile is the most expensive activity (MinerU parse
                 # is minutes per real PDF). Wider timeout absorbs

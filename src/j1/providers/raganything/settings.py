@@ -27,6 +27,22 @@ ENV_RAGANYTHING_RETRIEVAL = "J1_RAGANYTHING_RETRIEVAL_PROCESSOR"
 ENV_RAGANYTHING_PDF_CONVERT_EXTENSIONS = "J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS"
 ENV_RAGANYTHING_LIBREOFFICE_BINARY = "J1_RAGANYTHING_LIBREOFFICE_BINARY"
 ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT = "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS"
+# Adapter capability flags. Consumed by
+# [`plan_mapper.map_assessment_to_raganything_config`](./plan_mapper.py)
+# when an `AssessmentPlan` requires a per-capability toggle. When a
+# capability is marked unsupported AND the plan requires it, the
+# mapper records a warning (default `degrade_with_warning` policy)
+# or raises (`fail` policy). Default True everywhere so existing
+# deployments keep working unchanged.
+ENV_RAGANYTHING_SUPPORTS_IMAGE = "J1_RAGANYTHING_SUPPORTS_IMAGE"
+ENV_RAGANYTHING_SUPPORTS_TABLE = "J1_RAGANYTHING_SUPPORTS_TABLE"
+ENV_RAGANYTHING_SUPPORTS_EQUATION = "J1_RAGANYTHING_SUPPORTS_EQUATION"
+# Allow-list narrowing the plan mapper's parse_method choice. Empty
+# (the default) means "every value MinerU's CLI accepts is permitted"
+# — the plan picks freely. Set to e.g.
+# `J1_RAGANYTHING_ALLOWED_PARSE_METHODS=auto,txt` to lock OCR out of
+# a deployment that doesn't have the OCR backend wired.
+ENV_RAGANYTHING_ALLOWED_PARSE_METHODS = "J1_RAGANYTHING_ALLOWED_PARSE_METHODS"
 # Pipeline split. Values:
 #   `complete`            — legacy single-shot path. Calls
 #                            `RAGAnything.process_document_complete`
@@ -253,6 +269,24 @@ class RAGAnythingSettings:
     #     the new path via the env, while opt-in tests pass an
     #     explicit `pipeline_mode="split_parse_insert"`.
     pipeline_mode: str = PIPELINE_MODE_COMPLETE
+    # Adapter capability advertisements. Consumed by the
+    # AssessmentPlan → compile-config mapper to decide whether a
+    # required capability can be honoured by THIS deployment. Default
+    # True because RAGAnything's stock pipeline supports all three
+    # at the document-output level (the `to_mineru_kwargs` contract
+    # docstring explains that these are advisory at the moment —
+    # MinerU's top-level API doesn't expose per-capability switches,
+    # so the mapper can only USE them to gate "would the plan fail
+    # vs. degrade" decisions).
+    supports_image: bool = True
+    supports_table: bool = True
+    supports_equation: bool = True
+    # Empty tuple = no restriction (every method MinerU accepts is
+    # allowed). When non-empty, the mapper degrades plan-requested
+    # methods that aren't in the list back to the deployment default.
+    # Drives the env-as-safety-hatch story: operators can lock out
+    # OCR / txt without forking the planner.
+    allowed_parse_methods: tuple[str, ...] = ()
 
 
 def load_raganything_settings(
@@ -329,7 +363,47 @@ def load_raganything_settings(
         pipeline_mode=_validate_pipeline_mode(
             source.get(ENV_RAGANYTHING_PIPELINE_MODE),
         ),
+        supports_image=_parse_bool(
+            source.get(ENV_RAGANYTHING_SUPPORTS_IMAGE), default=True,
+        ),
+        supports_table=_parse_bool(
+            source.get(ENV_RAGANYTHING_SUPPORTS_TABLE), default=True,
+        ),
+        supports_equation=_parse_bool(
+            source.get(ENV_RAGANYTHING_SUPPORTS_EQUATION), default=True,
+        ),
+        allowed_parse_methods=_parse_allowed_methods(
+            source.get(ENV_RAGANYTHING_ALLOWED_PARSE_METHODS),
+        ),
     )
+
+
+def _parse_bool(raw: str | None, *, default: bool) -> bool:
+    """Standard env-var bool parsing. `None` / empty → default."""
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in {"true", "1", "yes", "on"}:
+        return True
+    if value in {"false", "0", "no", "off"}:
+        return False
+    return default
+
+
+def _parse_allowed_methods(raw: str | None) -> tuple[str, ...]:
+    """Parse a comma-separated parse-method allow-list. Validates
+    each entry against `VALID_PARSE_METHODS` and drops unknowns
+    (with no error — operator typos shouldn't kill startup; the
+    mapper's safety net catches the empty-allow-list case)."""
+    if not raw:
+        return ()
+    cleaned = [
+        m.strip().lower() for m in raw.split(",")
+        if m.strip()
+    ]
+    return tuple(m for m in cleaned if m in VALID_PARSE_METHODS)
 
 
 def _validate_pipeline_mode(raw: str | None) -> str:

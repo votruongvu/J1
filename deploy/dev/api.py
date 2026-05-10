@@ -61,6 +61,7 @@ def make_per_document_starter(
     task_queue: str,
     planner_enabled: bool,
     pipeline_mode: str = "complete",
+    assessment_failure_policy: str = "fail_open",
 ):
     """Build the `JobStarter` closure used by `POST /documents/{id}/ingest`.
 
@@ -145,6 +146,7 @@ def make_per_document_starter(
                 rebuild_index_only=bool(
                     getattr(body, "rebuild_index_only", False)
                 ),
+                assessment_failure_policy=assessment_failure_policy,
             ),
             id=workflow_id,
             task_queue=task_queue,
@@ -300,11 +302,18 @@ def _build_app():
     raganything_settings = load_raganything_settings()
     pipeline_mode = raganything_settings.pipeline_mode
 
+    # Read once at startup — passing through the workflow request
+    # rather than reading inside the workflow (which would violate
+    # Temporal's deterministic-replay contract).
+    from j1.processing.assessment import load_assessment_failure_policy
+    assessment_failure_policy = load_assessment_failure_policy()
+
     _start_project_workflow = make_per_document_starter(
         client_provider=client_provider,
         task_queue=temporal_settings.task_queue,
         planner_enabled=planner_enabled,
         pipeline_mode=pipeline_mode,
+        assessment_failure_policy=assessment_failure_policy,
     )
     # Parent-workflow dispatcher for multi-upload batches. Replaces
     # the previous "REST handler fans out N concurrent workflows"

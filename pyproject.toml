@@ -18,6 +18,19 @@ dependencies = [
     # (`j1.adapters.webhook.client`). Both lazy-import it; install
     # without it would ImportError on the first LLM/webhook call.
     "httpx>=0.24",
+    # `pypdf` is the lightweight PDF inspection library used by
+    # `j1.processing.profiling.DeterministicDocumentProfiler` to
+    # build `DocumentProfile` signals (page_count, text_extractable_
+    # ratio, image_count) for the AssessmentPlan. Pure-Python,
+    # side-effect-free, sub-second on typical PDFs — safe to run
+    # before the planner has decided whether the document is worth
+    # processing. Promoted from a transitive `raganything` dep to
+    # core so the profiler works in deployments without RAGAnything
+    # (e.g. a lean ingestion-only worker that delegates compile to
+    # a remote service). See `docs/ingestion-stage-validation.md`
+    # and the profiler's docstring for the lightweight-library
+    # policy.
+    "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]

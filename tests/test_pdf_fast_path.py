@@ -220,7 +220,9 @@ def _run_with_fake_rag(request: SimpleNamespace, rag: SimpleNamespace, workspace
     output_dir = workspace / "rag" / "outputs" / request.document_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with patch.object(bridge, "_prepare_compile", return_value=(rag, output_dir, source_path)):
+    # `_prepare_compile` returns 4-tuple now: (rag, output_dir, source_path,
+    # dropped_config_overrides). Empty list = no plan overrides dropped.
+    with patch.object(bridge, "_prepare_compile", return_value=(rag, output_dir, source_path, [])):
         return bridge.default_compile(request)
 
 

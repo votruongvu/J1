@@ -58,6 +58,15 @@ class RAGAnythingCompileRequest:
     into structured `step.progress` events. When absent (default for
     callers that don't use the runs surface) the bridge runs
     unchanged.
+
+    `assessment_plan` is the per-document compile plan
+    ([j1.processing.assessment](../../processing/assessment.py)). When
+    set, the bridge derives `parse_method` (and any future per-
+    capability toggles) via
+    [`map_assessment_to_raganything_config`](./plan_mapper.py)
+    instead of using `settings.parse_method`. When None (legacy
+    callers + tests), the bridge falls back to the static settings
+    field — preserves backward compatibility.
     """
 
     ctx: ProjectContext
@@ -68,6 +77,9 @@ class RAGAnythingCompileRequest:
     embedding_client: Any | None
     progress_reporter: Any = None  # ProgressReporter | None — Any to keep this dataclass importable without j1.runs.
     run_id: str | None = None
+    # Vendor-neutral plan. `Any` typing keeps this dataclass importable
+    # without forcing every consumer to import `j1.processing.assessment`.
+    assessment_plan: Any = None
 
 
 CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult]
@@ -174,6 +186,7 @@ class RAGAnythingCompiler:
         *,
         progress_reporter: Any = None,
         run_id: str | None = None,
+        assessment_plan: Any = None,
     ) -> ArtifactProcessingResult:
         """Run the wrapped vendor compile.
 
@@ -182,7 +195,14 @@ class RAGAnythingCompiler:
         vendor progress lines become structured `step.progress`
         events. The `KnowledgeCompiler` Protocol's compile method
         only requires `(ctx, document_id)` — these kwargs are
-        additive and existing callers stay working."""
+        additive and existing callers stay working.
+
+        `assessment_plan` is the per-document compile plan
+        ([j1.processing.assessment.AssessmentPlan](../../processing/assessment.py)).
+        When set, the bridge derives `parse_method` (and any future
+        per-capability toggles) from the plan via the mapper. None
+        falls back to `settings.parse_method` — preserves backward
+        compatibility for callers that don't yet build a plan."""
         request = RAGAnythingCompileRequest(
             ctx=ctx,
             document_id=document_id,
@@ -192,6 +212,7 @@ class RAGAnythingCompiler:
             embedding_client=self._llm_registry.try_embedding(),
             progress_reporter=progress_reporter,
             run_id=run_id,
+            assessment_plan=assessment_plan,
         )
         try:
             return self._compile_callable(request)

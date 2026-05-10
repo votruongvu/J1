@@ -73,9 +73,26 @@ class ProcessingService:
         *,
         actor: str = "system",
         correlation_id: str | None = None,
+        assessment_plan: object | None = None,
     ) -> ArtifactProcessingResult:
+        # Detect whether the compiler accepts `assessment_plan` (the
+        # `KnowledgeCompiler` Protocol's `compile` signature only
+        # requires `(ctx, document_id)`; concrete adapters opt in
+        # via the additive kwarg). Mock compilers + legacy
+        # implementations stay working without changes.
+        compile_kwargs: dict = {}
+        if assessment_plan is not None:
+            try:
+                import inspect
+                sig = inspect.signature(compiler.compile)
+                if "assessment_plan" in sig.parameters:
+                    compile_kwargs["assessment_plan"] = assessment_plan
+            except (TypeError, ValueError):
+                # Builtins / C extensions don't expose a signature;
+                # fall back to no kwarg (legacy behaviour).
+                pass
         try:
-            output = compiler.compile(ctx, document.document_id)
+            output = compiler.compile(ctx, document.document_id, **compile_kwargs)
         except Exception as exc:
             return self._fail_artifact(
                 ctx,

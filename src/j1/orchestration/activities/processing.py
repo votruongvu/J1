@@ -190,6 +190,37 @@ class ProcessingActivities:
         # quickly from a worker crash, long enough that intermittent
         # GIL contention or network glitches don't fire false
         # liveness failures.
+        # Reconstruct the AssessmentPlan from its dict payload (the
+        # workflow serialises it that way to keep this payload module
+        # free of `j1.processing.assessment` imports). None on legacy
+        # callers + bulk-job mode → bridge falls back to
+        # `settings.parse_method`.
+        assessment_plan = None
+        if input.assessment_plan_payload is not None:
+            try:
+                from j1.processing.assessment import AssessmentPlan
+                assessment_plan = AssessmentPlan.from_payload(
+                    input.assessment_plan_payload,
+                )
+            except Exception:  # noqa: BLE001 — defensive; never block compile
+                assessment_plan = None
+        # Pass `assessment_plan` only when the underlying service
+        # accepts it. Stub `ProcessingService` implementations in
+        # tests don't always carry the new kwarg; introspecting
+        # avoids a TypeError on legacy stubs while honouring the
+        # plan in real deployments.
+        compile_kwargs: dict = {
+            "actor": input.actor,
+            "correlation_id": input.correlation_id,
+        }
+        if assessment_plan is not None:
+            try:
+                import inspect
+                sig = inspect.signature(self._processing.compile)
+                if "assessment_plan" in sig.parameters:
+                    compile_kwargs["assessment_plan"] = assessment_plan
+            except (TypeError, ValueError):
+                pass
         try:
             with _heartbeating({
                 "stage": "compile",
@@ -197,11 +228,7 @@ class ProcessingActivities:
                 "processor_kind": input.processor_kind,
             }):
                 result = self._processing.compile(
-                    ctx,
-                    compiler,
-                    document,
-                    actor=input.actor,
-                    correlation_id=input.correlation_id,
+                    ctx, compiler, document, **compile_kwargs,
                 )
         except Exception as exc:
             self._report_step_failure(

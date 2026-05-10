@@ -33,6 +33,16 @@ class CompileActivityInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Vendor-neutral compile plan — built by the workflow from the
+    # document profile (see `_build_assessment_plan` in
+    # `project_processing.py`). Carried as a plain dict so the
+    # Temporal data converter handles it without taking a dependency
+    # on `j1.processing.assessment` from this payload module.
+    # The activity reconstructs an `AssessmentPlan` from the dict
+    # before forwarding to the compiler. None on legacy callers /
+    # the bulk-job path that doesn't run profiling — bridge falls
+    # back to `settings.parse_method`.
+    assessment_plan_payload: dict | None = None
 
 
 @dataclass(frozen=True)

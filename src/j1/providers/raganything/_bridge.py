@@ -198,7 +198,20 @@ def _default_compile_complete(
     # vars when the operator has selected the HTTP-client backend.
     # No-op for the default `auto` parse method.
     _apply_vlm_http_client_env(request.settings)
-    rag, output_dir, source_path = _prepare_compile(request)
+
+    # Resolve the AssessmentPlan-derived compile config UPFRONT so
+    # we can pass `config_overrides` into `_prepare_compile` (which
+    # builds the RAGAnything instance + applies them to the
+    # `RAGAnythingConfig`). Holds parser_kwargs + warnings for the
+    # downstream call site + the SUCCEEDED-path metadata builder.
+    compile_plan_config = _resolve_compile_config(request)
+    rag, output_dir, source_path, dropped_config_overrides = _prepare_compile(
+        request,
+        config_overrides=(
+            compile_plan_config.to_config_overrides()
+            if compile_plan_config is not None else None
+        ),
+    )
     # Operator-readable path log — folks debugging slow MinerU runs
     # on macOS Docker Desktop want to confirm the parse output is
     # NOT landing in a bind-mounted folder. Prints once per compile.
@@ -230,6 +243,44 @@ def _default_compile_complete(
                 "source_extension": source_path.suffix,
             },
         )
+
+    # Closure-shared holder for plan-derived warnings + unhandled
+    # capabilities. The resolution itself happened above
+    # (`compile_plan_config`); this dict surfaces the result to the
+    # SUCCEEDED-path metadata builder via the nested `_run_compile`.
+    plan_metadata: dict[str, tuple[str, ...]] = {
+        "plan_warnings": (),
+        "unhandled_capabilities": (),
+    }
+    plan_resolved_mode: list[str] = [""]
+    if compile_plan_config is not None:
+        # Merge the dropped-config-override field names into the
+        # unhandled list — the mapper says "I asked for X" and the
+        # bridge says "the installed vendor doesn't expose the
+        # corresponding config field". Concrete signal for a future
+        # optimisation pass to consume.
+        merged_unhandled: list[str] = list(
+            compile_plan_config.unhandled_capabilities
+        )
+        merged_warnings: list[str] = list(compile_plan_config.warnings)
+        for dropped in dropped_config_overrides or ():
+            merged_warnings.append(
+                f"RAGAnythingConfig field {dropped!r} not exposed by "
+                "installed vendor version; per-capability switch dropped"
+            )
+            # Map config-field-name → capability label so the
+            # metadata's `unhandled_capabilities` stays in plan
+            # vocabulary rather than vendor-internal naming.
+            label = {
+                "enable_image_processing": "image_extraction",
+                "enable_table_processing": "table_extraction",
+                "enable_equation_processing": "formula_extraction",
+            }.get(dropped, dropped)
+            if label not in merged_unhandled:
+                merged_unhandled.append(label)
+        plan_metadata["plan_warnings"] = tuple(merged_warnings)
+        plan_metadata["unhandled_capabilities"] = tuple(merged_unhandled)
+        plan_resolved_mode[0] = compile_plan_config.resolved_mode
 
     async def _run_compile():
         # `_ensure_lightrag_initialized` returns {"success": False, "error": ...}
@@ -303,18 +354,34 @@ def _default_compile_complete(
             # vision calls to the same OpenAI-compatible server.
             mineru_kwargs["vlm_url"] = request.settings.vlm_http_server_url
 
+        # AssessmentPlan-driven parse_method takes precedence over
+        # the static `settings.parse_method`. The plan was already
+        # resolved into `compile_plan_config` outside this closure
+        # (so config_overrides could feed `_prepare_compile`); here
+        # we just consume the parser_kwargs slice.
+        if compile_plan_config is not None:
+            parser_kwargs = compile_plan_config.to_parser_kwargs()
+        else:
+            parser_kwargs = {"parse_method": request.settings.parse_method}
+
+        for w in plan_metadata["plan_warnings"]:
+            _log.warning(
+                "compile config warning for %r: %s",
+                request.document_id, w,
+            )
         _log.info(
             "full-parse path: routing document %r to MinerU "
-            "(parse_method=%s, backend=%s, file=%s)",
+            "(parse_method=%s, backend=%s, file=%s, plan_driven=%s)",
             request.document_id,
-            request.settings.parse_method,
+            parser_kwargs.get("parse_method"),
             request.settings.backend or "<mineru-default>",
             source_path.name,
+            compile_plan_config is not None,
         )
         await rag.process_document_complete(
             file_path=str(source_path),
             output_dir=str(output_dir),
-            parse_method=request.settings.parse_method,
+            **parser_kwargs,
             **mineru_kwargs,
         )
 
@@ -441,6 +508,19 @@ def _default_compile_complete(
         "output_dir": str(output_dir),
     }
     metadata.update(manifest)
+
+    # Plan-derived observability. Always set the keys (with empty
+    # defaults) so downstream consumers can rely on them existing —
+    # absence vs. empty list ambiguity is a future-debugging trap.
+    # Values come from the `_run_compile` closure's `plan_metadata`
+    # holder; populated only when the caller supplied an
+    # AssessmentPlan, otherwise they stay empty tuples.
+    metadata["plan_warnings"] = list(plan_metadata["plan_warnings"])
+    metadata["unhandled_capabilities"] = list(
+        plan_metadata["unhandled_capabilities"]
+    )
+    if plan_resolved_mode[0]:
+        metadata["assessment_mode"] = plan_resolved_mode[0]
 
     # Persist a normalized `ParsedContentManifest` alongside the
     # compile output so downstream consumers (post-compile replan,
@@ -683,7 +763,27 @@ def default_parse_source(
         )
 
     _apply_vlm_http_client_env(request.settings)
-    rag, output_dir, source_path = _prepare_compile(request)
+    # Same plan resolution as the legacy compile path (above) so the
+    # split-mode parser also runs with AssessmentPlan-derived config
+    # flags applied to RAGAnythingConfig. Dropped overrides are
+    # logged but not yet attached to split-mode result metadata —
+    # split mode currently doesn't surface per-document warnings,
+    # only the manifest. Adding it here is a follow-up; for now
+    # logging is enough.
+    split_compile_config = _resolve_compile_config(request)
+    rag, output_dir, source_path, dropped_split_overrides = _prepare_compile(
+        request,
+        config_overrides=(
+            split_compile_config.to_config_overrides()
+            if split_compile_config is not None else None
+        ),
+    )
+    if dropped_split_overrides:
+        _log.warning(
+            "split-mode parse for %r: dropped config overrides %s "
+            "(installed RAGAnythingConfig does not expose these fields)",
+            request.document_id, list(dropped_split_overrides),
+        )
     _log.info(
         "split-mode parse: workdir=%s output_dir=%s source=%s",
         request.settings.workdir, output_dir, source_path.name,
@@ -885,7 +985,10 @@ def default_insert_content(
         )
 
     _apply_vlm_http_client_env(request.settings)
-    rag = _build_rag_instance(
+    # Insert path: no AssessmentPlan-driven config_overrides yet
+    # (split-mode insert is post-parse; the parser's config flags
+    # already steered the parse). Drop the dropped-overrides slot.
+    rag, _ = _build_rag_instance(
         text_client=request.text_client,
         vision_client=request.vision_client,
         embedding_client=request.embedding_client,
@@ -1224,7 +1327,9 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
     # `process_document_complete` which can re-invoke the VLM
     # backend when the storage dir is regenerated.
     _apply_vlm_http_client_env(request.settings)
-    rag = _build_rag_instance(
+    # Graph path: no AssessmentPlan today (graph plans are stage-
+    # gating not compile-config); drop the dropped-overrides slot.
+    rag, _ = _build_rag_instance(
         text_client=request.text_client,
         vision_client=None,
         embedding_client=request.embedding_client,
@@ -1259,7 +1364,8 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
 
 def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
     """Run a real RAGAnything query via `aquery`."""
-    rag = _build_rag_instance(
+    # Query path: no AssessmentPlan-driven config_overrides.
+    rag, _ = _build_rag_instance(
         text_client=request.text_client,
         vision_client=None,
         embedding_client=request.embedding_client,
@@ -1296,17 +1402,50 @@ def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
 # ---- Vendor-instance construction -----------------------------------
 
 
-def _prepare_compile(request: "RAGAnythingCompileRequest"):
+def _resolve_compile_config(request):
+    """Map the request's `assessment_plan` (if any) into a
+    `CompileConfig`. Returns None for legacy callers without a plan;
+    the bridge then falls back to `settings.parse_method` and skips
+    config_overrides entirely.
+
+    `getattr` (not direct access) tolerates legacy callers /
+    SimpleNamespace-based test fixtures that build a request
+    without the new `assessment_plan` field."""
+    assessment_plan = getattr(request, "assessment_plan", None)
+    if assessment_plan is None:
+        return None
+    from j1.providers.raganything.plan_mapper import (
+        map_assessment_to_raganything_config,
+    )
+    return map_assessment_to_raganything_config(
+        assessment_plan, request.settings,
+    )
+
+
+def _prepare_compile(
+    request: "RAGAnythingCompileRequest",
+    *,
+    config_overrides: dict[str, Any] | None = None,
+):
     """Build a RAGAnything instance + resolve I/O paths for compile.
 
     Vendor import happens first so a missing `raganything` package
     surfaces the actionable pip-install hint before path / env errors.
+
+    `config_overrides` (when supplied — typically by the AssessmentPlan
+    mapper) is applied to the `RAGAnythingConfig` instance before the
+    `RAGAnything` instance is constructed. Returns
+    `(rag, output_dir, source_path, dropped_overrides)` where
+    `dropped_overrides` lists the override field names the installed
+    vendor version doesn't expose. None / empty when no overrides
+    were supplied.
     """
-    rag = _build_rag_instance(
+    rag, dropped_overrides = _build_rag_instance(
         text_client=request.text_client,
         vision_client=request.vision_client,
         embedding_client=request.embedding_client,
         settings=request.settings,
+        config_overrides=config_overrides,
     )
     workspace = _resolve_workspace_root(request.ctx)
     raw_dir = workspace / "tenants" / request.ctx.tenant_id / "projects" / request.ctx.project_id / "raw"
@@ -1322,7 +1461,7 @@ def _prepare_compile(request: "RAGAnythingCompileRequest"):
         request.settings.workdir or "./data/raganything"
     ).expanduser() / "outputs" / request.document_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    return rag, output_dir, source_path
+    return rag, output_dir, source_path, dropped_overrides
 
 
 def _build_rag_instance(
@@ -1331,6 +1470,7 @@ def _build_rag_instance(
     vision_client,
     embedding_client,
     settings,
+    config_overrides: dict[str, Any] | None = None,
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
@@ -1338,6 +1478,11 @@ def _build_rag_instance(
     actually exported by the installed `raganything` package; if the
     expected name isn't there, raises `ProviderUnavailable` naming
     the missing symbol.
+
+    `config_overrides` is the AssessmentPlan-derived per-capability
+    flag dict; applied via `_build_rag_config`. Returns
+    `(instance, dropped_override_fields)` so the caller can surface
+    the dropped names through `metadata["unhandled_capabilities"]`.
     """
     raganything_mod = _import_raganything()
     rag_cls = getattr(raganything_mod, "RAGAnything", None)
@@ -1348,7 +1493,9 @@ def _build_rag_instance(
             "via J1_RAGANYTHING_*_PROCESSOR or compile_callable=."
         )
 
-    config = _build_rag_config(raganything_mod, settings)
+    config, dropped_overrides = _build_rag_config(
+        raganything_mod, settings, config_overrides=config_overrides,
+    )
     kwargs: dict[str, Any] = {}
     if config is not None:
         kwargs["config"] = config
@@ -1359,7 +1506,7 @@ def _build_rag_instance(
         kwargs["vision_model_func"] = _make_vision_callable(vision_client)
 
     try:
-        return rag_cls(**kwargs)
+        return rag_cls(**kwargs), dropped_overrides
     except TypeError as exc:
         raise ProviderUnavailable(
             f"Could not instantiate raganything.RAGAnything with the "
@@ -1380,23 +1527,51 @@ def _import_raganything():
     return raganything_mod
 
 
-def _build_rag_config(raganything_mod, settings):
+def _build_rag_config(
+    raganything_mod, settings,
+    *,
+    config_overrides: dict[str, Any] | None = None,
+):
     """Build a `RAGAnythingConfig` if the vendor exports it.
 
     Some versions of `raganything` accept `working_dir` directly on
     the constructor; in that case we skip the config object and pass
     a kwargs dict instead.
+
+    `config_overrides` is the AssessmentPlan-derived per-capability
+    flag dict from
+    [`plan_mapper.CompileConfig.to_config_overrides`](./plan_mapper.py).
+    Applied via `setattr` AFTER construction, and ONLY for fields
+    the installed `RAGAnythingConfig` actually exposes — a vendor
+    version that drops `enable_equation_processing` (say) silently
+    drops that override rather than crashing the compile. The
+    dropped fields are reported back so the bridge can surface
+    them via `metadata["unhandled_capabilities"]`.
+
+    Returns `(config_or_None, dropped_field_names)`.
     """
     cfg_cls = getattr(raganything_mod, "RAGAnythingConfig", None)
     if cfg_cls is None:
-        return None
+        return None, []
     try:
-        return cfg_cls(
+        config = cfg_cls(
             working_dir=settings.workdir,
         )
     except TypeError:
         # `working_dir` keyword name varies; fall back to no config.
-        return None
+        return None, []
+    dropped: list[str] = []
+    for name, value in (config_overrides or {}).items():
+        if hasattr(config, name):
+            try:
+                setattr(config, name, value)
+            except (AttributeError, TypeError):
+                # Field exists but isn't writable (frozen dataclass /
+                # property without setter). Treat as not-applied.
+                dropped.append(name)
+        else:
+            dropped.append(name)
+    return config, dropped
 
 
 # ---- LLM-callable adapters: J1 client → vendor-callable shape ------

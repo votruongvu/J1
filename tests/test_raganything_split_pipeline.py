@@ -184,7 +184,7 @@ def test_parse_source_persists_parsed_source_and_manifest(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._build_rag_instance",
-        lambda **kw: fake,
+        lambda **kw: (fake, []),
     )
     # Skip env-side application so the test stays hermetic.
     monkeypatch.setattr(
@@ -238,7 +238,7 @@ def test_parse_source_uses_plaintext_fast_path_for_txt(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._build_rag_instance",
-        lambda **kw: fake,
+        lambda **kw: (fake, []),
     )
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._apply_vlm_http_client_env",
@@ -307,7 +307,7 @@ def test_insert_content_drives_insert_content_list(tmp_path, monkeypatch):
     request = _make_request(tmp_path, monkeypatch=monkeypatch)
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._build_rag_instance",
-        lambda **kw: fake,
+        lambda **kw: (fake, []),
     )
     monkeypatch.setattr(
         "j1.providers.raganything._bridge._apply_vlm_http_client_env",
