@@ -54,6 +54,14 @@ ARTIFACT_KIND_VALIDATION_REPORT = "validation_report"
 # this run?" overview without forcing the FE to assemble it from
 # separate endpoints.
 ARTIFACT_KIND_FINAL_SUMMARY = "final_summary"
+# Per-stage validation report. One artifact per durable stage per
+# run (compile / generate_chunks / enrich / graph). Carries the
+# `StageValidationResult` payload so operators can audit which
+# checks ran and which tripped. Distinct from the run-level
+# `validation_report` (which aggregates the per-stage outcomes
+# at terminal transition). See
+# [`docs/ingestion-stage-validation.md`](../../docs/ingestion-stage-validation.md).
+ARTIFACT_KIND_STAGE_VALIDATION_REPORT = "stage_validation_report"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
@@ -63,6 +71,7 @@ __all__ = [
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",
+    "ARTIFACT_KIND_STAGE_VALIDATION_REPORT",
     "ARTIFACT_KIND_VALIDATION_REPORT",
     "ArtifactDraft",
     "ArtifactProcessingResult",

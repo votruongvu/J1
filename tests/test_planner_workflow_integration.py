@@ -132,6 +132,24 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
             # `build_content_inventory` and `generate_knowledge_chunks`
             # — best-effort telemetry, no return value needed.
             return None
+        if name.endswith("validate_stage"):
+            # Stage-validation gate: pass through every stage. The
+            # full-pipeline tests in this module assert on planner
+            # behaviour + step ordering; the validation contract has
+            # its own dedicated coverage in test_stage_validation.py.
+            from j1.orchestration.activities.payloads import (
+                StageValidationActivityResult,
+            )
+            return StageValidationActivityResult(
+                stage_name=payload.stage_name,
+                validation_status="passed",
+                passed=True,
+            )
+        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["report-1"],
+                kinds=("validation_report",),
+            )
         raise AssertionError(f"unexpected activity: {name}")
     return handler
 

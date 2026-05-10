@@ -32,6 +32,8 @@ from j1.orchestration.activities.payloads import (
     ProcessingActivityResult,
     QueryActivityInput,
     QueryActivityResult,
+    StageValidationActivityResult,
+    ValidateStageInput,
 )
 from j1.processing.contracts import (
     EnrichmentProcessor,
@@ -57,6 +59,7 @@ ACTIVITY_QUERY = "j1.processing.query"
 ACTIVITY_PERSIST_ERROR_REPORT = "j1.processing.persist_error_report"
 ACTIVITY_PERSIST_VALIDATION_REPORT = "j1.processing.persist_validation_report"
 ACTIVITY_PERSIST_FINAL_SUMMARY = "j1.processing.persist_final_summary"
+ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 
 
 class UnknownProcessorError(LookupError):
@@ -120,6 +123,7 @@ class ProcessingActivities:
             self.persist_error_report,
             self.persist_validation_report,
             self.persist_final_summary,
+            self.validate_stage,
         ]
 
     @activity.defn(name=ACTIVITY_COMPILE)
@@ -664,6 +668,209 @@ class ProcessingActivities:
             status="succeeded",
             artifact_ids=[record.artifact_id],
             kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_VALIDATE_STAGE)
+    def validate_stage(
+        self, input: ValidateStageInput,
+    ) -> StageValidationActivityResult:
+        """Run the per-stage validation contract for one stage of one
+        run. Reads back each artifact the stage produced, dispatches
+        to the right validator (`validate_compile` / `validate_chunks`
+        / etc.), persists a `stage_validation_report` artifact with
+        the full result, and returns a compact summary the workflow
+        uses to decide between COMPLETED and FAILED.
+
+        Failure modes:
+          * Unknown `stage_name` → returns `passed=True` with a
+            warning check. Defensive: an unrecognised stage isn't
+            a fatal workflow event; the validation just doesn't
+            assert anything.
+          * Unreadable artifact → check fails, persisted in the
+            report, surfaced as `passed=False`.
+          * Persist failure → return `passed=False` with the error
+            in the response. The workflow treats this as a stage
+            failure (we can't audit a stage we couldn't validate
+            durably)."""
+        from pathlib import Path
+        from j1.processing.stage_validation import (
+            STAGE_COMPILE,
+            STAGE_ENRICH,
+            STAGE_GENERATE_CHUNKS,
+            STAGE_GRAPH,
+            StageValidationCheck,
+            StageValidationResult,
+            VALIDATION_STATUS_FAILED,
+            VALIDATION_STATUS_WARNING,
+            VALIDATOR_VERSION,
+            aggregate_status,
+        )
+        from j1.processing.stage_validators import (
+            validate_chunks,
+            validate_compile,
+            validate_enrich,
+            validate_graph,
+        )
+        from j1.workspace.layout import WorkspaceArea
+
+        ctx = input.scope.to_context()
+
+        # Resolve every artifact id to a record. Skip-on-missing —
+        # the validator surfaces it as a check failure rather than
+        # raising here, so the report is still persisted.
+        artifacts: list = []
+        missing_ids: list[str] = []
+        for aid in input.output_artifact_ids:
+            try:
+                artifacts.append(self._artifacts.get(ctx, aid))
+            except Exception:  # noqa: BLE001
+                missing_ids.append(aid)
+
+        # Read-back closure — gives validators raw bytes (or None on
+        # failure). Path resolution mirrors `insert_content`'s
+        # parsed-source read: split on `/`, validate the area name,
+        # join under the workspace's area dir.
+        def _read_back(record) -> bytes | None:
+            location = (record.location or "").strip()
+            if not location:
+                return None
+            area_name, _, rest = location.partition("/")
+            if not area_name or not rest:
+                return None
+            try:
+                area = WorkspaceArea(area_name)
+            except ValueError:
+                return None
+            path = self._processing._workspace.area(ctx, area) / rest  # noqa: SLF001
+            try:
+                return Path(path).read_bytes()
+            except (OSError, ValueError):
+                return None
+
+        # Stage dispatch.
+        stage = input.stage_name
+        checks: list[StageValidationCheck] = []
+        for missing_aid in missing_ids:
+            checks.append(StageValidationCheck(
+                name="artifact_registered",
+                status="failed",
+                message=(
+                    f"artifact_id {missing_aid!r} not found in registry "
+                    "— stage reported it as output but the record is gone"
+                ),
+            ))
+        if stage == STAGE_COMPILE:
+            checks.extend(validate_compile(
+                artifacts=artifacts,
+                expected_tenant=ctx.tenant_id,
+                expected_project=ctx.project_id,
+                expected_run_id=input.run_id,
+                expected_document_id=input.document_id or "",
+                read_back=_read_back,
+            ))
+        elif stage == STAGE_GENERATE_CHUNKS:
+            checks.extend(validate_chunks(
+                artifacts=artifacts,
+                expected_tenant=ctx.tenant_id,
+                expected_project=ctx.project_id,
+                expected_run_id=input.run_id,
+                expected_document_id=input.document_id or "",
+                read_back=_read_back,
+            ))
+        elif stage == STAGE_ENRICH:
+            checks.extend(validate_enrich(
+                artifacts=artifacts,
+                expected_tenant=ctx.tenant_id,
+                expected_project=ctx.project_id,
+                expected_run_id=input.run_id,
+                expected_document_id=input.document_id,
+                enrich_required=input.enrich_required,
+                read_back=_read_back,
+            ))
+        elif stage == STAGE_GRAPH:
+            checks.extend(validate_graph(
+                artifacts=artifacts,
+                expected_tenant=ctx.tenant_id,
+                expected_project=ctx.project_id,
+                expected_run_id=input.run_id,
+                expected_document_id=input.document_id,
+                graph_required=input.graph_required,
+                chunk_artifact_ids=set(input.chunk_artifact_ids),
+                read_back=_read_back,
+            ))
+        else:
+            checks.append(StageValidationCheck(
+                name="unknown_stage",
+                status="warning",
+                message=(
+                    f"stage_name {stage!r} has no registered validator; "
+                    "skipping content checks"
+                ),
+            ))
+
+        validation_status = aggregate_status(checks)
+        errors = [
+            c.message or c.name
+            for c in checks if c.status == "failed"
+        ]
+        warnings = [
+            c.message or c.name
+            for c in checks if c.status == "warning"
+        ]
+
+        # Build the durable result.
+        result = StageValidationResult(
+            stage_name=stage,
+            run_id=input.run_id,
+            document_id=input.document_id,
+            tenant_id=ctx.tenant_id,
+            project_id=ctx.project_id,
+            workspace_id=None,  # workspace_id isn't on ProjectScope today
+            attempt=input.attempt,
+            validation_status=validation_status,
+            checks=list(checks),
+            errors=errors,
+            warnings=warnings,
+            output_refs=list(input.output_artifact_ids),
+            artifact_refs=[a.artifact_id for a in artifacts],
+            validator_version=VALIDATOR_VERSION,
+        )
+
+        # Persist the report artifact. Failure to persist is itself
+        # a validation failure — we can't audit what we couldn't save.
+        artifact_id: str | None = None
+        try:
+            record = self._processing.persist_stage_validation_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                stage_name=stage,
+                attempt=input.attempt,
+                payload=result.to_payload(),
+                actor=input.actor,
+            )
+            artifact_id = record.artifact_id
+        except Exception as exc:  # noqa: BLE001
+            # Demote validation_status to failed so the workflow
+            # records FAILED rather than COMPLETED.
+            errors.append(
+                f"persist_stage_validation_report failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            validation_status = VALIDATION_STATUS_FAILED
+
+        passed = validation_status in (
+            "passed", VALIDATION_STATUS_WARNING,
+        )
+        return StageValidationActivityResult(
+            stage_name=stage,
+            validation_status=validation_status,
+            passed=passed,
+            error_count=len(errors),
+            warning_count=len(warnings),
+            check_count=len(checks),
+            artifact_id=artifact_id,
+            errors=errors,
         )
 
     # ---- Progress-reporter integration -------------------------

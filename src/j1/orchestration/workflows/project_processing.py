@@ -23,7 +23,9 @@ with workflow.unsafe.imports_passed_through():
         ProjectScope,
         SetDocumentStatusInput,
         SpendSummary,
+        StageValidationActivityResult,
         ValidateContextResult,
+        ValidateStageInput,
     )
     from j1.orchestration.activities.planning import (
         ACTIVITY_BUILD_PLANNING_RESULT,
@@ -604,6 +606,14 @@ class ProjectProcessingWorkflow:
         # re-reading workflow history. Recording sites are colocated
         # with each stage call.
         self._step_results: list[StepResult] = []
+        # Set of stage names whose `validate_stage` activity returned
+        # `passed=True` and persisted a `stage_validation_report`
+        # artifact. Consulted by `_validate_completion`'s aggregator
+        # rule: every COMPLETED durable stage MUST have a corresponding
+        # entry here, otherwise we know the validation gate didn't run
+        # (legacy code path slipping through, or a developer bypassed
+        # the gate).
+        self._validated_stages: set[str] = set()
         # Cached scope identifiers so structured-log lines /
         # search-attribute updates don't have to dig into `request`
         # every call. Populated on first `_log_step()` and reused.
@@ -806,6 +816,7 @@ class ProjectProcessingWorkflow:
                         "indexer_kind_set_implies_index_step_ran",
                         "graph_step_completed_implies_graph_json_artifact",
                         "chunks_step_completed_implies_chunk_artifact",
+                        "every_durable_completed_stage_has_validation_report",
                     ],
                 )
                 if validation_errors:
@@ -1214,6 +1225,43 @@ class ProjectProcessingWorkflow:
                         "generate_knowledge_chunks step recorded as "
                         "completed but no `chunk` artifact was produced"
                     )
+
+        # Aggregator rule: every COMPLETED durable stage MUST have a
+        # corresponding entry in `_validated_stages`. The per-stage
+        # gates set this on a passed validation; absence here means
+        # either the gate didn't run (legacy code path slipping
+        # through) or the validation failed but the workflow still
+        # somehow reached COMPLETED. Either is a contract bug — fail
+        # the run rather than report SUCCEEDED on un-validated output.
+        #
+        # Skipped stages (status=SKIPPED) are allowed to lack a
+        # validation report; their reason+source IS the audit trail.
+        # Synthetic stages (compile-bundled chunks in legacy mode)
+        # are also exempt — they aren't real activity dispatches.
+        # Runs without a `correlation_id` (test fixtures + legacy
+        # bulk-job entry points) are also exempt because the gate
+        # itself is a no-op there.
+        _DURABLE_STAGES = {
+            "compile", "generate_knowledge_chunks", "enrich", "graph",
+        }
+        if request.correlation_id:
+            for r in self._step_results:
+                if r.status != StepStatus.COMPLETED:
+                    continue
+                if r.step not in _DURABLE_STAGES:
+                    continue
+                synthetic = bool(
+                    isinstance(r.metadata, dict)
+                    and r.metadata.get("synthetic")
+                )
+                if synthetic:
+                    continue
+                if r.step not in self._validated_stages:
+                    errors.append(
+                        f"durable stage {r.step!r} recorded as completed "
+                        "but no stage_validation_report was persisted; "
+                        "validation gate did not run for this stage"
+                    )
         return errors
 
     def _step_summary_payload(self) -> tuple[StepSummaryEntry, ...]:
@@ -1385,6 +1433,70 @@ class ProjectProcessingWorkflow:
             )
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
             pass
+
+    async def _validate_stage_output(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        stage_name: str,
+        document_id: str | None,
+        output_artifact_ids: list[str],
+        enrich_required: bool = False,
+        graph_required: bool = False,
+        chunk_artifact_ids: list[str] | None = None,
+        attempt: int = 1,
+    ) -> "StageValidationActivityResult | None":
+        """Run the per-stage validation contract via the
+        `validate_stage` activity, persist the
+        `stage_validation_report` artifact, and return the result so
+        the caller can gate `_record_step(COMPLETED)` on
+        `result.passed`.
+
+        Returns None when correlation_id is unset (the activity needs
+        a run_id to attach the report to). The caller should treat
+        a None return as "validation skipped — not enough context"
+        and proceed with legacy behaviour. Production deployments
+        always set correlation_id, so the None branch is exercised
+        only by test fixtures."""
+        if not request.correlation_id:
+            return None
+        try:
+            result = await workflow.execute_activity_method(
+                ProcessingActivities.validate_stage,
+                ValidateStageInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    stage_name=stage_name,
+                    output_artifact_ids=list(output_artifact_ids),
+                    enrich_required=enrich_required,
+                    graph_required=graph_required,
+                    chunk_artifact_ids=list(chunk_artifact_ids or []),
+                    attempt=attempt,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+            if result.passed:
+                self._validated_stages.add(stage_name)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            # Validation activity itself failed — that's a stage
+            # failure (we can't audit a stage we couldn't validate).
+            # Surface a synthetic failed result so the caller's
+            # `result.passed` branch records FAILED.
+            return StageValidationActivityResult(
+                stage_name=stage_name,
+                validation_status="failed",
+                passed=False,
+                error_count=1,
+                check_count=0,
+                errors=[
+                    f"validate_stage activity raised "
+                    f"{type(exc).__name__}: {exc}"
+                ],
+            )
 
     async def _persist_validation_report(
         self,
@@ -1996,6 +2108,36 @@ class ProjectProcessingWorkflow:
             raise _BusinessRejection(
                 f"compile failed for {document_id}: {compile_result.error}"
             )
+        # Validation gate: read back compile's artifacts, run the
+        # per-stage validator, persist `stage_validation_report`.
+        # Only mark COMPLETED if the validator passes — refuses to
+        # let a stage that "returned successfully" but produced an
+        # empty / unreadable / wrong-scope artifact slip through.
+        compile_validation = await self._validate_stage_output(
+            request,
+            stage_name="compile",
+            document_id=document_id,
+            output_artifact_ids=list(compile_result.artifact_ids),
+        )
+        if compile_validation is not None and not compile_validation.passed:
+            self._record_step(
+                step="compile",
+                status=StepStatus.FAILED,
+                required=True,
+                source=StepSource.CALLER,
+                reason="; ".join(compile_validation.errors)[:512]
+                    or "stage validation failed",
+                error=StepError(
+                    type="StageValidationFailed",
+                    message="; ".join(compile_validation.errors)[:512]
+                        or "stage validation failed",
+                    retryable=False,
+                ),
+                metadata={"document_id": document_id},
+            )
+            raise _BusinessRejection(
+                f"compile stage validation failed for {document_id}"
+            )
         self._produced_artifact_ids.extend(compile_result.artifact_ids)
         self._produced_artifact_kinds.extend(compile_result.kinds)
         self._record_step(
@@ -2203,6 +2345,38 @@ class ProjectProcessingWorkflow:
                 raise _BusinessRejection(
                     f"insert_content failed for {document_id}: {insert_result.error}"
                 )
+            # Validation gate for chunks: read back, count > 0,
+            # unique IDs, scope. Refuses to mark COMPLETED on a
+            # zero-chunks / unreadable / wrong-scope chunks artifact.
+            chunks_validation = await self._validate_stage_output(
+                request,
+                stage_name="generate_knowledge_chunks",
+                document_id=document_id,
+                output_artifact_ids=list(insert_result.artifact_ids),
+            )
+            if (
+                chunks_validation is not None
+                and not chunks_validation.passed
+            ):
+                self._record_step(
+                    step="generate_knowledge_chunks",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason="; ".join(chunks_validation.errors)[:512]
+                        or "stage validation failed",
+                    error=StepError(
+                        type="StageValidationFailed",
+                        message="; ".join(chunks_validation.errors)[:512]
+                            or "stage validation failed",
+                        retryable=False,
+                    ),
+                    metadata={"document_id": document_id},
+                )
+                raise _BusinessRejection(
+                    f"generate_knowledge_chunks stage validation failed "
+                    f"for {document_id}"
+                )
             self._produced_artifact_ids.extend(insert_result.artifact_ids)
             self._produced_artifact_kinds.extend(insert_result.kinds)
             self._record_step(
@@ -2300,6 +2474,12 @@ class ProjectProcessingWorkflow:
             )
 
         if enrich_enabled:
+            # Accumulate enrich-produced artifact IDs across the
+            # per-artifact loop so the validation gate (run ONCE at
+            # the loop's end) sees the aggregate output. Per-artifact
+            # validation would create N reports per run; one report
+            # per stage per run is the contract.
+            enrich_produced_ids: list[str] = []
             for artifact_id in list(compile_result.artifact_ids):
                 enrich_op = f"{OPERATION_ENRICH}:{artifact_id}"
                 if await self._gate_before_expensive(request, enrich_op):
@@ -2351,6 +2531,7 @@ class ProjectProcessingWorkflow:
                     )
                 self._produced_artifact_ids.extend(enrich_result.artifact_ids)
                 self._produced_artifact_kinds.extend(enrich_result.kinds)
+                enrich_produced_ids.extend(enrich_result.artifact_ids)
                 self._record_step(
                     step="enrich",
                     status=StepStatus.COMPLETED,
@@ -2360,6 +2541,39 @@ class ProjectProcessingWorkflow:
                     metadata={"artifact_id": artifact_id},
                 )
                 self._complete(enrich_op)
+            # Aggregate enrich validation: one report covering every
+            # enriched artifact this run produced. `enrich_required=True`
+            # because enrich was enabled; the validator confirms each
+            # artifact is readable + linked to upstream chunks.
+            enrich_validation = await self._validate_stage_output(
+                request,
+                stage_name="enrich",
+                document_id=document_id,
+                output_artifact_ids=enrich_produced_ids,
+                enrich_required=True,
+            )
+            if (
+                enrich_validation is not None
+                and not enrich_validation.passed
+            ):
+                self._record_step(
+                    step="enrich",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason="; ".join(enrich_validation.errors)[:512]
+                        or "enrich stage validation failed",
+                    error=StepError(
+                        type="StageValidationFailed",
+                        message="; ".join(enrich_validation.errors)[:512]
+                            or "enrich stage validation failed",
+                        retryable=False,
+                    ),
+                    metadata={"document_id": document_id},
+                )
+                raise _BusinessRejection(
+                    f"enrich stage validation failed for {document_id}"
+                )
             await self._maybe_review(request, GATE_AFTER_ENRICH)
             if self._cancelled:
                 return
@@ -2444,6 +2658,45 @@ class ProjectProcessingWorkflow:
                 )
                 raise _BusinessRejection(
                     f"build_graph failed: {graph_result.error}"
+                )
+            # Validation gate for graph: read back graph_json,
+            # node count > 0, edges reference real nodes, scope.
+            # Refuses to mark COMPLETED on an empty / dangling-edge
+            # graph that would otherwise pass to index.
+            chunk_ids_for_grounding = [
+                aid for aid, kind in zip(
+                    self._produced_artifact_ids,
+                    self._produced_artifact_kinds,
+                ) if kind == "chunk"
+            ]
+            graph_validation = await self._validate_stage_output(
+                request,
+                stage_name="graph",
+                document_id=document_id,
+                output_artifact_ids=list(graph_result.artifact_ids),
+                graph_required=True,
+                chunk_artifact_ids=chunk_ids_for_grounding,
+            )
+            if (
+                graph_validation is not None
+                and not graph_validation.passed
+            ):
+                self._record_step(
+                    step="graph",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason="; ".join(graph_validation.errors)[:512]
+                        or "graph stage validation failed",
+                    error=StepError(
+                        type="StageValidationFailed",
+                        message="; ".join(graph_validation.errors)[:512]
+                            or "graph stage validation failed",
+                        retryable=False,
+                    ),
+                )
+                raise _BusinessRejection(
+                    "graph stage validation failed"
                 )
             self._produced_artifact_ids.extend(graph_result.artifact_ids)
             self._produced_artifact_kinds.extend(graph_result.kinds)

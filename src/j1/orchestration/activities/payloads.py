@@ -125,6 +125,51 @@ class PersistFinalSummaryInput:
 
 
 @dataclass(frozen=True)
+class ValidateStageInput:
+    """Workflow → activity payload for `validate_stage`. Carries the
+    stage name + the artifacts the stage produced + the scope keys
+    the validator uses for cross-checks. The activity reads the
+    artifact files back from disk, runs the per-stage validator,
+    persists a `stage_validation_report` artifact, and returns the
+    result so the workflow can decide between `_record_step(COMPLETED)`
+    and `_record_step(FAILED)`."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    stage_name: str  # one of STAGE_COMPILE / GENERATE_CHUNKS / ENRICH / GRAPH
+    output_artifact_ids: list[str] = field(default_factory=list)
+    # Optional flags for stages whose validator's behaviour depends
+    # on the run's plan. `enrich_required` / `graph_required` come
+    # from the workflow's `_stage_enabled` decision.
+    enrich_required: bool = False
+    graph_required: bool = False
+    # For graph: the chunk artifact ids the graph should be grounded
+    # in. Empty when the workflow doesn't track them (legacy).
+    chunk_artifact_ids: list[str] = field(default_factory=list)
+    attempt: int = 1
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
+class StageValidationActivityResult:
+    """Workflow → activity return for `validate_stage`. Mirrors the
+    `StageValidationResult` shape but as a Temporal-data-converter
+    friendly dataclass. The workflow inspects `passed` to gate the
+    COMPLETED transition; full payload is also persisted as the
+    `stage_validation_report` artifact."""
+
+    stage_name: str
+    validation_status: str
+    passed: bool
+    error_count: int = 0
+    warning_count: int = 0
+    check_count: int = 0
+    artifact_id: str | None = None
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class PersistErrorReportInput:
     """Workflow → activity payload for the failure-path
     `error_report` artifact. The workflow calls this from its

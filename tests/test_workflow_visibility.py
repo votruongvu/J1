@@ -285,22 +285,31 @@ def test_log_step_uses_safe_fields_only(monkeypatch):
             captured_logs.append(extra or {})
 
     monkeypatch.setattr(workflow, "logger", _StubLogger())
-    _patch_workflow_runtime(
-        monkeypatch,
-        exec_handler=lambda m, p, k: (
-            ValidateContextResult(valid=True)
-            if _activity_name(m).endswith("validate_context")
-            else (
-                ["doc-1"]
-                if _activity_name(m).endswith("list_pending_documents")
-                else (
-                    ArtifactActivityResult(status="succeeded", artifact_ids=["art-1"])
-                    if _activity_name(m).endswith("compile")
-                    else None
-                )
+
+    def _handler(method, payload, kwargs):
+        from j1.orchestration.activities.payloads import (
+            StageValidationActivityResult,
+        )
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            # `kinds=("chunk",)` keeps the chunks-validation rule happy
+            # for the synthetic generate_knowledge_chunks step.
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-1"],
+                kinds=("chunk",),
             )
-        ),
-    )
+        if name.endswith("validate_stage"):
+            return StageValidationActivityResult(
+                stage_name=payload.stage_name,
+                validation_status="passed", passed=True,
+            )
+        return None
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=_handler)
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(
         scope=_scope(),
