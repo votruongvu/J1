@@ -118,16 +118,17 @@ describe("appliedCapabilities", () => {
 
 describe("attempts timeline", () => {
   it("preserves attempt order (server already sorts)", () => {
+    const baseAttempt = _report().attempts[0]!;
     const r = _report({
       attempts_count: 2,
       attempts: [
         {
-          ..._report().attempts[0],
+          ...baseAttempt,
           attempt_number: 1, mode: "fast", quality: "low",
           retry_reason: "zero_chunks", status: "retried",
         },
         {
-          ..._report().attempts[0],
+          ...baseAttempt,
           attempt_number: 2, mode: "standard", quality: "good",
           status: "succeeded",
         },
@@ -239,7 +240,7 @@ describe("final quality summary", () => {
       retry_used: false,
       attempts_count: 1,
     });
-    const last = r.attempts[r.attempts.length - 1];
+    const last = r.attempts[r.attempts.length - 1]!;
     expect(r.final_compile_quality).toBe("good");
     expect(r.final_mode).toBe("standard");
     expect(last.chunks_count).toBe(5);

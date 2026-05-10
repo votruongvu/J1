@@ -60,9 +60,10 @@ describe("bannersForEnrichPlan", () => {
       blocking_issues: ["compile failed; nothing to enrich"],
     }));
     expect(banners).toHaveLength(1);
-    expect(banners[0].kind).toBe("err");
-    expect(banners[0].testid).toBe("enrich-banner-skip");
-    expect(banners[0].message).toContain("compile failed");
+    const b = banners[0]!;
+    expect(b.kind).toBe("err");
+    expect(b.testid).toBe("enrich-banner-skip");
+    expect(b.message).toContain("compile failed");
   });
 
   it("emits a warn banner for SKIP without blocking issues", () => {
@@ -71,8 +72,9 @@ describe("bannersForEnrichPlan", () => {
       blocking_issues: [],
     }));
     expect(banners).toHaveLength(1);
-    expect(banners[0].kind).toBe("warn");
-    expect(banners[0].testid).toBe("enrich-banner-skip");
+    const b = banners[0]!;
+    expect(b.kind).toBe("warn");
+    expect(b.testid).toBe("enrich-banner-skip");
   });
 
   it("emits a warn banner for REQUIRED so operators see the must-do", () => {
@@ -80,7 +82,7 @@ describe("bannersForEnrichPlan", () => {
       overall_recommendation: "required",
     }));
     expect(banners).toHaveLength(1);
-    expect(banners[0].testid).toBe("enrich-banner-required");
+    expect(banners[0]!.testid).toBe("enrich-banner-required");
   });
 });
 

@@ -2,11 +2,9 @@
  * Results section — visible progressively as steps complete.
  *
  * Tabs gate on `summary.availableViews`, which in turn gates on
- * artifact presence in the workspace. As soon as the compile
- * activity emits the parsed-content manifest, the Content Inventory
- * tab unlocks; the moment chunk artifacts land, the Chunks tab
- * unlocks. The user no longer waits for the workflow to reach a
- * terminal state to inspect partial results.
+ * artifact presence in the workspace. The moment chunk artifacts
+ * land, the Chunks tab unlocks. The user no longer waits for the
+ * workflow to reach a terminal state to inspect partial results.
  *
  * Lazy fetching: the summary loads as soon as the section renders;
  * sub-tab data loads on first activation and is cached for the
@@ -21,18 +19,14 @@ import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ReviewQualityReport, ReviewRunSummary } from "@/types/review";
 import { AssetsTab } from "./AssetsTab";
 import { ChunksTab } from "./ChunksTab";
-import { ContentInventoryTab } from "./ContentInventoryTab";
 import { GraphTab } from "./GraphTab";
 import { OverviewTab } from "./OverviewTab";
-import { PlanningReportTab } from "./PlanningReportTab";
 import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
 import { ValidationTab } from "./ValidationTab";
 
 type ResultsTab =
   | "overview"
-  | "planning"
-  | "parsedContent"
   | "chunks"
   | "assets"
   | "graph"
@@ -63,15 +57,6 @@ export function ResultsSection({
   const [qualityLoading, setQualityLoading] = useState(false);
   const [qualityError, setQualityError] = useState<string | null>(null);
 
-  // Refresh nonce — incremented every time we reload the summary.
-  // Threaded into Content Inventory + Planning tabs so they re-fetch
-  // their own data when the summary signals new artifacts have
-  // landed. Without this, a tab that loaded BEFORE the
-  // parsed_content_manifest / planning_result artifacts were
-  // registered shows a stale "unavailable" state forever, even after
-  // SSE step.* events flip the parent's view of availability.
-  const [refreshNonce, setRefreshNonce] = useState(0);
-
   // Reset cache when the run id changes.
   useEffect(() => {
     setSummary(null);
@@ -80,7 +65,6 @@ export function ResultsSection({
     setQuality(null);
     setQualityLoading(false);
     setQualityError(null);
-    setRefreshNonce(0);
     setTab("overview");
   }, [runId]);
 
@@ -111,11 +95,6 @@ export function ResultsSection({
       } finally {
         if (!cancelled) {
           setSummaryLoading(false);
-          // Bump the nonce on every completed load (success OR
-          // error) — tabs that depend on summary state should
-          // re-fetch even when summary itself fails, so a transient
-          // /summary error doesn't leave the tab content stale.
-          setRefreshNonce((n) => n + 1);
         }
       }
     })();
@@ -130,23 +109,18 @@ export function ResultsSection({
     return loadSummary();
   }, [run?.runId, loadSummary]);
 
-  // SSE-driven refresh: re-fetch the summary on every step.completed,
-  // on plan.generated/plan.revised (the post-compile planning
-  // activity emits the latter when the planning_result artifact
-  // lands — without this trigger the Planning Report and Content
-  // Inventory tabs stay locked until the next step.completed),
-  // and on the terminal events. The summary is small (one HTTP call
-  // returning a few hundred bytes); the cost of re-fetching it on
-  // each step boundary is negligible and the UX win is large
-  // (newly-unlocked tabs appear without a manual reload).
+  // SSE-driven refresh: re-fetch the summary on every step.completed
+  // / step.failed / step.skipped, plus the terminal events. The
+  // summary is small (one HTTP call returning a few hundred bytes);
+  // the cost of re-fetching it on each step boundary is negligible
+  // and the UX win is large (newly-unlocked tabs appear without a
+  // manual reload).
   useEffect(() => {
     if (!latestEvent) return;
     const refreshOn = new Set<string>([
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,
-      EVENT_TYPES.PLAN_GENERATED,
-      EVENT_TYPES.PLAN_REVISED,
     ]);
     if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
       loadSummary();
@@ -189,32 +163,10 @@ export function ResultsSection({
     reason?: string | null;
   }> = [
     // Tab order mirrors the user-facing processing journey:
-    //   Overview → Content Inventory → Execution Plan →
-    //   Knowledge Chunks → Enrichment → Knowledge Graph → Quality →
-    //   Raw → Validation. Operators read top-to-bottom in the same
-    //   sequence the run produces them.
+    //   Overview → Knowledge Chunks → Enrichment → Knowledge Graph →
+    //   Quality → Raw → Validation. Operators read top-to-bottom in
+    //   the same sequence the run produces them.
     { key: "overview", label: "Overview", available: true },
-    {
-      key: "parsedContent",
-      label: "Content Inventory",
-      // `parsedContent` is optional on older API responses — fall
-      // back to false + a generic reason when absent so an old
-      // bundle running against a newer backend (or vice-versa)
-      // doesn't crash on `undefined.available`.
-      available: views?.parsedContent?.available ?? false,
-      reason:
-        views?.parsedContent?.reason ??
-        (views ? "Waiting for parser to finish." : "Loading…"),
-    },
-    {
-      key: "planning",
-      label: "Execution Plan",
-      // Optional like `parsedContent` — older API responses omit it.
-      available: views?.planning?.available ?? false,
-      reason:
-        views?.planning?.reason ??
-        (views ? "Waiting for planner to finish." : "Loading…"),
-    },
     // Use safe optional chaining (?. on EVERY field) so a partially-
     // missing `views` object — older API response, in-flight network
     // error retried by the FE, malformed payload — can't crash the
@@ -304,12 +256,6 @@ export function ResultsSection({
             loading={qualityLoading}
             error={qualityError}
           />
-        )}
-        {tab === "planning" && (
-          <PlanningReportTab runId={runId} refreshNonce={refreshNonce} />
-        )}
-        {tab === "parsedContent" && (
-          <ContentInventoryTab runId={runId} refreshNonce={refreshNonce} />
         )}
         {tab === "chunks" && <ChunksTab runId={runId} />}
         {tab === "assets" && <AssetsTab runId={runId} />}
