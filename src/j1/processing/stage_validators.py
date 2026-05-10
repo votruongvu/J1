@@ -160,8 +160,9 @@ def validate_compile(
     expected_document_id: str,
     read_back: ReadBack,
 ) -> list[StageValidationCheck]:
-    """Compile produces parsed_source / parsed_content_manifest /
-    chunk artifacts (kinds vary by pipeline_mode). Required:
+    """Compile produces parsed_content_manifest / chunk artifacts
+    (RAGAnything's `process_document_complete` returns parse + chunk
+    output together). Required:
       * at least one artifact registered.
       * each artifact's file readable + non-empty.
       * scope (tenant, project, run_id, document_id) matches.
@@ -170,8 +171,7 @@ def validate_compile(
 
     Quality checks: warn when no `parsed_content_manifest` is present
     (Content Inventory tab will be unavailable) but at least one
-    parsed_source or chunk is — operators may genuinely want
-    parse-only output."""
+    chunk is."""
     checks: list[StageValidationCheck] = []
     if not artifacts:
         checks.append(_failed(

@@ -117,62 +117,6 @@ class ProcessingService:
             source_document_ids=[document.document_id],
         )
 
-    def insert_content(
-        self,
-        ctx: ProjectContext,
-        compiler,  # KnowledgeCompiler-shaped — RAGAnythingCompiler concretely
-        document: DocumentRecord,
-        *,
-        content_list: list,
-        doc_id: str,
-        source_filename: str | None = None,
-        actor: str = "system",
-        correlation_id: str | None = None,
-    ) -> ArtifactProcessingResult:
-        """Drive the second-half (`insert_content_list`) of the
-        split RAGAnything pipeline.
-
-        Reads pre-parsed `content_list` (from the upstream
-        `parsed_source` artifact) and the resolved `doc_id`,
-        calls the compiler's `insert_content` method, materialises
-        chunk + graph drafts into the workspace.
-
-        Mirrors `compile()`'s shape — same workspace area, same
-        audit action — so callers consume one consistent
-        ArtifactProcessingResult shape regardless of pipeline mode.
-        """
-        try:
-            output = compiler.insert_content(
-                ctx,
-                document.document_id,
-                content_list=content_list,
-                doc_id=doc_id,
-                source_filename=source_filename,
-            )
-        except Exception as exc:
-            return self._fail_artifact(
-                ctx,
-                action=ACTION_COMPILE_FAIL,
-                target_kind=TARGET_DOCUMENT,
-                target_id=document.document_id,
-                exc=exc,
-                actor=actor,
-                correlation_id=correlation_id,
-                processor_kind=getattr(compiler, "kind", None),
-            )
-        return self._handle_artifact_output(
-            ctx,
-            output,
-            area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
-            target_kind=TARGET_DOCUMENT,
-            target_id=document.document_id,
-            actor=actor,
-            correlation_id=correlation_id,
-            processor_kind=getattr(compiler, "kind", None),
-            source_document_ids=[document.document_id],
-        )
-
     def persist_error_report(
         self,
         ctx: ProjectContext,
@@ -387,6 +331,68 @@ class ProcessingService:
             return registered.artifacts[0]
         raise RuntimeError(
             "failed to persist compile_strategy_report artifact for "
+            f"run {run_id!r}"
+        )
+
+    def persist_post_compile_enrich_plan(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        payload: dict,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write a `post_compile_enrich_plan` artifact carrying the
+        rule-based enrich-assessment verdict. Mirrors
+        `persist_compile_strategy_report`'s shape so the FE artifact
+        listing picks it up uniformly. `payload` is the
+        `PostCompileEnrichPlan.to_payload()` dict — the service layer
+        doesn't import `enrich_assessment` to keep the dependency
+        graph thin."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+
+        overall = str(payload.get("overall_recommendation") or "optional")
+        recommended = list(payload.get("recommended_tasks") or [])
+        decision_source = str(payload.get("decision_source") or "rule_based")
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"post_compile_enrich_plan_{run_id}.json",
+                "overall_recommendation": overall,
+                "recommended_task_count": len(recommended),
+                "decision_source": decision_source,
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            "failed to persist post_compile_enrich_plan artifact for "
             f"run {run_id!r}"
         )
 

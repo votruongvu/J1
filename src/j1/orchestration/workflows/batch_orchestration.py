@@ -84,7 +84,6 @@ class BatchChildSpec:
     indexer_kind: str | None = None
     actor: str = "system"
     planner_enabled: bool = False
-    pipeline_mode: str = "complete"
 
 
 @dataclass(frozen=True)
@@ -159,7 +158,6 @@ class BatchOrchestrationWorkflow:
                 correlation_id=spec.correlation_id,
                 target_document_ids=(spec.document_id,),
                 planner_enabled=spec.planner_enabled,
-                pipeline_mode=spec.pipeline_mode,
             )
             try:
                 await workflow.execute_child_workflow(

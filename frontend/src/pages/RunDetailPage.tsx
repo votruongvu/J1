@@ -26,6 +26,7 @@ import { LiveTimeline } from "./run-detail/LiveTimeline";
 import { PrimaryStatusPanel } from "./run-detail/PrimaryStatusPanel";
 import { ResultsSection } from "./run-detail/results";
 import { TechDrawer } from "./run-detail/TechDrawer";
+import { CompileStrategyPanel } from "./run-detail/CompileStrategyPanel";
 
 interface RunDetailPageProps {
   runId: string;
@@ -366,6 +367,13 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           />
         </div>
       </div>
+
+      {/* Compile Strategy panel — Assessment Plan + retry timeline +
+          final-quality summary. Read from the
+          `compile_strategy_report` artifact via the artifact-listing
+          API; renders a "no data" placeholder when the artifact
+          isn't present (legacy / mid-flight runs). */}
+      <CompileStrategyPanel runId={runId} />
 
       {/* Results section — visible progressively as steps complete.
           The component handles the visibility check internally so

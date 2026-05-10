@@ -44,7 +44,6 @@ def _spec(*, document_id: str, run_id: str, **overrides) -> BatchChildSpec:
         indexer_kind=overrides.pop("indexer_kind", "sqlite_search"),
         actor=overrides.pop("actor", "ops@example.com"),
         planner_enabled=overrides.pop("planner_enabled", True),
-        pipeline_mode=overrides.pop("pipeline_mode", "complete"),
     )
 
 

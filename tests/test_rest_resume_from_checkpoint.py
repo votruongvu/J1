@@ -55,7 +55,6 @@ _PRIOR_SETTINGS = {
     "indexer_kind": "sqlite_search",
     "planner_enabled": True,
     "policy": "auto",
-    "pipeline_mode": "complete",
     "domain_override": None,
     "workspace_default_domain": None,
     "failure_policy": "fail_fast",

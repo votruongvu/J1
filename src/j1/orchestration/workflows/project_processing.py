@@ -15,10 +15,10 @@ with workflow.unsafe.imports_passed_through():
         FinalizeInput,
         GraphActivityInput,
         IndexActivityInput,
-        InsertContentActivityInput,
         PersistCompileStrategyReportInput,
         PersistErrorReportInput,
         PersistFinalSummaryInput,
+        PersistPostCompileEnrichPlanInput,
         PersistValidationReportInput,
         ProcessingActivityResult,
         ProjectScope,
@@ -71,6 +71,11 @@ with workflow.unsafe.imports_passed_through():
         CompileMode,
         DefaultAssessmentPlanner,
         load_assessment_failure_policy,
+    )
+    from j1.processing.enrich_assessment import (
+        PostCompileEnrichPlan,
+        assess_post_compile_enrich,
+        build_signals_from_compile_metrics,
     )
     from j1.processing.compile_quality import (
         QUALITY_FAILED,
@@ -136,21 +141,13 @@ COMPILE_ACTIVITY_TIMEOUT = timedelta(hours=1)
 OPERATION_VALIDATE = "validate"
 OPERATION_LIST_DOCUMENTS = "list_documents"
 OPERATION_COMPILE = "compile"
-OPERATION_INSERT_CONTENT = "insert_content"
+OPERATION_POST_COMPILE_ASSESS = "post_compile_assess"
 OPERATION_ENRICH = "enrich"
 OPERATION_BUILD_GRAPH = "build_graph"
 OPERATION_INDEX = "index"
 OPERATION_FINALIZE = "finalize"
 OPERATION_BUDGET_CHECK = "budget_check"
 OPERATION_REVIEW_GATE = "review_gate"
-
-# Pipeline mode values mirrored from `RAGAnythingSettings`. The
-# workflow code branches on these strings to decide whether to invoke
-# the split-mode `insert_content` activity. Hard-coding the literals
-# avoids pulling the raganything-specific module into a workflow
-# that should stay provider-agnostic.
-PIPELINE_MODE_COMPLETE = "complete"
-PIPELINE_MODE_SPLIT_PARSE_INSERT = "split_parse_insert"
 
 # Temporal search-attribute names. Must match the registrations in
 # `deploy/dev/docker-compose.yml` (temporal-init service) — writing
@@ -254,24 +251,6 @@ class ProjectProcessingRequest:
     #   with a warning recorded on `domain_context`.
     domain_override: str | None = None
     workspace_default_domain: str | None = None
-    # Pipeline mode for the compile/insert split. Mirrors
-    # `RAGAnythingSettings.pipeline_mode` and is propagated by the
-    # REST adapter from raganything settings. Two values are
-    # recognised:
-    #   * "complete" (default) — the compile activity runs the
-    #     legacy single-shot `process_document_complete` path; no
-    #     separate insert step; chunk+graph artifacts are produced
-    #     by compile itself.
-    #   * "split_parse_insert" — the compile activity parses ONLY
-    #     and registers a `parsed_source` artifact; the workflow
-    #     then runs `insert_content` (RAGAnything.insert_content_list)
-    #     after the post-compile planning step. Chunk artifacts come
-    #     from insert; the upstream `parsed_source` is what unlocks
-    #     the Content Inventory tab.
-    # Defaults to "complete" so existing tests + deployments keep
-    # working unchanged. Production opts into split mode via
-    # `J1_RAGANYTHING_PIPELINE_MODE=split_parse_insert`.
-    pipeline_mode: str = "complete"
     # Resume-from-checkpoint context. Empty (default) = fresh run.
     # When set, the workflow honours the carry-forward artifact lists
     # at startup and skips activities for steps named in
@@ -1277,12 +1256,11 @@ class ProjectProcessingWorkflow:
                     "`graph_json` artifact was produced"
                 )
             elif r.step == "generate_knowledge_chunks" and "chunk" not in kinds:
-                # In split_parse_insert mode, the chunks step is the
-                # real boundary; in legacy `complete` mode chunks are
-                # produced by compile and labelled as a synthetic
-                # generate_knowledge_chunks step (skip the rule via
-                # metadata.synthetic). The check honours that escape
-                # hatch so we don't false-flag legacy runs.
+                # Compile bundles parse + chunk in one shot, so the
+                # chunks step is recorded as a synthetic step
+                # (metadata.synthetic=True). The check honours that
+                # escape hatch so we don't false-flag the synthetic
+                # step.
                 synthetic = bool(
                     isinstance(r.metadata, dict)
                     and r.metadata.get("synthetic")
@@ -1560,6 +1538,55 @@ class ProjectProcessingWorkflow:
             )
         except Exception:  # noqa: BLE001 — never block compile success on telemetry
             pass
+
+    async def _run_post_compile_enrich_assessment(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        document_id: str,
+        compile_result: "ArtifactActivityResult",
+        final_compile_quality: str,
+    ) -> "PostCompileEnrichPlan | None":
+        """Run the rule-based post-compile enrich assessment + persist
+        the resulting `post_compile_enrich_plan` artifact.
+
+        The assessor is pure (no I/O); we run it inline in workflow
+        code — that's deterministic and Temporal-sandbox-safe — and
+        only schedule an activity for the artifact write. Returns the
+        plan so callers can use the recommendation downstream; None
+        on error (callers fall through to the existing stage-gate
+        precedence)."""
+        try:
+            signals = build_signals_from_compile_metrics(
+                compile_status=str(compile_result.status),
+                final_compile_quality=final_compile_quality,
+                content_stats=compile_result.content_stats,
+                compile_metrics=compile_result.compile_metrics,
+            )
+            plan = assess_post_compile_enrich(signals)
+        except Exception as exc:  # noqa: BLE001 — defensive; assessor is pure
+            workflow.logger.warning(
+                "post-compile enrich assessment failed: %s", exc,
+            )
+            return None
+        if not request.correlation_id:
+            return plan
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_post_compile_enrich_plan,
+                PersistPostCompileEnrichPlanInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    payload=plan.to_payload(),
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — observability never blocks ingest
+            pass
+        return plan
 
     def _evaluate_compile_attempt(
         self,
@@ -2558,6 +2585,30 @@ class ProjectProcessingWorkflow:
             ),
         )
 
+        # ── Post-compile enrich assessment ────────────────────────
+        # Rule-based assessor decides whether downstream enrichment
+        # tasks (table / image / vision / quality) should run. The
+        # plan is persisted as a `post_compile_enrich_plan` artifact
+        # for FE rendering + future stage-gate consultation.
+        enrich_plan = await self._run_post_compile_enrich_assessment(
+            request,
+            document_id=document_id,
+            compile_result=compile_result,
+            final_compile_quality=final_quality,
+        )
+        if enrich_plan is not None:
+            self._log_step(
+                request,
+                event="ingestion.post_compile.enrich_assessment",
+                stage="post_compile_assess",
+                status="completed",
+                document_id=document_id,
+                reason=(
+                    f"enrich={enrich_plan.overall_recommendation.value} "
+                    f"recommended={list(enrich_plan.recommended_tasks)}"
+                ),
+            )
+
         # ── Synthetic step: Build Content Inventory ──────────────
         # The compile activity bundles parse + chunk in one shot
         # (RAGAnything's `process_document_complete` is one call),
@@ -2674,157 +2725,34 @@ class ProjectProcessingWorkflow:
                 )
 
         # ── Generate Knowledge Chunks ────────────────────────────
-        # Two paths:
-        #
-        #   * `pipeline_mode == "complete"` (legacy default):
-        #     compile already produced chunk artifacts; emit
-        #     synthetic step.* events so the user-facing ordering
-        #     reads "Plan → Chunks" even though chunks landed at
-        #     compile-time. The Chunks tab has been unlocked since
-        #     compile.completed; the events here only set the
-        #     timeline ordering.
-        #
-        #   * `pipeline_mode == "split_parse_insert"`:
-        #     compile parsed the source and registered a
-        #     `parsed_source` artifact only — no chunks yet. The
-        #     workflow now runs the `insert_content` activity which
-        #     calls `RAGAnything.insert_content_list` and produces
-        #     real chunk drafts. Step.* events wrap the activity
-        #     execution so the timeline shows actual work, not a
-        #     synthetic.
-        if (
-            request.pipeline_mode == PIPELINE_MODE_SPLIT_PARSE_INSERT
-            and compile_result.parsed_source_artifact_id
-        ):
-            insert_op = f"{OPERATION_INSERT_CONTENT}:{document_id}"
-            self._begin(insert_op)
-            try:
-                insert_result: ArtifactActivityResult = (
-                    await workflow.execute_activity_method(
-                        ProcessingActivities.insert_content,
-                        InsertContentActivityInput(
-                            scope=request.scope,
-                            document_id=document_id,
-                            processor_kind=request.compiler_kind,
-                            parsed_source_artifact_id=(
-                                compile_result.parsed_source_artifact_id
-                            ),
-                            actor=request.actor,
-                            correlation_id=request.correlation_id,
-                        ),
-                        # Insert drives chunking + LightRAG graph
-                        # storage; matches compile's heartbeat
-                        # ceiling because it can be similarly long
-                        # on large docs.
-                        start_to_close_timeout=COMPILE_ACTIVITY_TIMEOUT,
-                        heartbeat_timeout=HEARTBEAT_TIMEOUT,
-                        retry_policy=DEFAULT_RETRY.to_temporal(),
-                    )
-                )
-            except Exception as exc:
-                self._record_step(
-                    step="generate_knowledge_chunks",
-                    status=StepStatus.FAILED,
-                    required=True,
-                    source=StepSource.CALLER,
-                    reason=str(exc),
-                    error=StepError(
-                        type=type(exc).__name__,
-                        message=str(exc),
-                        retryable=False,
-                    ),
-                    metadata={"document_id": document_id},
-                )
-                raise
-            if insert_result.status != "succeeded":
-                self._record_step(
-                    step="generate_knowledge_chunks",
-                    status=StepStatus.FAILED,
-                    required=True,
-                    source=StepSource.CALLER,
-                    reason=insert_result.error or "insert_content activity returned non-succeeded status",
-                    error=StepError(
-                        type="ActivityFailure",
-                        message=insert_result.error or "unspecified",
-                        retryable=False,
-                    ),
-                    metadata={"document_id": document_id},
-                )
-                raise _BusinessRejection(
-                    f"insert_content failed for {document_id}: {insert_result.error}"
-                )
-            # Validation gate for chunks: read back, count > 0,
-            # unique IDs, scope. Refuses to mark COMPLETED on a
-            # zero-chunks / unreadable / wrong-scope chunks artifact.
-            chunks_validation = await self._validate_stage_output(
-                request,
-                stage_name="generate_knowledge_chunks",
-                document_id=document_id,
-                output_artifact_ids=list(insert_result.artifact_ids),
-            )
-            if (
-                chunks_validation is not None
-                and not chunks_validation.passed
-            ):
-                self._record_step(
-                    step="generate_knowledge_chunks",
-                    status=StepStatus.FAILED,
-                    required=True,
-                    source=StepSource.CALLER,
-                    reason="; ".join(chunks_validation.errors)[:512]
-                        or "stage validation failed",
-                    error=StepError(
-                        type="StageValidationFailed",
-                        message="; ".join(chunks_validation.errors)[:512]
-                            or "stage validation failed",
-                        retryable=False,
-                    ),
-                    metadata={"document_id": document_id},
-                )
-                raise _BusinessRejection(
-                    f"generate_knowledge_chunks stage validation failed "
-                    f"for {document_id}"
-                )
-            self._produced_artifact_ids.extend(insert_result.artifact_ids)
-            self._produced_artifact_kinds.extend(insert_result.kinds)
-            self._record_step(
-                step="generate_knowledge_chunks",
-                status=StepStatus.COMPLETED,
-                required=True,
-                source=StepSource.CALLER,
-                artifact_count=len(insert_result.artifact_ids),
-                metadata={
-                    "document_id": document_id,
-                    "synthetic": False,
-                    "pipeline_mode": PIPELINE_MODE_SPLIT_PARSE_INSERT,
-                },
-            )
-            self._complete(insert_op)
-        else:
-            # Legacy synthetic path. Keep behaviour identical to
-            # before split mode existed so deployments running
-            # `complete` mode see no timeline change.
-            await self._emit_step_lifecycle(
-                request, stage="GENERATE_KNOWLEDGE_CHUNKS",
-                step="generate_knowledge_chunks", action="started",
-            )
-            self._record_step(
-                step="generate_knowledge_chunks",
-                status=StepStatus.COMPLETED,
-                required=True,
-                source=StepSource.CALLER,
-                artifact_count=len(compile_result.artifact_ids),
-                metadata={
-                    "document_id": document_id,
-                    "synthetic": True,
-                    "synthesised_from": "compile",
-                },
-            )
-            await self._emit_step_lifecycle(
-                request, stage="GENERATE_KNOWLEDGE_CHUNKS",
-                step="generate_knowledge_chunks", action="completed",
-                artifact_count=len(compile_result.artifact_ids),
-            )
+        # Compile already produced chunk artifacts (J1 runs RAGAnything
+        # via `process_document_complete`, which parses + chunks +
+        # indexes in one activity). Emit synthetic step.* events so the
+        # user-facing timeline reads "Compile → Chunks" even though
+        # chunks landed at compile-time. The Chunks tab has been
+        # unlocked since compile.completed; these events only set the
+        # timeline ordering.
+        await self._emit_step_lifecycle(
+            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
+            step="generate_knowledge_chunks", action="started",
+        )
+        self._record_step(
+            step="generate_knowledge_chunks",
+            status=StepStatus.COMPLETED,
+            required=True,
+            source=StepSource.CALLER,
+            artifact_count=len(compile_result.artifact_ids),
+            metadata={
+                "document_id": document_id,
+                "synthetic": True,
+                "synthesised_from": "compile",
+            },
+        )
+        await self._emit_step_lifecycle(
+            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
+            step="generate_knowledge_chunks", action="completed",
+            artifact_count=len(compile_result.artifact_ids),
+        )
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
         if self._cancelled:

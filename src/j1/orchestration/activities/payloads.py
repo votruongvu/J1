@@ -46,25 +46,6 @@ class CompileActivityInput:
 
 
 @dataclass(frozen=True)
-class InsertContentActivityInput:
-    """Workflow → activity payload for the split-mode insert step.
-
-    Drives `RAGAnything.insert_content_list` from a previously-
-    persisted `parsed_source` artifact. The `parsed_source_artifact_id`
-    is the artifact id the parse activity registered upstream — the
-    insert activity reads its bytes back from disk to recover the
-    content_list + doc_id without re-parsing the source file."""
-
-    scope: ProjectScope
-    document_id: str
-    processor_kind: str
-    parsed_source_artifact_id: str
-    source_filename: str | None = None
-    actor: str = "system"
-    correlation_id: str | None = None
-
-
-@dataclass(frozen=True)
 class EnrichActivityInput:
     scope: ProjectScope
     artifact_id: str
@@ -141,6 +122,20 @@ class PersistCompileStrategyReportInput:
     + per-attempt audit + final-quality verdict in plain-dict form;
     the activity passes it straight to
     `ProcessingService.persist_compile_strategy_report`."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
+class PersistPostCompileEnrichPlanInput:
+    """Workflow → activity payload for the
+    `post_compile_enrich_plan` artifact. Carries the rule-based
+    enrich assessment verdict (recommendation + recommended/skipped
+    tasks + source signals + decision_source) as a plain dict."""
 
     scope: ProjectScope
     run_id: str
@@ -229,18 +224,12 @@ class ArtifactActivityResult:
     # content rather than extension heuristics. None = processor did
     # not populate; planner falls back to the deterministic profile.
     content_stats: dict[str, Any] | None = None
-    # Split-mode handoff: id of the `parsed_source` artifact when the
-    # compile activity ran in `split_parse_insert` mode. The workflow
-    # passes this to the `insert_content` activity so it can read the
-    # pre-parsed content_list back without re-parsing the source. None
-    # in legacy `complete` mode (compile produces chunks directly).
-    parsed_source_artifact_id: str | None = None
     # Per-artifact kinds the activity actually produced (e.g.
-    # `("chunk", "chunk", "chunk")` from insert_content,
-    # `("graph_json",)` from build_graph). The workflow's
-    # `_validate_completion` reads this to enforce per-stage required
-    # outputs — a graph step that "completed" without a graph_json
-    # artifact is a contract violation, not a SUCCEEDED state.
+    # `("chunk", "chunk", "chunk")`, `("graph_json",)` from build_graph).
+    # The workflow's `_validate_completion` reads this to enforce
+    # per-stage required outputs — a graph step that "completed"
+    # without a graph_json artifact is a contract violation, not a
+    # SUCCEEDED state.
     # Defaults to empty so older test fixtures that build
     # `ArtifactActivityResult(status="succeeded", artifact_ids=...)`
     # by hand keep working; the validation only fires when the field

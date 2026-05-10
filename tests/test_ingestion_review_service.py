@@ -2369,7 +2369,6 @@ def _resume_snapshot_metadata(
         "indexer_kind": "sqlite_search",
         "planner_enabled": True,
         "policy": "auto",
-        "pipeline_mode": "complete",
         "domain_override": None,
         "workspace_default_domain": None,
         "failure_policy": "fail_fast",
@@ -2478,7 +2477,6 @@ def test_resume_from_checkpoint_rejects_drifted_settings(
             "indexer_kind": "sqlite_search",
             "planner_enabled": True,
             "policy": "auto",
-            "pipeline_mode": "complete",
             "domain_override": None,
             "workspace_default_domain": None,
             "failure_policy": "fail_fast",
@@ -2489,7 +2487,7 @@ def test_resume_from_checkpoint_rejects_drifted_settings(
     ))
     drifted = dict(metadata["resume_snapshot"]["settings_snapshot"])
     drifted["enricher_kind"] = "different_enricher"
-    drifted["pipeline_mode"] = "split_parse_insert"
+    drifted["indexer_kind"] = "qdrant_search"
     with pytest.raises(ResumeIncompatible) as exc:
         service.resume_from_checkpoint(
             ctx, "run-1", candidate_settings=drifted,
@@ -2498,7 +2496,7 @@ def test_resume_from_checkpoint_rejects_drifted_settings(
     assert "enricher_kind" in diff
     assert diff["enricher_kind"]["before"] == "composite_enricher"
     assert diff["enricher_kind"]["after"] == "different_enricher"
-    assert "pipeline_mode" in diff
+    assert "indexer_kind" in diff
     # Unchanged fields don't appear in the diff.
     assert "compiler_kind" not in diff
 

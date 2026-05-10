@@ -27,7 +27,6 @@ class _StubRequest:
     indexer_kind: str | None = "sqlite_search"
     planner_enabled: bool = True
     policy: str = "auto"
-    pipeline_mode: str = "complete"
     domain_override: str | None = None
     workspace_default_domain: str | None = None
     failure_policy: str = "fail_fast"
@@ -76,12 +75,12 @@ def test_compatible_settings_false_on_processor_kind_drift():
 
 
 def test_settings_diff_returns_only_changed_fields():
-    a = build_settings_snapshot(_StubRequest(enricher_kind="x", pipeline_mode="complete"))
-    b = build_settings_snapshot(_StubRequest(enricher_kind="y", pipeline_mode="split_parse_insert"))
+    a = build_settings_snapshot(_StubRequest(enricher_kind="x", indexer_kind="sqlite_search"))
+    b = build_settings_snapshot(_StubRequest(enricher_kind="y", indexer_kind="qdrant_search"))
     diff = settings_diff(a, b)
-    assert set(diff.keys()) == {"enricher_kind", "pipeline_mode"}
+    assert set(diff.keys()) == {"enricher_kind", "indexer_kind"}
     assert diff["enricher_kind"] == {"before": "x", "after": "y"}
-    assert diff["pipeline_mode"] == {"before": "complete", "after": "split_parse_insert"}
+    assert diff["indexer_kind"] == {"before": "sqlite_search", "after": "qdrant_search"}
 
 
 def test_settings_diff_empty_when_compatible():

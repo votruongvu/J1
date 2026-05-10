@@ -20,12 +20,13 @@ ARTIFACT_KIND_COMPILED_TEXT = "compiled.text"
 # it without re-walking the storage_dir. Independent of vendor
 # internals — see `j1.processing.manifest` for the canonical schema.
 ARTIFACT_KIND_PARSED_CONTENT_MANIFEST = "parsed_content_manifest"
-# Raw parser output — the structured `content_list` produced by
-# `RAGAnything.parse_document` (or J1's plaintext / pypdf fast paths
-# in split mode). Persisted as JSON so the downstream
-# `insert_content_list` activity can read it back without re-parsing.
-# Distinct from `parsed_content_manifest` (counts + items projection
-# the FE renders) — this kind is the literal vendor payload.
+# Raw parser output — the structured `content_list` the parser
+# emits. Distinct from `parsed_content_manifest` (counts + items
+# projection the FE renders); this kind is the literal vendor
+# payload. Kept as a recognised artifact kind for stage-validation
+# tolerance, but the current compile path produces it inline as
+# part of `process_document_complete` rather than as a standalone
+# artifact.
 ARTIFACT_KIND_PARSED_SOURCE = "parsed_source"
 # Post-compile Processing Plan artifact. Persisted by the planning
 # activity once compile + content inventory are available; carries
@@ -68,6 +69,13 @@ ARTIFACT_KIND_STAGE_VALIDATION_REPORT = "stage_validation_report"
 # audit list, and the final-quality verdict. The FE's run-detail
 # Compile Strategy tab reads this to render the timeline.
 ARTIFACT_KIND_COMPILE_STRATEGY_REPORT = "compile_strategy_report"
+# Post-compile enrich-plan assessment. Built by the rule-based
+# `j1.processing.enrich_assessment` assessor immediately after
+# compile success; carries the recommendation (skip/optional/
+# recommended/required), per-task decisions, source signals, and
+# decision_source. Read by the FE's enrich-plan card and by future
+# stage-gate logic that wants to consult the recommendation.
+ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN = "post_compile_enrich_plan"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
@@ -77,6 +85,7 @@ __all__ = [
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",
+    "ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN",
     "ARTIFACT_KIND_COMPILE_STRATEGY_REPORT",
     "ARTIFACT_KIND_STAGE_VALIDATION_REPORT",
     "ARTIFACT_KIND_VALIDATION_REPORT",

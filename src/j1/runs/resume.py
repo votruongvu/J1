@@ -44,7 +44,6 @@ RESUME_SETTINGS_FIELDS: tuple[str, ...] = (
     "indexer_kind",
     "planner_enabled",
     "policy",
-    "pipeline_mode",
     "domain_override",
     "workspace_default_domain",
     "failure_policy",

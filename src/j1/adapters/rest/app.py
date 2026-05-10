@@ -1465,10 +1465,6 @@ def create_rest_api(
                 if hasattr(starter, "_planner_enabled") else None
             ),
             "policy": "auto",
-            "pipeline_mode": (
-                getattr(starter, "_pipeline_mode", "complete")
-                if hasattr(starter, "_pipeline_mode") else "complete"
-            ),
             "domain_override": None,
             "workspace_default_domain": None,
             "failure_policy": "fail_fast",

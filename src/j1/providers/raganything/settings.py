@@ -43,25 +43,6 @@ ENV_RAGANYTHING_SUPPORTS_EQUATION = "J1_RAGANYTHING_SUPPORTS_EQUATION"
 # `J1_RAGANYTHING_ALLOWED_PARSE_METHODS=auto,txt` to lock OCR out of
 # a deployment that doesn't have the OCR backend wired.
 ENV_RAGANYTHING_ALLOWED_PARSE_METHODS = "J1_RAGANYTHING_ALLOWED_PARSE_METHODS"
-# Pipeline split. Values:
-#   `complete`            — legacy single-shot path. Calls
-#                            `RAGAnything.process_document_complete`
-#                            (parse + chunk + index in one
-#                            indivisible activity). Kept for old
-#                            deployments and for older RAGAnything
-#                            versions that don't expose
-#                            `parse_document` / `insert_content_list`.
-#   `split_parse_insert`  — RECOMMENDED. Two activities:
-#                            (1) `parse_source_content` calls
-#                                `parse_document` and persists the
-#                                content_list as a `parsed_source`
-#                                artifact + the manifest with real
-#                                items[].
-#                            (2) `generate_knowledge_chunks` (after
-#                                planning) calls
-#                                `insert_content_list` to drive
-#                                LightRAG chunking + indexing.
-ENV_RAGANYTHING_PIPELINE_MODE = "J1_RAGANYTHING_PIPELINE_MODE"
 
 # VLM HTTP client configuration. Consumed by MinerU when
 # `parse_method=vlm-http-client` — MinerU reads `MINERU_VL_SERVER` /
@@ -98,37 +79,6 @@ DEFAULT_PARSE_METHOD = "auto"
 DEFAULT_BACKEND: str = "vlm-http-client"
 DEFAULT_LIBREOFFICE_BINARY = "soffice"
 DEFAULT_LIBREOFFICE_TIMEOUT = 120.0  # seconds — soffice can be slow on first launch
-
-# Pipeline-mode vocabulary.
-#
-#   `complete`            (default) — legacy single-shot path. Calls
-#                                     `RAGAnything.process_document_complete`
-#                                     (parse + chunk + index in one
-#                                     indivisible activity).
-#   `split_parse_insert`             — RECOMMENDED for new
-#                                     deployments. Two activities:
-#                                     `parse_source` (calls
-#                                     `parse_document`, persists
-#                                     `parsed_source` + manifest),
-#                                     and a separate `insert_content`
-#                                     after planning (calls
-#                                     `insert_content_list` to drive
-#                                     LightRAG chunking + indexing).
-#                                     The bridge auto-detects whether
-#                                     the installed RAGAnything
-#                                     supports the methods and falls
-#                                     back to `complete` if not.
-#
-# Default is `complete` for backward-compatibility — operators
-# opt into the split path via `J1_RAGANYTHING_PIPELINE_MODE=
-# split_parse_insert`. The dev `.env` ships with split enabled.
-PIPELINE_MODE_COMPLETE = "complete"
-PIPELINE_MODE_SPLIT_PARSE_INSERT = "split_parse_insert"
-DEFAULT_PIPELINE_MODE = PIPELINE_MODE_COMPLETE
-VALID_PIPELINE_MODES = frozenset({
-    PIPELINE_MODE_COMPLETE,
-    PIPELINE_MODE_SPLIT_PARSE_INSERT,
-})
 
 # Valid values for `parse_method` per MinerU's CLI choices. Validated
 # at settings-load time so a misuse of `parse_method=vlm-http-client`
@@ -256,19 +206,6 @@ class RAGAnythingSettings:
     vlm_http_server_url: str | None = None
     vlm_http_api_key: str | None = None
     vlm_http_model_name: str | None = None
-    # Pipeline mode — one of the `PIPELINE_MODE_*` constants.
-    #
-    # Two-default split:
-    #   * Dataclass default = `complete` (legacy single-shot path).
-    #     Test fixtures that build `RAGAnythingSettings()` directly
-    #     stay on the legacy path so existing tests don't have to
-    #     stub `parse_document` / `insert_content_list`.
-    #   * `load_raganything_settings(env)` overrides via
-    #     `J1_RAGANYTHING_PIPELINE_MODE`, defaulting to
-    #     `split_parse_insert`. Production / dev deployments take
-    #     the new path via the env, while opt-in tests pass an
-    #     explicit `pipeline_mode="split_parse_insert"`.
-    pipeline_mode: str = PIPELINE_MODE_COMPLETE
     # Adapter capability advertisements. Consumed by the
     # AssessmentPlan → compile-config mapper to decide whether a
     # required capability can be honoured by THIS deployment. Default
@@ -360,9 +297,6 @@ def load_raganything_settings(
             or source.get(ENV_J1_VISION_LLM_MODEL)
             or None
         ),
-        pipeline_mode=_validate_pipeline_mode(
-            source.get(ENV_RAGANYTHING_PIPELINE_MODE),
-        ),
         supports_image=_parse_bool(
             source.get(ENV_RAGANYTHING_SUPPORTS_IMAGE), default=True,
         ),
@@ -404,28 +338,6 @@ def _parse_allowed_methods(raw: str | None) -> tuple[str, ...]:
         if m.strip()
     ]
     return tuple(m for m in cleaned if m in VALID_PARSE_METHODS)
-
-
-def _validate_pipeline_mode(raw: str | None) -> str:
-    """Validate `J1_RAGANYTHING_PIPELINE_MODE` at load time.
-
-    Falls back to `DEFAULT_PIPELINE_MODE` (split_parse_insert) when
-    unset / empty. Unrecognised values raise `ConfigError` so a typo
-    (`split-parse-insert` vs `split_parse_insert`) doesn't silently
-    degrade to the legacy path.
-    """
-    if raw is None:
-        return DEFAULT_PIPELINE_MODE
-    value = raw.strip().lower()
-    if not value:
-        return DEFAULT_PIPELINE_MODE
-    if value not in VALID_PIPELINE_MODES:
-        from j1.errors.exceptions import ConfigError
-        raise ConfigError(
-            f"{ENV_RAGANYTHING_PIPELINE_MODE}={raw!r} is invalid; "
-            f"expected one of {sorted(VALID_PIPELINE_MODES)}"
-        )
-    return value
 
 
 def _parse_extensions(raw: str | None) -> tuple[str, ...]:

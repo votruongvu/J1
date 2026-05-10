@@ -84,18 +84,6 @@ class RAGAnythingCompileRequest:
 
 CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult]
 
-# Insert callable used by `pipeline_mode=split_parse_insert`. Receives
-# a CompileRequest plus the pre-parsed `content_list` (read from a
-# parsed_source artifact upstream) and the resolved `doc_id`. Returns
-# chunk + graph drafts after `RAGAnything.insert_content_list`
-# completes. Defined here so production wiring can swap a custom
-# callable in via `J1_RAGANYTHING_INSERT_PROCESSOR` without touching
-# the compiler internals.
-InsertCallable = Callable[
-    [RAGAnythingCompileRequest, list, str, str | None],
-    ArtifactProcessingResult,
-]
-
 
 class RAGAnythingCompiler:
     kind: str = PROVIDER_NAME
@@ -106,17 +94,10 @@ class RAGAnythingCompiler:
         llm_registry: LLMProviderRegistry,
         settings: RAGAnythingSettings,
         compile_callable: CompileCallable,
-        insert_callable: InsertCallable | None = None,
     ) -> None:
         self._llm_registry = llm_registry
         self._settings = settings
         self._compile_callable = compile_callable
-        # Optional second-half callable for split_parse_insert mode.
-        # When None, `insert_content()` raises `ProviderUnavailable`
-        # — the workflow only invokes it in split mode anyway, but
-        # this keeps the failure mode honest for misconfigured
-        # deployments.
-        self._insert_callable = insert_callable
 
     @property
     def version(self) -> str:
@@ -167,16 +148,10 @@ class RAGAnythingCompiler:
             compile_callable = resolve_callable(settings.compiler_processor)
         else:
             compile_callable = _build_default_compile_callable()
-        # Insert callable for `split_parse_insert` mode. Always
-        # bind the default — adapter callers in `complete` mode
-        # never invoke `insert_content`, so the binding is harmless
-        # for legacy paths and keeps split mode wired automatically.
-        insert_callable = _build_default_insert_callable()
         return cls(
             llm_registry=llm_registry,
             settings=settings,
             compile_callable=compile_callable,
-            insert_callable=insert_callable,
         )
 
     def compile(
@@ -226,57 +201,6 @@ class RAGAnythingCompiler:
                 drafts=[],
                 metadata={"provider": PROVIDER_NAME},
             )
-
-    def insert_content(
-        self,
-        ctx: ProjectContext,
-        document_id: str,
-        *,
-        content_list: list,
-        doc_id: str,
-        source_filename: str | None = None,
-        progress_reporter: Any = None,
-        run_id: str | None = None,
-    ) -> ArtifactProcessingResult:
-        """Drive `RAGAnything.insert_content_list()` for a document
-        whose `parsed_source` artifact already exists.
-
-        Used by the workflow's `insert_content` activity in
-        `pipeline_mode=split_parse_insert`. Returns chunk + graph
-        drafts collected from the LightRAG storage_dir post-insert.
-        """
-        if self._insert_callable is None:
-            raise ProviderUnavailable(
-                "RAGAnythingCompiler.insert_content called but no "
-                "insert_callable was wired. Configure the compiler via "
-                "`from_default(...)` (which auto-binds the default), "
-                "or pass `insert_callable=` explicitly."
-            )
-        request = RAGAnythingCompileRequest(
-            ctx=ctx,
-            document_id=document_id,
-            settings=self._settings,
-            text_client=self._llm_registry.text(),
-            vision_client=self._llm_registry.try_vision(),
-            embedding_client=self._llm_registry.try_embedding(),
-            progress_reporter=progress_reporter,
-            run_id=run_id,
-        )
-        try:
-            return self._insert_callable(
-                request, content_list, doc_id, source_filename,
-            )
-        except ProviderUnavailable:
-            raise
-        except Exception as exc:
-            return ArtifactProcessingResult(
-                status=ResultStatus.FAILED,
-                error=str(exc),
-                message=type(exc).__name__,
-                drafts=[],
-                metadata={"provider": PROVIDER_NAME, "stage": "insert"},
-            )
-
 
 def _vendor_version() -> str:
     """Return the installed `raganything` package version, or empty
@@ -337,29 +261,5 @@ def _build_default_compile_callable() -> CompileCallable:
     def _delegate(request: RAGAnythingCompileRequest) -> ArtifactProcessingResult:
         from j1.providers.raganything._bridge import default_compile
         return default_compile(request)
-
-    return _delegate
-
-
-def _build_default_insert_callable() -> InsertCallable:
-    """Real default boundary for the split-mode insert step.
-
-    Delegates to `j1.providers.raganything._bridge.default_insert_content`,
-    which calls the vendor `RAGAnything.insert_content_list()` and
-    surfaces chunk drafts from LightRAG's storage_dir post-insert."""
-
-    def _delegate(
-        request: RAGAnythingCompileRequest,
-        content_list: list,
-        doc_id: str,
-        source_filename: str | None,
-    ) -> ArtifactProcessingResult:
-        from j1.providers.raganything._bridge import default_insert_content
-        return default_insert_content(
-            request,
-            content_list=content_list,
-            doc_id=doc_id,
-            source_filename=source_filename,
-        )
 
     return _delegate

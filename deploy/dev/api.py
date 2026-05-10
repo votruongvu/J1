@@ -60,7 +60,6 @@ def make_per_document_starter(
     client_provider,
     task_queue: str,
     planner_enabled: bool,
-    pipeline_mode: str = "complete",
     assessment_failure_policy: str = "fail_open",
 ):
     """Build the `JobStarter` closure used by `POST /documents/{id}/ingest`.
@@ -132,7 +131,6 @@ def make_per_document_starter(
                 correlation_id=body.correlation_id,
                 target_document_ids=(document_id,),
                 planner_enabled=planner_enabled,
-                pipeline_mode=pipeline_mode,
                 resume_from_run_id=getattr(body, "resume_of", None),
                 resume_completed_steps=tuple(
                     getattr(body, "resume_completed_steps", ()) or ()
@@ -162,7 +160,6 @@ def make_batch_starter(
     client_provider,
     task_queue: str,
     planner_enabled: bool,
-    pipeline_mode: str = "complete",
 ):
     """Build the `BatchStarter` closure used by `POST /ingestion-batches`.
 
@@ -199,7 +196,6 @@ def make_batch_starter(
                 indexer_kind=s.get("indexer_kind"),
                 actor=str(s.get("actor", "system")),
                 planner_enabled=planner_enabled,
-                pipeline_mode=pipeline_mode,
             )
             for s in child_specs
         )
@@ -293,15 +289,6 @@ def _build_app():
         not in {"false", "0", "no", "off"}
     )
 
-    # Propagate the RAGAnything pipeline mode (legacy `complete` or
-    # `split_parse_insert`) so the workflow knows whether to invoke
-    # the dedicated `insert_content` activity after planning. Reading
-    # via the loader keeps validation + env-name handling identical
-    # to what the worker uses when it builds the compiler.
-    from j1.providers.raganything.settings import load_raganything_settings
-    raganything_settings = load_raganything_settings()
-    pipeline_mode = raganything_settings.pipeline_mode
-
     # Read once at startup — passing through the workflow request
     # rather than reading inside the workflow (which would violate
     # Temporal's deterministic-replay contract).
@@ -312,7 +299,6 @@ def _build_app():
         client_provider=client_provider,
         task_queue=temporal_settings.task_queue,
         planner_enabled=planner_enabled,
-        pipeline_mode=pipeline_mode,
         assessment_failure_policy=assessment_failure_policy,
     )
     # Parent-workflow dispatcher for multi-upload batches. Replaces
@@ -324,7 +310,6 @@ def _build_app():
         client_provider=client_provider,
         task_queue=temporal_settings.task_queue,
         planner_enabled=planner_enabled,
-        pipeline_mode=pipeline_mode,
     )
 
     # Compose the env-declared providers so the API can default
