@@ -1,13 +1,24 @@
 /**
  * Upload page — drag-and-drop / file-picker for the new run flow.
+ *
+ * Single-file uploads dispatch via the existing
+ * `POST /ingestion-runs` endpoint and immediately route the user to
+ * the new run-detail page. Multi-file selections (up to 5) dispatch
+ * via `POST /ingestion-batches` and route to the new batch-detail
+ * view (rendered inline below the dropzone for now — no separate
+ * batch page yet).
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 import { Icon } from "@/components/icons";
+import { StatusBadge } from "@/components/badges";
 import { Banner } from "@/components/Banner";
 import { useClient } from "@/lib/hooks/useClient";
+import type { BatchDetail, BatchUploadResult } from "@/lib/api/client";
 import type { ProjectContext } from "@/types/ui";
+
+const MAX_BATCH_FILES = 5;
 
 interface UploadPageProps {
   ctx: ProjectContext;
@@ -27,25 +38,40 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [batch, setBatch] = useState<BatchUploadResult | null>(null);
+  const [batchDetail, setBatchDetail] = useState<BatchDetail | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const ready = !!ctx.tenant && !!ctx.project;
 
   const onPick = useCallback(() => {
-    if (!ready) return;
+    if (!ready || busy) return;
     inputRef.current?.click();
-  }, [ready]);
+  }, [ready, busy]);
 
-  const onFile = async (file: File) => {
+  const onFiles = async (files: File[]) => {
     if (!ready) {
       setError("Tenant and Project are required. Please set them in the context bar.");
       return;
     }
+    if (files.length === 0) return;
+    if (files.length > MAX_BATCH_FILES) {
+      setError(`Up to ${MAX_BATCH_FILES} files per batch. You selected ${files.length}.`);
+      return;
+    }
     setError(null);
+    setBatch(null);
+    setBatchDetail(null);
     setBusy(true);
     try {
-      const { runId } = await client.upload(file, ctx);
-      onUploaded(runId);
+      if (files.length === 1) {
+        const single = files[0]!;
+        const { runId } = await client.upload(single, ctx);
+        onUploaded(runId);
+        return;
+      }
+      const result = await client.uploadBatch(files, ctx);
+      setBatch(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
@@ -57,14 +83,44 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
     e.preventDefault();
     setDrag(false);
     if (!ready) return;
-    const f = e.dataTransfer.files?.[0];
-    if (f) void onFile(f);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length > 0) void onFiles(files);
   };
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) void onFile(f);
+    const files = Array.from(e.target.files ?? []);
+    if (files.length > 0) void onFiles(files);
+    // Reset so picking the same files again still fires onChange.
+    e.target.value = "";
   };
+
+  // Poll the batch detail every 3s while any child run is still
+  // active. Once every child is terminal, stop polling.
+  useEffect(() => {
+    if (!batch) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const d = await client.getBatch(batch.batchRunId);
+        if (cancelled) return;
+        setBatchDetail(d);
+        const allTerminal = d.runs.every((r) =>
+          ["completed", "completed_with_warnings", "succeeded", "succeeded_with_warnings", "failed", "cancelled", "deleted"].includes(
+            r.status.toLowerCase(),
+          ),
+        );
+        if (allTerminal) return;
+        setTimeout(() => void tick(), 3000);
+      } catch {
+        // Surface transient errors as a dim banner but keep polling.
+        if (!cancelled) setTimeout(() => void tick(), 5000);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [batch, client]);
 
   return (
     <div>
@@ -92,7 +148,9 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
           )}
           <h1>New ingestion run</h1>
           <p>
-            Upload a document to generate an execution plan, then review and confirm before run.
+            Upload one document — or select up to {MAX_BATCH_FILES} for a
+            sequential batch. J1 plans, runs, and surfaces results per
+            file.
           </p>
         </div>
       </div>
@@ -131,14 +189,18 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
           <input
             ref={inputRef}
             type="file"
+            multiple
             accept=".pdf,.docx,.html,.txt,.md"
             style={{ display: "none" }}
             onChange={handleChange}
           />
           <div className="dropzone__icon">{busy ? <Icon.Loader /> : <Icon.Upload />}</div>
-          <p className="dropzone__title">{busy ? "Uploading…" : "Drop a document here"}</p>
+          <p className="dropzone__title">
+            {busy ? "Uploading…" : "Drop one or more documents here"}
+          </p>
           <p className="dropzone__hint">
-            or click to browse · PDF, DOCX, HTML, TXT, MD up to 200 MB
+            or click to browse · PDF, DOCX, HTML, TXT, MD · up to{" "}
+            {MAX_BATCH_FILES} files, 200 MB each
           </p>
           <div className="dropzone__formats">
             <span className="badge badge--outline mono">.pdf</span>
@@ -160,6 +222,10 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
             <li>
               Final result includes warnings, failures, and human-review prompts when required.
             </li>
+            <li>
+              Multi-file selections run sequentially (one at a time) so they
+              don't fight for shared workers.
+            </li>
           </ul>
           <h3 style={{ marginTop: 24 }}>Stages</h3>
           <div className="stage-preview">
@@ -176,6 +242,73 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
           </div>
         </div>
       </div>
+
+      {batch && (
+        <div style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 4 }}>
+            Batch <span className="mono">{batch.batchRunId.slice(0, 8)}</span>{" "}
+            <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
+              · {batch.fileCount} file{batch.fileCount === 1 ? "" : "s"}
+              {batchDetail && (
+                <>
+                  {" · "}
+                  {batchDetail.completedCount} done · {batchDetail.failedCount} failed
+                </>
+              )}
+            </span>
+          </h2>
+          <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 12 }}>
+            Each file becomes its own ingestion run. Click a row to open it.
+          </p>
+          <div className="card" style={{ padding: 0 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 12 }}>
+                  <th style={{ padding: "8px 12px" }}>File</th>
+                  <th style={{ padding: "8px 12px" }}>Run</th>
+                  <th style={{ padding: "8px 12px" }}>Status</th>
+                  <th style={{ padding: "8px 12px" }}>Stage</th>
+                  <th style={{ padding: "8px 12px", textAlign: "right" }}>Progress</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(batchDetail?.runs ?? batch.runIds.map((id) => ({
+                  runId: id,
+                  documentId: null,
+                  filename: null,
+                  status: "created",
+                  currentStage: null,
+                  currentStep: null,
+                  progressPercent: 0,
+                }))).map((r) => (
+                  <tr
+                    key={r.runId}
+                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}
+                    onClick={() => onUploaded(r.runId)}
+                  >
+                    <td style={{ padding: "10px 12px" }}>
+                      {r.filename ?? <span className="mono" style={{ color: "var(--text-muted)" }}>—</span>}
+                    </td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <span className="mono" style={{ fontSize: 12 }}>{r.runId.slice(0, 8)}</span>
+                    </td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <StatusBadge status={r.status} />
+                    </td>
+                    <td style={{ padding: "10px 12px", color: "var(--text-muted)", fontSize: 13 }}>
+                      {r.currentStage ?? "—"}
+                      {r.currentStep && <span> · {r.currentStep}</span>}
+                    </td>
+                    <td style={{ padding: "10px 12px", textAlign: "right", fontSize: 13 }}>
+                      {r.progressPercent}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

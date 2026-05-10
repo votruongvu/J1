@@ -18,6 +18,12 @@ interface RunHeaderProps {
   onOpenDrawer: () => void;
   onRefresh: () => void;
   pushToast: (toast: Omit<Toast, "id">) => void;
+  /** Forwarded to RunControls so the page can navigate after
+   * Re-process (→ new run) / Delete (→ list). */
+  onAfterAction?: (
+    action: "pause" | "resume" | "cancel" | "reindex" | "delete",
+    newRunId: string | null,
+  ) => void;
 }
 
 function formatDuration(seconds: number | null): string {
@@ -28,7 +34,7 @@ function formatDuration(seconds: number | null): string {
 }
 
 export function RunHeader({
-  run, plan, ctx, onBack, onOpenDrawer, onRefresh, pushToast,
+  run, plan, ctx, onBack, onOpenDrawer, onRefresh, pushToast, onAfterAction,
 }: RunHeaderProps) {
   if (!run) return null;
   const summary = plan?.summary;
@@ -67,7 +73,12 @@ export function RunHeader({
           <div className="run-hero__id">{run.runId}</div>
         </div>
         <div className="run-hero__actions">
-          <RunControls run={run} onRefresh={onRefresh} pushToast={pushToast} />
+          <RunControls
+            run={run}
+            onRefresh={onRefresh}
+            pushToast={pushToast}
+            onAfterAction={onAfterAction}
+          />
           <button className="btn btn--sm" onClick={onOpenDrawer}>
             <Icon.Code className="icon-sm" /> Technical details
           </button>

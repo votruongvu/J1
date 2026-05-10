@@ -43,6 +43,10 @@ export const StatusDisplay: Readonly<Record<RunStatus, StatusMeta>> = {
   AWAITING_HUMAN_REVIEW: { label: "Human review", tone: "warning", pulse: true },
   REQUIRES_HUMAN_REVIEW: { label: "Human review", tone: "warning", pulse: true },
   CANCELLED: { label: "Cancelled", tone: "neutral", pulse: false },
+  // Soft-deleted runs are hidden from most listings; this entry
+  // exists so a direct deep-link to a deleted run still renders a
+  // sensible badge instead of an "Unknown" fallback.
+  deleted: { label: "Deleted", tone: "neutral", pulse: false },
 };
 
 /** Safe lookup that falls back to a neutral tone for unknown strings. */

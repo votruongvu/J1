@@ -269,6 +269,37 @@ export interface IngestionClient {
    * to 30s for the next background poll.
    */
   refreshLLMHealth(): Promise<LLMHealthStatus>;
+
+  // ---- Operational actions ---------------------------------------
+
+  /**
+   * DELETE an ingestion run (soft tombstone). Backend marks the
+   * run + its artifacts deleted; subsequent reads exclude them.
+   * Idempotent — `wasAlreadyDeleted=true` on the second call.
+   * Throws ApiError(409) when the run is still active.
+   */
+  deleteRun(runId: string): Promise<DeleteRunResult>;
+
+  /**
+   * POST full re-index — start a NEW run for the same document_id
+   * as the referenced run. Returns the new `reindexRunId`.
+   * Throws ApiError(409) when the original run is still active.
+   */
+  fullReindexRun(runId: string): Promise<FullReindexResult>;
+
+  /**
+   * POST a multi-upload batch. Backend registers each file as a
+   * child ingestion run, returns the batch_run_id + child run_ids.
+   * Max files is enforced server-side (default 5 via
+   * `J1_INGESTION_BATCH_MAX_FILES`).
+   */
+  uploadBatch(
+    files: File[],
+    ctx: ProjectContext,
+  ): Promise<BatchUploadResult>;
+
+  /** GET batch detail — aggregate status + per-file run rows. */
+  getBatch(batchRunId: string): Promise<BatchDetail>;
 }
 
 /** Per-role probe result from `/healthz/llm`. */
@@ -285,6 +316,56 @@ export interface LLMHealthStatus {
   healthy: boolean;
   checkedAt: string | null;
   results: LLMHealthRole[];
+}
+
+/** Result envelope from `DELETE /ingestion-runs/{id}`. */
+export interface DeleteRunResult {
+  runId: string;
+  status: string;
+  tombstonedArtifactCount: number;
+  wasAlreadyDeleted: boolean;
+  deletedAt: string;
+}
+
+/** Result envelope from `POST /ingestion-runs/{id}/full-reindex`. */
+export interface FullReindexResult {
+  originalRunId: string;
+  reindexRunId: string;
+  workflowId: string;
+  documentId: string;
+  status: string;
+}
+
+/** Result envelope from `POST /ingestion-batches`. */
+export interface BatchUploadResult {
+  batchRunId: string;
+  fileCount: number;
+  runIds: string[];
+  status: string;
+  startedAt: string;
+}
+
+/** One row in `BatchDetail.runs`. */
+export interface BatchChildRun {
+  runId: string;
+  documentId: string | null;
+  filename: string | null;
+  status: string;
+  currentStage: string | null;
+  currentStep: string | null;
+  progressPercent: number;
+}
+
+/** Aggregate view returned by `GET /ingestion-batches/{id}`. */
+export interface BatchDetail {
+  batchRunId: string;
+  status: string;
+  startedAt: string;
+  fileCount: number;
+  completedCount: number;
+  failedCount: number;
+  currentRunId: string | null;
+  runs: BatchChildRun[];
 }
 
 /** Sentinel error type the UI can surface as 4xx / 5xx differently. */

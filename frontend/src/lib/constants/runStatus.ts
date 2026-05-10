@@ -23,6 +23,10 @@ export const RUN_STATUS = {
   AWAITING_HUMAN_REVIEW: "AWAITING_HUMAN_REVIEW",
   REQUIRES_HUMAN_REVIEW: "REQUIRES_HUMAN_REVIEW",
   CANCELLED: "CANCELLED",
+  // Soft-delete tombstone (lowercase to match backend). Hidden from
+  // most listing surfaces; visible only to admin / "tombstone
+  // explorer" views (not yet built).
+  DELETED: "deleted",
 } as const;
 
 export type RunStatus = (typeof RUN_STATUS)[keyof typeof RUN_STATUS];
@@ -78,6 +82,19 @@ export const CANCELLABLE_STATUSES: ReadonlySet<RunStatus> = new Set([
   RUN_STATUS.PAUSED,
   RUN_STATUS.PLAN_READY,
   RUN_STATUS.WAITING_FOR_CONFIRMATION,
+]);
+
+// Active = workflow is still doing work or could resume. The backend
+// refuses Delete + Full-reindex with HTTP 409 for these. Mirrors
+// `active_states` in `IngestionResultReviewService.delete_run`.
+export const ACTIVE_STATUSES: ReadonlySet<RunStatus> = new Set([
+  RUN_STATUS.RUNNING,
+  RUN_STATUS.ASSESSING,
+  RUN_STATUS.PAUSED,
+  RUN_STATUS.CANCELLING,
+  RUN_STATUS.PLAN_READY,
+  RUN_STATUS.WAITING_FOR_CONFIRMATION,
+  RUN_STATUS.CREATED,
 ]);
 
 // Ordered list for filter dropdowns. Stable order — render this

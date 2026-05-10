@@ -49,6 +49,10 @@ import type {
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import {
   ApiError,
+  type BatchDetail,
+  type BatchUploadResult,
+  type DeleteRunResult,
+  type FullReindexResult,
   type IngestionClient,
   type LLMHealthStatus,
   type RunControlResult,
@@ -663,6 +667,92 @@ export class ApiClient implements IngestionClient {
             error: r.error == null ? null : String(r.error),
           }))
         : [],
+    };
+  }
+
+  // ---- Operational actions --------------------------------------
+
+  async deleteRun(runId: string): Promise<DeleteRunResult> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}`),
+      { method: "DELETE", headers: this.headers() },
+    );
+    const data = await this.json<Record<string, unknown>>(resp);
+    return {
+      runId: String(data.runId ?? runId),
+      status: String(data.status ?? "deleted"),
+      tombstonedArtifactCount: Number(data.tombstonedArtifactCount ?? 0),
+      wasAlreadyDeleted: Boolean(data.wasAlreadyDeleted),
+      deletedAt: String(data.deletedAt ?? ""),
+    };
+  }
+
+  async fullReindexRun(runId: string): Promise<FullReindexResult> {
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/full-reindex`),
+      { method: "POST", headers: this.headers() },
+    );
+    const data = await this.json<Record<string, unknown>>(resp);
+    return {
+      originalRunId: String(data.originalRunId ?? runId),
+      reindexRunId: String(data.reindexRunId ?? ""),
+      workflowId: String(data.workflowId ?? ""),
+      documentId: String(data.documentId ?? ""),
+      status: String(data.status ?? "created"),
+    };
+  }
+
+  async uploadBatch(
+    files: File[],
+    _ctx: ProjectContext,
+  ): Promise<BatchUploadResult> {
+    const form = new FormData();
+    for (const f of files) {
+      form.append("files", f, f.name);
+    }
+    const resp = await fetch(this.url("/ingestion-batches"), {
+      method: "POST",
+      // Don't add Content-Type — FormData sets its own
+      // multipart boundary header automatically.
+      headers: this.headers(),
+      body: form,
+    });
+    const data = await this.json<Record<string, unknown>>(resp);
+    return {
+      batchRunId: String(data.batchRunId ?? ""),
+      fileCount: Number(data.fileCount ?? files.length),
+      runIds: Array.isArray(data.runIds) ? data.runIds.map(String) : [],
+      status: String(data.status ?? "running"),
+      startedAt: String(data.startedAt ?? ""),
+    };
+  }
+
+  async getBatch(batchRunId: string): Promise<BatchDetail> {
+    const resp = await fetch(
+      this.url(`/ingestion-batches/${encodeURIComponent(batchRunId)}`),
+      { headers: this.headers() },
+    );
+    const data = await this.json<Record<string, unknown>>(resp);
+    const runs = Array.isArray(data.runs)
+      ? data.runs.map((r: Record<string, unknown>) => ({
+          runId: String(r.runId ?? ""),
+          documentId: r.documentId == null ? null : String(r.documentId),
+          filename: r.filename == null ? null : String(r.filename),
+          status: String(r.status ?? ""),
+          currentStage: r.currentStage == null ? null : String(r.currentStage),
+          currentStep: r.currentStep == null ? null : String(r.currentStep),
+          progressPercent: Number(r.progressPercent ?? 0),
+        }))
+      : [];
+    return {
+      batchRunId: String(data.batchRunId ?? batchRunId),
+      status: String(data.status ?? "running"),
+      startedAt: String(data.startedAt ?? ""),
+      fileCount: Number(data.fileCount ?? 0),
+      completedCount: Number(data.completedCount ?? 0),
+      failedCount: Number(data.failedCount ?? 0),
+      currentRunId: data.currentRunId == null ? null : String(data.currentRunId),
+      runs,
     };
   }
 }
