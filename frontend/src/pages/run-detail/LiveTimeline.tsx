@@ -15,6 +15,7 @@ import { EVENT_TYPES } from "@/lib/constants/events";
 import { eventTypeLabel } from "@/lib/display";
 import {
   internalStepToUserFacing,
+  processingStepById,
   userFacingStepLabel,
 } from "@/lib/processing-steps";
 import type { ProgressEvent } from "@/types/ingestion";
@@ -35,13 +36,17 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
     }
   }, [events.length]);
 
-  // Hide the legacy `plan.generated` ("Initial Plan") row from the
-  // user-facing timeline. The user-facing flow starts with parsing —
-  // the operator sees the Execution Plan card on the right after
-  // post-compile planning fires its `plan.revised` event. The raw
-  // event still ships through SSE for diagnostic consumers.
+  // Hide legacy IngestPlanner-era events from the user-facing
+  // timeline. The compile-first workflow no longer emits these:
+  // pre-compile work surfaces as `assess_compile_strategy` step
+  // events, post-compile as `assess_enrichment`. The raw plan.*
+  // events still ship through SSE for diagnostic consumers, but
+  // they only appear on legacy runs replayed from history.
   const visibleEvents = events.filter(
-    (e) => e.event !== EVENT_TYPES.PLAN_GENERATED,
+    (e) =>
+      e.event !== EVENT_TYPES.PLAN_GENERATED
+      && e.event !== EVENT_TYPES.PLAN_REVISED
+      && e.event !== EVENT_TYPES.PLAN_CONFIRMED,
   );
 
   return (
@@ -139,6 +144,14 @@ function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
     if (t === EVENT_TYPES.STEP_PROGRESS) return "running";
     return null;
   })();
+  // Operator-readable description of what this step does. Pulled
+  // from the canonical PROCESSING_STEPS table so the timeline row
+  // explains "Assess Compile Strategy" / "Assess Enrichment" in
+  // plain language without needing per-event backend copy.
+  const stepDescription =
+    stepId && t === EVENT_TYPES.STEP_STARTED
+      ? processingStepById(stepId).description
+      : null;
 
   return (
     <div className={`tl-item tl-item--${kind}`} onClick={onClick} style={{ cursor: "pointer" }}>
@@ -188,6 +201,9 @@ function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
         <span className="tl-item__time">{formatTimeShort(event.ts)}</span>
       </div>
       <div className="tl-item__msg">{event.data?.message}</div>
+      {stepDescription && !event.data?.message && (
+        <div className="tl-item__step-desc">{stepDescription}</div>
+      )}
 
       {isProgress && (
         <div className="tl-progress-card">

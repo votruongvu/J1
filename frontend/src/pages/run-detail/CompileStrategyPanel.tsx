@@ -13,8 +13,10 @@
  * data available" placeholder instead of fake values.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
+import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
+import type { ProgressEvent } from "@/types/ingestion";
 import {
   appliedCapabilities,
   bannersForReport,
@@ -26,9 +28,14 @@ import {
 
 interface CompileStrategyPanelProps {
   runId: string;
+  /** SSE event from the parent. See `AssessmentPlanPanel` for the
+   * full rationale; same pattern. */
+  latestEvent?: ProgressEvent | null;
 }
 
-export function CompileStrategyPanel({ runId }: CompileStrategyPanelProps) {
+export function CompileStrategyPanel({
+  runId, latestEvent,
+}: CompileStrategyPanelProps) {
   const client = useClient();
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -37,7 +44,7 @@ export function CompileStrategyPanel({ runId }: CompileStrategyPanelProps) {
     | { kind: "error"; message: string }
   >({ kind: "loading" });
 
-  useEffect(() => {
+  const loadReport = useCallback(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -46,7 +53,9 @@ export function CompileStrategyPanel({ runId }: CompileStrategyPanelProps) {
         });
         const artifact = page.items[0];
         if (!artifact) {
-          if (!cancelled) setState({ kind: "missing" });
+          if (!cancelled) {
+            setState((prev) => prev.kind === "ready" ? prev : { kind: "missing" });
+          }
           return;
         }
         const content = await client.getRunArtifactContent(
@@ -58,17 +67,38 @@ export function CompileStrategyPanel({ runId }: CompileStrategyPanelProps) {
         if (!cancelled) setState({ kind: "ready", report });
       } catch (e) {
         if (!cancelled) {
-          setState({
-            kind: "error",
-            message: e instanceof Error ? e.message : "load failed",
-          });
+          setState((prev) =>
+            prev.kind === "ready"
+              ? prev
+              : {
+                  kind: "error",
+                  message: e instanceof Error ? e.message : "load failed",
+                },
+          );
         }
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, client]);
+    return () => { cancelled = true; };
+  }, [client, runId]);
+
+  useEffect(() => {
+    setState({ kind: "loading" });
+    return loadReport();
+  }, [loadReport]);
+
+  // Refetch on compile-completion-adjacent SSE events so the panel
+  // picks up the report when the user loaded mid-flight.
+  useEffect(() => {
+    if (!latestEvent) return;
+    const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_COMPLETED,
+      EVENT_TYPES.STEP_FAILED,
+      EVENT_TYPES.STEP_SKIPPED,
+    ]);
+    if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
+      loadReport();
+    }
+  }, [latestEvent, loadReport]);
 
   if (state.kind === "loading") {
     return (

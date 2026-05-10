@@ -3582,3 +3582,13 @@ pre.json .b {
   background: var(--warning-bg, rgba(220, 160, 40, 0.15));
   color: var(--warning-fg, #d4a017);
 }
+
+/* Step description shown under a step.started timeline row when
+ * the backend didn't supply a per-event message. Sourced from the
+ * canonical PROCESSING_STEPS table. */
+.tl-item__step-desc {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.4;
+}

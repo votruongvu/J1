@@ -281,15 +281,27 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           the page so operators see WHICH compile strategy J1
           picked before scanning compile output / timeline. Reads
           the same `compile_strategy_report` artifact that the
-          CompileStrategyPanel below renders. */}
+          CompileStrategyPanel below renders. `latestEvent` lets
+          the panel re-fetch its artifact on step.completed / run
+          terminal events so a page loaded mid-flight eventually
+          shows the data. */}
       <div style={{ marginBottom: 20 }}>
-        <AssessmentPlanPanel runId={runId} />
+        <AssessmentPlanPanel
+          runId={runId}
+          latestEvent={events.length > 0 ? events[events.length - 1] : null}
+        />
       </div>
 
       <div className="run-body">
         <div className="col">
-          <CompileStrategyPanel runId={runId} />
-          <EnrichPlanPanel runId={runId} />
+          <CompileStrategyPanel
+            runId={runId}
+            latestEvent={events.length > 0 ? events[events.length - 1] : null}
+          />
+          <EnrichPlanPanel
+            runId={runId}
+            latestEvent={events.length > 0 ? events[events.length - 1] : null}
+          />
         </div>
         <div className="col">
           <LiveTimeline

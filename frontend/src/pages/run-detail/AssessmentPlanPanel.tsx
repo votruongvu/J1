@@ -26,8 +26,10 @@
  *   * Unhandled capabilities the deployment couldn't honour.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
+import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
+import type { ProgressEvent } from "@/types/ingestion";
 import {
   COMPILE_STRATEGY_REPORT_KIND,
   capabilityLabel,
@@ -43,9 +45,20 @@ import {
 
 interface AssessmentPlanPanelProps {
   runId: string;
+  /**
+   * Latest SSE event from the parent page. When relevant events
+   * arrive (step lifecycle, run terminal) the panel re-fetches its
+   * artifact so a panel that mounted BEFORE compile finished
+   * eventually picks up the report once it lands. Without this the
+   * panel sticks at "missing" forever for runs the user navigated
+   * into mid-flight.
+   */
+  latestEvent?: ProgressEvent | null;
 }
 
-export function AssessmentPlanPanel({ runId }: AssessmentPlanPanelProps) {
+export function AssessmentPlanPanel({
+  runId, latestEvent,
+}: AssessmentPlanPanelProps) {
   const client = useClient();
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -54,7 +67,7 @@ export function AssessmentPlanPanel({ runId }: AssessmentPlanPanelProps) {
     | { kind: "error"; message: string }
   >({ kind: "loading" });
 
-  useEffect(() => {
+  const loadReport = useCallback(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -63,7 +76,12 @@ export function AssessmentPlanPanel({ runId }: AssessmentPlanPanelProps) {
         });
         const artifact = page.items[0];
         if (!artifact) {
-          if (!cancelled) setState({ kind: "missing" });
+          // Don't downgrade an already-loaded report on a transient
+          // refetch miss — only flip to "missing" if we never had
+          // data in the first place.
+          if (!cancelled) {
+            setState((prev) => prev.kind === "ready" ? prev : { kind: "missing" });
+          }
           return;
         }
         const content = await client.getRunArtifactContent(
@@ -74,17 +92,40 @@ export function AssessmentPlanPanel({ runId }: AssessmentPlanPanelProps) {
         if (!cancelled) setState({ kind: "ready", report });
       } catch (e) {
         if (!cancelled) {
-          setState({
-            kind: "error",
-            message: e instanceof Error ? e.message : "load failed",
-          });
+          setState((prev) =>
+            prev.kind === "ready"
+              ? prev
+              : {
+                  kind: "error",
+                  message: e instanceof Error ? e.message : "load failed",
+                },
+          );
         }
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, client]);
+    return () => { cancelled = true; };
+  }, [client, runId]);
+
+  // Initial load on mount / runId change.
+  useEffect(() => {
+    setState({ kind: "loading" });
+    return loadReport();
+  }, [loadReport]);
+
+  // SSE-driven refresh: re-fetch when compile-completion-adjacent
+  // events arrive. Cheap (one HTTP call returning a few KB) and lets
+  // a panel mounted mid-flight pick up the report once it lands.
+  useEffect(() => {
+    if (!latestEvent) return;
+    const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_COMPLETED,
+      EVENT_TYPES.STEP_FAILED,
+      EVENT_TYPES.STEP_SKIPPED,
+    ]);
+    if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
+      loadReport();
+    }
+  }, [latestEvent, loadReport]);
 
   if (state.kind === "loading") {
     return (

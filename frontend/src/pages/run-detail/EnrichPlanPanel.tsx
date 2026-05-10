@@ -8,8 +8,10 @@
  * + one card.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
+import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
+import type { ProgressEvent } from "@/types/ingestion";
 import type {
   PostCompileEnrichPlanPayload,
   RunEnrichPlanResponse,
@@ -24,9 +26,16 @@ import {
 
 interface EnrichPlanPanelProps {
   runId: string;
+  /** SSE event from the parent. Same refetch pattern as the
+   * AssessmentPlanPanel — needed so a panel mounted before
+   * post-compile assessment runs picks up the artifact when it
+   * lands instead of sticking on "unavailable" forever. */
+  latestEvent?: ProgressEvent | null;
 }
 
-export function EnrichPlanPanel({ runId }: EnrichPlanPanelProps) {
+export function EnrichPlanPanel({
+  runId, latestEvent,
+}: EnrichPlanPanelProps) {
   const client = useClient();
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -35,7 +44,7 @@ export function EnrichPlanPanel({ runId }: EnrichPlanPanelProps) {
     | { kind: "error"; message: string }
   >({ kind: "loading" });
 
-  useEffect(() => {
+  const loadPlan = useCallback(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -44,24 +53,47 @@ export function EnrichPlanPanel({ runId }: EnrichPlanPanelProps) {
         if (isEnrichPlanAvailable(resp)) {
           setState({ kind: "ready", resp, plan: resp.plan });
         } else {
-          setState({
-            kind: "unavailable",
-            reason: resp.unavailableReason ?? null,
-          });
+          setState((prev) =>
+            prev.kind === "ready"
+              ? prev
+              : {
+                  kind: "unavailable",
+                  reason: resp.unavailableReason ?? null,
+                },
+          );
         }
       } catch (e) {
         if (!cancelled) {
-          setState({
-            kind: "error",
-            message: e instanceof Error ? e.message : "load failed",
-          });
+          setState((prev) =>
+            prev.kind === "ready"
+              ? prev
+              : {
+                  kind: "error",
+                  message: e instanceof Error ? e.message : "load failed",
+                },
+          );
         }
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, client]);
+    return () => { cancelled = true; };
+  }, [client, runId]);
+
+  useEffect(() => {
+    setState({ kind: "loading" });
+    return loadPlan();
+  }, [loadPlan]);
+
+  useEffect(() => {
+    if (!latestEvent) return;
+    const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_COMPLETED,
+      EVENT_TYPES.STEP_FAILED,
+      EVENT_TYPES.STEP_SKIPPED,
+    ]);
+    if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
+      loadPlan();
+    }
+  }, [latestEvent, loadPlan]);
 
   if (state.kind === "loading") {
     return (
