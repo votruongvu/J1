@@ -311,16 +311,27 @@ def test_run_completes_full_pipeline(monkeypatch):
         if name.endswith("list_pending_documents"):
             return ["doc-1"]
         if name.endswith("compile"):
+            # `kinds` is required by `_validate_completion` to enforce
+            # per-stage required artifacts. A compile that produces a
+            # `chunk` kind here keeps the synthetic
+            # generate_knowledge_chunks step from tripping the
+            # "no chunk artifact" rule.
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["art-c1"]
+                status="succeeded", artifact_ids=["art-c1"],
+                kinds=("chunk",),
             )
         if name.endswith("enrich"):
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["art-e1"]
+                status="succeeded", artifact_ids=["art-e1"],
+                kinds=("enriched.tables",),
             )
         if name.endswith("build_graph"):
+            # Must include `graph_json` — `_validate_completion`
+            # rejects a graph step that completed without producing
+            # one (the canonical graph output is missing).
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["art-g1"]
+                status="succeeded", artifact_ids=["art-g1"],
+                kinds=("graph_json",),
             )
         if name.endswith("index"):
             return ProcessingActivityResult(status="succeeded")
@@ -1259,3 +1270,116 @@ def test_completion_validation_passes_when_artifacts_present(monkeypatch):
     result = asyncio.run(wf.run(request))
     assert result.state == WorkflowState.COMPLETED.value
     assert "art-real" in result.artifact_ids
+
+
+def test_completion_validation_fails_when_graph_step_completed_without_artifact(monkeypatch):
+    """Per-stage required-output rule: a `graph` step recorded as
+    COMPLETED without a `graph_json` artifact is a contract
+    violation, not a SUCCEEDED state. This is the regression test
+    for the audit-listed bug class where the workflow could mark a
+    graph-enabled run as SUCCEEDED while the canonical graph output
+    was missing — operators saw 'completed' but the Knowledge Graph
+    tab was empty."""
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-c1"],
+                kinds=("chunk",),
+            )
+        if name.endswith("build_graph"):
+            # SUCCEEDED but produces NO graph_json artifact —
+            # the bug class this rule catches.
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-g1"],
+                kinds=("graph_metadata",),  # not the canonical kind
+            )
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        if name.endswith("persist_error_report"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["err-1"],
+                kinds=("error_report",),
+            )
+        return None  # other reporter activities
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        graph_builder_kind="g",
+    )
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    msg = str(excinfo.value).lower()
+    assert "graph" in msg
+    assert "graph_json" in msg
+
+
+def test_failed_run_persists_error_report_artifact(monkeypatch):
+    """Failure path must persist an `error_report` artifact via the
+    `j1.processing.persist_error_report` activity BEFORE finalize +
+    terminal-event emission, so the FE artifact-listing surface
+    carries the failure detail under the failed run alongside any
+    partial artifacts produced by earlier stages."""
+    seen_persist_inputs: list = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            # Compile succeeds; downstream graph fails.
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-c1"],
+                kinds=("chunk",),
+            )
+        if name.endswith("build_graph"):
+            return ArtifactActivityResult(
+                status="failed", error="graph adapter unavailable",
+            )
+        if name.endswith("persist_error_report"):
+            seen_persist_inputs.append(payload)
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["err-1"],
+                kinds=("error_report",),
+            )
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        return None
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        graph_builder_kind="g",
+        # `correlation_id` is what the workflow uses as the run_id
+        # for the error_report artifact. The helper early-returns
+        # when it's missing — set it so the activity actually fires.
+        correlation_id="run-failed-1",
+    )
+    with pytest.raises(ApplicationError):
+        asyncio.run(wf.run(request))
+
+    assert len(seen_persist_inputs) == 1, (
+        "persist_error_report must be invoked exactly once on FAILED_FINAL"
+    )
+    payload = seen_persist_inputs[0]
+    assert payload.failure_message
+    assert "graph" in payload.failure_message.lower()
+    assert payload.run_id == "run-failed-1"
+    # The step_results snapshot must include the failed graph step.
+    step_names = [r.get("step") for r in payload.step_results]
+    assert "graph" in step_names

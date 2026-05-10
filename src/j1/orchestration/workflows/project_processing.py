@@ -16,6 +16,7 @@ with workflow.unsafe.imports_passed_through():
         GraphActivityInput,
         IndexActivityInput,
         InsertContentActivityInput,
+        PersistErrorReportInput,
         ProcessingActivityResult,
         ProjectScope,
         SetDocumentStatusInput,
@@ -566,6 +567,13 @@ class ProjectProcessingWorkflow:
         self._documents_total: int = 0
         self._documents_completed: int = 0
         self._produced_artifact_ids: list[str] = []
+        # Mirror of `_produced_artifact_ids` carrying the artifact
+        # KIND for each id in the same order. Populated in lockstep
+        # with every `extend` call. Used by `_validate_completion` to
+        # enforce per-stage required outputs (graph step that
+        # "completed" without producing a graph_json is a contract
+        # violation, not a SUCCEEDED state).
+        self._produced_artifact_kinds: list[str] = []
         self._error: str | None = None
         # Per-stage records aggregated into the workflow's final
         # result so operators / status endpoints / audit logs can
@@ -751,6 +759,17 @@ class ProjectProcessingWorkflow:
                 error_type=ERROR_TYPE_REQUIRED_STEP_FAILED,
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
+            # Persist the failure-path `error_report` artifact so the
+            # FE artifact-listing surface carries the failure detail
+            # under the run, alongside whatever partial artifacts the
+            # earlier stages produced. Best-effort — any persistence
+            # error is logged inside the activity and we proceed
+            # regardless.
+            await self._persist_error_report(
+                request,
+                failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                failure_message=self._error,
+            )
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -1047,6 +1066,44 @@ class ProjectProcessingWorkflow:
                     "but no index step ran; the run would be reported "
                     "SUCCEEDED while remaining unsearchable"
                 )
+
+        # Per-stage required-output rules. These catch the "step
+        # reported COMPLETED but produced no canonical artifact" case
+        # — a regression that the fail-fast handler can't see because
+        # the activity returned status="succeeded" with an empty
+        # `artifact_ids` list. We compare against
+        # `_produced_artifact_kinds` (a strict mirror of
+        # `_produced_artifact_ids` populated in lockstep with each
+        # `extend()` call) so the rules don't need a registry query.
+        kinds = set(self._produced_artifact_kinds)
+        for r in self._step_results:
+            if r.status != StepStatus.COMPLETED:
+                continue
+            if r.step == "graph" and "graph_json" not in kinds:
+                # graph step said it succeeded but no graph_json
+                # artifact landed — the canonical graph output is
+                # missing. Surface so the run fails closed instead of
+                # being reported as a working graph build.
+                errors.append(
+                    "graph step recorded as completed but no "
+                    "`graph_json` artifact was produced"
+                )
+            elif r.step == "generate_knowledge_chunks" and "chunk" not in kinds:
+                # In split_parse_insert mode, the chunks step is the
+                # real boundary; in legacy `complete` mode chunks are
+                # produced by compile and labelled as a synthetic
+                # generate_knowledge_chunks step (skip the rule via
+                # metadata.synthetic). The check honours that escape
+                # hatch so we don't false-flag legacy runs.
+                synthetic = bool(
+                    isinstance(r.metadata, dict)
+                    and r.metadata.get("synthetic")
+                )
+                if not synthetic:
+                    errors.append(
+                        "generate_knowledge_chunks step recorded as "
+                        "completed but no `chunk` artifact was produced"
+                    )
         return errors
 
     def _step_summary_payload(self) -> tuple[StepSummaryEntry, ...]:
@@ -1093,6 +1150,87 @@ class ProjectProcessingWorkflow:
                     failure_message=failure_message,
                     actor=request.actor,
                     step_summary=self._step_summary_payload(),
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
+            pass
+
+    async def _persist_error_report(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        failure_code: str,
+        failure_message: str,
+    ) -> None:
+        """Schedule `ProcessingActivities.persist_error_report` so the
+        FE artifact-listing surface picks up an `error_report` artifact
+        under the failed run.
+
+        Best-effort like the other emit helpers — any persistence
+        error (activity timeout, registry write failure) is logged
+        inside the activity and we proceed regardless. Skipped when
+        no `correlation_id` is set (the resolver has nothing to
+        attach the artifact to)."""
+        if not request.correlation_id:
+            return
+        # Snapshot the current step_results into a Temporal-data-
+        # converter-friendly list of dicts. The workflow's
+        # `_step_results` is a list of frozen dataclasses; convert
+        # at the boundary.
+        step_results_payload: list[dict] = []
+        for r in self._step_results:
+            try:
+                entry = {
+                    "step": r.step,
+                    "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+                    "required": bool(r.required),
+                    "source": r.source.value if hasattr(r.source, "value") else str(r.source),
+                    "reason": r.reason,
+                    "artifact_count": int(r.artifact_count or 0),
+                }
+                if r.error is not None:
+                    entry["error_type"] = r.error.type
+                    entry["error_message"] = r.error.message
+                step_results_payload.append(entry)
+            except Exception:  # noqa: BLE001 — defensive snapshot
+                continue
+        # Last-known stage / step come from the most recent FAILED
+        # entry if present; otherwise from the last recorded entry.
+        stage_hint: str | None = None
+        step_hint: str | None = None
+        for r in reversed(self._step_results):
+            if (r.status.value if hasattr(r.status, "value") else str(r.status)) == "failed":
+                step_hint = r.step
+                stage_hint = r.step
+                break
+        if step_hint is None and self._step_results:
+            step_hint = self._step_results[-1].step
+            stage_hint = self._step_results[-1].step
+        # Document id from the most recently-recorded step's
+        # metadata (workflow records `metadata={"document_id": ...}`
+        # on per-document steps).
+        document_id: str | None = None
+        for r in reversed(self._step_results):
+            if isinstance(r.metadata, dict):
+                doc = r.metadata.get("document_id")
+                if doc:
+                    document_id = str(doc)
+                    break
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_error_report,
+                PersistErrorReportInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    failure_code=failure_code,
+                    failure_message=failure_message,
+                    stage=stage_hint,
+                    step=step_hint,
+                    step_results=step_results_payload,
+                    actor=request.actor,
                 ),
                 start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
                 retry_policy=DEFAULT_RETRY.to_temporal(),
@@ -1605,6 +1743,7 @@ class ProjectProcessingWorkflow:
                 f"compile failed for {document_id}: {compile_result.error}"
             )
         self._produced_artifact_ids.extend(compile_result.artifact_ids)
+        self._produced_artifact_kinds.extend(compile_result.kinds)
         self._record_step(
             step="compile",
             status=StepStatus.COMPLETED,
@@ -1811,6 +1950,7 @@ class ProjectProcessingWorkflow:
                     f"insert_content failed for {document_id}: {insert_result.error}"
                 )
             self._produced_artifact_ids.extend(insert_result.artifact_ids)
+            self._produced_artifact_kinds.extend(insert_result.kinds)
             self._record_step(
                 step="generate_knowledge_chunks",
                 status=StepStatus.COMPLETED,
@@ -1926,6 +2066,7 @@ class ProjectProcessingWorkflow:
                         f"enrich failed for {artifact_id}: {enrich_result.error}"
                     )
                 self._produced_artifact_ids.extend(enrich_result.artifact_ids)
+                self._produced_artifact_kinds.extend(enrich_result.kinds)
                 self._record_step(
                     step="enrich",
                     status=StepStatus.COMPLETED,
@@ -1994,6 +2135,7 @@ class ProjectProcessingWorkflow:
                     f"build_graph failed: {graph_result.error}"
                 )
             self._produced_artifact_ids.extend(graph_result.artifact_ids)
+            self._produced_artifact_kinds.extend(graph_result.kinds)
             self._record_step(
                 step="graph",
                 status=StepStatus.COMPLETED,

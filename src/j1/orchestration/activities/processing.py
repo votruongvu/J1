@@ -26,6 +26,7 @@ from j1.orchestration.activities.payloads import (
     GraphActivityInput,
     IndexActivityInput,
     InsertContentActivityInput,
+    PersistErrorReportInput,
     ProcessingActivityResult,
     QueryActivityInput,
     QueryActivityResult,
@@ -51,6 +52,7 @@ ACTIVITY_ENRICH = "j1.processing.enrich"
 ACTIVITY_BUILD_GRAPH = "j1.processing.build_graph"
 ACTIVITY_INDEX = "j1.processing.index"
 ACTIVITY_QUERY = "j1.processing.query"
+ACTIVITY_PERSIST_ERROR_REPORT = "j1.processing.persist_error_report"
 
 
 class UnknownProcessorError(LookupError):
@@ -111,6 +113,7 @@ class ProcessingActivities:
             self.build_graph,
             self.index,
             self.query,
+            self.persist_error_report,
         ]
 
     @activity.defn(name=ACTIVITY_COMPILE)
@@ -555,6 +558,43 @@ class ProcessingActivities:
         )
         return _query_result(result)
 
+    @activity.defn(name=ACTIVITY_PERSIST_ERROR_REPORT)
+    def persist_error_report(
+        self, input: PersistErrorReportInput,
+    ) -> ArtifactActivityResult:
+        """Persist the failure-path `error_report` artifact so the FE
+        artifact-listing surface picks it up under the failed run.
+
+        Called from the workflow's FAILED_FINAL handler before
+        `_safe_finalize` so the artifact lands in time for the run's
+        terminal event. Best-effort from the workflow's perspective:
+        any persistence failure is logged but does NOT mask the
+        original `_BusinessRejection` — the workflow re-raises
+        regardless of whether this activity succeeded."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_error_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                failure_code=input.failure_code,
+                failure_message=input.failure_message,
+                stage=input.stage,
+                step=input.step,
+                step_results=list(input.step_results) if input.step_results else None,
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
     # ---- Progress-reporter integration -------------------------
 
     def _report_step_start(
@@ -918,6 +958,11 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
         if getattr(record, "kind", None) == ARTIFACT_KIND_PARSED_SOURCE:
             parsed_source_artifact_id = record.artifact_id
             break
+    # Surface the kinds tuple so `_validate_completion` can enforce
+    # per-stage required outputs without a separate registry query.
+    kinds = tuple(
+        str(getattr(r, "kind", "") or "") for r in result.artifacts
+    )
     return ArtifactActivityResult(
         status=result.status.value,
         artifact_ids=[r.artifact_id for r in result.artifacts],
@@ -925,6 +970,7 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
         message=result.message,
         content_stats=content_stats,
         parsed_source_artifact_id=parsed_source_artifact_id,
+        kinds=kinds,
     )
 
 

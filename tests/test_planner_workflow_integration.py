@@ -96,16 +96,24 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
             assert profile is not None, "test passed planner_enabled=True without a profile"
             return profile
         if name.endswith("compile"):
+            # `kinds=("chunk",)` keeps the synthetic
+            # generate_knowledge_chunks completion check happy in
+            # `complete` mode (chunks are produced by compile, not by
+            # a separate insert activity).
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["art-1"]
+                status="succeeded", artifact_ids=["art-1"],
+                kinds=("chunk",),
             )
         if name.endswith("enrich"):
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["art-enriched-1"]
+                status="succeeded", artifact_ids=["art-enriched-1"],
+                kinds=("enriched.tables",),
             )
         if name.endswith("build_graph"):
+            # Must include `graph_json` — see `_validate_completion`.
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["art-graph-1"]
+                status="succeeded", artifact_ids=["art-graph-1"],
+                kinds=("graph_json",),
             )
         if name.endswith("index"):
             return ProcessingActivityResult(status="succeeded")

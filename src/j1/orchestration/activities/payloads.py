@@ -92,6 +92,28 @@ class QueryActivityInput:
 
 
 @dataclass(frozen=True)
+class PersistErrorReportInput:
+    """Workflow → activity payload for the failure-path
+    `error_report` artifact. The workflow calls this from its
+    FAILED_FINAL handler so operators can inspect why a run failed
+    via the same artifact-listing path that surfaces successful
+    artifacts."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    failure_code: str
+    failure_message: str
+    stage: str | None = None
+    step: str | None = None
+    # JSON-friendly snapshot of the per-step status table at the
+    # moment of failure. Pydantic / Temporal data converter
+    # serialisable.
+    step_results: list[dict[str, Any]] = field(default_factory=list)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class ArtifactActivityResult:
     status: str
     artifact_ids: list[str] = field(default_factory=list)
@@ -110,6 +132,17 @@ class ArtifactActivityResult:
     # pre-parsed content_list back without re-parsing the source. None
     # in legacy `complete` mode (compile produces chunks directly).
     parsed_source_artifact_id: str | None = None
+    # Per-artifact kinds the activity actually produced (e.g.
+    # `("chunk", "chunk", "chunk")` from insert_content,
+    # `("graph_json",)` from build_graph). The workflow's
+    # `_validate_completion` reads this to enforce per-stage required
+    # outputs — a graph step that "completed" without a graph_json
+    # artifact is a contract violation, not a SUCCEEDED state.
+    # Defaults to empty so older test fixtures that build
+    # `ArtifactActivityResult(status="succeeded", artifact_ids=...)`
+    # by hand keep working; the validation only fires when the field
+    # is populated.
+    kinds: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

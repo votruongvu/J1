@@ -83,10 +83,13 @@ def _split_handler(*, insert_artifacts: list[str] | None = None):
                 status="succeeded",
                 artifact_ids=["parsed-1", "manifest-1", "compiled-text-1"],
                 parsed_source_artifact_id="parsed-1",
+                kinds=("parsed_source", "parsed_content_manifest", "compiled.text"),
             )
         if name.endswith("insert_content"):
             return ArtifactActivityResult(
-                status="succeeded", artifact_ids=list(insert_artifacts),
+                status="succeeded",
+                artifact_ids=list(insert_artifacts),
+                kinds=tuple("chunk" for _ in insert_artifacts),
             )
         if name.endswith("set_document_status"):
             return None
@@ -284,3 +287,62 @@ def test_split_mode_propagates_insert_failure(monkeypatch):
     assert chunk_steps, "generate_knowledge_chunks step not recorded on failure"
     assert chunk_steps[-1].status == StepStatus.FAILED
     assert "insert blew up" in (chunk_steps[-1].reason or "")
+
+
+def test_completion_validation_fails_when_chunks_step_completed_without_artifact(
+    monkeypatch,
+):
+    """Per-stage required-output rule: in split mode the
+    `generate_knowledge_chunks` step is the real boundary; a step
+    that's recorded as COMPLETED without producing any `chunk`
+    artifact is a contract violation, not a SUCCEEDED state. The
+    workflow must reject the run via `_validate_completion` rather
+    than mark it COMPLETED with an empty chunk store."""
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded",
+                artifact_ids=["parsed-1"],
+                parsed_source_artifact_id="parsed-1",
+                kinds=("parsed_source",),
+            )
+        if name.endswith("insert_content"):
+            # Activity reports SUCCEEDED but produces NO chunk artifact
+            # — the bug class this rule catches. Without the rule the
+            # workflow would mark COMPLETED.
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=[],
+                kinds=(),
+            )
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        if name.endswith("build_planning_result"):
+            return None
+        if name.endswith("report_plan_revised"):
+            return None
+        if name.endswith("report_step_lifecycle"):
+            return None
+        if name.endswith("persist_error_report"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["err-1"],
+                kinds=("error_report",),
+            )
+        raise AssertionError(f"unexpected activity: {name}")
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="raganything",
+        pipeline_mode=PIPELINE_MODE_SPLIT_PARSE_INSERT,
+    )
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+    assert "chunk" in str(excinfo.value).lower()

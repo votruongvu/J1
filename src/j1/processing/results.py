@@ -33,10 +33,18 @@ ARTIFACT_KIND_PARSED_SOURCE = "parsed_source"
 # (when LLM-assisted planning ran) the validated LLM output. Read by
 # `/ingestion-runs/{id}/planning` and the FE Planning Report tab.
 ARTIFACT_KIND_PLANNING_RESULT = "planning_result"
+# Failure-path artifact. Written by the workflow's FAILED_FINAL
+# handler so operators can inspect why a run failed via the same
+# artifact-listing path that surfaces successful artifacts —
+# instead of having to grep audit logs. Carries the failure code,
+# message, last-known stage / step, and the per-step status table
+# at the moment of failure.
+ARTIFACT_KIND_ERROR_REPORT = "error_report"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
+    "ARTIFACT_KIND_ERROR_REPORT",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",

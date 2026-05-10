@@ -156,6 +156,88 @@ class ProcessingService:
             source_document_ids=[document.document_id],
         )
 
+    def persist_error_report(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        failure_code: str,
+        failure_message: str,
+        stage: str | None = None,
+        step: str | None = None,
+        step_results: list[dict] | None = None,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write a structured `error_report.json` artifact describing
+        why a run failed.
+
+        Persisted via the same `_register_draft` path successful
+        artifacts use, so the FE's existing artifact-listing surface
+        picks it up automatically. Tagged with `metadata.run_id` so
+        `_resolve_run_artifacts` returns it under the failed run.
+        Best-effort: any persistence failure is logged + raised back
+        to the caller (typically the workflow's failure handler) so
+        it can decide whether to swallow the error (we don't want a
+        broken error-report path to mask the original failure)."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_ERROR_REPORT,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+
+        payload = {
+            "schema_version": "1",
+            "run_id": run_id,
+            "document_id": document_id,
+            "failure_code": failure_code,
+            "failure_message": failure_message,
+            "last_stage": stage,
+            "last_step": step,
+            # The per-step status table at the moment of failure —
+            # tells the operator WHICH step actually failed and
+            # which prior steps already succeeded.
+            "step_results": step_results or [],
+            "created_at": self._clock().isoformat(),
+        }
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_ERROR_REPORT,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"error_report_{run_id}.json",
+                "failure_code": failure_code,
+                "last_stage": stage or "",
+                "last_step": step or "",
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        from j1.workspace.layout import WorkspaceArea
+        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        # `_handle_artifact_output` only returns empty when registration
+        # itself failed — bubble up to caller.
+        raise RuntimeError(
+            f"failed to persist error_report artifact for run {run_id!r}"
+        )
+
     def enrich(
         self,
         ctx: ProjectContext,
