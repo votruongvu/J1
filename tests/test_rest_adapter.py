@@ -681,6 +681,25 @@ def test_get_health_llm_surfaces_failed_role(client):
     cache_probe_results([])
 
 
+def test_post_health_llm_refresh_returns_cached_state_when_no_registry(
+    client,
+):
+    """When `create_rest_api` was called WITHOUT an `llm_registry`
+    (the test fixture's case), the refresh endpoint falls back to
+    returning the cached snapshot — same shape as GET. This keeps
+    the FE 'Retry now' button working in mock / minimal deployments
+    instead of 503-ing."""
+    from j1.llm.probe import cache_probe_results
+    cache_probe_results([])
+    response = client.post("/healthz/llm/refresh")
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    # Empty cache → conservative healthy=true ('assume working
+    # until proven otherwise'). Same contract as GET.
+    assert data["healthy"] is True
+    assert data["results"] == []
+
+
 def test_get_version(client):
     response = client.get("/version")
     assert response.status_code == 200

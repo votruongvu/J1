@@ -2079,6 +2079,12 @@ export class MockClient implements IngestionClient {
     };
   }
 
+  async refreshLLMHealth(): Promise<LLMHealthStatus> {
+    // Mirrors getLLMHealth in mock mode — banner's "Retry now"
+    // button still works; just always reports healthy.
+    return this.getLLMHealth();
+  }
+
   // ---- Scenario adjustments + run-state derivation ---------------
 
   private applyScenario(entry: ScriptEntry): ProgressEvent {

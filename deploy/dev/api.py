@@ -288,6 +288,11 @@ def _build_app():
         # is fine because the FE's Validation tab availability gate
         # in `availableViews.validation` will already be off.
         validation_service=build_validation_service(workspace),
+        # Hand the LLM registry to the REST adapter so `POST
+        # /healthz/llm/refresh` (the FE banner's "Retry now" button)
+        # can re-probe synchronously instead of waiting for the next
+        # 30s background tick.
+        llm_registry=getattr(boot, "llm_registry", None),
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

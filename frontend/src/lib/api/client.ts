@@ -261,6 +261,14 @@ export interface IngestionClient {
    * interval.
    */
   getLLMHealth(): Promise<LLMHealthStatus>;
+
+  /**
+   * POST a synchronous re-probe and return the fresh snapshot. Used
+   * by the banner's "Retry now" button so admins can verify the LLM
+   * is back immediately after restarting it, instead of waiting up
+   * to 30s for the next background poll.
+   */
+  refreshLLMHealth(): Promise<LLMHealthStatus>;
 }
 
 /** Per-role probe result from `/healthz/llm`. */

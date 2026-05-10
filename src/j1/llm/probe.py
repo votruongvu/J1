@@ -371,10 +371,20 @@ def _exercise_role(role: str, client: object) -> None:
         raise LLMProviderUnavailable(
             f"text client {type(client).__name__} has no generate"
         )
-    # Cap to 1 token so the probe doesn't burn budget. Any prompt
-    # the model considers valid works; "ping" is short + recognisable
-    # in provider logs.
-    generate("ping", max_output_tokens=1, temperature=0.0)
+    # Use a small but non-trivial output cap (8 tokens). With
+    # max_tokens=1 most chat models emit a single special / role
+    # token and return EMPTY visible content + finish_reason=length,
+    # which trips the "empty content" warning in the openai_compat
+    # client every time the probe runs. 8 tokens leaves room for a
+    # short word or two so the model returns visible content,
+    # the warning stays quiet on healthy probes, and the cost is
+    # still negligible. The prompt asks for a one-word reply to
+    # encourage compact output.
+    generate(
+        "Reply with the single word: pong",
+        max_output_tokens=8,
+        temperature=0.0,
+    )
 
 
 # ---- Background re-probe monitor -----------------------------------

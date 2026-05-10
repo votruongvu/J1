@@ -123,10 +123,17 @@ def test_probe_registry_returns_one_result_per_registered_role():
     assert all(r.provider == "openai_compat" for r in results)
 
 
-def test_probe_registry_calls_text_generate_with_one_token_cap():
-    """The text probe must use `max_output_tokens=1` so it never burns
-    budget. The deterministic `temperature=0.0` keeps the probe
-    reproducible — same response shape on every check."""
+def test_probe_registry_calls_text_generate_with_small_token_cap():
+    """The text probe uses a small but non-trivial output cap (≤16
+    tokens). With max_tokens=1 most chat models emit a single
+    special token and return EMPTY visible content with
+    finish_reason=length, which trips the openai_compat client's
+    'empty content' warning on every probe tick — pure log noise
+    on a healthy LLM. A few tokens is still negligible cost but
+    leaves room for a real one-word response.
+
+    `temperature=0.0` keeps the probe reproducible — same response
+    shape on every check."""
     text = _OkText()
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, text)
@@ -134,7 +141,9 @@ def test_probe_registry_calls_text_generate_with_one_token_cap():
     probe_registry(registry)
 
     assert len(text.calls) == 1
-    assert text.calls[0]["max_output_tokens"] == 1
+    cap = text.calls[0]["max_output_tokens"]
+    assert cap is not None
+    assert 2 <= cap <= 16, f"probe cap {cap} should be small but not 1"
     assert text.calls[0]["temperature"] == 0.0
 
 

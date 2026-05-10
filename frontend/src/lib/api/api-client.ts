@@ -622,15 +622,27 @@ export class ApiClient implements IngestionClient {
   }
 
   async getLLMHealth(): Promise<LLMHealthStatus> {
-    // Plain GET — no auth required for health endpoints in the dev
-    // stack. The response is enveloped (`{data: {...}, requestId}`)
-    // like every other API call, so we unwrap `data` here.
-    const res = await fetch(this.url("/healthz/llm"), {
-      method: "GET",
+    return this._llmHealthCall("GET", "/healthz/llm");
+  }
+
+  async refreshLLMHealth(): Promise<LLMHealthStatus> {
+    // Synchronous re-probe — backend bounds it by the configured
+    // probe deadline (default 5s per role), so the worst case is
+    // ~15s if all three roles are down. The banner's button shows
+    // a spinner during the call.
+    return this._llmHealthCall("POST", "/healthz/llm/refresh");
+  }
+
+  private async _llmHealthCall(
+    method: "GET" | "POST",
+    path: string,
+  ): Promise<LLMHealthStatus> {
+    const res = await fetch(this.url(path), {
+      method,
       headers: { Accept: "application/json" },
     });
     if (!res.ok) {
-      throw new ApiError(res.status, `GET /healthz/llm → ${res.status}`);
+      throw new ApiError(res.status, `${method} ${path} → ${res.status}`);
     }
     const body = await res.json();
     const data = body?.data ?? body;

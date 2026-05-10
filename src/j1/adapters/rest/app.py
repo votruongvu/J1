@@ -378,6 +378,7 @@ def create_rest_api(
     review_service: IngestionResultReviewService | None = None,
     validation_service: IngestionValidationService | None = None,
     confirm_handler: RunConfirmHandler | None = None,
+    llm_registry: object | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -3131,6 +3132,52 @@ def create_rest_api(
     def get_health_llm(request: Request) -> dict[str, Any]:
         from j1.llm.probe import current_health
         snapshot = current_health()
+        return envelope(
+            {
+                "healthy": snapshot.healthy,
+                "checkedAt": snapshot.checked_at,
+                "results": [
+                    {
+                        "role": r.role,
+                        "ok": r.ok,
+                        "provider": r.provider,
+                        "model": r.model,
+                        "error": r.error,
+                    }
+                    for r in snapshot.results
+                ],
+            },
+            _req_id(request),
+        )
+
+    @app.post(
+        "/healthz/llm/refresh",
+        tags=["system"],
+        summary="Re-probe LLM connectivity now",
+        description=(
+            "Runs the LLM connectivity probe synchronously (bounded "
+            "by the configured per-call deadline, default 5s) and "
+            "returns the fresh snapshot. The FE banner offers this "
+            "as a 'Retry now' button so admins can verify the fix "
+            "immediately after restarting LM Studio / vLLM, instead "
+            "of waiting for the next 30s background tick."
+        ),
+    )
+    def post_health_llm_refresh(request: Request) -> dict[str, Any]:
+        from j1.llm.probe import (
+            cache_probe_results,
+            current_health,
+            probe_registry,
+        )
+        if llm_registry is None:
+            # No registry wired (mock / test deployments). Fall through
+            # to the cached snapshot — still serves an honest answer
+            # rather than 503-ing the FE retry button.
+            snapshot = current_health()
+        else:
+            results = probe_registry(llm_registry)  # type: ignore[arg-type]
+            cache_probe_results(results)
+            snapshot = current_health()
         return envelope(
             {
                 "healthy": snapshot.healthy,
