@@ -227,12 +227,37 @@ class AssessmentPlanner:
 # ---- Default rule-based planner ------------------------------------
 
 
-# Plain-text extensions where `fast` mode is always sufficient.
-# Mirrors the planner's own list ([planning.py](./planning.py)) — kept
-# duplicated here to keep `assessment.py` import-free of the planning
-# module's public API surface.
+# 100%-text extensions where `fast` mode is always safe. The
+# guarantee operators care about: a file in this set CAN'T contain
+# embedded images / tables that need VLM extraction — the bytes ARE
+# the content. PDFs, DOCX, PPTX etc. are deliberately excluded
+# because we can never be sure a binary container doesn't carry
+# vision-only artifacts (figures, scanned regions, equation images).
+#
+# When growing this set:
+#   * Update `_NATIVE_TEXT_EXTENSIONS` in
+#     [_bridge.py](../providers/raganything/_bridge.py) in lockstep
+#     — the bridge's plaintext fast-path that skips MinerU keys off
+#     the same vocabulary.
+#   * Add a regression test in `test_assessment_plan.py` that pins
+#     the new extension to `CompileMode.FAST`.
+#
+# Markup / hypertext formats (`.html`, `.xml`) are intentionally
+# absent — they CAN reference vision content via `<img>`, even though
+# the file bytes are text — and operators usually want layout
+# detection on them. Default to STANDARD; operators that know their
+# corpus is plain HTML can opt into FAST via parse_method override.
 _PLAIN_TEXT_EXTENSIONS: frozenset[str] = frozenset({
+    # Documentation / log formats.
     ".txt", ".md", ".markdown", ".rst", ".log",
+    # Structured-data text formats. Bytes ARE the content; no
+    # embedded vision artifacts possible.
+    ".json", ".jsonl", ".ndjson",
+    ".yaml", ".yml",
+    ".toml",
+    ".tsv",
+    # Config / data formats.
+    ".ini", ".cfg", ".conf", ".env",
 })
 
 # Extensions whose contents are typically scanned (need OCR).
@@ -327,6 +352,20 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
     """
 
     def assess(
+        self,
+        profile: DocumentProfile,
+        *,
+        document_type: str | None = None,
+    ) -> AssessmentPlan:
+        plan = self._assess_inner(profile, document_type=document_type)
+        # Defensive belt: FAST mode is only safe for 100%-text
+        # extensions. If a future rule ever lets FAST escape for a
+        # PDF / DOCX / image binary, coerce up to STANDARD here.
+        # Operators reading the audit trail see the coercion in the
+        # `reason` field so the override is auditable.
+        return _enforce_fast_mode_safety(plan, profile)
+
+    def _assess_inner(
         self,
         profile: DocumentProfile,
         *,
@@ -504,6 +543,54 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
             optional_capabilities=frozenset(optional - required),
             reason=reason,
         )
+
+
+def _enforce_fast_mode_safety(
+    plan: AssessmentPlan,
+    profile: DocumentProfile,
+) -> AssessmentPlan:
+    """Defensive coercion: FAST is only safe for 100%-text extensions.
+
+    The user-facing rule: a PDF / DOCX / PPTX / image container
+    might carry images, tables, or scanned regions that need VLM /
+    OCR; we never trust FAST mode for those. If any rule branch
+    above slipped FAST through for a binary extension, override to
+    STANDARD here and stamp the reason so the override is auditable.
+
+    No-op when:
+      * `plan.mode != FAST` (nothing to coerce).
+      * `profile.extension` IS in `_PLAIN_TEXT_EXTENSIONS` (FAST is
+        the correct mode and stays).
+    """
+    if plan.mode != CompileMode.FAST:
+        return plan
+    if profile.extension in _PLAIN_TEXT_EXTENSIONS:
+        return plan
+    # Coerce. Replace mode, augment required capabilities to the
+    # STANDARD baseline, append the override reason so audit logs
+    # show why FAST was overridden. Capabilities the original rule
+    # already required are kept (don't downgrade).
+    coerced_required = frozenset(plan.required_capabilities | {
+        Capability.TEXT_EXTRACTION,
+        Capability.LAYOUT_DETECTION,
+    })
+    return AssessmentPlan(
+        document_id=plan.document_id,
+        mode=CompileMode.STANDARD,
+        document_type=plan.document_type,
+        complexity=plan.complexity,
+        confidence=plan.confidence,
+        required_capabilities=coerced_required,
+        optional_capabilities=plan.optional_capabilities,
+        risk_flags=plan.risk_flags,
+        fallback_policy=plan.fallback_policy,
+        reason=(
+            f"{plan.reason} | coerced FAST→STANDARD: extension "
+            f"{profile.extension!r} is not in the 100%-text set "
+            "(binary containers may carry images / tables / scanned "
+            "regions that need standard mode)"
+        ),
+    )
 
 
 def _infer_document_type(profile: DocumentProfile) -> str:

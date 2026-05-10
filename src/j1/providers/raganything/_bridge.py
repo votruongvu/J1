@@ -81,14 +81,24 @@ _log = logging.getLogger(__name__)
 # extensions the bridge reads the bytes directly and feeds them to
 # LightRAG, skipping mineru entirely.
 #
-# Kept in lock-step with `_PLAIN_TEXT_EXTENSIONS` in
-# `j1.processing.planning`. The planner uses the same set to pick the
-# `TEXT_ONLY` mode; if the bridge's set is narrower the planner routes
-# (e.g.) `.rst` / `.log` files through the slow MinerU path instead of
-# the fast plaintext path. Touch both files together when adding a
-# new extension.
+# MUST stay in lockstep with `_PLAIN_TEXT_EXTENSIONS` in
+# `j1.processing.assessment`. The assessor uses the same set to pick
+# `CompileMode.FAST`; if the bridge's set is narrower, the assessor
+# selects FAST but the bridge still routes through MinerU — defeating
+# the whole point of fast mode. Touch BOTH files together when adding
+# a new extension and add a regression test in
+# `test_assessment_plan.py` that pins the new extension to FAST.
 _NATIVE_TEXT_EXTENSIONS = frozenset({
+    # Documentation / log formats.
     ".txt", ".md", ".markdown", ".rst", ".log",
+    # Structured-data text formats. Bytes ARE the content; no
+    # embedded vision artifacts possible.
+    ".json", ".jsonl", ".ndjson",
+    ".yaml", ".yml",
+    ".toml",
+    ".tsv",
+    # Config / data formats.
+    ".ini", ".cfg", ".conf", ".env",
 })
 
 

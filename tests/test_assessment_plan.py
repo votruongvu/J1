@@ -138,6 +138,106 @@ def test_deep_profile_image_only_extension_triggers_ocr():
     assert Capability.OCR in plan.required_capabilities
 
 
+# ---- 3.5) FAST mode is reserved for 100%-text extensions only ----
+#
+# Spec: a binary container (PDF / DOCX / PPTX / image) might carry
+# images, tables, or scanned regions that need VLM / OCR. The
+# planner MUST never choose FAST for those — even if every other
+# signal looks clean. Only files where the bytes ARE the content
+# (txt / md / json / yaml / toml / log / config) qualify.
+
+
+@pytest.mark.parametrize("extension", [
+    ".txt", ".md", ".markdown", ".rst", ".log",
+    ".json", ".jsonl", ".ndjson",
+    ".yaml", ".yml",
+    ".toml",
+    ".tsv",
+    ".ini", ".cfg", ".conf", ".env",
+])
+def test_text_only_extensions_assigned_fast_mode(extension):
+    """Every extension in the canonical 100%-text set lands in
+    FAST mode regardless of other signals (most signals are
+    irrelevant for these formats anyway)."""
+    profile = _profile(extension=extension, page_count=1)
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.mode == CompileMode.FAST, (
+        f"{extension} should map to FAST mode; got {plan.mode}"
+    )
+
+
+@pytest.mark.parametrize("extension", [
+    ".pdf",
+    ".docx", ".doc",
+    ".pptx", ".ppt",
+    ".xlsx", ".xls",
+    ".odt", ".ods", ".odp",
+    ".rtf",
+    ".pages", ".numbers", ".key",
+])
+def test_binary_container_extensions_never_assigned_fast_mode(extension):
+    """Spec contract: PDF / DOCX / PPTX / XLSX / etc. are binary
+    containers that may carry images, tables, or scanned regions
+    invisible to the file extension. The planner must NEVER choose
+    FAST for these — even when every signal looks clean."""
+    profile = _profile(
+        extension=extension,
+        page_count=10,
+        text_extractable_ratio=1.0,
+        has_images=False,
+        has_tables=False,
+        has_scanned_pages=False,
+    )
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.mode != CompileMode.FAST, (
+        f"{extension} must NEVER map to FAST mode; got {plan.mode}. "
+        "Binary containers may carry vision content the file extension "
+        "doesn't reveal."
+    )
+
+
+def test_fast_mode_safety_belt_coerces_unknown_extension():
+    """Defensive coercion: even if a future rule slips and lets FAST
+    escape for a non-text extension, `_enforce_fast_mode_safety`
+    overrides to STANDARD. Drive the override directly to verify
+    the belt fires regardless of upstream rule changes."""
+    from j1.processing.assessment import _enforce_fast_mode_safety
+
+    rogue_plan = AssessmentPlan(
+        document_id="d", mode=CompileMode.FAST,
+        document_type="pdf", complexity=Complexity.LOW, confidence=1.0,
+        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
+        reason="hypothetical rogue rule",
+    )
+    pdf_profile = _profile(extension=".pdf", page_count=1)
+    coerced = _enforce_fast_mode_safety(rogue_plan, pdf_profile)
+    assert coerced.mode == CompileMode.STANDARD
+    assert "coerced FAST→STANDARD" in coerced.reason
+    assert ".pdf" in coerced.reason
+    # Ensure the standard baseline capabilities are added (don't lose
+    # what was already required either).
+    assert Capability.TEXT_EXTRACTION in coerced.required_capabilities
+    assert Capability.LAYOUT_DETECTION in coerced.required_capabilities
+
+
+def test_fast_mode_safety_belt_noop_for_text_extension():
+    """The safety belt must NOT touch a legitimate FAST-for-text
+    plan. Coercion is one-way and only fires for binary extensions."""
+    from j1.processing.assessment import _enforce_fast_mode_safety
+
+    legit_plan = AssessmentPlan(
+        document_id="d", mode=CompileMode.FAST,
+        document_type="plain_text",
+        complexity=Complexity.LOW, confidence=1.0,
+        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
+        reason="plain-text extension '.json'; no parser intensity needed",
+    )
+    json_profile = _profile(extension=".json", page_count=1)
+    same = _enforce_fast_mode_safety(legit_plan, json_profile)
+    assert same.mode == CompileMode.FAST
+    assert same.reason == legit_plan.reason  # untouched
+
+
 # ---- 4) fast plan maps to txt / light behaviour ------------------
 
 
