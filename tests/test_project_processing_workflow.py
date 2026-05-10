@@ -303,6 +303,84 @@ def test_failed_compile_marks_document_failed(monkeypatch):
     assert statuses == ["failed"]
 
 
+def test_resume_skips_enrich_and_graph_when_listed_in_resume_context(monkeypatch):
+    """When `resume_completed_steps` lists enrich + graph, the workflow
+    must NOT dispatch the corresponding activities — it should record
+    SKIPPED step results citing the resume source and carry the
+    prior-run artifacts forward through `_produced_artifact_ids`.
+
+    This is the contract the resume endpoint relies on: skip exactly
+    the LLM-cost stages that already ran, run everything else."""
+    dispatched: list[str] = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        dispatched.append(name)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-resume"]
+        if name.endswith("compile"):
+            # Compile always re-runs — its outputs are the structural
+            # backbone every downstream stage reads.
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["new-compile"],
+                kinds=("chunk",),
+            )
+        if name.endswith("enrich"):
+            # If we hit this the resume short-circuit is broken.
+            raise AssertionError(
+                "enrich activity should not run on resume "
+                "when 'enrich' is in resume_completed_steps"
+            )
+        if name.endswith("build_graph"):
+            raise AssertionError(
+                "build_graph activity should not run on resume "
+                "when 'graph' is in resume_completed_steps"
+            )
+        if name.endswith("index"):
+            return ProcessingActivityResult(status="succeeded")
+        if name.endswith("finalize"):
+            return None
+        raise AssertionError(name)
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        enricher_kind="e",
+        graph_builder_kind="g",
+        indexer_kind="i",
+        resume_from_run_id="prior-run-1",
+        resume_completed_steps=("enrich", "graph"),
+        resume_artifact_ids=("prior-enrich", "prior-graph"),
+        resume_artifact_kinds=("enriched.tables", "graph_json"),
+    )
+    result = asyncio.run(wf.run(request))
+    assert result.state == WorkflowState.COMPLETED.value
+    # Carry-forward IDs are visible alongside this run's compile
+    # artifacts so downstream surfaces (index, validation_report)
+    # see the full set the prior run produced.
+    assert "prior-enrich" in result.artifact_ids
+    assert "prior-graph" in result.artifact_ids
+    assert "new-compile" in result.artifact_ids
+    # Step records show the SKIPPED entries with the resume reason
+    # so operators can audit why the LLM-cost stages didn't run.
+    enrich_steps = [r for r in wf._step_results if r.step == "enrich"]
+    graph_steps = [r for r in wf._step_results if r.step == "graph"]
+    assert any(
+        r.status.value == "skipped"
+        and "prior-run-1" in (r.reason or "")
+        for r in enrich_steps
+    )
+    assert any(
+        r.status.value == "skipped"
+        and "prior-run-1" in (r.reason or "")
+        for r in graph_steps
+    )
+
+
 def test_run_completes_full_pipeline(monkeypatch):
     def handler(method, payload, kwargs):
         name = _activity_name(method)

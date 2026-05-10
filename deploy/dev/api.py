@@ -91,13 +91,18 @@ def make_per_document_starter(
         scope = ProjectScope.from_context(ctx)
         # Default deterministic workflow_id: lets repeated uploads of
         # the same checksum re-attach to the in-flight workflow via
-        # USE_EXISTING. When `body.reindex_of` is set (full-reindex
-        # path), use a fresh suffixed id so the new attempt doesn't
-        # collide with the original.
+        # USE_EXISTING. The `-reindex-` and `-resume-` suffixes are
+        # distinct so operators can tell them apart in the Temporal UI;
+        # both prevent USE_EXISTING from re-attaching to the original.
         if getattr(body, "reindex_of", None):
             workflow_id = (
                 f"j1-{ctx.tenant_id}-{ctx.project_id}-"
                 f"{document_id}-reindex-{body.correlation_id}"
+            )
+        elif getattr(body, "resume_of", None):
+            workflow_id = (
+                f"j1-{ctx.tenant_id}-{ctx.project_id}-"
+                f"{document_id}-resume-{body.correlation_id}"
             )
         else:
             workflow_id = (
@@ -116,6 +121,16 @@ def make_per_document_starter(
                 target_document_ids=(document_id,),
                 planner_enabled=planner_enabled,
                 pipeline_mode=pipeline_mode,
+                resume_from_run_id=getattr(body, "resume_of", None),
+                resume_completed_steps=tuple(
+                    getattr(body, "resume_completed_steps", ()) or ()
+                ),
+                resume_artifact_ids=tuple(
+                    getattr(body, "resume_artifact_ids", ()) or ()
+                ),
+                resume_artifact_kinds=tuple(
+                    getattr(body, "resume_artifact_kinds", ()) or ()
+                ),
             ),
             id=workflow_id,
             task_queue=task_queue,

@@ -38,3 +38,26 @@ class RunStillActive(J1Error):
     PAUSED / CANCELLING / ASSESSING run — the workflow could still be
     writing artifacts. Mapped to 409 at the REST boundary; clients
     are expected to `cancel` first."""
+
+
+class ResumeNotPossible(J1Error):
+    """Resume-from-checkpoint can't proceed against this run.
+
+    Raised by `resume_from_checkpoint` when the prior run lacks a
+    `resume_snapshot` (terminated before the snapshot machinery
+    landed, or finished via the cancelled / unknown-terminal paths
+    that don't snapshot). Mapped to 412 (Precondition Failed) at
+    the REST boundary — the operator should full-reindex instead."""
+
+
+class ResumeIncompatible(J1Error):
+    """Resume-from-checkpoint refused — settings drifted.
+
+    Raised when the prior run's `settings_hash` doesn't match the
+    candidate request's hash. Carries the structured diff
+    (`{field: {"before": x, "after": y}}`) on the `.diff` attribute
+    so the REST layer can surface it in the 412 response body."""
+
+    def __init__(self, message: str, diff: dict[str, dict] | None = None) -> None:
+        super().__init__(message)
+        self.diff = diff or {}

@@ -1016,6 +1016,102 @@ class IngestionResultReviewService:
             "deleted_at": deleted_at,
         }
 
+    def resume_from_checkpoint(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+        *,
+        candidate_settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate that the prior run is resumable under the candidate
+        settings and return the carry-forward plan.
+
+        Pure validation — does NOT create a new run record or dispatch
+        a workflow. The REST endpoint composes this with run-record
+        creation and workflow dispatch (so the service stays
+        store-agnostic and easy to test).
+
+        `candidate_settings` is the proposed-new-run settings dict
+        (same shape as `RESUME_SETTINGS_FIELDS`). When the prior run's
+        snapshot hash matches, the returned dict carries:
+
+            {
+              "run_id": str,                 # the prior run id
+              "snapshot": dict,              # the full resume_snapshot
+              "resumable_steps": list[str],  # steps the new run can skip
+              "carry_forward_artifact_ids": list[str],
+              "carry_forward_artifact_kinds": list[str],
+            }
+
+        Raises:
+          - `ReviewNotFound` if the run doesn't exist (404).
+          - `RunStillActive` if the run is in an in-flight state (409).
+          - `ResumeNotPossible` if the run is DELETED, terminated
+            without a snapshot, or status is otherwise non-terminal
+            in a way resume can't proceed (412).
+          - `ResumeIncompatible` if `candidate_settings` doesn't match
+            the prior settings hash (412 with structured diff).
+        """
+        from j1.ingestion_review.exceptions import (
+            ResumeIncompatible, ResumeNotPossible,
+        )
+        from j1.runs.models import RunStatus
+        from j1.runs.resume import (
+            RESUMABLE_STAGES, compatible_settings, settings_diff,
+        )
+
+        run = self._load_run(ctx, run_id)
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(run.status) in active_states:
+            raise RunStillActive(
+                f"run {run_id!r} is currently {run.status} — "
+                "cancel it before resuming"
+            )
+        if str(run.status) == RunStatus.DELETED.value:
+            raise ResumeNotPossible(
+                f"run {run_id!r} is deleted — cannot resume"
+            )
+        if not run.is_terminal():
+            raise ResumeNotPossible(
+                f"run {run_id!r} is in non-resumable state {run.status}"
+            )
+        snapshot = (
+            (run.metadata or {}).get("resume_snapshot")
+            if isinstance(run.metadata, dict)
+            else None
+        )
+        if not isinstance(snapshot, dict) or "settings_snapshot" not in snapshot:
+            raise ResumeNotPossible(
+                f"run {run_id!r} has no resume snapshot — terminated "
+                "before resume support landed, or via a path that "
+                "doesn't snapshot (e.g. cancelled). Use full-reindex."
+            )
+        prior_settings = snapshot.get("settings_snapshot") or {}
+        if not compatible_settings(prior_settings, candidate_settings):
+            diff = settings_diff(prior_settings, candidate_settings)
+            raise ResumeIncompatible(
+                f"settings drifted since run {run_id!r} — refusing to "
+                "resume; full-reindex instead",
+                diff=diff,
+            )
+        completed = list(snapshot.get("completed_steps") or [])
+        # Intersect with the policy-allowed set: only enrich + graph
+        # are safe to skip in v1. Compile + chunks always re-run
+        # because their outputs are the structural backbone.
+        resumable = [s for s in completed if s in RESUMABLE_STAGES]
+        carry_ids = list(snapshot.get("produced_artifact_ids") or [])
+        carry_kinds = list(snapshot.get("produced_artifact_kinds") or [])
+        return {
+            "run_id": run_id,
+            "snapshot": dict(snapshot),
+            "resumable_steps": resumable,
+            "carry_forward_artifact_ids": carry_ids,
+            "carry_forward_artifact_kinds": carry_kinds,
+        }
+
     # ---- Internals ----------------------------------------------------
 
     def _project_chunks(

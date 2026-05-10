@@ -1303,6 +1303,206 @@ def create_rest_api(
             _req_id(request),
         )
 
+    @app.post(
+        "/ingestion-runs/{run_id}/resume-from-checkpoint",
+        tags=["ingestion-runs"],
+        summary="Resume a failed run from its last checkpoint",
+        description=(
+            "Starts a NEW ingestion run for the same document_id as "
+            "the referenced run, carrying forward the prior run's "
+            "produced artifacts and skipping the LLM-cost stages "
+            "(enrich + graph) that already completed. Refuses to "
+            "operate on an in-flight run (HTTP 409). Returns HTTP 412 "
+            "when the prior run has no resume snapshot (terminated "
+            "before the snapshot machinery landed, or via a path "
+            "that doesn't snapshot — e.g. cancelled), and HTTP 412 "
+            "with a structured `diff` when settings have drifted "
+            "since the prior run finished. The new run's metadata "
+            "carries `resume_of=<original-run-id>` so the FE can "
+            "render the relationship."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def resume_ingestion_run_from_checkpoint(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        from j1.ingestion_review.exceptions import (
+            ResumeIncompatible, ResumeNotPossible, ReviewNotFound,
+            RunStillActive,
+        )
+        store = _require_run_store()
+        review = _require_review_service()
+        original = store.get(ctx, run_id)
+        if original is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        if not original.document_id:
+            raise HTTPException(
+                400, f"run {run_id!r} has no document_id; cannot resume"
+            )
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, original.document_id)
+        except Exception:
+            raise HTTPException(
+                404,
+                f"original document {original.document_id!r} not found "
+                "in this project; cannot resume",
+            )
+        # Resolve the new run's settings up-front so the compatibility
+        # check sees the same dict the workflow will receive. The
+        # resume endpoint inherits processor selections from the
+        # deployment defaults — operators who want to change them
+        # should full-reindex instead.
+        compiler_kind = _resolve_compiler_kind(None)
+        enricher_kind = _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.enricher_kinds
+             if processing_capabilities else frozenset()),
+            "enricherKind",
+        )
+        graph_builder_kind = _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.graph_builder_kinds
+             if processing_capabilities else frozenset()),
+            "graphBuilderKind",
+        )
+        indexer_kind = _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.indexer_kinds
+             if processing_capabilities else frozenset()),
+            "indexerKind",
+        )
+        # Build the candidate-settings dict mirroring the workflow's
+        # `ProjectProcessingRequest`. The fields that participate in
+        # the compatibility hash live in `RESUME_SETTINGS_FIELDS`;
+        # any field absent here defaults to whatever the workflow
+        # uses, which is what the prior run would also have used.
+        candidate_settings: dict[str, Any] = {
+            "compiler_kind": compiler_kind,
+            "enricher_kind": enricher_kind,
+            "graph_builder_kind": graph_builder_kind,
+            "indexer_kind": indexer_kind,
+            # Operators currently can't override these per-run; they
+            # come from the API process's env, which is also where
+            # the prior run got them. If the operator restarted the
+            # API with different env between runs the snapshot hash
+            # will catch it.
+            "planner_enabled": (
+                getattr(starter, "_planner_enabled", None)
+                # Fallback when the closure didn't expose it.
+                if hasattr(starter, "_planner_enabled") else None
+            ),
+            "policy": "auto",
+            "pipeline_mode": (
+                getattr(starter, "_pipeline_mode", "complete")
+                if hasattr(starter, "_pipeline_mode") else "complete"
+            ),
+            "domain_override": None,
+            "workspace_default_domain": None,
+            "failure_policy": "fail_fast",
+        }
+        # When the candidate-settings keys above don't get filled
+        # because the starter doesn't expose them, fall back to the
+        # snapshot's own values. This keeps the comparison effective
+        # against drift that operators CAN cause (changing a
+        # processor kind via env), while ignoring drift in fields
+        # neither end can vary today.
+        snap = (original.metadata or {}).get("resume_snapshot") or {}
+        prior_settings = (
+            snap.get("settings_snapshot") if isinstance(snap, dict) else {}
+        ) or {}
+        for k, v in candidate_settings.items():
+            if v is None and k in prior_settings:
+                candidate_settings[k] = prior_settings[k]
+
+        try:
+            plan = review.resume_from_checkpoint(
+                ctx, run_id, candidate_settings=candidate_settings,
+            )
+        except ReviewNotFound:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        except RunStillActive as exc:
+            raise HTTPException(409, str(exc))
+        except ResumeNotPossible as exc:
+            raise HTTPException(412, str(exc))
+        except ResumeIncompatible as exc:
+            # Surface the structured diff via the standard J1 error
+            # envelope's `details` so the FE can render exactly which
+            # settings changed. Returning the JSONResponse directly
+            # bypasses the generic HTTPException handler that would
+            # stringify our dict into the `message` field.
+            return error_response(
+                status_code=412,
+                code="RESUME_INCOMPATIBLE",
+                message=str(exc),
+                request_id=_req_id(request),
+                details={"diff": exc.diff},
+            )
+
+        actor = security.subject if security else "system"
+        new_run_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        original_meta = dict(original.metadata or {})
+        new_run = IngestionRun(
+            run_id=new_run_id,
+            document_id=original.document_id,
+            workflow_id=None,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                "resume_of": run_id,
+                "resumed_steps": plan["resumable_steps"],
+                "carry_forward_artifact_ids": plan["carry_forward_artifact_ids"],
+                "policy": original_meta.get("policy", "auto"),
+                "mode": original_meta.get("mode", "STANDARD"),
+                "document_name": original_meta.get(
+                    "document_name", doc_dto.original_filename,
+                ),
+            },
+        )
+        store.upsert(ctx, new_run)
+
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=new_run_id, document_id=original.document_id,
+                actor=actor,
+            )
+
+        body = IngestRequest(
+            compiler_kind=compiler_kind,
+            enricher_kind=enricher_kind,
+            graph_builder_kind=graph_builder_kind,
+            indexer_kind=indexer_kind,
+            actor=actor,
+            correlation_id=new_run_id,
+            resume_of=run_id,
+            resume_completed_steps=tuple(plan["resumable_steps"]),
+            resume_artifact_ids=tuple(plan["carry_forward_artifact_ids"]),
+            resume_artifact_kinds=tuple(plan["carry_forward_artifact_kinds"]),
+        )
+        workflow_id = await starter(ctx, original.document_id, body)
+        new_run.workflow_id = workflow_id
+        new_run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, new_run)
+        return envelope(
+            {
+                "originalRunId": run_id,
+                "resumeRunId": new_run_id,
+                "workflowId": workflow_id,
+                "documentId": original.document_id,
+                "status": RunStatus.CREATED.value,
+                "resumedSteps": plan["resumable_steps"],
+                "carryForwardArtifactCount": len(plan["carry_forward_artifact_ids"]),
+            },
+            _req_id(request),
+        )
+
     @app.delete(
         "/ingestion-runs/{run_id}",
         tags=["ingestion-runs"],

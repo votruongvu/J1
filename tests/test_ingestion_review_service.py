@@ -2347,3 +2347,179 @@ def test_delete_run_404s_for_unknown_run(service, ctx):
     from j1.ingestion_review.exceptions import ReviewNotFound
     with pytest.raises(ReviewNotFound):
         service.delete_run(ctx, "missing-run")
+
+
+# ---- Resume from checkpoint --------------------------------------
+
+
+def _resume_snapshot_metadata(
+    *,
+    completed_steps: list[str],
+    settings: dict | None = None,
+    artifact_ids: list[str] | None = None,
+    artifact_kinds: list[str] | None = None,
+) -> dict:
+    """Helper: build the `metadata["resume_snapshot"]` shape that the
+    workflow's `_emit_run_terminal` would persist."""
+    from j1.runs.resume import compute_settings_hash
+    snap_settings = settings or {
+        "compiler_kind": "raganything",
+        "enricher_kind": "composite_enricher",
+        "graph_builder_kind": "lightrag_graph",
+        "indexer_kind": "sqlite_search",
+        "planner_enabled": True,
+        "policy": "auto",
+        "pipeline_mode": "complete",
+        "domain_override": None,
+        "workspace_default_domain": None,
+        "failure_policy": "fail_fast",
+    }
+    return {
+        "resume_snapshot": {
+            "settings_hash": compute_settings_hash(snap_settings),
+            "settings_snapshot": snap_settings,
+            "completed_steps": list(completed_steps),
+            "failed_steps": [],
+            "produced_artifact_ids": list(artifact_ids or []),
+            "produced_artifact_kinds": list(artifact_kinds or []),
+            "snapshot_at": "2026-05-10T12:00:00+00:00",
+            "failure_code": None,
+            "failure_message": None,
+        }
+    }
+
+
+def test_resume_from_checkpoint_returns_carry_forward_plan(
+    service, run_store, ctx,
+):
+    """Happy path: terminal run with a snapshot whose settings match
+    the candidate. Service returns `resumable_steps` intersected with
+    the policy-allowed set + the carry-forward artifact lists."""
+    metadata = _resume_snapshot_metadata(
+        completed_steps=["compile", "enrich", "graph"],
+        artifact_ids=["a-compile", "a-enrich", "a-graph"],
+        artifact_kinds=["chunk", "enriched.tables", "graph_json"],
+    )
+    run_store.upsert(ctx, _make_run(
+        status=RunStatus.FAILED, metadata=metadata,
+    ))
+    plan = service.resume_from_checkpoint(
+        ctx, "run-1",
+        candidate_settings=metadata["resume_snapshot"]["settings_snapshot"],
+    )
+    # Only enrich + graph are policy-resumable; compile always re-runs.
+    assert sorted(plan["resumable_steps"]) == ["enrich", "graph"]
+    assert plan["carry_forward_artifact_ids"] == [
+        "a-compile", "a-enrich", "a-graph",
+    ]
+    assert plan["carry_forward_artifact_kinds"] == [
+        "chunk", "enriched.tables", "graph_json",
+    ]
+    assert plan["snapshot"]["settings_hash"] == \
+        metadata["resume_snapshot"]["settings_hash"]
+
+
+def test_resume_from_checkpoint_404s_for_unknown_run(service, ctx):
+    from j1.ingestion_review.exceptions import ReviewNotFound
+    with pytest.raises(ReviewNotFound):
+        service.resume_from_checkpoint(
+            ctx, "missing", candidate_settings={},
+        )
+
+
+def test_resume_from_checkpoint_rejects_active_run(service, run_store, ctx):
+    """RUNNING / PAUSED / CANCELLING / ASSESSING all map to
+    RunStillActive — operators must cancel before resuming."""
+    from j1.ingestion_review.exceptions import RunStillActive
+    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
+    with pytest.raises(RunStillActive):
+        service.resume_from_checkpoint(
+            ctx, "run-1", candidate_settings={},
+        )
+
+
+def test_resume_from_checkpoint_rejects_deleted_run(service, run_store, ctx):
+    """A tombstoned run can't be resumed."""
+    from j1.ingestion_review.exceptions import ResumeNotPossible
+    run_store.upsert(ctx, _make_run(status=RunStatus.DELETED))
+    with pytest.raises(ResumeNotPossible):
+        service.resume_from_checkpoint(
+            ctx, "run-1", candidate_settings={},
+        )
+
+
+def test_resume_from_checkpoint_rejects_run_without_snapshot(
+    service, run_store, ctx,
+):
+    """A FAILED run that has no `resume_snapshot` metadata (terminated
+    before snapshot machinery landed, or via a path that doesn't
+    snapshot) raises ResumeNotPossible — operators must full-reindex."""
+    from j1.ingestion_review.exceptions import ResumeNotPossible
+    run_store.upsert(ctx, _make_run(status=RunStatus.FAILED, metadata={}))
+    with pytest.raises(ResumeNotPossible):
+        service.resume_from_checkpoint(
+            ctx, "run-1", candidate_settings={},
+        )
+
+
+def test_resume_from_checkpoint_rejects_drifted_settings(
+    service, run_store, ctx,
+):
+    """When the candidate settings differ from the snapshot's
+    settings_snapshot, raise ResumeIncompatible with a structured
+    diff so the FE can surface what changed."""
+    from j1.ingestion_review.exceptions import ResumeIncompatible
+    metadata = _resume_snapshot_metadata(
+        completed_steps=["compile", "enrich"],
+        settings={
+            "compiler_kind": "raganything",
+            "enricher_kind": "composite_enricher",
+            "graph_builder_kind": "lightrag_graph",
+            "indexer_kind": "sqlite_search",
+            "planner_enabled": True,
+            "policy": "auto",
+            "pipeline_mode": "complete",
+            "domain_override": None,
+            "workspace_default_domain": None,
+            "failure_policy": "fail_fast",
+        },
+    )
+    run_store.upsert(ctx, _make_run(
+        status=RunStatus.FAILED, metadata=metadata,
+    ))
+    drifted = dict(metadata["resume_snapshot"]["settings_snapshot"])
+    drifted["enricher_kind"] = "different_enricher"
+    drifted["pipeline_mode"] = "split_parse_insert"
+    with pytest.raises(ResumeIncompatible) as exc:
+        service.resume_from_checkpoint(
+            ctx, "run-1", candidate_settings=drifted,
+        )
+    diff = exc.value.diff
+    assert "enricher_kind" in diff
+    assert diff["enricher_kind"]["before"] == "composite_enricher"
+    assert diff["enricher_kind"]["after"] == "different_enricher"
+    assert "pipeline_mode" in diff
+    # Unchanged fields don't appear in the diff.
+    assert "compiler_kind" not in diff
+
+
+def test_resume_from_checkpoint_excludes_non_resumable_steps(
+    service, run_store, ctx,
+):
+    """Even if the snapshot says compile + chunks completed, the
+    resumable_steps list filters to enrich + graph only — compile and
+    chunk-generation always re-run because their outputs are the
+    structural backbone every downstream stage reads."""
+    metadata = _resume_snapshot_metadata(
+        completed_steps=["compile", "generate_knowledge_chunks", "enrich"],
+        artifact_ids=["a-compile", "a-enrich"],
+        artifact_kinds=["chunk", "enriched.tables"],
+    )
+    run_store.upsert(ctx, _make_run(
+        status=RunStatus.FAILED, metadata=metadata,
+    ))
+    plan = service.resume_from_checkpoint(
+        ctx, "run-1",
+        candidate_settings=metadata["resume_snapshot"]["settings_snapshot"],
+    )
+    assert plan["resumable_steps"] == ["enrich"]

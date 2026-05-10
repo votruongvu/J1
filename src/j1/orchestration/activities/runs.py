@@ -80,6 +80,12 @@ class ReportRunTerminalInput:
     failure_message: str | None = None
     actor: str = "system"
     step_summary: tuple[StepSummaryEntry, ...] = field(default_factory=tuple)
+    # Resume-from-checkpoint snapshot. Plain dict so the Temporal
+    # data converter handles it without dataclass schema coupling.
+    # Persisted to `IngestionRun.metadata["resume_snapshot"]` by
+    # `_persist_run_terminal`. None on cancelled / unknown-terminal
+    # paths where resume isn't a sensible affordance.
+    resume_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -403,6 +409,16 @@ class RunsActivities:
                 }
                 for entry in input.step_summary
             ]
+
+        # Resume-from-checkpoint snapshot. Always overwrite when the
+        # workflow supplies one — a fresh terminal transition means
+        # the prior snapshot is stale (its step_results no longer
+        # describe the latest attempt). When `None` we leave the
+        # existing key alone (cancelled-path emit doesn't carry a
+        # snapshot but shouldn't blow away a previously-good one
+        # captured by a continue-as-new boundary).
+        if input.resume_snapshot is not None:
+            run.metadata["resume_snapshot"] = dict(input.resume_snapshot)
 
         try:
             self._run_store.upsert(ctx, run)

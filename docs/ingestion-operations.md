@@ -22,7 +22,7 @@ implemented so the contract doesn't drift.
 | Soft-delete ingest | ✓ |
 | Full re-index | ✓ |
 | Multi-upload batch + status view | ✓ |
-| Resume from last checkpoint | ⏳ (needs compatibility checker) |
+| Resume from last checkpoint | ✓ (skips enrich + graph; compile + chunks always re-run) |
 | Rebuild index only | ⏳ |
 | Hard delete | ⏳ |
 | Parent-workflow batch sequencing | ⏳ (workaround: set `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1`) |

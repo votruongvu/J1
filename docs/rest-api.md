@@ -170,6 +170,7 @@ call.
 | `UNSUPPORTED_FILE_TYPE` | 415   | `UnsupportedFileTypeError` — uploaded filename's extension isn't in the configured `J1_ALLOWED_UPLOAD_EXTENSIONS` allow-list. Response `details` carries `extension` (the offending suffix) and `allowedExtensions` (the current allow-list). |
 | `APPLICATION_ERROR`   | 400     | Temporal `ApplicationError`                 |
 | `J1_ERROR`            | 400     | Any other `J1Error` subclass                |
+| `RESUME_INCOMPATIBLE` | 412     | `ingestion_review.ResumeIncompatible` — raised by `POST /ingestion-runs/{id}/resume-from-checkpoint` when the prior run's settings hash doesn't match the candidate's. Response `details` carries `diff` (`{field: {"before": x, "after": y}}`) so the client can render exactly which settings drifted and prompt the operator to full-reindex instead. |
 
 ---
 
