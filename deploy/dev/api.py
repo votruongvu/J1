@@ -214,6 +214,7 @@ def _build_app():
         cache_probe_results,
         llm_probe_enabled,
         probe_registry,
+        start_health_monitor,
     )
     if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
         _log.info("LLM startup probe: starting (5s deadline per role)")
@@ -235,6 +236,12 @@ def _build_app():
                 "LLM startup probe: all %d configured roles reachable",
                 len(results),
             )
+        # Background re-probe loop (daemon thread, separate from the
+        # request-handling loop). Refreshes the cached `/healthz/llm`
+        # state on a bounded interval so the FE banner clears /
+        # appears automatically when the LLM goes up / down without
+        # an operator restart.
+        start_health_monitor(boot.llm_registry)
     # Surface the worker's registered processor kinds so the REST
     # adapter can both (a) validate caller-supplied kinds at the API
     # boundary and (b) auto-default omitted kinds via the new

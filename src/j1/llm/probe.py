@@ -44,6 +44,15 @@ _log = logging.getLogger("j1.llm.probe")
 
 ENV_LLM_STARTUP_PROBE = "J1_LLM_STARTUP_PROBE"
 ENV_LLM_PROBE_TIMEOUT = "J1_LLM_PROBE_TIMEOUT_SECONDS"
+ENV_LLM_HEALTH_MONITOR_INTERVAL = "J1_LLM_HEALTH_MONITOR_INTERVAL_SECONDS"
+
+# Background re-probe interval. When the LLM endpoint goes down or
+# back up after startup, we want the cached health snapshot to
+# reflect that within a bounded window WITHOUT requiring an operator
+# restart. 30s is the sweet spot: short enough that the FE banner
+# clears quickly when the operator fixes the endpoint, long enough
+# that the upstream LLM doesn't see meaningful probe traffic.
+DEFAULT_HEALTH_MONITOR_INTERVAL_SECONDS = 30.0
 
 # Hard ceiling per probe call. The underlying client's configured
 # timeout (e.g. `J1_TEXT_LLM_TIMEOUT_SECONDS=300`) is sized for real
@@ -173,6 +182,22 @@ def llm_probe_timeout(env: dict | None = None) -> float:
     if value <= 0:
         return DEFAULT_PROBE_TIMEOUT_SECONDS
     return value
+
+
+def llm_health_monitor_interval(env: dict | None = None) -> float:
+    """Re-probe interval for the background health monitor.
+
+    Set to 0 (or any non-positive value) to disable the monitor;
+    only the startup probe runs in that case."""
+    source = env if env is not None else os.environ
+    raw = source.get(ENV_LLM_HEALTH_MONITOR_INTERVAL)
+    if not raw:
+        return DEFAULT_HEALTH_MONITOR_INTERVAL_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_HEALTH_MONITOR_INTERVAL_SECONDS
+    return max(value, 0.0)
 
 
 def probe_registry(
@@ -350,3 +375,130 @@ def _exercise_role(role: str, client: object) -> None:
     # the model considers valid works; "ping" is short + recognisable
     # in provider logs.
     generate("ping", max_output_tokens=1, temperature=0.0)
+
+
+# ---- Background re-probe monitor -----------------------------------
+#
+# The startup probe gives the FE banner an initial state, but if the
+# operator fixes the LLM endpoint after boot the banner stays up
+# forever (until restart). Same the other way: an LLM that goes down
+# mid-session leaves the banner reporting "all good" until the next
+# restart. The monitor runs a daemon thread that re-probes on a
+# bounded interval and refreshes the cache, so the FE always reflects
+# CURRENT reality within ~30 seconds.
+#
+# One process can run at most one monitor at a time — `start_health_monitor`
+# is idempotent + thread-safe; subsequent calls are silent no-ops.
+
+_monitor_lock = threading.Lock()
+_monitor_thread: threading.Thread | None = None
+_monitor_stop: threading.Event | None = None
+
+
+def start_health_monitor(
+    registry: LLMProviderRegistry,
+    *,
+    interval_seconds: float | None = None,
+    roles: tuple[str, ...] | None = None,
+) -> bool:
+    """Start a daemon thread that re-probes the registry on a loop.
+
+    Returns True when a new monitor was started, False when one was
+    already running (idempotent — safe to call from API + worker
+    bootstrap without coordination).
+
+    The thread is a daemon, so it dies with the process. The monitor
+    exits cleanly on `stop_health_monitor()`; tests use that for
+    determinism. Production code never needs to stop it explicitly.
+    """
+    interval = (
+        interval_seconds if interval_seconds is not None
+        else llm_health_monitor_interval()
+    )
+    if interval <= 0:
+        _log.info(
+            "LLM health monitor: disabled (interval=%.1fs); cache will "
+            "only reflect the startup probe result",
+            interval,
+        )
+        return False
+
+    global _monitor_thread, _monitor_stop
+    with _monitor_lock:
+        if _monitor_thread is not None and _monitor_thread.is_alive():
+            return False
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=_monitor_loop,
+            args=(registry, interval, roles, stop),
+            name="j1-llm-health-monitor",
+            daemon=True,
+        )
+        _monitor_thread = thread
+        _monitor_stop = stop
+        thread.start()
+    _log.info(
+        "LLM health monitor: started (interval=%.1fs)", interval,
+    )
+    return True
+
+
+def stop_health_monitor(timeout: float = 1.0) -> None:
+    """Signal the monitor to exit and wait briefly for it to die.
+
+    Production rarely calls this — the daemon thread dies with the
+    process. Tests call it for determinism so the next test starts
+    from a clean slate."""
+    global _monitor_thread, _monitor_stop
+    with _monitor_lock:
+        thread = _monitor_thread
+        stop = _monitor_stop
+        _monitor_thread = None
+        _monitor_stop = None
+    if stop is not None:
+        stop.set()
+    if thread is not None:
+        thread.join(timeout=timeout)
+
+
+def _monitor_loop(
+    registry: LLMProviderRegistry,
+    interval: float,
+    roles: tuple[str, ...] | None,
+    stop: threading.Event,
+) -> None:
+    """The daemon's main loop. Re-probes, caches, sleeps. The stop
+    event is checked between sleeps so a test can shut it down
+    promptly without waiting a full interval.
+
+    Exceptions from `probe_registry` are caught + logged but never
+    crash the loop — the monitor must outlive transient errors so it
+    keeps refreshing the cached state."""
+    while not stop.is_set():
+        try:
+            results = probe_registry(registry, roles=roles)
+            cache_probe_results(results)
+            failures = [r for r in results if not r.ok]
+            if failures:
+                # Per-role detail at WARNING so operators can tail
+                # logs and see when the endpoint flips back.
+                for f in failures:
+                    _log.warning(
+                        "LLM health monitor: role=%s provider=%s "
+                        "model=%s STILL DOWN (%s)",
+                        f.role, f.provider, f.model, f.error,
+                    )
+            else:
+                # Healthy ticks at DEBUG so a long-running healthy
+                # process doesn't spam INFO logs every 30s.
+                _log.debug(
+                    "LLM health monitor: %d roles all reachable",
+                    len(results),
+                )
+        except Exception as exc:  # noqa: BLE001 — monitor must never die
+            _log.warning("LLM health monitor tick raised: %s", exc)
+        # Use Event.wait so an external stop() can break the sleep
+        # immediately instead of waiting up to `interval` seconds.
+        if stop.wait(interval):
+            break
+    _log.info("LLM health monitor: stopped")

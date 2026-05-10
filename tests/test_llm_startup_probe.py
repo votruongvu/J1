@@ -12,6 +12,8 @@ Locks two contracts:
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from j1.llm.clients import LLMUsage
@@ -22,8 +24,11 @@ from j1.llm.probe import (
     assert_required_llm_reachable,
     cache_probe_results,
     current_health,
+    llm_health_monitor_interval,
     llm_probe_enabled,
     probe_registry,
+    start_health_monitor,
+    stop_health_monitor,
 )
 from j1.llm.registry import (
     LLM_ROLE_EMBEDDING,
@@ -352,3 +357,152 @@ def test_probe_registry_passes_through_real_errors_under_deadline():
     # NOT the timeout error — the real exception's message survived.
     assert "connection refused" in (results[0].error or "")
     assert "timed out" not in (results[0].error or "").lower()
+
+
+# ---- Background health monitor (LLM up/down without restart) -------
+
+
+@pytest.fixture(autouse=True)
+def _stop_monitor_between_tests():
+    """Ensure no leftover monitor leaks across tests. The monitor is
+    a daemon thread; tests that start one must stop it so the next
+    test starts with a clean process state. Yields to let the test
+    run, then unconditionally tears down — safe to call even when no
+    monitor is running."""
+    yield
+    stop_health_monitor(timeout=2.0)
+    cache_probe_results([])
+
+
+def test_llm_health_monitor_interval_default_30s():
+    assert llm_health_monitor_interval(env={}) == 30.0
+
+
+def test_llm_health_monitor_interval_zero_disables():
+    """`0` is the documented kill-switch for the monitor. Negative
+    values are clamped to 0 so a misconfiguration doesn't loop the
+    monitor instantly."""
+    assert llm_health_monitor_interval(env={"J1_LLM_HEALTH_MONITOR_INTERVAL_SECONDS": "0"}) == 0.0
+    assert llm_health_monitor_interval(env={"J1_LLM_HEALTH_MONITOR_INTERVAL_SECONDS": "-5"}) == 0.0
+
+
+def test_start_health_monitor_disabled_when_interval_zero():
+    """When the operator sets the interval to 0, no background thread
+    is spawned. The startup probe still ran (cache reflects that),
+    but the cache won't auto-refresh."""
+    registry = LLMProviderRegistry()
+    registry.register(LLM_ROLE_TEXT, _OkText())
+
+    started = start_health_monitor(registry, interval_seconds=0)
+    assert started is False
+
+
+def test_start_health_monitor_is_idempotent():
+    """The startup hook may be called twice (e.g. uvicorn worker
+    re-init in dev). Subsequent calls must be no-ops so we don't end
+    up with multiple monitors all probing the same upstream LLM
+    every 30s."""
+    registry = LLMProviderRegistry()
+    registry.register(LLM_ROLE_TEXT, _OkText())
+
+    first = start_health_monitor(registry, interval_seconds=10)
+    second = start_health_monitor(registry, interval_seconds=10)
+    assert first is True
+    assert second is False
+
+
+def test_health_monitor_refreshes_cache_when_endpoint_recovers():
+    """The whole point of the monitor: when the LLM endpoint goes
+    from FAILING to HEALTHY (operator fixed it), the cached
+    snapshot must reflect the new state within roughly one
+    interval. Without the monitor, the cache stays stale until
+    restart and the FE banner sticks around forever.
+
+    Uses a stub client whose first call fails and subsequent calls
+    succeed — mirrors the recovery scenario exactly."""
+    import time
+
+    class _FlipText:
+        provider = "openai_compat"
+        model = "flip-model"
+
+        def __init__(self):
+            self._calls = 0
+            self._lock = threading.Lock()
+
+        def generate(self, prompt, **_):
+            with self._lock:
+                self._calls += 1
+                call_n = self._calls
+            if call_n == 1:
+                raise LLMProviderUnavailable("first call: endpoint down")
+            return ("pong", LLMUsage(provider=self.provider, model=self.model,
+                                     input_tokens=1, output_tokens=1, total_tokens=2))
+
+    flip = _FlipText()
+    registry = LLMProviderRegistry()
+    registry.register(LLM_ROLE_TEXT, flip)
+
+    # Tight 0.1s interval so the test doesn't block. Startup probe
+    # records the FAILED first call; monitor's next tick records the
+    # SUCCESSFUL second call.
+    cache_probe_results(probe_registry(registry))
+    assert current_health().healthy is False
+
+    start_health_monitor(registry, interval_seconds=0.1)
+
+    # Wait up to 2s for the cache to flip — way more headroom than
+    # the 0.1s interval needs in practice but generous enough that
+    # CI jitter doesn't flake.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if current_health().healthy:
+            break
+        time.sleep(0.05)
+
+    assert current_health().healthy is True, (
+        "monitor never refreshed the cache after the endpoint recovered"
+    )
+
+
+def test_health_monitor_keeps_running_when_a_tick_raises():
+    """Defensive: an exception inside `probe_registry` must not kill
+    the monitor — it has to outlive transient errors so it can keep
+    refreshing once the system stabilises."""
+    import threading as _threading
+    import time
+
+    raised = _threading.Event()
+
+    class _RaisingRegistry:
+        def __init__(self):
+            self._fail_until = 1
+            self._calls = 0
+
+        def try_resolve(self, role):
+            self._calls += 1
+            if self._calls <= self._fail_until:
+                raised.set()
+                raise RuntimeError("tick raised")
+            # After the first raising tick: return a healthy stub
+            # ONLY for the text role; everything else returns None
+            # so the probe loop skips them silently.
+            if role == LLM_ROLE_TEXT:
+                return _OkText()
+            return None
+
+    registry = _RaisingRegistry()
+    start_health_monitor(registry, interval_seconds=0.05)
+
+    # Wait for the raising tick to fire + at least one more tick.
+    assert raised.wait(timeout=2.0), "first tick never ran"
+    time.sleep(0.2)  # let subsequent ticks run
+
+    snapshot = current_health()
+    # Cache should have been populated by a SUBSEQUENT (non-raising)
+    # tick — proving the monitor outlived the exception.
+    # (Roles list is empty in current_health when no probed-role
+    # client was returned; since our stub `try_resolve` returns
+    # _OkText for every role, results are populated and healthy.)
+    assert snapshot.healthy is True
+    assert len(snapshot.results) >= 1

@@ -60,6 +60,7 @@ async def _run() -> None:
         cache_probe_results,
         llm_probe_enabled,
         probe_registry,
+        start_health_monitor,
     )
     if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
         _log.info("LLM startup probe: starting (5s deadline per role)")
@@ -82,6 +83,12 @@ async def _run() -> None:
                 "LLM startup probe: all %d configured roles reachable",
                 len(results),
             )
+        # Background re-probe loop. Daemon thread, separate from the
+        # main worker loop, refreshes the cached health state on a
+        # bounded interval so the FE banner clears within ~30s of
+        # the operator fixing the LLM endpoint (and appears within
+        # ~30s of the LLM going down post-startup).
+        start_health_monitor(boot.llm_registry)
 
     _log.info(
         "connecting to Temporal target=%s namespace=%s task_queue=%s",

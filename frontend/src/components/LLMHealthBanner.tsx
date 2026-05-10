@@ -74,7 +74,7 @@ export function LLMHealthBanner() {
 
   return (
     <div
-      role="alert"
+      role="status"
       style={{
         background: "var(--surface-warning, #fff7e6)",
         borderBottom: "1px solid var(--border-warning, #f0ad4e)",
@@ -83,8 +83,11 @@ export function LLMHealthBanner() {
       }}
     >
       <strong style={{ color: "var(--text-warning, #b76d00)" }}>
-        LLM unreachable — uploads are disabled
+        LLM unreachable — admin notice
       </strong>
+      <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
+        New ingestion runs may fail until the endpoint(s) below recover.
+      </span>
       <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
         {failures.map((f) => (
           <li key={f.role} style={{ marginBottom: 2 }}>
@@ -100,8 +103,9 @@ export function LLMHealthBanner() {
         ))}
       </ul>
       <div style={{ marginTop: 6, color: "var(--text-muted)", fontSize: 12 }}>
-        Last checked: {checkedAt}. Restart the worker after fixing the
-        endpoint to refresh the probe.
+        Last checked: {checkedAt}. The background monitor re-probes
+        every 30s; the banner clears automatically when the endpoint
+        recovers.
       </div>
     </div>
   );
