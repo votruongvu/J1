@@ -334,6 +334,36 @@ export interface PlanningResult {
   plannerMode?: string | null;
 }
 
+/**
+ * Post-compile rule-based enrich plan, served by
+ * `GET /ingestion-runs/{run_id}/enrich-plan`. Mirrors the backend's
+ * `PostCompileEnrichPlan.to_payload()` shape under `plan` plus a
+ * thin envelope for run-scope metadata + unavailable reasons.
+ */
+export interface RunEnrichPlanResponse {
+  runId: string;
+  documentId?: string | null;
+  documentName?: string | null;
+  /** "completed" | "unavailable" */
+  status: "completed" | "unavailable";
+  unavailableReason?: string | null;
+  artifactId?: string | null;
+  plan: PostCompileEnrichPlanPayload | null;
+}
+
+export interface PostCompileEnrichPlanPayload {
+  schema_version: string;
+  /** "skip" | "optional" | "recommended" | "required" */
+  overall_recommendation: "skip" | "optional" | "recommended" | "required";
+  reasons: string[];
+  recommended_tasks: string[];
+  skipped_tasks: string[];
+  blocking_issues: string[];
+  source_signals: Record<string, unknown>;
+  /** "rule_based" | "rule_based_with_fast_llm" */
+  decision_source: "rule_based" | "rule_based_with_fast_llm";
+}
+
 // ---- Validation (Phase 1: manual test query) --------------------
 
 export interface ValidationCheck {

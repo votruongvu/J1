@@ -153,12 +153,20 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
             blocking_issues=(block,),
             source_signals=_signals_to_dict(signals),
         )
+    # Affirmative-empty rule: SKIP only when we have positive evidence
+    # the document is empty (no chunks, no text chars, no rich-content
+    # signals). Pure-zero defaults from a parser that didn't surface
+    # metrics at all → fall through to OPTIONAL instead, since the
+    # absence of signals isn't proof of an empty doc.
     if (
-        signals.text_block_count == 0
+        signals.total_text_chars == 0
+        and signals.text_block_count == 0
         and signals.image_count == 0
         and signals.table_count == 0
+        and signals.page_count is not None
+        and signals.page_count > 0
     ):
-        block = "compile produced no content blocks"
+        block = "compile produced no content blocks despite a non-empty source"
         return PostCompileEnrichPlan(
             overall_recommendation=EnrichRecommendation.SKIP,
             reasons=(block,),
@@ -214,6 +222,100 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
         recommended_tasks=tuple(recommended),
         skipped_tasks=tuple(skipped),
         source_signals=_signals_to_dict(signals),
+    )
+
+
+@dataclass(frozen=True)
+class FastLLMRefinement:
+    """A single refinement an optional fast-LLM consult emits to
+    upgrade/downgrade a rule-based plan. Pure-data; the actual LLM
+    call lives in a separate boundary (an activity / a wired
+    consultant) so the rule-based assessor stays I/O-free.
+
+    Honour-rules:
+      * `recommendation` may upgrade OPTIONAL → RECOMMENDED/REQUIRED
+        when the LLM justifies it, or downgrade RECOMMENDED →
+        OPTIONAL when the LLM judges the doc isn't worth enriching.
+        It must NEVER override SKIP — blocking conditions are
+        deterministic.
+      * `add_reasons` are appended to the existing reasons (capped
+        to keep audit logs lean).
+      * `add_recommended_tasks` extend the recommended list (no dups);
+        anything new also drops out of `skipped_tasks`.
+    """
+
+    recommendation: EnrichRecommendation | None = None
+    add_reasons: tuple[str, ...] = ()
+    add_recommended_tasks: tuple[str, ...] = ()
+
+
+_REFINABLE_FROM = frozenset({
+    EnrichRecommendation.OPTIONAL,
+    EnrichRecommendation.RECOMMENDED,
+})
+_REFINEMENT_REASON_CAP = 8
+
+
+def apply_fast_llm_refinement(
+    plan: PostCompileEnrichPlan,
+    refinement: FastLLMRefinement,
+) -> PostCompileEnrichPlan:
+    """Merge a fast-LLM refinement with a rule-based plan and return a
+    new `PostCompileEnrichPlan` with `decision_source` flipped to
+    `rule_based_with_fast_llm`. SKIP plans are NEVER refined — the
+    blocking conditions that drove SKIP are deterministic and must
+    win over LLM judgement.
+
+    Pure function — no I/O, no LLM call. Test fixtures construct
+    a `FastLLMRefinement` directly; production wiring uses an
+    activity that calls the LLM and constructs the same dataclass."""
+    if plan.overall_recommendation == EnrichRecommendation.SKIP:
+        # Refinement on a SKIP plan is rejected silently — the
+        # rule-based blockers are authoritative. We still flip the
+        # decision_source so audit logs record that an LLM consult
+        # happened (and was overruled).
+        return PostCompileEnrichPlan(
+            schema_version=plan.schema_version,
+            overall_recommendation=plan.overall_recommendation,
+            reasons=plan.reasons,
+            recommended_tasks=plan.recommended_tasks,
+            skipped_tasks=plan.skipped_tasks,
+            blocking_issues=plan.blocking_issues,
+            source_signals=plan.source_signals,
+            decision_source=DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
+        )
+    new_rec = plan.overall_recommendation
+    if (
+        refinement.recommendation is not None
+        and plan.overall_recommendation in _REFINABLE_FROM
+        and refinement.recommendation != EnrichRecommendation.SKIP
+    ):
+        new_rec = refinement.recommendation
+    # Merge tasks: anything LLM recommended joins recommended_tasks
+    # and is removed from skipped_tasks. Order is preserved
+    # (rule-based first, then LLM additions in insertion order).
+    recommended = list(plan.recommended_tasks)
+    skipped = list(plan.skipped_tasks)
+    for task in refinement.add_recommended_tasks:
+        if task and task not in recommended:
+            recommended.append(task)
+        if task in skipped:
+            skipped.remove(task)
+    reasons = list(plan.reasons)
+    for reason in refinement.add_reasons:
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    # Cap reasons so a chatty LLM doesn't bloat the artifact.
+    reasons = reasons[:_REFINEMENT_REASON_CAP]
+    return PostCompileEnrichPlan(
+        schema_version=plan.schema_version,
+        overall_recommendation=new_rec,
+        reasons=tuple(reasons),
+        recommended_tasks=tuple(recommended),
+        skipped_tasks=tuple(skipped),
+        blocking_issues=plan.blocking_issues,
+        source_signals=plan.source_signals,
+        decision_source=DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
     )
 
 

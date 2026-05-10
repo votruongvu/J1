@@ -73,6 +73,7 @@ with workflow.unsafe.imports_passed_through():
         load_assessment_failure_policy,
     )
     from j1.processing.enrich_assessment import (
+        EnrichRecommendation,
         PostCompileEnrichPlan,
         assess_post_compile_enrich,
         build_signals_from_compile_metrics,
@@ -2172,7 +2173,12 @@ class ProjectProcessingWorkflow:
         return revised
 
     def _stage_enabled(
-        self, plan: IngestPlan | None, stage: str, request_kind: str | None,
+        self,
+        plan: IngestPlan | None,
+        stage: str,
+        request_kind: str | None,
+        *,
+        enrich_plan: "PostCompileEnrichPlan | None" = None,
     ) -> tuple[bool, str | None, StepSource]:
         """Resolve "should this stage run?" with consistent precedence.
 
@@ -2183,13 +2189,37 @@ class ProjectProcessingWorkflow:
         Order of precedence (highest first):
           1. No `request_kind` → stage is unrunnable (no adapter chosen)
              → skip with `source=CALLER`.
-          2. Plan is None (planner disabled) → run if request_kind set.
-          3. Plan says step is enabled → run; source=PLANNER (or CALLER
+          2. `stage == "enrich"` AND `enrich_plan` is supplied → the
+             post-compile rule-based enrich plan is authoritative:
+             SKIP recommendation with blocking_issues skips with
+             `PLANNER` source; any other recommendation runs (the
+             caller already opted in by setting `enricher_kind`).
+          3. Plan is None (planner disabled) → run if request_kind set.
+          4. Plan says step is enabled → run; source=PLANNER (or CALLER
              if caller-overridden).
-          4. Plan says step is skipped → skip; source carried from
+          5. Plan says step is skipped → skip; source carried from
              plan.step.source (typically PLANNER)."""
         if not request_kind:
             return False, f"{stage}_kind not provided in request", StepSource.CALLER
+        # Post-compile enrich plan is authoritative for the enrich
+        # stage when provided. SKIP overrules the IngestPlan; other
+        # recommendations defer to the IngestPlan's runnable signal
+        # (still controlled by caller_overrides + planner mode).
+        if stage == "enrich" and enrich_plan is not None:
+            if enrich_plan.overall_recommendation == EnrichRecommendation.SKIP:
+                reason = (
+                    "; ".join(enrich_plan.blocking_issues)
+                    or "post-compile enrich plan recommends SKIP"
+                )
+                return False, reason, StepSource.PLANNER
+            # RECOMMENDED / REQUIRED → run with PLANNER provenance so
+            # the audit log records the new assessor as the deciding
+            # source. OPTIONAL → defer to IngestPlan / caller below.
+            if enrich_plan.overall_recommendation in (
+                EnrichRecommendation.RECOMMENDED,
+                EnrichRecommendation.REQUIRED,
+            ):
+                return True, None, StepSource.PLANNER
         if plan is None:
             return True, None, StepSource.CALLER
         step = plan.step(stage)
@@ -2758,11 +2788,13 @@ class ProjectProcessingWorkflow:
         if self._cancelled:
             return
 
-        # Stage gate: planner (if enabled) and request kind together
-        # decide whether enrich runs. `_stage_enabled` codifies the
-        # precedence rules (caller > planner > default).
+        # Stage gate: the post-compile enrich plan is authoritative
+        # when present; otherwise fall back to the IngestPlan + the
+        # request's enricher_kind. `_stage_enabled` codifies the
+        # precedence rules.
         enrich_enabled, enrich_reason, enrich_source = self._stage_enabled(
             plan, "enrich", request.enricher_kind,
+            enrich_plan=enrich_plan,
         )
         # Resume short-circuit: if the prior run already completed
         # enrich, skip the activity dispatch and record a SKIPPED

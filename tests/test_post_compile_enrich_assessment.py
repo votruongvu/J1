@@ -19,7 +19,9 @@ import pytest
 
 from j1.processing.enrich_assessment import (
     DECISION_SOURCE_RULE_BASED,
+    DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
     EnrichRecommendation,
+    FastLLMRefinement,
     PostCompileEnrichPlan,
     SCHEMA_VERSION,
     SourceSignals,
@@ -27,6 +29,7 @@ from j1.processing.enrich_assessment import (
     TASK_QUALITY_ASSESSMENT,
     TASK_TABLE_ENRICHMENT,
     TASK_VISION_ENRICHMENT,
+    apply_fast_llm_refinement,
     assess_post_compile_enrich,
     build_signals_from_compile_metrics,
 )
@@ -67,10 +70,15 @@ def test_final_quality_failed_returns_skip():
     assert any("FAILED" in b for b in plan.blocking_issues)
 
 
-def test_empty_document_returns_skip():
+def test_affirmative_empty_document_returns_skip():
+    """SKIP only with positive evidence of an empty doc:
+    page_count>0 + zero counts everywhere. Catches the
+    'compile parsed a real PDF but found nothing useful' case."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
+        page_count=4,
+        total_text_chars=0,
         text_block_count=0,
         image_count=0,
         table_count=0,
@@ -78,6 +86,19 @@ def test_empty_document_returns_skip():
     assert plan.overall_recommendation == EnrichRecommendation.SKIP
     assert plan.blocking_issues
     assert "no content" in plan.blocking_issues[0].lower()
+
+
+def test_no_signals_falls_through_to_optional():
+    """Defaults (page_count=None, all counts=0) must NOT trip the
+    empty-doc SKIP path — the absence of metrics isn't proof of an
+    empty document. Test fakes + legacy compilers that don't surface
+    content_stats fall through to OPTIONAL."""
+    plan = assess_post_compile_enrich(SourceSignals(
+        compile_status="succeeded",
+        final_compile_quality="good",
+    ))
+    assert plan.overall_recommendation == EnrichRecommendation.OPTIONAL
+    assert plan.blocking_issues == ()
 
 
 # ---- Task-by-task recommendations ----------------------------------
@@ -221,6 +242,106 @@ def test_build_signals_falls_back_to_compile_metrics_for_text_chars():
         compile_metrics={"extracted_text_chars": 4200},
     )
     assert signals.total_text_chars == 4200
+
+
+# ---- End-to-end: compile metrics → plan ---------------------------
+
+
+# ---- Fast-LLM refinement -------------------------------------------
+
+
+def test_fast_llm_refinement_upgrades_optional_to_recommended():
+    """OPTIONAL → RECOMMENDED is a valid LLM upgrade. The merged plan
+    flips `decision_source` to record that an LLM consult shaped it."""
+    base = assess_post_compile_enrich(_ok_signals())
+    assert base.overall_recommendation == EnrichRecommendation.OPTIONAL
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement(
+        recommendation=EnrichRecommendation.RECOMMENDED,
+        add_reasons=("LLM judged this is a regulated-domain document",),
+        add_recommended_tasks=("requirement_extraction",),
+    ))
+    assert refined.overall_recommendation == EnrichRecommendation.RECOMMENDED
+    assert "requirement_extraction" in refined.recommended_tasks
+    assert "requirement_extraction" not in refined.skipped_tasks
+    assert refined.decision_source == DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM
+    assert any("regulated" in r for r in refined.reasons)
+
+
+def test_fast_llm_refinement_can_downgrade_recommended_to_optional():
+    base = assess_post_compile_enrich(_ok_signals(
+        has_tables=True, table_count=1,
+    ))
+    assert base.overall_recommendation == EnrichRecommendation.RECOMMENDED
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement(
+        recommendation=EnrichRecommendation.OPTIONAL,
+        add_reasons=("LLM judged the table is auto-generated TOC",),
+    ))
+    assert refined.overall_recommendation == EnrichRecommendation.OPTIONAL
+    assert refined.decision_source == DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM
+
+
+def test_fast_llm_refinement_never_overrides_skip():
+    """SKIP plans carry deterministic blocking conditions; the LLM
+    must NOT be allowed to upgrade them. The decision_source still
+    flips so we record the consult in the audit log."""
+    base = assess_post_compile_enrich(SourceSignals(compile_status="failed"))
+    assert base.overall_recommendation == EnrichRecommendation.SKIP
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement(
+        recommendation=EnrichRecommendation.RECOMMENDED,
+        add_recommended_tasks=("table_enrichment",),
+    ))
+    assert refined.overall_recommendation == EnrichRecommendation.SKIP
+    assert refined.recommended_tasks == ()  # SKIP never carries tasks
+    assert refined.blocking_issues == base.blocking_issues
+    # Audit signal: even rejected LLM consults flip the source so
+    # operators know an LLM was consulted.
+    assert refined.decision_source == DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM
+
+
+def test_fast_llm_refinement_silently_drops_skip_attempted_via_recommendation():
+    """An LLM that emits `recommendation=skip` for a non-SKIP plan
+    must NOT be allowed to force a SKIP. SKIP is reserved for
+    deterministic blocking conditions."""
+    base = assess_post_compile_enrich(_ok_signals(has_images=True, image_count=1))
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement(
+        recommendation=EnrichRecommendation.SKIP,
+    ))
+    # Original recommendation preserved (RECOMMENDED), only decision
+    # source flipped.
+    assert refined.overall_recommendation == base.overall_recommendation
+
+
+def test_fast_llm_refinement_dedupes_recommended_tasks():
+    base = assess_post_compile_enrich(_ok_signals(has_tables=True, table_count=1))
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement(
+        # Already in recommended_tasks from the rule-based assessor.
+        add_recommended_tasks=("table_enrichment", "image_captioning"),
+    ))
+    # No duplicate `table_enrichment`.
+    assert refined.recommended_tasks.count("table_enrichment") == 1
+    # `image_captioning` newly added; gone from skipped.
+    assert "image_captioning" in refined.recommended_tasks
+    assert "image_captioning" not in refined.skipped_tasks
+
+
+def test_fast_llm_refinement_caps_reasons():
+    """A chatty LLM that emits 50 reasons mustn't bloat the audit
+    artifact. The merge caps to a small limit."""
+    base = assess_post_compile_enrich(_ok_signals())
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement(
+        add_reasons=tuple(f"reason {i}" for i in range(50)),
+    ))
+    assert len(refined.reasons) <= 8
+
+
+def test_fast_llm_refinement_with_empty_refinement_only_flips_source():
+    base = assess_post_compile_enrich(_ok_signals())
+    refined = apply_fast_llm_refinement(base, FastLLMRefinement())
+    assert refined.overall_recommendation == base.overall_recommendation
+    assert refined.recommended_tasks == base.recommended_tasks
+    assert refined.skipped_tasks == base.skipped_tasks
+    assert refined.reasons == base.reasons
+    assert refined.decision_source == DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM
 
 
 # ---- End-to-end: compile metrics → plan ---------------------------

@@ -2236,6 +2236,32 @@ def create_rest_api(
         return envelope(report.model_dump(by_alias=True), _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/enrich-plan",
+        tags=["ingestion-runs"],
+        summary="Get the post-compile enrich plan for an ingestion run",
+        description=(
+            "Returns the post-compile rule-based enrich plan "
+            "(`PostCompileEnrichPlan`): an `overall_recommendation` "
+            "(skip/optional/recommended/required), the per-task "
+            "recommended/skipped lists, blocking issues, source "
+            "signals, and the decision_source. Read by the FE's "
+            "Enrich Plan card. Returns `status=\"unavailable\"` with "
+            "a reason when the run hasn't reached post-compile or "
+            "the artifact wasn't persisted. Returns 404 if the run "
+            "does not exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_enrich_plan(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        plan = service.get_run_enrich_plan(ctx, run_id)
+        return envelope(plan, _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/graph",
         tags=["ingestion-runs"],
         summary="Get the neutral graph snapshot for an ingestion run",

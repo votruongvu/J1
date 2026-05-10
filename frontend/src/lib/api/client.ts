@@ -27,6 +27,7 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  RunEnrichPlanResponse,
   StartValidationRunRequest,
   ValidationRun,
   ValidationRunListItem,
@@ -166,6 +167,13 @@ export interface IngestionClient {
    * reason when no plan exists yet (legacy / pre-plan / disabled).
    */
   getRunPlanning(runId: string): Promise<PlanningResult>;
+
+  /**
+   * GET the post-compile rule-based enrich plan (Enrich Plan card).
+   * Returns `status="unavailable"` with a reason when the run hasn't
+   * reached post-compile yet or the artifact wasn't persisted.
+   */
+  getRunEnrichPlan(runId: string): Promise<RunEnrichPlanResponse>;
 
   // ---- Validation (Phase 1) ---------------------------------------
 

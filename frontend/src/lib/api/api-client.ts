@@ -40,6 +40,7 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  RunEnrichPlanResponse,
   StartValidationRunRequest,
   ValidationRun,
   ValidationRunListItem,
@@ -320,6 +321,18 @@ export class ApiClient implements IngestionClient {
       { headers: this.headers() },
     );
     return (await this.json<PlanningResult>(resp));
+  }
+
+  async getRunEnrichPlan(runId: string): Promise<RunEnrichPlanResponse> {
+    // Reads the `post_compile_enrich_plan` artifact via
+    // `IngestionResultReviewService.get_run_enrich_plan`. Plain dict
+    // payload (no DTO) — the schema is small and stable; we type
+    // the response in the FE for compile-time safety.
+    const resp = await fetch(
+      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/enrich-plan`),
+      { headers: this.headers() },
+    );
+    return (await this.json<RunEnrichPlanResponse>(resp));
   }
 
   async listRunChunks(

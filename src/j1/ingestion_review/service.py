@@ -709,6 +709,84 @@ class IngestionResultReviewService:
             llm_recommendation=llm_rec,
         )
 
+    def get_run_enrich_plan(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> dict:
+        """Return the post-compile rule-based enrich-plan for `run_id`.
+
+        Reads the `post_compile_enrich_plan` artifact (persisted by
+        the workflow's `_run_post_compile_enrich_assessment` step).
+        When no artifact exists — e.g. legacy run, compile failed
+        before assessment, run hasn't reached post-compile yet — the
+        response carries `status="unavailable"` with an
+        operator-readable reason. Schema is the
+        `PostCompileEnrichPlan.to_payload()` dict, exposed under the
+        `plan` field; the wrapping dict adds `runId` /
+        `documentId` / `unavailableReason` for FE rendering.
+
+        Raises `ReviewNotFound` when the run doesn't exist in the
+        caller's tenant/project."""
+        from j1.processing.results import ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN
+
+        run = self._load_run(ctx, run_id)
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        candidates = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN
+        ]
+        base = {
+            "runId": run_id,
+            "documentId": run.document_id or None,
+            "documentName": run.metadata.get("document_name"),
+        }
+        if not candidates:
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "No post-compile enrich plan was persisted for this "
+                    "run yet. Compile may not have completed, the run "
+                    "predates the assessor, or persistence failed."
+                ),
+                "plan": None,
+            }
+        # Most-recent wins on replay duplicates.
+        candidates.sort(key=lambda a: a.updated_at, reverse=True)
+        artifact = candidates[0]
+        path_resolver = self._artifact_path_resolver(ctx)
+        try:
+            path = path_resolver(artifact)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ReviewNotFound):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "post_compile_enrich_plan artifact exists but could "
+                    "not be read; check workspace permissions."
+                ),
+                "plan": None,
+            }
+        if not isinstance(payload, dict):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "post_compile_enrich_plan artifact has an unexpected "
+                    "shape (not a JSON object)."
+                ),
+                "plan": None,
+            }
+        return {
+            **base,
+            "status": "completed",
+            "unavailableReason": None,
+            "artifactId": artifact.artifact_id,
+            "plan": payload,
+        }
+
     def _read_planning_artifact_dto(
         self, ctx: ProjectContext, run, run_id: str,
     ) -> "PlanningResultDTO | None":
