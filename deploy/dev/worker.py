@@ -48,6 +48,25 @@ async def _run() -> None:
         boot.selection.compiler, boot.selection.graph, boot.selection.retrieval,
     )
 
+    # Fail-fast LLM connectivity gate. The worker drives every LLM
+    # call in the pipeline; if the endpoint is unreachable now it
+    # WILL fail mid-run later — surface the misconfiguration as a
+    # startup error instead of letting the operator find out via a
+    # broken document upload three minutes in. Opt-out via
+    # `J1_LLM_STARTUP_PROBE=false` (intended for tests + mock-only
+    # deployments).
+    from j1.llm.probe import (
+        LLMStartupProbeError,
+        assert_required_llm_reachable,
+        llm_probe_enabled,
+    )
+    if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
+        try:
+            assert_required_llm_reachable(boot.llm_registry)
+        except LLMStartupProbeError as exc:
+            _log.error("%s", exc)
+            sys.exit(2)
+
     _log.info(
         "connecting to Temporal target=%s namespace=%s task_queue=%s",
         temporal_settings.target, temporal_settings.namespace,

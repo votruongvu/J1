@@ -203,6 +203,24 @@ def _build_app():
     # one bootstrap means clients that omit `compilerKind` get the
     # selection the worker actually wired.
     boot = bootstrap_from_env()
+
+    # Fail-fast LLM connectivity gate (mirrors worker.py). The API
+    # itself rarely calls the LLM, but we run the same probe here so
+    # operators see the misconfiguration ONE place — at the
+    # `docker compose up` banner — rather than discovering it later
+    # when the worker fails its own startup. Opt-out via
+    # `J1_LLM_STARTUP_PROBE=false`.
+    from j1.llm.probe import (
+        LLMStartupProbeError,
+        assert_required_llm_reachable,
+        llm_probe_enabled,
+    )
+    if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
+        try:
+            assert_required_llm_reachable(boot.llm_registry)
+        except LLMStartupProbeError as exc:
+            _log.error("%s", exc)
+            raise SystemExit(2) from exc
     # Surface the worker's registered processor kinds so the REST
     # adapter can both (a) validate caller-supplied kinds at the API
     # boundary and (b) auto-default omitted kinds via the new
