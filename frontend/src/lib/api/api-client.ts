@@ -635,7 +635,12 @@ export class ApiClient implements IngestionClient {
     const body = await res.json();
     const data = body?.data ?? body;
     return {
-      healthy: Boolean(data?.healthy ?? true),
+      // Default to UNHEALTHY when the field is missing — fail-closed
+      // so a malformed response doesn't silently hide real LLM
+      // outages from the admin banner. The catch path on a network
+      // error already does the same; this aligns the success-but-
+      // malformed path with that contract.
+      healthy: Boolean(data?.healthy ?? false),
       checkedAt: data?.checkedAt ?? null,
       results: Array.isArray(data?.results)
         ? data.results.map((r: Record<string, unknown>) => ({

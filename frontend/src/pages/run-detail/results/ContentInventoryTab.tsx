@@ -21,6 +21,11 @@ import type {
 
 interface ContentInventoryTabProps {
   runId: string;
+  /** Bumps every time the parent reloads the run summary. The tab
+   * re-fetches its own data when this changes so a manifest that
+   * lands AFTER the user opened the tab becomes visible without a
+   * manual reload. Optional — older callers default to 0. */
+  refreshNonce?: number;
 }
 
 type TypeFilter =
@@ -32,7 +37,7 @@ type TypeFilter =
   | "heading"
   | "other";
 
-export function ContentInventoryTab({ runId }: ContentInventoryTabProps) {
+export function ContentInventoryTab({ runId, refreshNonce = 0 }: ContentInventoryTabProps) {
   const client = useClient();
   const [inventory, setInventory] = useState<ContentInventory | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,7 +66,12 @@ export function ContentInventoryTab({ runId }: ContentInventoryTabProps) {
     return () => {
       cancelled = true;
     };
-  }, [client, runId]);
+    // `refreshNonce` is in deps so a parent-side summary refresh
+    // (typically triggered by a step.completed / plan.revised SSE
+    // event) re-fetches the inventory. Without this dep the tab
+    // shows whatever the FIRST mount's response was, even after
+    // the manifest artifact lands later in the run.
+  }, [client, runId, refreshNonce]);
 
   const filteredItems = useMemo(() => {
     if (!inventory) return [];

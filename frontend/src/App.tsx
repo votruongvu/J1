@@ -40,7 +40,16 @@ export function App() {
   const [authValue, setAuthValue] = useLocalStorage(LS_KEYS.authValue, "");
   const [apiBase, setApiBase] = useLocalStorage(LS_KEYS.apiBase, DEFAULT_API_BASE);
   const [theme, setTheme] = useLocalStorage<Theme>(LS_KEYS.theme, "light");
-  const [mode, setMode] = useLocalStorage<Mode>(LS_KEYS.mode, "mock");
+  // Default to LIVE mode. Mock mode hardcodes success responses for
+  // many client methods (getLLMHealth, getRunContentInventory,
+  // getRunPlanning) which silently masks real backend issues:
+  // operators were seeing tabs locked / banners missing because
+  // the mock returned `healthy: true` / `unavailable: true` while
+  // the live backend was reporting the actual state. Live is the
+  // safer default for a first-load on a real deployment; existing
+  // users keep their persisted preference via useLocalStorage.
+  // Demo / standalone testing can still flip to mock via the toggle.
+  const [mode, setMode] = useLocalStorage<Mode>(LS_KEYS.mode, "live");
   const [scenario, setScenario] = useLocalStorage<MockScenario>(LS_KEYS.scenario, "warnings");
 
   const [authOpen, setAuthOpen] = useState(false);

@@ -32,9 +32,15 @@ import type {
 
 interface PlanningReportTabProps {
   runId: string;
+  /** Bumps when the parent reloads the run summary; the tab
+   * re-fetches its plan when this changes so a planning_result
+   * artifact that lands AFTER the user opened the tab becomes
+   * visible without a manual reload. Optional — older callers
+   * default to 0. */
+  refreshNonce?: number;
 }
 
-export function PlanningReportTab({ runId }: PlanningReportTabProps) {
+export function PlanningReportTab({ runId, refreshNonce = 0 }: PlanningReportTabProps) {
   const client = useClient();
   const [report, setReport] = useState<PlanningResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,7 +67,12 @@ export function PlanningReportTab({ runId }: PlanningReportTabProps) {
     return () => {
       cancelled = true;
     };
-  }, [client, runId]);
+    // `refreshNonce` is in deps so a parent-side summary refresh
+    // (typically triggered by a plan.revised SSE event) re-fetches
+    // the plan. Without this dep the tab shows the FIRST mount's
+    // response forever, even after the planning_result artifact
+    // lands later in the run.
+  }, [client, runId, refreshNonce]);
 
   if (error) {
     return (

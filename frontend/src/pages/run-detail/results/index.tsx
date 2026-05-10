@@ -63,6 +63,15 @@ export function ResultsSection({
   const [qualityLoading, setQualityLoading] = useState(false);
   const [qualityError, setQualityError] = useState<string | null>(null);
 
+  // Refresh nonce — incremented every time we reload the summary.
+  // Threaded into Content Inventory + Planning tabs so they re-fetch
+  // their own data when the summary signals new artifacts have
+  // landed. Without this, a tab that loaded BEFORE the
+  // parsed_content_manifest / planning_result artifacts were
+  // registered shows a stale "unavailable" state forever, even after
+  // SSE step.* events flip the parent's view of availability.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
   // Reset cache when the run id changes.
   useEffect(() => {
     setSummary(null);
@@ -71,6 +80,7 @@ export function ResultsSection({
     setQuality(null);
     setQualityLoading(false);
     setQualityError(null);
+    setRefreshNonce(0);
     setTab("overview");
   }, [runId]);
 
@@ -99,7 +109,14 @@ export function ResultsSection({
           setSummaryError(e instanceof Error ? e.message : "Failed to load.");
         }
       } finally {
-        if (!cancelled) setSummaryLoading(false);
+        if (!cancelled) {
+          setSummaryLoading(false);
+          // Bump the nonce on every completed load (success OR
+          // error) — tabs that depend on summary state should
+          // re-fetch even when summary itself fails, so a transient
+          // /summary error doesn't leave the tab content stale.
+          setRefreshNonce((n) => n + 1);
+        }
       }
     })();
     return () => {
@@ -198,41 +215,47 @@ export function ResultsSection({
         views?.planning?.reason ??
         (views ? "Waiting for planner to finish." : "Loading…"),
     },
+    // Use safe optional chaining (?. on EVERY field) so a partially-
+    // missing `views` object — older API response, in-flight network
+    // error retried by the FE, malformed payload — can't crash the
+    // tab list rendering. Previously `views?.chunks.available` would
+    // throw `TypeError: cannot read 'available' of undefined` when
+    // `views.chunks` was missing, blanking the whole results panel.
     {
       key: "chunks",
       label: "Knowledge Chunks",
-      available: views?.chunks.available ?? false,
-      reason: views?.chunks.reason ?? "Loading…",
+      available: views?.chunks?.available ?? false,
+      reason: views?.chunks?.reason ?? "Loading…",
     },
     {
       key: "assets",
       label: "Enrichment",
-      available: views?.assets.available ?? false,
-      reason: views?.assets.reason ?? "Loading…",
+      available: views?.assets?.available ?? false,
+      reason: views?.assets?.reason ?? "Loading…",
     },
     {
       key: "graph",
       label: "Knowledge Graph",
-      available: views?.graph.available ?? false,
-      reason: views?.graph.reason ?? "Loading…",
+      available: views?.graph?.available ?? false,
+      reason: views?.graph?.reason ?? "Loading…",
     },
     {
       key: "quality",
       label: "Quality",
-      available: views?.quality.available ?? false,
-      reason: views?.quality.reason ?? "Loading…",
+      available: views?.quality?.available ?? false,
+      reason: views?.quality?.reason ?? "Loading…",
     },
     {
       key: "raw",
       label: "Raw artifacts",
-      available: views?.rawArtifacts.available ?? false,
-      reason: views?.rawArtifacts.reason ?? "Loading…",
+      available: views?.rawArtifacts?.available ?? false,
+      reason: views?.rawArtifacts?.reason ?? "Loading…",
     },
     {
       key: "validation",
       label: "Validation",
-      available: views?.validation.available ?? false,
-      reason: views?.validation.reason ?? "Loading…",
+      available: views?.validation?.available ?? false,
+      reason: views?.validation?.reason ?? "Loading…",
     },
   ];
 
@@ -282,8 +305,12 @@ export function ResultsSection({
             error={qualityError}
           />
         )}
-        {tab === "planning" && <PlanningReportTab runId={runId} />}
-        {tab === "parsedContent" && <ContentInventoryTab runId={runId} />}
+        {tab === "planning" && (
+          <PlanningReportTab runId={runId} refreshNonce={refreshNonce} />
+        )}
+        {tab === "parsedContent" && (
+          <ContentInventoryTab runId={runId} refreshNonce={refreshNonce} />
+        )}
         {tab === "chunks" && <ChunksTab runId={runId} />}
         {tab === "assets" && <AssetsTab runId={runId} />}
         {tab === "graph" && <GraphTab runId={runId} />}
