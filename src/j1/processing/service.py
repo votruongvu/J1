@@ -238,6 +238,148 @@ class ProcessingService:
             f"failed to persist error_report artifact for run {run_id!r}"
         )
 
+    def persist_validation_report(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        passed: bool,
+        errors: list[str],
+        rules_evaluated: list[str] | None = None,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write a `validation_report.json` artifact summarising the
+        outcome of `_validate_completion`.
+
+        Persisted on every terminal transition (success OR failure),
+        so operators can see WHICH rules ran and WHICH ones tripped
+        without re-running validation. Backs the `validation_report`
+        kind in the artifact contract."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_VALIDATION_REPORT,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+
+        payload = {
+            "schema_version": "1",
+            "run_id": run_id,
+            "document_id": document_id,
+            "passed": passed,
+            "errors": list(errors or []),
+            "rules_evaluated": list(rules_evaluated or []),
+            "created_at": self._clock().isoformat(),
+        }
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_VALIDATION_REPORT,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"validation_report_{run_id}.json",
+                "passed": passed,
+                "error_count": len(errors or []),
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            f"failed to persist validation_report artifact for run {run_id!r}"
+        )
+
+    def persist_final_summary(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        final_status: str,
+        executed_steps: list[dict] | None = None,
+        artifact_kind_counts: dict[str, int] | None = None,
+        warning_count: int = 0,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write a `final_summary.json` artifact at terminal state.
+
+        Carries the at-a-glance outcome (status + planner-derived
+        executed-stage tally + artifact-kind counts + warning count
+        + failure detail when applicable). Persisted at SUCCESS or
+        FAILURE transitions so the FE / operators have a single
+        canonical artifact summarising the run."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_FINAL_SUMMARY,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+
+        payload = {
+            "schema_version": "1",
+            "run_id": run_id,
+            "document_id": document_id,
+            "final_status": final_status,
+            "warning_count": int(warning_count or 0),
+            "failure_code": failure_code,
+            "failure_message": failure_message,
+            "executed_steps": list(executed_steps or []),
+            "artifact_kind_counts": dict(artifact_kind_counts or {}),
+            "created_at": self._clock().isoformat(),
+        }
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_FINAL_SUMMARY,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"final_summary_{run_id}.json",
+                "final_status": final_status,
+                "warning_count": int(warning_count or 0),
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            f"failed to persist final_summary artifact for run {run_id!r}"
+        )
+
     def enrich(
         self,
         ctx: ProjectContext,

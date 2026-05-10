@@ -92,6 +92,39 @@ class QueryActivityInput:
 
 
 @dataclass(frozen=True)
+class PersistValidationReportInput:
+    """Workflow → activity payload for the `validation_report`
+    artifact. Persisted before the COMPLETED transition (or by the
+    failure handler when validation itself triggered the failure)
+    so operators can see WHICH rules ran and which ones tripped."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    passed: bool
+    errors: list[str] = field(default_factory=list)
+    rules_evaluated: list[str] = field(default_factory=list)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
+class PersistFinalSummaryInput:
+    """Workflow → activity payload for the `final_summary` artifact.
+    Carries the at-a-glance run outcome at terminal state."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    final_status: str
+    executed_steps: list[dict[str, Any]] = field(default_factory=list)
+    artifact_kind_counts: dict[str, int] = field(default_factory=dict)
+    warning_count: int = 0
+    failure_code: str | None = None
+    failure_message: str | None = None
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class PersistErrorReportInput:
     """Workflow → activity payload for the failure-path
     `error_report` artifact. The workflow calls this from its

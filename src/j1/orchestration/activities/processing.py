@@ -27,6 +27,8 @@ from j1.orchestration.activities.payloads import (
     IndexActivityInput,
     InsertContentActivityInput,
     PersistErrorReportInput,
+    PersistFinalSummaryInput,
+    PersistValidationReportInput,
     ProcessingActivityResult,
     QueryActivityInput,
     QueryActivityResult,
@@ -53,6 +55,8 @@ ACTIVITY_BUILD_GRAPH = "j1.processing.build_graph"
 ACTIVITY_INDEX = "j1.processing.index"
 ACTIVITY_QUERY = "j1.processing.query"
 ACTIVITY_PERSIST_ERROR_REPORT = "j1.processing.persist_error_report"
+ACTIVITY_PERSIST_VALIDATION_REPORT = "j1.processing.persist_validation_report"
+ACTIVITY_PERSIST_FINAL_SUMMARY = "j1.processing.persist_final_summary"
 
 
 class UnknownProcessorError(LookupError):
@@ -114,6 +118,8 @@ class ProcessingActivities:
             self.index,
             self.query,
             self.persist_error_report,
+            self.persist_validation_report,
+            self.persist_final_summary,
         ]
 
     @activity.defn(name=ACTIVITY_COMPILE)
@@ -582,6 +588,71 @@ class ProcessingActivities:
                 stage=input.stage,
                 step=input.step,
                 step_results=list(input.step_results) if input.step_results else None,
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_VALIDATION_REPORT)
+    def persist_validation_report(
+        self, input: PersistValidationReportInput,
+    ) -> ArtifactActivityResult:
+        """Persist `validation_report.json` summarising
+        `_validate_completion`'s outcome. Called from the workflow at
+        EVERY terminal transition (success or failure) so operators
+        can see WHICH rules ran and which ones tripped without
+        re-running validation. Best-effort — failure here doesn't
+        change the workflow's terminal status."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_validation_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                passed=input.passed,
+                errors=list(input.errors),
+                rules_evaluated=list(input.rules_evaluated),
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_FINAL_SUMMARY)
+    def persist_final_summary(
+        self, input: PersistFinalSummaryInput,
+    ) -> ArtifactActivityResult:
+        """Persist `final_summary.json` at terminal state. Carries the
+        at-a-glance run outcome (status + executed-stage tally +
+        artifact-kind counts + warning count + failure detail).
+        Best-effort like the other terminal-state artifact writes."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_final_summary(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                final_status=input.final_status,
+                executed_steps=list(input.executed_steps),
+                artifact_kind_counts=dict(input.artifact_kind_counts),
+                warning_count=input.warning_count,
+                failure_code=input.failure_code,
+                failure_message=input.failure_message,
                 actor=input.actor,
             )
         except Exception as exc:  # noqa: BLE001

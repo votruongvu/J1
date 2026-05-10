@@ -308,7 +308,183 @@ curl -s http://localhost:8000/healthz/llm | python -m json.tool
 - **Per-process probe cache.** Worker and API caches are independent. The FE talks to the API, so the API's cache is what gates the banner. If the worker probe sees the LLM as down but the API hasn't ticked yet, there's a short window where the FE banner says "healthy" but a workflow run will fail. Background monitor (30s) closes the window quickly.
 - **`J1_LLM_PLANNING_ENABLED` is legacy.** Operators with both it and `J1_INGEST_PLAN_MODE` set will see the explicit `_ENABLED` value win — by design but a foot-gun. Plan to deprecate in a follow-up.
 
-## 11. Manual acceptance checklist
+## 11. Expected ingestion operating model
+
+J1 owns planning + validation. Adapters execute selected capabilities. A run is `COMPLETED` only when validation against the `IngestPlan` passes.
+
+**Backbone stages (every run):**
+
+`create_run → persist_original_document → resolve_config → document_profile → initial_execution_plan → parse_or_compile → content_inventory → refined_execution_plan? → generate_chunks → persist_or_index_chunks → artifact_manifest → final_validation → final_summary`
+
+**Conditional capabilities (gated by plan):**
+- `graph` — runs only when `IngestPlan.steps[graph].enabled == True`. Today: gated by caller-supplied `graph_builder_kind` (forces enabled with `source=CALLER`) OR planner decision (with `source=PLANNER`). The post-compile overlay must NOT silently flip a CALLER-enabled graph back to skipped — `_apply_post_compile_planning` honors this.
+- `enrich` — same model.
+- `vision_enrich` — folded inside the composite enricher; per-modality flags from `EnrichmentSettings`.
+
+**Stage-success rule**: a stage is `succeeded` only when (a) the activity returned successfully, (b) required outputs were persisted, (c) outputs are readable, (d) per-stage validation passes, (e) the stage record is durably saved.
+
+The current workflow ([`src/j1/orchestration/workflows/project_processing.py`](../src/j1/orchestration/workflows/project_processing.py)) already enforces (a)–(c) via `_handle_artifact_output` + raise-on-failure semantics, and partially enforces (d) via `_validate_completion`. (e) is implicit through `_record_step` which is read by `RunSummaryDTO.steps[]`.
+
+## 12. Gap analysis (plan-first model vs. current state)
+
+| Required behaviour | Current state | Gap | Fix landed this commit |
+|---|---|---|---|
+| J1 owns the IngestPlan | ✓ — `DefaultIngestPlanner` + `_apply_post_compile_planning` | None | — |
+| Graph not implicit in parse | ✓ — split-mode parses without inserting; complete-mode keeps everything in one call but is documented as legacy | `complete` mode is honest about combined behaviour via `parse_boundary="legacy_combined"` metadata | — |
+| Enrich gated by plan | ✓ via `_stage_enabled(plan, "enrich", ...)` | None | — |
+| Each stage validates output | ✓ for compile/insert/enrich/graph/index — fail-closed via `_BusinessRejection`. + per-stage rules now in `_validate_completion` | None remaining | Per-stage required-output rules (graph→`graph_json`, chunks→`chunk`) |
+| `validation_report` artifact persisted | ✗ existed only as in-memory `validation_errors` | Add a durable artifact summarising what `_validate_completion` saw + decided | **YES (this commit)** |
+| `final_summary` artifact persisted | ✗ summary only existed in-memory + audit log | Add a `final_summary.json` artifact at terminal state (success or failure) | **YES (this commit)** |
+| `error_report` artifact persisted on failure | ✗ → ✓ | — | Landed in previous commit (see § 7) |
+| Failed runs expose partial artifacts | ✓ — verified in lifecycle map § 4 | None | — |
+| Resume from last checkpoint | ✗ no resume action; users have to re-upload | Big surface; documented in operations doc, deferred for impl iteration | Doc only |
+| Rebuild index only | ✗ no endpoint | Same — operations doc | Doc only |
+| Full re-index (new attempt) | Partial — re-uploading same checksum cache-hits and re-uses | Operations doc explains the contract; impl follow-up | Doc only |
+| Delete ingest (soft / hard) | ✗ no endpoint | Operations doc explains the contract; impl follow-up | Doc only |
+| Multi-upload batch | ✗ each upload is independent; no batch_run_id | Operations doc explains the contract; impl follow-up | Doc only |
+| Sequential concurrency=1 | The dev worker already has `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=5` (default) but the workflow processes documents inside one workflow sequentially. Multi-upload concurrency is N/A until batch model lands. | Doc the current behaviour; flag `J1_INGESTION_BATCH_CONCURRENCY` as the future knob | Doc only |
+
+## 13. Execution plan contract
+
+The `IngestPlan` ([`src/j1/processing/planning.py`](../src/j1/processing/planning.py)) is the source of truth.
+
+```python
+@dataclass(frozen=True)
+class IngestPlan:
+    document_id: str
+    mode: IngestMode          # CHUNKS_ONLY | TEXT_ONLY | MULTIMODAL_LIGHT | MULTIMODAL_FULL
+    policy: IngestPolicy      # AUTO | FAST | PREMIUM
+    steps: tuple[PlannedStep, ...]    # one entry per backbone+conditional stage
+    confidence: float
+    estimated_cost_level: str
+    profile: DocumentProfile | None
+    requires_vision: bool = False
+    requires_premium_llm: bool = False
+    warnings: tuple[str, ...] = ()
+```
+
+Each `PlannedStep` carries:
+- `name` (`compile` / `enrich` / `graph` / `index`)
+- `enabled` (bool)
+- `required` (bool — failure causes run failure)
+- `decision` (`RUN` / `SKIP`)
+- `source` (`CALLER` / `PLANNER` / `DEFAULT` / `POLICY`)
+- `reason`
+- `risk_level`, `estimated_cost_tier`, `llm_class`, `expected_engine`, `expected_provider`
+- `metadata` (free-form per-step extras)
+
+**Caller-wins rule**: when the upload supplied `graph_builder_kind` / `enricher_kind`, the corresponding step is created with `source=CALLER, enabled=True, required=True`. The post-compile overlay can never flip these back to `enabled=False`.
+
+**Skip-with-reason invariant**: every disabled step carries a non-empty `reason`. The FE's Execution Plan tab renders this verbatim.
+
+**Plan revision audit**: the post-compile planning activity emits `plan.revised` audit events with a `diff` describing which steps' enabled flags changed.
+
+## 14. Stage optionality policy
+
+| Stage | Class | Required-policy |
+|---|---|---|
+| `create_run` / `persist_original_document` / `resolve_config` | Mandatory backbone | Always `required=True`; failure = `failed`. |
+| `document_profile` | Mandatory backbone | Light-mode allowed; produces `DocumentProfile` from extension/MIME/size/early-page heuristics. Failure = `failed`. |
+| `compile` / `parse_or_compile` | Mandatory backbone | `required=True`. Failure = `failed`. May be marked `synthetic` when RAGAnything's `process_document_complete` collapses parse+chunk into one call (legacy `complete` mode). |
+| `content_inventory` | Mandatory backbone, may be synthetic | Today: synthetic step wrapping the `parsed_content_manifest` artifact compile produced. Marked via `metadata.synthetic=True, metadata.synthesised_from="compile"`. |
+| `execution_plan` | Mandatory backbone | Implicit until split mode landed; now has its own `planning_result` artifact + `plan.generated`/`plan.revised` audit events. |
+| `generate_knowledge_chunks` | Mandatory backbone | Real activity in split mode (`insert_content`); synthetic step in complete mode. New rule: COMPLETED requires a `chunk` artifact. |
+| `persist_or_index_chunks` | Mandatory backbone (when indexer wired) | `index` step. New rule (already in `_validate_completion`): `indexer_kind` set + artifacts produced ⇒ `index` step must have run. |
+| `artifact_manifest` | Mandatory backbone | The `parsed_content_manifest` artifact serves this role today. |
+| `final_validation` | Mandatory backbone | Now persists a `validation_report` artifact (this commit). |
+| `final_summary` | Mandatory backbone | Now persists a `final_summary` artifact at terminal state (this commit). |
+| `enrich` | Quality enhancement | Skipped explicitly when text-only profile + no enricher_kind. Required only when caller-supplied. |
+| `graph` | Conditional capability | Skipped unless caller supplied `graph_builder_kind` or planner enabled it. New rule: COMPLETED requires `graph_json` artifact. |
+| `vision_enrich` | Quality enhancement | Folded into composite enricher; per-modality flag. |
+
+## 15. Graph / enrich / vision decision rules
+
+The deterministic planner's decision matrix lives in [`src/j1/processing/planning.py::DefaultIngestPlanner`](../src/j1/processing/planning.py). Highlights:
+
+**Enrichment**: enabled when ANY of:
+- `parse_quality_score < 0.7`
+- `text_sufficiency_score < 0.7`
+- `image_count > 0` AND `J1_ENRICH_IMAGES=true`
+- `table_count > 0` AND `J1_ENRICH_TABLES=true`
+- domain pack requires it (e.g. `civil_engineering`)
+- caller supplied `enricher_kind`
+
+Skipped when text-only profile + no caller override + no domain trigger.
+
+**Graph**: enabled when ANY of:
+- caller supplied `graph_builder_kind`
+- mode is `MULTIMODAL_FULL` AND document has structural signals (`text_block_count > 8` or `entity_count > 0`)
+- profile is `civil_engineering` / `software_development` (relationship-heavy)
+- post-compile observed signals lift the doc into "graph candidate" tier
+
+Skipped when `mode=CHUNKS_ONLY`, single-page doc, no relationship signals.
+
+**Vision**: tied to enrichment + per-modality flags. Triggered when image/diagram blocks present in manifest AND `J1_ENRICH_IMAGES` (or per-modality equivalent) is true.
+
+The planner's full decision-tree is unit-tested in `tests/test_planning.py` + `tests/test_planning_activity.py` + `tests/test_domain_planning_integration.py`.
+
+## 16. RAGAnything adapter boundary
+
+The bridge ([`src/j1/providers/raganything/_bridge.py`](../src/j1/providers/raganything/_bridge.py)) wraps the vendor library. J1 core never imports `raganything` directly — only through this bridge.
+
+**Capability methods** the bridge exposes to J1:
+
+| Method | What | Used by |
+|---|---|---|
+| `default_compile(request)` | Top-level compile dispatch — routes to `default_parse_source` (split mode) or `_default_compile_complete` (legacy). | `RAGAnythingCompiler.compile` |
+| `default_parse_source(request)` | Pure parse — calls `RAGAnything.parse_document()`, persists `parsed_source` + `parsed_content_manifest` + `compiled.text` drafts. NO chunk/graph side effects. | Split mode only |
+| `default_insert_content(request, content_list, doc_id, source_filename)` | Pure chunk generation — calls `RAGAnything.insert_content_list()`, persists `chunk` drafts (filtered by `full_doc_id`). | Split mode only |
+| `_default_compile_complete(request)` | Legacy single-shot — calls `RAGAnything.process_document_complete()`. Produces parse+chunk+graph artifacts together. Marked with `metadata.parse_boundary="legacy_combined"` so operators know the boundaries are synthetic. | Legacy `complete` mode |
+| Graph builder + retrieval providers | Separate `RAGAnythingGraphBuilder` / `RAGAnythingRetrieval` classes — instantiated only when `J1_DEFAULT_GRAPH_PROVIDER=raganything` / `J1_DEFAULT_RETRIEVAL_PROVIDER=raganything`. | `bootstrap.py` selection |
+
+**No implicit side effects**: Split mode is the recommended (and currently default-via-loader) configuration. In split mode, `parse_document` does NOT touch LightRAG storage — chunks + graph are produced ONLY when the workflow's `insert_content` activity fires after the planner approves the chunks step. Graph is produced ONLY when the workflow runs the `build_graph` activity, which only fires when `IngestPlan` enables it.
+
+In complete mode, `process_document_complete` DOES combine parse + chunk + graph internally. The bridge marks this honestly via metadata so the FE can render the synthetic boundary correctly. **Operators running graph-required workflows should use split mode**; complete mode is for legacy compatibility.
+
+## 17. Temporal stage / checkpoint design (current + future)
+
+**Current state** ([`src/j1/orchestration/workflows/project_processing.py`](../src/j1/orchestration/workflows/project_processing.py)):
+- One workflow per document (per per-document upload) OR per project bulk job.
+- Each backbone stage is its own Temporal Activity — `compile`, `insert_content`, `build_planning_result`, `enrich`, `build_graph`, `index`, `finalize`.
+- `_record_step` writes a per-stage `StepResult` into the workflow's in-memory state, surfaced via `get_status` query AND persisted to `IngestionRunStore.metadata.step_results` so failed runs can still report which stage failed.
+- Continue-as-new boundary at configurable `continue_as_new_after_documents` / `history_event_threshold` for bulk jobs.
+- Activity retries follow `DEFAULT_RETRY` (5 attempts) or `COMPILE_RETRY` (2 attempts) — non-retryable error types from `_NON_RETRYABLE_ERROR_TYPES` short-circuit retries.
+
+**Stage-checkpoint guarantee**:
+- Each activity persists its output via `_handle_artifact_output` BEFORE returning success. Artifact registration is a single SQLite-backed write — atomic from the workflow's perspective.
+- Activity-level retry can re-run a stage; idempotency is at the artifact-id level (each retry creates a new artifact_id, never overwrites). LightRAG's internal storage IS overwritten — the bridge clears the doc_id from `kv_store_doc_status.json` BEFORE insert specifically to make retries safe.
+
+**What's NOT yet a child workflow**: each stage is a single Activity, not a Child Workflow. Promoting them to child workflows would buy stronger compensation semantics (and per-stage Temporal queries) but isn't required for the current visibility / validation guarantees. Tracked as a follow-up.
+
+**Resume model** (deferred to next iteration; documented in [`docs/ingestion-operations.md`](./ingestion-operations.md)):
+- New workflow attempt linked via `original_run_id` metadata.
+- Loads the original run's `step_results` and `_produced_artifact_ids`.
+- Skips stages whose outputs are still valid under the current plan.
+- Rejects compatibility-incompatible resumes (model/profile/embedding changed) with an explicit error pointing the operator at full re-index.
+
+## 18. Operational actions (UI/API surface)
+
+See [`docs/ingestion-operations.md`](./ingestion-operations.md) for the full API + behaviour spec. Summary:
+
+| Action | Endpoint | Status |
+|---|---|---|
+| Cancel running ingest | `POST /ingestion-runs/{id}/cancel` | ✓ implemented (signal to running workflow) |
+| Resume from last checkpoint | `POST /ingestion-runs/{id}/resume-from-checkpoint` | ⏳ designed, not yet implemented |
+| Rebuild index only | `POST /ingestion-runs/{id}/rebuild-index` | ⏳ designed, not yet implemented |
+| Full re-index | `POST /ingestion-runs/{id}/full-reindex` | ⏳ designed (re-upload same doc with cache-bypass flag works as a workaround today) |
+| Delete ingest | `DELETE /ingestion-runs/{id}` | ⏳ designed, not yet implemented |
+| Multi-upload batch | `POST /ingestion-batches` | ⏳ designed, not yet implemented (single upload works; no batch_run_id yet) |
+
+Each deferred endpoint has a stable contract documented in `ingestion-operations.md` so the next implementation iteration doesn't need to re-discover the design.
+
+## 19. Settings + storage governance
+
+- **Source of truth**: `J1_INGEST_PLAN_MODE` for planner; `J1_RAGANYTHING_PIPELINE_MODE` for compile path; `J1_DEFAULT_*` for adapter selection.
+- **Legacy / deprecated**: `J1_LLM_PLANNING_ENABLED` (overridden by `J1_INGEST_PLAN_MODE`).
+- **Multi-upload concurrency knob (planned)**: `J1_INGESTION_BATCH_CONCURRENCY` — default `1` (sequential). Not yet wired since the batch model itself is deferred.
+- **Cleanup boundary**: only `_register_draft`'s DB-write rollback unlinks files. No stage cleans up data on failure. Deletion (when implemented) is the only API-driven cleanup path.
+
+## 20. Manual acceptance checklist
 
 After applying this commit:
 

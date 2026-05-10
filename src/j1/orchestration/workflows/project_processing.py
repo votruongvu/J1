@@ -17,6 +17,8 @@ with workflow.unsafe.imports_passed_through():
         IndexActivityInput,
         InsertContentActivityInput,
         PersistErrorReportInput,
+        PersistFinalSummaryInput,
+        PersistValidationReportInput,
         ProcessingActivityResult,
         ProjectScope,
         SetDocumentStatusInput,
@@ -715,6 +717,22 @@ class ProjectProcessingWorkflow:
                 # recorded, etc.). Without this gate the workflow
                 # would mark SUCCEEDED on a degenerate run.
                 validation_errors = self._validate_completion(request)
+                # Persist the validation_report artifact regardless of
+                # outcome — the FE artifact-listing surface needs the
+                # snapshot for both success (proof of validation) and
+                # failure (error detail) paths.
+                await self._persist_validation_report(
+                    request,
+                    passed=not validation_errors,
+                    errors=list(validation_errors),
+                    rules_evaluated=[
+                        "at_least_one_artifact_produced",
+                        "required_steps_completed_or_skipped",
+                        "indexer_kind_set_implies_index_step_ran",
+                        "graph_step_completed_implies_graph_json_artifact",
+                        "chunks_step_completed_implies_chunk_artifact",
+                    ],
+                )
                 if validation_errors:
                     raise _BusinessRejection(
                         "completion validation failed: "
@@ -735,6 +753,14 @@ class ProjectProcessingWorkflow:
                 # is 0 in the success path; deployments adopting
                 # `continue_optional` policy will populate this.
                 final_status = "succeeded_with_warnings" if self._warning_count() > 0 else "succeeded"
+                # Persist the final_summary artifact at successful
+                # terminal — single canonical artifact summarising
+                # the run for the FE / operators.
+                await self._persist_final_summary(
+                    request,
+                    final_status=final_status,
+                    warning_count=self._warning_count(),
+                )
                 await self._emit_run_terminal(
                     request, final_status=final_status,
                     warning_count=self._warning_count(),
@@ -767,6 +793,15 @@ class ProjectProcessingWorkflow:
             # regardless.
             await self._persist_error_report(
                 request,
+                failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                failure_message=self._error,
+            )
+            # Failed runs also get a `final_summary` artifact so the
+            # FE has a single canonical run-outcome artifact for
+            # both success and failure paths.
+            await self._persist_final_summary(
+                request,
+                final_status="failed",
                 failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
                 failure_message=self._error,
             )
@@ -1230,6 +1265,112 @@ class ProjectProcessingWorkflow:
                     stage=stage_hint,
                     step=step_hint,
                     step_results=step_results_payload,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
+            pass
+
+    async def _persist_validation_report(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        passed: bool,
+        errors: list[str],
+        rules_evaluated: list[str] | None = None,
+    ) -> None:
+        """Persist `validation_report.json` summarising the outcome of
+        `_validate_completion`. Called at every terminal transition
+        (success or failure) so operators can see WHICH rules ran
+        and which ones tripped without re-running validation. Best-
+        effort — never blocks the terminal transition."""
+        if not request.correlation_id:
+            return
+        document_id: str | None = None
+        for r in reversed(self._step_results):
+            if isinstance(r.metadata, dict):
+                doc = r.metadata.get("document_id")
+                if doc:
+                    document_id = str(doc)
+                    break
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_validation_report,
+                PersistValidationReportInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    passed=passed,
+                    errors=list(errors or []),
+                    rules_evaluated=list(rules_evaluated or []),
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
+            pass
+
+    async def _persist_final_summary(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        final_status: str,
+        warning_count: int = 0,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        """Persist `final_summary.json` at terminal state. Carries the
+        at-a-glance run outcome so the FE has a single canonical
+        artifact to summarise the run without assembling state from
+        separate endpoints."""
+        if not request.correlation_id:
+            return
+        document_id: str | None = None
+        for r in reversed(self._step_results):
+            if isinstance(r.metadata, dict):
+                doc = r.metadata.get("document_id")
+                if doc:
+                    document_id = str(doc)
+                    break
+        # Snapshot the per-step status table at terminal time. Same
+        # shape as the `error_report` artifact's step_results for
+        # cross-referencing.
+        executed_steps: list[dict] = []
+        for r in self._step_results:
+            try:
+                entry = {
+                    "step": r.step,
+                    "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+                    "required": bool(r.required),
+                    "source": r.source.value if hasattr(r.source, "value") else str(r.source),
+                    "artifact_count": int(r.artifact_count or 0),
+                }
+                if r.reason:
+                    entry["reason"] = r.reason
+                executed_steps.append(entry)
+            except Exception:  # noqa: BLE001
+                continue
+        # Aggregate artifact counts by kind from the workflow's
+        # in-memory tracker.
+        kind_counts: dict[str, int] = {}
+        for k in self._produced_artifact_kinds:
+            kind_counts[k] = kind_counts.get(k, 0) + 1
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_final_summary,
+                PersistFinalSummaryInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    final_status=final_status,
+                    executed_steps=executed_steps,
+                    artifact_kind_counts=kind_counts,
+                    warning_count=warning_count,
+                    failure_code=failure_code,
+                    failure_message=failure_message,
                     actor=request.actor,
                 ),
                 start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,

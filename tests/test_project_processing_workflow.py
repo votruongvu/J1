@@ -1383,3 +1383,127 @@ def test_failed_run_persists_error_report_artifact(monkeypatch):
     # The step_results snapshot must include the failed graph step.
     step_names = [r.get("step") for r in payload.step_results]
     assert "graph" in step_names
+
+
+def test_completed_run_persists_validation_report_and_final_summary(monkeypatch):
+    """A successful run must persist BOTH `validation_report` and
+    `final_summary` artifacts at the COMPLETED transition. They land
+    via the standard artifact-listing surface so the FE / operators
+    have a single canonical run-outcome artifact to read.
+
+    The validation report carries the rules that ran + an empty
+    error list (validation passed). The final summary carries the
+    final_status + executed-step tally + artifact-kind counts."""
+    seen_validation: list = []
+    seen_final_summary: list = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["c-1"],
+                kinds=("chunk",),
+            )
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        if name.endswith("persist_validation_report"):
+            seen_validation.append(payload)
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["vr-1"],
+                kinds=("validation_report",),
+            )
+        if name.endswith("persist_final_summary"):
+            seen_final_summary.append(payload)
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["fs-1"],
+                kinds=("final_summary",),
+            )
+        return None  # other reporter activities
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        # `correlation_id` is the run_id; helper early-returns
+        # without it.
+        correlation_id="run-success-1",
+    )
+    result = asyncio.run(wf.run(request))
+
+    assert result.state == WorkflowState.COMPLETED.value
+
+    # Validation report fired exactly once with passed=True.
+    assert len(seen_validation) == 1
+    vr = seen_validation[0]
+    assert vr.passed is True
+    assert vr.errors == []
+    assert "at_least_one_artifact_produced" in vr.rules_evaluated
+
+    # Final summary fired exactly once with the success status +
+    # the executed-step tally including the compile step.
+    assert len(seen_final_summary) == 1
+    fs = seen_final_summary[0]
+    assert fs.final_status in {"succeeded", "succeeded_with_warnings"}
+    step_names = [s.get("step") for s in fs.executed_steps]
+    assert "compile" in step_names
+    # The chunk-kind artifact compile produced shows up in the
+    # aggregate kind tally.
+    assert fs.artifact_kind_counts.get("chunk", 0) >= 1
+
+
+def test_failed_run_persists_final_summary_with_failed_status(monkeypatch):
+    """A failed run must persist a `final_summary` artifact too —
+    the FE / operators need ONE canonical run-outcome artifact for
+    both success and failure paths. Final status is `failed`,
+    failure_code + failure_message carry the cause."""
+    seen_final_summary: list = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="failed", error="compile blew up",
+            )
+        if name.endswith("set_document_status"):
+            return None
+        if name.endswith("finalize"):
+            return None
+        if name.endswith("persist_final_summary"):
+            seen_final_summary.append(payload)
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["fs-1"],
+                kinds=("final_summary",),
+            )
+        if name.endswith("persist_error_report"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["err-1"],
+                kinds=("error_report",),
+            )
+        return None
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        correlation_id="run-failed-2",
+    )
+    with pytest.raises(ApplicationError):
+        asyncio.run(wf.run(request))
+
+    assert len(seen_final_summary) == 1
+    fs = seen_final_summary[0]
+    assert fs.final_status == "failed"
+    assert fs.failure_code  # code present
+    assert "compile" in (fs.failure_message or "").lower()

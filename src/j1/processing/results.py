@@ -40,14 +40,30 @@ ARTIFACT_KIND_PLANNING_RESULT = "planning_result"
 # message, last-known stage / step, and the per-step status table
 # at the moment of failure.
 ARTIFACT_KIND_ERROR_REPORT = "error_report"
+# Pre-finalize validation snapshot. Persisted by the workflow's
+# COMPLETED transition (or by the FAILED handler when validation
+# itself triggered the failure). Carries the list of validation
+# errors (empty when validation passed) plus the rules that ran,
+# so operators can see WHY the run was marked succeeded /
+# completed_with_warnings / failed without re-running validation.
+ARTIFACT_KIND_VALIDATION_REPORT = "validation_report"
+# Final-summary artifact written at terminal state — succeeded OR
+# failed. Carries the at-a-glance run outcome: final_status,
+# document_id, planner mode, executed-stage tally, artifact tally
+# by kind, warning_count, duration. Backs the "what happened in
+# this run?" overview without forcing the FE to assemble it from
+# separate endpoints.
+ARTIFACT_KIND_FINAL_SUMMARY = "final_summary"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
     "ARTIFACT_KIND_ERROR_REPORT",
+    "ARTIFACT_KIND_FINAL_SUMMARY",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",
+    "ARTIFACT_KIND_VALIDATION_REPORT",
     "ArtifactDraft",
     "ArtifactProcessingResult",
     "CostBreakdown",
