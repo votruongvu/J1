@@ -1,9 +1,25 @@
 import contextlib
 import contextvars
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from j1.processing.enrich_assessment import (
+        FastLLMConsultPrompt,
+        FastLLMRefinement,
+    )
+    from j1.processing.enrich_assessment_settings import FastLLMConsultSettings
+
+# Optional fast-LLM consult callable signature. The worker bootstrap
+# resolves this from env settings + the LLM registry; when None, the
+# consult activity returns `consulted=False` and ingestion runs on
+# the rule-based plan only.
+FastLLMConsultCallable = Callable[
+    ["FastLLMConsultPrompt", "FastLLMConsultSettings"],
+    "FastLLMRefinement | None",
+]
 
 from temporalio import activity
 
@@ -23,6 +39,8 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     CompileActivityInput,
     EnrichActivityInput,
+    FastLLMConsultEnrichInput,
+    FastLLMConsultEnrichResult,
     GraphActivityInput,
     IndexActivityInput,
     PersistCompileStrategyReportInput,
@@ -60,6 +78,7 @@ ACTIVITY_PERSIST_VALIDATION_REPORT = "j1.processing.persist_validation_report"
 ACTIVITY_PERSIST_FINAL_SUMMARY = "j1.processing.persist_final_summary"
 ACTIVITY_PERSIST_COMPILE_STRATEGY_REPORT = "j1.processing.persist_compile_strategy_report"
 ACTIVITY_PERSIST_POST_COMPILE_ENRICH_PLAN = "j1.processing.persist_post_compile_enrich_plan"
+ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 
 
@@ -81,6 +100,7 @@ class ProcessingActivities:
         progress_reporter: ProgressReporter | None = None,
         result_cache: ProcessingResultCache | None = None,
         run_store: IngestionRunStore | None = None,
+        fast_llm_consult: "FastLLMConsultCallable | None" = None,
     ) -> None:
         self._processing = processing
         self._sources = sources
@@ -90,6 +110,12 @@ class ProcessingActivities:
         self._graph_builders = dict(graph_builders or {})
         self._indexers = dict(indexers or {})
         self._query_providers = dict(query_providers or {})
+        # Optional fast-LLM consult callable, bound at worker
+        # bootstrap from `J1_ENRICH_ASSESSMENT_FAST_LLM_*` env vars.
+        # When None, the consult activity returns `consulted=False`
+        # and the workflow falls back to the rule-based enrich plan.
+        # Signature: `(prompt, settings) -> FastLLMRefinement | None`.
+        self._fast_llm_consult = fast_llm_consult
         # User-facing progress events. Optional — when None, the
         # framework runs exactly as before (no progress events
         # emitted). Bootstrap wires a CompositeProgressReporter
@@ -125,6 +151,7 @@ class ProcessingActivities:
             self.persist_final_summary,
             self.persist_compile_strategy_report,
             self.persist_post_compile_enrich_plan,
+            self.fast_llm_consult_enrich,
             self.validate_stage,
         ]
 
@@ -646,6 +673,99 @@ class ProcessingActivities:
             status="succeeded",
             artifact_ids=[record.artifact_id],
             kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_FAST_LLM_CONSULT_ENRICH)
+    def fast_llm_consult_enrich(
+        self, input: FastLLMConsultEnrichInput,
+    ) -> FastLLMConsultEnrichResult:
+        """Optional fast-LLM consult on the rule-based enrich plan.
+
+        Activity-side logic:
+          1. Resolve `FastLLMConsultSettings` from env. Disabled by
+             default → return `consulted=False`.
+          2. If no `fast_llm_consult` callable was wired at bootstrap
+             (worker has no LLM client for the configured provider/
+             model) → return `consulted=False`.
+          3. Settings disabled, missing provider, or missing model →
+             return `consulted=False`.
+          4. Call the callable; any exception → log + return
+             `consulted=False` (NEVER raise).
+          5. Callable returns None or unparseable refinement →
+             `consulted=False`.
+
+        The callable is responsible for honouring the configured
+        timeout. The activity wraps everything in a broad except so
+        a misbehaving LLM cannot fail ingestion."""
+        from j1.processing.enrich_assessment import (
+            EnrichRecommendation,
+            FastLLMConsultPrompt,
+        )
+        from j1.processing.enrich_assessment_settings import (
+            load_fast_llm_consult_settings,
+        )
+
+        settings = load_fast_llm_consult_settings()
+        if not settings.is_actionable():
+            return FastLLMConsultEnrichResult(
+                consulted=False,
+                fallback_reason=(
+                    "fast-LLM consult disabled or missing provider/model"
+                ),
+            )
+        if self._fast_llm_consult is None:
+            return FastLLMConsultEnrichResult(
+                consulted=False,
+                fallback_reason=(
+                    "fast-LLM consult enabled in env but no callable "
+                    "wired at worker bootstrap"
+                ),
+            )
+        try:
+            provisional = EnrichRecommendation(
+                input.provisional_recommendation
+            )
+        except ValueError:
+            return FastLLMConsultEnrichResult(
+                consulted=False,
+                fallback_reason=(
+                    "provisional_recommendation has unrecognised value"
+                ),
+            )
+        prompt = FastLLMConsultPrompt(
+            compile_status=input.compile_status,
+            final_compile_quality=input.final_compile_quality,
+            source_signals=dict(input.source_signals or {}),
+            provisional_recommendation=provisional,
+            provisional_recommended_tasks=tuple(
+                input.provisional_recommended_tasks or ()
+            ),
+            provisional_skipped_tasks=tuple(
+                input.provisional_skipped_tasks or ()
+            ),
+            compile_warnings=tuple(input.compile_warnings or ()),
+        )
+        try:
+            refinement = self._fast_llm_consult(prompt, settings)
+        except Exception as exc:  # noqa: BLE001 — consult must never fail ingest
+            return FastLLMConsultEnrichResult(
+                consulted=False,
+                fallback_reason=f"{type(exc).__name__}: {exc}",
+            )
+        if refinement is None:
+            return FastLLMConsultEnrichResult(
+                consulted=False,
+                fallback_reason="callable returned no refinement",
+            )
+        rec_value = (
+            refinement.recommendation.value
+            if refinement.recommendation is not None else None
+        )
+        return FastLLMConsultEnrichResult(
+            consulted=True,
+            recommendation=rec_value,
+            add_reasons=list(refinement.add_reasons),
+            add_recommended_tasks=list(refinement.add_recommended_tasks),
         )
 
     @activity.defn(name=ACTIVITY_VALIDATE_STAGE)

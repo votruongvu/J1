@@ -145,6 +145,42 @@ class PersistPostCompileEnrichPlanInput:
 
 
 @dataclass(frozen=True)
+class FastLLMConsultEnrichInput:
+    """Workflow → activity payload for the optional fast-LLM consult.
+
+    Carries ONLY compact signals + the rule-based provisional plan.
+    NEVER document content. The activity is no-op when the consult
+    is disabled; it MUST never raise (any internal failure is
+    swallowed and reported as `consulted=False`)."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    compile_status: str
+    final_compile_quality: str
+    source_signals: dict[str, Any] = field(default_factory=dict)
+    provisional_recommendation: str = "optional"  # one of skip/optional/recommended/required
+    provisional_recommended_tasks: list[str] = field(default_factory=list)
+    provisional_skipped_tasks: list[str] = field(default_factory=list)
+    compile_warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class FastLLMConsultEnrichResult:
+    """Activity → workflow return. `consulted=False` always means
+    'fall back to rule-based plan' (whatever the reason)."""
+
+    consulted: bool
+    fallback_reason: str | None = None
+    # Refinement fields, only meaningful when `consulted=True`. The
+    # workflow constructs a `FastLLMRefinement` from these and feeds
+    # it through `apply_fast_llm_refinement`.
+    recommendation: str | None = None  # never "skip" — the activity drops it
+    add_reasons: list[str] = field(default_factory=list)
+    add_recommended_tasks: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ValidateStageInput:
     """Workflow → activity payload for `validate_stage`. Carries the
     stage name + the artifacts the stage produced + the scope keys

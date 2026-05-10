@@ -101,6 +101,87 @@ def test_no_signals_falls_through_to_optional():
     assert plan.blocking_issues == ()
 
 
+def test_page_count_zero_does_not_trigger_skip():
+    """page_count == 0 should NOT trip SKIP. Some sources are
+    legitimately page-less (plaintext / single-stream documents);
+    the SKIP rule reserves itself for `page_count > 0` + zero
+    content as positive evidence."""
+    plan = assess_post_compile_enrich(SourceSignals(
+        compile_status="succeeded",
+        final_compile_quality="good",
+        page_count=0,
+        text_block_count=0,
+        image_count=0,
+        table_count=0,
+    ))
+    assert plan.overall_recommendation == EnrichRecommendation.OPTIONAL
+    assert plan.blocking_issues == ()
+
+
+def test_page_count_unknown_does_not_trigger_skip_even_with_zero_counts():
+    """Even when text/image/table counts are zero, SKIP must NOT
+    fire if page_count is unknown (None) — we don't have positive
+    evidence the document is empty."""
+    plan = assess_post_compile_enrich(SourceSignals(
+        compile_status="succeeded",
+        final_compile_quality="good",
+        page_count=None,
+        text_block_count=0,
+        image_count=0,
+        table_count=0,
+    ))
+    assert plan.overall_recommendation == EnrichRecommendation.OPTIONAL
+    assert plan.blocking_issues == ()
+
+
+def test_compile_failed_emits_blocking_issue_not_misleading_skip():
+    """Compile-failed → SKIP with blocking issue mentioning compile
+    failure (NOT 'no content blocks' which suggests a successful
+    compile that produced nothing). Keeps operator messages
+    diagnostic."""
+    plan = assess_post_compile_enrich(SourceSignals(compile_status="failed"))
+    assert plan.overall_recommendation == EnrichRecommendation.SKIP
+    assert any(
+        "compile failed" in b.lower()
+        for b in plan.blocking_issues
+    )
+    assert not any(
+        "no content blocks" in b.lower()
+        for b in plan.blocking_issues
+    )
+
+
+def test_page_count_positive_with_only_text_chars_does_not_skip():
+    """Edge case: parser surfaced text content as `total_text_chars`
+    rather than block counts. SKIP must not fire — text exists."""
+    plan = assess_post_compile_enrich(SourceSignals(
+        compile_status="succeeded",
+        final_compile_quality="good",
+        page_count=10,
+        total_text_chars=5000,
+        text_block_count=0,
+        image_count=0,
+        table_count=0,
+    ))
+    assert plan.overall_recommendation != EnrichRecommendation.SKIP
+
+
+def test_page_count_positive_only_images_does_not_skip():
+    """Image-only document with usable page_count — there's content
+    (images) even though text counts are zero. SKIP must not fire."""
+    plan = assess_post_compile_enrich(SourceSignals(
+        compile_status="succeeded",
+        final_compile_quality="good",
+        page_count=4,
+        total_text_chars=0,
+        text_block_count=0,
+        image_count=12,
+        table_count=0,
+    ))
+    assert plan.overall_recommendation == EnrichRecommendation.RECOMMENDED
+    assert "image_captioning" in plan.recommended_tasks
+
+
 # ---- Task-by-task recommendations ----------------------------------
 
 

@@ -567,10 +567,17 @@ def test_resume_skips_enrich_and_graph_when_listed_in_resume_context(monkeypatch
             return ["doc-resume"]
         if name.endswith("compile"):
             # Compile always re-runs — its outputs are the structural
-            # backbone every downstream stage reads.
+            # backbone every downstream stage reads. Populate
+            # `compile_metrics` realistically so the post-compile
+            # quality verdict stays GOOD (the new graph/index gates
+            # consult final_compile_quality + chunks_count).
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["new-compile"],
                 kinds=("chunk",),
+                compile_metrics={
+                    "chunks_count": 3,
+                    "extracted_text_chars": 800,
+                },
             )
         if name.endswith("enrich"):
             # If we hit this the resume short-circuit is broken.
@@ -638,10 +645,17 @@ def test_run_completes_full_pipeline(monkeypatch):
             # per-stage required artifacts. A compile that produces a
             # `chunk` kind here keeps the synthetic
             # generate_knowledge_chunks step from tripping the
-            # "no chunk artifact" rule.
+            # "no chunk artifact" rule. `compile_metrics` populates
+            # `chunks_count` + `extracted_text_chars` so the new
+            # graph/index gates see a healthy compile (otherwise
+            # the quality verdict drops to LOW and graph is skipped).
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-c1"],
                 kinds=("chunk",),
+                compile_metrics={
+                    "chunks_count": 3,
+                    "extracted_text_chars": 800,
+                },
             )
         if name.endswith("enrich"):
             return ArtifactActivityResult(
@@ -1610,9 +1624,16 @@ def test_completion_validation_fails_when_graph_step_completed_without_artifact(
         if name.endswith("list_pending_documents"):
             return ["doc-1"]
         if name.endswith("compile"):
+            # `compile_metrics` populated so the new graph gate
+            # doesn't skip on LOW quality (this test wants graph
+            # to run + then fail completion validation).
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-c1"],
                 kinds=("chunk",),
+                compile_metrics={
+                    "chunks_count": 3,
+                    "extracted_text_chars": 800,
+                },
             )
         if name.endswith("build_graph"):
             # SUCCEEDED but produces NO graph_json artifact —
@@ -1661,10 +1682,17 @@ def test_failed_run_persists_error_report_artifact(monkeypatch):
         if name.endswith("list_pending_documents"):
             return ["doc-1"]
         if name.endswith("compile"):
-            # Compile succeeds; downstream graph fails.
+            # Compile succeeds; downstream graph fails. Populate
+            # `compile_metrics` so the new graph gate does NOT skip
+            # on LOW quality — this test wants the graph stage to
+            # actually run + fail.
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-c1"],
                 kinds=("chunk",),
+                compile_metrics={
+                    "chunks_count": 3,
+                    "extracted_text_chars": 800,
+                },
             )
         if name.endswith("build_graph"):
             return ArtifactActivityResult(

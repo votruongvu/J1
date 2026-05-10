@@ -319,6 +319,142 @@ def apply_fast_llm_refinement(
     )
 
 
+@dataclass(frozen=True)
+class FastLLMConsultPrompt:
+    """Compact context the optional fast-LLM consult sees.
+
+    Carries ONLY signals + the rule-based provisional decision. NEVER
+    document content. Operators reading the consult's prompt logs see
+    structured fields (counts, flags, recommendation). This bounds
+    token cost and prevents accidental PII leakage."""
+
+    compile_status: str
+    final_compile_quality: str
+    source_signals: dict[str, Any]
+    provisional_recommendation: EnrichRecommendation
+    provisional_recommended_tasks: tuple[str, ...]
+    provisional_skipped_tasks: tuple[str, ...]
+    compile_warnings: tuple[str, ...] = ()
+
+
+# JSON schema the activity sends to the LLM via `extract` (or as
+# explicit instructions when `generate` is used). Operators can
+# inspect this directly when debugging fast-LLM responses; the parser
+# below tolerates missing/extra fields so a chatty model doesn't
+# break ingestion.
+FAST_LLM_REFINEMENT_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "recommendation": {
+            "type": "string",
+            "enum": ["optional", "recommended", "required"],
+            "description": (
+                "Refined enrich recommendation. SKIP is intentionally "
+                "not allowed — deterministic blocking conditions handle "
+                "skip cases. Omit the field entirely when no refinement "
+                "is warranted."
+            ),
+        },
+        "add_reasons": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Short operator-readable justifications.",
+        },
+        "add_recommended_tasks": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    TASK_TABLE_ENRICHMENT,
+                    TASK_IMAGE_CAPTIONING,
+                    TASK_VISION_ENRICHMENT,
+                    TASK_REQUIREMENT_EXTRACTION,
+                    TASK_RISK_EXTRACTION,
+                    TASK_QUALITY_ASSESSMENT,
+                ],
+            },
+            "description": "Tasks the LLM judges should be added.",
+        },
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
+
+def parse_fast_llm_refinement(
+    payload: Any,
+) -> FastLLMRefinement | None:
+    """Parse a fast-LLM response (dict or JSON-string) into a
+    `FastLLMRefinement`. Returns None when the payload is not a
+    dict or has no usable fields. Hard rules:
+
+      * `recommendation == "skip"` is silently dropped — SKIP is
+        reserved for deterministic blocking conditions.
+      * Unknown task ids in `add_recommended_tasks` are silently
+        dropped (not raised) so a chatty model can't break ingestion.
+      * Reasons are coerced to strings + capped downstream by
+        `apply_fast_llm_refinement`.
+    """
+    import json as _json
+
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+
+    rec_value = payload.get("recommendation")
+    rec: EnrichRecommendation | None = None
+    if isinstance(rec_value, str):
+        cleaned = rec_value.strip().lower()
+        if cleaned in {"optional", "recommended", "required"}:
+            rec = EnrichRecommendation(cleaned)
+        # SKIP intentionally not honoured.
+
+    raw_reasons = payload.get("add_reasons")
+    reasons: tuple[str, ...] = ()
+    if isinstance(raw_reasons, list):
+        reasons = tuple(
+            str(r) for r in raw_reasons
+            if isinstance(r, (str, int, float)) and str(r).strip()
+        )
+
+    raw_tasks = payload.get("add_recommended_tasks")
+    known_tasks = {
+        TASK_TABLE_ENRICHMENT,
+        TASK_IMAGE_CAPTIONING,
+        TASK_VISION_ENRICHMENT,
+        TASK_REQUIREMENT_EXTRACTION,
+        TASK_RISK_EXTRACTION,
+        TASK_QUALITY_ASSESSMENT,
+    }
+    tasks: tuple[str, ...] = ()
+    if isinstance(raw_tasks, list):
+        tasks = tuple(
+            str(t).strip()
+            for t in raw_tasks
+            if isinstance(t, str) and str(t).strip() in known_tasks
+        )
+
+    if rec is None and not reasons and not tasks:
+        return None
+    return FastLLMRefinement(
+        recommendation=rec,
+        add_reasons=reasons,
+        add_recommended_tasks=tasks,
+    )
+
+
+def is_consult_warranted(plan: PostCompileEnrichPlan) -> bool:
+    """True iff the rule-based plan is ambiguous enough to be worth
+    consulting a fast LLM. Today: only `OPTIONAL` plans qualify —
+    SKIP is deterministic, RECOMMENDED/REQUIRED already carry
+    confident rule-based reasons."""
+    return plan.overall_recommendation == EnrichRecommendation.OPTIONAL
+
+
 def build_signals_from_compile_metrics(
     *,
     compile_status: str,

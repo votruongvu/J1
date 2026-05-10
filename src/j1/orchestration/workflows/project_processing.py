@@ -12,6 +12,7 @@ with workflow.unsafe.imports_passed_through():
         ArtifactActivityResult,
         CompileActivityInput,
         EnrichActivityInput,
+        FastLLMConsultEnrichInput,
         FinalizeInput,
         GraphActivityInput,
         IndexActivityInput,
@@ -28,12 +29,6 @@ with workflow.unsafe.imports_passed_through():
         ValidateContextResult,
         ValidateStageInput,
     )
-    from j1.orchestration.activities.planning import (
-        ACTIVITY_BUILD_PLANNING_RESULT,
-        BuildPlanningResultInput,
-        BuildPlanningResultOutput,
-        PlanningActivities,
-    )
     from j1.orchestration.activities.processing import ProcessingActivities
     from j1.orchestration.activities.profiling import (
         ProfileDocumentInput,
@@ -41,8 +36,6 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.orchestration.activities.project import ProjectActivities
     from j1.orchestration.activities.runs import (
-        ReportPlanGeneratedInput,
-        ReportPlanRevisedInput,
         ReportRunTerminalInput,
         ReportStepLifecycleInput,
         ReportStepSkippedInput,
@@ -54,16 +47,6 @@ with workflow.unsafe.imports_passed_through():
         ERROR_TYPE_UNEXPECTED_ERROR,
     )
     from j1.orchestration.temporal.retries import COMPILE_RETRY, DEFAULT_RETRY
-    from j1.processing.planning import (
-        STEP_COMPILE,
-        STEP_ENRICH,
-        STEP_GRAPH,
-        STEP_INDEX,
-        DefaultIngestPlanner,
-        IngestPlan,
-        IngestPlanner,
-        IngestPolicy,
-    )
     from j1.processing.assessment import (
         ASSESSMENT_FAILURE_POLICY_FAIL_CLOSED,
         AssessmentPlan,
@@ -74,9 +57,12 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.processing.enrich_assessment import (
         EnrichRecommendation,
+        FastLLMRefinement,
         PostCompileEnrichPlan,
+        apply_fast_llm_refinement,
         assess_post_compile_enrich,
         build_signals_from_compile_metrics,
+        is_consult_warranted,
     )
     from j1.processing.compile_quality import (
         QUALITY_FAILED,
@@ -101,7 +87,6 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.processing.step_result import StepError, StepResult
     from j1.jobs.status import ProcessingStatus
-    from j1._serialization import to_jsonable
 
 
 class WorkflowState(StrEnum):
@@ -210,18 +195,16 @@ class ProjectProcessingRequest:
     # behaviour. `continue_optional` permits PARTIAL_COMPLETED when
     # optional steps fail; `best_effort` permits it for required steps.
     failure_policy: FailurePolicy = FailurePolicy.FAIL_FAST
-    # Adaptive ingestion planning toggle. When False (default), the
-    # workflow uses the "kind is None → skip" gate logic and behaves
-    # exactly as it did before adaptive planning landed. When True,
-    # each document is compiled first (compile is always required),
-    # then profiled and run through `DefaultIngestPlanner` using the
-    # parser's content signals; the resulting `IngestPlan` decides
-    # which of the LLM-expensive stages (enrich / graph / index) to
-    # actually attempt. Caller-supplied kinds always override planner
-    # decisions (caller wins).
+    # Cheap deterministic profile + AssessmentPlan toggle. When True
+    # (production default), the workflow runs the `profile_document`
+    # activity pre-compile and feeds the resulting profile into
+    # `DefaultAssessmentPlanner` to derive compile config (parse_method,
+    # per-capability toggles). The IngestPlanner is gone entirely —
+    # downstream stage gating uses compile evidence + the
+    # post-compile enrich plan, not a pre-compile decision tree.
+    # Caller-supplied stage kinds remain authoritative for whether
+    # an enricher / graph builder / indexer is even runnable.
     planner_enabled: bool = False
-    # Policy fed to the planner. Only consulted when `planner_enabled`.
-    policy: IngestPolicy = IngestPolicy.AUTO
     # Temporal search-attribute upserts. Default OFF because the
     # cluster rejects upserts for attributes that aren't registered
     # with the namespace, and the rejection happens at workflow-
@@ -402,34 +385,44 @@ def _merge_compile_signals(
     return _replace_request(profile, **overrides)
 
 
-def _summarise_plan_diff(
-    initial: "IngestPlan", revised: "IngestPlan",
-) -> dict[str, Any]:
-    """Compute a minimal step-enablement diff between two plans.
 
-    Returns an empty dict when no step's enabled flag changed —
-    callers treat that as "no observable change, skip the audit
-    event". Otherwise returns a dict keyed by step name with
-    `{before, after}` booleans, plus the new mode if it shifted.
 
-    The diff intentionally ignores fields that don't change
-    pipeline behaviour (confidence numbers, vision_decisions detail,
-    reasons): we want a coarse "does this revision unlock a step?"
-    signal, not a deep equality check.
-    """
-    out: dict[str, Any] = {}
-    initial_steps = {s.name: s for s in initial.steps}
-    revised_steps = {s.name: s for s in revised.steps}
-    for name in sorted(set(initial_steps) | set(revised_steps)):
-        before = initial_steps.get(name)
-        after = revised_steps.get(name)
-        before_enabled = bool(before and before.enabled)
-        after_enabled = bool(after and after.enabled)
-        if before_enabled != after_enabled:
-            out[name] = {"before": before_enabled, "after": after_enabled}
-    if initial.mode != revised.mode:
-        out["mode"] = {"before": initial.mode.value, "after": revised.mode.value}
-    return out
+def _compile_saw_images(compile_result) -> bool:
+    """True iff the compile activity's `content_stats` reports actual
+    image content. Used to set the `REQUIRES_VISION` search attribute
+    from compile evidence rather than pre-compile guesses. Defensive
+    against missing `content_stats` (legacy compilers / test fakes
+    that don't populate it) — returns False in that case so the
+    search attribute defaults to a conservative `false`."""
+    if compile_result is None:
+        return False
+    stats = getattr(compile_result, "content_stats", None)
+    if not isinstance(stats, dict):
+        return False
+    if stats.get("has_images") is True:
+        return True
+    image_count = stats.get("image_count")
+    return isinstance(image_count, int) and image_count > 0
+
+
+def _enrich_plan_needs_premium_llm(enrich_plan) -> bool:
+    """True iff the post-compile enrich plan recommends or requires a
+    vision-aware enrichment task. Drives the `REQUIRES_PREMIUM_LLM`
+    search attribute from assessment output rather than pre-compile
+    heuristics. None plan → False (no premium-LLM signal yet)."""
+    if enrich_plan is None:
+        return False
+    rec = getattr(enrich_plan, "overall_recommendation", None)
+    if rec is None:
+        return False
+    rec_value = getattr(rec, "value", str(rec))
+    if rec_value not in {"recommended", "required"}:
+        return False
+    recommended = tuple(
+        getattr(enrich_plan, "recommended_tasks", ()) or ()
+    )
+    vision_aware = {"image_captioning", "vision_enrichment"}
+    return any(t in vision_aware for t in recommended)
 
 
 def _safe_now_iso() -> str:
@@ -457,169 +450,9 @@ def _parse_method_for_mode(mode: str | None) -> str | None:
     return {"fast": "txt", "standard": "auto", "deep": "auto"}.get(mode)
 
 
-def _profile_payload(profile: "DocumentProfile | None") -> dict[str, Any] | None:
-    """Serialise a `DocumentProfile` to a Temporal-data-converter
-    friendly dict for the planning activity. Lossy on tuple fields
-    (e.g. `images`, `warnings`) — the planning activity only reads
-    scalar signals, so we keep this compact."""
-    if profile is None:
-        return None
-    return {
-        "document_id": profile.document_id,
-        "extension": profile.extension,
-        "mime_type": profile.mime_type,
-        "file_size_bytes": profile.file_size_bytes,
-        "page_count": profile.page_count,
-        "text_extractable_ratio": profile.text_extractable_ratio,
-        "has_images": profile.has_images,
-        "has_tables": profile.has_tables,
-        "has_scanned_pages": profile.has_scanned_pages,
-        "estimated_tokens": profile.estimated_tokens,
-        "language": profile.language,
-        "parser_confidence": profile.parser_confidence,
-        "parse_quality_score": profile.parse_quality_score,
-        "text_sufficiency_score": profile.text_sufficiency_score,
-        "layout_complexity_score": profile.layout_complexity_score,
-    }
 
 
-def _apply_post_compile_planning(
-    plan: "IngestPlan", planning: "BuildPlanningResultOutput",
-) -> tuple["IngestPlan", dict[str, Any]]:
-    """Overlay the post-compile planning result onto the existing
-    `IngestPlan` and return the updated plan plus a diff dict.
 
-    The post-compile planning result speaks `execution_plan.steps`
-    (rich shape with reasons / scopes) but the workflow's gating logic
-    only consults `IngestPlan.steps[*].enabled`. Translate the rich
-    decisions into per-step enable/disable overrides — this is the
-    minimal safe wiring that lets the downstream gates honor the
-    planner's recommendations without rewriting `_stage_enabled`.
-
-    Mapping (post-compile → workflow step):
-      * `enrich` is enabled when ANY of `table_enrichment`,
-        `vision_enrichment`, `image_captioning`,
-        `requirement_extraction`, `risk_extraction`,
-        `quality_assessment` is enabled. Disabled when all of them
-        are disabled — saves the cost of a no-op enrich call.
-      * `graph` follows `graph_extraction.enabled` directly.
-      * `index` follows `indexing.enabled` (defaults True).
-
-    Returns `(new_plan, diff)`. `diff` is empty when the post-compile
-    plan agrees with the initial plan; non-empty diff is suitable for
-    `_format_plan_diff_reason`."""
-    # Defensive: `execution_plan.steps` is contractually a dict
-    # keyed by step name. LLM-emitted plans occasionally emit it as
-    # a list of `{name, enabled, ...}` objects instead. Without this
-    # guard the next `.get()` call raises
-    # `AttributeError: 'list' object has no attribute 'get'` and the
-    # whole workflow fails with `J1_INGEST_UNEXPECTED_ERROR` —
-    # exactly the BUILD_CONTENT_INVENTORY-stage crash operators have
-    # hit. Coerce a list to its dict equivalent (keyed by `name` /
-    # `step_id`) so downstream lookups work; fall back to an empty
-    # dict when the shape is genuinely unrecognised.
-    raw_steps = (planning.execution_plan or {}).get("steps")
-    if isinstance(raw_steps, dict):
-        steps = raw_steps
-    elif isinstance(raw_steps, list):
-        steps = {}
-        for entry in raw_steps:
-            if not isinstance(entry, dict):
-                continue
-            key = (
-                entry.get("name")
-                or entry.get("step_id")
-                or entry.get("id")
-            )
-            if key:
-                steps[str(key)] = entry
-    else:
-        steps = {}
-    enrich_drivers = (
-        "table_enrichment", "vision_enrichment", "image_captioning",
-        "requirement_extraction", "risk_extraction", "quality_assessment",
-    )
-    enrich_should_run = any(
-        bool((steps.get(name) or {}).get("enabled"))
-        for name in enrich_drivers
-    )
-    graph_entry = steps.get("graph_extraction") or {}
-    graph_should_run = bool(graph_entry.get("enabled"))
-    index_entry = steps.get("indexing") or {}
-    index_should_run = bool(index_entry.get("enabled", True))
-
-    desired = {
-        STEP_ENRICH: enrich_should_run,
-        STEP_GRAPH: graph_should_run,
-        STEP_INDEX: index_should_run,
-    }
-
-    diff: dict[str, Any] = {}
-    new_steps: list = []
-    for step in plan.steps:
-        if step.name in desired:
-            target = desired[step.name]
-            # Caller-supplied kinds become forced-enables in the
-            # initial plan (`_build_plan` sets `overrides[name]=True`,
-            # which marks `step.source=CALLER` + `step.enabled=True`).
-            # The post-compile overlay must NOT silently flip those
-            # back to skipped — the operator's per-run intent wins
-            # over the planner's rule-based recommendation.
-            if step.source == StepSource.CALLER and step.enabled and not target:
-                # Caller wants this step; the planner wanted to
-                # skip it. Honor the caller. The Light-/RAG-Anything
-                # graph build is the canonical example — when
-                # `graph_builder_kind` is set, the operator wants
-                # graph artifacts surfaced even on a document the
-                # rule-based planner classified as a non-graph
-                # candidate.
-                new_steps.append(step)
-                continue
-            if step.enabled != target:
-                diff[step.name] = {"before": step.enabled, "after": target}
-                new_steps.append(_replace_request(
-                    step,
-                    enabled=target,
-                    required=step.required and target,
-                    decision=("RUN" if target else "SKIP"),
-                    reason=(
-                        step.reason if target
-                        else (
-                            (steps.get(step.name) or {}).get("reason")
-                            or step.reason
-                        )
-                    ),
-                ))
-                continue
-        new_steps.append(step)
-
-    if not diff:
-        return plan, {}
-
-    return _replace_request(plan, steps=tuple(new_steps)), diff
-
-
-def _format_plan_diff_reason(diff: dict[str, Any]) -> str:
-    """Render a `_summarise_plan_diff` result as a one-line reason.
-
-    Operator-readable; lands in the audit payload's `reason` field
-    so the FE timeline shows e.g.
-    `Post-compile signals: graph re-enabled, mode multimodal_light`
-    without bespoke FE rendering.
-    """
-    bits: list[str] = []
-    for key, change in sorted(diff.items()):
-        if not isinstance(change, dict):
-            continue
-        before = change.get("before")
-        after = change.get("after")
-        if key == "mode":
-            bits.append(f"mode {before}->{after}")
-        elif before is False and after is True:
-            bits.append(f"{key} re-enabled")
-        elif before is True and after is False:
-            bits.append(f"{key} disabled")
-    return "Post-compile replan: " + ", ".join(bits) if bits else "Post-compile replan"
 
 
 @workflow.defn
@@ -1548,15 +1381,17 @@ class ProjectProcessingWorkflow:
         compile_result: "ArtifactActivityResult",
         final_compile_quality: str,
     ) -> "PostCompileEnrichPlan | None":
-        """Run the rule-based post-compile enrich assessment + persist
-        the resulting `post_compile_enrich_plan` artifact.
+        """Run the rule-based post-compile enrich assessment, optionally
+        consult a fast LLM for ambiguous (OPTIONAL) cases, persist the
+        resulting `post_compile_enrich_plan` artifact, and return the
+        plan for downstream stage gating.
 
-        The assessor is pure (no I/O); we run it inline in workflow
-        code — that's deterministic and Temporal-sandbox-safe — and
-        only schedule an activity for the artifact write. Returns the
-        plan so callers can use the recommendation downstream; None
-        on error (callers fall through to the existing stage-gate
-        precedence)."""
+        The rule-based assessor is pure — runs inline (deterministic,
+        Temporal-sandbox-safe). The fast-LLM consult is dispatched via
+        an activity which honours `J1_ENRICH_ASSESSMENT_FAST_LLM_*`
+        env settings; consult failures NEVER block ingestion (we fall
+        back to the rule-based plan). The post-compile artifact write
+        is the only other activity dispatched here."""
         try:
             signals = build_signals_from_compile_metrics(
                 compile_status=str(compile_result.status),
@@ -1570,6 +1405,21 @@ class ProjectProcessingWorkflow:
                 "post-compile enrich assessment failed: %s", exc,
             )
             return None
+
+        # Optional fast-LLM consult — only when the rule-based plan is
+        # ambiguous (OPTIONAL). The consult activity short-circuits
+        # internally when env-disabled / no callable wired; we still
+        # dispatch unconditionally so the env gate lives in one place.
+        if is_consult_warranted(plan):
+            plan = await self._maybe_consult_fast_llm(
+                request,
+                document_id=document_id,
+                rule_based_plan=plan,
+                signals=signals,
+                compile_result=compile_result,
+                final_compile_quality=final_compile_quality,
+            )
+
         if not request.correlation_id:
             return plan
         try:
@@ -1588,6 +1438,85 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001 — observability never blocks ingest
             pass
         return plan
+
+    async def _maybe_consult_fast_llm(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        document_id: str,
+        rule_based_plan: "PostCompileEnrichPlan",
+        signals,
+        compile_result: "ArtifactActivityResult",
+        final_compile_quality: str,
+    ) -> "PostCompileEnrichPlan":
+        """Dispatch the fast-LLM consult activity and apply any
+        refinement to the rule-based plan. Activity failures
+        (timeout, missing config, invalid JSON, exception) all fall
+        back to the unmodified rule-based plan — ingestion MUST NEVER
+        fail because the optional consult had a bad day.
+
+        SKIP plans never reach this method (they're filtered upstream
+        by `is_consult_warranted`); even if they did, the pure
+        `apply_fast_llm_refinement` blocks SKIP overrides."""
+        compile_warnings = list(
+            (compile_result.compile_metrics or {}).get("plan_warnings", [])
+            or []
+        )
+        try:
+            consult_result = await workflow.execute_activity_method(
+                ProcessingActivities.fast_llm_consult_enrich,
+                FastLLMConsultEnrichInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id or "",
+                    document_id=document_id,
+                    compile_status=str(compile_result.status),
+                    final_compile_quality=final_compile_quality,
+                    source_signals=dict(rule_based_plan.source_signals),
+                    provisional_recommendation=(
+                        rule_based_plan.overall_recommendation.value
+                    ),
+                    provisional_recommended_tasks=list(
+                        rule_based_plan.recommended_tasks
+                    ),
+                    provisional_skipped_tasks=list(
+                        rule_based_plan.skipped_tasks
+                    ),
+                    compile_warnings=compile_warnings,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+            # Result-shape access is inside the try so a stub /
+            # legacy worker that returns the wrong shape can't crash
+            # ingestion — we fall back to the rule-based plan.
+            if not getattr(consult_result, "consulted", False):
+                return rule_based_plan
+            rec_value = getattr(consult_result, "recommendation", None)
+            rec: EnrichRecommendation | None = None
+            if rec_value:
+                try:
+                    rec = EnrichRecommendation(rec_value)
+                except ValueError:
+                    rec = None
+            refinement = FastLLMRefinement(
+                recommendation=rec,
+                add_reasons=tuple(
+                    getattr(consult_result, "add_reasons", None) or ()
+                ),
+                add_recommended_tasks=tuple(
+                    getattr(consult_result, "add_recommended_tasks", None) or ()
+                ),
+            )
+            return apply_fast_llm_refinement(rule_based_plan, refinement)
+        except Exception as exc:  # noqa: BLE001 — consult never blocks ingest
+            try:
+                workflow.logger.warning(
+                    "fast-LLM consult activity failed; using rule-based plan: %s",
+                    exc,
+                )
+            except Exception:  # noqa: BLE001 — log can fail outside workflow runtime in tests
+                pass
+            return rule_based_plan
 
     def _evaluate_compile_attempt(
         self,
@@ -1878,83 +1807,6 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001
             pass
 
-    async def _emit_plan_generated(
-        self,
-        request: ProjectProcessingRequest,
-        document_id: str,
-        plan: IngestPlan,
-    ) -> None:
-        """Persist the plan into the audit log via an activity.
-
-        The planner runs in workflow code (deterministic, no I/O), so
-        the audit-log write that backs `GET /ingestion-runs/{id}/plan`
-        has to be an activity call. Best-effort like the other
-        emit helpers — failure to record the plan must not block the
-        rest of the pipeline."""
-        if not request.correlation_id:
-            return
-        # `to_jsonable` recursively converts dataclasses + enums (the
-        # `IngestPlan` tree includes `PlannedStep` / `IngestMode` /
-        # `IngestPolicy` / `DocumentProfile`) into Temporal-data-
-        # converter-safe dicts.
-        plan_payload = to_jsonable(plan)
-        # The REST `_read_run_plan` reads `payload["plan"]["document_id"]`
-        # etc. directly, so make sure the payload has `document_id`
-        # at top level (matches `IngestPlan.document_id`).
-        if isinstance(plan_payload, dict):
-            plan_payload.setdefault("document_id", document_id)
-        try:
-            await workflow.execute_activity_method(
-                RunsActivities.report_plan_generated,
-                ReportPlanGeneratedInput(
-                    scope=request.scope,
-                    run_id=request.correlation_id,
-                    plan_payload=plan_payload,
-                    actor=request.actor,
-                ),
-                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
-                retry_policy=DEFAULT_RETRY.to_temporal(),
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
-    async def _emit_plan_revised(
-        self,
-        request: ProjectProcessingRequest,
-        plan: IngestPlan,
-        *,
-        diff: dict[str, Any],
-    ) -> None:
-        """Persist the revised plan via `j1.progress.plan.revised`.
-
-        Same best-effort contract as `_emit_plan_generated`. The
-        `diff` summary is folded into the audit payload's `reason`
-        so operators reading the timeline see exactly what changed
-        between initial and revised plans (e.g. "graph step
-        re-enabled by post-compile signals: image_count=8").
-        """
-        if not request.correlation_id:
-            return
-        plan_payload = to_jsonable(plan)
-        if isinstance(plan_payload, dict):
-            plan_payload.setdefault("document_id", plan.document_id)
-        reason = _format_plan_diff_reason(diff)
-        try:
-            await workflow.execute_activity_method(
-                RunsActivities.report_plan_revised,
-                ReportPlanRevisedInput(
-                    scope=request.scope,
-                    run_id=request.correlation_id,
-                    plan_payload=plan_payload,
-                    reason=reason,
-                    actor=request.actor,
-                ),
-                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
-                retry_policy=DEFAULT_RETRY.to_temporal(),
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
     def _set_search_attribute(self, name: str, value: str) -> None:
         """Opt-in keyword search-attribute upsert.
 
@@ -2062,173 +1914,134 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001 — registry status is non-critical telemetry
             pass
 
-    async def _build_plan(
-        self,
-        request: ProjectProcessingRequest,
-        document_id: str,
-        *,
-        compile_content_stats: dict | None = None,
-    ) -> IngestPlan:
-        """Run the profiling activity and feed the result through the
-        planner. Pure side-effect-free planning happens in-workflow;
-        only the I/O-bound profile call goes through an activity.
-
-        Caller-supplied kinds become caller_overrides — the planner
-        sees them as forced-enable for that step (the legacy
-        "kind is set" semantics). Stages without a kind on the
-        request are left to the planner's mode-driven decision.
-
-        `compile_content_stats` (when supplied — typically by the
-        post-compile call site) carries observed signals from the
-        parser. Keys override the deterministic profile so a 1-page
-        PDF that contains only a diagram (which the file-system-only
-        profiler classifies as text-only) gets `has_images=True`
-        post-compile and the planner picks an image-aware mode."""
-        profile: DocumentProfile = await workflow.execute_activity_method(
-            ProfilingActivities.profile_document,
-            ProfileDocumentInput(
-                scope=request.scope,
-                document_id=document_id,
-                actor=request.actor,
-                correlation_id=request.correlation_id,
-            ),
-            start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
-            retry_policy=DEFAULT_RETRY.to_temporal(),
-        )
-        if compile_content_stats:
-            profile = _merge_compile_signals(profile, compile_content_stats)
-        # Caller-supplied kinds → forced-enable. Compile is treated
-        # as always set (request.compiler_kind has a default fallback
-        # at the REST adapter layer).
-        overrides: dict[str, bool] = {STEP_COMPILE: True}
-        if request.enricher_kind:
-            overrides[STEP_ENRICH] = True
-        if request.graph_builder_kind:
-            overrides[STEP_GRAPH] = True
-        if request.indexer_kind:
-            overrides[STEP_INDEX] = True
-
-        # Available steps reflect what the deployment has registered;
-        # for now infer from caller-supplied kinds + always include
-        # compile (mandatory in the legacy model). A future change can
-        # pass this in via `ProcessingCapabilities` so the planner
-        # sees the full registered set, not just what the caller
-        # picked.
-        available_steps = frozenset({STEP_COMPILE})
-        if request.enricher_kind:
-            available_steps |= {STEP_ENRICH}
-        if request.graph_builder_kind:
-            available_steps |= {STEP_GRAPH}
-        if request.indexer_kind:
-            available_steps |= {STEP_INDEX}
-
-        planner = DefaultIngestPlanner()
-        return planner.plan(
-            profile,
-            policy=request.policy,
-            available_steps=available_steps,
-            caller_overrides=overrides,
-        )
-
-    async def _maybe_replan_after_compile(
-        self,
-        request: ProjectProcessingRequest,
-        document_id: str,
-        *,
-        initial_plan: IngestPlan,
-        compile_content_stats: dict,
-    ) -> IngestPlan | None:
-        """Re-run the planner with parser-derived stats overlaid on
-        the deterministic profile. Returns the revised plan when it
-        differs from `initial_plan`, otherwise None.
-
-        The revised plan can ONLY affect downstream optional stages
-        (enrich / graph / index): compile already ran. We never
-        revisit a step the initial plan reported as completed.
-        Caller-supplied kinds keep winning via `caller_overrides`.
-
-        Persists the revision via `j1.progress.plan.revised` so the
-        FE plan card swaps from initial → revised, and operators can
-        see the reason in the audit timeline.
-        """
-        try:
-            revised = await self._build_plan(
-                request,
-                document_id,
-                compile_content_stats=compile_content_stats,
-            )
-        except Exception as exc:  # noqa: BLE001 — replan is best-effort
-            workflow.logger.warning(
-                "post-compile replan failed; keeping initial plan: %s", exc,
-            )
-            return None
-
-        diff = _summarise_plan_diff(initial_plan, revised)
-        if not diff:
-            # No effective change in step enablement — keep the
-            # initial plan and skip the audit event noise.
-            return None
-
-        await self._emit_plan_revised(request, revised, diff=diff)
-        return revised
 
     def _stage_enabled(
         self,
-        plan: IngestPlan | None,
         stage: str,
         request_kind: str | None,
         *,
+        compile_result: "ArtifactActivityResult | None" = None,
+        final_compile_quality: str | None = None,
         enrich_plan: "PostCompileEnrichPlan | None" = None,
     ) -> tuple[bool, str | None, StepSource]:
-        """Resolve "should this stage run?" with consistent precedence.
+        """Resolve "should this stage run?" using compile evidence +
+        the post-compile enrich plan + the request's stage kind.
 
         Returns `(enabled, skip_reason, source)`. The reason is None
         when enabled; populated when skipped so the workflow can pass
         it to `_record_step`.
 
-        Order of precedence (highest first):
-          1. No `request_kind` → stage is unrunnable (no adapter chosen)
-             → skip with `source=CALLER`.
-          2. `stage == "enrich"` AND `enrich_plan` is supplied → the
-             post-compile rule-based enrich plan is authoritative:
-             SKIP recommendation with blocking_issues skips with
-             `PLANNER` source; any other recommendation runs (the
-             caller already opted in by setting `enricher_kind`).
-          3. Plan is None (planner disabled) → run if request_kind set.
-          4. Plan says step is enabled → run; source=PLANNER (or CALLER
-             if caller-overridden).
-          5. Plan says step is skipped → skip; source carried from
-             plan.step.source (typically PLANNER)."""
+        There is intentionally no IngestPlan parameter — gating is
+        compile-first. Pre-compile guesses do not influence
+        enrich/graph/index decisions.
+
+        Per-stage rules:
+          * `enrich`:
+              - SKIP from enrich plan (with blocking issues) →
+                skip with `PLANNER` source.
+              - RECOMMENDED / REQUIRED → run with `PLANNER` source.
+              - Else → defer to caller intent (`CALLER`).
+          * `graph`:
+              - compile failed / final quality FAILED → skip
+                (`PLANNER`).
+              - zero chunks produced → skip (`PLANNER`).
+              - enrich plan recommends SKIP for blocking compile
+                issues → skip (`PLANNER`).
+              - low compile quality WITHOUT a caller force →
+                skip (`PLANNER`) to avoid extracting from a
+                degraded parse.
+              - Else → run (`CALLER`).
+          * `index`:
+              - compile failed → skip (`PLANNER`).
+              - zero chunks produced → skip (`PLANNER`).
+              - Else → run (`CALLER`).
+        """
         if not request_kind:
             return False, f"{stage}_kind not provided in request", StepSource.CALLER
-        # Post-compile enrich plan is authoritative for the enrich
-        # stage when provided. SKIP overrules the IngestPlan; other
-        # recommendations defer to the IngestPlan's runnable signal
-        # (still controlled by caller_overrides + planner mode).
-        if stage == "enrich" and enrich_plan is not None:
-            if enrich_plan.overall_recommendation == EnrichRecommendation.SKIP:
-                reason = (
-                    "; ".join(enrich_plan.blocking_issues)
-                    or "post-compile enrich plan recommends SKIP"
+
+        compile_status = (
+            str(getattr(compile_result, "status", "")) if compile_result else ""
+        )
+        chunks_count = 0
+        if compile_result is not None:
+            metrics = getattr(compile_result, "compile_metrics", None) or {}
+            chunks_count = int(metrics.get("chunks_count", 0) or 0)
+            if chunks_count == 0:
+                # Fall back to counting `chunk` kinds when the metrics
+                # didn't surface a count (legacy compilers / fakes).
+                kinds = getattr(compile_result, "kinds", ()) or ()
+                chunks_count = sum(1 for k in kinds if k == "chunk")
+
+        if stage == "enrich":
+            if enrich_plan is not None:
+                if enrich_plan.overall_recommendation == EnrichRecommendation.SKIP:
+                    reason = (
+                        "; ".join(enrich_plan.blocking_issues)
+                        or "post-compile enrich plan recommends SKIP"
+                    )
+                    return False, reason, StepSource.PLANNER
+                if enrich_plan.overall_recommendation in (
+                    EnrichRecommendation.RECOMMENDED,
+                    EnrichRecommendation.REQUIRED,
+                ):
+                    return True, None, StepSource.PLANNER
+            return True, None, StepSource.CALLER
+
+        if stage == "graph":
+            if compile_result is not None and compile_status != "succeeded":
+                return (
+                    False,
+                    "compile did not succeed; cannot build graph",
+                    StepSource.PLANNER,
                 )
-                return False, reason, StepSource.PLANNER
-            # RECOMMENDED / REQUIRED → run with PLANNER provenance so
-            # the audit log records the new assessor as the deciding
-            # source. OPTIONAL → defer to IngestPlan / caller below.
-            if enrich_plan.overall_recommendation in (
-                EnrichRecommendation.RECOMMENDED,
-                EnrichRecommendation.REQUIRED,
+            if final_compile_quality == "failed":
+                return (
+                    False,
+                    "final compile quality is FAILED; refusing to graph",
+                    StepSource.PLANNER,
+                )
+            if compile_result is not None and chunks_count == 0:
+                return (
+                    False,
+                    "compile produced zero chunks; nothing to graph",
+                    StepSource.PLANNER,
+                )
+            if (
+                enrich_plan is not None
+                and enrich_plan.overall_recommendation == EnrichRecommendation.SKIP
+                and enrich_plan.blocking_issues
             ):
-                return True, None, StepSource.PLANNER
-        if plan is None:
+                return (
+                    False,
+                    "; ".join(enrich_plan.blocking_issues),
+                    StepSource.PLANNER,
+                )
+            if final_compile_quality == "low":
+                return (
+                    False,
+                    "compile quality is LOW; skipping graph to avoid "
+                    "extracting from a degraded parse",
+                    StepSource.PLANNER,
+                )
             return True, None, StepSource.CALLER
-        step = plan.step(stage)
-        if step is None:
-            # Stage isn't in the plan — defaults to caller-driven.
+
+        if stage == "index":
+            if compile_result is not None and compile_status != "succeeded":
+                return (
+                    False,
+                    "compile did not succeed; nothing to index",
+                    StepSource.PLANNER,
+                )
+            if compile_result is not None and chunks_count == 0:
+                return (
+                    False,
+                    "compile produced zero chunks; nothing to index",
+                    StepSource.PLANNER,
+                )
             return True, None, StepSource.CALLER
-        if step.enabled:
-            return True, None, step.source
-        return False, step.reason, step.source
+
+        # Unknown stage — caller-driven by default.
+        return True, None, StepSource.CALLER
 
     async def _process_document(
         self, request: ProjectProcessingRequest, document_id: str
@@ -2245,85 +2058,63 @@ class ProjectProcessingWorkflow:
         if request.compiler_kind:
             self._set_search_attribute(SEARCH_ATTR_PARSER_NAME, request.compiler_kind)
 
-        # Build the plan BEFORE compile so the FE's plan card resolves
-        # within seconds of upload — operators see "what will run" up
-        # front, not at workflow exit.
-        #
-        # We trade off content-stat refinement for visibility: the
-        # planner sees only the deterministic profile (file size,
-        # extension), not the parser-derived signals (has_images /
-        # has_tables / text_extractable_ratio). For most documents the
-        # extension-based profile is sufficient — e.g. a `.pdf` is
-        # already known to potentially carry images and tables, so the
-        # planner picks an image-aware mode regardless. The remaining
-        # edge case (a `.txt` that secretly contains a base64-encoded
-        # diagram) is rare enough that earlier visibility wins.
-        #
-        # Compile is always force-enabled — the planner only gates the
-        # LLM-expensive stages (enrich / graph / index) — so an
-        # upfront plan never short-circuits the parsing path.
-        plan: IngestPlan | None = None
-        if request.planner_enabled:
-            plan = await self._build_plan(request, document_id)
-            self._set_search_attribute(SEARCH_ATTR_INGEST_MODE, plan.mode.value)
-            # Surface the LLM/vision policy decisions as search
-            # attributes so operators can filter Temporal histories
-            # for "all runs that needed the premium model" without
-            # re-reading the audit log. Both gated on the same
-            # `search_attributes_enabled` flag as the existing upserts.
-            self._set_search_attribute(
-                SEARCH_ATTR_REQUIRES_VISION,
-                "true" if plan.requires_vision else "false",
-            )
-            self._set_search_attribute(
-                SEARCH_ATTR_REQUIRES_PREMIUM_LLM,
-                "true" if plan.requires_premium_llm else "false",
-            )
-            self._log_step(
-                request,
-                event="ingestion.plan.created",
-                stage="plan",
-                status="completed",
-                document_id=document_id,
-                reason=(
-                    f"mode={plan.mode.value} policy={plan.policy.value} "
-                    f"requires_vision={plan.requires_vision} "
-                    f"requires_premium_llm={plan.requires_premium_llm}"
-                ),
-            )
-            # Persist the plan into the audit log so the FE's
-            # `GET /ingestion-runs/{id}/plan` endpoint can serve it.
-            # Without this the run-detail page sits on "Generating
-            # plan…" forever — the plan only exists in workflow
-            # memory until this activity writes it through the
-            # progress reporter.
-            await self._emit_plan_generated(request, document_id, plan)
-
-        # Build the vendor-neutral AssessmentPlan from the same
-        # profile the IngestPlanner saw. The bridge consumes it via
-        # `map_assessment_to_raganything_config` to derive
-        # parse_method (and per-capability toggles) instead of
-        # using the static `settings.parse_method` for every
-        # document. Only built when planner_enabled — the legacy
-        # bulk-job path skips profiling and thus skips assessment
-        # too; the bridge falls back to settings in that case.
+        # Compile-first: the only pre-compile work is a cheap
+        # deterministic profile (pypdf-based, no LLM, no IngestPlanner)
+        # used to derive the AssessmentPlan that drives compile config
+        # (parse_method + per-capability toggles). All gating
+        # decisions for downstream stages (enrich / graph / index)
+        # happen post-compile from compile evidence + the
+        # `PostCompileEnrichPlan`. There is no IngestPlan object
+        # threaded through this workflow.
         #
         # Failure handling is governed by
         # `request.assessment_failure_policy` (read from
         # `J1_ASSESSMENT_FAILURE_POLICY` at request-build time):
-        #
         #   * `fail_open` (default) — assessment failure logs +
         #     leaves payload None; bridge falls back to
-        #     settings.parse_method. Production-friendly.
+        #     `settings.parse_method`. Production-friendly.
         #   * `fail_closed` — assessment failure raises
         #     `_BusinessRejection`; compile step recorded FAILED;
-        #     run lands at FAILED_FINAL. For compliance setups that
-        #     require explicit per-document plans.
+        #     run lands at FAILED_FINAL.
         assessment_payload: dict | None = None
-        if plan is not None:
+        if request.planner_enabled:
             try:
-                assessment = DefaultAssessmentPlanner().assess(plan.profile)
+                profile = await workflow.execute_activity_method(
+                    ProfilingActivities.profile_document,
+                    ProfileDocumentInput(
+                        scope=request.scope,
+                        document_id=document_id,
+                        actor=request.actor,
+                        correlation_id=request.correlation_id,
+                    ),
+                    start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                    retry_policy=DEFAULT_RETRY.to_temporal(),
+                )
+                assessment = DefaultAssessmentPlanner().assess(profile)
                 assessment_payload = assessment.to_payload()
+                # Surface the assessment mode as a Temporal search
+                # attribute so operators can filter histories without
+                # reading the audit log. INGEST_MODE comes from the
+                # AssessmentPlan's compile-mode (fast/standard/deep);
+                # vision / premium-LLM search attrs are deferred until
+                # after compile so they reflect compile evidence +
+                # post-compile assessment, not pre-compile guesses.
+                mode_value = assessment_payload.get("mode")
+                if mode_value:
+                    self._set_search_attribute(
+                        SEARCH_ATTR_INGEST_MODE, mode_value,
+                    )
+                self._log_step(
+                    request,
+                    event="ingestion.assessment.created",
+                    stage="assessment",
+                    status="completed",
+                    document_id=document_id,
+                    reason=(
+                        f"mode={mode_value} "
+                        f"confidence={assessment_payload.get('confidence')}"
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001 — handled per policy
                 if request.assessment_failure_policy == \
                         ASSESSMENT_FAILURE_POLICY_FAIL_CLOSED:
@@ -2347,12 +2138,11 @@ class ProjectProcessingWorkflow:
                         f"AssessmentPlan build failed for {document_id}: "
                         f"{exc}"
                     )
-                # fail_open: log via the structured-log facility +
-                # proceed with settings.parse_method.
+                # fail_open: log + proceed with settings.parse_method.
                 self._log_step(
                     request,
                     event="ingestion.assessment.failed",
-                    stage="plan",
+                    stage="assessment",
                     status="warning",
                     document_id=document_id,
                     reason=f"assessment build failed (fail_open): {exc}",
@@ -2671,88 +2461,26 @@ class ProjectProcessingWorkflow:
             artifact_count=len(compile_result.artifact_ids),
         )
 
-        # Post-compile replan. The compile activity returns
-        # `content_stats` with parser-derived signals (image/table/
-        # equation counts, page count, scanned-page hints). Re-feed
-        # them into the planner so a misclassified document (e.g. a
-        # PDF whose deterministic profile said `has_images=False`
-        # but compile actually found embedded figures) can trigger
-        # a downstream stage that the initial plan skipped. The
-        # revised plan is allowed to ENABLE optional stages only —
-        # compile already ran and is not re-evaluated.
-        if (
-            request.planner_enabled
-            and plan is not None
-            and compile_result.content_stats
-        ):
-            revised = await self._maybe_replan_after_compile(
-                request,
-                document_id,
-                initial_plan=plan,
-                compile_content_stats=compile_result.content_stats,
-            )
-            if revised is not None:
-                plan = revised
-
-        # Post-compile Processing Plan. Reads the parsed-content
-        # manifest the compile activity emitted, runs Document
-        # Understanding + Lightweight Content Digest + Rule-based
-        # Post-Compile Assessment, optionally consults a planner LLM,
-        # and persists `planning_result.json`. Best-effort: when the
-        # activity fails or no manifest is available the workflow
-        # falls back to the existing IngestPlan unchanged.
-        if plan is not None:
-            try:
-                planning_result: "BuildPlanningResultOutput | None" = (
-                    await workflow.execute_activity_method(
-                        PlanningActivities.build_planning_result,
-                        BuildPlanningResultInput(
-                            scope=request.scope,
-                            run_id=request.correlation_id or "",
-                            document_id=document_id,
-                            profile_payload=_profile_payload(plan.profile),
-                            domain_override=request.domain_override,
-                            workspace_default_domain=request.workspace_default_domain,
-                        ),
-                        start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
-                        retry_policy=DEFAULT_RETRY.to_temporal(),
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001 — planning is best-effort
-                workflow.logger.warning(
-                    "post-compile planning activity failed; keeping existing plan: %s",
-                    exc,
-                )
-                planning_result = None
-
-            if planning_result is not None:
-                updated, diff = _apply_post_compile_planning(plan, planning_result)
-                if diff:
-                    plan = updated
-                # Always re-emit `plan.revised` after a successful
-                # post-compile planning activity — even when the
-                # overlay didn't flip an enable bit. Two reasons:
-                # (a) the activity's planning_result.json artifact
-                #     just landed; the audit-log event is the FE's
-                #     trigger to refresh the run summary so the new
-                #     Planning Report tab unlocks promptly.
-                # (b) when no enable bits flipped but scope/pages
-                #     did (e.g. a domain-pack overlay narrowed
-                #     `vision_enrichment.pages`), `/plan` should
-                #     still surface the latest canonical IngestPlan
-                #     so the plan card stays accurate.
-                await self._emit_plan_revised(
-                    request, plan,
-                    diff={
-                        **diff,
-                        "post_compile_source": {
-                            "after": planning_result.source,
-                        },
-                        "post_compile_domain": {
-                            "after": planning_result.selected_domain,
-                        },
-                    },
-                )
+        # Compile-result-driven search attributes. Both flags are
+        # derived ONLY from compile evidence + the post-compile
+        # enrich plan — never from pre-compile guesses.
+        #
+        #   * REQUIRES_VISION — true iff compile actually saw images
+        #     in the document (content_stats.has_images or
+        #     image_count > 0). Operators filter Temporal histories
+        #     by this to find runs that hit the VLM path.
+        #   * REQUIRES_PREMIUM_LLM — true iff the post-compile
+        #     enrich plan recommends or requires a vision-aware
+        #     enrichment task; signals that downstream stages will
+        #     consume an LLM with image input.
+        self._set_search_attribute(
+            SEARCH_ATTR_REQUIRES_VISION,
+            "true" if _compile_saw_images(compile_result) else "false",
+        )
+        self._set_search_attribute(
+            SEARCH_ATTR_REQUIRES_PREMIUM_LLM,
+            "true" if _enrich_plan_needs_premium_llm(enrich_plan) else "false",
+        )
 
         # ── Generate Knowledge Chunks ────────────────────────────
         # Compile already produced chunk artifacts (J1 runs RAGAnything
@@ -2789,11 +2517,13 @@ class ProjectProcessingWorkflow:
             return
 
         # Stage gate: the post-compile enrich plan is authoritative
-        # when present; otherwise fall back to the IngestPlan + the
-        # request's enricher_kind. `_stage_enabled` codifies the
-        # precedence rules.
+        # for the enrich stage; absent that, defer to the caller's
+        # enricher_kind. `_stage_enabled` codifies the precedence
+        # rules — no IngestPlan involved.
         enrich_enabled, enrich_reason, enrich_source = self._stage_enabled(
-            plan, "enrich", request.enricher_kind,
+            "enrich", request.enricher_kind,
+            compile_result=compile_result,
+            final_compile_quality=final_quality,
             enrich_plan=enrich_plan,
         )
         # Resume short-circuit: if the prior run already completed
@@ -2947,7 +2677,10 @@ class ProjectProcessingWorkflow:
                 return
 
         graph_enabled, graph_reason, graph_source = self._stage_enabled(
-            plan, "graph", request.graph_builder_kind,
+            "graph", request.graph_builder_kind,
+            compile_result=compile_result,
+            final_compile_quality=final_quality,
+            enrich_plan=enrich_plan,
         )
         # Resume short-circuit: same shape as the enrich one above.
         # The `graph` step name matches what the planner / status
