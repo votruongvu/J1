@@ -1,29 +1,33 @@
 /**
- * Right-side technical drawer that surfaces raw run / plan / event /
+ * Right-side technical drawer that surfaces raw run / event /
  * selected-event JSON for engineers diagnosing a run.
+ *
+ * Compile-first: there is no longer a single canonical IngestPlan
+ * to render — the AssessmentPlan + post-compile enrich plan are
+ * artifact-backed and have their own UI panels (Compile Strategy,
+ * Enrich Plan). Operators wanting raw JSON for those should use
+ * the Raw artifacts result tab.
  */
 
 import { useState } from "react";
 import { Icon } from "@/components/icons";
 import { JsonView } from "@/components/JsonView";
-import type { ExecutionPlan, IngestionRun, ProgressEvent } from "@/types/ingestion";
+import type { IngestionRun, ProgressEvent } from "@/types/ingestion";
 
 interface TechDrawerProps {
   open: boolean;
   onClose: () => void;
   run: IngestionRun | null;
-  plan: ExecutionPlan | null;
   events: ProgressEvent[];
   selectedEvent: ProgressEvent | null;
 }
 
-type Tab = "run" | "plan" | "events" | "selected";
+type Tab = "run" | "events" | "selected";
 
 export function TechDrawer({
   open,
   onClose,
   run,
-  plan,
   events,
   selectedEvent,
 }: TechDrawerProps) {
@@ -48,12 +52,6 @@ export function TechDrawer({
           Run
         </button>
         <button
-          className={`drawer__tab ${tab === "plan" ? "is-active" : ""}`}
-          onClick={() => setTab("plan")}
-        >
-          Plan
-        </button>
-        <button
           className={`drawer__tab ${tab === "events" ? "is-active" : ""}`}
           onClick={() => setTab("events")}
         >
@@ -68,7 +66,6 @@ export function TechDrawer({
       </div>
       <div className="drawer__body">
         {tab === "run" && <JsonView value={run} />}
-        {tab === "plan" && <JsonView value={plan} />}
         {tab === "events" && <JsonView value={events} />}
         {tab === "selected" &&
           (selectedEvent ? (

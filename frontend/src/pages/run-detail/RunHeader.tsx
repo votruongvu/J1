@@ -1,10 +1,15 @@
 /**
  * Run header — breadcrumb, document name, status, and a strip of
- * top-level run stats (mode / policy / total steps / decision counts /
- * warnings / duration). Pure presentation; the parent passes data.
+ * top-level run stats (mode / policy / warnings / duration). Pure
+ * presentation; the parent passes data.
+ *
+ * Compile-first: per-step counts (total / run / skip / cond) used
+ * to come from the IngestPlan, which the workflow no longer
+ * produces. Stage-by-stage detail lives in the LiveTimeline +
+ * EnrichPlanPanel; the header keeps only run-scope identity.
  */
 
-import type { ExecutionPlan, IngestionRun } from "@/types/ingestion";
+import type { IngestionRun } from "@/types/ingestion";
 import type { ProjectContext, Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 import { StatusBadge } from "@/components/badges";
@@ -12,7 +17,6 @@ import { RunControls } from "./RunControls";
 
 interface RunHeaderProps {
   run: IngestionRun | null;
-  plan: ExecutionPlan | null;
   ctx: ProjectContext;
   onBack: () => void;
   onOpenDrawer: () => void;
@@ -36,10 +40,9 @@ function formatDuration(seconds: number | null): string {
 }
 
 export function RunHeader({
-  run, plan, ctx, onBack, onOpenDrawer, onRefresh, pushToast, onAfterAction,
+  run, ctx, onBack, onOpenDrawer, onRefresh, pushToast, onAfterAction,
 }: RunHeaderProps) {
   if (!run) return null;
-  const summary = plan?.summary;
   const startedMs = run.started_at ? new Date(run.started_at).getTime() : null;
   const endMs = run.completed_at ? new Date(run.completed_at).getTime() : Date.now();
   const durationSec = startedMs ? Math.max(0, Math.round((endMs - startedMs) / 1000)) : null;
@@ -95,22 +98,6 @@ export function RunHeader({
         <div className="run-stats__item">
           <label>Policy</label>
           <div className="v mono">{run.policy}</div>
-        </div>
-        <div className="run-stats__item">
-          <label>Total steps</label>
-          <div className="v">{summary?.total ?? "—"}</div>
-        </div>
-        <div className="run-stats__item">
-          <label>Run · Skip · Cond</label>
-          <div className="vsmall">
-            <span style={{ color: "var(--info-fg)" }}>{summary?.run ?? "—"}</span>
-            <span style={{ color: "var(--text-subtle)" }}> · </span>
-            <span style={{ color: "var(--text-muted)" }}>{summary?.skip ?? "—"}</span>
-            <span style={{ color: "var(--text-subtle)" }}> · </span>
-            <span style={{ color: "var(--accent-soft-fg)" }}>
-              {summary?.conditional ?? "—"}
-            </span>
-          </div>
         </div>
         <div className="run-stats__item">
           <label>Warnings</label>

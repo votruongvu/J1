@@ -5,7 +5,6 @@
  */
 
 import type {
-  ExecutionPlan,
   IngestionRun,
   ProgressEvent,
   RunListQuery,
@@ -16,7 +15,6 @@ import type {
   GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
-  PlanningResult,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -81,9 +79,6 @@ export interface IngestionClient {
 
   /** GET a single run snapshot. */
   getRun(runId: string): Promise<IngestionRun>;
-
-  /** GET the execution plan for a run. */
-  getPlan(runId: string): Promise<ExecutionPlan>;
 
   /** POST confirm — transitions a run from PLAN_READY → RUNNING. */
   confirm(runId: string): Promise<{ ok: true }>;
@@ -155,18 +150,13 @@ export interface IngestionClient {
   ): Promise<ReviewGraphSnapshot>;
 
   /**
-   * GET the parsed-content manifest projection (Content Inventory tab).
-   * Returns `status="unavailable"` with a reason when no manifest
-   * exists (legacy / mid-compile / failed-compile runs).
+   * GET the parsed-content manifest projection. Returns
+   * `status="unavailable"` with a reason when no manifest exists
+   * (legacy / mid-compile / failed-compile runs). Currently only
+   * surfaced via the Compile Strategy panel — the standalone tab
+   * was removed in the compile-first refactor.
    */
   getRunContentInventory(runId: string): Promise<ContentInventory>;
-
-  /**
-   * GET the Planning Report (Planning tab) — richer projection over
-   * the planner's output. Returns `status="unavailable"` with a
-   * reason when no plan exists yet (legacy / pre-plan / disabled).
-   */
-  getRunPlanning(runId: string): Promise<PlanningResult>;
 
   /**
    * GET the post-compile rule-based enrich plan (Enrich Plan card).

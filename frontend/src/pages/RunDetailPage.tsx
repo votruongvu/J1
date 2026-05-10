@@ -1,7 +1,8 @@
 /**
- * Run-detail orchestrator. Owns the run, plan, events, and stream
- * lifecycle. Coordinates the header, primary status panel, plan card,
- * timeline, and technical drawer.
+ * Run-detail orchestrator. Owns the run, events, and stream
+ * lifecycle. Coordinates the header, primary status panel, live
+ * timeline, compile-strategy panel, enrich-plan panel, and
+ * technical drawer.
  *
  * Stream resumption: we send the last seen `eventId` as
  * `Last-Event-Id` so reconnects pick up cleanly. A failure triggers a
@@ -12,21 +13,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, type StreamHandle } from "@/lib/api/client";
 import { useClient } from "@/lib/hooks/useClient";
 import {
-  type ExecutionPlan,
   type IngestionRun,
   type ProgressEvent,
   isTerminalEvent,
 } from "@/types/ingestion";
-import { EVENT_TYPES } from "@/lib/constants/events";
-import type { ProjectContext, RuntimeStepStatus, StreamStatus, Toast } from "@/types/ui";
+import type { ProjectContext, StreamStatus, Toast } from "@/types/ui";
 import { Banner } from "@/components/Banner";
 import { RunHeader } from "./run-detail/RunHeader";
-import { PlanCard } from "./run-detail/PlanCard";
 import { LiveTimeline } from "./run-detail/LiveTimeline";
 import { PrimaryStatusPanel } from "./run-detail/PrimaryStatusPanel";
 import { ResultsSection } from "./run-detail/results";
 import { TechDrawer } from "./run-detail/TechDrawer";
 import { CompileStrategyPanel } from "./run-detail/CompileStrategyPanel";
+import { EnrichPlanPanel } from "./run-detail/EnrichPlanPanel";
 
 interface RunDetailPageProps {
   runId: string;
@@ -39,15 +38,10 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
   const client = useClient();
 
   const [run, setRun] = useState<IngestionRun | null>(null);
-  const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
-  const [confirming, setConfirming] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<ProgressEvent | null>(null);
-  const [runtimeStepStatus, setRuntimeStepStatus] = useState<Record<string, RuntimeStepStatus>>(
-    {},
-  );
   const [loadError, setLoadError] = useState<{ status: number; message: string } | null>(null);
 
   const streamHandle = useRef<StreamHandle | null>(null);
@@ -102,29 +96,13 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         refreshTimerRef.current = setTimeout(refresh, RUN_REFRESH_DEBOUNCE_MS);
       }
 
-      const stepKey = e.data?.step;
-      if (stepKey) {
-        if (t === EVENT_TYPES.STEP_STARTED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "running" }));
-        if (t === EVENT_TYPES.STEP_COMPLETED)
-          setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "completed" }));
-        if (t === EVENT_TYPES.STEP_FAILED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "failed" }));
-        if (t === EVENT_TYPES.STEP_SKIPPED) setRuntimeStepStatus((s) => ({ ...s, [stepKey]: "skipped" }));
-      }
-
-      if (
-        t === EVENT_TYPES.PLAN_GENERATED ||
-        t === EVENT_TYPES.PLAN_REVISED
-      ) {
-        // Both events update the plan card. `plan.revised` lands
-        // when the post-compile planner adjusted the plan (domain
-        // overlay, post-compile signals merge, etc.) — we re-fetch
-        // so the card shows the latest canonical IngestPlan
-        // instead of sticking to the initial plan.
-        void client
-          .getPlan(runId)
-          .then((p) => setPlan(p))
-          .catch(() => {});
-      }
+      // Compile-first: there is no IngestPlan to refresh on
+      // plan.generated/plan.revised. Compile evidence + the
+      // post-compile enrich plan are the source of truth; the
+      // EnrichPlanPanel pulls its own data from the artifact.
+      // Step lifecycle telemetry is rendered directly off the
+      // event stream by `LiveTimeline` — no separate runtime-step
+      // map is needed at this layer.
     },
     [client, runId],
   );
@@ -178,9 +156,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       refreshTimerRef.current = null;
     }
     setRun(null);
-    setPlan(null);
     setEvents([]);
-    setRuntimeStepStatus({});
     setLoadError(null);
 
     void (async () => {
@@ -189,20 +165,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         if (cancelled) return;
         setRun(r);
 
-        // Allow the assessor to populate before fetching the plan.
-        // Kept as a fallback for the case where plan.generated
-        // arrives in history between `getEvents` and `openStream`.
-        setTimeout(async () => {
-          if (plan === null) {
-            try {
-              const p = await client.getPlan(runId);
-              if (!cancelled) setPlan(p);
-            } catch {
-              /* plan may not be ready yet — events will trigger refetch */
-            }
-          }
-        }, 600);
-
         const hist = await client.getEvents(runId);
         if (cancelled) return;
         for (const e of hist) {
@@ -210,22 +172,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           lastEventIdRef.current = e.eventId;
         }
         setEvents(hist);
-
-        // If `plan.generated` is already in history we must fetch the
-        // plan here — the SSE stream starts at `Last-Event-Id` and
-        // will NOT replay past events, so the `handleEvent` branch
-        // that calls `getPlan` never fires for already-seen events.
-        // The 600 ms eager fetch below can lose this race when the
-        // plan was written just before page-load; scanning history is
-        // the reliable alternative.
-        if (hist.some((e) => e.event === EVENT_TYPES.PLAN_GENERATED) && !cancelled) {
-          void client
-            .getPlan(runId)
-            .then((p) => {
-              if (!cancelled) setPlan(p);
-            })
-            .catch(() => {});
-        }
         openStream();
       } catch (e) {
         if (cancelled) return;
@@ -258,25 +204,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     };
   }, [runId, client, openStream, pushToast]);
 
-  const onConfirm = async () => {
-    setConfirming(true);
-    try {
-      await client.confirm(runId);
-      const r = await client.getRun(runId);
-      setRun(r);
-      pushToast({
-        kind: "success",
-        title: "Plan confirmed",
-        body: "Execution started.",
-      });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Confirm failed.";
-      pushToast({ kind: "error", title: "Confirm failed", body: message });
-    } finally {
-      setConfirming(false);
-    }
-  };
-
   const onSelectEvent = (e: ProgressEvent) => {
     setSelectedEvent(e);
     setDrawerOpen(true);
@@ -286,7 +213,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     <div>
       <RunHeader
         run={run}
-        plan={plan}
         ctx={ctx}
         onBack={onBack}
         onOpenDrawer={() => setDrawerOpen(true)}
@@ -346,18 +272,13 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       )}
 
       <div style={{ marginBottom: 20 }}>
-        <PrimaryStatusPanel run={run} plan={plan} events={events} />
+        <PrimaryStatusPanel run={run} events={events} />
       </div>
 
       <div className="run-body">
         <div className="col">
-          <PlanCard
-            plan={plan}
-            run={run}
-            runtimeStepStatus={runtimeStepStatus}
-            onConfirm={() => void onConfirm()}
-            confirming={confirming}
-          />
+          <CompileStrategyPanel runId={runId} />
+          <EnrichPlanPanel runId={runId} />
         </div>
         <div className="col">
           <LiveTimeline
@@ -367,13 +288,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           />
         </div>
       </div>
-
-      {/* Compile Strategy panel — Assessment Plan + retry timeline +
-          final-quality summary. Read from the
-          `compile_strategy_report` artifact via the artifact-listing
-          API; renders a "no data" placeholder when the artifact
-          isn't present (legacy / mid-flight runs). */}
-      <CompileStrategyPanel runId={runId} />
 
       {/* Results section — visible progressively as steps complete.
           The component handles the visibility check internally so
@@ -391,7 +305,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         run={run}
-        plan={plan}
         events={events}
         selectedEvent={selectedEvent}
       />

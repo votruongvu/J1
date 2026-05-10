@@ -18,7 +18,6 @@
  */
 
 import type {
-  ExecutionPlan,
   IngestionRun,
   ProgressEvent,
   RunListQuery,
@@ -29,7 +28,6 @@ import type {
   ManualTestQueryRequest,
   ContentInventory,
   ManualTestQueryResponse,
-  PlanningResult,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -65,7 +63,6 @@ import {
   type UploadFile,
 } from "./client";
 import {
-  type ApiPlanRecord,
   type ApiProgressEvent,
   type ApiRunListItem,
   type ApiRunRecord,
@@ -76,7 +73,6 @@ import {
   graphSnapshotFromApi,
   parseEtag,
   parseFilename,
-  planFromApi,
   qualityReportFromApi,
   runFromApi,
   runListItemFromApi,
@@ -213,16 +209,6 @@ export class ApiClient implements IngestionClient {
     return runFromApi(data);
   }
 
-  // ---- getPlan -----------------------------------------------------
-
-  async getPlan(runId: string): Promise<ExecutionPlan> {
-    const resp = await fetch(this.url(`/ingestion-runs/${encodeURIComponent(runId)}/plan`), {
-      headers: this.headers(),
-    });
-    const data = await this.json<ApiPlanRecord>(resp);
-    return planFromApi(data);
-  }
-
   // ---- confirm -----------------------------------------------------
 
   async confirm(runId: string): Promise<{ ok: true }> {
@@ -309,18 +295,6 @@ export class ApiClient implements IngestionClient {
       { headers: this.headers() },
     );
     return (await this.json<ContentInventory>(resp));
-  }
-
-  async getRunPlanning(runId: string): Promise<PlanningResult> {
-    // Same field-for-field shape mirroring as `getRunContentInventory`.
-    // Backend DTO (`PlanningResultDTO`) is camelCased via `CamelModel`
-    // — see tests/test_rest_run_review.py::test_planning_endpoint
-    // for the contract assertion.
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/planning`),
-      { headers: this.headers() },
-    );
-    return (await this.json<PlanningResult>(resp));
   }
 
   async getRunEnrichPlan(runId: string): Promise<RunEnrichPlanResponse> {

@@ -12,11 +12,10 @@ import { Icon } from "@/components/icons";
 import { IngestionStepIcon } from "@/components/ingestion-icons";
 import { EVENT_TYPES } from "@/lib/constants/events";
 import { userFacingStepLabel } from "@/lib/processing-steps";
-import type { ExecutionPlan, IngestionRun, ProgressEvent } from "@/types/ingestion";
+import type { IngestionRun, ProgressEvent } from "@/types/ingestion";
 
 interface PrimaryStatusPanelProps {
   run: IngestionRun | null;
-  plan: ExecutionPlan | null;
   events: ProgressEvent[];
 }
 
@@ -47,53 +46,19 @@ function deriveOutputs(events: ProgressEvent[]): OutputMetrics {
   return out;
 }
 
-export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProps) {
+export function PrimaryStatusPanel({ run, events }: PrimaryStatusPanelProps) {
   const outputs = useMemo(() => deriveOutputs(events), [events]);
 
   if (!run) return null;
   const status = run.status;
   const final = run.final;
 
-  if (status === "PLAN_READY" || status === "WAITING_FOR_CONFIRMATION") {
-    const summary = plan?.summary;
-    const total = (summary?.run ?? 0) + (summary?.skip ?? 0) + (summary?.conditional ?? 0);
-    return (
-      <div className="psp psp--awaiting">
-        <div className="psp__icon">
-          <Icon.Alert className="icon" />
-        </div>
-        <div className="psp__body">
-          <div className="psp__eyebrow">Awaiting confirmation</div>
-          <h2 className="psp__title">Review the plan before execution starts</h2>
-          <p className="psp__lede">
-            The assessor identified <strong>{total}</strong> candidate steps.{" "}
-            <strong>{summary?.run ?? 0}</strong> will run, <strong>{summary?.skip ?? 0}</strong>{" "}
-            will be skipped, <strong>{summary?.conditional ?? 0}</strong> are conditional.
-            Confirm the plan on the right to begin.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   if (status === "ASSESSING" || status === "CREATED") {
-    // Backend is still flipping the run record from ASSESSING → RUNNING
-    // when compile begins, so we look for stronger signals from the
-    // event stream + plan to advance the banner. Without this, the
-    // panel sticks on "Building execution plan…" even when the plan
-    // is visibly rendered below and the live timeline is firing
-    // step events. Two transitional cases (in priority order):
-    //
-    //   1. step.started has fired → the runner is past planning,
-    //      show the running spinner with the active stage so the
-    //      user sees the actual phase the document is in.
-    //   2. plan exists but no step has started yet → planning
-    //      completed; we're in the brief "compile is about to
-    //      begin" window. Show a "Plan ready" transition so the
-    //      banner doesn't lie about what just happened.
-    //
-    // When neither signal is present (the genuine pre-plan window),
-    // fall through to the original "Building execution plan…" copy.
+    // Backend flips the run record from ASSESSING → RUNNING when
+    // compile begins, so we read the event stream for stronger
+    // signals to advance the banner. If `step.started` has fired,
+    // show the running view with the active stage; otherwise show
+    // the pre-compile assessment window.
     const lastStarted = [...events].reverse().find((e) => e.event === EVENT_TYPES.STEP_STARTED);
     if (lastStarted) {
       const step = (lastStarted.data?.step as string | undefined) ?? "—";
@@ -101,8 +66,6 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
       return (
         <div className="psp psp--running">
           <div className="psp__icon">
-            {/* Step-specific pixel icon replaces the generic
-                refresh spinner — animation is the running state. */}
             <IngestionStepIcon step={step} status="running" size="md" />
           </div>
           <div className="psp__body">
@@ -118,40 +81,12 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
         </div>
       );
     }
-    if (plan) {
-      const summary = plan.summary;
-      const total = (summary?.run ?? 0) + (summary?.skip ?? 0) + (summary?.conditional ?? 0);
-      return (
-        <div className="psp psp--assessing">
-          <div className="psp__icon">
-            {/* Plan exists, pipeline about to start — show a
-                completed PlanIcon to telegraph the just-finished
-                planning phase. */}
-            <IngestionStepIcon
-              step="create_execution_plan"
-              status="completed"
-              size="md"
-            />
-          </div>
-          <div className="psp__body">
-            <div className="psp__eyebrow">Plan ready</div>
-            <h2 className="psp__title">Starting pipeline…</h2>
-            <p className="psp__lede">
-              The execution plan has <strong>{total}</strong> step(s)
-              ({summary?.run ?? 0} run, {summary?.skip ?? 0} skip,
-              {" "}{summary?.conditional ?? 0} conditional). The first stage
-              is about to begin.
-            </p>
-          </div>
-        </div>
-      );
-    }
     return (
       <div className="psp psp--assessing">
         <div className="psp__icon">
-          {/* Pre-plan window — the parser is about to fire. Show
-              the ParseIcon in running state so the user sees the
-              first phase before the first step.started lands. */}
+          {/* Pre-compile window — the parser is about to fire.
+              Show the ParseIcon in running state so the user sees
+              the first phase before the first step.started lands. */}
           <IngestionStepIcon
             step="parse_source_content"
             status="running"
@@ -160,10 +95,11 @@ export function PrimaryStatusPanel({ run, plan, events }: PrimaryStatusPanelProp
         </div>
         <div className="psp__body">
           <div className="psp__eyebrow">Assessing</div>
-          <h2 className="psp__title">Building execution plan…</h2>
+          <h2 className="psp__title">Profiling document…</h2>
           <p className="psp__lede">
-            Analyzing document characteristics, language, structure, and content to determine
-            which pipeline steps apply.
+            Building the AssessmentPlan that drives compile. Stage gating
+            decisions are made post-compile from compile evidence + the
+            post-compile enrich plan.
           </p>
         </div>
       </div>
