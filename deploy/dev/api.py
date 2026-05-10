@@ -204,23 +204,31 @@ def _build_app():
     # selection the worker actually wired.
     boot = bootstrap_from_env()
 
-    # Fail-fast LLM connectivity gate (mirrors worker.py). The API
-    # itself rarely calls the LLM, but we run the same probe here so
-    # operators see the misconfiguration ONE place — at the
-    # `docker compose up` banner — rather than discovering it later
-    # when the worker fails its own startup. Opt-out via
-    # `J1_LLM_STARTUP_PROBE=false`.
+    # LLM connectivity probe at API startup. Same warn-only contract
+    # as the worker — failures populate the cached results that
+    # `/healthz/llm` reads, so the FE can render the banner without
+    # the API itself going down. The API can still serve cached run
+    # history, audit-log endpoints, and the run-detail UI even when
+    # LLM is unreachable; only NEW uploads are gated at the FE.
     from j1.llm.probe import (
-        LLMStartupProbeError,
-        assert_required_llm_reachable,
+        cache_probe_results,
         llm_probe_enabled,
+        probe_registry,
     )
     if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
-        try:
-            assert_required_llm_reachable(boot.llm_registry)
-        except LLMStartupProbeError as exc:
-            _log.error("%s", exc)
-            raise SystemExit(2) from exc
+        results = probe_registry(boot.llm_registry)
+        cache_probe_results(results)
+        failures = [r for r in results if not r.ok]
+        if failures:
+            for f in failures:
+                _log.warning(
+                    "LLM probe FAILED: role=%s provider=%s model=%s error=%s",
+                    f.role, f.provider, f.model, f.error,
+                )
+            _log.warning(
+                "API booting WITH unreachable LLM roles. /healthz/llm "
+                "will report the failure; FE shows the banner.",
+            )
     # Surface the worker's registered processor kinds so the REST
     # adapter can both (a) validate caller-supplied kinds at the API
     # boundary and (b) auto-default omitted kinds via the new

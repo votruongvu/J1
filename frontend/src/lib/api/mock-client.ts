@@ -51,6 +51,7 @@ import type { MockScenario, ProjectContext } from "@/types/ui";
 import {
   ApiError,
   type IngestionClient,
+  type LLMHealthStatus,
   type RunControlResult,
   type StreamHandle,
   type StreamHandlers,
@@ -2064,6 +2065,17 @@ export class MockClient implements IngestionClient {
         cancelled = true;
         if (timer) clearTimeout(timer);
       },
+    };
+  }
+
+  async getLLMHealth(): Promise<LLMHealthStatus> {
+    // Mock mode: pretend the LLM is always reachable. Real wiring
+    // is exercised by the live API client; here we just keep the
+    // FE banner quiet so mock-mode demos aren't cluttered.
+    return {
+      healthy: true,
+      checkedAt: new Date().toISOString(),
+      results: [],
     };
   }
 

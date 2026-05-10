@@ -48,24 +48,34 @@ async def _run() -> None:
         boot.selection.compiler, boot.selection.graph, boot.selection.retrieval,
     )
 
-    # Fail-fast LLM connectivity gate. The worker drives every LLM
-    # call in the pipeline; if the endpoint is unreachable now it
-    # WILL fail mid-run later — surface the misconfiguration as a
-    # startup error instead of letting the operator find out via a
-    # broken document upload three minutes in. Opt-out via
-    # `J1_LLM_STARTUP_PROBE=false` (intended for tests + mock-only
-    # deployments).
+    # LLM connectivity probe. Runs at startup so the cached results
+    # are immediately available to the API's `/healthz/llm` endpoint
+    # (the FE polls it to render an "LLM unreachable" banner +
+    # disable uploads). Probe failures are LOGGED, not fatal — the
+    # worker still boots and serves activities so users can see
+    # cached run history, view past artifacts, etc. New uploads get
+    # gated at the FE banner instead of crashing mid-pipeline.
+    # Opt-out via `J1_LLM_STARTUP_PROBE=false`.
     from j1.llm.probe import (
-        LLMStartupProbeError,
-        assert_required_llm_reachable,
+        cache_probe_results,
         llm_probe_enabled,
+        probe_registry,
     )
     if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
-        try:
-            assert_required_llm_reachable(boot.llm_registry)
-        except LLMStartupProbeError as exc:
-            _log.error("%s", exc)
-            sys.exit(2)
+        results = probe_registry(boot.llm_registry)
+        cache_probe_results(results)
+        failures = [r for r in results if not r.ok]
+        if failures:
+            for f in failures:
+                _log.warning(
+                    "LLM probe FAILED: role=%s provider=%s model=%s error=%s",
+                    f.role, f.provider, f.model, f.error,
+                )
+            _log.warning(
+                "Worker booting WITH unreachable LLM roles. New ingestion "
+                "runs will fail until the endpoint(s) above come back. "
+                "FE will surface the banner via /healthz/llm.",
+            )
 
     _log.info(
         "connecting to Temporal target=%s namespace=%s task_queue=%s",

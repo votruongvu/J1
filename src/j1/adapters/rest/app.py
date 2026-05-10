@@ -3117,6 +3117,38 @@ def create_rest_api(
         record = HealthRecord(status="ok")
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
+    @app.get(
+        "/healthz/llm",
+        tags=["system"],
+        summary="LLM connectivity status",
+        description=(
+            "Returns the most recent LLM startup-probe results. The "
+            "FE polls this to render an 'LLM unreachable' banner and "
+            "disable uploads when any required role is down. Cached "
+            "in-process; no upstream LLM call per request."
+        ),
+    )
+    def get_health_llm(request: Request) -> dict[str, Any]:
+        from j1.llm.probe import current_health
+        snapshot = current_health()
+        return envelope(
+            {
+                "healthy": snapshot.healthy,
+                "checkedAt": snapshot.checked_at,
+                "results": [
+                    {
+                        "role": r.role,
+                        "ok": r.ok,
+                        "provider": r.provider,
+                        "model": r.model,
+                        "error": r.error,
+                    }
+                    for r in snapshot.results
+                ],
+            },
+            _req_id(request),
+        )
+
     @app.get("/version", tags=["system"], summary="API version")
     def get_version(request: Request) -> dict[str, Any]:
         record = VersionRecord(version=version)

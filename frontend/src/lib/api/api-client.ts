@@ -50,6 +50,7 @@ import type { AuthConfig, ProjectContext } from "@/types/ui";
 import {
   ApiError,
   type IngestionClient,
+  type LLMHealthStatus,
   type RunControlResult,
   type StreamHandle,
   type StreamHandlers,
@@ -617,6 +618,34 @@ export class ApiClient implements IngestionClient {
           /* ignore */
         }
       },
+    };
+  }
+
+  async getLLMHealth(): Promise<LLMHealthStatus> {
+    // Plain GET — no auth required for health endpoints in the dev
+    // stack. The response is enveloped (`{data: {...}, requestId}`)
+    // like every other API call, so we unwrap `data` here.
+    const res = await fetch(this.url("/healthz/llm"), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new ApiError(res.status, `GET /healthz/llm → ${res.status}`);
+    }
+    const body = await res.json();
+    const data = body?.data ?? body;
+    return {
+      healthy: Boolean(data?.healthy ?? true),
+      checkedAt: data?.checkedAt ?? null,
+      results: Array.isArray(data?.results)
+        ? data.results.map((r: Record<string, unknown>) => ({
+            role: String(r.role ?? ""),
+            ok: Boolean(r.ok),
+            provider: r.provider == null ? null : String(r.provider),
+            model: r.model == null ? null : String(r.model),
+            error: r.error == null ? null : String(r.error),
+          }))
+        : [],
     };
   }
 }

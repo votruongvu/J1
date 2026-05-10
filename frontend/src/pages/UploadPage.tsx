@@ -9,6 +9,7 @@ import { useCallback, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent, MouseEvent } from "react";
 import { Icon } from "@/components/icons";
 import { Banner } from "@/components/Banner";
+import { useLLMHealth } from "@/components/LLMHealthBanner";
 import { useClient } from "@/lib/hooks/useClient";
 import type { MockScenario, ProjectContext } from "@/types/ui";
 
@@ -41,8 +42,15 @@ export function UploadPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Block uploads while LLM is unreachable. The full warning + per-
+  // role detail lives in the global `LLMHealthBanner` at the top of
+  // the page; here we just gate the buttons. `null` (still
+  // checking) = treat as healthy so the buttons aren't disabled
+  // during the brief first-poll window.
+  const llmHealth = useLLMHealth();
+  const llmDown = llmHealth !== null && !llmHealth.healthy;
 
-  const ready = !!ctx.tenant && !!ctx.project;
+  const ready = !!ctx.tenant && !!ctx.project && !llmDown;
 
   const onPick = useCallback(() => {
     if (!ready) return;
@@ -50,6 +58,12 @@ export function UploadPage({
   }, [ready]);
 
   const onFile = async (file: File) => {
+    if (llmDown) {
+      setError(
+        "LLM endpoint is unreachable. Fix the connection (see banner above) before uploading.",
+      );
+      return;
+    }
     if (!ready) {
       setError("Tenant and Project are required. Please set them in the context bar.");
       return;

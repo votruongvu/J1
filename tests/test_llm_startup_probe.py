@@ -20,6 +20,8 @@ from j1.llm.probe import (
     LLMStartupProbeError,
     ProbeResult,
     assert_required_llm_reachable,
+    cache_probe_results,
+    current_health,
     llm_probe_enabled,
     probe_registry,
 )
@@ -217,3 +219,73 @@ def test_assert_raises_when_any_role_fails_even_if_others_pass():
     # raised message — keeps the error focused on what to fix).
     assert LLM_ROLE_EMBEDDING in msg
     assert "model not loaded" in msg
+
+
+# ---- Cache + current_health snapshot (FE banner data source) -----
+
+
+def test_current_health_returns_healthy_when_no_probe_run_yet():
+    """Conservative default: when the probe hasn't run (probe disabled
+    or process startup hook skipped), the cached snapshot reports
+    healthy=True. Matches every other health check in the stack —
+    'assume working until proven otherwise' so a missing probe
+    doesn't trigger a false-alarm banner."""
+    cache_probe_results([])  # reset
+    snapshot = current_health()
+    assert snapshot.healthy is True
+    assert snapshot.results == ()
+
+
+def test_current_health_reflects_cached_results_after_probe():
+    """Calling `cache_probe_results` makes the next `current_health`
+    return the cached results. The API's `/healthz/llm` endpoint
+    reads through this cache so polling can't burn the upstream LLM."""
+    cache_probe_results([
+        ProbeResult(
+            role=LLM_ROLE_TEXT, ok=True,
+            provider="openai_compat", model="m-1",
+        ),
+        ProbeResult(
+            role=LLM_ROLE_EMBEDDING, ok=False,
+            provider="openai_compat", model="m-2",
+            error="LLMProviderUnavailable: HTTP 503",
+        ),
+    ])
+
+    snapshot = current_health()
+    assert snapshot.healthy is False
+    assert snapshot.checked_at is not None
+    by_role = {r.role: r for r in snapshot.results}
+    assert by_role[LLM_ROLE_TEXT].ok is True
+    assert by_role[LLM_ROLE_EMBEDDING].ok is False
+    assert "503" in (by_role[LLM_ROLE_EMBEDDING].error or "")
+
+
+def test_current_health_healthy_true_when_all_cached_roles_ok():
+    cache_probe_results([
+        ProbeResult(role=LLM_ROLE_TEXT, ok=True, provider="p", model="m"),
+        ProbeResult(role=LLM_ROLE_EMBEDDING, ok=True, provider="p", model="m"),
+    ])
+
+    snapshot = current_health()
+    assert snapshot.healthy is True
+
+
+def test_cache_probe_results_overwrites_previous_state():
+    """Subsequent probes (e.g. a future re-probe-on-demand endpoint)
+    must overwrite the cache so the FE never sees a stale healthy
+    status after the LLM goes down."""
+    cache_probe_results([
+        ProbeResult(role=LLM_ROLE_TEXT, ok=True, provider="p", model="m"),
+    ])
+    assert current_health().healthy is True
+
+    cache_probe_results([
+        ProbeResult(
+            role=LLM_ROLE_TEXT, ok=False, provider="p", model="m",
+            error="endpoint dropped",
+        ),
+    ])
+    snapshot = current_health()
+    assert snapshot.healthy is False
+    assert snapshot.results[0].error == "endpoint dropped"

@@ -249,6 +249,34 @@ export interface IngestionClient {
     validationRunId: string,
     format?: "markdown" | "json",
   ): Promise<{ content: string; mediaType: string; filename: string }>;
+
+  /**
+   * GET cached LLM connectivity status from the API. Drives the
+   * top-of-screen "LLM unreachable" banner + disables the upload
+   * button when any required role is down — so users don't kick
+   * off uploads that are guaranteed to fail mid-pipeline.
+   *
+   * Backend reads from a process-local cache populated at startup
+   * (no upstream LLM call per request), safe to poll on a short
+   * interval.
+   */
+  getLLMHealth(): Promise<LLMHealthStatus>;
+}
+
+/** Per-role probe result from `/healthz/llm`. */
+export interface LLMHealthRole {
+  role: string;
+  ok: boolean;
+  provider: string | null;
+  model: string | null;
+  error: string | null;
+}
+
+/** Aggregate LLM health status surfaced by `/healthz/llm`. */
+export interface LLMHealthStatus {
+  healthy: boolean;
+  checkedAt: string | null;
+  results: LLMHealthRole[];
 }
 
 /** Sentinel error type the UI can surface as 4xx / 5xx differently. */

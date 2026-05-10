@@ -641,6 +641,46 @@ def test_get_health(client):
     assert data["status"] == "ok"
 
 
+def test_get_health_llm_returns_cached_probe_status(client):
+    """`/healthz/llm` reads the process-local probe cache. When the
+    cache is empty (no probe has run in this test process), the
+    endpoint reports `healthy=true` with empty results — matches
+    the conservative 'assume working until proven otherwise'
+    contract. The FE banner stays quiet on this response."""
+    from j1.llm.probe import cache_probe_results
+    cache_probe_results([])  # ensure clean state
+    response = client.get("/healthz/llm")
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["healthy"] is True
+    assert data["results"] == []
+
+
+def test_get_health_llm_surfaces_failed_role(client):
+    """When the cache holds a failed probe result, the endpoint
+    reports `healthy=false` and includes per-role detail so the FE
+    banner can render the operator-readable error."""
+    from j1.llm.probe import ProbeResult, cache_probe_results
+    cache_probe_results([
+        ProbeResult(
+            role="text", ok=False,
+            provider="openai_compat", model="m-1",
+            error="LLMProviderUnavailable: HTTP 503",
+        ),
+    ])
+    response = client.get("/healthz/llm")
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["healthy"] is False
+    assert len(data["results"]) == 1
+    assert data["results"][0]["role"] == "text"
+    assert data["results"][0]["ok"] is False
+    assert "503" in data["results"][0]["error"]
+    # Reset to keep test isolation when subsequent tests assume a
+    # clean cache.
+    cache_probe_results([])
+
+
 def test_get_version(client):
     response = client.get("/version")
     assert response.status_code == 200

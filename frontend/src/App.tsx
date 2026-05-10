@@ -19,6 +19,7 @@ import { ClientContext } from "@/lib/client-context";
 import { LS_KEYS, useLocalStorage } from "@/lib/hooks/useLocalStorage";
 import { ContextBar } from "@/components/ContextBar";
 import { AuthModal } from "@/components/AuthModal";
+import { LLMHealthBanner } from "@/components/LLMHealthBanner";
 import { ToastHost } from "@/components/Toast";
 import { AllRunsPage } from "@/pages/AllRunsPage";
 import { UploadPage } from "@/pages/UploadPage";
@@ -121,6 +122,8 @@ export function App() {
           mode={mode}
           onModeToggle={() => setMode(mode === "live" ? "mock" : "live")}
         />
+
+        <LLMHealthBanner />
 
         <main className="main">
           {route.name === "list" && (

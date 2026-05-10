@@ -1,26 +1,33 @@
-"""Startup connectivity probe for the LLM provider stack.
+"""Startup + on-demand connectivity probe for the LLM provider stack.
 
 Why: when J1 ingests a document the worker calls the LLM many times
 (planner, entity extraction, vision captioning, embeddings). If the
-LLM endpoint is unreachable at run time, the run crashes mid-flight,
-the user uploads a document, sees a generic failure, and the operator
-has to dig through logs to find the cause.
+LLM endpoint is unreachable, the run crashes mid-flight — the user
+uploads a document, sees a generic failure, and the operator has to
+dig through logs to find the cause.
 
-This module exercises every CONFIGURED LLM role at startup with a
-tiny, idempotent request. If any role's probe fails, the caller is
-expected to abort process startup (FastAPI lifespan / worker main)
-with a clear, copy-paste-able error message naming the unreachable
-endpoint.
+This module exercises every CONFIGURED LLM role with a tiny,
+idempotent request and caches the latest results in a process-local
+state. The API surfaces the cached state via `/healthz/llm` so the
+FE can render an "LLM unreachable" banner + disable uploads BEFORE
+the user wastes time on an upload that's guaranteed to fail.
 
 The probe is opt-out via `J1_LLM_STARTUP_PROBE=false` for tests and
 mock-only deployments — production runs leave it enabled.
+
+Probe failures are warn-only at startup: the worker + API still boot
+and serve everything that doesn't depend on the LLM (run history,
+audit logs, raw artifact downloads). Only NEW ingestion runs are
+gated at the FE banner.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from j1.llm.errors import LLMProviderUnavailable
 from j1.llm.registry import (
@@ -60,6 +67,66 @@ class ProbeResult:
     provider: str | None
     model: str | None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class LLMHealthSnapshot:
+    """Snapshot of the cached probe results, surfaced by the API's
+    `/healthz/llm` endpoint and consumed by the FE banner.
+
+    `healthy` is True iff every probed role last reported `ok=True`.
+    `checked_at` is the wall-clock time of the most recent probe;
+    the FE shows it in the banner so operators know how stale the
+    status is.
+    """
+
+    healthy: bool
+    checked_at: str | None
+    results: tuple[ProbeResult, ...]
+
+
+# ---- Process-local cache ------------------------------------------
+#
+# Both the API and worker run a probe at startup and cache the
+# results here. The API's `/healthz/llm` reads the cache (no
+# re-probe per request — that would melt the upstream LLM under
+# even modest FE polling). A future re-probe-on-demand endpoint
+# can call `cache_probe_results(probe_registry(registry))` to
+# refresh.
+_cache_lock = threading.Lock()
+_cached_results: tuple[ProbeResult, ...] = ()
+_cached_checked_at: str | None = None
+
+
+def cache_probe_results(results: list[ProbeResult] | tuple[ProbeResult, ...]) -> None:
+    """Store the latest probe results so `current_health()` can read
+    them. Called by the worker + API startup hooks; safe to call
+    multiple times (latest call wins)."""
+    global _cached_results, _cached_checked_at
+    with _cache_lock:
+        _cached_results = tuple(results)
+        _cached_checked_at = datetime.now(timezone.utc).isoformat()
+
+
+def current_health() -> LLMHealthSnapshot:
+    """Return the most recently cached probe results.
+
+    When no probe has run yet (e.g. probe disabled, or this process
+    skipped the startup hook), returns `healthy=True` with empty
+    results — matches the conservative "assume working until proven
+    otherwise" behaviour of every other health check in the stack."""
+    with _cache_lock:
+        results = _cached_results
+        checked_at = _cached_checked_at
+    if not results:
+        return LLMHealthSnapshot(
+            healthy=True, checked_at=checked_at, results=(),
+        )
+    return LLMHealthSnapshot(
+        healthy=all(r.ok for r in results),
+        checked_at=checked_at,
+        results=results,
+    )
 
 
 class LLMStartupProbeError(RuntimeError):
