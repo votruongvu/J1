@@ -297,18 +297,16 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         }}
         pushToast={pushToast}
         onAfterAction={(action, newRunId) => {
-          // Delete → back to runs list; Re-process → jump to the
-          // new run if one was created. Other actions (pause /
-          // resume / cancel) just refresh in-place via onRefresh.
+          // Delete → back to runs list; Re-process / Resume → jump
+          // to the new run if one was created. Other actions
+          // (pause / resume / cancel) just refresh in-place via
+          // onRefresh.
           if (action === "delete") {
             onBack();
-          } else if (action === "reindex" && newRunId) {
-            // RunDetailPage doesn't own routing, but the parent's
-            // onBack + a fresh click would do this. For now we
-            // navigate via window.location to the new run id —
-            // the SPA shell will resolve it through useState
-            // Route on the next render. In a future iteration the
-            // page should accept an `onNavigateRun(runId)` prop.
+          } else if (
+            (action === "reindex" || action === "resumeCheckpoint")
+            && newRunId
+          ) {
             try {
               window.history.pushState({}, "", `?run=${newRunId}`);
             } catch {

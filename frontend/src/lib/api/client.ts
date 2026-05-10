@@ -288,6 +288,20 @@ export interface IngestionClient {
   fullReindexRun(runId: string): Promise<FullReindexResult>;
 
   /**
+   * POST resume-from-checkpoint — start a NEW run for the same
+   * document_id, skipping LLM-cost stages that already completed
+   * in the prior run (currently enrich + graph). Compile and
+   * chunk-generation always re-run.
+   *
+   * Throws `ApiError(409)` when the original run is still active,
+   * `ApiError(412)` when the prior run has no resume snapshot
+   * (legacy run / cancelled), and `ApiError(412)` with
+   * `RESUME_INCOMPATIBLE` code + `details.diff` when settings
+   * drifted since the prior run finished.
+   */
+  resumeFromCheckpoint(runId: string): Promise<ResumeFromCheckpointResult>;
+
+  /**
    * POST a multi-upload batch. Backend registers each file as a
    * child ingestion run, returns the batch_run_id + child run_ids.
    * Max files is enforced server-side (default 5 via
@@ -334,6 +348,19 @@ export interface FullReindexResult {
   workflowId: string;
   documentId: string;
   status: string;
+}
+
+/** Result envelope from `POST /ingestion-runs/{id}/resume-from-checkpoint`. */
+export interface ResumeFromCheckpointResult {
+  originalRunId: string;
+  resumeRunId: string;
+  workflowId: string;
+  documentId: string;
+  status: string;
+  /** Step names the new run will skip (subset of enrich, graph). */
+  resumedSteps: string[];
+  /** Number of artifacts seeded from the prior run. */
+  carryForwardArtifactCount: number;
 }
 
 /** Result envelope from `POST /ingestion-batches`. */

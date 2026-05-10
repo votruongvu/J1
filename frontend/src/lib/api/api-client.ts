@@ -53,6 +53,7 @@ import {
   type BatchUploadResult,
   type DeleteRunResult,
   type FullReindexResult,
+  type ResumeFromCheckpointResult,
   type IngestionClient,
   type LLMHealthStatus,
   type RunControlResult,
@@ -699,6 +700,27 @@ export class ApiClient implements IngestionClient {
       workflowId: String(data.workflowId ?? ""),
       documentId: String(data.documentId ?? ""),
       status: String(data.status ?? "created"),
+    };
+  }
+
+  async resumeFromCheckpoint(runId: string): Promise<ResumeFromCheckpointResult> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/resume-from-checkpoint`,
+      ),
+      { method: "POST", headers: this.headers() },
+    );
+    const data = await this.json<Record<string, unknown>>(resp);
+    return {
+      originalRunId: String(data.originalRunId ?? runId),
+      resumeRunId: String(data.resumeRunId ?? ""),
+      workflowId: String(data.workflowId ?? ""),
+      documentId: String(data.documentId ?? ""),
+      status: String(data.status ?? "created"),
+      resumedSteps: Array.isArray(data.resumedSteps)
+        ? data.resumedSteps.map(String)
+        : [],
+      carryForwardArtifactCount: Number(data.carryForwardArtifactCount ?? 0),
     };
   }
 

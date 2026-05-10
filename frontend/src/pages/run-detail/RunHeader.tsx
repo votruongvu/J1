@@ -21,7 +21,9 @@ interface RunHeaderProps {
   /** Forwarded to RunControls so the page can navigate after
    * Re-process (→ new run) / Delete (→ list). */
   onAfterAction?: (
-    action: "pause" | "resume" | "cancel" | "reindex" | "delete",
+    action:
+      | "pause" | "resume" | "cancel"
+      | "reindex" | "delete" | "resumeCheckpoint",
     newRunId: string | null,
   ) => void;
 }

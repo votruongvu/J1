@@ -28,7 +28,9 @@ import type { IngestionRun } from "@/types/ingestion";
 import type { Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 
-type ControlAction = "pause" | "resume" | "cancel" | "reindex" | "delete";
+type ControlAction =
+  | "pause" | "resume" | "cancel"
+  | "reindex" | "delete" | "resumeCheckpoint";
 
 interface RunControlsProps {
   run: IngestionRun | null;
@@ -80,6 +82,16 @@ export function RunControls({
         );
         if (!ok) return;
       }
+      if (action === "resumeCheckpoint") {
+        const ok = window.confirm(
+          `Resume "${run.document_name}" from the last checkpoint?\n\n` +
+            `Skips enrich + graph stages that already completed in ` +
+            `the prior run; compile and chunk-generation always re-run. ` +
+            `Refused (412) if settings drifted since the prior run — ` +
+            `use Re-process in that case.`,
+        );
+        if (!ok) return;
+      }
       setPending(action);
       try {
         let toastTitle = "";
@@ -105,6 +117,15 @@ export function RunControls({
           toastTitle = "Re-process started";
           toastBody = `New run ${result.reindexRunId.slice(0, 8)} created.`;
           newRunId = result.reindexRunId;
+        } else if (action === "resumeCheckpoint") {
+          const result = await client.resumeFromCheckpoint(run.runId);
+          toastTitle = "Resume started";
+          const skipped =
+            result.resumedSteps.length > 0
+              ? ` (skipping ${result.resumedSteps.join(", ")})`
+              : "";
+          toastBody = `New run ${result.resumeRunId.slice(0, 8)} created${skipped}.`;
+          newRunId = result.resumeRunId;
         }
         pushToast({ kind: "success", title: toastTitle, body: toastBody });
         if (onAfterAction) onAfterAction(action, newRunId);
@@ -140,7 +161,18 @@ export function RunControls({
   const isDeleted = status === RUN_STATUS.DELETED;
   const showReindex = !isActive && !isDeleted;
   const showDelete = !isActive && !isDeleted;
-  if (!showPause && !showResume && !showCancel && !showReindex && !showDelete && status !== RUN_STATUS.CANCELLING) {
+  // Resume from checkpoint is meaningful on FAILED runs that have a
+  // resume snapshot. The snapshot is only persisted on the SUCCEEDED
+  // / FAILED / TIMED_OUT paths — cancelled runs aren't a useful
+  // resume point. We show the button on any failed run; the backend
+  // returns 412 if the snapshot is absent / settings drifted.
+  const showResumeCheckpoint =
+    status === RUN_STATUS.FAILED;
+  if (
+    !showPause && !showResume && !showCancel
+    && !showReindex && !showDelete && !showResumeCheckpoint
+    && status !== RUN_STATUS.CANCELLING
+  ) {
     return null;
   }
   if (status === RUN_STATUS.CANCELLING) {
@@ -202,6 +234,26 @@ export function RunControls({
             <Icon.XCircle className="icon-sm" />
           )}
           {!compact && <span style={{ marginLeft: 4 }}>Cancel</span>}
+        </button>
+      )}
+      {showResumeCheckpoint && (
+        <button
+          type="button"
+          className={btnClass}
+          disabled={anyPending}
+          onClick={() => void dispatch("resumeCheckpoint")}
+          aria-label="Resume from last checkpoint"
+          title={
+            "Start a new run that skips enrich + graph stages " +
+            "completed by this run. Compile + chunks always re-run."
+          }
+        >
+          {isPending("resumeCheckpoint") ? (
+            <Icon.RefreshCw className="icon-sm spin" />
+          ) : (
+            <Icon.Play className="icon-sm" />
+          )}
+          {!compact && <span style={{ marginLeft: 4 }}>Resume</span>}
         </button>
       )}
       {showReindex && (

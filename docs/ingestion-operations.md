@@ -100,11 +100,11 @@ The `step_results` list is:
 
 These rules fire in `_validate_completion()` before the COMPLETED transition. Violations cause `_BusinessRejection` → FAILED_FINAL.
 
-## 3. Resume from last successful checkpoint  ⏳ designed
+## 3. Resume from last successful checkpoint  ✓
 
 ### Use case
 
-The run failed at stage X. Operator fixed the underlying issue (LLM endpoint, model config, vector store outage). They want to continue from the last validated stage instead of re-uploading and paying the full re-parse cost.
+The run failed at stage X. Operator fixed the underlying issue (LLM endpoint, model config, vector store outage). They want to retry without paying the LLM-cost stages that already succeeded.
 
 ### Endpoint
 
@@ -112,58 +112,62 @@ The run failed at stage X. Operator fixed the underlying issue (LLM endpoint, mo
 POST /ingestion-runs/{runId}/resume-from-checkpoint
 ```
 
-**Request body** (optional):
-```json
-{
-  "fromStage": "build_graph",       // optional override; defaults to first non-succeeded stage
-  "actor": "ops@example.com"
-}
-```
+No request body — the endpoint inherits processor selections from the deployment's `processing_capabilities` and validates compatibility against the prior run's snapshot.
 
-**Response** (201):
+**Response** (200):
 ```json
 {
   "data": {
     "originalRunId": "<runId>",
     "resumeRunId": "<new-run-id>",
-    "workflowId": "j1-{tenant}-{project}-{document_id}-resume-{timestamp}",
-    "skippedStages": ["compile", "insert_content", "build_planning_result"],
-    "fromStage": "build_graph"
-  },
-  "requestId": "..."
+    "workflowId": "j1-{tenant}-{project}-{document_id}-resume-{new-run-id}",
+    "documentId": "<document_id>",
+    "status": "created",
+    "resumedSteps": ["enrich"],
+    "carryForwardArtifactCount": 5
+  }
 }
 ```
 
-### Behaviour contract
+### What gets skipped
 
-1. Look up the original run's `IngestionRun` record. Reject with 404 if not found.
-2. Reject with 409 if the original run is currently `RUNNING` (the workflow is still alive — the operator should `cancel` first or wait).
-3. Snapshot the original run's `step_results` and `produced_artifact_ids` for the resume.
-4. Run a **compatibility check**:
-   - Selected `compiler_kind`, `enricher_kind`, `graph_builder_kind`, `indexer_kind` unchanged.
-   - `IngestPlan.profile`, `mode`, `policy` unchanged.
-   - Embedding model unchanged (compare `J1_EMBEDDING_MODEL`).
-   - Chunking strategy version unchanged (placeholder field on `parsed_content_manifest`).
-   - Compatibility failure ⇒ 409 + actionable message pointing at `full-reindex`.
-5. Compute the resume point:
-   - Default: first stage with status != `COMPLETED` AND != `SKIPPED`.
-   - Override: `fromStage` from request body if supplied AND it's >= the default.
-6. Start a NEW workflow with `workflow_id = j1-{tenant}-{project}-{document_id}-resume-{timestamp}`.
-7. Pass the original `produced_artifact_ids` via `ProjectProcessingRequest.produced_artifact_ids` (already supported for continue-as-new). The workflow skips stages whose `step_results` came back COMPLETED.
-8. Tag every new artifact with `metadata.resume_of=<originalRunId>` AND `metadata.attempt=2` (or higher).
-9. Emit `resume.started` audit event on the new run, `resume.completed` on terminal.
+Only the LLM-cost stages that COMPLETED in the prior run, intersected with `RESUMABLE_STAGES` (currently `{"enrich", "graph"}`). Compile + chunk-generation always re-run because their outputs are the structural backbone every downstream stage reads. The carry-forward artifact IDs are seeded on the new workflow's `_produced_artifact_ids` so downstream stages (index, validation_report) see the full artifact set the prior run produced.
 
-### Restrictions
+### Compatibility check
 
-- Resume cannot reach back further than the FIRST FAILED stage. If the operator wants to redo earlier stages, that's `full-reindex`.
-- A second resume attempt on the same original run creates `attempt=3`, etc. — no limit currently.
+Settings hash is SHA256 over `RESUME_SETTINGS_FIELDS` ([`src/j1/runs/resume.py`](../src/j1/runs/resume.py)):
 
-### Tests required
+- `compiler_kind`, `enricher_kind`, `graph_builder_kind`, `indexer_kind`
+- `planner_enabled`, `policy`, `pipeline_mode`
+- `domain_override`, `workspace_default_domain`
+- `failure_policy`
 
-- `test_resume_creates_new_workflow_referencing_original`
-- `test_resume_skips_already_completed_stages`
-- `test_resume_rejects_when_compatibility_changed`
-- `test_resume_rejects_when_original_still_running`
+If any field drifted between the prior snapshot and the candidate request, the endpoint returns **412** with a structured `details.diff` (`{field: {"before": x, "after": y}}`) so the FE can render exactly what changed and prompt the operator to full-reindex instead.
+
+### Snapshot persistence
+
+The workflow's `_emit_run_terminal` builds a `resume_snapshot` dict at every SUCCEEDED / SUCCEEDED_WITH_WARNINGS / FAILED / TIMED_OUT transition and persists it to `IngestionRun.metadata["resume_snapshot"]` via `RunsActivities._persist_run_terminal`. Cancelled runs do not snapshot — operator-initiated cancellation isn't a useful resume point.
+
+### Error responses
+
+| Status | When |
+|---|---|
+| 404 | Original run / document not found |
+| 409 | Original run still RUNNING / PAUSED / CANCELLING / ASSESSING — cancel first |
+| 412 | No `resume_snapshot` (legacy run, cancelled run) — full-reindex instead |
+| 412 | `RESUME_INCOMPATIBLE` with `details.diff` — settings drifted |
+
+### Tests
+
+- `tests/test_runs_resume.py` — settings hash, diff, snapshot construction
+- `tests/test_ingestion_review_service.py::test_resume_*` — service-layer validation
+- `tests/test_project_processing_workflow.py::test_resume_skips_enrich_and_graph_when_listed_in_resume_context` — workflow short-circuit
+- `tests/test_rest_resume_from_checkpoint.py` — end-to-end REST contract
+
+### Deferred (follow-up iterations)
+
+- Skip compile / chunk-generation: requires re-attaching the prior `parsed_source` artifact to the new run, plus careful handling of the chunk store. Today these always re-run, which is acceptable because they're cheap relative to enrich + graph.
+- `fromStage` request override (let operator force re-run of a specific stage).
 
 ---
 
