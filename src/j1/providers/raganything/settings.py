@@ -57,6 +57,16 @@ ENV_RAGANYTHING_ALLOWED_PARSE_METHODS = "J1_RAGANYTHING_ALLOWED_PARSE_METHODS"
 ENV_RAGANYTHING_VLM_HTTP_SERVER_URL = "J1_RAGANYTHING_VLM_HTTP_SERVER_URL"
 ENV_RAGANYTHING_VLM_HTTP_API_KEY = "J1_RAGANYTHING_VLM_HTTP_API_KEY"
 ENV_RAGANYTHING_VLM_HTTP_MODEL_NAME = "J1_RAGANYTHING_VLM_HTTP_MODEL_NAME"
+# Cap on parallel VLM requests MinerU will fire against the
+# externally-managed VLM endpoint. MinerU's default fans out N
+# requests in parallel via `asyncio.gather`; under load this can
+# OOM / crash the upstream model (we've observed llama.cpp's
+# `decode: failed to find a memory slot for batch of size N`
+# under the default fanout). Default 1 = strictly serial — safest
+# for self-hosted single-process VLM servers (LM Studio / single
+# llama-server). Operators with a horizontally-scaled VLM endpoint
+# can raise to whatever the cluster can serve concurrently.
+ENV_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY = "J1_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY"
 # Project-wide vision LLM env vars used as fallbacks. We deliberately
 # read these from the env at load-time rather than importing the
 # `j1.llm.*` modules to keep the provider self-contained — the LLM
@@ -206,6 +216,13 @@ class RAGAnythingSettings:
     vlm_http_server_url: str | None = None
     vlm_http_api_key: str | None = None
     vlm_http_model_name: str | None = None
+    # Cap on parallel VLM requests MinerU dispatches per compile.
+    # Default 1 = strictly serial; raises only when the operator has
+    # a VLM endpoint that can actually serve N parallel requests.
+    # Propagated to MinerU as `MINERU_VL_MAX_CONCURRENCY` at compile
+    # time by the bridge's `_apply_vlm_http_client_env`. See the env
+    # constant comment above for the full rationale.
+    vlm_http_max_concurrency: int = 1
     # Adapter capability advertisements. Consumed by the
     # AssessmentPlan → compile-config mapper to decide whether a
     # required capability can be honoured by THIS deployment. Default
@@ -297,6 +314,9 @@ def load_raganything_settings(
             or source.get(ENV_J1_VISION_LLM_MODEL)
             or None
         ),
+        vlm_http_max_concurrency=_parse_max_concurrency(
+            source.get(ENV_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY),
+        ),
         supports_image=_parse_bool(
             source.get(ENV_RAGANYTHING_SUPPORTS_IMAGE), default=True,
         ),
@@ -338,6 +358,20 @@ def _parse_allowed_methods(raw: str | None) -> tuple[str, ...]:
         if m.strip()
     ]
     return tuple(m for m in cleaned if m in VALID_PARSE_METHODS)
+
+
+def _parse_max_concurrency(raw: str | None) -> int:
+    """Parse the VLM-max-concurrency env var. Defaults / clamps to 1
+    on missing / invalid / non-positive input — never crash startup
+    on a typo, never let an operator accidentally enable parallel
+    fanout via a malformed value."""
+    if raw is None or not raw.strip():
+        return 1
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(value, 1)
 
 
 def _parse_extensions(raw: str | None) -> tuple[str, ...]:

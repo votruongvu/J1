@@ -12,6 +12,8 @@ Covers:
   * Settings loaders honour `J1_RAGANYTHING_*` and `J1_GRAPHIFY_*`
 """
 
+import os
+
 import pytest
 
 from j1.processing.results import (
@@ -112,6 +114,91 @@ def test_raganything_settings_explicit_subdirs_take_precedence():
     })
     assert s.storage_dir == "/elsewhere/store"
     assert s.cache_dir == "/elsewhere/cache"
+
+
+# ---- VLM HTTP-client max-concurrency --------------------------------
+
+
+def test_vlm_max_concurrency_defaults_to_one():
+    """Safest default: serial dispatch. Self-hosted single-process VLM
+    servers (LM Studio / single llama-server) crash under MinerU's
+    default high-fanout pattern; default 1 protects them out of the
+    box."""
+    s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
+    })
+    assert s.vlm_http_max_concurrency == 1
+
+
+def test_vlm_max_concurrency_honours_explicit_value():
+    s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
+        "J1_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY": "8",
+    })
+    assert s.vlm_http_max_concurrency == 8
+
+
+def test_vlm_max_concurrency_clamps_to_one_on_zero_or_negative():
+    """Defensive: 0 / negative would mean 'no requests ever' which is
+    nonsensical. Clamp to 1."""
+    for raw in ("0", "-1", "-100"):
+        s = load_raganything_settings(env={
+            "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
+            "J1_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY": raw,
+        })
+        assert s.vlm_http_max_concurrency == 1, (
+            f"expected clamp to 1 for raw={raw!r}, got {s.vlm_http_max_concurrency}"
+        )
+
+
+def test_vlm_max_concurrency_falls_back_on_garbage_value():
+    """Operator typos must not crash startup. Garbage → default 1."""
+    s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
+        "J1_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY": "lots",
+    })
+    assert s.vlm_http_max_concurrency == 1
+
+
+def test_vlm_max_concurrency_propagates_to_mineru_env(monkeypatch):
+    """Bridge propagates `vlm_http_max_concurrency` into the env var
+    `mineru_vl_utils` reads (`MINERU_VL_MAX_CONCURRENCY`). Default 1
+    sets it explicitly so MinerU doesn't fall back to its own
+    high-fanout default."""
+    from j1.providers.raganything._bridge import _apply_vlm_http_client_env
+
+    # Clear any pre-existing operator override so we observe what
+    # the bridge actually sets.
+    monkeypatch.delenv("MINERU_VL_SERVER", raising=False)
+    monkeypatch.delenv("MINERU_VL_MAX_CONCURRENCY", raising=False)
+
+    s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
+        "J1_RAGANYTHING_BACKEND": "vlm-http-client",
+    })
+    _apply_vlm_http_client_env(s)
+    assert os.environ.get("MINERU_VL_MAX_CONCURRENCY") == "1"
+
+
+def test_vlm_max_concurrency_env_propagation_respects_operator_override(
+    monkeypatch,
+):
+    """Operator-supplied `MINERU_VL_MAX_CONCURRENCY` always wins —
+    consistent with the bridge's policy on every other MINERU_VL_*
+    env var. Lets ops override at runtime without changing settings."""
+    from j1.providers.raganything._bridge import _apply_vlm_http_client_env
+
+    monkeypatch.delenv("MINERU_VL_SERVER", raising=False)
+    monkeypatch.setenv("MINERU_VL_MAX_CONCURRENCY", "4")
+
+    s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
+        "J1_RAGANYTHING_BACKEND": "vlm-http-client",
+        "J1_RAGANYTHING_VLM_HTTP_MAX_CONCURRENCY": "1",
+    })
+    _apply_vlm_http_client_env(s)
+    # Operator override wins.
+    assert os.environ.get("MINERU_VL_MAX_CONCURRENCY") == "4"
 
 
 # ---- RAGAnything compiler -------------------------------------------

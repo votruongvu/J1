@@ -118,7 +118,10 @@ def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
     (`vlm-http-client`, `hybrid-http-client`), propagate J1's
     vision-LLM config into the env vars MinerU's
     `mineru_vl_utils.MinerUClient` reads at runtime:
-    `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`, `MINERU_VL_MODEL_NAME`.
+    `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`, `MINERU_VL_MODEL_NAME`,
+    and `MINERU_VL_MAX_CONCURRENCY` (caps the parallel-request
+    fanout — defaults to 1 to protect self-hosted VLM endpoints
+    from OOM under MinerU's default high-fanout pattern).
 
     Both backend names route VLM requests to the same OpenAI-compatible
     HTTP server; only the local-computation strategy differs. Either
@@ -148,10 +151,17 @@ def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
     pick its own engine and never reads these vars)."""
     if settings.backend not in _HTTP_CLIENT_BACKENDS:
         return
+    # Concurrency cap is propagated as a STRING because env values
+    # are strings. mineru_vl_utils parses `MINERU_VL_MAX_CONCURRENCY`
+    # as int. Default of 1 is safest for self-hosted single-process
+    # VLM servers (LM Studio / single llama-server) — see the
+    # settings module for the full rationale.
+    max_concurrency = max(int(settings.vlm_http_max_concurrency or 1), 1)
     mapping = {
         "MINERU_VL_SERVER": settings.vlm_http_server_url,
         "MINERU_VL_API_KEY": settings.vlm_http_api_key,
         "MINERU_VL_MODEL_NAME": settings.vlm_http_model_name,
+        "MINERU_VL_MAX_CONCURRENCY": str(max_concurrency),
     }
     for name, value in mapping.items():
         if not value:
