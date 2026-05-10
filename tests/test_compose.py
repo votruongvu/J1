@@ -81,7 +81,7 @@ def _registry_no_vision() -> LLMProviderRegistry:
 
 
 def test_load_processing_selection_defaults_to_raganything():
-    sel = load_processing_selection(env={})
+    sel = load_processing_selection(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     assert sel.compiler == "raganything"
     assert sel.graph == "raganything"
     assert sel.retrieval == "raganything"
@@ -89,13 +89,14 @@ def test_load_processing_selection_defaults_to_raganything():
 
 def test_load_processing_selection_normalises_case():
     sel = load_processing_selection(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_GRAPH_PROVIDER": "  GRAPHIFY  ",
     })
     assert sel.graph == "graphify"
 
 
 def test_load_enrichment_settings_defaults():
-    e = load_enrichment_settings(env={})
+    e = load_enrichment_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     assert e.enabled is True
     assert e.confidence_threshold == 0.75
     assert e.images is True
@@ -109,7 +110,7 @@ def test_load_enrichment_settings_defaults():
 
 
 def test_load_enrichment_settings_disabled():
-    e = load_enrichment_settings(env={"J1_ENRICH_ENABLED": "false"})
+    e = load_enrichment_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_ENRICH_ENABLED": "false"})
     assert e.enabled is False
     assert e.visual_modalities_enabled is False
     assert e.enabled_modalities() == ()
@@ -118,6 +119,7 @@ def test_load_enrichment_settings_disabled():
 def test_load_enrichment_settings_partial_disable():
     """Disabling images + diagrams + scanned should still allow tables."""
     e = load_enrichment_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_ENRICH_IMAGES": "false",
         "J1_ENRICH_DIAGRAMS": "false",
         "J1_ENRICH_SCANNED_PAGES": "false",
@@ -128,14 +130,14 @@ def test_load_enrichment_settings_partial_disable():
 
 def test_load_enrichment_settings_invalid_threshold():
     with pytest.raises(ConfigError, match="must be a number"):
-        load_enrichment_settings(env={"J1_ENRICH_CONFIDENCE_THRESHOLD": "high"})
+        load_enrichment_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_ENRICH_CONFIDENCE_THRESHOLD": "high"})
 
 
 # ---- Bootstrap success path -----------------------------------------
 
 
 def test_bootstrap_default_registers_raganything_everywhere():
-    result = Bootstrap(env={}, llm_registry=_full_registry()).build()
+    result = Bootstrap(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"}, llm_registry=_full_registry()).build()
     assert result.selection.compiler == "raganything"
     assert result.selection.graph == "raganything"
     assert result.selection.retrieval == "raganything"
@@ -148,7 +150,7 @@ def test_bootstrap_default_registers_raganything_everywhere():
 
 def test_bootstrap_returns_actual_provider_instances():
     """Sanity: registered providers can be retrieved + carry the right kind."""
-    result = Bootstrap(env={}, llm_registry=_full_registry()).build()
+    result = Bootstrap(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"}, llm_registry=_full_registry()).build()
     compiler = result.compilers["raganything"]
     assert compiler.kind == "raganything"
 
@@ -156,6 +158,7 @@ def test_bootstrap_returns_actual_provider_instances():
 def test_bootstrap_with_enrichment_disabled_does_not_require_vision():
     """Disabling visual modalities removes the vision-LLM requirement."""
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_ENRICH_IMAGES": "false",
         "J1_ENRICH_DIAGRAMS": "false",
         "J1_ENRICH_SCANNED_PAGES": "false",
@@ -172,7 +175,7 @@ def test_bootstrap_fails_when_raganything_selected_without_text_llm():
     reg.register(LLM_ROLE_VISION, _FakeVision())
     reg.register(LLM_ROLE_EMBEDDING, _FakeEmbed())
     with pytest.raises(ConfigError, match="text"):
-        Bootstrap(env={}, llm_registry=reg).build()
+        Bootstrap(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"}, llm_registry=reg).build()
 
 
 def test_bootstrap_fails_when_raganything_selected_without_embedding():
@@ -180,17 +183,18 @@ def test_bootstrap_fails_when_raganything_selected_without_embedding():
     reg.register(LLM_ROLE_TEXT, _FakeText())
     reg.register(LLM_ROLE_VISION, _FakeVision())
     with pytest.raises(ConfigError, match="embedding"):
-        Bootstrap(env={}, llm_registry=reg).build()
+        Bootstrap(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"}, llm_registry=reg).build()
 
 
 def test_bootstrap_fails_when_visual_enrichment_needs_vision_llm():
     """Default enrichment includes images/diagrams/scanned which all need vision."""
     with pytest.raises(ConfigError, match="vision LLM"):
-        Bootstrap(env={}, llm_registry=_registry_no_vision()).build()
+        Bootstrap(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"}, llm_registry=_registry_no_vision()).build()
 
 
 def test_bootstrap_fails_when_graphify_selected_but_disabled():
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_GRAPH_PROVIDER": "graphify",
         # J1_GRAPHIFY_ENABLED unset → disabled
         "J1_ENRICH_ENABLED": "false",  # avoid vision-LLM noise
@@ -200,13 +204,13 @@ def test_bootstrap_fails_when_graphify_selected_but_disabled():
 
 
 def test_bootstrap_fails_when_unknown_graph_provider_selected():
-    env = {"J1_DEFAULT_GRAPH_PROVIDER": "totally-fake"}
+    env = {"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_DEFAULT_GRAPH_PROVIDER": "totally-fake"}
     with pytest.raises(ConfigError, match="not a registered graph provider"):
         Bootstrap(env=env, llm_registry=_full_registry()).build()
 
 
 def test_bootstrap_fails_when_unknown_compiler_selected():
-    env = {"J1_DEFAULT_COMPILER": "totally-fake"}
+    env = {"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_DEFAULT_COMPILER": "totally-fake"}
     with pytest.raises(ConfigError, match="not a registered compiler"):
         Bootstrap(env=env, llm_registry=_full_registry()).build()
 
@@ -216,6 +220,7 @@ def test_bootstrap_fails_when_unknown_compiler_selected():
 
 def test_bootstrap_with_graphify_enabled_and_selected():
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_GRAPH_PROVIDER": "graphify",
         "J1_GRAPHIFY_ENABLED": "true",
     }
@@ -231,7 +236,7 @@ def test_bootstrap_with_graphify_enabled_and_selected():
 
 def test_bootstrap_with_graphify_enabled_but_raganything_selected():
     """`enabled=true` doesn't auto-register Graphify if not selected."""
-    env = {"J1_GRAPHIFY_ENABLED": "true"}
+    env = {"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_GRAPHIFY_ENABLED": "true"}
     result = Bootstrap(env=env, llm_registry=_full_registry()).build()
     assert "graphify" not in result.graph_builders
     assert result.diagnostics.graphify_enabled is True
@@ -241,7 +246,7 @@ def test_bootstrap_with_graphify_enabled_but_raganything_selected():
 
 
 def test_diagnostics_renders_secrets_safe_lines():
-    result = Bootstrap(env={}, llm_registry=_full_registry()).build()
+    result = Bootstrap(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"}, llm_registry=_full_registry()).build()
     lines = render_startup_diagnostics(result.diagnostics)
     blob = "\n".join(lines)
     assert "raganything" in blob
@@ -257,6 +262,7 @@ def test_diagnostics_renders_secrets_safe_lines():
 
 def test_diagnostics_captures_enrichment_state():
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_ENRICH_IMAGES": "false",
         "J1_ENRICH_DIAGRAMS": "false",
         "J1_ENRICH_SCANNED_PAGES": "false",
@@ -295,6 +301,7 @@ def test_bootstrap_mock_selection_registers_all_three_without_llm():
     without forcing the developer to provision an LLM endpoint.
     """
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
         "J1_DEFAULT_GRAPH_PROVIDER": "mock",
         "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
@@ -313,6 +320,7 @@ def test_bootstrap_mock_selection_registers_all_three_without_llm():
 
 def test_bootstrap_mock_compiler_carries_correct_kind():
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
         "J1_DEFAULT_GRAPH_PROVIDER": "mock",
         "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
@@ -334,6 +342,7 @@ def test_bootstrap_mock_compiler_runs_against_real_processing_service(tmp_path):
     from j1.projects.context import ProjectContext
 
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
         "J1_DEFAULT_GRAPH_PROVIDER": "mock",
         "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
@@ -354,6 +363,7 @@ def test_bootstrap_mixed_selection_mock_compiler_raganything_graph():
     a real graph provider must work (and the real provider's LLM
     requirements still apply)."""
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
         "J1_DEFAULT_GRAPH_PROVIDER": "raganything",
         "J1_DEFAULT_RETRIEVAL_PROVIDER": "mock",
@@ -370,6 +380,7 @@ def test_bootstrap_mock_compiler_alone_does_not_satisfy_raganything_retrieval():
     """`mock` doesn't auto-fill other roles — selecting raganything for
     a different stage still needs LLM credentials."""
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
         "J1_DEFAULT_GRAPH_PROVIDER": "mock",
         "J1_DEFAULT_RETRIEVAL_PROVIDER": "raganything",
@@ -381,6 +392,6 @@ def test_bootstrap_mock_compiler_alone_does_not_satisfy_raganything_retrieval():
 
 def test_bootstrap_unknown_compiler_error_lists_mock_as_option():
     """Error message helps operators discover the smoke-mode option."""
-    env = {"J1_DEFAULT_COMPILER": "totally-fake", "J1_ENRICH_ENABLED": "false"}
+    env = {"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_DEFAULT_COMPILER": "totally-fake", "J1_ENRICH_ENABLED": "false"}
     with pytest.raises(ConfigError, match="mock"):
         Bootstrap(env=env, llm_registry=_full_registry()).build()

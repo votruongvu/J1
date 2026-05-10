@@ -23,6 +23,24 @@ from j1.review.queue import JsonReviewQueue
 from j1.workspace.resolver import WorkspaceResolver
 
 
+@pytest.fixture(autouse=True)
+def _stub_raganything_vlm_url(monkeypatch):
+    """J1 forces MinerU into HTTP-client mode and refuses to load
+    settings without `J1_RAGANYTHING_VLM_HTTP_SERVER_URL`. The
+    bootstrap-triggered tests (test_compose, test_bootstrap_integration,
+    etc.) call `load_raganything_settings()` with no env arg → it
+    reads `os.environ`. Provide a stub URL here so those tests work
+    out of the box without each test setting it themselves.
+
+    Tests that pass an explicit `env={...}` to the loader bypass
+    `os.environ` entirely; those test files set the key in their
+    own dicts. Tests that need to assert on the URL-missing path
+    use `monkeypatch.delenv` inside the test body."""
+    monkeypatch.setenv(
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL", "http://stub-vlm:1234/v1",
+    )
+
+
 @pytest.fixture
 def data_root(tmp_path: Path) -> Path:
     return tmp_path.resolve()

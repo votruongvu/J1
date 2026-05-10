@@ -128,6 +128,7 @@ def test_bootstrap_compiler_plugs_into_processing_service(tmp_path, monkeypatch)
     # 2. Run Bootstrap with the env-driven processor hook + visual
     # enrichment disabled so we don't need a vision client.
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_COMPILER_PROCESSOR": "test_e2e_processors:compile_doc",
         # Keep enrichment enabled but turn off all visual modalities so
         # `_full_registry()` doesn't have to register vision.
@@ -213,7 +214,7 @@ def test_bootstrap_compiler_plugs_into_knowledge_activities(tmp_path, monkeypatc
     monkeypatch.setitem(sys.modules, "test_e2e_processors_v2", mod)
 
     result = Bootstrap(
-        env={"J1_RAGANYTHING_COMPILER_PROCESSOR": "test_e2e_processors_v2:compile_doc"},
+        env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1", "J1_RAGANYTHING_COMPILER_PROCESSOR": "test_e2e_processors_v2:compile_doc"},
         llm_registry=_full_registry(),
     ).build()
 
@@ -255,6 +256,7 @@ def test_bootstrap_with_graphify_plugs_into_knowledge_activities(monkeypatch, tm
     monkeypatch.setitem(sys.modules, "test_e2e_graphify", mod)
 
     env = {
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_GRAPH_PROVIDER": "graphify",
         "J1_GRAPHIFY_ENABLED": "true",
         "J1_GRAPHIFY_GRAPH_PROCESSOR": "test_e2e_graphify:gfy",

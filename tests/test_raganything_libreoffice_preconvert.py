@@ -43,7 +43,7 @@ from j1.providers.raganything.settings import (
 
 
 def test_settings_default_pdf_convert_extensions():
-    s = load_raganything_settings(env={})
+    s = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     assert s.pdf_convert_extensions == DEFAULT_PDF_CONVERT_EXTENSIONS
     # Sanity: every default entry has a leading dot and is lowercase.
     for ext in s.pdf_convert_extensions:
@@ -52,7 +52,7 @@ def test_settings_default_pdf_convert_extensions():
 
 
 def test_settings_default_libreoffice_binary_and_timeout():
-    s = load_raganything_settings(env={})
+    s = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     assert s.libreoffice_binary == DEFAULT_LIBREOFFICE_BINARY
     assert s.libreoffice_timeout_seconds == DEFAULT_LIBREOFFICE_TIMEOUT
 
@@ -60,6 +60,7 @@ def test_settings_default_libreoffice_binary_and_timeout():
 def test_settings_custom_extension_list_normalised():
     """User can supply with or without leading dot, any case."""
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS": ".doc, xls, DOCX",
     })
     assert s.pdf_convert_extensions == (".doc", ".xls", ".docx")
@@ -67,6 +68,7 @@ def test_settings_custom_extension_list_normalised():
 
 def test_settings_empty_extension_list_disables_conversion():
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS": "",
     })
     assert s.pdf_convert_extensions == ()
@@ -74,6 +76,7 @@ def test_settings_empty_extension_list_disables_conversion():
 
 def test_settings_custom_libreoffice_binary():
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_LIBREOFFICE_BINARY": "/opt/libreoffice/program/soffice",
     })
     assert s.libreoffice_binary == "/opt/libreoffice/program/soffice"
@@ -81,6 +84,7 @@ def test_settings_custom_libreoffice_binary():
 
 def test_settings_custom_libreoffice_timeout():
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS": "60",
     })
     assert s.libreoffice_timeout_seconds == 60.0
@@ -89,6 +93,7 @@ def test_settings_custom_libreoffice_timeout():
 def test_settings_libreoffice_timeout_must_be_positive():
     with pytest.raises(ValueError, match="must be > 0"):
         load_raganything_settings(env={
+            "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
             "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS": "0",
         })
 
@@ -96,6 +101,7 @@ def test_settings_libreoffice_timeout_must_be_positive():
 def test_settings_libreoffice_timeout_must_be_numeric():
     with pytest.raises(ValueError, match="must be a number"):
         load_raganything_settings(env={
+            "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
             "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS": "fast",
         })
 
@@ -104,7 +110,7 @@ def test_settings_libreoffice_timeout_must_be_numeric():
 
 
 def _settings_with_default_extensions() -> RAGAnythingSettings:
-    return load_raganything_settings(env={})
+    return load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
 
 
 def test_needs_pdf_conversion_for_legacy_doc():
@@ -129,6 +135,7 @@ def test_native_formats_are_not_converted(ext):
 def test_no_extensions_configured_means_no_conversion():
     """Empty extension set disables conversion globally (escape hatch)."""
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS": "",
     })
     assert not _needs_pdf_conversion(Path("file.doc"), settings)
@@ -140,7 +147,7 @@ def test_no_extensions_configured_means_no_conversion():
 def test_convert_to_pdf_invokes_soffice_with_expected_argv(tmp_path, monkeypatch):
     """The subprocess call shape: --headless --convert-to pdf
     --outdir <tmp> <source>."""
-    settings = load_raganything_settings(env={})
+    settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk binary doc")
 
@@ -182,7 +189,7 @@ def test_convert_to_pdf_invokes_soffice_with_expected_argv(tmp_path, monkeypatch
 def test_convert_to_pdf_raises_provider_unavailable_when_binary_missing(
     tmp_path, monkeypatch,
 ):
-    settings = load_raganything_settings(env={})
+    settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk")
 
@@ -199,7 +206,7 @@ def test_convert_to_pdf_provider_unavailable_message_is_actionable(
 ):
     """The error must name (a) install, (b) override-binary path,
     (c) shrink-extensions option, (d) processor-hook escape."""
-    settings = load_raganything_settings(env={})
+    settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk")
 
@@ -223,7 +230,7 @@ def test_convert_to_pdf_provider_unavailable_message_is_actionable(
 def test_convert_to_pdf_wraps_nonzero_exit_in_conversion_error(
     tmp_path, monkeypatch,
 ):
-    settings = load_raganything_settings(env={})
+    settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk")
 
@@ -245,7 +252,7 @@ def test_convert_to_pdf_wraps_no_output_in_conversion_error(
     tmp_path, monkeypatch,
 ):
     """Even when soffice returns 0, missing/empty output PDF is fatal."""
-    settings = load_raganything_settings(env={})
+    settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk")
 
@@ -268,6 +275,7 @@ def test_convert_to_pdf_wraps_timeout_in_conversion_error(
     tmp_path, monkeypatch,
 ):
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS": "1",
     })
     source = tmp_path / "demo.doc"
@@ -317,8 +325,10 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
             return {"success": True}
 
         async def process_document_complete(
-            self, *, file_path, output_dir, parse_method,
+            self, *, file_path, output_dir, parse_method, **_extra,
         ):
+            # `**_extra` swallows backend / vlm_url that the bridge
+            # now forwards by default (since J1 forces vlm-http-client).
             captured["compile_file_path"] = file_path
             captured["compile_parse_method"] = parse_method
             outdir = Path(output_dir)
@@ -355,6 +365,7 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
     # --- Drive the bridge ---
     workdir = tmp_path / "rag-workdir"
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": str(workdir),
     })
 
@@ -413,8 +424,10 @@ def test_default_compile_passes_through_native_pdf_unchanged(
             return {"success": True}
 
         async def process_document_complete(
-            self, *, file_path, output_dir, parse_method,
+            self, *, file_path, output_dir, parse_method, **_extra,
         ):
+            # `**_extra` swallows backend / vlm_url forwarded by the
+            # bridge in the default vlm-http-client mode.
             captured["compile_file_path"] = file_path
             outdir = Path(output_dir)
             outdir.mkdir(parents=True, exist_ok=True)
@@ -443,6 +456,7 @@ def test_default_compile_passes_through_native_pdf_unchanged(
 
     workdir = tmp_path / "rag-workdir"
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": str(workdir),
     })
 
@@ -526,6 +540,7 @@ def test_default_compile_surfaces_lightrag_init_failure_as_provider_unavailable(
         def max_tokens(self): return 512
 
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
     })
     request = RAGAnythingCompileRequest(
@@ -655,6 +670,7 @@ def test_default_compile_short_circuits_plain_text_to_lightrag_ainsert(
         def max_tokens(self): return 512
 
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
     })
     request = RAGAnythingCompileRequest(
@@ -736,6 +752,7 @@ def test_default_compile_skips_ainsert_for_empty_text_file(
         def max_tokens(self): return 4
 
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
     })
     request = RAGAnythingCompileRequest(

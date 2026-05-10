@@ -80,7 +80,7 @@ def _ctx() -> ProjectContext:
 
 
 def test_raganything_settings_defaults():
-    s = load_raganything_settings(env={})
+    s = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     assert s.mode == "local"
     assert s.workdir == "./data/raganything"
     # `storage_dir` defaults to the workdir itself — LightRAG writes
@@ -93,6 +93,7 @@ def test_raganything_settings_defaults():
 
 def test_raganything_settings_workdir_inherits_into_storage():
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": "/var/data/rag",
     })
     # storage_dir defaults to the workdir; cache_dir keeps its
@@ -104,6 +105,7 @@ def test_raganything_settings_workdir_inherits_into_storage():
 
 def test_raganything_settings_explicit_subdirs_take_precedence():
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": "/var/data/rag",
         "J1_RAGANYTHING_STORAGE_DIR": "/elsewhere/store",
         "J1_RAGANYTHING_CACHE_DIR": "/elsewhere/cache",
@@ -296,7 +298,7 @@ def test_query_provider_default_path_raises_when_raganything_missing(monkeypatch
 
 
 def test_graphify_settings_defaults_disabled():
-    s = load_graphify_settings(env={})
+    s = load_graphify_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     assert s.enabled is False
     assert s.mode == "cli"
     assert s.command == "graphify"
@@ -305,6 +307,7 @@ def test_graphify_settings_defaults_disabled():
 
 def test_graphify_settings_enabled():
     s = load_graphify_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_GRAPHIFY_ENABLED": "true",
         "J1_GRAPHIFY_COMMAND": "/usr/local/bin/graphify-cli",
     })
@@ -500,6 +503,7 @@ def test_graphify_from_default_loads_env_processor(monkeypatch):
 def test_settings_loaders_pick_up_processor_env_vars():
     """Env loaders thread the processor strings through."""
     s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_COMPILER_PROCESSOR": "mypkg:compile",
         "J1_RAGANYTHING_GRAPH_PROCESSOR": "mypkg:graph",
         "J1_RAGANYTHING_RETRIEVAL_PROCESSOR": "mypkg:query",
@@ -509,6 +513,7 @@ def test_settings_loaders_pick_up_processor_env_vars():
     assert s.retrieval_processor == "mypkg:query"
 
     g = load_graphify_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_GRAPHIFY_GRAPH_PROCESSOR": "mypkg:gfy",
     })
     assert g.graph_processor == "mypkg:gfy"
@@ -542,8 +547,10 @@ def _install_fake_raganything(monkeypatch, *, captured: dict):
             return {"success": True}
 
         async def process_document_complete(
-            self, *, file_path, output_dir, parse_method,
+            self, *, file_path, output_dir, parse_method, **_extra,
         ):
+            # `**_extra` swallows backend / vlm_url forwarded by the
+            # bridge in the default vlm-http-client mode.
             captured["compile_call"] = {
                 "file_path": file_path,
                 "output_dir": output_dir,

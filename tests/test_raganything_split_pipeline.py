@@ -49,10 +49,16 @@ from j1.providers.raganything.settings import (
 
 
 def _settings(tmp_path: Path, mode: str = PIPELINE_MODE_SPLIT_PARSE_INSERT):
-    """Build minimal RAGAnything settings rooted at tmp_path."""
+    """Build minimal RAGAnything settings rooted at tmp_path.
+
+    The loader requires a VLM HTTP server URL since J1 forces MinerU
+    into HTTP-client mode (see settings.py); a stub URL is enough
+    for these tests because the bridge fakes never actually contact
+    it."""
     return load_raganything_settings(env={
         "J1_RAGANYTHING_WORKDIR": str(tmp_path / "raganything"),
         "J1_RAGANYTHING_PIPELINE_MODE": mode,
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
     })
 
 

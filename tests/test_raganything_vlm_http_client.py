@@ -70,25 +70,29 @@ def test_settings_explicit_vlm_overrides_j1_vision():
     assert s.vlm_http_model_name == "mineru-model"
 
 
-def test_settings_vlm_fields_default_to_none_when_neither_set():
-    """When neither `J1_VISION_LLM_*` nor `J1_RAGANYTHING_VLM_HTTP_*`
-    is set, the fields stay None — `_apply_vlm_http_client_env` will
-    skip applying anything, so MinerU falls back to its own defaults
-    (typically the public hosted endpoint)."""
-    s = load_raganything_settings(env={})
-    assert s.vlm_http_server_url is None
-    assert s.vlm_http_api_key is None
-    assert s.vlm_http_model_name is None
+def test_settings_load_rejects_when_no_vlm_url_set():
+    """J1 forces MinerU into HTTP-client mode and refuses to start
+    without an externally-managed VLM endpoint. An empty env (no
+    `J1_RAGANYTHING_VLM_HTTP_SERVER_URL` and no `J1_VISION_LLM_BASE_URL`
+    fallback) must fail at load with `ConfigError` — operators get
+    a clear migration message instead of a mid-compile crash."""
+    from j1.errors.exceptions import ConfigError
+    with pytest.raises(ConfigError) as excinfo:
+        load_raganything_settings(env={})
+    msg = str(excinfo.value)
+    assert "VLM server URL" in msg
+    assert "J1_RAGANYTHING_VLM_HTTP_SERVER_URL" in msg
 
 
-def test_settings_blank_vlm_url_treated_as_unset():
+def test_settings_load_rejects_when_vlm_url_blank():
     """An operator who exports `J1_VISION_LLM_BASE_URL=` (empty
-    string) shouldn't end up with a literal empty server URL — the
-    loader normalises empty to None."""
-    s = load_raganything_settings(env={
-        "J1_VISION_LLM_BASE_URL": "",
-    })
-    assert s.vlm_http_server_url is None
+    string) must hit the same rejection as the unset case —
+    whitespace-only strings are normalised to "no URL"."""
+    from j1.errors.exceptions import ConfigError
+    with pytest.raises(ConfigError):
+        load_raganything_settings(env={
+            "J1_VISION_LLM_BASE_URL": "",
+        })
 
 
 # ---- _apply_vlm_http_client_env behaviour ---------------------------
@@ -235,36 +239,53 @@ def test_parse_method_rejects_unknown_value():
 
 
 def test_backend_rejects_unknown_value():
-    with pytest.raises(ValueError) as excinfo:
+    from j1.errors.exceptions import ConfigError
+    with pytest.raises(ConfigError) as excinfo:
         load_raganything_settings(env={
             "J1_RAGANYTHING_BACKEND": "made-up-engine",
+            "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
         })
     assert "made-up-engine" in str(excinfo.value)
-    assert "vlm-http-client" in str(excinfo.value)
 
 
-def test_backend_defaults_to_none_when_unset():
-    """Default = None means 'let MinerU pick' — the bridge passes no
-    `backend` kwarg in that case so MinerU's CLI default applies."""
-    s = load_raganything_settings(env={})
-    assert s.backend is None
+def test_backend_defaults_to_vlm_http_client_when_unset():
+    """J1 forces external-only operation — the loader's default is
+    `vlm-http-client` so an operator who exports just the VLM URL
+    gets a working setup with no extra config."""
+    s = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
+    })
+    assert s.backend == "vlm-http-client"
 
 
-def test_backend_accepts_all_documented_values():
-    """Pin the full valid set so a future mineru change that adds
-    or removes a backend value is caught here."""
-    valid = ["pipeline", "vlm-http-client", "hybrid-http-client",
-             "vlm-auto-engine", "hybrid-auto-engine"]
-    for backend in valid:
+def test_backend_accepts_only_external_http_client_variants():
+    """`vlm-http-client` and `hybrid-http-client` are the only
+    permitted backends. The local-model variants (`pipeline` /
+    `vlm-auto-engine` / `hybrid-auto-engine`) are rejected at load
+    time with an actionable migration message — no surprise
+    multi-gigabyte HF downloads inside the worker."""
+    from j1.errors.exceptions import ConfigError
+    for backend in ("vlm-http-client", "hybrid-http-client"):
         s = load_raganything_settings(env={
             "J1_RAGANYTHING_BACKEND": backend,
+            "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
         })
         assert s.backend == backend
+    for rejected in ("pipeline", "vlm-auto-engine", "hybrid-auto-engine"):
+        with pytest.raises(ConfigError) as excinfo:
+            load_raganything_settings(env={
+                "J1_RAGANYTHING_BACKEND": rejected,
+                "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
+            })
+        msg = str(excinfo.value)
+        assert "local model" in msg.lower()
+        assert "vlm-http-client" in msg or "hybrid-http-client" in msg
 
 
 def test_parse_method_accepts_all_documented_values():
     for method in ("auto", "txt", "ocr"):
         s = load_raganything_settings(env={
             "J1_RAGANYTHING_PARSE_METHOD": method,
+            "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
         })
         assert s.parse_method == method

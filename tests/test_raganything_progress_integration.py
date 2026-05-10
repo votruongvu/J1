@@ -74,8 +74,10 @@ def _install_fake_raganything(monkeypatch, log_lines: list[str]):
             return {"success": True}
 
         async def process_document_complete(
-            self, *, file_path, output_dir, parse_method,
+            self, *, file_path, output_dir, parse_method, **_extra,
         ):
+            # `**_extra` swallows backend / vlm_url forwarded by the
+            # bridge in the default vlm-http-client mode.
             mineru_logger = logging.getLogger("mineru")
             for line in log_lines:
                 mineru_logger.info(line)
@@ -112,6 +114,7 @@ def _build_request(
         def max_tokens(self): return 512
 
     settings = load_raganything_settings(env={
+        "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_WORKDIR": str(tmp_path / "rag-workdir"),
     })
     return RAGAnythingCompileRequest(

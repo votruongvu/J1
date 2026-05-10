@@ -71,7 +71,15 @@ ENV_J1_VISION_LLM_MODEL = "J1_VISION_LLM_MODEL"
 DEFAULT_MODE = "local"
 DEFAULT_WORKDIR = "./data/raganything"
 DEFAULT_PARSE_METHOD = "auto"
-DEFAULT_BACKEND: str | None = None
+# J1 runs MinerU as an HTTP client only — local-model backends are
+# rejected at startup (see `EXTERNAL_ONLY_BACKENDS` + the policy
+# checks in `_validate_backend` and `load_raganything_settings`).
+# `vlm-http-client` offloads VLM inference to an externally-managed
+# OpenAI-compatible endpoint we control (LM Studio / vLLM / hosted),
+# so MinerU never downloads multi-gigabyte weights inside the J1
+# container. Operators who genuinely need local models must fork
+# the deployment and revert this default + the policy guard.
+DEFAULT_BACKEND: str = "vlm-http-client"
 DEFAULT_LIBREOFFICE_BINARY = "soffice"
 DEFAULT_LIBREOFFICE_TIMEOUT = 120.0  # seconds — soffice can be slow on first launch
 
@@ -125,6 +133,25 @@ VALID_BACKENDS = frozenset({
     "vlm-auto-engine",
     "hybrid-auto-engine",
 })
+
+# Subset of `VALID_BACKENDS` that J1 actually permits at startup.
+# Anything outside this set runs MinerU's local model code path
+# (model downloads, in-process inference, optional GPU usage) — none
+# of which J1 is willing to manage. Operators who need a local
+# backend must fork the deployment and remove this guard explicitly.
+EXTERNAL_ONLY_BACKENDS = frozenset({
+    "vlm-http-client",
+    "hybrid-http-client",
+})
+
+# Mapping from rejected (local-model) backend names → the
+# closest externally-hosted equivalent. Surfaced in the rejection
+# error message so operators get an actionable migration path.
+_LOCAL_BACKEND_REPLACEMENTS = {
+    "pipeline": "vlm-http-client",
+    "vlm-auto-engine": "vlm-http-client",
+    "hybrid-auto-engine": "hybrid-http-client",
+}
 
 # Document formats RAGAnything / mineru cannot parse natively (the
 # pure-Python parsers it ships handle modern OOXML + PDF + images,
@@ -237,6 +264,26 @@ def load_raganything_settings(
         source.get(ENV_RAGANYTHING_PARSE_METHOD, DEFAULT_PARSE_METHOD),
     )
     backend = _validate_backend(source.get(ENV_RAGANYTHING_BACKEND))
+    # Server URL is required because every allowed backend
+    # (`vlm-http-client`, `hybrid-http-client`) is HTTP-only — without
+    # a URL, MinerU has nowhere to send the request. Fail loudly at
+    # load time rather than mid-compile.
+    vlm_server_url = (
+        source.get(ENV_RAGANYTHING_VLM_HTTP_SERVER_URL)
+        or source.get(ENV_J1_VISION_LLM_BASE_URL)
+        or None
+    )
+    if vlm_server_url is None or not vlm_server_url.strip():
+        from j1.errors.exceptions import ConfigError
+        raise ConfigError(
+            f"MinerU is configured for HTTP-client backend "
+            f"({backend}) but no VLM server URL is set. Set "
+            f"{ENV_RAGANYTHING_VLM_HTTP_SERVER_URL} (or the "
+            f"project-wide {ENV_J1_VISION_LLM_BASE_URL} fallback) to "
+            "the externally-managed VLM endpoint J1 should call. "
+            "Local-model backends are not permitted — see "
+            "docs/raganything-vlm-setup.md."
+        )
     return RAGAnythingSettings(
         mode=source.get(ENV_RAGANYTHING_MODE, DEFAULT_MODE),
         workdir=workdir,
@@ -267,11 +314,8 @@ def load_raganything_settings(
         libreoffice_timeout_seconds=_parse_timeout(
             source.get(ENV_RAGANYTHING_LIBREOFFICE_TIMEOUT),
         ),
-        vlm_http_server_url=(
-            source.get(ENV_RAGANYTHING_VLM_HTTP_SERVER_URL)
-            or source.get(ENV_J1_VISION_LLM_BASE_URL)
-            or None
-        ),
+        # Already resolved + presence-validated above.
+        vlm_http_server_url=vlm_server_url,
         vlm_http_api_key=(
             source.get(ENV_RAGANYTHING_VLM_HTTP_API_KEY)
             or source.get(ENV_J1_VISION_LLM_API_KEY)
@@ -372,21 +416,42 @@ def _validate_parse_method(raw: str | None) -> str:
     )
 
 
-def _validate_backend(raw: str | None) -> str | None:
-    """Validate the backend env var against MinerU's CLI choices.
+def _validate_backend(raw: str | None) -> str:
+    """Validate the backend env var against the J1-allowed subset of
+    MinerU's CLI choices.
 
-    None / empty → None (let MinerU pick its own default). Anything
-    else must match `VALID_BACKENDS` exactly — the CLI does the same
-    check and surfaces a much less helpful error message.
-    """
+    Empty / unset → `DEFAULT_BACKEND` (`vlm-http-client`). Anything
+    else must match `EXTERNAL_ONLY_BACKENDS` — the local-model
+    backends (`pipeline` / `vlm-auto-engine` / `hybrid-auto-engine`)
+    are rejected at startup with an actionable migration message
+    pointing at the closest HTTP-client equivalent.
+
+    The rejection is by design: J1 doesn't host MinerU's models in-
+    process. Local-model backends would trigger multi-gigabyte HF
+    downloads and inference on the worker — neither of which the
+    deployment is configured to handle. Operators who need local
+    inference must fork the deployment and remove this guard."""
     if not raw:
         return DEFAULT_BACKEND
     value = raw.strip()
     if not value:
         return DEFAULT_BACKEND
     if value not in VALID_BACKENDS:
-        raise ValueError(
+        from j1.errors.exceptions import ConfigError
+        raise ConfigError(
             f"{ENV_RAGANYTHING_BACKEND}={value!r} is invalid; "
             f"expected one of {sorted(VALID_BACKENDS)}."
+        )
+    if value not in EXTERNAL_ONLY_BACKENDS:
+        replacement = _LOCAL_BACKEND_REPLACEMENTS.get(value, "vlm-http-client")
+        from j1.errors.exceptions import ConfigError
+        raise ConfigError(
+            f"{ENV_RAGANYTHING_BACKEND}={value!r} runs MinerU's local "
+            "model code path (model downloads, in-process inference). "
+            "J1 only permits the HTTP-client backends "
+            f"({sorted(EXTERNAL_ONLY_BACKENDS)}). "
+            f"Switch to {ENV_RAGANYTHING_BACKEND}={replacement!r} and "
+            f"point {ENV_RAGANYTHING_VLM_HTTP_SERVER_URL} at your "
+            "externally-hosted VLM endpoint."
         )
     return value

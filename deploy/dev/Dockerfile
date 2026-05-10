@@ -173,26 +173,23 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     && pip install --upgrade pip \
     && pip install -e ".[dev,dev-server,all-providers]"
 
-# ---- HuggingFace cache location -------------------------------------
-# Pin `HF_HOME` so that IF the worker ever runs MinerU's local VLM
-# backend (i.e. someone flips `J1_RAGANYTHING_BACKEND` away from
-# `vlm-http-client`), downloaded weights land in the bind-mounted
-# `j1_huggingface_cache` volume — cached across image rebuilds.
+# ---- MinerU runs as HTTP client only --------------------------------
+# J1 does NOT host MinerU's models in-process. The deployment MUST
+# point MinerU at an externally-managed VLM endpoint via
+# `J1_RAGANYTHING_VLM_HTTP_SERVER_URL` (or the project-wide
+# `J1_VISION_LLM_BASE_URL` fallback). The settings loader rejects
+# the local-model backends (`pipeline` / `vlm-auto-engine` /
+# `hybrid-auto-engine`) at startup so an accidental config change
+# can't trigger a multi-gigabyte download inside the container.
 #
-# We deliberately DO NOT pre-cache the ~5 GB MinerU model weights at
-# build time. The default deployment offloads VLM inference to an
-# OpenAI-compat endpoint (LM Studio / vLLM / hosted) via
-# `J1_RAGANYTHING_BACKEND=vlm-http-client`, in which case the local
-# weights are dead bytes. Skipping the precache keeps image builds
-# fast (~3 minutes faster) and the image ~5 GB smaller.
-#
-# To restore the precache for a deployment that actually runs MinerU
-# locally, add a single layer in your downstream Dockerfile:
-#
-#     RUN mineru-models-download -s huggingface -m all
-#
-# Cache lookups will find the weights at $HF_HOME on first run.
-ENV HF_HOME=/opt/huggingface
+# Consequences:
+#   * No HuggingFace cache mount or `HF_HOME` env. The image stays
+#     small; first-run latency is bounded by the upstream VLM
+#     endpoint, not by a model download.
+#   * No `mineru-models-download` precache step. The previous
+#     comments explained an opt-in precache that we're now removing
+#     — operators who want local models should fork this Dockerfile
+#     and add their own model layer + revert the settings guard.
 
 # Real source tree replaces the stub created above. Editable
 # install's `.pth` already points at `/app/src`, so swapping the

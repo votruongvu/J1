@@ -110,12 +110,16 @@ so reloading half-edited modules into a running worker can corrupt
 in-flight workflows). A rebuild is only needed when you change
 `pyproject.toml`, the `Dockerfile`, or another build-time input.
 
-> **The default stack offloads VLM inference to an OpenAI-compat endpoint**
-> (vLLM / sglang / hosted) via `J1_RAGANYTHING_BACKEND=vlm-http-client`,
-> so the worker image does **not** ship MinerU model weights — image
-> builds stay fast and ~5 GB smaller. The first compile hits your VLM
-> server over HTTP per page (seconds), not the in-process 1.2 B-param
-> model on CPU (~5 min/page).
+> **MinerU runs as an HTTP client only.** J1 forces
+> `J1_RAGANYTHING_BACKEND=vlm-http-client` (or `hybrid-http-client`)
+> at startup and **rejects** the local-model backends (`pipeline` /
+> `vlm-auto-engine` / `hybrid-auto-engine`) — see
+> [src/j1/providers/raganything/settings.py](../../src/j1/providers/raganything/settings.py).
+> The worker image does NOT ship MinerU model weights, no
+> HuggingFace cache mount exists, and `J1_RAGANYTHING_VLM_HTTP_SERVER_URL`
+> (or the project-wide `J1_VISION_LLM_BASE_URL` fallback) is required
+> at startup — bootstrap fails with a clear `ConfigError` if neither
+> is set.
 >
 > The endpoint must serve a **MinerU-trained layout VLM** —
 > `opendatalab/MinerU2.5-Pro-2604-1.2B` is the canonical choice. A
@@ -127,15 +131,11 @@ in-flight workflows). A rebuild is only needed when you change
 > MinerU2.5-Pro for parsing. See the LLM-role table further down for
 > the full model-per-role contract.
 >
-> If two model servers feels like too much, set
-> `J1_RAGANYTHING_BACKEND=pipeline` instead — MinerU's traditional CV
-> detectors handle parsing with no VLM, no extra server. Add a precache
-> layer in your downstream Dockerfile if you want the weights baked
-> into the image rather than downloaded on first parse:
->
-> ```dockerfile
-> RUN mineru-models-download -s huggingface -m all
-> ```
+> Operators who genuinely need MinerU's local-model code path must
+> fork the deployment, remove the guard in `_validate_backend`, and
+> wire their own model-cache mount. The default deployment treats
+> "downloads multi-GB models inside the container" as a startup
+> error — same posture J1 takes for every other model role.
 
 Services that come up:
 
@@ -198,7 +198,6 @@ worker is wired so heavy-write paths NEVER land on a bind mount:
 | Path | Backing | Why |
 |---|---|---|
 | `j1_workspace` named volume → `/var/lib/j1` | Linux VM overlay disk | All persistent state (audit JSONL, run records, artifact registry, FTS index, RAGAnything workdir, MinerU per-doc outputs). |
-| `j1_huggingface_cache` named volume → `/opt/huggingface` | Linux VM overlay disk | MinerU model weights when running a local backend. |
 | `tmpfs` → `/tmp` (1 GiB cap) | RAM | Python `tempfile`, MinerU intermediate scratch, soffice's `j1-soffice-*` mkdtemps. RAM-backed for hottest-path I/O. |
 | `j1_postgres` named volume | Linux VM overlay disk | Temporal's storage. |
 | `../../src` / `../../deploy` bind mounts → `/app/src`, `/app/deploy` | macOS via gRPC FUSE | Source code only — read-mostly, the bind cost is acceptable. |

@@ -67,14 +67,10 @@ services:
       # gRPC FUSE. All ingestion writes (chunks, kv_store_*.json,
       # MinerU per-document outputs) land here.
       - j1_workspace:/var/lib/j1
-      # MinerU's HuggingFace cache. Mounted at `$HF_HOME` (set in
-      # the Dockerfile). Empty by default — the dev stack offloads
-      # VLM inference to LM Studio / vLLM via
-      # `J1_RAGANYTHING_BACKEND=vlm-http-client`, so MinerU never
-      # touches local model weights. The mount is preserved so an
-      # operator can flip back to a local backend without losing
-      # downloaded weights between rebuilds.
-      - j1_huggingface_cache:/opt/huggingface
+      # NOTE: no HuggingFace cache mount. J1 forces MinerU into
+      # vlm-http-client mode (see settings.py + Dockerfile note);
+      # local model downloads are explicitly rejected at startup
+      # so there's nothing to cache here.
       # Source-code bind mounts. Read-mostly: the bind read costs
       # are tolerable; write-heavy paths live elsewhere (see
       # j1_workspace + tmpfs above/below). Restart the worker
@@ -281,4 +277,3 @@ networks:
 volumes:
   j1_workspace:          # framework state (per-project JSON registries, SQLite FTS5)
   j1_postgres:           # Temporal's own storage — not used by J1 itself
-  j1_huggingface_cache:  # MinerU model weights when running a local backend; empty in the default vlm-http-client setup
