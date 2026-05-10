@@ -2078,6 +2078,15 @@ class ProjectProcessingWorkflow:
         #     run lands at FAILED_FINAL.
         assessment_payload: dict | None = None
         if request.planner_enabled:
+            # Wrap the cheap pre-compile work (profile + AssessmentPlan
+            # build) in synthetic step.* events so the FE timeline +
+            # status panel reflect the assessment phase. Both events
+            # are best-effort observability — failure never blocks
+            # the workflow's actual assessment work below.
+            await self._emit_step_lifecycle(
+                request, stage="ASSESS_COMPILE_STRATEGY",
+                step="assess_compile_strategy", action="started",
+            )
             try:
                 profile = await workflow.execute_activity_method(
                     ProfilingActivities.profile_document,
@@ -2115,7 +2124,17 @@ class ProjectProcessingWorkflow:
                         f"confidence={assessment_payload.get('confidence')}"
                     ),
                 )
+                await self._emit_step_lifecycle(
+                    request, stage="ASSESS_COMPILE_STRATEGY",
+                    step="assess_compile_strategy", action="completed",
+                )
             except Exception as exc:  # noqa: BLE001 — handled per policy
+                # Surface the failure on the timeline before the
+                # fail_open / fail_closed branches handle it below.
+                await self._emit_step_lifecycle(
+                    request, stage="ASSESS_COMPILE_STRATEGY",
+                    step="assess_compile_strategy", action="failed",
+                )
                 if request.assessment_failure_policy == \
                         ASSESSMENT_FAILURE_POLICY_FAIL_CLOSED:
                     self._record_step(
@@ -2409,7 +2428,13 @@ class ProjectProcessingWorkflow:
         # Rule-based assessor decides whether downstream enrichment
         # tasks (table / image / vision / quality) should run. The
         # plan is persisted as a `post_compile_enrich_plan` artifact
-        # for FE rendering + future stage-gate consultation.
+        # for FE rendering + future stage-gate consultation. Wrapped
+        # in step.* lifecycle events so the FE timeline + status
+        # panel surface the assessment phase explicitly.
+        await self._emit_step_lifecycle(
+            request, stage="ASSESS_ENRICHMENT",
+            step="assess_enrichment", action="started",
+        )
         enrich_plan = await self._run_post_compile_enrich_assessment(
             request,
             document_id=document_id,
@@ -2428,6 +2453,11 @@ class ProjectProcessingWorkflow:
                     f"recommended={list(enrich_plan.recommended_tasks)}"
                 ),
             )
+        await self._emit_step_lifecycle(
+            request, stage="ASSESS_ENRICHMENT",
+            step="assess_enrichment",
+            action="completed" if enrich_plan is not None else "skipped",
+        )
 
         # ── Synthetic step: Build Content Inventory ──────────────
         # The compile activity bundles parse + chunk in one shot

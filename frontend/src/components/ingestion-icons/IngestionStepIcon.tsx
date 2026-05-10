@@ -51,9 +51,14 @@ export const INGESTION_STEP_ICONS: Record<
   ProcessingStepId,
   ComponentType<IngestionIconProps>
 > = {
+  // Pre-compile assessment phase — reuses the planning glyph since
+  // the AssessmentPlan IS what used to be called the plan.
+  assess_compile_strategy: PlanIcon,
   parse_source_content: ParseIcon,
   build_content_inventory: InventoryIcon,
-  create_execution_plan: PlanIcon,
+  // Post-compile rule-based enrich assessment — reuses the planning
+  // glyph for visual continuity with the pre-compile assessment.
+  assess_enrichment: PlanIcon,
   generate_knowledge_chunks: ChunkIcon,
   enrich_extracted_content: EnrichIcon,
   build_knowledge_graph: GraphIcon,

@@ -28,8 +28,8 @@ describe("INGESTION_STEP_ICONS mapping", () => {
     }
   });
 
-  it("has exactly seven entries (matching the user-facing flow)", () => {
-    expect(Object.keys(INGESTION_STEP_ICONS)).toHaveLength(7);
+  it("has exactly eight entries (matching the user-facing flow)", () => {
+    expect(Object.keys(INGESTION_STEP_ICONS)).toHaveLength(8);
   });
 });
 
@@ -84,10 +84,14 @@ describe("<IngestionStepIcon /> rendering", () => {
     expect(render({ step: "compile", status: "running" })).toContain(
       "pix-ic-parse",
     );
-    // `plan.revised` → create_execution_plan → PlanIcon
-    expect(render({ step: "plan.revised", status: "completed" })).toContain(
-      "pix-ic-plan",
-    );
+    // `profile_document` → assess_compile_strategy → PlanIcon
+    expect(
+      render({ step: "profile_document", status: "running" }),
+    ).toContain("pix-ic-plan");
+    // `post_compile_assess` → assess_enrichment → PlanIcon
+    expect(
+      render({ step: "post_compile_assess", status: "completed" }),
+    ).toContain("pix-ic-plan");
     // `chunks` → generate_knowledge_chunks → ChunkIcon
     expect(render({ step: "chunks", status: "running" })).toContain(
       "pix-ic-chunk",

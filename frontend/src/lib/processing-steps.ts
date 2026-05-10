@@ -6,13 +6,16 @@
  * for the operator-facing Run Detail page. This module owns the
  * single mapping from internal names → user-facing labels:
  *
- *   compile / parse / parser    → "Parse Source Content"
- *   parsed_content_manifest     → "Build Content Inventory"  (virtual)
- *   plan / planning             → "Create Execution Plan"
- *   chunking / chunks           → "Generate Knowledge Chunks"
- *   enrich / enrichment         → "Enrich Extracted Content"
- *   graph / build_graph         → "Build Knowledge Graph"
- *   index / finalize / complete → "Finalize Ingestion"
+ *   profile / assessment / assess_compile_strategy
+ *                                → "Assess Compile Strategy"  (pre-compile)
+ *   compile / parse / parser     → "Parse Source Content"
+ *   parsed_content_manifest      → "Build Content Inventory"  (synthetic)
+ *   post_compile_assess /
+ *     enrich_assessment          → "Assess Enrichment"        (post-compile)
+ *   chunking / chunks            → "Generate Knowledge Chunks" (synthetic)
+ *   enrich / enrichment          → "Enrich Extracted Content"
+ *   graph / build_graph          → "Build Knowledge Graph"
+ *   index / finalize / complete  → "Finalize Ingestion"
  *
  * Use the helper functions everywhere a step name reaches the user
  * — Timeline, PrimaryStatusPanel, tab labels — so a backend rename
@@ -20,9 +23,10 @@
  */
 
 export const PROCESSING_STEP_IDS = [
+  "assess_compile_strategy",
   "parse_source_content",
   "build_content_inventory",
-  "create_execution_plan",
+  "assess_enrichment",
   "generate_knowledge_chunks",
   "enrich_extracted_content",
   "build_knowledge_graph",
@@ -38,11 +42,20 @@ export interface ProcessingStepDef {
 }
 
 /**
- * The seven user-facing steps in their canonical order. Result
- * tabs are gated on the matching availability in the run summary;
- * the timeline + status panel project events onto these ids.
+ * User-facing steps in canonical order. The compile-first journey:
+ * profile + assess → compile → synthetic content inventory →
+ * post-compile enrich assessment → synthetic chunks → enrich →
+ * graph → finalize. Every emitted step.* event projects onto one
+ * of these ids via `internalStepToUserFacing`.
  */
 export const PROCESSING_STEPS: readonly ProcessingStepDef[] = [
+  {
+    id: "assess_compile_strategy",
+    label: "Assess Compile Strategy",
+    description:
+      "Profile the document and build the AssessmentPlan that drives " +
+      "compile config (parse method, capability toggles).",
+  },
   {
     id: "parse_source_content",
     label: "Parse Source Content",
@@ -57,11 +70,11 @@ export const PROCESSING_STEPS: readonly ProcessingStepDef[] = [
       "tables, images, and headings.",
   },
   {
-    id: "create_execution_plan",
-    label: "Create Execution Plan",
+    id: "assess_enrichment",
+    label: "Assess Enrichment",
     description:
-      "Decide which downstream steps to run, based on parsed content " +
-      "and the active domain pack.",
+      "Rule-based assessment of compile output to decide which " +
+      "enrichment tasks should run downstream.",
   },
   {
     id: "generate_knowledge_chunks",
@@ -80,7 +93,8 @@ export const PROCESSING_STEPS: readonly ProcessingStepDef[] = [
     id: "build_knowledge_graph",
     label: "Build Knowledge Graph",
     description:
-      "Build entity / relationship graph if the plan decided to.",
+      "Build entity / relationship graph from compile output and " +
+      "enriched chunks.",
   },
   {
     id: "finalize_ingestion",
@@ -126,6 +140,17 @@ export function internalStepToUserFacing(
 
   // Internal stage labels (uppercase) and activity / step names.
   if (
+    key === "assess_compile_strategy" ||
+    key === "assessment" ||
+    key === "assessment.created" ||
+    key === "ingestion.assessment.created" ||
+    key === "profile" ||
+    key === "profile_document" ||
+    key === "assessment_plan"
+  ) {
+    return "assess_compile_strategy";
+  }
+  if (
     key === "compile" ||
     key === "parse" ||
     key === "parser" ||
@@ -138,26 +163,27 @@ export function internalStepToUserFacing(
     key === "parsed_content_manifest" ||
     key === "content_inventory" ||
     key === "content_list" ||
-    key === "parsed_content_list"
+    key === "parsed_content_list" ||
+    key === "build_content_inventory"
   ) {
     return "build_content_inventory";
   }
   if (
-    key === "plan" ||
-    key === "planning" ||
-    key === "initial_plan" ||
-    key === "revised_plan" ||
-    key === "plan.generated" ||
-    key === "plan.revised"
+    key === "assess_enrichment" ||
+    key === "post_compile_assess" ||
+    key === "enrich_assessment" ||
+    key === "post_compile_enrich_plan" ||
+    key === "ingestion.post_compile.enrich_assessment"
   ) {
-    return "create_execution_plan";
+    return "assess_enrichment";
   }
   if (
     key === "chunk" ||
     key === "chunks" ||
     key === "chunking" ||
     key === "chunk_task" ||
-    key === "compile_chunks"
+    key === "compile_chunks" ||
+    key === "generate_knowledge_chunks"
   ) {
     return "generate_knowledge_chunks";
   }

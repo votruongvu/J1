@@ -18,11 +18,12 @@ import {
 
 describe("processing-steps", () => {
   describe("PROCESSING_STEPS canonical list", () => {
-    it("contains the seven user-facing steps in spec order", () => {
+    it("contains the eight user-facing steps in compile-first order", () => {
       expect(PROCESSING_STEPS.map((s) => s.id)).toEqual([
+        "assess_compile_strategy",
         "parse_source_content",
         "build_content_inventory",
-        "create_execution_plan",
+        "assess_enrichment",
         "generate_knowledge_chunks",
         "enrich_extracted_content",
         "build_knowledge_graph",
@@ -38,7 +39,7 @@ describe("processing-steps", () => {
       }
     });
 
-    it("'Initial Plan' is NOT in the user-facing vocabulary", () => {
+    it("vocabulary stays operator-friendly", () => {
       const labels = PROCESSING_STEPS.map((s) => s.label).join(" | ");
       expect(labels).not.toMatch(/initial plan/i);
       expect(labels).not.toMatch(/raganything/i);
@@ -65,15 +66,43 @@ describe("processing-steps", () => {
       );
     });
 
-    it("maps planning events to create_execution_plan", () => {
-      expect(internalStepToUserFacing("plan")).toBe("create_execution_plan");
-      expect(internalStepToUserFacing("planning")).toBe("create_execution_plan");
-      expect(internalStepToUserFacing("plan.revised")).toBe(
-        "create_execution_plan",
+    it("maps profile / assessment events to assess_compile_strategy", () => {
+      expect(internalStepToUserFacing("profile_document")).toBe(
+        "assess_compile_strategy",
       );
-      expect(internalStepToUserFacing("initial_plan")).toBe(
-        "create_execution_plan",
+      expect(internalStepToUserFacing("assessment")).toBe(
+        "assess_compile_strategy",
       );
+      expect(internalStepToUserFacing("ingestion.assessment.created")).toBe(
+        "assess_compile_strategy",
+      );
+      expect(internalStepToUserFacing("assessment_plan")).toBe(
+        "assess_compile_strategy",
+      );
+    });
+
+    it("maps post-compile enrich-assessment events to assess_enrichment", () => {
+      expect(internalStepToUserFacing("post_compile_assess")).toBe(
+        "assess_enrichment",
+      );
+      expect(internalStepToUserFacing("enrich_assessment")).toBe(
+        "assess_enrichment",
+      );
+      expect(
+        internalStepToUserFacing("ingestion.post_compile.enrich_assessment"),
+      ).toBe("assess_enrichment");
+      expect(internalStepToUserFacing("post_compile_enrich_plan")).toBe(
+        "assess_enrichment",
+      );
+    });
+
+    it("legacy plan.* events no longer map (workflow does not emit them)", () => {
+      // The old IngestPlanner is gone; plan.generated/plan.revised are
+      // dead. They must NOT mislabel onto a real step.
+      expect(internalStepToUserFacing("plan")).toBeNull();
+      expect(internalStepToUserFacing("planning")).toBeNull();
+      expect(internalStepToUserFacing("plan.revised")).toBeNull();
+      expect(internalStepToUserFacing("initial_plan")).toBeNull();
     });
 
     it("maps chunks to generate_knowledge_chunks", () => {
@@ -143,7 +172,12 @@ describe("processing-steps", () => {
   describe("userFacingStepLabel()", () => {
     it("returns the canonical label for known steps", () => {
       expect(userFacingStepLabel("compile")).toBe("Parse Source Content");
-      expect(userFacingStepLabel("plan.revised")).toBe("Create Execution Plan");
+      expect(userFacingStepLabel("profile_document")).toBe(
+        "Assess Compile Strategy",
+      );
+      expect(userFacingStepLabel("post_compile_assess")).toBe(
+        "Assess Enrichment",
+      );
       expect(userFacingStepLabel("graph")).toBe("Build Knowledge Graph");
     });
 
