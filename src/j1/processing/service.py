@@ -179,7 +179,7 @@ class ProcessingService:
             status=ResultStatus.SUCCEEDED, drafts=[draft],
         )
         from j1.workspace.layout import WorkspaceArea
-        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        # action + target_kind constants live at module top of this file
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
@@ -225,7 +225,7 @@ class ProcessingService:
             ResultStatus,
         )
         from j1.workspace.layout import WorkspaceArea
-        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        # action + target_kind constants live at module top of this file
 
         payload = {
             "schema_version": "1",
@@ -293,7 +293,7 @@ class ProcessingService:
             ResultStatus,
         )
         from j1.workspace.layout import WorkspaceArea
-        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        # action + target_kind constants live at module top of this file
 
         attempts = payload.get("attempts") or []
         attempts_count = len(attempts)
@@ -358,7 +358,7 @@ class ProcessingService:
             ResultStatus,
         )
         from j1.workspace.layout import WorkspaceArea
-        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        # action + target_kind constants live at module top of this file
 
         overall = str(payload.get("overall_recommendation") or "optional")
         recommended = list(payload.get("recommended_tasks") or [])
@@ -428,7 +428,7 @@ class ProcessingService:
             ResultStatus,
         )
         from j1.workspace.layout import WorkspaceArea
-        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        # action + target_kind constants live at module top of this file
 
         validation_status = str(payload.get("validation_status") or "unknown")
         check_count = len(payload.get("checks") or [])
@@ -500,7 +500,7 @@ class ProcessingService:
             ResultStatus,
         )
         from j1.workspace.layout import WorkspaceArea
-        from j1.audit.records import ACTION_COMPILE_OK, TARGET_DOCUMENT
+        # action + target_kind constants live at module top of this file
 
         payload = {
             "schema_version": "1",
