@@ -25,7 +25,7 @@ implemented so the contract doesn't drift.
 | Resume from last checkpoint | ✓ (skips enrich + graph; compile + chunks always re-run) |
 | Rebuild index only | ✓ (re-runs index activity against carry-forward chunks) |
 | Hard delete (purge) | ✓ (two-step ritual: soft-delete then purge; cascades to validation; audit log preserved) |
-| Parent-workflow batch sequencing | ⏳ (workaround: set `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1`) |
+| Parent-workflow batch sequencing | ✓ (`BatchOrchestrationWorkflow` dispatches children sequentially; multiple batches can run in parallel) |
 
 ---
 
@@ -356,15 +356,25 @@ Store: [`src/j1/runs/batch_store.py`](../src/j1/runs/batch_store.py) — `JsonlB
 
 **Constraints:**
 - `J1_INGESTION_BATCH_MAX_FILES` — env-overridable, default `5`. Rejected with HTTP 400 when exceeded.
-- Sequencing is whatever the worker's task-queue concurrency permits. With the dev default `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=5`, child workflows may execute in parallel at the activity layer. The future `J1_INGESTION_BATCH_CONCURRENCY=1` knob (parent-workflow sequencing via `execute_child_workflow`) is documented but not yet implemented — operators who need strict sequential execution should set `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` until the parent-workflow sequencer lands.
+- **Sequencing is in-batch only.** Each batch dispatches a `BatchOrchestrationWorkflow` parent ([src/j1/orchestration/workflows/batch_orchestration.py](../src/j1/orchestration/workflows/batch_orchestration.py)) that fans out children sequentially via `workflow.execute_child_workflow` — child N+1 doesn't start until child N reaches terminal state. Multiple batches can run concurrently — each batch is internally serial, batches are independent. The previous `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` workaround is no longer needed.
+
+**Parent workflow behaviour:**
+
+- **Workflow id:** `j1-batch-{batch_run_id}` so operators can spot batches in the Temporal UI vs single-doc workflows.
+- **Failure policy** (request field, default `continue`): when a child workflow raises `ApplicationError`, the parent records the failure and either halts the batch or moves on to the next child.
+  - `continue` (default): record failure, dispatch next child. Batch ends `partial_completed` if any succeeded, `failed` if none did.
+  - `halt`: stop dispatching after the first failure. Useful when every document is required.
+- **Cancel signal:** operators send `cancel` to the parent; future children don't launch. In-flight child workflows surface `CancelledError` through the `execute_child_workflow` await, which the parent treats as `_cancelled=True` and reports `final_status="cancelled"`.
+- **Aggregate status is read-side**, not parent-side. Each child writes its own status to the `IngestionRunStore`; `derive_batch_status` queries them at read-time.
 
 **Behaviour landed:**
 
 1. Validate file count against `J1_INGESTION_BATCH_MAX_FILES`.
 2. Generate `batch_run_id` (UUID).
-3. For each file: register the document via the existing intake service (handles checksum dedupe), allocate a child `run_id`, persist `IngestionRun` with `metadata.batch_run_id`, start a per-document workflow via the existing starter.
-4. Persist `BatchRun(batch_run_id, run_ids, file_count, started_at, actor)` to `audit/batch_runs.jsonl`.
-5. Return `{batchRunId, fileCount, runIds, status: "running", startedAt}`.
+3. For each file: register the document via the existing intake service (handles checksum dedupe), allocate a child `run_id`, persist `IngestionRun` with `metadata.batch_run_id`. Build a `BatchChildSpec` with the deterministic `j1-{tenant}-{project}-{document_id}` workflow id.
+4. Dispatch ONE `BatchOrchestrationWorkflow` parent with the spec list. The parent fans out children sequentially.
+5. Persist `BatchRun(batch_run_id, run_ids, file_count, started_at, actor, metadata={parent_workflow_id})` to `audit/batch_runs.jsonl`.
+6. Return `{batchRunId, fileCount, runIds, status: "running", startedAt, parentWorkflowId}`.
 
 **Read endpoint** returns:
 ```json
@@ -394,6 +404,7 @@ Store: [`src/j1/runs/batch_store.py`](../src/j1/runs/batch_store.py) — `JsonlB
 ### Tests
 - `tests/test_batch_run_store.py` — store persistence + read-back + idempotent overwrite.
 - `tests/test_batch_run_store.py::test_derive_batch_status_*` — every aggregate-status rule pinned.
+- `tests/test_batch_orchestration_workflow.py` — sequential dispatch order, halt vs continue failure policies, cancel propagation, all-failed → `failed` status, empty batch terminates cleanly.
 
 
 

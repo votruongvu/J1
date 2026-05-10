@@ -43,6 +43,11 @@ from j1 import (
     create_rest_api,
     load_temporal_settings,
 )
+from j1.orchestration.workflows.batch_orchestration import (
+    BatchChildSpec,
+    BatchOrchestrationRequest,
+    BatchOrchestrationWorkflow,
+)
 from temporalio.common import WorkflowIDConflictPolicy
 from j1.integration.services import ApplicationFacade
 from j1.search.indexer import SqliteSearchIndexer
@@ -150,6 +155,75 @@ def make_per_document_starter(
     return _start
 
 
+def make_batch_starter(
+    *,
+    client_provider,
+    task_queue: str,
+    planner_enabled: bool,
+    pipeline_mode: str = "complete",
+):
+    """Build the `BatchStarter` closure used by `POST /ingestion-batches`.
+
+    The closure dispatches ONE `BatchOrchestrationWorkflow` per call;
+    that parent fans out the child workflows sequentially via
+    `execute_child_workflow`. Replaces the previous "REST handler
+    fans out N concurrent workflows" pattern (which depended on the
+    worker-wide `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` env var to
+    serialize). With the parent workflow, multiple batches can run
+    in parallel — each batch is internally sequential, batches are
+    independent.
+
+    Parent workflow id: `j1-batch-{batch_run_id}` so operators can
+    spot batches in the Temporal UI vs single-doc workflows. The
+    batch_run_id is the FE-facing identifier; using it directly
+    avoids the need for a follow-up "what's the workflow id for
+    batch X" lookup.
+    """
+
+    async def _start(ctx, batch_run_id, child_specs) -> str:
+        client = client_provider()
+        scope = ProjectScope.from_context(ctx)
+        # Hydrate the dict child specs from the REST endpoint into
+        # frozen dataclass instances so the workflow input is
+        # Temporal-data-converter friendly + locked at dispatch time.
+        specs = tuple(
+            BatchChildSpec(
+                workflow_id=str(s["workflow_id"]),
+                document_id=str(s["document_id"]),
+                correlation_id=str(s["correlation_id"]),
+                compiler_kind=str(s["compiler_kind"]),
+                enricher_kind=s.get("enricher_kind"),
+                graph_builder_kind=s.get("graph_builder_kind"),
+                indexer_kind=s.get("indexer_kind"),
+                actor=str(s.get("actor", "system")),
+                planner_enabled=planner_enabled,
+                pipeline_mode=pipeline_mode,
+            )
+            for s in child_specs
+        )
+        parent_workflow_id = f"j1-batch-{batch_run_id}"
+        await client.start_workflow(
+            BatchOrchestrationWorkflow.run,
+            BatchOrchestrationRequest(
+                scope=scope,
+                batch_run_id=batch_run_id,
+                child_specs=specs,
+                actor="system",
+            ),
+            id=parent_workflow_id,
+            task_queue=task_queue,
+            # USE_EXISTING — a duplicate POST (operator double-click
+            # before getting a response) attaches to the in-flight
+            # parent instead of dispatching a parallel batch. The
+            # batch_run_id is freshly allocated per request so this
+            # only matters under network retries.
+            id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        )
+        return parent_workflow_id
+
+    return _start
+
+
 def _build_app():
     settings = build_settings()
     workspace = build_workspace(settings)
@@ -232,6 +306,17 @@ def _build_app():
         planner_enabled=planner_enabled,
         pipeline_mode=pipeline_mode,
     )
+    # Parent-workflow dispatcher for multi-upload batches. Replaces
+    # the previous "REST handler fans out N concurrent workflows"
+    # pattern (which depended on `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1`
+    # to serialize). Multiple batches now run concurrently — each
+    # batch is internally sequential.
+    _start_batch_workflow = make_batch_starter(
+        client_provider=client_provider,
+        task_queue=temporal_settings.task_queue,
+        planner_enabled=planner_enabled,
+        pipeline_mode=pipeline_mode,
+    )
 
     # Compose the env-declared providers so the API can default
     # `compilerKind` and validate unknown kinds. The same `boot`
@@ -309,6 +394,7 @@ def _build_app():
         workspace=workspace,
         event_bus=ApplicationEventBus(),
         job_starter=_start_project_workflow,
+        batch_starter=_start_batch_workflow,
         processing_capabilities=capabilities,
         # User-facing ingestion-runs surface — without these the
         # frontend's All Runs page, run detail, and SSE timeline all

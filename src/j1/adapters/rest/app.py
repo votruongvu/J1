@@ -195,6 +195,15 @@ RunConfirmHandler = Callable[[ProjectContext, str], Awaitable[None]]
 JobStarter = Callable[
     [ProjectContext, str, IngestRequest], Awaitable[str]
 ]
+# Parent-workflow starter for multi-upload batches. Distinct from
+# `JobStarter` because the parent dispatches a different workflow
+# class and its input shape is `(ctx, batch_run_id, child_specs)`
+# rather than per-document. The dev wiring builds both via the same
+# `client_provider`. When None, `POST /ingestion-batches` 503s.
+BatchStarter = Callable[
+    [ProjectContext, str, list],  # ctx, batch_run_id, child_specs
+    Awaitable[str],  # returns the parent workflow_id
+]
 
 
 def _default_context_resolver(request: Request) -> ProjectContext:
@@ -366,6 +375,7 @@ def create_rest_api(
     *,
     context_resolver: ContextResolver | None = None,
     job_starter: JobStarter | None = None,
+    batch_starter: BatchStarter | None = None,
     workspace: WorkspaceResolver | None = None,
     authenticator: Authenticator | None = None,
     anonymous_paths: frozenset[str] | None = None,
@@ -3079,7 +3089,6 @@ def create_rest_api(
         files: list[UploadFile] = File(...),
         actor: str = Form("system"),
         ctx: ProjectContext = Depends(get_ctx),
-        starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         from datetime import datetime, timezone
@@ -3088,6 +3097,13 @@ def create_rest_api(
                 503,
                 "batch run store not configured (pass `batch_run_store=` "
                 "to create_rest_api)",
+            )
+        if batch_starter is None:
+            raise HTTPException(
+                503,
+                "batch starter not configured (pass `batch_starter=` "
+                "to create_rest_api so the parent workflow can dispatch "
+                "child workflows sequentially)",
             )
         if not files:
             raise HTTPException(400, "at least one file is required")
@@ -3101,15 +3117,37 @@ def create_rest_api(
         batch_run_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc)
         child_run_ids: list[str] = []
+        # Resolve processor kinds ONCE for the whole batch. Every
+        # child run inherits the same recipe; per-file overrides
+        # aren't a v1 affordance (operators who need them should
+        # upload one file at a time via `POST /ingestion-runs`).
+        compiler_kind = _resolve_compiler_kind(None)
+        enricher_kind = _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.enricher_kinds
+             if processing_capabilities else frozenset()),
+            "enricherKind",
+        )
+        graph_builder_kind = _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.graph_builder_kinds
+             if processing_capabilities else frozenset()),
+            "graphBuilderKind",
+        )
+        indexer_kind = _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.indexer_kinds
+             if processing_capabilities else frozenset()),
+            "indexerKind",
+        )
 
-        # Register each file + create + start each child workflow.
-        # The existing per-document starter handles workflow creation.
-        # No parent workflow today — sequencing is whatever the
-        # worker's task-queue concurrency permits. With the dev
-        # default `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=5` they may
-        # interleave at the activity layer; the audit doc explains
-        # the future `J1_INGESTION_BATCH_CONCURRENCY=1` knob for
-        # parent-workflow sequencing.
+        # Register each file + create the run record. We DON'T
+        # dispatch child workflows here; we hand the specs to the
+        # parent workflow which dispatches them sequentially via
+        # `execute_child_workflow`. The deterministic per-document
+        # workflow_id stays the same as the single-file path so
+        # readers (Temporal UI, debug commands) see a uniform shape.
+        child_specs: list[dict[str, Any]] = []
         for upload in files:
             try:
                 doc_dto = facade.ingestion.register_document(
@@ -3128,10 +3166,16 @@ def create_rest_api(
                 duplicate = True
 
             child_run_id = uuid.uuid4().hex
+            # Per-document workflow_id is deterministic — same shape
+            # the single-upload starter would have used so a
+            # USE_EXISTING re-attach behaves identically.
+            child_workflow_id = (
+                f"j1-{ctx.tenant_id}-{ctx.project_id}-{doc_dto.document_id}"
+            )
             child_run = IngestionRun(
                 run_id=child_run_id,
                 document_id=doc_dto.document_id,
-                workflow_id=None,
+                workflow_id=child_workflow_id,
                 workflow_run_id=None,
                 status=RunStatus.CREATED,
                 started_at=datetime.now(timezone.utc),
@@ -3151,34 +3195,26 @@ def create_rest_api(
                     document_id=doc_dto.document_id, actor=actor,
                 )
 
-            body = IngestRequest(
-                compiler_kind=_resolve_compiler_kind(None),
-                enricher_kind=_resolve_optional_processor_kind(
-                    None,
-                    (processing_capabilities.enricher_kinds
-                     if processing_capabilities else frozenset()),
-                    "enricherKind",
-                ),
-                graph_builder_kind=_resolve_optional_processor_kind(
-                    None,
-                    (processing_capabilities.graph_builder_kinds
-                     if processing_capabilities else frozenset()),
-                    "graphBuilderKind",
-                ),
-                indexer_kind=_resolve_optional_processor_kind(
-                    None,
-                    (processing_capabilities.indexer_kinds
-                     if processing_capabilities else frozenset()),
-                    "indexerKind",
-                ),
-                actor=actor,
-                correlation_id=child_run_id,
-            )
-            workflow_id = await starter(ctx, doc_dto.document_id, body)
-            child_run.workflow_id = workflow_id
-            child_run.updated_at = datetime.now(timezone.utc)
-            store.upsert(ctx, child_run)
+            child_specs.append({
+                "workflow_id": child_workflow_id,
+                "document_id": doc_dto.document_id,
+                "correlation_id": child_run_id,
+                "compiler_kind": compiler_kind,
+                "enricher_kind": enricher_kind,
+                "graph_builder_kind": graph_builder_kind,
+                "indexer_kind": indexer_kind,
+                "actor": actor,
+            })
             child_run_ids.append(child_run_id)
+
+        # Dispatch the parent workflow. It will fan out children
+        # sequentially via `execute_child_workflow` — workflow IDs +
+        # request fields are passed on the spec list. This replaces
+        # the previous "fan out from REST" pattern that relied on
+        # `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` to serialize.
+        parent_workflow_id = await batch_starter(
+            ctx, batch_run_id, child_specs,
+        )
 
         # Persist the batch record. Status is derived at read-time
         # from child runs; we never persist a stale aggregate here.
@@ -3191,7 +3227,7 @@ def create_rest_api(
             file_count=len(child_run_ids),
             started_at=now,
             actor=actor,
-            metadata={},
+            metadata={"parent_workflow_id": parent_workflow_id},
         )
         batch_run_store.upsert(ctx, batch)  # type: ignore[union-attr]
         return envelope(
@@ -3201,6 +3237,7 @@ def create_rest_api(
                 "runIds": child_run_ids,
                 "status": "running",
                 "startedAt": now.isoformat(),
+                "parentWorkflowId": parent_workflow_id,
             },
             _req_id(request),
         )

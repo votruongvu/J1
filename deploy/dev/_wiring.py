@@ -635,7 +635,22 @@ def build_worker_spec(
         graph_builders=dict(graph_builders or {}),
     ).all_activities()
 
+    # `BatchOrchestrationWorkflow` is the parent that dispatches
+    # per-document children sequentially via `execute_child_workflow`.
+    # Both must be registered on the same worker — the parent runs
+    # in the worker process, then schedules child workflow tasks
+    # that the same worker (or any worker on this task queue) picks
+    # up. Forgetting to register it would surface as
+    # "WorkflowTypeNotFoundError" the first time `POST
+    # /ingestion-batches` runs.
+    from j1.orchestration.workflows.batch_orchestration import (
+        BatchOrchestrationWorkflow,
+    )
     return WorkerSpec(
-        workflows=[ProjectProcessingWorkflow, DocumentProcessingWorkflow],
+        workflows=[
+            ProjectProcessingWorkflow,
+            DocumentProcessingWorkflow,
+            BatchOrchestrationWorkflow,
+        ],
         activities=activities,
     )
