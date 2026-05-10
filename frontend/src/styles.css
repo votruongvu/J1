@@ -2410,19 +2410,6 @@ pre.json .b {
   }
 }
 
-.mock-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--review-soft);
-  color: var(--review-fg);
-  border: 1px solid color-mix(in oklab, var(--review) 25%, transparent);
-}
-
 /* ── Primary status panel ─────────────────────────────── */
 .psp {
   position: relative;

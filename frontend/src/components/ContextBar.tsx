@@ -1,10 +1,9 @@
 /**
- * Top app bar — tenant / project inputs, mode toggle, auth button,
- * theme toggle. Owns no state; the parent (`App.tsx`) drives every
- * value via props.
+ * Top app bar — tenant / project inputs, auth button, theme toggle.
+ * Owns no state; the parent (`App.tsx`) drives every value via props.
  */
 
-import type { AuthConfig, Mode, ProjectContext, Theme } from "@/types/ui";
+import type { AuthConfig, ProjectContext, Theme } from "@/types/ui";
 import { Icon } from "./icons";
 
 interface ContextBarProps {
@@ -14,8 +13,6 @@ interface ContextBarProps {
   onAuthClick: () => void;
   theme: Theme;
   onThemeToggle: () => void;
-  mode: Mode;
-  onModeToggle: () => void;
 }
 
 export function ContextBar({
@@ -25,8 +22,6 @@ export function ContextBar({
   onAuthClick,
   theme,
   onThemeToggle,
-  mode,
-  onModeToggle,
 }: ContextBarProps) {
   const ok = !!ctx.tenant && !!ctx.project;
   const authed = !!auth.value;
@@ -66,26 +61,6 @@ export function ContextBar({
             {ok ? "Context set" : "Context required"}
           </div>
         </div>
-
-        <button
-          className="btn btn--sm"
-          onClick={onModeToggle}
-          aria-label="Toggle data source"
-          title={mode === "live" ? "Switch to mock data" : "Switch to live API"}
-          style={{
-            background:
-              mode === "live" ? "var(--success-soft, #d1fae5)" : "var(--warning-soft, #fef3c7)",
-            color:
-              mode === "live" ? "var(--success-fg, #065f46)" : "var(--warning-fg, #92400e)",
-          }}
-        >
-          {mode === "live" ? (
-            <Icon.Cpu className="icon-sm" />
-          ) : (
-            <Icon.Spark className="icon-sm" />
-          )}
-          {mode === "live" ? "Live API" : "Mock mode"}
-        </button>
 
         <button className="btn btn--sm" onClick={onAuthClick}>
           {authed ? <Icon.Lock className="icon-sm" /> : <Icon.Unlock className="icon-sm" />}

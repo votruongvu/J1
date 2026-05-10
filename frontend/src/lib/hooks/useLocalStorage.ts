@@ -18,8 +18,6 @@ export const LS_KEYS = {
   authValue: "j1.authValue",
   apiBase: "j1.apiBase",
   theme: "j1.theme",
-  mode: "j1.mode",
-  scenario: "j1.scenario",
 } as const;
 
 export function useLocalStorage<T extends string = string>(
