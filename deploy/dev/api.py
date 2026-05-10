@@ -216,6 +216,7 @@ def _build_app():
         probe_registry,
     )
     if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
+        _log.info("LLM startup probe: starting (5s deadline per role)")
         results = probe_registry(boot.llm_registry)
         cache_probe_results(results)
         failures = [r for r in results if not r.ok]
@@ -228,6 +229,11 @@ def _build_app():
             _log.warning(
                 "API booting WITH unreachable LLM roles. /healthz/llm "
                 "will report the failure; FE shows the banner.",
+            )
+        else:
+            _log.info(
+                "LLM startup probe: all %d configured roles reachable",
+                len(results),
             )
     # Surface the worker's registered processor kinds so the REST
     # adapter can both (a) validate caller-supplied kinds at the API

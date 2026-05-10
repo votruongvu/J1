@@ -62,6 +62,7 @@ async def _run() -> None:
         probe_registry,
     )
     if llm_probe_enabled() and getattr(boot, "llm_registry", None) is not None:
+        _log.info("LLM startup probe: starting (5s deadline per role)")
         results = probe_registry(boot.llm_registry)
         cache_probe_results(results)
         failures = [r for r in results if not r.ok]
@@ -75,6 +76,11 @@ async def _run() -> None:
                 "Worker booting WITH unreachable LLM roles. New ingestion "
                 "runs will fail until the endpoint(s) above come back. "
                 "FE will surface the banner via /healthz/llm.",
+            )
+        else:
+            _log.info(
+                "LLM startup probe: all %d configured roles reachable",
+                len(results),
             )
 
     _log.info(

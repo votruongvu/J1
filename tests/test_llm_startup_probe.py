@@ -289,3 +289,66 @@ def test_cache_probe_results_overwrites_previous_state():
     snapshot = current_health()
     assert snapshot.healthy is False
     assert snapshot.results[0].error == "endpoint dropped"
+
+
+# ---- Per-call deadline (the "container running but server hung" fix) -
+
+
+class _HangingText:
+    """Stub client that mimics a TextLLMClient.generate() blocked on a
+    socket read against an unreachable LLM endpoint. Without the
+    probe-side deadline this would hang for the client's full
+    configured timeout (300s in the dev stack) and the worker / API
+    container would appear to hang at startup."""
+
+    provider = "openai_compat"
+    model = "hung-model"
+
+    def generate(self, prompt, **_):
+        import time
+        time.sleep(30)  # would be the LLM's configured timeout in prod
+
+
+def test_probe_registry_enforces_short_deadline_against_hanging_client():
+    """The probe MUST fail fast when the LLM endpoint hangs. Without
+    this, worker / API startup blocks for minutes per unreachable
+    role and operators see 'container is running but the server is
+    not serving requests' with no clear cause. Pin the upper bound
+    so the probe completes well within the deadline (we use a 0.5s
+    deadline against a 30s hanging stub — anything more than ~3s
+    means the deadline isn't actually enforced)."""
+    import time
+
+    registry = LLMProviderRegistry()
+    registry.register(LLM_ROLE_TEXT, _HangingText())
+
+    started = time.monotonic()
+    results = probe_registry(registry, timeout_seconds=0.5)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3.0, (
+        f"probe should complete within deadline + small overhead, "
+        f"took {elapsed:.2f}s — the deadline isn't being enforced"
+    )
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert results[0].role == LLM_ROLE_TEXT
+    assert "timed out" in (results[0].error or "").lower()
+
+
+def test_probe_registry_passes_through_real_errors_under_deadline():
+    """Real exceptions (auth failure, bad model name, etc.) must still
+    propagate through the probe — the deadline only catches HANGS,
+    not normal failures. A `connection refused` error fires
+    immediately and should be reported as a normal probe failure,
+    not a timeout."""
+    registry = LLMProviderRegistry()
+    registry.register(LLM_ROLE_TEXT, _FailingText())
+
+    results = probe_registry(registry, timeout_seconds=5.0)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    # NOT the timeout error — the real exception's message survived.
+    assert "connection refused" in (results[0].error or "")
+    assert "timed out" not in (results[0].error or "").lower()

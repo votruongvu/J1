@@ -23,6 +23,7 @@ gated at the FE banner.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import threading
@@ -42,6 +43,17 @@ from j1.llm.registry import (
 _log = logging.getLogger("j1.llm.probe")
 
 ENV_LLM_STARTUP_PROBE = "J1_LLM_STARTUP_PROBE"
+ENV_LLM_PROBE_TIMEOUT = "J1_LLM_PROBE_TIMEOUT_SECONDS"
+
+# Hard ceiling per probe call. The underlying client's configured
+# timeout (e.g. `J1_TEXT_LLM_TIMEOUT_SECONDS=300`) is sized for real
+# generation; the probe is just a reachability check. Without this
+# wrapping deadline, a down LLM blocks worker / API startup for the
+# full 300s × N-roles before either container starts serving — which
+# looks like "container is running but server is down" to operators.
+# Override via `J1_LLM_PROBE_TIMEOUT_SECONDS` for slow cold-start
+# environments (defaults to 5s, plenty for any reachable endpoint).
+DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
 
 # Roles probed when present. Order matters only for deterministic log
 # output. Each role uses the cheapest possible API call to confirm
@@ -148,10 +160,26 @@ def llm_probe_enabled(env: dict | None = None) -> bool:
     return raw not in {"false", "0", "no", "off"}
 
 
+def llm_probe_timeout(env: dict | None = None) -> float:
+    """Per-probe-call deadline. Returns a float number of seconds."""
+    source = env if env is not None else os.environ
+    raw = source.get(ENV_LLM_PROBE_TIMEOUT)
+    if not raw:
+        return DEFAULT_PROBE_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_PROBE_TIMEOUT_SECONDS
+    if value <= 0:
+        return DEFAULT_PROBE_TIMEOUT_SECONDS
+    return value
+
+
 def probe_registry(
     registry: LLMProviderRegistry,
     *,
     roles: tuple[str, ...] | None = None,
+    timeout_seconds: float | None = None,
 ) -> list[ProbeResult]:
     """Exercise each configured role with a minimal request.
 
@@ -160,11 +188,20 @@ def probe_registry(
     configure them. Roles that ARE registered but fail the probe
     return `ok=False` with the error string.
 
+    Each probe call is wrapped in a hard deadline (default 5s,
+    overridable via `J1_LLM_PROBE_TIMEOUT_SECONDS`). The underlying
+    client's configured timeout is sized for real generation and is
+    far too long to use for a startup reachability check — without
+    this wrapping deadline, a down LLM would block worker / API
+    startup for minutes per role and operators would see "container
+    running but server unreachable" with no obvious cause.
+
     Caller decides how to handle failures (abort startup, log + warn,
     etc.). This function never raises for a probe failure — it
     returns the result so the caller controls the policy.
     """
     targets = roles if roles is not None else _PROBED_ROLES
+    deadline = timeout_seconds if timeout_seconds is not None else llm_probe_timeout()
     results: list[ProbeResult] = []
     for role in targets:
         client = registry.try_resolve(role)
@@ -173,9 +210,17 @@ def probe_registry(
         provider = getattr(client, "provider", None)
         model = getattr(client, "model", None)
         try:
-            _exercise_role(role, client)
+            _run_with_deadline(role, client, deadline)
             results.append(ProbeResult(
                 role=role, ok=True, provider=provider, model=model,
+            ))
+        except concurrent.futures.TimeoutError:
+            results.append(ProbeResult(
+                role=role, ok=False, provider=provider, model=model,
+                error=(
+                    f"probe timed out after {deadline:.1f}s — endpoint "
+                    f"unreachable or extremely slow"
+                ),
             ))
         except Exception as exc:  # noqa: BLE001 — probe converts every error
             results.append(ProbeResult(
@@ -183,6 +228,23 @@ def probe_registry(
                 error=f"{type(exc).__name__}: {exc}",
             ))
     return results
+
+
+def _run_with_deadline(role: str, client: object, deadline: float) -> None:
+    """Run `_exercise_role(role, client)` on a worker thread, raising
+    `TimeoutError` when it doesn't finish within `deadline` seconds.
+
+    Each call gets its own one-shot ThreadPoolExecutor — cheaper than
+    keeping a pool alive across rare probe events, and guarantees the
+    blocking client call can't reuse a poisoned thread."""
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix=f"j1-llm-probe-{role}",
+    ) as pool:
+        future = pool.submit(_exercise_role, role, client)
+        # `result(timeout)` raises `concurrent.futures.TimeoutError`
+        # when the call hangs; raises any underlying exception
+        # otherwise. We let both propagate to the caller.
+        future.result(timeout=deadline)
 
 
 def assert_required_llm_reachable(
