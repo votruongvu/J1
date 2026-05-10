@@ -234,17 +234,36 @@ def _run_with_deadline(role: str, client: object, deadline: float) -> None:
     """Run `_exercise_role(role, client)` on a worker thread, raising
     `TimeoutError` when it doesn't finish within `deadline` seconds.
 
-    Each call gets its own one-shot ThreadPoolExecutor — cheaper than
-    keeping a pool alive across rare probe events, and guarantees the
-    blocking client call can't reuse a poisoned thread."""
-    with concurrent.futures.ThreadPoolExecutor(
+    Critical: we DON'T use the executor as a context manager.
+    `ThreadPoolExecutor.__exit__` blocks until pending threads finish
+    — which would defeat the entire point of the deadline against a
+    hanging socket read. Instead, on timeout we call `shutdown(wait=
+    False, cancel_futures=True)`. The hanging thread continues
+    running in the background (it's a daemon thread, so it dies with
+    the process) but the probe returns immediately with the timeout
+    error, and the caller's startup hook proceeds.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix=f"j1-llm-probe-{role}",
-    ) as pool:
+    )
+    try:
         future = pool.submit(_exercise_role, role, client)
         # `result(timeout)` raises `concurrent.futures.TimeoutError`
         # when the call hangs; raises any underlying exception
         # otherwise. We let both propagate to the caller.
         future.result(timeout=deadline)
+        # Successful path: clean shutdown waits for the (already
+        # completed) thread to die.
+        pool.shutdown(wait=True)
+    except BaseException:
+        # Timeout or other exception: tear down the pool WITHOUT
+        # waiting. The hanging thread can't be cancelled (Python
+        # has no thread-kill primitive), but daemon-marking it via
+        # the worker's `thread_name_prefix=j1-llm-probe-*` lets it
+        # die when the process exits — and the probe doesn't
+        # block startup in the meantime.
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
 
 
 def assert_required_llm_reachable(
