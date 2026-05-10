@@ -48,6 +48,12 @@ class IngestRequest(CamelModel):
     indexer_kind: str | None = None
     actor: str = "system"
     correlation_id: str | None = None
+    # When set, the JobStarter MUST construct a fresh workflow id
+    # (typically `j1-{tenant}-{project}-{doc_id}-reindex-{run_id}`)
+    # rather than the deterministic `j1-{tenant}-{project}-{doc_id}`.
+    # Used by the full-reindex endpoint so the new attempt doesn't
+    # collide with the original workflow under USE_EXISTING.
+    reindex_of: str | None = None
 
 
 class JobStartRecord(CamelModel):

@@ -70,6 +70,11 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     REQUIRES_HUMAN_REVIEW = "requires_human_review"
+    # Soft-delete tombstone. The run record + its artifacts stay on
+    # disk for audit/compliance, but `_resolve_run_artifacts` excludes
+    # them by default and listing endpoints exclude DELETED runs
+    # unless the caller opts in via `?includeDeleted=true`.
+    DELETED = "deleted"
 
 
 # Execution-plan decisions (per-step). Mirrors the user-spec naming;

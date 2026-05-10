@@ -31,6 +31,16 @@ class ArtifactRegistry(Protocol):
         self, ctx: ProjectContext, *, kind: str | None = None
     ) -> list[ArtifactRecord]: ...
 
+    def update_metadata(
+        self, ctx: ProjectContext, artifact_id: str,
+        metadata: dict,
+    ) -> None:
+        """Replace the artifact's `metadata` dict in-place. Used by
+        the soft-delete path to set `metadata.deleted_at` without
+        rewriting the artifact's content. Raises
+        `ArtifactNotFoundError` if the id isn't registered."""
+        ...
+
 
 class JsonArtifactRegistry:
     def __init__(self, workspace: WorkspaceResolver) -> None:
@@ -68,6 +78,23 @@ class JsonArtifactRegistry:
         if kind is None:
             return records
         return [r for r in records if r.kind == kind]
+
+    def update_metadata(
+        self, ctx: ProjectContext, artifact_id: str, metadata: dict,
+    ) -> None:
+        """Rewrite `metadata` for one artifact. Used by soft-delete
+        to set `metadata.deleted_at` without touching the artifact
+        bytes. Atomic via tmp-file + rename in `_write`."""
+        from dataclasses import replace as _replace
+        records = self._read(ctx)
+        for i, r in enumerate(records):
+            if r.artifact_id == artifact_id:
+                records[i] = _replace(r, metadata=dict(metadata))
+                self._write(ctx, records)
+                return
+        raise ArtifactNotFoundError(
+            f"artifact {artifact_id} not found in {ctx.tenant_id}/{ctx.project_id}"
+        )
 
     def _path(self, ctx: ProjectContext) -> Path:
         return self._workspace.runtime(ctx) / ARTIFACT_REGISTRY_FILENAME

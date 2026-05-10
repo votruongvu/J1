@@ -469,11 +469,12 @@ See [`docs/ingestion-operations.md`](./ingestion-operations.md) for the full API
 | Action | Endpoint | Status |
 |---|---|---|
 | Cancel running ingest | `POST /ingestion-runs/{id}/cancel` | ✓ implemented (signal to running workflow) |
-| Resume from last checkpoint | `POST /ingestion-runs/{id}/resume-from-checkpoint` | ⏳ designed, not yet implemented |
+| **Soft-delete ingest** | `DELETE /ingestion-runs/{id}` | **✓ implemented** (run + artifacts tombstoned; resolver excludes; idempotent) |
+| **Full re-index** | `POST /ingestion-runs/{id}/full-reindex` | **✓ implemented** (new run + new workflow_id `…-reindex-{run_id}`; tags `metadata.reindex_of`) |
+| **Multi-upload batch** | `POST /ingestion-batches` | **✓ implemented** (`J1_INGESTION_BATCH_MAX_FILES=5` default; per-doc workflows via existing starter; status derived at read-time) |
+| **Get batch detail** | `GET /ingestion-batches/{id}` | **✓ implemented** (per-file run rows + aggregate status) |
+| Resume from last checkpoint | `POST /ingestion-runs/{id}/resume-from-checkpoint` | ⏳ designed, not yet implemented (needs compatibility checker for model/profile drift) |
 | Rebuild index only | `POST /ingestion-runs/{id}/rebuild-index` | ⏳ designed, not yet implemented |
-| Full re-index | `POST /ingestion-runs/{id}/full-reindex` | ⏳ designed (re-upload same doc with cache-bypass flag works as a workaround today) |
-| Delete ingest | `DELETE /ingestion-runs/{id}` | ⏳ designed, not yet implemented |
-| Multi-upload batch | `POST /ingestion-batches` | ⏳ designed, not yet implemented (single upload works; no batch_run_id yet) |
 
 Each deferred endpoint has a stable contract documented in `ingestion-operations.md` so the next implementation iteration doesn't need to re-discover the design.
 

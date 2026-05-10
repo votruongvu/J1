@@ -340,6 +340,13 @@ def build_run_progress_surface(
     )
 
 
+def build_batch_run_store(workspace: WorkspaceResolver):
+    """Build the JSONL-backed batch-run store. Used by
+    `POST /ingestion-batches` to track multi-upload aggregations."""
+    from j1.runs.batch_store import JsonlBatchRunStore
+    return JsonlBatchRunStore(workspace)
+
+
 def maybe_build_authenticator() -> ApiKeyAuthenticator | None:
     """Construct an authenticator only when API keys are configured.
 

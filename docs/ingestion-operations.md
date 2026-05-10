@@ -10,9 +10,22 @@ implemented so the contract doesn't drift.
 
 | Status legend | Meaning |
 |---|---|
-| ✓ implemented | Live in this commit; tests in `tests/`. |
-| ⏳ designed | Contract specified here; impl deferred to a follow-up iteration. |
+| ✓ implemented | Live; tests in `tests/`. |
 | 🚧 partial | Some pieces live, others deferred. See per-action notes. |
+| ⏳ designed | Contract specified here; impl deferred to a follow-up iteration. |
+
+**Action implementation status (current):**
+
+| Action | Status |
+|---|---|
+| Cancel running ingest | ✓ |
+| Soft-delete ingest | ✓ |
+| Full re-index | ✓ |
+| Multi-upload batch + status view | ✓ |
+| Resume from last checkpoint | ⏳ (needs compatibility checker) |
+| Rebuild index only | ⏳ |
+| Hard delete | ⏳ |
+| Parent-workflow batch sequencing | ⏳ (workaround: set `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1`) |
 
 ---
 
@@ -193,7 +206,23 @@ POST /ingestion-runs/{runId}/rebuild-index
 
 ---
 
-## 5. Full re-index  ⏳ designed
+## 5. Full re-index  ✓ implemented
+
+Endpoint: `POST /ingestion-runs/{runId}/full-reindex` ([src/j1/adapters/rest/app.py](../src/j1/adapters/rest/app.py)).
+
+**Behaviour landed:**
+
+1. Looks up the original run + its `document_id`. 404 if not found, 409 if still active, 400 if no `document_id`.
+2. Allocates a fresh `run_id` + persists a new `IngestionRun` with `metadata.reindex_of=<originalRunId>` (and inherited `policy` / `mode` / `document_name`).
+3. Calls the existing per-document starter with `body.reindex_of=<runId>`. The starter constructs `workflow_id = j1-{tenant}-{project}-{document_id}-reindex-{run_id}` so the new attempt doesn't collide with the original under USE_EXISTING.
+4. Returns `{originalRunId, reindexRunId, workflowId, documentId, status: "created"}`.
+5. The original run is preserved unchanged. Operators delete it explicitly via DELETE when ready.
+
+**Cache note**: the processing-result cache is keyed by `(document_hash, processor_kind, version, mode)`. A re-index of the same document with the same processor will cache-hit and produce identical artifacts under the new run_id. For an explicit cache-bypass (e.g., LLM output changed), wipe the LightRAG workdir or wait for the cache TTL — a `cache_bypass=True` flag is a follow-up.
+
+### Tests
+- Unit-tested via the REST adapter test (success + 404 + 409 + 400-no-document_id paths exercised).
+
 
 ### Use case
 
@@ -235,7 +264,30 @@ POST /ingestion-runs/{runId}/full-reindex
 
 ---
 
-## 6. Delete ingest  ⏳ designed
+## 6. Delete ingest  ✓ implemented (soft mode)
+
+Endpoint: `DELETE /ingestion-runs/{runId}` ([src/j1/adapters/rest/app.py](../src/j1/adapters/rest/app.py)).
+Service method: [`IngestionResultReviewService.delete_run`](../src/j1/ingestion_review/service.py).
+
+**Behaviour landed (soft):**
+
+1. 409 if the run is RUNNING / PAUSED / CANCELLING / ASSESSING.
+2. 404 if the run doesn't exist.
+3. Tombstones the `IngestionRun` record: status → `RunStatus.DELETED`, `metadata.deleted_at`, `metadata.deleted_by`.
+4. Tombstones every `ArtifactRecord` belonging to the run via the new `ArtifactRegistry.update_metadata()` method: sets `metadata.deleted_at` + `metadata.deleted_by`.
+5. The `_resolve_run_artifacts` resolver now excludes records carrying `metadata.deleted_at`, so subsequent FE reads return zero artifacts for the deleted run.
+6. **Idempotent** — calling DELETE twice returns `wasAlreadyDeleted=true` on the second call with `tombstonedArtifactCount=0`.
+7. Returns `{runId, status: "deleted", tombstonedArtifactCount, wasAlreadyDeleted, deletedAt}`.
+
+**Hard delete**: not implemented in this iteration. Soft delete is sufficient for development; hard delete adds GDPR-style guarantees + needs file unlinking + log compaction.
+
+### Tests
+- `tests/test_ingestion_review_service.py::test_delete_run_tombstones_run_and_artifacts`
+- `tests/test_ingestion_review_service.py::test_delete_run_is_idempotent`
+- `tests/test_ingestion_review_service.py::test_delete_run_rejects_active_run`
+- `tests/test_ingestion_review_service.py::test_delete_run_404s_for_unknown_run`
+
+
 
 ### Use case
 
@@ -286,7 +338,56 @@ DELETE /ingestion-runs/{runId}
 
 ---
 
-## 7. Multi-upload batch  ⏳ designed
+## 7. Multi-upload batch  ✓ implemented
+
+Endpoints:
+- `POST /ingestion-batches` — register N files, kick off N child workflows.
+- `GET /ingestion-batches/{batchId}` — aggregate view.
+
+Store: [`src/j1/runs/batch_store.py`](../src/j1/runs/batch_store.py) — `JsonlBatchRunStore` parallel of `JsonlIngestionRunStore`. `BatchRun` carries the ordered child `run_ids`. Aggregate status is **derived at read-time** from child statuses via `derive_batch_status()`, never persisted, so we never have to write a synchronised view of N rows.
+
+**Constraints:**
+- `J1_INGESTION_BATCH_MAX_FILES` — env-overridable, default `5`. Rejected with HTTP 400 when exceeded.
+- Sequencing is whatever the worker's task-queue concurrency permits. With the dev default `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=5`, child workflows may execute in parallel at the activity layer. The future `J1_INGESTION_BATCH_CONCURRENCY=1` knob (parent-workflow sequencing via `execute_child_workflow`) is documented but not yet implemented — operators who need strict sequential execution should set `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` until the parent-workflow sequencer lands.
+
+**Behaviour landed:**
+
+1. Validate file count against `J1_INGESTION_BATCH_MAX_FILES`.
+2. Generate `batch_run_id` (UUID).
+3. For each file: register the document via the existing intake service (handles checksum dedupe), allocate a child `run_id`, persist `IngestionRun` with `metadata.batch_run_id`, start a per-document workflow via the existing starter.
+4. Persist `BatchRun(batch_run_id, run_ids, file_count, started_at, actor)` to `audit/batch_runs.jsonl`.
+5. Return `{batchRunId, fileCount, runIds, status: "running", startedAt}`.
+
+**Read endpoint** returns:
+```json
+{
+  "batchRunId": "...",
+  "status": "running" | "completed" | "completed_with_warnings" | "partially_failed" | "failed" | "deleted",
+  "startedAt": "...",
+  "fileCount": 5,
+  "completedCount": 2,
+  "failedCount": 0,
+  "currentRunId": "<the first non-terminal child>",
+  "runs": [
+    {"runId": "r1", "documentId": "d1", "filename": "a.pdf", "status": "succeeded", "currentStage": null, "currentStep": null, "progressPercent": 100},
+    ...
+  ]
+}
+```
+
+**Status-derivation rules** (`derive_batch_status`):
+- any child active → `running`
+- all `succeeded` → `completed`
+- all `succeeded` + ≥1 `succeeded_with_warnings` → `completed_with_warnings`
+- mix of succeeded + failed → `partially_failed`
+- all `failed` / `cancelled` → `failed`
+- all `deleted` → `deleted`
+
+### Tests
+- `tests/test_batch_run_store.py` — store persistence + read-back + idempotent overwrite.
+- `tests/test_batch_run_store.py::test_derive_batch_status_*` — every aggregate-status rule pinned.
+
+
 
 ### Use case
 

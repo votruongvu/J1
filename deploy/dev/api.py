@@ -22,6 +22,7 @@ import uvicorn
 
 from deploy.dev._wiring import (
     build_application_facade,
+    build_batch_run_store,
     build_review_service,
     build_validation_service,
     build_run_progress_surface,
@@ -88,9 +89,20 @@ def make_per_document_starter(
     async def _start(ctx, document_id, body) -> str:
         client = client_provider()
         scope = ProjectScope.from_context(ctx)
-        workflow_id = (
-            f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
-        )
+        # Default deterministic workflow_id: lets repeated uploads of
+        # the same checksum re-attach to the in-flight workflow via
+        # USE_EXISTING. When `body.reindex_of` is set (full-reindex
+        # path), use a fresh suffixed id so the new attempt doesn't
+        # collide with the original.
+        if getattr(body, "reindex_of", None):
+            workflow_id = (
+                f"j1-{ctx.tenant_id}-{ctx.project_id}-"
+                f"{document_id}-reindex-{body.correlation_id}"
+            )
+        else:
+            workflow_id = (
+                f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
+            )
         await client.start_workflow(
             ProjectProcessingWorkflow.run,
             ProjectProcessingRequest(
@@ -279,6 +291,9 @@ def _build_app():
         # 503. Wiring them is cheap (JSONL files under the workspace
         # audit area).
         ingestion_run_store=run_store,
+        # Multi-upload batch store — sits alongside the ingestion-run
+        # store. Without this, `POST /ingestion-batches` 503s.
+        batch_run_store=build_batch_run_store(workspace),
         progress_reporter=progress_reporter,
         # Read-only review surface for completed runs (Results tabs).
         # Without this the FE's `/ingestion-runs/{id}/summary` 503s.

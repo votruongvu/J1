@@ -2265,3 +2265,85 @@ def test_get_run_planning_audit_log_fallback_marks_source(
     # Post-compile-only fields stay None on the audit-log path.
     assert report.document_understanding is None
     assert report.execution_plan is None
+
+
+# ---- Soft delete --------------------------------------------------
+
+
+def test_delete_run_tombstones_run_and_artifacts(
+    service, run_store, artifact_registry, ctx,
+):
+    """`delete_run` flips the run to status=DELETED and tombstones
+    every artifact tagged with the run_id (sets `metadata.deleted_at`).
+    Subsequent `summarize_run` returns an empty kinds list because
+    `_resolve_run_artifacts` excludes tombstoned records."""
+    from j1.runs.models import RunStatus
+
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="ps-1", kind="parsed_source",
+        source_document_ids=["doc-A"],
+        metadata={"run_id": "run-1"},
+    ))
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="manifest-1", kind="parsed_content_manifest",
+        source_document_ids=["doc-A"],
+        metadata={"run_id": "run-1"},
+    ))
+
+    # Sanity: artifacts visible before delete.
+    pre = service.summarize_run(ctx, "run-1")
+    assert "parsed_source" in pre.artifact_counts
+
+    report = service.delete_run(ctx, "run-1", actor="ops@example.com")
+    assert report["status"] == "deleted"
+    assert report["tombstoned_artifact_count"] == 2
+    assert report["was_already_deleted"] is False
+
+    # Run record is now DELETED.
+    refetched = run_store.get(ctx, "run-1")
+    assert str(refetched.status) == RunStatus.DELETED.value
+    assert refetched.metadata.get("deleted_at") == report["deleted_at"]
+    assert refetched.metadata.get("deleted_by") == "ops@example.com"
+
+    # Tombstoned artifacts no longer surface in the resolver.
+    post = service.summarize_run(ctx, "run-1")
+    assert post.artifact_counts == {}
+
+
+def test_delete_run_is_idempotent(
+    service, run_store, artifact_registry, ctx,
+):
+    """Calling `delete_run` twice produces `was_already_deleted=True`
+    on the second call and tombstones zero new artifacts."""
+    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="a-1", kind="chunk",
+        source_document_ids=["doc-A"],
+        metadata={"run_id": "run-1"},
+    ))
+
+    first = service.delete_run(ctx, "run-1")
+    second = service.delete_run(ctx, "run-1")
+
+    assert first["was_already_deleted"] is False
+    assert first["tombstoned_artifact_count"] == 1
+    assert second["was_already_deleted"] is True
+    assert second["tombstoned_artifact_count"] == 0
+
+
+def test_delete_run_rejects_active_run(service, run_store, ctx):
+    """A RUNNING run can't be deleted — the workflow could still be
+    writing artifacts. The service raises `RunStillActive`; the REST
+    layer maps this to 409."""
+    from j1.ingestion_review.exceptions import RunStillActive
+    from j1.runs.models import RunStatus
+    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
+    with pytest.raises(RunStillActive):
+        service.delete_run(ctx, "run-1")
+
+
+def test_delete_run_404s_for_unknown_run(service, ctx):
+    from j1.ingestion_review.exceptions import ReviewNotFound
+    with pytest.raises(ReviewNotFound):
+        service.delete_run(ctx, "missing-run")

@@ -16,7 +16,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Iterable
+from typing import Any, TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
     from j1.processing.planning_settings import PlanningSettings
@@ -51,7 +51,7 @@ from j1.ingestion_review.dtos import (
     StepResultDTO,
     WarningDTO,
 )
-from j1.ingestion_review.exceptions import ReviewNotFound
+from j1.ingestion_review.exceptions import ReviewNotFound, RunStillActive
 from j1.ingestion_review.projectors import (
     ChunkProjector,
     GraphSnapshotProjector,
@@ -916,6 +916,106 @@ class IngestionResultReviewService:
             ),
         )
 
+    # ---- Operational actions -----------------------------------------
+
+    def delete_run(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+        *,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        """Soft-delete an ingestion run.
+
+        Tombstones the `IngestionRun` record (status=DELETED) and
+        every `ArtifactRecord` belonging to the run (sets
+        `metadata.deleted_at`). Tombstoned records stay on disk for
+        audit; `_resolve_run_artifacts` excludes them from every
+        read path so the FE no longer surfaces them.
+
+        Idempotent — calling twice produces the same response shape;
+        the second call counts zero newly-tombstoned records.
+
+        Returns a deletion-report dict the REST layer envelopes:
+        `{run_id, status, tombstoned_artifact_count, was_already_deleted, deleted_at}`.
+
+        Raises `ReviewNotFound` if the run doesn't exist.
+        Raises `RunStillActive` (409 at the REST boundary) if the run
+        is currently RUNNING — operators must `cancel` first."""
+        from datetime import datetime, timezone
+        from j1.runs.models import RunStatus
+
+        run = self._load_run(ctx, run_id)
+        # Guard: don't tombstone an in-flight run. The workflow could
+        # still be writing artifacts; tombstoning mid-flight produces
+        # confusing partial state.
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(run.status) in active_states:
+            raise RunStillActive(
+                f"run {run_id!r} is currently {run.status} — cancel it before deleting"
+            )
+
+        already_deleted = str(run.status) == RunStatus.DELETED.value
+        deleted_at = datetime.now(timezone.utc).isoformat()
+        tombstoned = 0
+
+        # Tombstone every artifact tagged with this run_id, plus
+        # lineage-resolved artifacts (so the FE's filter actually
+        # hides them all). Skip records already tombstoned.
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        # `_resolve_run_artifacts` already filters out deleted
+        # records, so on a re-delete we get an empty list — that's
+        # the idempotent path.
+        for a in artifacts:
+            existing_meta = dict(a.metadata or {})
+            if existing_meta.get("deleted_at"):
+                continue
+            existing_meta["deleted_at"] = deleted_at
+            existing_meta["deleted_by"] = actor
+            # Re-register with updated metadata. The registry's
+            # `update_metadata` is the right call; fall back to
+            # `add` if the registry only supports add (some test
+            # fixtures).
+            update = getattr(self._artifacts, "update_metadata", None)
+            if callable(update):
+                try:
+                    update(ctx, a.artifact_id, existing_meta)
+                    tombstoned += 1
+                    continue
+                except Exception:  # noqa: BLE001
+                    pass
+            # Fallback: replace via add() — works on the in-memory
+            # test fixture, no-ops on a real registry that rejects
+            # duplicate ids.
+            from dataclasses import replace as _replace
+            try:
+                self._artifacts.add(_replace(a, metadata=existing_meta))
+                tombstoned += 1
+            except Exception:  # noqa: BLE001 — best-effort tombstone
+                continue
+
+        # Flip the run record to DELETED last so the run still
+        # resolves during the tombstone loop above.
+        if not already_deleted:
+            run.status = RunStatus.DELETED
+            run.updated_at = datetime.now(timezone.utc)
+            metadata = dict(run.metadata or {})
+            metadata["deleted_at"] = deleted_at
+            metadata["deleted_by"] = actor
+            run.metadata = metadata
+            self._run_store.upsert(ctx, run)
+
+        return {
+            "run_id": run_id,
+            "status": RunStatus.DELETED.value,
+            "tombstoned_artifact_count": tombstoned,
+            "was_already_deleted": already_deleted,
+            "deleted_at": deleted_at,
+        }
+
     # ---- Internals ----------------------------------------------------
 
     def _project_chunks(
@@ -1011,6 +1111,18 @@ class IngestionResultReviewService:
              on legacy untagged runs even though graph_json artifacts
              exist on disk."""
         all_artifacts = self._artifacts.list_artifacts(ctx)
+        # Soft-deleted artifact filter: any record carrying
+        # `metadata.deleted_at` is hidden from every read path. The
+        # tombstone stays on disk for audit; only the listing surface
+        # excludes it. (No `?includeDeleted=true` opt-in yet — add
+        # one when an admin-only "tombstone explorer" view ships.)
+        all_artifacts = [
+            a for a in all_artifacts
+            if not (
+                isinstance(getattr(a, "metadata", None), dict)
+                and a.metadata.get("deleted_at")
+            )
+        ]
 
         target_doc_ids = set(_document_ids(run))
 

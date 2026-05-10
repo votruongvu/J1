@@ -374,6 +374,7 @@ def create_rest_api(
     bulk_import: BulkImportService | None = None,
     processing_capabilities: ProcessingCapabilities | None = None,
     ingestion_run_store: "IngestionRunStore | None" = None,
+    batch_run_store: object | None = None,
     progress_reporter: "ProgressReporter | None" = None,
     review_service: IngestionResultReviewService | None = None,
     validation_service: IngestionValidationService | None = None,
@@ -1175,6 +1176,175 @@ def create_rest_api(
             total=total,
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-runs/{run_id}/full-reindex",
+        tags=["ingestion-runs"],
+        summary="Reprocess a document from its original source",
+        description=(
+            "Starts a NEW ingestion run for the same document_id as "
+            "the referenced run. Allocates a fresh run_id + workflow "
+            "(suffixed `-reindex-{run_id}` so it doesn't collide "
+            "with the original under USE_EXISTING). The new run's "
+            "metadata carries `reindex_of=<original-run-id>` so the "
+            "FE can render the relationship. Refuses to operate on "
+            "a run that's still active (HTTP 409). The original run "
+            "is preserved unchanged — operators delete it explicitly "
+            "via the soft-delete endpoint when ready."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def full_reindex_ingestion_run(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        from j1.ingestion_review.exceptions import RunStillActive
+        store = _require_run_store()
+        original = store.get(ctx, run_id)
+        if original is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        # Same active-state guard as soft-delete; can't kick off a
+        # new attempt while the original workflow might still be
+        # writing artifacts.
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(original.status) in active_states:
+            raise HTTPException(
+                409,
+                f"run {run_id!r} is currently {original.status} — "
+                "cancel it before starting a full-reindex",
+            )
+        # Validate the original document is still resolvable.
+        if not original.document_id:
+            raise HTTPException(
+                400, f"run {run_id!r} has no document_id; cannot full-reindex"
+            )
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, original.document_id)
+        except Exception:
+            raise HTTPException(
+                404,
+                f"original document {original.document_id!r} not found "
+                "in this project; cannot full-reindex",
+            )
+        actor = security.subject if security else "system"
+        new_run_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        # Inherit processor selection from the original run's metadata
+        # when present, so a re-index repeats with the same recipe.
+        original_meta = dict(original.metadata or {})
+        new_run = IngestionRun(
+            run_id=new_run_id,
+            document_id=original.document_id,
+            workflow_id=None,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                "reindex_of": run_id,
+                "policy": original_meta.get("policy", "auto"),
+                "mode": original_meta.get("mode", "STANDARD"),
+                "document_name": original_meta.get(
+                    "document_name", doc_dto.original_filename,
+                ),
+            },
+        )
+        store.upsert(ctx, new_run)
+
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=new_run_id, document_id=original.document_id,
+                actor=actor,
+            )
+
+        body = IngestRequest(
+            compiler_kind=_resolve_compiler_kind(None),
+            enricher_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.enricher_kinds
+                 if processing_capabilities else frozenset()),
+                "enricherKind",
+            ),
+            graph_builder_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.graph_builder_kinds
+                 if processing_capabilities else frozenset()),
+                "graphBuilderKind",
+            ),
+            indexer_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.indexer_kinds
+                 if processing_capabilities else frozenset()),
+                "indexerKind",
+            ),
+            actor=actor,
+            correlation_id=new_run_id,
+            reindex_of=run_id,  # signals starter to use suffixed workflow_id
+        )
+        workflow_id = await starter(ctx, original.document_id, body)
+        new_run.workflow_id = workflow_id
+        new_run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, new_run)
+        return envelope(
+            {
+                "originalRunId": run_id,
+                "reindexRunId": new_run_id,
+                "workflowId": workflow_id,
+                "documentId": original.document_id,
+                "status": RunStatus.CREATED.value,
+            },
+            _req_id(request),
+        )
+
+    @app.delete(
+        "/ingestion-runs/{run_id}",
+        tags=["ingestion-runs"],
+        summary="Soft-delete an ingestion run",
+        description=(
+            "Tombstones the run + every artifact tagged with this "
+            "run_id. Tombstoned records stay on disk for audit; the "
+            "FE listing surface excludes them. Idempotent — calling "
+            "twice returns the same envelope with "
+            "`wasAlreadyDeleted=true`. Refuses to operate on a run "
+            "that's still RUNNING / PAUSED / CANCELLING / ASSESSING "
+            "with HTTP 409 — operators must `cancel` first."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def delete_ingestion_run(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from j1.ingestion_review.exceptions import (
+            ReviewNotFound, RunStillActive,
+        )
+        service = _require_review_service()
+        actor = security.subject if security else "system"
+        try:
+            report = service.delete_run(ctx, run_id, actor=actor)
+        except ReviewNotFound:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        except RunStillActive as exc:
+            raise HTTPException(409, str(exc))
+        return envelope(
+            {
+                "runId": report["run_id"],
+                "status": report["status"],
+                "tombstonedArtifactCount": report["tombstoned_artifact_count"],
+                "wasAlreadyDeleted": report["was_already_deleted"],
+                "deletedAt": report["deleted_at"],
+            },
+            _req_id(request),
+        )
 
     @app.get(
         "/ingestion-runs/{run_id}",
@@ -2467,6 +2637,232 @@ def create_rest_api(
             status=RunStatus.CREATED.value,
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Multi-upload batches ---------------------------------------
+
+    INGESTION_BATCH_MAX_FILES = int(
+        os.environ.get("J1_INGESTION_BATCH_MAX_FILES", "5"),
+    )
+
+    @app.post(
+        "/ingestion-batches",
+        status_code=201,
+        tags=["ingestion-batches"],
+        summary="Upload up to N documents as a batch",
+        description=(
+            "Multi-upload entry point. Accepts up to "
+            "`J1_INGESTION_BATCH_MAX_FILES` (default 5) files, "
+            "registers each as its own document + ingestion run, "
+            "and returns a `batchRunId` operators poll via "
+            "`GET /ingestion-batches/{id}`. Each child run executes "
+            "as its own per-document workflow; the existing per-doc "
+            "workflow_id derivation gives sequential execution per "
+            "document (a re-upload of the same checksum still "
+            "USE_EXISTING-attaches as today). The batch view "
+            "aggregates child statuses at read-time."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_ingestion_batch(
+        request: Request,
+        files: list[UploadFile] = File(...),
+        actor: str = Form("system"),
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        if batch_run_store is None:
+            raise HTTPException(
+                503,
+                "batch run store not configured (pass `batch_run_store=` "
+                "to create_rest_api)",
+            )
+        if not files:
+            raise HTTPException(400, "at least one file is required")
+        if len(files) > INGESTION_BATCH_MAX_FILES:
+            raise HTTPException(
+                400,
+                f"batch upload supports up to {INGESTION_BATCH_MAX_FILES} "
+                f"files; got {len(files)}",
+            )
+        store = _require_run_store()
+        batch_run_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        child_run_ids: list[str] = []
+
+        # Register each file + create + start each child workflow.
+        # The existing per-document starter handles workflow creation.
+        # No parent workflow today — sequencing is whatever the
+        # worker's task-queue concurrency permits. With the dev
+        # default `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=5` they may
+        # interleave at the activity layer; the audit doc explains
+        # the future `J1_INGESTION_BATCH_CONCURRENCY=1` knob for
+        # parent-workflow sequencing.
+        for upload in files:
+            try:
+                doc_dto = facade.ingestion.register_document(
+                    ctx,
+                    upload.file,
+                    original_filename=upload.filename or "upload.bin",
+                    mime_type=upload.content_type,
+                    actor=actor,
+                    correlation_id=batch_run_id,
+                )
+                duplicate = False
+            except DuplicateDocumentError as exc:
+                doc_dto = facade.source_lookup.get_source(
+                    ctx, exc.existing_document_id,
+                )
+                duplicate = True
+
+            child_run_id = uuid.uuid4().hex
+            child_run = IngestionRun(
+                run_id=child_run_id,
+                document_id=doc_dto.document_id,
+                workflow_id=None,
+                workflow_run_id=None,
+                status=RunStatus.CREATED,
+                started_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                metadata={
+                    "duplicate_upload": duplicate,
+                    "policy": "auto",
+                    "mode": "STANDARD",
+                    "document_name": doc_dto.original_filename,
+                    "batch_run_id": batch_run_id,
+                },
+            )
+            store.upsert(ctx, child_run)
+            if progress_reporter is not None:
+                progress_reporter.report_run_created(
+                    ctx, run_id=child_run_id,
+                    document_id=doc_dto.document_id, actor=actor,
+                )
+
+            body = IngestRequest(
+                compiler_kind=_resolve_compiler_kind(None),
+                enricher_kind=_resolve_optional_processor_kind(
+                    None,
+                    (processing_capabilities.enricher_kinds
+                     if processing_capabilities else frozenset()),
+                    "enricherKind",
+                ),
+                graph_builder_kind=_resolve_optional_processor_kind(
+                    None,
+                    (processing_capabilities.graph_builder_kinds
+                     if processing_capabilities else frozenset()),
+                    "graphBuilderKind",
+                ),
+                indexer_kind=_resolve_optional_processor_kind(
+                    None,
+                    (processing_capabilities.indexer_kinds
+                     if processing_capabilities else frozenset()),
+                    "indexerKind",
+                ),
+                actor=actor,
+                correlation_id=child_run_id,
+            )
+            workflow_id = await starter(ctx, doc_dto.document_id, body)
+            child_run.workflow_id = workflow_id
+            child_run.updated_at = datetime.now(timezone.utc)
+            store.upsert(ctx, child_run)
+            child_run_ids.append(child_run_id)
+
+        # Persist the batch record. Status is derived at read-time
+        # from child runs; we never persist a stale aggregate here.
+        from j1.runs.batch_store import BatchRun
+        batch = BatchRun(
+            batch_run_id=batch_run_id,
+            tenant_id=ctx.tenant_id,
+            project_id=ctx.project_id,
+            run_ids=child_run_ids,
+            file_count=len(child_run_ids),
+            started_at=now,
+            actor=actor,
+            metadata={},
+        )
+        batch_run_store.upsert(ctx, batch)  # type: ignore[union-attr]
+        return envelope(
+            {
+                "batchRunId": batch_run_id,
+                "fileCount": len(child_run_ids),
+                "runIds": child_run_ids,
+                "status": "running",
+                "startedAt": now.isoformat(),
+            },
+            _req_id(request),
+        )
+
+    @app.get(
+        "/ingestion-batches/{batch_run_id}",
+        tags=["ingestion-batches"],
+        summary="Get batch status + per-file run details",
+        description=(
+            "Aggregate view: batch-level status (derived from child "
+            "runs), per-file `{runId, documentId, filename, status, "
+            "currentStage}` rows. The FE batch table reads this on a "
+            "polling cadence."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_batch(
+        request: Request,
+        batch_run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        if batch_run_store is None:
+            raise HTTPException(503, "batch run store not configured")
+        batch = batch_run_store.get(ctx, batch_run_id)  # type: ignore[union-attr]
+        if batch is None:
+            raise HTTPException(
+                404, f"batch run {batch_run_id!r} not found"
+            )
+        store = _require_run_store()
+        from j1.runs.batch_store import derive_batch_status
+        runs_payload = []
+        child_statuses: list[str] = []
+        completed_count = 0
+        failed_count = 0
+        current_run_id: str | None = None
+        active_states = {
+            "created", "assessing", "plan_ready", "running", "paused",
+            "cancelling", "waiting_for_confirmation",
+        }
+        for child_id in batch.run_ids:
+            child = store.get(ctx, child_id)
+            if child is None:
+                continue
+            child_status = str(child.status)
+            child_statuses.append(child_status)
+            if child_status in active_states and current_run_id is None:
+                current_run_id = child_id
+            if child_status in {"succeeded", "succeeded_with_warnings"}:
+                completed_count += 1
+            elif child_status in {"failed", "cancelled"}:
+                failed_count += 1
+            runs_payload.append({
+                "runId": child.run_id,
+                "documentId": child.document_id,
+                "filename": (child.metadata or {}).get("document_name"),
+                "status": child_status,
+                "currentStage": child.current_stage,
+                "currentStep": child.current_step,
+                "progressPercent": child.progress_percent,
+            })
+        return envelope(
+            {
+                "batchRunId": batch.batch_run_id,
+                "status": derive_batch_status(child_statuses),
+                "startedAt": batch.started_at.isoformat(),
+                "fileCount": batch.file_count,
+                "completedCount": completed_count,
+                "failedCount": failed_count,
+                "currentRunId": current_run_id,
+                "runs": runs_payload,
+            },
+            _req_id(request),
+        )
 
     @app.post(
         "/ingestion-jobs",

@@ -29,3 +29,12 @@ class RunNotTerminal(J1Error):
     (Conflict) so clients can distinguish "not ready yet" from
     "doesn't exist."
     """
+
+
+class RunStillActive(J1Error):
+    """Operation can't run while the workflow is still active.
+
+    Soft-delete and full-reindex both refuse to operate on a RUNNING /
+    PAUSED / CANCELLING / ASSESSING run — the workflow could still be
+    writing artifacts. Mapped to 409 at the REST boundary; clients
+    are expected to `cancel` first."""
