@@ -63,6 +63,11 @@ class IngestRequest(CamelModel):
     resume_completed_steps: tuple[str, ...] = ()
     resume_artifact_ids: tuple[str, ...] = ()
     resume_artifact_kinds: tuple[str, ...] = ()
+    # Rebuild-index-only flag. When True, the workflow skips the
+    # per-document loop (compile / chunks / enrich / graph) and
+    # only runs the index activity against `resume_artifact_ids`.
+    # Used by `POST /ingestion-runs/{id}/rebuild-index`.
+    rebuild_index_only: bool = False
 
 
 class JobStartRecord(CamelModel):

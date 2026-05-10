@@ -258,6 +258,16 @@ class ProjectProcessingRequest:
     resume_completed_steps: tuple[str, ...] = ()
     resume_artifact_ids: tuple[str, ...] = ()
     resume_artifact_kinds: tuple[str, ...] = ()
+    # Rebuild-index-only mode. When True, the workflow skips the
+    # per-document loop entirely (no compile / chunks / enrich /
+    # graph) and runs ONLY the `index` activity against the
+    # carry-forward artifact IDs in `resume_artifact_ids`. Used by
+    # `POST /ingestion-runs/{id}/rebuild-index` when chunks already
+    # exist + are valid but the retrieval index is stale (vector
+    # store cleared, embedding model upgrade, index corruption).
+    # Requires `indexer_kind` to be set; rejects at workflow start
+    # otherwise.
+    rebuild_index_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -651,8 +661,47 @@ class ProjectProcessingWorkflow:
         try:
             if not is_continuation:
                 await self._validate(request)
-            documents = await self._list_documents(request)
-            self._documents_total = len(documents)
+
+            # Rebuild-index-only mode: skip the documents loop
+            # entirely and emit synthetic SKIPPED step records for
+            # the upstream stages so the FE timeline still shows the
+            # full pipeline shape (with explicit "skipped: rebuild
+            # index only" reasons). Requires indexer_kind + at least
+            # one carry-forward artifact id; otherwise we can't index
+            # anything.
+            if request.rebuild_index_only:
+                if not request.indexer_kind:
+                    raise _BusinessRejection(
+                        "rebuild_index_only=True requires indexer_kind"
+                    )
+                if not self._produced_artifact_ids:
+                    raise _BusinessRejection(
+                        "rebuild_index_only=True requires at least one "
+                        "carry-forward artifact id (none provided in "
+                        "resume_artifact_ids)"
+                    )
+                self._documents_total = 1
+                reason = (
+                    f"rebuild index only — chunks reused from "
+                    f"{request.resume_from_run_id or 'prior run'}"
+                )
+                for skipped_step in (
+                    "compile", "build_content_inventory",
+                    "generate_knowledge_chunks", "enrich", "graph",
+                ):
+                    self._record_step(
+                        step=skipped_step,
+                        status=StepStatus.SKIPPED,
+                        required=False,
+                        source=StepSource.POLICY,
+                        reason=reason,
+                        metadata={"rebuild_index_only": True},
+                    )
+                # Fall through to the index-enabled branch below.
+                documents = []
+            else:
+                documents = await self._list_documents(request)
+                self._documents_total = len(documents)
 
             # Skip documents already processed in a prior run.
             for doc_id in documents[self._documents_completed:]:

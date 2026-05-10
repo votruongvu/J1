@@ -510,6 +510,38 @@ class IngestionValidationService:
             f"unsupported report format {format!r}; expected 'markdown' or 'json'"
         )
 
+    def purge_for_run(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> dict[str, int]:
+        """Cascade-delete every validation set + run that references
+        `run_id`. Used by the hard-delete (purge) orchestration in
+        the REST layer so a purged ingestion run doesn't leave
+        dangling validation history pointing at a missing run.
+
+        Best-effort across both stores — a failure on one doesn't
+        abort the other. Returns a count report:
+          `{sets_removed: int, runs_removed: int}`."""
+        sets_removed = 0
+        runs_removed = 0
+        if self._set_store is not None:
+            purge = getattr(self._set_store, "purge_for_run", None)
+            if callable(purge):
+                try:
+                    sets_removed = int(purge(ctx, run_id) or 0)
+                except Exception:  # noqa: BLE001 — best-effort cascade
+                    sets_removed = 0
+        if self._run_store_v is not None:
+            purge = getattr(self._run_store_v, "purge_for_run", None)
+            if callable(purge):
+                try:
+                    runs_removed = int(purge(ctx, run_id) or 0)
+                except Exception:  # noqa: BLE001 — best-effort cascade
+                    runs_removed = 0
+        return {
+            "sets_removed": sets_removed,
+            "runs_removed": runs_removed,
+        }
+
     # ---- Phase 2 helpers (private) -------------------------------------
 
     def _project_run_chunks(

@@ -120,9 +120,15 @@ def stub_starter(starter_calls):
             "resume_of": getattr(body, "resume_of", None),
             "resume_completed_steps": getattr(body, "resume_completed_steps", ()),
             "resume_artifact_ids": getattr(body, "resume_artifact_ids", ()),
+            "rebuild_index_only": getattr(body, "rebuild_index_only", False),
+            "indexer_kind": getattr(body, "indexer_kind", None),
             "correlation_id": body.correlation_id,
         })
-        return f"wf-{document_id}-resume-{body.correlation_id}"
+        suffix = (
+            "rebuild" if getattr(body, "rebuild_index_only", False)
+            else "resume"
+        )
+        return f"wf-{document_id}-{suffix}-{body.correlation_id}"
     return _start
 
 
@@ -308,3 +314,131 @@ def test_resume_endpoint_412_with_diff_when_settings_drifted(
     assert "enricher_kind" in diff
     assert diff["enricher_kind"]["before"] == "ancient_enricher"
     assert diff["enricher_kind"]["after"] == "composite_enricher"
+
+
+# ---- Rebuild index endpoint --------------------------------------
+
+
+def _seed_terminal_run_with_chunks(run_store, *, run_id="run-prior"):
+    """Seed a SUCCEEDED run whose snapshot includes chunk artifacts —
+    the rebuild-index endpoint reads `produced_artifact_ids` filtered
+    by `chunk` kind."""
+    snap = {
+        "settings_hash": compute_settings_hash(_PRIOR_SETTINGS),
+        "settings_snapshot": _PRIOR_SETTINGS,
+        "completed_steps": ["compile", "enrich", "graph", "index"],
+        "failed_steps": [],
+        "produced_artifact_ids": [
+            "chunk-1", "chunk-2", "chunk-3", "graph-1",
+        ],
+        "produced_artifact_kinds": [
+            "chunk", "chunk", "chunk", "graph_json",
+        ],
+        "snapshot_at": "2026-05-10T12:00:00+00:00",
+    }
+    now = datetime(2026, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
+    run = IngestionRun(
+        run_id=run_id,
+        document_id="doc-A",
+        workflow_id="wf-prior",
+        workflow_run_id="wfr-prior",
+        status=RunStatus.SUCCEEDED,
+        started_at=now,
+        updated_at=now + timedelta(minutes=2),
+        completed_at=now + timedelta(minutes=2),
+        metadata={
+            "policy": "auto", "mode": "STANDARD",
+            "document_name": "doc-A.pdf",
+            "resume_snapshot": snap,
+        },
+    )
+    ctx = ProjectContext(tenant_id="acme", project_id="alpha")
+    run_store.upsert(ctx, run)
+
+
+def test_rebuild_index_endpoint_dispatches_index_only_run(
+    client, run_store, registry, starter_calls,
+):
+    """Happy path: terminal run with chunks → 200 + new run +
+    `rebuild_index_only=True` on the workflow request +
+    chunk-only carry forward."""
+    _seed_terminal_run_with_chunks(run_store)
+    _seed_document(registry)
+    resp = client.post(
+        "/ingestion-runs/run-prior/rebuild-index", headers=_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["originalRunId"] == "run-prior"
+    assert body["rebuildRunId"] != "run-prior"
+    assert body["carryForwardChunkCount"] == 3
+    assert body["indexerKind"] == "sqlite_search"
+    # The workflow received the rebuild flag + chunk-only carry.
+    assert len(starter_calls) == 1
+    call = starter_calls[0]
+    assert call["rebuild_index_only"] is True
+    assert tuple(call["resume_artifact_ids"]) == ("chunk-1", "chunk-2", "chunk-3")
+    assert call["indexer_kind"] == "sqlite_search"
+    # New run record records the lineage so the FE can render the
+    # relationship without a follow-up call.
+    new_run = run_store.get(
+        ProjectContext(tenant_id="acme", project_id="alpha"),
+        body["rebuildRunId"],
+    )
+    assert new_run is not None
+    assert new_run.metadata.get("rebuild_of") == "run-prior"
+
+
+def test_rebuild_index_endpoint_404_for_unknown_run(client):
+    resp = client.post(
+        "/ingestion-runs/missing/rebuild-index", headers=_HEADERS,
+    )
+    assert resp.status_code == 404
+
+
+def test_rebuild_index_endpoint_409_when_run_active(client, run_store, registry):
+    _seed_terminal_run(run_store, status=RunStatus.RUNNING)
+    _seed_document(registry)
+    resp = client.post(
+        "/ingestion-runs/run-prior/rebuild-index", headers=_HEADERS,
+    )
+    assert resp.status_code == 409
+
+
+def test_rebuild_index_endpoint_412_when_no_chunks(client, run_store, registry):
+    """A run that produced no chunks (snapshot has only graph
+    artifacts) — nothing to re-index. 412 + actionable message
+    pointing at full-reindex."""
+    snap = {
+        "settings_hash": compute_settings_hash(_PRIOR_SETTINGS),
+        "settings_snapshot": _PRIOR_SETTINGS,
+        "completed_steps": ["compile"],
+        "failed_steps": [],
+        "produced_artifact_ids": ["graph-1"],
+        "produced_artifact_kinds": ["graph_json"],
+        "snapshot_at": "2026-05-10T12:00:00+00:00",
+    }
+    now = datetime(2026, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
+    run_store.upsert(
+        ProjectContext(tenant_id="acme", project_id="alpha"),
+        IngestionRun(
+            run_id="run-prior",
+            document_id="doc-A",
+            workflow_id="wf-prior",
+            workflow_run_id="wfr-prior",
+            status=RunStatus.SUCCEEDED,
+            started_at=now,
+            updated_at=now,
+            completed_at=now,
+            metadata={
+                "policy": "auto", "mode": "STANDARD",
+                "document_name": "doc-A.pdf",
+                "resume_snapshot": snap,
+            },
+        ),
+    )
+    _seed_document(registry)
+    resp = client.post(
+        "/ingestion-runs/run-prior/rebuild-index", headers=_HEADERS,
+    )
+    assert resp.status_code == 412

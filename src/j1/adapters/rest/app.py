@@ -1503,6 +1503,147 @@ def create_rest_api(
             _req_id(request),
         )
 
+    @app.post(
+        "/ingestion-runs/{run_id}/rebuild-index",
+        tags=["ingestion-runs"],
+        summary="Rebuild the retrieval index from existing chunks",
+        description=(
+            "Starts a NEW ingestion run for the same document_id that "
+            "skips compile / enrich / graph entirely and only runs "
+            "the index activity against the prior run's chunk "
+            "artifacts. Useful when the vector store was cleared, the "
+            "embedding model upgraded, or the index got corrupted "
+            "while the chunks themselves are still valid. Refuses to "
+            "operate on an in-flight run (HTTP 409). Returns HTTP 412 "
+            "when the prior run has no resume snapshot or never "
+            "produced chunk artifacts (use full-reindex instead). The "
+            "new run's metadata carries `rebuild_of=<original-run-id>` "
+            "so the FE can render the relationship."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def rebuild_ingestion_run_index(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        from j1.ingestion_review.exceptions import (
+            ResumeNotPossible, ReviewNotFound, RunStillActive,
+        )
+        store = _require_run_store()
+        review = _require_review_service()
+        original = store.get(ctx, run_id)
+        if original is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        if not original.document_id:
+            raise HTTPException(
+                400,
+                f"run {run_id!r} has no document_id; cannot rebuild index",
+            )
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, original.document_id)
+        except Exception:
+            raise HTTPException(
+                404,
+                f"original document {original.document_id!r} not found "
+                "in this project; cannot rebuild index",
+            )
+        try:
+            plan = review.rebuild_index_only(ctx, run_id)
+        except ReviewNotFound:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        except RunStillActive as exc:
+            raise HTTPException(409, str(exc))
+        except ResumeNotPossible as exc:
+            raise HTTPException(412, str(exc))
+        # Resolve the indexer kind: prefer the snapshot's value (so
+        # the rebuild repeats with the same recipe). Fall back to
+        # the deployment default — covers the case where an operator
+        # updated the worker between runs and the prior indexer is
+        # no longer registered.
+        indexer_kind = plan.get("indexer_kind") or _resolve_optional_processor_kind(
+            None,
+            (processing_capabilities.indexer_kinds
+             if processing_capabilities else frozenset()),
+            "indexerKind",
+        )
+        if not indexer_kind:
+            raise HTTPException(
+                412,
+                f"run {run_id!r} has no indexer_kind on snapshot and no "
+                "default is registered — nothing to rebuild against",
+            )
+        # Compile is mandatory in normal flows; rebuild-index-only
+        # short-circuits past it. Pass a non-empty `compiler_kind`
+        # anyway because `ProjectProcessingRequest` requires the
+        # field — the workflow won't dispatch the activity in this
+        # mode.
+        compiler_kind = _resolve_compiler_kind(None)
+
+        actor = security.subject if security else "system"
+        new_run_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        original_meta = dict(original.metadata or {})
+        new_run = IngestionRun(
+            run_id=new_run_id,
+            document_id=original.document_id,
+            workflow_id=None,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                "rebuild_of": run_id,
+                "carry_forward_artifact_ids": plan["chunk_artifact_ids"],
+                "policy": original_meta.get("policy", "auto"),
+                "mode": original_meta.get("mode", "STANDARD"),
+                "document_name": original_meta.get(
+                    "document_name", doc_dto.original_filename,
+                ),
+            },
+        )
+        store.upsert(ctx, new_run)
+
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=new_run_id, document_id=original.document_id,
+                actor=actor,
+            )
+
+        # Re-use the resume_* fields to thread the carry-forward
+        # artifact ids (the workflow seeds `_produced_artifact_ids`
+        # from them at startup). The rebuild-index-only flag tells
+        # the workflow to skip the per-document loop entirely.
+        body = IngestRequest(
+            compiler_kind=compiler_kind,
+            indexer_kind=indexer_kind,
+            actor=actor,
+            correlation_id=new_run_id,
+            resume_of=run_id,
+            resume_artifact_ids=tuple(plan["chunk_artifact_ids"]),
+            resume_artifact_kinds=tuple(plan["chunk_artifact_kinds"]),
+            rebuild_index_only=True,
+        )
+        workflow_id = await starter(ctx, original.document_id, body)
+        new_run.workflow_id = workflow_id
+        new_run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, new_run)
+        return envelope(
+            {
+                "originalRunId": run_id,
+                "rebuildRunId": new_run_id,
+                "workflowId": workflow_id,
+                "documentId": original.document_id,
+                "status": RunStatus.CREATED.value,
+                "carryForwardChunkCount": len(plan["chunk_artifact_ids"]),
+                "indexerKind": indexer_kind,
+            },
+            _req_id(request),
+        )
+
     @app.delete(
         "/ingestion-runs/{run_id}",
         tags=["ingestion-runs"],
@@ -1542,6 +1683,76 @@ def create_rest_api(
                 "tombstonedArtifactCount": report["tombstoned_artifact_count"],
                 "wasAlreadyDeleted": report["was_already_deleted"],
                 "deletedAt": report["deleted_at"],
+            },
+            _req_id(request),
+        )
+
+    @app.post(
+        "/ingestion-runs/{run_id}/purge",
+        tags=["ingestion-runs"],
+        summary="Hard-delete (purge) an ingestion run",
+        description=(
+            "Physically removes the run record + every artifact "
+            "(file on disk + registry record) + cascades to "
+            "validation sets / runs that reference this run_id. "
+            "The audit log stays intact for compliance. Refuses "
+            "to operate on an in-flight run (HTTP 409). By default "
+            "requires the run to already be soft-deleted (HTTP 409 "
+            "if not — operator must `DELETE` first); set "
+            "`?force=true` to bypass that gate for admin tooling. "
+            "Idempotent: calling twice returns "
+            "`{snapshotsRemoved: 0, ...}` on the second call."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def purge_ingestion_run(
+        request: Request,
+        run_id: str,
+        force: bool = False,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from j1.ingestion_review.exceptions import (
+            ResumeNotPossible, ReviewNotFound, RunNotTerminal,
+            RunStillActive,
+        )
+        service = _require_review_service()
+        actor = security.subject if security else "system"
+        try:
+            report = service.purge_run(
+                ctx, run_id, actor=actor,
+                require_already_deleted=not force,
+            )
+        except ReviewNotFound:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        except RunStillActive as exc:
+            raise HTTPException(409, str(exc))
+        except RunNotTerminal as exc:
+            raise HTTPException(409, str(exc))
+        # Cascade-delete validation history. Best-effort — failures
+        # here don't roll back the artifact/run purge above (which
+        # already physically removed bytes from disk; rollback isn't
+        # available). The validation cascade is purely operational
+        # cleanup; a stale validation record pointing at a missing
+        # run is ugly but not dangerous.
+        validation_cascade = {"sets_removed": 0, "runs_removed": 0}
+        if validation_service is not None:
+            try:
+                validation_cascade = validation_service.purge_for_run(
+                    ctx, run_id,
+                )
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+        return envelope(
+            {
+                "runId": report["run_id"],
+                "artifactsPurged": report["artifacts_purged"],
+                "filesDeleted": report["files_deleted"],
+                "filesMissing": report["files_missing"],
+                "snapshotsRemoved": report["snapshots_removed"],
+                "validationSetsRemoved": validation_cascade["sets_removed"],
+                "validationRunsRemoved": validation_cascade["runs_removed"],
+                "purgedAt": report["purged_at"],
             },
             _req_id(request),
         )

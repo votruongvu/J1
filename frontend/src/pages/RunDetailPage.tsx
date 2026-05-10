@@ -301,10 +301,15 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           // to the new run if one was created. Other actions
           // (pause / resume / cancel) just refresh in-place via
           // onRefresh.
-          if (action === "delete") {
+          if (action === "delete" || action === "purge") {
+            // Soft-delete and purge both remove the run from view —
+            // bounce back to the list so the user doesn't sit on a
+            // page for something that no longer exists.
             onBack();
           } else if (
-            (action === "reindex" || action === "resumeCheckpoint")
+            (action === "reindex"
+              || action === "resumeCheckpoint"
+              || action === "rebuildIndex")
             && newRunId
           ) {
             try {

@@ -23,7 +23,7 @@ interface RunHeaderProps {
   onAfterAction?: (
     action:
       | "pause" | "resume" | "cancel"
-      | "reindex" | "delete" | "resumeCheckpoint",
+      | "reindex" | "delete" | "resumeCheckpoint" | "rebuildIndex" | "purge",
     newRunId: string | null,
   ) => void;
 }

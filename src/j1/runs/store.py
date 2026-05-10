@@ -43,6 +43,18 @@ class IngestionRunStore(Protocol):
         limit: int | None = None,
     ) -> list[IngestionRun]: ...
 
+    def purge(self, ctx: ProjectContext, run_id: str) -> bool:
+        """Physically remove every snapshot of `run_id` from storage.
+        Used by hard-delete (purge). Returns True iff at least one
+        snapshot was removed; False if `run_id` wasn't present
+        (idempotent — purge is allowed to run twice).
+
+        Distinct from `upsert(run, status=DELETED)` (soft-delete),
+        which appends a tombstone snapshot the reader skips. Purge
+        rewrites the JSONL minus every line for `run_id` so the
+        bytes physically leave the audit area."""
+        ...
+
 
 class JsonlIngestionRunStore:
     """JSONL append-only store. Latest snapshot wins on read.
@@ -103,6 +115,44 @@ class JsonlIngestionRunStore:
         if limit is not None:
             runs = runs[:limit]
         return runs
+
+    def purge(self, ctx: ProjectContext, run_id: str) -> bool:
+        """Rewrite the JSONL file minus every line for `run_id`.
+
+        Atomic via tmp-file + rename so a crash mid-purge can't
+        leave a half-written file. Skips work entirely when the
+        path doesn't exist or no matching lines are found —
+        callers can invoke this idempotently."""
+        path = self._path(ctx)
+        if not path.exists():
+            return False
+        kept_lines: list[str] = []
+        removed = 0
+        with path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    # Preserve unparseable lines — rewriting them
+                    # would silently lose data we don't understand.
+                    kept_lines.append(stripped)
+                    continue
+                if str(payload.get("run_id")) == run_id:
+                    removed += 1
+                    continue
+                kept_lines.append(stripped)
+        if removed == 0:
+            return False
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for line in kept_lines:
+                fh.write(line)
+                fh.write("\n")
+        tmp.replace(path)
+        return True
 
     # ---- Internals ---------------------------------------------------
 

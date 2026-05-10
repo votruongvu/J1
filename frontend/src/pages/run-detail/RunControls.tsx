@@ -30,7 +30,7 @@ import { Icon } from "@/components/icons";
 
 type ControlAction =
   | "pause" | "resume" | "cancel"
-  | "reindex" | "delete" | "resumeCheckpoint";
+  | "reindex" | "delete" | "resumeCheckpoint" | "rebuildIndex" | "purge";
 
 interface RunControlsProps {
   run: IngestionRun | null;
@@ -92,6 +92,27 @@ export function RunControls({
         );
         if (!ok) return;
       }
+      if (action === "rebuildIndex") {
+        const ok = window.confirm(
+          `Rebuild the retrieval index for "${run.document_name}"?\n\n` +
+            `Re-runs ONLY the index activity against the chunks the ` +
+            `prior run already produced. Use when the vector store ` +
+            `was cleared or the embedding model upgraded.\n\n` +
+            `Refused (412) if no chunks exist — use Re-process instead.`,
+        );
+        if (!ok) return;
+      }
+      if (action === "purge") {
+        const ok = window.confirm(
+          `PERMANENTLY purge "${run.document_name}"?\n\n` +
+            `This physically deletes the run record + every artifact ` +
+            `file on disk + cascades to validation sets/runs. The ` +
+            `audit log stays intact for compliance, but the run + its ` +
+            `outputs are GONE.\n\n` +
+            `This action CANNOT be undone.`,
+        );
+        if (!ok) return;
+      }
       setPending(action);
       try {
         let toastTitle = "";
@@ -126,6 +147,19 @@ export function RunControls({
               : "";
           toastBody = `New run ${result.resumeRunId.slice(0, 8)} created${skipped}.`;
           newRunId = result.resumeRunId;
+        } else if (action === "rebuildIndex") {
+          const result = await client.rebuildIndex(run.runId);
+          toastTitle = "Index rebuild started";
+          toastBody =
+            `New run ${result.rebuildRunId.slice(0, 8)} created — ` +
+            `re-indexing ${result.carryForwardChunkCount} chunk(s).`;
+          newRunId = result.rebuildRunId;
+        } else if (action === "purge") {
+          const result = await client.purgeRun(run.runId);
+          toastTitle = "Purged";
+          toastBody =
+            `${result.filesDeleted} file(s) + ${result.artifactsPurged} ` +
+            `artifact record(s) removed.`;
         }
         pushToast({ kind: "success", title: toastTitle, body: toastBody });
         if (onAfterAction) onAfterAction(action, newRunId);
@@ -168,9 +202,20 @@ export function RunControls({
   // returns 412 if the snapshot is absent / settings drifted.
   const showResumeCheckpoint =
     status === RUN_STATUS.FAILED;
+  // Rebuild index works against any terminal run that produced
+  // chunks — typical use is a SUCCEEDED run where the vector store
+  // was cleared. Show on every non-active, non-deleted run; the
+  // backend returns 412 when no chunks exist for the run.
+  const showRebuildIndex = !isActive && !isDeleted;
+  // Purge is the second step of the two-step delete ritual. Only
+  // show on already-soft-deleted runs so an accidental click on a
+  // live run can't physically destroy data. Operators who want to
+  // purge an undeleted terminal run can soft-delete first.
+  const showPurge = isDeleted;
   if (
     !showPause && !showResume && !showCancel
     && !showReindex && !showDelete && !showResumeCheckpoint
+    && !showRebuildIndex && !showPurge
     && status !== RUN_STATUS.CANCELLING
   ) {
     return null;
@@ -273,6 +318,26 @@ export function RunControls({
           {!compact && <span style={{ marginLeft: 4 }}>Re-process</span>}
         </button>
       )}
+      {showRebuildIndex && (
+        <button
+          type="button"
+          className={btnClass}
+          disabled={anyPending}
+          onClick={() => void dispatch("rebuildIndex")}
+          aria-label="Rebuild retrieval index from existing chunks"
+          title={
+            "Re-run ONLY the index activity against existing chunks. " +
+            "Use after vector store outages or embedding-model upgrades."
+          }
+        >
+          {isPending("rebuildIndex") ? (
+            <Icon.RefreshCw className="icon-sm spin" />
+          ) : (
+            <Icon.Code className="icon-sm" />
+          )}
+          {!compact && <span style={{ marginLeft: 4 }}>Rebuild index</span>}
+        </button>
+      )}
       {showDelete && (
         <button
           type="button"
@@ -288,6 +353,26 @@ export function RunControls({
             <Icon.XCircle className="icon-sm" />
           )}
           {!compact && <span style={{ marginLeft: 4 }}>Delete</span>}
+        </button>
+      )}
+      {showPurge && (
+        <button
+          type="button"
+          className={`${btnClass} btn--danger`}
+          disabled={anyPending}
+          onClick={() => void dispatch("purge")}
+          aria-label="Permanently purge run + artifacts"
+          title={
+            "Physically delete the run + every artifact file on disk. " +
+            "Audit log stays intact. CANNOT be undone."
+          }
+        >
+          {isPending("purge") ? (
+            <Icon.RefreshCw className="icon-sm spin" />
+          ) : (
+            <Icon.XCircle className="icon-sm" />
+          )}
+          {!compact && <span style={{ marginLeft: 4 }}>Purge</span>}
         </button>
       )}
     </div>

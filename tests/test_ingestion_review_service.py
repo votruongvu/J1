@@ -2523,3 +2523,202 @@ def test_resume_from_checkpoint_excludes_non_resumable_steps(
         candidate_settings=metadata["resume_snapshot"]["settings_snapshot"],
     )
     assert plan["resumable_steps"] == ["enrich"]
+
+
+# ---- Rebuild index only ------------------------------------------
+
+
+def test_rebuild_index_only_returns_chunk_artifact_ids(
+    service, run_store, ctx,
+):
+    """Happy path: terminal run with chunk artifacts in the snapshot.
+    Service returns the chunk-only carry-forward + the prior indexer
+    kind so the new run repeats with the same recipe."""
+    metadata = _resume_snapshot_metadata(
+        completed_steps=["compile", "enrich"],
+        artifact_ids=["chunk-1", "chunk-2", "enrich-1", "graph-1"],
+        artifact_kinds=["chunk", "chunk", "enriched.tables", "graph_json"],
+    )
+    run_store.upsert(ctx, _make_run(
+        status=RunStatus.SUCCEEDED, metadata=metadata,
+    ))
+    plan = service.rebuild_index_only(ctx, "run-1")
+    # Only `chunk`-kind artifacts carry forward — the index activity
+    # consumes chunks; passing graph/enrich artifacts would either
+    # waste work or trip per-stage rules in the new run.
+    assert plan["chunk_artifact_ids"] == ["chunk-1", "chunk-2"]
+    assert plan["chunk_artifact_kinds"] == ["chunk", "chunk"]
+    assert plan["indexer_kind"] == "sqlite_search"
+
+
+def test_rebuild_index_only_404s_for_unknown_run(service, ctx):
+    from j1.ingestion_review.exceptions import ReviewNotFound
+    with pytest.raises(ReviewNotFound):
+        service.rebuild_index_only(ctx, "missing")
+
+
+def test_rebuild_index_only_rejects_active_run(service, run_store, ctx):
+    from j1.ingestion_review.exceptions import RunStillActive
+    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
+    with pytest.raises(RunStillActive):
+        service.rebuild_index_only(ctx, "run-1")
+
+
+def test_rebuild_index_only_rejects_deleted_run(service, run_store, ctx):
+    from j1.ingestion_review.exceptions import ResumeNotPossible
+    run_store.upsert(ctx, _make_run(status=RunStatus.DELETED))
+    with pytest.raises(ResumeNotPossible):
+        service.rebuild_index_only(ctx, "run-1")
+
+
+def test_rebuild_index_only_rejects_run_without_snapshot(
+    service, run_store, ctx,
+):
+    """Snapshot is the only carry-forward source; missing snapshot
+    means we can't safely identify which artifacts to re-index."""
+    from j1.ingestion_review.exceptions import ResumeNotPossible
+    run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED, metadata={}))
+    with pytest.raises(ResumeNotPossible):
+        service.rebuild_index_only(ctx, "run-1")
+
+
+def test_rebuild_index_only_rejects_run_without_chunks(
+    service, run_store, ctx,
+):
+    """A run that only produced graph artifacts (no chunks) has
+    nothing for the index activity to consume — full-reindex
+    instead. Guards against an indexer trying to re-process empty
+    input."""
+    from j1.ingestion_review.exceptions import ResumeNotPossible
+    metadata = _resume_snapshot_metadata(
+        completed_steps=["compile", "enrich"],
+        artifact_ids=["graph-1"],
+        artifact_kinds=["graph_json"],
+    )
+    run_store.upsert(ctx, _make_run(
+        status=RunStatus.SUCCEEDED, metadata=metadata,
+    ))
+    with pytest.raises(ResumeNotPossible):
+        service.rebuild_index_only(ctx, "run-1")
+
+
+# ---- Hard delete (purge) -----------------------------------------
+
+
+def test_purge_run_physically_removes_artifacts_and_run_record(
+    service, run_store, artifact_registry, workspace, ctx,
+):
+    """Happy path: a soft-deleted run gets its artifact files
+    unlinked, registry records removed, and run snapshots deleted
+    from the JSONL store. Audit log untouched."""
+    # Seed a soft-deleted run with two artifacts whose files exist
+    # on disk. Use the workspace area resolver so the test paths
+    # match what the service's _resolve_artifact_path computes.
+    from j1.workspace.layout import WorkspaceArea
+    compiled_dir = workspace.area(ctx, WorkspaceArea.COMPILED)
+    compiled_dir.mkdir(parents=True, exist_ok=True)
+    file_a = compiled_dir / "art-A.json"
+    file_b = compiled_dir / "art-B.json"
+    file_a.write_text('{"chunk": "A"}')
+    file_b.write_text('{"chunk": "B"}')
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="art-A", kind="chunk",
+        source_document_ids=["doc-1"],
+        metadata={"run_id": "run-1", "deleted_at": "2026-05-10T11:00:00+00:00"},
+    ))
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="art-B", kind="enriched.tables",
+        source_document_ids=["doc-1"],
+        metadata={"run_id": "run-1", "deleted_at": "2026-05-10T11:00:00+00:00"},
+    ))
+    run_store.upsert(ctx, _make_run(
+        document_id="doc-1", status=RunStatus.DELETED,
+        metadata={"deleted_at": "2026-05-10T11:00:00+00:00"},
+    ))
+
+    report = service.purge_run(ctx, "run-1", actor="ops@example.com")
+    assert report["files_deleted"] == 2
+    assert report["files_missing"] == 0
+    assert report["artifacts_purged"] == 2
+    assert report["snapshots_removed"] == 1
+    # Files are gone from disk.
+    assert not file_a.exists()
+    assert not file_b.exists()
+    # Registry records are gone.
+    from j1.artifacts.registry import ArtifactNotFoundError
+    with pytest.raises(ArtifactNotFoundError):
+        artifact_registry.get(ctx, "art-A")
+    with pytest.raises(ArtifactNotFoundError):
+        artifact_registry.get(ctx, "art-B")
+    # Run record no longer resolves.
+    assert run_store.get(ctx, "run-1") is None
+
+
+def test_purge_run_requires_soft_delete_first_by_default(
+    service, run_store, ctx,
+):
+    """Two-step delete ritual: a SUCCEEDED run can't be purged
+    without first soft-deleting it. Reduces the blast radius of an
+    accidental click."""
+    from j1.ingestion_review.exceptions import RunNotTerminal
+    run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED))
+    with pytest.raises(RunNotTerminal):
+        service.purge_run(ctx, "run-1")
+
+
+def test_purge_run_force_bypasses_soft_delete_gate(
+    service, run_store, artifact_registry, ctx,
+):
+    """Admin tooling can pass `require_already_deleted=False` to
+    skip the soft-delete gate."""
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="art-X", kind="chunk",
+        source_document_ids=["doc-1"],
+        metadata={"run_id": "run-1"},
+    ))
+    run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED))
+    report = service.purge_run(
+        ctx, "run-1", require_already_deleted=False,
+    )
+    assert report["snapshots_removed"] == 1
+    assert run_store.get(ctx, "run-1") is None
+
+
+def test_purge_run_rejects_active_run(service, run_store, ctx):
+    """An in-flight run can't be purged — workflow could still be
+    writing artifacts. RunStillActive → 409 at REST."""
+    from j1.ingestion_review.exceptions import RunStillActive
+    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
+    with pytest.raises(RunStillActive):
+        service.purge_run(ctx, "run-1", require_already_deleted=False)
+
+
+def test_purge_run_404s_for_unknown_run(service, ctx):
+    from j1.ingestion_review.exceptions import ReviewNotFound
+    with pytest.raises(ReviewNotFound):
+        service.purge_run(ctx, "missing")
+
+
+def test_purge_run_idempotent_on_second_call(
+    service, run_store, artifact_registry, workspace, ctx,
+):
+    """Calling purge_run twice is safe: the second call sees no
+    artifacts and no run record, returns zero counts. Operators can
+    retry on transient errors without compounding side effects."""
+    from j1.workspace.layout import WorkspaceArea
+    compiled_dir = workspace.area(ctx, WorkspaceArea.COMPILED)
+    compiled_dir.mkdir(parents=True, exist_ok=True)
+    (compiled_dir / "art-Y.json").write_text("{}")
+    artifact_registry.add(_make_artifact(
+        ctx, artifact_id="art-Y", kind="chunk",
+        source_document_ids=["doc-1"],
+        metadata={"run_id": "run-1", "deleted_at": "2026-05-10T11:00:00+00:00"},
+    ))
+    run_store.upsert(ctx, _make_run(status=RunStatus.DELETED))
+    service.purge_run(ctx, "run-1")
+    # Second call — run no longer exists, raises ReviewNotFound (the
+    # 404 path is the right answer for "already purged"; the FE
+    # surfaces it as "the run is gone").
+    from j1.ingestion_review.exceptions import ReviewNotFound
+    with pytest.raises(ReviewNotFound):
+        service.purge_run(ctx, "run-1")

@@ -41,6 +41,18 @@ class ArtifactRegistry(Protocol):
         `ArtifactNotFoundError` if the id isn't registered."""
         ...
 
+    def delete_by_artifact_id(
+        self, ctx: ProjectContext, artifact_id: str,
+    ) -> bool:
+        """Physically remove the registry record for `artifact_id`.
+        Used by the hard-delete (purge) path AFTER the artifact's
+        on-disk file has been removed. Returns True iff a record
+        was removed; False if the id wasn't present (idempotent —
+        purge is allowed to run twice). Raising on missing would
+        force the caller to coordinate with file-deletion ordering,
+        which is unnecessary friction."""
+        ...
+
 
 class JsonArtifactRegistry:
     def __init__(self, workspace: WorkspaceResolver) -> None:
@@ -95,6 +107,16 @@ class JsonArtifactRegistry:
         raise ArtifactNotFoundError(
             f"artifact {artifact_id} not found in {ctx.tenant_id}/{ctx.project_id}"
         )
+
+    def delete_by_artifact_id(
+        self, ctx: ProjectContext, artifact_id: str,
+    ) -> bool:
+        records = self._read(ctx)
+        kept = [r for r in records if r.artifact_id != artifact_id]
+        if len(kept) == len(records):
+            return False
+        self._write(ctx, kept)
+        return True
 
     def _path(self, ctx: ProjectContext) -> Path:
         return self._workspace.runtime(ctx) / ARTIFACT_REGISTRY_FILENAME

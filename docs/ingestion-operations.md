@@ -23,8 +23,8 @@ implemented so the contract doesn't drift.
 | Full re-index | ✓ |
 | Multi-upload batch + status view | ✓ |
 | Resume from last checkpoint | ✓ (skips enrich + graph; compile + chunks always re-run) |
-| Rebuild index only | ⏳ |
-| Hard delete | ⏳ |
+| Rebuild index only | ✓ (re-runs index activity against carry-forward chunks) |
+| Hard delete (purge) | ✓ (two-step ritual: soft-delete then purge; cascades to validation; audit log preserved) |
 | Parent-workflow batch sequencing | ⏳ (workaround: set `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1`) |
 
 ---
@@ -171,7 +171,7 @@ The workflow's `_emit_run_terminal` builds a `resume_snapshot` dict at every SUC
 
 ---
 
-## 4. Rebuild index only  ⏳ designed
+## 4. Rebuild index only  ✓
 
 ### Use case
 
@@ -183,30 +183,52 @@ Chunks already exist + are valid; only the retrieval index is stale (vector stor
 POST /ingestion-runs/{runId}/rebuild-index
 ```
 
-**Request body** (optional):
+No request body — the endpoint inherits the indexer kind from the prior run's snapshot (falling back to the deployment default if the snapshot's indexer is no longer registered).
+
+**Response** (200):
 ```json
 {
-  "actor": "ops@example.com"
+  "data": {
+    "originalRunId": "<runId>",
+    "rebuildRunId": "<new-run-id>",
+    "workflowId": "j1-{tenant}-{project}-{document_id}-rebuild-{new-run-id}",
+    "documentId": "<document_id>",
+    "status": "created",
+    "carryForwardChunkCount": 12,
+    "indexerKind": "sqlite_search"
+  }
 }
 ```
 
-### Behaviour contract
+### Behaviour
 
-1. Reject with 404 if run not found.
-2. Reject with 409 if run is currently RUNNING.
-3. Reject with 409 if no `chunk` artifact exists for the run (nothing to index).
-4. Start a workflow with `request.completed_operations` populated such that ONLY the `index` activity runs.
-5. The `index` activity reads chunk artifacts directly from the registry (existing path).
-6. New `retrieval_index_result` artifact is registered with `metadata.rebuild_of=<runId>` AND `metadata.original_chunks_count=N`.
-7. New `validation_report` + `final_summary` artifacts replace the prior ones.
-8. The original run's other artifacts (compile, plan, chunks, graph) are PRESERVED.
-9. Emit `index.rebuilt` audit event.
+1. Validate the prior run is terminal + non-deleted + has a `resume_snapshot`.
+2. Filter `produced_artifact_ids` to the `chunk` kind only (other kinds aren't index inputs and could trip per-stage rules in the new run).
+3. Reject with 412 if no chunks exist (nothing to index → `full-reindex` instead).
+4. Allocate a new `run_id`, persist an `IngestionRun` with `metadata.rebuild_of=<originalRunId>` + the chunk-id list.
+5. Dispatch a workflow with `rebuild_index_only=True` + the chunk ids on `resume_artifact_ids`. The workflow's main loop short-circuits past the documents loop, emits SKIPPED step records for compile / chunks / enrich / graph (with `reason="rebuild index only — chunks reused from {prior}"`), and runs ONLY the index activity.
+6. The original run's artifacts are PRESERVED — the new run produces a fresh `retrieval_index_result` (and `validation_report` / `final_summary` per the standard terminal path) but doesn't touch upstream artifacts.
+7. The standard terminal snapshot is captured on the new run, so it itself is resumable / re-rebuildable.
 
-### Tests required
+### Workflow ID
 
-- `test_rebuild_index_uses_existing_chunks`
-- `test_rebuild_index_rejects_when_no_chunks`
-- `test_rebuild_index_preserves_other_artifacts`
+`j1-{tenant}-{project}-{document_id}-rebuild-{new_run_id}` — distinct from `-reindex-` and `-resume-` so operators can tell them apart in the Temporal UI. Prevents `USE_EXISTING` collision with the original.
+
+### Error responses
+
+| Status | When |
+|---|---|
+| 404 | Original run / document not found |
+| 409 | Original run still RUNNING / PAUSED / CANCELLING / ASSESSING — cancel first |
+| 412 | No `resume_snapshot` (legacy run, cancelled run) — full-reindex instead |
+| 412 | Snapshot has no chunk artifacts — full-reindex instead |
+| 412 | No `indexer_kind` available (prior snapshot null + no default registered) |
+
+### Tests
+
+- `tests/test_ingestion_review_service.py::test_rebuild_index_only_*` — service-layer validation
+- `tests/test_project_processing_workflow.py::test_rebuild_index_only_*` — workflow short-circuit + indexer-required guard
+- `tests/test_rest_resume_from_checkpoint.py::test_rebuild_index_endpoint_*` — end-to-end REST contract
 
 ---
 
@@ -283,62 +305,44 @@ Service method: [`IngestionResultReviewService.delete_run`](../src/j1/ingestion_
 6. **Idempotent** — calling DELETE twice returns `wasAlreadyDeleted=true` on the second call with `tombstonedArtifactCount=0`.
 7. Returns `{runId, status: "deleted", tombstonedArtifactCount, wasAlreadyDeleted, deletedAt}`.
 
-**Hard delete**: not implemented in this iteration. Soft delete is sufficient for development; hard delete adds GDPR-style guarantees + needs file unlinking + log compaction.
-
-### Tests
+### Soft-delete tests
 - `tests/test_ingestion_review_service.py::test_delete_run_tombstones_run_and_artifacts`
 - `tests/test_ingestion_review_service.py::test_delete_run_is_idempotent`
 - `tests/test_ingestion_review_service.py::test_delete_run_rejects_active_run`
 - `tests/test_ingestion_review_service.py::test_delete_run_404s_for_unknown_run`
 
+### Hard delete (purge)  ✓
 
+Endpoint: `POST /ingestion-runs/{runId}/purge` ([src/j1/adapters/rest/app.py](../src/j1/adapters/rest/app.py)).
+Service method: [`IngestionResultReviewService.purge_run`](../src/j1/ingestion_review/service.py).
 
-### Use case
+**Two-step ritual.** By default the endpoint refuses to operate on a run that hasn't been soft-deleted first (HTTP 409 — `RunNotTerminal`). Operators do `DELETE /ingestion-runs/{id}` (soft), confirm the run is gone from the FE list, then `POST /ingestion-runs/{id}/purge` (hard). Reduces blast radius of accidental clicks. Pass `?force=true` to bypass the gate for admin tooling.
 
-Operator wants to remove a document (and all its derived data) from the active knowledge base.
+**Behaviour:**
 
-### Endpoint
+1. 404 if the run doesn't exist.
+2. 409 if the run is in an active state (RUNNING / PAUSED / CANCELLING / ASSESSING).
+3. 409 (`RunNotTerminal`) if the run isn't soft-deleted and `?force=true` wasn't passed.
+4. Resolve every artifact tagged with this run_id — including soft-deleted records — via `_resolve_run_artifacts(include_deleted=True)`.
+5. For each artifact: `Path.unlink(missing_ok=True)` the file, then remove the registry record via `ArtifactRegistry.delete_by_artifact_id`. File-first ordering means a crash mid-purge leaves orphaned files on disk that can be re-resolved by the registry record (still pointing at them); the reverse leaves orphaned files with no pointer.
+6. Rewrite the `ingestion_runs.jsonl` minus every snapshot for this run_id (atomic via tmp-file + rename in `JsonlIngestionRunStore.purge`).
+7. **Cascade** to validation: the REST orchestration calls `IngestionValidationService.purge_for_run`, which rewrites `validation_sets.jsonl` and `validation_runs.jsonl` minus snapshots referencing this run_id.
+8. **Audit log untouched** — events stay on disk for compliance. The run record being gone is orthogonal to event history.
+9. Returns `{runId, artifactsPurged, filesDeleted, filesMissing, snapshotsRemoved, validationSetsRemoved, validationRunsRemoved, purgedAt}`.
 
-```
-DELETE /ingestion-runs/{runId}
-```
+**Scope:** purge is `(tenant_id, project_id, run_id)`-scoped. A purge in one project cannot touch another project's data even if they share artifact ids (which they shouldn't, since ids are project-namespaced).
 
-**Query params**:
-- `mode=soft` (default) — tombstone everything; reversible.
-- `mode=hard` — physically delete; irreversible. Requires elevated scope (`kb:admin`).
+**What's deliberately NOT cascaded:**
+- **Audit log** — compliance / debugging value outweighs storage. The events.jsonl entries with `target_id=<run_id>` stay forever.
+- **Batch records** — a parent batch's `run_ids` array keeps the purged child id. The FE renders missing children as "purged" (it gets a 404 from `getRun`); the historical batch composition is preserved.
 
-### Behaviour contract
-
-**Soft delete:**
-1. Reject with 409 if run is currently RUNNING.
-2. Mark `IngestionRun.status = "deleted"`. Keep the record + audit trail.
-3. Mark every `ArtifactRecord` for this run with `metadata.deleted_at=<iso>` AND `metadata.deleted_by=<actor>`.
-4. Update `_resolve_run_artifacts` to exclude `metadata.deleted_at` records UNLESS the caller passes `?includeDeleted=true`.
-5. Notify the indexer to delete this run's chunk records from the FTS index.
-6. Notify the graph store (LightRAG) to call `adelete_by_doc_id(doc_id)` for the affected document_id.
-7. Persist a `deletion_report.json` artifact: what was tombstoned, what was deleted from external stores, any partial failures.
-8. Emit `delete.started` and `delete.completed` audit events. On partial failure, `delete.failed`.
-9. Idempotent — calling DELETE twice produces a no-op + the same response shape.
-
-**Hard delete:**
-1. Steps 1–6 from soft delete (with the addition of physically `unlink()`-ing artifact files from disk).
-2. Remove the `ArtifactRecord` rows from the SQLite registry.
-3. Remove the `IngestionRun` JSONL record (or rewrite the JSONL with the row dropped).
-4. Persist `deletion_report.json` to a separate audit-log path (NOT under the deleted run's artifact area, since the run is gone).
-5. Same audit events.
-
-**Scope enforcement**: deletion is scoped by `(tenant_id, project_id, run_id)`. A delete in one project cannot affect another project even if they share a document checksum.
-
-### Tests required
-
-- `test_soft_delete_marks_artifacts_and_excludes_from_resolver`
-- `test_soft_delete_removes_chunks_from_fts_index`
-- `test_soft_delete_calls_lightrag_adelete_by_doc_id`
-- `test_hard_delete_unlinks_artifact_files_and_drops_records`
-- `test_delete_is_scoped_to_tenant_project`
-- `test_delete_is_idempotent`
-- `test_delete_rejects_running_run`
-- `test_delete_persists_deletion_report`
+### Hard-delete tests
+- `tests/test_ingestion_review_service.py::test_purge_run_physically_removes_artifacts_and_run_record`
+- `tests/test_ingestion_review_service.py::test_purge_run_requires_soft_delete_first_by_default`
+- `tests/test_ingestion_review_service.py::test_purge_run_force_bypasses_soft_delete_gate`
+- `tests/test_ingestion_review_service.py::test_purge_run_rejects_active_run`
+- `tests/test_ingestion_review_service.py::test_purge_run_404s_for_unknown_run`
+- `tests/test_ingestion_review_service.py::test_purge_run_idempotent_on_second_call`
 
 ---
 

@@ -281,6 +281,21 @@ export interface IngestionClient {
   deleteRun(runId: string): Promise<DeleteRunResult>;
 
   /**
+   * POST purge — physically remove a soft-deleted run, its
+   * artifacts (files + registry records), and any validation
+   * sets/runs that referenced it. Audit log stays intact.
+   *
+   * By default the backend requires the run to already be
+   * soft-deleted (DELETE first). Pass `force=true` to bypass that
+   * gate for admin tooling.
+   *
+   * Throws `ApiError(409)` when the run is still active OR when
+   * the operator hasn't soft-deleted it first (and `force` is
+   * false).
+   */
+  purgeRun(runId: string, opts?: { force?: boolean }): Promise<PurgeRunResult>;
+
+  /**
    * POST full re-index — start a NEW run for the same document_id
    * as the referenced run. Returns the new `reindexRunId`.
    * Throws ApiError(409) when the original run is still active.
@@ -300,6 +315,18 @@ export interface IngestionClient {
    * drifted since the prior run finished.
    */
   resumeFromCheckpoint(runId: string): Promise<ResumeFromCheckpointResult>;
+
+  /**
+   * POST rebuild-index — start a NEW run that ONLY runs the index
+   * activity against the prior run's chunk artifacts. Use when the
+   * vector store was cleared, the embedding model upgraded, or the
+   * index got corrupted while chunks themselves are still valid.
+   *
+   * Throws `ApiError(409)` when the original run is still active,
+   * `ApiError(412)` when the prior run has no resume snapshot or
+   * never produced chunk artifacts (use full-reindex instead).
+   */
+  rebuildIndex(runId: string): Promise<RebuildIndexResult>;
 
   /**
    * POST a multi-upload batch. Backend registers each file as a
@@ -341,6 +368,22 @@ export interface DeleteRunResult {
   deletedAt: string;
 }
 
+/** Result envelope from `POST /ingestion-runs/{id}/purge`. */
+export interface PurgeRunResult {
+  runId: string;
+  /** Registry records removed. */
+  artifactsPurged: number;
+  /** Files actually unlinked from disk. */
+  filesDeleted: number;
+  /** Files that were already missing (idempotent path). */
+  filesMissing: number;
+  /** JSONL snapshots of the run record removed. */
+  snapshotsRemoved: number;
+  validationSetsRemoved: number;
+  validationRunsRemoved: number;
+  purgedAt: string;
+}
+
 /** Result envelope from `POST /ingestion-runs/{id}/full-reindex`. */
 export interface FullReindexResult {
   originalRunId: string;
@@ -361,6 +404,19 @@ export interface ResumeFromCheckpointResult {
   resumedSteps: string[];
   /** Number of artifacts seeded from the prior run. */
   carryForwardArtifactCount: number;
+}
+
+/** Result envelope from `POST /ingestion-runs/{id}/rebuild-index`. */
+export interface RebuildIndexResult {
+  originalRunId: string;
+  rebuildRunId: string;
+  workflowId: string;
+  documentId: string;
+  status: string;
+  /** Number of chunk artifacts seeded from the prior run. */
+  carryForwardChunkCount: number;
+  /** The indexer kind the new run will use. */
+  indexerKind: string;
 }
 
 /** Result envelope from `POST /ingestion-batches`. */

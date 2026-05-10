@@ -137,6 +137,13 @@ class JsonlValidationSetStore:
             reverse=True,
         )
 
+    def purge_for_run(self, ctx: ProjectContext, run_id: str) -> int:
+        """Rewrite the JSONL file minus every snapshot whose
+        `run_id` matches. Used by the hard-delete (purge) cascade
+        so a purged run doesn't leave dangling validation sets.
+        Returns the number of removed snapshots."""
+        return _purge_jsonl_by_run_id(self._path(ctx), run_id)
+
     def _iter_all(self, ctx: ProjectContext) -> Iterable[ValidationSetDTO]:
         path = self._path(ctx)
         if not path.exists():
@@ -199,6 +206,11 @@ class JsonlValidationRunStore:
             key=lambda v: v.started_at,
             reverse=True,
         )
+
+    def purge_for_run(self, ctx: ProjectContext, run_id: str) -> int:
+        """Same shape as `JsonlValidationSetStore.purge_for_run` —
+        cascade-delete every validation-run snapshot for `run_id`."""
+        return _purge_jsonl_by_run_id(self._path(ctx), run_id)
 
     def _iter_all(self, ctx: ProjectContext) -> Iterable[ValidationRunDTO]:
         path = self._path(ctx)
@@ -355,6 +367,43 @@ def _summary_from_payload(payload: dict) -> ValidationSummaryDTO:
         main_issues=list(payload.get("main_issues") or []),
         recommended_action=payload.get("recommended_action"),
     )
+
+
+def _purge_jsonl_by_run_id(path, run_id: str) -> int:
+    """Atomically rewrite an append-only JSONL file with all snapshots
+    for `run_id` removed. Returns the number of removed lines.
+
+    Shared by both validation stores because the read shape is
+    identical (one JSON object per line, top-level `run_id` field).
+    Atomic via tmp-file + rename so a mid-purge crash can't corrupt
+    the file. No-op when the file doesn't exist."""
+    if not path.exists():
+        return 0
+    kept: list[str] = []
+    removed = 0
+    with path.open("r", encoding="utf-8") as fh:
+        for raw in fh:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                kept.append(stripped)  # preserve unparseable lines
+                continue
+            if str(payload.get("run_id")) == run_id:
+                removed += 1
+                continue
+            kept.append(stripped)
+    if removed == 0:
+        return 0
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for line in kept:
+            fh.write(line)
+            fh.write("\n")
+    tmp.replace(path)
+    return removed
 
 
 # Re-exported for the service-layer import surface — the service

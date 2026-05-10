@@ -1112,6 +1112,216 @@ class IngestionResultReviewService:
             "carry_forward_artifact_kinds": carry_kinds,
         }
 
+    def purge_run(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+        *,
+        actor: str = "system",
+        require_already_deleted: bool = True,
+    ) -> dict[str, Any]:
+        """Hard-delete an ingestion run.
+
+        Physically removes:
+          1. Each artifact file on disk (via `Path.unlink`).
+          2. Each artifact record in the registry (via
+             `delete_by_artifact_id`).
+          3. Every JSONL snapshot of the run record (via
+             `IngestionRunStore.purge`).
+
+        Audit-log events are PRESERVED — compliance requires the
+        full history of what happened, even after the run record is
+        gone. Validation sets / runs that reference this run_id are
+        cascaded separately by the REST orchestration (the review
+        service doesn't own those stores).
+
+        `require_already_deleted=True` (default) refuses to operate
+        on a run that hasn't been soft-deleted first. Two-step
+        ritual reduces accidental data loss — the operator does
+        DELETE → confirm → POST /purge. Set False to skip the gate
+        when an operator explicitly invokes purge on an undeleted
+        terminal run (admin tooling).
+
+        Returns a report dict the REST layer envelopes:
+          {
+            "run_id": str,
+            "artifacts_purged": int,        # records removed
+            "files_deleted": int,            # files actually removed from disk
+            "files_missing": int,            # already absent (idempotent path)
+            "snapshots_removed": int,        # JSONL snapshots of run record
+            "purged_at": str (ISO),
+          }
+
+        Raises:
+          - `ReviewNotFound` if the run doesn't exist (404).
+          - `RunStillActive` if the run is in an in-flight state (409).
+          - `RunNotTerminal` if `require_already_deleted=True` and
+            the run isn't already soft-deleted (409 — operator
+            must `DELETE` first).
+        """
+        from j1.ingestion_review.exceptions import RunNotTerminal
+        from j1.runs.models import RunStatus
+
+        run = self._load_run(ctx, run_id)
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(run.status) in active_states:
+            raise RunStillActive(
+                f"run {run_id!r} is currently {run.status} — "
+                "cancel it before purging"
+            )
+        if require_already_deleted and str(run.status) != RunStatus.DELETED.value:
+            raise RunNotTerminal(
+                f"run {run_id!r} is {run.status} — soft-delete it "
+                "first (DELETE /ingestion-runs/{id}) before purging"
+            )
+
+        # Resolve EVERY artifact tagged with this run_id, including
+        # the tombstoned ones (soft-delete sets metadata.deleted_at;
+        # the resolver hides them by default — opt in here so the
+        # purge sees the full set).
+        artifacts = self._resolve_run_artifacts(
+            ctx, run, include_deleted=True,
+        )
+        files_deleted = 0
+        files_missing = 0
+        artifacts_purged = 0
+        for a in artifacts:
+            # File deletion first — the registry record is the only
+            # pointer to where the file lives. If we delete the
+            # record before the file, a crash leaves an orphaned
+            # file on disk with no way to find it.
+            try:
+                path = self._resolve_artifact_path(ctx, a)
+            except Exception:  # noqa: BLE001 — unresolvable path; skip file
+                path = None
+            if path is not None:
+                try:
+                    if path.exists():
+                        path.unlink()
+                        files_deleted += 1
+                    else:
+                        files_missing += 1
+                except OSError:
+                    files_missing += 1
+            # Registry record next.
+            delete_fn = getattr(
+                self._artifacts, "delete_by_artifact_id", None,
+            )
+            if callable(delete_fn):
+                try:
+                    if delete_fn(ctx, a.artifact_id):
+                        artifacts_purged += 1
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
+        # Run record last — once it's gone, the resolver can no
+        # longer enumerate the artifacts (lineage is broken). Doing
+        # this last keeps the purge restartable on partial failures.
+        snapshots_removed = 0
+        try:
+            if self._run_store.purge(ctx, run_id):
+                snapshots_removed = 1
+        except Exception:  # noqa: BLE001 — defensive, store may not implement
+            pass
+        from datetime import datetime as _dt, timezone as _tz
+        return {
+            "run_id": run_id,
+            "actor": actor,
+            "artifacts_purged": artifacts_purged,
+            "files_deleted": files_deleted,
+            "files_missing": files_missing,
+            "snapshots_removed": snapshots_removed,
+            "purged_at": _dt.now(_tz.utc).isoformat(),
+        }
+
+    def rebuild_index_only(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Validate that the prior run has chunks the index can re-read
+        and return the carry-forward chunk artifact IDs.
+
+        Pure validation — does NOT create a new run record or dispatch
+        a workflow. The REST endpoint composes this with run-record
+        creation and workflow dispatch.
+
+        Returns:
+            {
+              "run_id": str,                            # the prior run id
+              "chunk_artifact_ids": list[str],          # carry-forward IDs
+              "chunk_artifact_kinds": list[str],        # parallel kinds
+              "indexer_kind": str | None,               # the prior run's indexer
+            }
+
+        Raises:
+          - `ReviewNotFound` if the run doesn't exist (404).
+          - `RunStillActive` if the run is in an in-flight state (409).
+          - `ResumeNotPossible` if the run is DELETED, never produced
+            chunks, or has no resume snapshot for the carry-forward
+            (412).
+        """
+        from j1.ingestion_review.exceptions import ResumeNotPossible
+        from j1.runs.models import RunStatus
+
+        run = self._load_run(ctx, run_id)
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(run.status) in active_states:
+            raise RunStillActive(
+                f"run {run_id!r} is currently {run.status} — "
+                "cancel it before rebuilding the index"
+            )
+        if str(run.status) == RunStatus.DELETED.value:
+            raise ResumeNotPossible(
+                f"run {run_id!r} is deleted — cannot rebuild index"
+            )
+        # Snapshot is the canonical source of carry-forward IDs (it's
+        # what the workflow already promised to persist at terminal).
+        # Falling back to walking the artifact registry would work
+        # but introduces a second source of truth — keep snapshot as
+        # the only path so a missing snapshot fails closed.
+        snapshot = (
+            (run.metadata or {}).get("resume_snapshot")
+            if isinstance(run.metadata, dict)
+            else None
+        )
+        if not isinstance(snapshot, dict):
+            raise ResumeNotPossible(
+                f"run {run_id!r} has no resume snapshot — terminated "
+                "before snapshot machinery landed, or via a path that "
+                "doesn't snapshot (e.g. cancelled). Use full-reindex."
+            )
+        ids = list(snapshot.get("produced_artifact_ids") or [])
+        kinds = list(snapshot.get("produced_artifact_kinds") or [])
+        # Filter to the artifact kinds the index activity actually
+        # consumes. Today the index reads `chunk` artifacts; passing
+        # other kinds is harmless but wastes work — keep the carry
+        # forward narrow so the index activity sees exactly what it
+        # needs and the per-stage required-output rules don't trip.
+        chunk_ids: list[str] = []
+        chunk_kinds: list[str] = []
+        for aid, akind in zip(ids, kinds):
+            if akind == "chunk":
+                chunk_ids.append(aid)
+                chunk_kinds.append(akind)
+        if not chunk_ids:
+            raise ResumeNotPossible(
+                f"run {run_id!r} produced no chunk artifacts — nothing "
+                "to re-index. Use full-reindex to rebuild from source."
+            )
+        snap_settings = snapshot.get("settings_snapshot") or {}
+        return {
+            "run_id": run_id,
+            "chunk_artifact_ids": chunk_ids,
+            "chunk_artifact_kinds": chunk_kinds,
+            "indexer_kind": snap_settings.get("indexer_kind"),
+        }
+
     # ---- Internals ----------------------------------------------------
 
     def _project_chunks(
@@ -1186,6 +1396,8 @@ class IngestionResultReviewService:
 
     def _resolve_run_artifacts(
         self, ctx: ProjectContext, run: IngestionRun,
+        *,
+        include_deleted: bool = False,
     ) -> list[ArtifactRecord]:
         """Return artifacts produced by `run`.
 
@@ -1205,20 +1417,28 @@ class IngestionResultReviewService:
              `source_document_ids`, so a single-hop check leaves them
              unresolved. Without this walk the Graph tab silently disables
              on legacy untagged runs even though graph_json artifacts
-             exist on disk."""
+             exist on disk.
+
+        `include_deleted=True` opts into seeing tombstoned records.
+        Used by the hard-delete (purge) path which needs to physically
+        remove the same files soft-delete tombstoned. Every other
+        caller wants the default (False) — soft-deleted artifacts
+        stay invisible to read surfaces."""
         all_artifacts = self._artifacts.list_artifacts(ctx)
         # Soft-deleted artifact filter: any record carrying
         # `metadata.deleted_at` is hidden from every read path. The
         # tombstone stays on disk for audit; only the listing surface
-        # excludes it. (No `?includeDeleted=true` opt-in yet — add
-        # one when an admin-only "tombstone explorer" view ships.)
-        all_artifacts = [
-            a for a in all_artifacts
-            if not (
-                isinstance(getattr(a, "metadata", None), dict)
-                and a.metadata.get("deleted_at")
-            )
-        ]
+        # excludes it. The purge path opts back in via
+        # `include_deleted=True` so it can physically delete the
+        # tombstoned files + records.
+        if not include_deleted:
+            all_artifacts = [
+                a for a in all_artifacts
+                if not (
+                    isinstance(getattr(a, "metadata", None), dict)
+                    and a.metadata.get("deleted_at")
+                )
+            ]
 
         target_doc_ids = set(_document_ids(run))
 
