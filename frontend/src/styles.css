@@ -3447,3 +3447,138 @@ pre.json .b {
 .results-graph__placeholder {
   color: var(--text-subtle, var(--text-muted));
 }
+
+/* ---- Assessment Plan panel ------------------------------------- */
+
+.assessment-plan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.assessment-plan-panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.assessment-plan-panel__head h3 {
+  margin: 0;
+}
+.assessment-plan-panel__source {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--mono, monospace);
+}
+.assessment-plan-panel__hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+}
+.assessment-plan-panel__hero-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.assessment-plan-panel__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.assessment-plan-panel__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.assessment-plan-panel__escalation {
+  padding: 8px 12px;
+  border-left: 3px solid var(--warning-fg);
+  background: var(--warning-bg, rgba(255, 165, 0, 0.05));
+  font-size: 13px;
+}
+.assessment-plan-panel__escalation .muted {
+  color: var(--text-muted);
+}
+.assessment-plan-panel__kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+.assessment-plan-panel__caps {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.assessment-plan-panel__risks,
+.assessment-plan-panel__unhandled,
+.assessment-plan-panel__warnings {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.02));
+}
+.assessment-plan-panel__risks {
+  border-left: 3px solid var(--warning-fg);
+}
+.assessment-plan-panel__unhandled {
+  border-left: 3px solid var(--warning-fg);
+}
+.assessment-plan-panel__warnings {
+  border-left: 3px solid var(--info-fg);
+}
+.assessment-plan-panel__config {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.02));
+}
+
+/* Mode badge — large variant for the hero */
+.mode-badge--lg {
+  font-size: 18px;
+  padding: 6px 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Confidence badge — bucket-driven color */
+.confidence-badge {
+  font-size: 18px;
+  padding: 6px 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.confidence-badge--high {
+  background: var(--success-bg, rgba(40, 180, 100, 0.15));
+  color: var(--success-fg, #2bb46e);
+}
+.confidence-badge--medium {
+  background: var(--warning-bg, rgba(220, 160, 40, 0.15));
+  color: var(--warning-fg, #d4a017);
+}
+.confidence-badge--low {
+  background: var(--error-bg, rgba(220, 60, 60, 0.15));
+  color: var(--error-fg, #d04848);
+}
+.confidence-badge--unknown {
+  background: var(--surface-soft, rgba(0, 0, 0, 0.05));
+  color: var(--text-muted);
+}
+
+/* Cap-pill variants — match the panel's visual language */
+.cap-pill--required {
+  background: var(--info-bg, rgba(60, 130, 220, 0.12));
+  color: var(--info-fg, #3782dc);
+}
+.cap-pill--optional {
+  background: var(--surface-soft, rgba(0, 0, 0, 0.05));
+  color: var(--text-muted);
+}
+.cap-pill--unhandled {
+  background: var(--warning-bg, rgba(220, 160, 40, 0.15));
+  color: var(--warning-fg, #d4a017);
+}

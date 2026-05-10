@@ -20,7 +20,6 @@ import {
   bannersForReport,
   COMPILE_STRATEGY_REPORT_KIND,
   isFallbackOnly,
-  type AssessmentPlanPayload,
   type CompileAttemptRecord,
   type CompileStrategyReport,
 } from "./compile-strategy-helpers";
@@ -104,54 +103,16 @@ export function CompileStrategyPanel({ runId }: CompileStrategyPanelProps) {
 }
 
 function CompileStrategyContent({ report }: { report: CompileStrategyReport }) {
+  // Note: AssessmentPlan rendering is owned by `AssessmentPlanPanel`
+  // (mounted FIRST on the run-detail page). This panel focuses on
+  // the compile-side: mapped config, per-attempt timeline, and
+  // final-quality summary.
   return (
     <div data-testid="compile-strategy-panel">
       <Banners report={report} />
-      <AssessmentPlanCard plan={report.assessment_plan} />
       <CompileStrategyCard report={report} />
       <CompileAttemptsTimeline attempts={report.attempts} />
       <FinalQualitySummary report={report} />
-    </div>
-  );
-}
-
-// ---- 1) Assessment Plan card ---------------------------------------
-
-function AssessmentPlanCard({ plan }: { plan: AssessmentPlanPayload }) {
-  const required = plan.required_capabilities ?? [];
-  const optional = plan.optional_capabilities ?? [];
-  const risk = plan.risk_flags ?? [];
-  return (
-    <div className="card" data-testid="assessment-plan-card">
-      <h3>Assessment Plan</h3>
-      <dl className="kv">
-        <dt>Selected mode</dt>
-        <dd>
-          <span className={`badge mode-badge mode-badge--${plan.mode ?? "unknown"}`}>
-            {plan.mode ?? "—"}
-          </span>
-        </dd>
-        <dt>Confidence</dt>
-        <dd>{plan.confidence != null ? `${(plan.confidence * 100).toFixed(0)}%` : "—"}</dd>
-        <dt>Document type</dt>
-        <dd>{plan.document_type ?? "—"}</dd>
-        <dt>Complexity</dt>
-        <dd>{plan.complexity ?? "—"}</dd>
-        <dt>Required capabilities</dt>
-        <dd>{required.length === 0 ? "—" : <CapList caps={required} />}</dd>
-        <dt>Optional capabilities</dt>
-        <dd>{optional.length === 0 ? "—" : <CapList caps={optional} />}</dd>
-        <dt>Risk flags</dt>
-        <dd>
-          {risk.length === 0 ? "—" : (
-            <ul className="bullet-list">
-              {risk.map((r, i) => <li key={i}>{r}</li>)}
-            </ul>
-          )}
-        </dd>
-        <dt>Reason</dt>
-        <dd>{plan.reason || "—"}</dd>
-      </dl>
     </div>
   );
 }
@@ -166,7 +127,7 @@ function CapList({ caps }: { caps: string[] }) {
   );
 }
 
-// ---- 2) Compile Strategy card --------------------------------------
+// ---- Compile Strategy card -----------------------------------------
 
 function CompileStrategyCard({ report }: { report: CompileStrategyReport }) {
   const required = report.assessment_plan.required_capabilities ?? [];

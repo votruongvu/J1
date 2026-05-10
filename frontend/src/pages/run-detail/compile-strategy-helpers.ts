@@ -161,3 +161,73 @@ export function appliedCapabilities(
 export function isFallbackOnly(report: CompileStrategyReport): boolean {
   return !report.assessment_plan.mode;
 }
+
+
+// ---- Assessment Plan rendering helpers ----------------------------
+
+
+export type ConfidenceBucket = "high" | "medium" | "low" | "unknown";
+
+/** Bucket a confidence value (0..1) for color-coding the badge. */
+export function confidenceBucket(value: number | undefined): ConfidenceBucket {
+  if (value == null) return "unknown";
+  if (value >= 0.85) return "high";
+  if (value >= LOW_CONFIDENCE_THRESHOLD) return "medium";
+  return "low";
+}
+
+/** "85%" / "—" — null/undefined safe. */
+export function formatConfidence(value: number | undefined): string {
+  if (value == null) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+/** Did compile safety retry escalate the mode? `initial !== final`
+ * AND both are populated. Drives the "Initial → Final" caption on
+ * the AssessmentPlanPanel. */
+export function hasModeEscalation(report: CompileStrategyReport): boolean {
+  return Boolean(
+    report.initial_mode
+      && report.final_mode
+      && report.initial_mode !== report.final_mode,
+  );
+}
+
+/** Operator-friendly one-liner explaining what each compile mode
+ * actually does. Used as a subtitle under the mode badge. */
+export function modeDescription(mode: string | undefined): string {
+  switch (mode) {
+    case "fast":
+      return "Plain-text extraction; skips VLM. Cheap, fast, "
+        + "loses image / table understanding.";
+    case "standard":
+      return "Auto parsing with VLM for layout + tables + figures. "
+        + "Balanced default for most documents.";
+    case "deep":
+      return "OCR + VLM on every page. Slowest but recovers content "
+        + "from scanned / image-heavy PDFs.";
+    default:
+      return "Unknown mode.";
+  }
+}
+
+/** Pretty-print a capability id (`text_extraction` → "Text extraction"). */
+export function capabilityLabel(cap: string): string {
+  if (!cap) return cap;
+  return cap
+    .replace(/_/g, " ")
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
+/** Resolved compile config for the FINAL attempt — extracted from
+ * the last attempt's `mapped_compile_config`. Returns an empty
+ * object when no attempts exist (mid-flight / failure before
+ * any attempt landed).
+ */
+export function resolvedCompileConfig(
+  report: CompileStrategyReport,
+): { parse_method?: string | null; assessment_mode?: string | null;
+     unhandled_capabilities?: string[] } {
+  const last = report.attempts[report.attempts.length - 1];
+  return last?.mapped_compile_config ?? {};
+}

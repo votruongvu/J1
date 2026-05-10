@@ -24,6 +24,7 @@ import { LiveTimeline } from "./run-detail/LiveTimeline";
 import { PrimaryStatusPanel } from "./run-detail/PrimaryStatusPanel";
 import { ResultsSection } from "./run-detail/results";
 import { TechDrawer } from "./run-detail/TechDrawer";
+import { AssessmentPlanPanel } from "./run-detail/AssessmentPlanPanel";
 import { CompileStrategyPanel } from "./run-detail/CompileStrategyPanel";
 import { EnrichPlanPanel } from "./run-detail/EnrichPlanPanel";
 
@@ -273,6 +274,16 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
 
       <div style={{ marginBottom: 20 }}>
         <PrimaryStatusPanel run={run} events={events} />
+      </div>
+
+      {/* Assessment Plan FIRST — shows the rule-based assessor's
+          mode + confidence + capabilities + reason at the top of
+          the page so operators see WHICH compile strategy J1
+          picked before scanning compile output / timeline. Reads
+          the same `compile_strategy_report` artifact that the
+          CompileStrategyPanel below renders. */}
+      <div style={{ marginBottom: 20 }}>
+        <AssessmentPlanPanel runId={runId} />
       </div>
 
       <div className="run-body">

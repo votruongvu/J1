@@ -13,7 +13,13 @@ import { describe, expect, it } from "vitest";
 import {
   appliedCapabilities,
   bannersForReport,
+  capabilityLabel,
+  confidenceBucket,
+  formatConfidence,
+  hasModeEscalation,
   isFallbackOnly,
+  modeDescription,
+  resolvedCompileConfig,
   type CompileStrategyReport,
 } from "../compile-strategy-helpers";
 
@@ -259,5 +265,138 @@ describe("isFallbackOnly", () => {
 
   it("returns false when assessment_plan.mode is set", () => {
     expect(isFallbackOnly(_report())).toBe(false);
+  });
+});
+
+
+// ---- 7) Assessment Plan rendering helpers ------------------------
+
+
+describe("formatConfidence", () => {
+  it("renders confidence as a percentage", () => {
+    expect(formatConfidence(0.85)).toBe("85%");
+    expect(formatConfidence(0.5)).toBe("50%");
+    expect(formatConfidence(1)).toBe("100%");
+    expect(formatConfidence(0)).toBe("0%");
+  });
+
+  it("returns em dash when value is missing", () => {
+    expect(formatConfidence(undefined)).toBe("—");
+  });
+
+  it("rounds to nearest integer", () => {
+    expect(formatConfidence(0.834)).toBe("83%");
+    expect(formatConfidence(0.836)).toBe("84%");
+  });
+});
+
+
+describe("confidenceBucket", () => {
+  it("buckets ≥0.85 as high", () => {
+    expect(confidenceBucket(0.85)).toBe("high");
+    expect(confidenceBucket(0.95)).toBe("high");
+    expect(confidenceBucket(1)).toBe("high");
+  });
+
+  it("buckets [LOW_CONFIDENCE_THRESHOLD..0.85) as medium", () => {
+    expect(confidenceBucket(0.7)).toBe("medium");
+    expect(confidenceBucket(0.8)).toBe("medium");
+    expect(confidenceBucket(0.849)).toBe("medium");
+  });
+
+  it("buckets <LOW_CONFIDENCE_THRESHOLD as low", () => {
+    expect(confidenceBucket(0.69)).toBe("low");
+    expect(confidenceBucket(0.5)).toBe("low");
+    expect(confidenceBucket(0)).toBe("low");
+  });
+
+  it("returns unknown for missing value", () => {
+    expect(confidenceBucket(undefined)).toBe("unknown");
+  });
+});
+
+
+describe("hasModeEscalation", () => {
+  it("returns true when initial !== final", () => {
+    expect(
+      hasModeEscalation(
+        _report({ initial_mode: "fast", final_mode: "standard" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when initial === final", () => {
+    expect(hasModeEscalation(_report())).toBe(false);
+  });
+
+  it("returns false when either side is null", () => {
+    expect(
+      hasModeEscalation(_report({ initial_mode: null })),
+    ).toBe(false);
+    expect(
+      hasModeEscalation(_report({ final_mode: null })),
+    ).toBe(false);
+  });
+});
+
+
+describe("modeDescription", () => {
+  it("describes each known mode in operator-friendly terms", () => {
+    expect(modeDescription("fast")).toContain("Plain-text");
+    expect(modeDescription("fast")).toContain("VLM");
+    expect(modeDescription("standard")).toContain("VLM");
+    expect(modeDescription("deep")).toContain("OCR");
+  });
+
+  it("falls back to 'Unknown mode' for unrecognised input", () => {
+    expect(modeDescription(undefined)).toBe("Unknown mode.");
+    expect(modeDescription("totally-not-a-mode")).toBe("Unknown mode.");
+  });
+});
+
+
+describe("capabilityLabel", () => {
+  it("converts snake_case capabilities to a readable label", () => {
+    expect(capabilityLabel("text_extraction")).toBe("Text extraction");
+    expect(capabilityLabel("layout_detection")).toBe("Layout detection");
+  });
+
+  it("preserves single-word capabilities", () => {
+    expect(capabilityLabel("ocr")).toBe("Ocr");
+  });
+
+  it("returns falsy input unchanged", () => {
+    expect(capabilityLabel("")).toBe("");
+  });
+});
+
+
+describe("resolvedCompileConfig", () => {
+  it("returns the LAST attempt's mapped_compile_config", () => {
+    const baseAttempt = _report().attempts[0]!;
+    const r = _report({
+      attempts: [
+        { ...baseAttempt, attempt_number: 1, mode: "fast" },
+        {
+          ...baseAttempt,
+          attempt_number: 2,
+          mode: "standard",
+          mapped_compile_config: {
+            parse_method: "auto",
+            assessment_mode: "standard",
+            unhandled_capabilities: [],
+          },
+        },
+      ],
+      attempts_count: 2,
+    });
+    const cfg = resolvedCompileConfig(r);
+    expect(cfg.parse_method).toBe("auto");
+    expect(cfg.assessment_mode).toBe("standard");
+  });
+
+  it("returns empty object when there are no attempts", () => {
+    const r = _report({ attempts: [], attempts_count: 0 });
+    expect(resolvedCompileConfig(r)).toEqual({});
   });
 });
