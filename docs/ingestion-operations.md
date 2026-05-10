@@ -499,14 +499,30 @@ Every major log line and audit event includes:
 - `artifact_type` (when an artifact write/read event)
 - `storage_key` (when an artifact write/read event)
 
-Audit-event taxonomy (`src/j1/runs/reporter.py`):
+**Audit-event taxonomy.** Three namespaces, separated by what kind of action they describe:
+
+`j1.progress.*` — workflow lifecycle, emitted by [`ProgressReporter`](../src/j1/runs/reporter.py):
 - `run.created`, `run.completed`, `run.completed_with_warnings`, `run.partially_failed`, `run.failed`, `run.cancelled`
 - `stage.started`, `stage.completed`, `stage.failed`, `stage.skipped`
 - `step.started`, `step.completed`, `step.failed`, `step.skipped`, `step.progress`, `step.warning`
-- `artifact.created` (planned)
 - `plan.generated`, `plan.revised`, `plan.confirmed`
 - `assessment.started`, `assessment.completed`
-- `validation.started`, `validation.completed`, `validation.failed` (planned)
+- `human_review.required`
+
+`j1.lifecycle.*` — Temporal-stage transitions inside the workflow (validate, finalize, etc).
+
+`j1.ops.*` — operator-initiated mutations, emitted by REST endpoints. Constants live in [`src/j1/ingestion_review/audit_actions.py`](../src/j1/ingestion_review/audit_actions.py):
+
+| Action | Endpoint | Target kind | Payload (key fields) |
+|---|---|---|---|
+| `j1.ops.run.deleted` | `DELETE /ingestion-runs/{id}` | `ingestion_run` | `tombstoned_artifact_count`, `was_already_deleted`, `deleted_at` |
+| `j1.ops.run.purged` | `POST /ingestion-runs/{id}/purge` | `ingestion_run` | `artifacts_purged`, `files_deleted`, `files_missing`, `snapshots_removed`, `validation_sets_removed`, `validation_runs_removed`, `purged_at` |
+| `j1.ops.run.resumed` | `POST /ingestion-runs/{id}/resume-from-checkpoint` | `ingestion_run` | `original_run_id`, `document_id`, `workflow_id`, `resumed_steps`, `carry_forward_artifact_count` |
+| `j1.ops.run.reindexed` | `POST /ingestion-runs/{id}/full-reindex` | `ingestion_run` | `original_run_id`, `document_id`, `workflow_id` |
+| `j1.ops.run.index_rebuilt` | `POST /ingestion-runs/{id}/rebuild-index` | `ingestion_run` | `original_run_id`, `document_id`, `workflow_id`, `carry_forward_chunk_count`, `indexer_kind` |
+| `j1.ops.batch.dispatched` | `POST /ingestion-batches` | `ingestion_batch` | `file_count`, `run_ids`, `parent_workflow_id` |
+
+Resume / reindex / rebuild events are keyed on the NEW run id (`target_id`); the prior run id lives in `payload.original_run_id`. This means a query like "show me everything that touched run-X" naturally surfaces both the run's own progress events AND any subsequent ops that referenced it as a parent.
 
 To debug a single run by id:
 

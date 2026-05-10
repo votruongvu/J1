@@ -137,6 +137,16 @@ from j1.errors.exceptions import (
     UnsupportedFileTypeError,
     UploadTooLargeError,
 )
+from j1.ingestion_review.audit_actions import (
+    ACTION_OPS_BATCH_DISPATCHED,
+    ACTION_OPS_RUN_DELETED,
+    ACTION_OPS_RUN_INDEX_REBUILT,
+    ACTION_OPS_RUN_PURGED,
+    ACTION_OPS_RUN_REINDEXED,
+    ACTION_OPS_RUN_RESUMED,
+    TARGET_KIND_INGESTION_BATCH,
+    TARGET_KIND_INGESTION_RUN,
+)
 from j1.integration.dto import (
     AnswerRequestDTO,
     EventDTO,
@@ -1115,6 +1125,42 @@ def create_rest_api(
             )
         return ingestion_run_store
 
+    def _emit_ops_event(
+        ctx: ProjectContext,
+        *,
+        action: str,
+        target_id: str,
+        actor: str,
+        payload: dict[str, Any],
+        target_kind: str = TARGET_KIND_INGESTION_RUN,
+        correlation_id: str | None = None,
+    ) -> None:
+        """Best-effort `j1.ops.*` audit-event emission for the
+        operator-initiated ingestion ops (delete / purge / resume /
+        rebuild / reindex / batch). Routes through the existing
+        `EventPublisherService` so the event lands in the same
+        `events.jsonl` audit log every other action writes to.
+
+        Failures here MUST NOT block the operator's request — the
+        underlying mutation already succeeded and rolling it back
+        because we couldn't write a log line would be far worse.
+        Swallow + carry on; an audit gap is recoverable, a half-
+        applied mutation is not."""
+        try:
+            facade.event_publisher.publish_event(
+                ctx,
+                EventDTO(
+                    actor=actor,
+                    action=action,
+                    target_kind=target_kind,
+                    target_id=target_id,
+                    payload=dict(payload),
+                    correlation_id=correlation_id,
+                ),
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks ops
+            pass
+
     @app.get(
         "/ingestion-runs",
         tags=["ingestion-runs"],
@@ -1302,6 +1348,18 @@ def create_rest_api(
         new_run.workflow_id = workflow_id
         new_run.updated_at = datetime.now(timezone.utc)
         store.upsert(ctx, new_run)
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_RUN_REINDEXED,
+            target_id=new_run_id,
+            actor=actor,
+            correlation_id=new_run_id,
+            payload={
+                "original_run_id": run_id,
+                "document_id": original.document_id,
+                "workflow_id": workflow_id,
+            },
+        )
         return envelope(
             {
                 "originalRunId": run_id,
@@ -1500,6 +1558,21 @@ def create_rest_api(
         new_run.workflow_id = workflow_id
         new_run.updated_at = datetime.now(timezone.utc)
         store.upsert(ctx, new_run)
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_RUN_RESUMED,
+            target_id=new_run_id,
+            actor=actor,
+            correlation_id=new_run_id,
+            payload={
+                "original_run_id": run_id,
+                "document_id": original.document_id,
+                "workflow_id": workflow_id,
+                "resumed_steps": list(plan["resumable_steps"]),
+                "carry_forward_artifact_count":
+                    len(plan["carry_forward_artifact_ids"]),
+            },
+        )
         return envelope(
             {
                 "originalRunId": run_id,
@@ -1641,6 +1714,21 @@ def create_rest_api(
         new_run.workflow_id = workflow_id
         new_run.updated_at = datetime.now(timezone.utc)
         store.upsert(ctx, new_run)
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_RUN_INDEX_REBUILT,
+            target_id=new_run_id,
+            actor=actor,
+            correlation_id=new_run_id,
+            payload={
+                "original_run_id": run_id,
+                "document_id": original.document_id,
+                "workflow_id": workflow_id,
+                "carry_forward_chunk_count":
+                    len(plan["chunk_artifact_ids"]),
+                "indexer_kind": indexer_kind,
+            },
+        )
         return envelope(
             {
                 "originalRunId": run_id,
@@ -1686,6 +1774,19 @@ def create_rest_api(
             raise HTTPException(404, f"ingestion run {run_id!r} not found")
         except RunStillActive as exc:
             raise HTTPException(409, str(exc))
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_RUN_DELETED,
+            target_id=run_id,
+            actor=actor,
+            correlation_id=run_id,
+            payload={
+                "tombstoned_artifact_count":
+                    report["tombstoned_artifact_count"],
+                "was_already_deleted": report["was_already_deleted"],
+                "deleted_at": report["deleted_at"],
+            },
+        )
         return envelope(
             {
                 "runId": report["run_id"],
@@ -1753,6 +1854,22 @@ def create_rest_api(
                 )
             except Exception:  # noqa: BLE001 — best-effort
                 pass
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_RUN_PURGED,
+            target_id=run_id,
+            actor=actor,
+            correlation_id=run_id,
+            payload={
+                "artifacts_purged": report["artifacts_purged"],
+                "files_deleted": report["files_deleted"],
+                "files_missing": report["files_missing"],
+                "snapshots_removed": report["snapshots_removed"],
+                "validation_sets_removed": validation_cascade["sets_removed"],
+                "validation_runs_removed": validation_cascade["runs_removed"],
+                "purged_at": report["purged_at"],
+            },
+        )
         return envelope(
             {
                 "runId": report["run_id"],
@@ -3230,6 +3347,19 @@ def create_rest_api(
             metadata={"parent_workflow_id": parent_workflow_id},
         )
         batch_run_store.upsert(ctx, batch)  # type: ignore[union-attr]
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_BATCH_DISPATCHED,
+            target_id=batch_run_id,
+            target_kind=TARGET_KIND_INGESTION_BATCH,
+            actor=actor,
+            correlation_id=batch_run_id,
+            payload={
+                "file_count": len(child_run_ids),
+                "run_ids": child_run_ids,
+                "parent_workflow_id": parent_workflow_id,
+            },
+        )
         return envelope(
             {
                 "batchRunId": batch_run_id,
