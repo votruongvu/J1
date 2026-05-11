@@ -32,15 +32,21 @@ import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ProgressEvent } from "@/types/ingestion";
 import {
   COMPILE_STRATEGY_REPORT_KIND,
+  canonicalRecommendedPath,
   capabilityLabel,
   confidenceBucket,
+  contentTypeLabel,
   formatConfidence,
   hasModeEscalation,
   isFallbackOnly,
   modeDescription,
+  recommendedPathDescription,
+  recommendedPathFromReport,
+  recommendedPathLabel,
   resolvedCompileConfig,
   type AssessmentPlanPayload,
   type CompileStrategyReport,
+  type ExtractionEvidence,
 } from "./compile-strategy-helpers";
 
 interface AssessmentPlanPanelProps {
@@ -174,6 +180,10 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
   const unhandled = report.unhandled_capabilities ?? [];
   const planWarnings = report.plan_warnings ?? [];
   const confBucket = confidenceBucket(plan.confidence);
+  const recommendedPath = recommendedPathFromReport(report);
+  const badgeVariant =
+    canonicalRecommendedPath(recommendedPath) ?? recommendedPath;
+  const extraction: ExtractionEvidence = report.extraction_evidence ?? {};
 
   return (
     <div
@@ -190,6 +200,25 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
             ? "fallback (no AssessmentPlan attached)"
             : "rule-based assessor"}
         </span>
+      </div>
+
+      {/* Hero: recommended path is the headline. Mode + confidence
+          are subordinate context — operators read intent first,
+          adapter detail second. */}
+      <div
+        className="assessment-plan-panel__recommendation"
+        data-testid="assessment-plan-recommendation"
+      >
+        <div className="assessment-plan-panel__label">Recommended path</div>
+        <span
+          className={`badge recommended-path-badge recommended-path-badge--${badgeVariant}`}
+          data-testid="assessment-plan-recommended-path"
+        >
+          {recommendedPathLabel(recommendedPath)}
+        </span>
+        <div className="assessment-plan-panel__hint">
+          {recommendedPathDescription(recommendedPath)}
+        </div>
       </div>
 
       {/* Hero: mode + confidence side by side */}
@@ -295,6 +324,66 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
           </ul>
         </div>
       )}
+
+      {/* Extraction evidence — what the parser ACTUALLY extracted.
+          Distinct from chunking status (verified separately).
+          Reading this answers "did parsing work?"; reading the
+          Chunks tab answers "did chunking land?". */}
+      <div
+        className="assessment-plan-panel__extraction"
+        data-testid="assessment-plan-extraction"
+      >
+        <div className="assessment-plan-panel__label">Extraction evidence</div>
+        <dl className="kv">
+          <dt>Parser</dt>
+          <dd className="mono">{extraction.parser ?? "raganything"}</dd>
+          <dt>Parser method</dt>
+          <dd className="mono">{extraction.parser_method ?? "—"}</dd>
+          <dt>Text characters</dt>
+          <dd data-testid="assessment-plan-text-char-count">
+            {extraction.text_char_count == null
+              ? "—"
+              : extraction.text_char_count.toLocaleString()}
+          </dd>
+          <dt>Content blocks</dt>
+          <dd data-testid="assessment-plan-content-block-count">
+            {extraction.content_block_count == null
+              ? "—"
+              : extraction.content_block_count.toLocaleString()}
+          </dd>
+          <dt>Pages</dt>
+          <dd>
+            {extraction.page_count == null
+              ? "—"
+              : extraction.page_count.toLocaleString()}
+          </dd>
+          <dt>Detected content</dt>
+          <dd data-testid="assessment-plan-detected-types">
+            {(extraction.detected_content_types ?? []).length === 0 ? (
+              <span className="muted">—</span>
+            ) : (
+              <div className="cap-pills">
+                {(extraction.detected_content_types ?? []).map((c) => (
+                  <span key={c} className="badge cap-pill">
+                    {contentTypeLabel(c)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </dd>
+          <dt>Chunking status</dt>
+          <dd data-testid="assessment-plan-chunking-status">
+            <span
+              className="badge chunking-status-badge"
+              title="Chunks are verified separately during compile/index — not by this probe."
+            >
+              {(extraction.chunking_status === "pending_verification")
+                ? "Pending — verified during compile/index"
+                : (extraction.chunking_status ?? "Pending verification")}
+            </span>
+          </dd>
+        </dl>
+      </div>
 
       {/* Resolved compile config */}
       <div

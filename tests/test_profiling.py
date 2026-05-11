@@ -503,7 +503,8 @@ def test_assessment_planner_consumes_deterministic_profile(tmp_path):
     src.write_text("hello world\n")
     profile = DeterministicDocumentProfiler().profile("d", str(src))
     plan = DefaultAssessmentPlanner().assess(profile)
-    # Plain text → fast plan, text_extraction required, no heavy
-    # parser invocation.
-    assert plan.mode == CompileMode.FAST
+    # Two-mode model: plain text → STANDARD compile mode with the
+    # plaintext-bypass hint in the reason. The bridge handles the
+    # actual cheap-parse path; the compile mode itself is standard.
+    assert plan.mode == CompileMode.STANDARD
     assert Capability.TEXT_EXTRACTION in plan.required_capabilities

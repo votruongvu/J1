@@ -1882,6 +1882,69 @@ pre,
   margin-top: 8px;
 }
 
+/* Macro-stage section header (Phase 3). Visually similar to a
+ * tl-item but the dot is solid (no icon) and the text is the
+ * macro-stage title. Sits on the same left-rail as the regular
+ * timeline items so the rail visually groups the steps under it. */
+.tl-section {
+  position: relative;
+  padding: 14px 0 6px 40px;
+  margin-top: 10px;
+}
+.tl-section:first-child {
+  margin-top: 0;
+}
+.tl-section__dot {
+  position: absolute;
+  left: 4px;
+  top: 18px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-elev);
+  border: 2px solid var(--border-strong);
+  z-index: 1;
+}
+.tl-section--info .tl-section__dot {
+  background: var(--info-soft);
+  border-color: var(--info-fg);
+}
+.tl-section--running .tl-section__dot {
+  background: var(--info-soft);
+  border-color: var(--info-fg);
+  animation: tlSectionPulse 1.6s ease-in-out infinite;
+}
+.tl-section--success .tl-section__dot {
+  background: var(--success);
+  border-color: var(--success);
+}
+.tl-section--error .tl-section__dot {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+@keyframes tlSectionPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--info-soft); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
+.tl-section__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tl-section__title {
+  font-weight: 600;
+  font-size: var(--text-body);
+  letter-spacing: var(--tracking-body);
+  color: var(--text);
+}
+.tl-section__badge {
+  font-size: var(--text-overline);
+  color: var(--text-subtle);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 /* Progress mini-card */
 .tl-progress-card {
   margin-top: 12px;
@@ -3591,4 +3654,58 @@ pre.json .b {
   color: var(--text-muted);
   margin-top: 2px;
   line-height: 1.4;
+}
+
+/* Recommended-path hero card on the AssessmentPlanPanel. */
+.assessment-plan-panel__recommendation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 6px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.02));
+  border-left: 4px solid var(--accent-fg, #5a7fc4);
+}
+.recommended-path-badge {
+  font-size: 20px;
+  padding: 6px 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  align-self: flex-start;
+}
+/* Two-mode compile model: standard / deep. The panel resolves
+ * legacy paths (fast_text_compile / multimodal_compile / ocr_parse)
+ * to their canonical badge variant via `canonicalRecommendedPath`,
+ * so legacy reports still get coloured consistently — no need for
+ * legacy-specific CSS rules. */
+.recommended-path-badge--standard_compile {
+  background: var(--info-bg, rgba(60, 130, 220, 0.15));
+  color: var(--info-fg, #3782dc);
+}
+.recommended-path-badge--deep_compile {
+  background: var(--warning-bg, rgba(220, 160, 40, 0.15));
+  color: var(--warning-fg, #d4a017);
+}
+.recommended-path-badge--skip_empty_document {
+  background: var(--surface-soft, rgba(0, 0, 0, 0.06));
+  color: var(--text-muted);
+}
+.recommended-path-badge--failed {
+  background: var(--error-bg, rgba(220, 60, 60, 0.15));
+  color: var(--error-fg, #d04848);
+}
+
+/* Extraction-evidence section */
+.assessment-plan-panel__extraction {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.02));
+  border-left: 3px solid var(--info-fg, #3782dc);
+}
+.chunking-status-badge {
+  font-size: 12px;
+  padding: 3px 8px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.05));
+  color: var(--text-muted);
+  cursor: help;
 }

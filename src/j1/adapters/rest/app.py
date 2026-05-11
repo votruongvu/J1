@@ -66,6 +66,7 @@ from j1.adapters.rest.schemas import (
     ExecutionPlanStep,
     HealthRecord,
     IngestRequest,
+    IngestionRunCompileRecord,
     IngestionRunConfirmRecord,
     IngestionRunControlRecord,
     IngestionRunCreatedRecord,
@@ -126,6 +127,7 @@ from j1.runs import (
     PROGRESS_TERMINAL_EVENT_TYPES,
     ProgressReporter,
     RunStatus,
+    status_aliases,
 )
 from j1.audit.sink import AUDIT_LOG_FILENAME
 from j1.errors.exceptions import (
@@ -202,6 +204,15 @@ ContextResolver = Callable[[Request], ProjectContext]
 # is sent — appropriate for deployments that auto-run (no
 # confirmation gate is configured per-run).
 RunConfirmHandler = Callable[[ProjectContext, str], Awaitable[None]]
+# Hook the deployment can wire to forward `POST /ingestion-runs/{id}/
+# compile` to the workflow parked at `WorkflowState.WAITING_FOR_
+# COMPILE_TRIGGER`. Typical implementation is a thin wrapper around
+# `temporalio.Client.get_workflow_handle(workflow_id).signal(
+# SIGNAL_TRIGGER_COMPILE)`. When omitted, the REST adapter still
+# flips the run record's status COMPILE_PENDING → RUNNING but no
+# Temporal signal is sent — appropriate for deployments running in
+# the legacy single-phase flow.
+RunCompileHandler = Callable[[ProjectContext, str], Awaitable[None]]
 JobStarter = Callable[
     [ProjectContext, str, IngestRequest], Awaitable[str]
 ]
@@ -399,6 +410,7 @@ def create_rest_api(
     review_service: IngestionResultReviewService | None = None,
     validation_service: IngestionValidationService | None = None,
     confirm_handler: RunConfirmHandler | None = None,
+    compile_handler: RunCompileHandler | None = None,
     llm_registry: object | None = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
@@ -1197,14 +1209,25 @@ def create_rest_api(
         # values. Unknown strings are dropped silently — the FE drives
         # the list of valid statuses, and a typo from a hand-rolled
         # cURL shouldn't 400 the whole call.
+        #
+        # Canonical/legacy expansion: a `?status=received` query also
+        # matches runs persisted with the legacy `created` value, and
+        # `?status=assessment_ready` also matches `plan_ready`. See
+        # `status_aliases()` for the table. This lets the FE migrate
+        # to the canonical names without breaking existing JSONL data.
         status_filter: list[RunStatus] | None = None
         if status:
             parsed: list[RunStatus] = []
+            seen: set[str] = set()
             for raw in status:
-                try:
-                    parsed.append(RunStatus(raw))
-                except ValueError:
-                    continue
+                for alias in status_aliases(raw):
+                    if alias in seen:
+                        continue
+                    try:
+                        parsed.append(RunStatus(alias))
+                        seen.add(alias)
+                    except ValueError:
+                        continue
             status_filter = parsed or None
 
         # The store's `list` already deduplicates by run_id and sorts
@@ -2697,6 +2720,7 @@ def create_rest_api(
             raise HTTPException(404, f"ingestion run {run_id!r} not found")
         if run.status not in (
             RunStatus.PLAN_READY,
+            RunStatus.ASSESSMENT_READY,
             RunStatus.WAITING_FOR_CONFIRMATION,
         ):
             # Already running / completed / failed — noop, but report
@@ -2747,6 +2771,91 @@ def create_rest_api(
                 )
 
         record = IngestionRunConfirmRecord(run_id=run_id, status=run.status.value)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-runs/{run_id}/compile",
+        tags=["ingestion-runs"],
+        summary="Trigger the compile phase of a two-phase ingestion",
+        description=(
+            "Releases a run that's parked at `compile_pending` (the "
+            "two-phase compile gate) into the compile activity. The "
+            "run must have been started with `two_phase_compile=True` "
+            "for this gate to exist; otherwise the workflow already "
+            "dispatched compile inline and this endpoint is a no-op.\n"
+            "Three things happen, in order:\n"
+            "  1. The run record's status flips to `running` so "
+            "polling clients see the trigger landed.\n"
+            "  2. A `compile.trigger` audit / progress event is "
+            "emitted (best-effort).\n"
+            "  3. The deployment's `compile_handler` is invoked with "
+            "(ctx, run_id) — typical implementation forwards "
+            "`SIGNAL_TRIGGER_COMPILE` to the workflow handle. When no "
+            "handler is wired, the status flip is still authoritative "
+            "and the workflow will pick up the persisted status on its "
+            "next poll.\n"
+            "No-op when the run is already past the gate "
+            "(`running` / terminal); the caller gets the current "
+            "status in the response."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_ingestion_run_compile(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        store = _require_run_store()
+        run = store.get(ctx, run_id)
+        if run is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        if run.status != RunStatus.COMPILE_PENDING:
+            # Already running / completed / failed / never parked —
+            # surface the current status so the caller can inspect.
+            record = IngestionRunCompileRecord(
+                run_id=run_id, status=run.status.value,
+            )
+            return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        actor = security.subject if security and security.subject else "system"
+        run.status = RunStatus.RUNNING
+        run.updated_at = now
+        run.metadata = dict(run.metadata)
+        run.metadata["compile_triggered_at"] = now.isoformat()
+        run.metadata["compile_triggered_by"] = actor
+        store.upsert(ctx, run)
+
+        # Best-effort progress event so the SSE timeline shows the
+        # operator action. The reporter is optional; failure here
+        # never blocks the trigger.
+        if progress_reporter is not None:
+            try:
+                progress_reporter.report_step_started(
+                    ctx, run_id=run_id,
+                    stage="COMPILE", step="compile_trigger",
+                    engine=None, actor=actor,
+                )
+            except Exception:  # noqa: BLE001 — observability never blocks
+                _log.exception("compile.trigger event emission failed")
+
+        # Forward to the deployment's signal hook. Same failure
+        # contract as `/confirm`: REST returns success on the status
+        # flip even when the downstream signal can't be delivered.
+        if compile_handler is not None:
+            try:
+                await compile_handler(ctx, run_id)
+            except Exception:  # noqa: BLE001
+                _log.exception(
+                    "compile_handler failed for run_id=%s; "
+                    "run record is RUNNING but downstream signal "
+                    "was not delivered", run_id,
+                )
+
+        record = IngestionRunCompileRecord(run_id=run_id, status=run.status.value)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
     # ---- Run-level control endpoints --------------------------------

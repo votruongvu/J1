@@ -52,10 +52,20 @@ from j1.providers.raganything.settings import (
     VALID_PARSE_METHODS,
 )
 
-# Map CompileMode → preferred parse_method. The actual choice can
-# narrow further (e.g. `deep` switches to "ocr" when OCR is required).
+# Map CompileMode → preferred parse_method. Two-mode model:
+# `standard` and `deep` are the only modes the planner emits. The
+# adapter resolves parse_method here from the mode + capability set
+# (e.g. `deep` promotes to "ocr" when the plan requires OCR).
+#
+# `FAST → txt` is kept as a LEGACY fallback so adapters can still
+# resolve a parse_method when reading an old AssessmentPlan from a
+# historical artifact. The planner itself never emits FAST any more
+# (see assessment.py); the safety belt coerces FAST → STANDARD on
+# the read path before this mapping is consulted in the normal
+# flow. Touch this dict together with `CompileMode` if either
+# changes.
 _MODE_TO_PARSE_METHOD: dict[CompileMode, str] = {
-    CompileMode.FAST: "txt",
+    CompileMode.FAST: "txt",   # legacy round-trip only — never emitted
     CompileMode.STANDARD: "auto",
     CompileMode.DEEP: "auto",  # promoted to "ocr" when plan requires OCR
 }

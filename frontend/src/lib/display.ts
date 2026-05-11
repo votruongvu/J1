@@ -28,11 +28,16 @@ export interface StatusMeta {
 }
 
 export const StatusDisplay: Readonly<Record<RunStatus, StatusMeta>> = {
-  CREATED: { label: "Created", tone: "neutral", pulse: false },
+  CREATED: { label: "Received", tone: "neutral", pulse: false },
+  RECEIVED: { label: "Received", tone: "neutral", pulse: false },
   ASSESSING: { label: "Assessing", tone: "info", pulse: true },
-  PLAN_READY: { label: "Plan ready", tone: "accent", pulse: false },
+  PLAN_READY: { label: "Assessment ready", tone: "accent", pulse: false },
+  ASSESSMENT_READY: { label: "Assessment ready", tone: "accent", pulse: false },
   WAITING_FOR_CONFIRMATION: { label: "Awaiting confirmation", tone: "accent", pulse: true },
+  COMPILE_PENDING: { label: "Awaiting compile", tone: "accent", pulse: true },
   RUNNING: { label: "Running", tone: "info", pulse: true },
+  COMPILING: { label: "Compiling", tone: "info", pulse: true },
+  VERIFYING: { label: "Verifying", tone: "info", pulse: true },
   PAUSED: { label: "Paused", tone: "warning", pulse: false },
   CANCELLING: { label: "Cancelling", tone: "neutral", pulse: true },
   COMPLETED: { label: "Completed", tone: "success", pulse: false },

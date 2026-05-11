@@ -25,6 +25,17 @@ export const EVENT_TYPES = {
   RUN_FAILED: "run.failed",
   RUN_CANCELLED: "run.cancelled",
   HUMAN_REVIEW_REQUIRED: "human_review.required",
+  // Canonical macro-stage events (Phase 3). Currently derived
+  // client-side from existing `step.*` events via
+  // `deriveMacroEventType()` — the constants exist so the FE can
+  // render macro-stage section headers and so a future
+  // emit-from-server change has a stable target.
+  COMPILE_STARTED: "compile.started",
+  COMPILE_COMPLETED: "compile.completed",
+  COMPILE_FAILED: "compile.failed",
+  VERIFICATION_STARTED: "verification.started",
+  VERIFICATION_COMPLETED: "verification.completed",
+  VERIFICATION_FAILED: "verification.failed",
 } as const;
 
 export type ProgressEventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];

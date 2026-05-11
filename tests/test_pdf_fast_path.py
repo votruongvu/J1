@@ -263,3 +263,147 @@ def test_scan_pdf_compile_uses_mineru_not_fast_path(tmp_path):
     # Full MinerU path: process_document_complete called, ainsert NOT called.
     rag.process_document_complete.assert_awaited_once()
     ainsert.assert_not_awaited()
+
+
+# ---- Fast path force-persists chunks to disk -----------------------
+
+
+def _make_fake_rag_with_storage_callbacks(
+    *,
+    ainsert_mock: AsyncMock,
+) -> tuple[SimpleNamespace, dict[str, AsyncMock]]:
+    """Like `_make_fake_rag`, but each LightRAG kv-storage exposes an
+    `index_done_callback` mock so tests can verify the bridge flushes
+    them after the fast-path `ainsert`."""
+    callbacks: dict[str, AsyncMock] = {
+        "text_chunks": AsyncMock(),
+        "chunks_vdb": AsyncMock(),
+        "full_docs": AsyncMock(),
+        "doc_status": AsyncMock(),
+    }
+    lightrag = SimpleNamespace(
+        ainsert=ainsert_mock,
+        text_chunks=SimpleNamespace(index_done_callback=callbacks["text_chunks"]),
+        chunks_vdb=SimpleNamespace(index_done_callback=callbacks["chunks_vdb"]),
+        full_docs=SimpleNamespace(index_done_callback=callbacks["full_docs"]),
+        doc_status=SimpleNamespace(index_done_callback=callbacks["doc_status"]),
+    )
+    rag = SimpleNamespace(
+        lightrag=lightrag,
+        _ensure_lightrag_initialized=AsyncMock(return_value={"success": True}),
+        process_document_complete=AsyncMock(),
+    )
+    return rag, callbacks
+
+
+def test_text_pdf_fast_path_force_flushes_chunks_to_disk(tmp_path):
+    """Regression: in txt/FAST mode the fast-path calls
+    `lightrag.ainsert(text)` directly, which writes chunks to
+    in-memory storage but only flushes them to disk if LightRAG's
+    LLM-driven entity extraction succeeds. The bridge must force
+    `index_done_callback()` on each chunk storage so chunks land
+    on disk regardless of entity-extraction outcome — otherwise
+    the FE's Chunks tab stays empty for every fast-path run.
+    See `_force_persist_chunks` in `_bridge.py`."""
+    pytest.importorskip("pypdf")
+    pytest.importorskip("reportlab")
+
+    pdf = tmp_path / "text_doc.pdf"
+    _write_text_pdf(pdf, n_pages=2)
+    document_id, _ = _place_source(pdf, tmp_path)
+
+    ainsert = AsyncMock()
+    rag, callbacks = _make_fake_rag_with_storage_callbacks(
+        ainsert_mock=ainsert,
+    )
+    request = _make_request(tmp_path, document_id)
+    result = _run_with_fake_rag(request, rag, tmp_path)
+
+    assert result.status.value == "succeeded"
+    ainsert.assert_awaited_once()
+    # The flush must hit every chunk-bearing storage. text_chunks
+    # is the critical one (drives the Chunks tab); the others keep
+    # LightRAG's state coherent.
+    callbacks["text_chunks"].assert_awaited_once()
+    callbacks["chunks_vdb"].assert_awaited_once()
+    callbacks["full_docs"].assert_awaited_once()
+    callbacks["doc_status"].assert_awaited_once()
+
+
+def test_fast_path_force_flush_swallows_callback_errors(tmp_path):
+    """The flush is best-effort: if any storage's
+    `index_done_callback` raises, the compile must still complete
+    successfully. We never want a telemetry flush failure to
+    surface as a compile FAILED."""
+    pytest.importorskip("pypdf")
+    pytest.importorskip("reportlab")
+
+    pdf = tmp_path / "text_doc.pdf"
+    _write_text_pdf(pdf, n_pages=2)
+    document_id, _ = _place_source(pdf, tmp_path)
+
+    ainsert = AsyncMock()
+    rag, callbacks = _make_fake_rag_with_storage_callbacks(
+        ainsert_mock=ainsert,
+    )
+    # Make text_chunks flush blow up — bridge must catch + continue.
+    callbacks["text_chunks"].side_effect = RuntimeError("disk full")
+    request = _make_request(tmp_path, document_id)
+
+    result = _run_with_fake_rag(request, rag, tmp_path)
+
+    assert result.status.value == "succeeded", (
+        "force-flush errors must not fail the compile"
+    )
+    ainsert.assert_awaited_once()
+    callbacks["text_chunks"].assert_awaited_once()
+    # Subsequent storages still get flushed — the per-storage try
+    # block isolates failures.
+    callbacks["chunks_vdb"].assert_awaited_once()
+    callbacks["full_docs"].assert_awaited_once()
+    callbacks["doc_status"].assert_awaited_once()
+
+
+def test_fast_path_force_flush_handles_sync_callbacks(tmp_path):
+    """Some LightRAG storage backends expose `index_done_callback`
+    as a sync function (returns None) instead of a coroutine. The
+    bridge must support both shapes — the helper inspects the
+    return value before awaiting."""
+    pytest.importorskip("pypdf")
+    pytest.importorskip("reportlab")
+
+    pdf = tmp_path / "text_doc.pdf"
+    _write_text_pdf(pdf, n_pages=2)
+    document_id, _ = _place_source(pdf, tmp_path)
+
+    sync_called: list[str] = []
+
+    def _sync_flush_text_chunks():
+        sync_called.append("text_chunks")
+        return None  # sync, not a coroutine
+
+    ainsert = AsyncMock()
+    callbacks: dict[str, object] = {
+        "text_chunks": _sync_flush_text_chunks,
+        "chunks_vdb": AsyncMock(),
+        "full_docs": AsyncMock(),
+        "doc_status": AsyncMock(),
+    }
+    lightrag = SimpleNamespace(
+        ainsert=ainsert,
+        text_chunks=SimpleNamespace(index_done_callback=callbacks["text_chunks"]),
+        chunks_vdb=SimpleNamespace(index_done_callback=callbacks["chunks_vdb"]),
+        full_docs=SimpleNamespace(index_done_callback=callbacks["full_docs"]),
+        doc_status=SimpleNamespace(index_done_callback=callbacks["doc_status"]),
+    )
+    rag = SimpleNamespace(
+        lightrag=lightrag,
+        _ensure_lightrag_initialized=AsyncMock(return_value={"success": True}),
+        process_document_complete=AsyncMock(),
+    )
+    request = _make_request(tmp_path, document_id)
+
+    result = _run_with_fake_rag(request, rag, tmp_path)
+
+    assert result.status.value == "succeeded"
+    assert sync_called == ["text_chunks"]

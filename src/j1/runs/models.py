@@ -19,12 +19,21 @@ __all__ = [
     "EXECUTION_DECISION_CONDITIONAL",
     "EXECUTION_DECISION_RUN",
     "EXECUTION_DECISION_SKIP",
+    "FAILURE_CODE_ASSESSMENT_FAILED",
+    "FAILURE_CODE_CHUNK_FAILED",
+    "FAILURE_CODE_COMPILE_FAILED",
+    "FAILURE_CODE_EMPTY_DOCUMENT",
+    "FAILURE_CODE_INDEX_FAILED",
+    "FAILURE_CODE_VERIFICATION_FAILED",
     "IngestionRun",
+    "LEGACY_TO_CANONICAL_STATUS",
     "PROGRESS_SEVERITY_ERROR",
     "PROGRESS_SEVERITY_INFO",
     "PROGRESS_SEVERITY_WARNING",
     "ProgressEvent",
     "RunStatus",
+    "canonical_status",
+    "status_aliases",
 ]
 
 
@@ -56,13 +65,36 @@ class RunStatus(StrEnum):
     `PAUSED` and `CANCELLING` are operator-driven intermediate states.
     PAUSED is reversible (resume → RUNNING). CANCELLING is one-way:
     the workflow is winding down, will land at CANCELLED at terminal
-    once any in-flight activity finishes."""
+    once any in-flight activity finishes.
+
+    `COMPILE_PENDING` and `VERIFYING` are intermediate states for the
+    two-phase compile model. The workflow parks at `COMPILE_PENDING`
+    after assessment finishes; `POST /ingestion-runs/{id}/compile`
+    advances it to RUNNING. `VERIFYING` runs immediately after the
+    compile activity to gate chunk-count / index health checks; a
+    failure here lands at terminal FAILED with one of the
+    `FAILURE_CODE_*` reason codes.
+
+    Canonical-vs-legacy names: `RECEIVED`, `ASSESSMENT_READY`, and
+    `COMPILING` are the canonical names introduced by the
+    macro-stage simplification (Phase 1 of the workflow refactor).
+    `CREATED`, `PLAN_READY`, and `RUNNING` remain as readable
+    legacy values for runs persisted by older worker builds — new
+    runs SHOULD be written with the canonical names. See
+    `canonical_status()` and `LEGACY_TO_CANONICAL_STATUS` for the
+    translation table; downstream callers (REST status filters, FE
+    predicate sets) treat each pair as equivalent."""
 
     CREATED = "created"
+    RECEIVED = "received"
     ASSESSING = "assessing"
     PLAN_READY = "plan_ready"
+    ASSESSMENT_READY = "assessment_ready"
     WAITING_FOR_CONFIRMATION = "waiting_for_confirmation"
+    COMPILE_PENDING = "compile_pending"
     RUNNING = "running"
+    COMPILING = "compiling"
+    VERIFYING = "verifying"
     PAUSED = "paused"
     CANCELLING = "cancelling"
     SUCCEEDED = "succeeded"
@@ -90,6 +122,72 @@ EXECUTION_DECISION_CONDITIONAL = "CONDITIONAL"
 PROGRESS_SEVERITY_INFO = "INFO"
 PROGRESS_SEVERITY_WARNING = "WARNING"
 PROGRESS_SEVERITY_ERROR = "ERROR"
+
+
+# Failure reason codes written to `IngestionRun.failure_code` when
+# a structured macro-stage failure terminates a run. These are
+# stable string values (operators filter on them in audit logs +
+# the FE renders them as banner copy) — keep in sync with any
+# corresponding labels in `frontend/src/pages/run-detail/`.
+FAILURE_CODE_CHUNK_FAILED = "CHUNK_FAILED"
+FAILURE_CODE_INDEX_FAILED = "INDEX_FAILED"
+FAILURE_CODE_VERIFICATION_FAILED = "VERIFICATION_FAILED"
+# Macro-stage failure codes (Phase 1). Distinct from the generic
+# `ERROR_TYPE_REQUIRED_STEP_FAILED` label — they pin the failure
+# to a specific macro stage so the FE/operator UI can render the
+# right banner copy and link to the right diagnostic.
+FAILURE_CODE_ASSESSMENT_FAILED = "ASSESSMENT_FAILED"
+FAILURE_CODE_COMPILE_FAILED = "COMPILE_FAILED"
+# Empty-document is NOT a failure in the operator sense; it's a
+# successful early-out (the document had no extractable content).
+# Surfaced as a failure_code on a terminal SUCCEEDED_WITH_WARNINGS
+# run so the FE renders it as a non-error info banner — the
+# vocabulary is shared with the failure-code table for consistency
+# with how the existing rule-based skip path tags zero-content runs.
+FAILURE_CODE_EMPTY_DOCUMENT = "EMPTY_DOCUMENT"
+
+
+# Legacy → canonical translation table for the run-status enum.
+# The two columns are equivalent for predicate-set membership and
+# UI rendering; new code SHOULD use the canonical names but old
+# runs persisted with legacy values keep working. Callers that
+# need to compare statuses across the boundary use
+# `canonical_status()` to fold legacy values onto the canonical
+# row first. Empty for statuses with no legacy alias.
+LEGACY_TO_CANONICAL_STATUS: dict[str, str] = {
+    "created": "received",
+    "plan_ready": "assessment_ready",
+    "running": "running",
+    # Note: `running` maps to itself — the legacy semantics
+    # ("anything mid-pipeline") still apply, and `compiling` is
+    # a more specific subset used only when the workflow is
+    # actively inside the compile macro stage. Callers that need
+    # the specific value read `current_stage` alongside.
+}
+
+
+def canonical_status(value: str | RunStatus) -> str:
+    """Fold a legacy run-status string onto its canonical name.
+
+    Used by predicate sets (REST status filters, FE active-state
+    checks) so a query for `status=received` matches both runs
+    written with the new name AND runs written with the legacy
+    `created` value. Unknown values pass through unchanged."""
+    raw = value.value if isinstance(value, RunStatus) else str(value)
+    return LEGACY_TO_CANONICAL_STATUS.get(raw, raw)
+
+
+def status_aliases(value: str | RunStatus) -> tuple[str, ...]:
+    """Return all aliases that compare-equal to `value` (canonical
+    + every legacy that maps to it). Used by the REST list filter
+    to expand `?status=received` into `(received, created)` for
+    the underlying store query."""
+    canonical = canonical_status(value)
+    aliases = [canonical]
+    for legacy, mapped in LEGACY_TO_CANONICAL_STATUS.items():
+        if mapped == canonical and legacy != canonical:
+            aliases.append(legacy)
+    return tuple(aliases)
 
 
 @dataclass

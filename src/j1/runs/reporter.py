@@ -66,8 +66,15 @@ __all__ = [
     "AuditProgressReporter",
     "CompositeProgressReporter",
     "NoopProgressReporter",
+    "PROGRESS_EVENT_COMPILE_COMPLETED",
+    "PROGRESS_EVENT_COMPILE_FAILED",
+    "PROGRESS_EVENT_COMPILE_STARTED",
+    "PROGRESS_EVENT_VERIFICATION_COMPLETED",
+    "PROGRESS_EVENT_VERIFICATION_FAILED",
+    "PROGRESS_EVENT_VERIFICATION_STARTED",
     "ProgressReporter",
     "TemporalHeartbeatReporter",
+    "derive_macro_event_type",
     "is_progress_action",
     "PROGRESS_ACTION_PREFIX",
     "PROGRESS_TARGET_KIND",
@@ -98,6 +105,23 @@ PROGRESS_EVENT_RUN_COMPLETED = "run.completed"
 PROGRESS_EVENT_RUN_FAILED = "run.failed"
 PROGRESS_EVENT_RUN_CANCELLED = "run.cancelled"
 PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED = "human_review.required"
+# Canonical macro-stage event vocabulary (Phase 3). Each macro
+# event describes a stage as a whole — `compile.started` covers
+# the entire compile macro-stage (parse + chunk + persist), as
+# opposed to the sub-step `step.started` events which describe
+# individual operations inside it. The FE timeline groups
+# `step.*` rows under the surrounding macro header.
+#
+# Today these strings are derived client-side by projecting the
+# `(stage, event)` pair of an existing `step.*` event — see
+# `derive_macro_event_type()` below. The constants exist now so a
+# future emit-from-server change has a stable target.
+PROGRESS_EVENT_COMPILE_STARTED = "compile.started"
+PROGRESS_EVENT_COMPILE_COMPLETED = "compile.completed"
+PROGRESS_EVENT_COMPILE_FAILED = "compile.failed"
+PROGRESS_EVENT_VERIFICATION_STARTED = "verification.started"
+PROGRESS_EVENT_VERIFICATION_COMPLETED = "verification.completed"
+PROGRESS_EVENT_VERIFICATION_FAILED = "verification.failed"
 
 # Audit `action` values — prefix + bare event name. These are what
 # the audit log records and the audit-history filter accepts.
@@ -137,6 +161,70 @@ PROGRESS_TARGET_KIND = "ingestion_run"
 def is_progress_action(action: str) -> bool:
     """True for any J1 progress-event audit action."""
     return action.startswith(PROGRESS_ACTION_PREFIX)
+
+
+# Macro-stage event derivation table (Phase 3). Maps an internal
+# `(stage, step.* event)` pair to its canonical macro event name —
+# `(COMPILE, step.started)` → `compile.started`, etc. Used by the
+# FE timeline to draw macro-stage section headers around the
+# operator-detail step rows.
+#
+# `stage` is normalised to uppercase before lookup so legacy
+# call sites that emit lowercase / mixed-case stage strings still
+# match. Steps that don't sit under one of the macro stages
+# (`assess_compile_strategy`, `finalize`, ...) return None and
+# the FE renders them as standalone rows.
+_MACRO_STAGE_EVENT_TABLE: dict[
+    tuple[str, str], dict[str, str]
+] = {
+    ("COMPILE", "compile"): {
+        PROGRESS_EVENT_STEP_STARTED: PROGRESS_EVENT_COMPILE_STARTED,
+        PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_COMPILE_COMPLETED,
+        PROGRESS_EVENT_STEP_FAILED: PROGRESS_EVENT_COMPILE_FAILED,
+    },
+    # The workflow's post-compile verification step lives under a
+    # dedicated stage so the FE can render it as its own macro row.
+    # See `_run_post_compile_verification` in
+    # `j1/orchestration/workflows/project_processing.py`.
+    ("VERIFY", "verify_compile"): {
+        PROGRESS_EVENT_STEP_STARTED: PROGRESS_EVENT_VERIFICATION_STARTED,
+        PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_VERIFICATION_COMPLETED,
+        PROGRESS_EVENT_STEP_FAILED: PROGRESS_EVENT_VERIFICATION_FAILED,
+    },
+}
+
+
+def derive_macro_event_type(
+    stage: str | None,
+    step: str | None,
+    event_type: str,
+) -> str | None:
+    """Project an internal `step.*` event onto its canonical macro
+    event name, or None when the event doesn't sit under one of the
+    Phase-3 macro stages.
+
+    Pure / deterministic: callers (the FE timeline + tests) can
+    derive the macro name from a stored event without round-tripping
+    to the server. `stage` is case-insensitive; `step` and
+    `event_type` must match exactly.
+
+    Examples:
+        derive_macro_event_type("COMPILE", "compile", "step.started")
+        # → "compile.started"
+
+        derive_macro_event_type("VERIFY", "verify_compile", "step.failed")
+        # → "verification.failed"
+
+        derive_macro_event_type("ENRICH", "enrich", "step.started")
+        # → None  (enrich is not yet a macro stage in Phase 3)
+    """
+    if not stage or not step:
+        return None
+    key = (stage.upper(), step)
+    table = _MACRO_STAGE_EVENT_TABLE.get(key)
+    if table is None:
+        return None
+    return table.get(event_type)
 
 
 # ---- Protocol --------------------------------------------------------

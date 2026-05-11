@@ -4,7 +4,7 @@
  * review / info) and clickable for detail inspection.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Icon } from "@/components/icons";
 import { EngineBadge } from "@/components/badges";
 import {
@@ -20,6 +20,10 @@ import {
 } from "@/lib/processing-steps";
 import type { ProgressEvent } from "@/types/ingestion";
 import type { StreamStatus as StreamStatusKind } from "@/types/ui";
+import {
+  groupTimelineByMacroStage,
+  type TimelineSection,
+} from "./timeline-grouping";
 
 interface LiveTimelineProps {
   events: ProgressEvent[];
@@ -49,6 +53,15 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
       && e.event !== EVENT_TYPES.PLAN_CONFIRMED,
   );
 
+  // Phase 3: project the flat event list into macro-stage sections
+  // so the timeline can draw "Compile" / "Verification" headers
+  // around the operator-detail step rows. Pure helper — cheap to
+  // recompute on each event arrival.
+  const sections = useMemo(
+    () => groupTimelineByMacroStage(visibleEvents),
+    [visibleEvents],
+  );
+
   return (
     <div className="card">
       <div className="card__header">
@@ -67,11 +80,70 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
           </div>
         ) : (
           <div className="timeline">
-            {visibleEvents.map((e) => (
-              <TimelineEventItem key={e.eventId} event={e} onClick={() => onSelectEvent?.(e)} />
+            {sections.map((section) => (
+              <TimelineSectionView
+                key={section.key}
+                section={section}
+                onSelectEvent={onSelectEvent}
+              />
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+interface TimelineSectionViewProps {
+  section: TimelineSection;
+  onSelectEvent?: (event: ProgressEvent) => void;
+}
+
+function TimelineSectionView({ section, onSelectEvent }: TimelineSectionViewProps) {
+  // Ungrouped section: one event, render directly without a header.
+  // Preserves the existing flat-row look for plan.* / run.* / finalize
+  // events that don't belong under a macro stage.
+  if (section.macro === null) {
+    const event = section.events[0];
+    if (!event) return null;
+    return (
+      <TimelineEventItem
+        event={event}
+        onClick={() => onSelectEvent?.(event)}
+      />
+    );
+  }
+  return (
+    <>
+      <MacroStageHeader section={section} />
+      {section.events.map((e) => (
+        <TimelineEventItem
+          key={e.eventId}
+          event={e}
+          onClick={() => onSelectEvent?.(e)}
+        />
+      ))}
+    </>
+  );
+}
+
+function MacroStageHeader({ section }: { section: TimelineSection }) {
+  const kind =
+    section.status === "failed"
+      ? "error"
+      : section.status === "completed"
+        ? "success"
+        : section.status === "running"
+          ? "running"
+          : "info";
+  return (
+    <div className={`tl-section tl-section--${kind}`}>
+      <div className="tl-section__dot" aria-hidden />
+      <div className="tl-section__head">
+        <span className="tl-section__title">{section.title}</span>
+        <span className="tl-section__badge mono">
+          {section.events.length} event{section.events.length === 1 ? "" : "s"}
+        </span>
       </div>
     </div>
   );

@@ -273,11 +273,13 @@ def _plain_text_profile() -> DocumentProfile:
     )
 
 
-def test_fast_compile_with_zero_chunks_retries_to_standard(monkeypatch):
-    """Plan picks fast (plain-text profile). First compile attempt
-    returns ZERO chunks → quality LOW with `zero_chunks` retry
-    reason → workflow escalates to STANDARD and re-dispatches.
-    Second attempt returns chunks; final quality GOOD."""
+def test_standard_compile_with_zero_chunks_retries_to_deep(monkeypatch):
+    """Two-mode model: planner emits STANDARD for plain-text
+    profiles (the bridge takes the plaintext bypass at runtime).
+    First compile attempt returns ZERO chunks → quality LOW with
+    `zero_chunks` retry reason → workflow escalates to DEEP and
+    re-dispatches. Second attempt returns chunks; final quality
+    GOOD."""
     compile_payloads: list[CompileActivityInput] = []
     strategy_report_payload: dict = {}
 
@@ -286,20 +288,20 @@ def test_fast_compile_with_zero_chunks_retries_to_standard(monkeypatch):
         if name.endswith("validate_context"):
             return ValidateContextResult(valid=True)
         if name.endswith("list_pending_documents"):
-            return ["doc-fast"]
+            return ["doc-standard"]
         if name.endswith("profile_document"):
             return _plain_text_profile()
         if name.endswith("compile"):
             compile_payloads.append(payload)
             mode = (payload.assessment_plan_payload or {}).get("mode")
-            if mode == "fast":
+            if mode == "standard":
                 # First attempt: zero chunks, low text.
                 return ArtifactActivityResult(
                     status="succeeded", artifact_ids=[],
                     kinds=(),
                     compile_metrics={"chunks_count": 0, "extracted_text_chars": 0},
                 )
-            # Standard attempt: succeeds with chunks + text.
+            # Deep attempt: succeeds with chunks + text.
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["c-1"],
                 kinds=("chunk",),
@@ -338,7 +340,7 @@ def test_fast_compile_with_zero_chunks_retries_to_standard(monkeypatch):
         scope=_scope(),
         compiler_kind="c",
         planner_enabled=True,
-        correlation_id="run-fast-retry",
+        correlation_id="run-standard-retry",
         compile_max_attempts=2,
     )
     result = asyncio.run(wf.run(request))
@@ -347,24 +349,38 @@ def test_fast_compile_with_zero_chunks_retries_to_standard(monkeypatch):
     assert len(compile_payloads) == 2, (
         "expected 1 retry → 2 compile attempts"
     )
-    # First attempt was fast; second was standard.
+    # First attempt was standard; second was deep (two-mode ladder).
     first_mode = (compile_payloads[0].assessment_plan_payload or {}).get("mode")
     second_mode = (compile_payloads[1].assessment_plan_payload or {}).get("mode")
-    assert first_mode == "fast"
-    assert second_mode == "standard"
+    assert first_mode == "standard"
+    assert second_mode == "deep"
+    assert "fast" not in {first_mode, second_mode}, (
+        "FAST must not appear in either attempt's mode under the "
+        "two-mode model"
+    )
 
-    # Strategy report carries the full audit trail.
-    assert strategy_report_payload["initial_mode"] == "fast"
-    assert strategy_report_payload["final_mode"] == "standard"
+    # Strategy report carries the full audit trail. New fields:
+    # `selected_compile_mode` (canonical) + back-compat aliases.
+    assert strategy_report_payload["selected_compile_mode"] == "deep"
+    assert strategy_report_payload["initial_compile_mode"] == "standard"
+    assert strategy_report_payload["final_compile_mode"] == "deep"
+    # Back-compat aliases still populated for older FE consumers.
+    assert strategy_report_payload["initial_mode"] == "standard"
+    assert strategy_report_payload["final_mode"] == "deep"
     assert strategy_report_payload["retry_used"] is True
     assert strategy_report_payload["attempts_count"] == 2
     attempts = strategy_report_payload["attempts"]
-    assert attempts[0]["mode"] == "fast"
+    assert attempts[0]["mode"] == "standard"
     assert attempts[0]["retry_reason"] == "zero_chunks"
     assert attempts[0]["status"] == "retried"
-    assert attempts[1]["mode"] == "standard"
+    assert attempts[1]["mode"] == "deep"
     assert attempts[1]["status"] == "succeeded"
     assert strategy_report_payload["final_compile_quality"] == "good"
+    # Escalation reason is now surfaced explicitly.
+    assert strategy_report_payload["escalation_reason"]
+    assert "standard" in strategy_report_payload["escalation_reason"]
+    assert "deep" in strategy_report_payload["escalation_reason"]
+    assert "zero_chunks" in strategy_report_payload["escalation_reason"]
 
 
 def test_standard_compile_with_low_text_and_ocr_required_retries_to_deep(

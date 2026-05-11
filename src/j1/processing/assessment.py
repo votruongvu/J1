@@ -37,26 +37,34 @@ from j1.processing.profiling import DocumentProfile
 
 
 class CompileMode(StrEnum):
-    """Compile-stage intensity, vendor-neutral.
+    """Compile-stage intensity, vendor-neutral. Two official modes:
+    `standard` and `deep`.
 
     These are descriptive labels for adapters + dashboards. The
     mapping from mode → adapter config lives in the adapter (e.g.
-    RAGAnything maps `fast`→`parse_method=txt`, `deep`→
+    RAGAnything maps `standard`→`parse_method=auto`, `deep`→
     `parse_method=ocr|auto`); do NOT reference vendor parser names
     here.
 
-      * `fast` — readable text layer, simple layout. Adapter should
-        prefer the cheapest text-extraction path. Image / formula
-        processing OFF unless the plan explicitly requires them.
-      * `standard` — moderate complexity. Tables / images / formulas
-        may exist; adapter enables them per the plan's
-        `required_capabilities`. Default for unknown documents.
-      * `deep` — scanned / weak text layer / complex layout. OCR
-        likely required (per the `OCR` capability flag). Adapter
-        enables every supported quality knob and emits warnings
+      * `standard` — reliable default for normal text-first
+        documents. Adapter runs the standard parse path with
+        capability flags from the plan; quality gates still apply.
+        Does NOT mean "fast" — it means "normal reliable compile".
+      * `deep` — complex / low-confidence / multimodal / scanned /
+        layout-heavy documents. Adapter enables every supported
+        quality knob (OCR, layout, multimodal) and emits warnings
         for later optimisation.
-    """
 
+    `FAST` is deprecated and kept ONLY so legacy
+    `compile_strategy_report` payloads can round-trip without
+    crashing replay. The planner NEVER emits FAST; the safety belt
+    (`_coerce_legacy_fast_to_standard`) coerces any FAST it sees
+    on the read path to STANDARD. New planning code MUST emit
+    STANDARD or DEEP. Any code branching on `CompileMode.FAST`
+    is a regression — branch on STANDARD/DEEP."""
+
+    # Deprecated, kept readable for legacy artifact compatibility.
+    # Do not emit from new planning code.
     FAST = "fast"
     STANDARD = "standard"
     DEEP = "deep"
@@ -109,6 +117,41 @@ class FallbackPolicy(StrEnum):
     FAIL = "fail"
 
 
+class RecommendedProcessingPath(StrEnum):
+    """Operator-facing recommended processing path. One value per
+    canonical Compile-Stage outcome the planner can recommend.
+
+    Two-mode model: every non-skip recommendation maps onto either
+    STANDARD_COMPILE or DEEP_COMPILE, mirroring `CompileMode`.
+
+      * `STANDARD_COMPILE` — reliable default. Maps to
+        `CompileMode.STANDARD`. Used for normal text-first docs,
+        including 100%-text formats (the bridge takes a plaintext
+        bypass for those, but they still report standard mode).
+      * `DEEP_COMPILE` — richer parsing for scanned, layout-heavy,
+        multimodal, OCR-required, or low-confidence documents.
+        Maps to `CompileMode.DEEP`.
+      * `SKIP_EMPTY_DOCUMENT` — profile shows non-zero page count
+        but every content signal is zero. Surfaced by the
+        post-compile enrich assessor; the planner mirrors it so
+        the FE has a single canonical signal.
+      * `FAILED` — assessment couldn't complete (profile build
+        failure, missing extension, etc.).
+
+    Legacy values `fast_text_compile`, `multimodal_compile`, and
+    `ocr_parse` are NO LONGER emitted by the planner. `from_payload`
+    accepts them for legacy artifact round-trip and coerces them
+    to the canonical two-mode model (see `_coerce_legacy_recommended_path`).
+
+    Wire strings are stable — dashboards key off them, FE renders
+    human-readable labels via a separate mapper."""
+
+    STANDARD_COMPILE = "standard_compile"
+    DEEP_COMPILE = "deep_compile"
+    SKIP_EMPTY_DOCUMENT = "skip_empty_document"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class AssessmentPlan:
     """The planner's compile-stage decision for one document.
@@ -135,6 +178,14 @@ class AssessmentPlan:
     risk_flags: tuple[str, ...] = ()
     fallback_policy: FallbackPolicy = FallbackPolicy.DEGRADE_WITH_WARNING
     reason: str = ""
+    # Operator-facing intent — distinct from `mode` (the adapter
+    # intensity knob). The planner sets this from `mode + profile`;
+    # operators read it as the canonical "what J1 plans to do next"
+    # signal. Defaults to STANDARD_COMPILE which is the safe
+    # interpretation when the planner couldn't decide.
+    recommended_path: RecommendedProcessingPath = (
+        RecommendedProcessingPath.STANDARD_COMPILE
+    )
 
     def requires(self, capability: Capability) -> bool:
         return capability in self.required_capabilities
@@ -166,6 +217,7 @@ class AssessmentPlan:
             "risk_flags": list(self.risk_flags),
             "fallback_policy": self.fallback_policy.value,
             "reason": self.reason,
+            "recommended_path": self.recommended_path.value,
         }
 
     @classmethod
@@ -196,6 +248,16 @@ class AssessmentPlan:
             )
         except ValueError:
             policy = FallbackPolicy.DEGRADE_WITH_WARNING
+        # `recommended_path` is additive — older payloads omit it.
+        # Tolerate missing / unknown values rather than crashing
+        # replay. Legacy values (fast_text_compile, multimodal_compile,
+        # ocr_parse) are coerced to the canonical two-mode model:
+        #   fast_text_compile  → STANDARD_COMPILE
+        #   multimodal_compile → STANDARD_COMPILE  (standard handles
+        #                         multimodal capability flags too)
+        #   ocr_parse          → DEEP_COMPILE
+        raw_path = payload.get("recommended_path")
+        path = _coerce_legacy_recommended_path(raw_path)
         return cls(
             document_id=str(payload.get("document_id", "")),
             mode=mode,
@@ -207,6 +269,7 @@ class AssessmentPlan:
             risk_flags=tuple(payload.get("risk_flags") or ()),
             fallback_policy=policy,
             reason=str(payload.get("reason", "")),
+            recommended_path=path,
         )
 
 
@@ -363,7 +426,12 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
         # PDF / DOCX / image binary, coerce up to STANDARD here.
         # Operators reading the audit trail see the coercion in the
         # `reason` field so the override is auditable.
-        return _enforce_fast_mode_safety(plan, profile)
+        plan = _enforce_fast_mode_safety(plan, profile)
+        # Stamp `recommended_path` as the LAST step so it always
+        # reflects the (possibly coerced) `mode + capabilities`.
+        # Single source of truth for the mode → operator-intent
+        # mapping — every rule branch flows through here.
+        return _stamp_recommended_path(plan, profile)
 
     def _assess_inner(
         self,
@@ -374,17 +442,23 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
         warnings: list[str] = []
         doc_type = document_type or _infer_document_type(profile)
 
-        # Rule 1: plain text → fast.
+        # Rule 1: plain text → STANDARD with the plaintext-bypass
+        # hint in the reason. The bridge takes a fast plaintext
+        # path for these extensions (skips MinerU), but the
+        # compile mode itself is STANDARD — the two-mode model has
+        # no FAST. Operators reading the audit see why this is
+        # cheap even though the mode is "standard".
         if profile.extension in _PLAIN_TEXT_EXTENSIONS:
             return AssessmentPlan(
                 document_id=profile.document_id,
-                mode=CompileMode.FAST,
+                mode=CompileMode.STANDARD,
                 document_type=doc_type,
                 complexity=Complexity.LOW,
                 confidence=1.0,
                 required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
                 reason=(
-                    f"plain-text extension {profile.extension!r}; no parser intensity needed"
+                    f"plain-text extension {profile.extension!r}; "
+                    "bridge uses the plaintext bypass — no MinerU/VLM."
                 ),
             )
 
@@ -549,27 +623,28 @@ def _enforce_fast_mode_safety(
     plan: AssessmentPlan,
     profile: DocumentProfile,
 ) -> AssessmentPlan:
-    """Defensive coercion: FAST is only safe for 100%-text extensions.
+    """Belt-and-suspenders: planner never emits FAST in the
+    two-mode model, but if a legacy code path slips through OR a
+    payload from before the two-mode refactor lands here, coerce
+    FAST → STANDARD universally.
 
-    The user-facing rule: a PDF / DOCX / PPTX / image container
-    might carry images, tables, or scanned regions that need VLM /
-    OCR; we never trust FAST mode for those. If any rule branch
-    above slipped FAST through for a binary extension, override to
-    STANDARD here and stamp the reason so the override is auditable.
+    Pre-refactor this helper was scoped to "FAST is only safe for
+    100%-text extensions"; in the two-mode model FAST is not safe
+    for ANY extension because it's no longer part of the official
+    compile-mode vocabulary. The plaintext-extension optimisation
+    moved to the bridge layer (extension-keyed `_NATIVE_TEXT_EXTENSIONS`
+    plaintext bypass) — independent of `CompileMode`.
 
-    No-op when:
-      * `plan.mode != FAST` (nothing to coerce).
-      * `profile.extension` IS in `_PLAIN_TEXT_EXTENSIONS` (FAST is
-        the correct mode and stays).
-    """
+    No-op when `plan.mode != FAST`. When FAST is observed, coerce
+    to STANDARD with the safe capability baseline + an audit-trail
+    note in `reason` so operators see the migration. Profile is
+    accepted for parity with the pre-refactor signature but isn't
+    consulted — coercion now ignores extension."""
     if plan.mode != CompileMode.FAST:
-        return plan
-    if profile.extension in _PLAIN_TEXT_EXTENSIONS:
         return plan
     # Coerce. Replace mode, augment required capabilities to the
     # STANDARD baseline, append the override reason so audit logs
-    # show why FAST was overridden. Capabilities the original rule
-    # already required are kept (don't downgrade).
+    # show why FAST was overridden.
     coerced_required = frozenset(plan.required_capabilities | {
         Capability.TEXT_EXTRACTION,
         Capability.LAYOUT_DETECTION,
@@ -585,11 +660,95 @@ def _enforce_fast_mode_safety(
         risk_flags=plan.risk_flags,
         fallback_policy=plan.fallback_policy,
         reason=(
-            f"{plan.reason} | coerced FAST→STANDARD: extension "
-            f"{profile.extension!r} is not in the 100%-text set "
-            "(binary containers may carry images / tables / scanned "
-            "regions that need standard mode)"
+            f"{plan.reason} | migrated legacy FAST→STANDARD: the "
+            "two-mode model has only standard + deep compile modes"
         ),
+    )
+
+
+def _coerce_legacy_recommended_path(
+    raw: object,
+) -> RecommendedProcessingPath:
+    """Map any value (current OR legacy) onto the two-mode
+    `RecommendedProcessingPath` vocabulary.
+
+    Mapping:
+      * Current values pass through (`standard_compile`,
+        `deep_compile`, `skip_empty_document`, `failed`).
+      * Legacy values coerce:
+          - `fast_text_compile`  → STANDARD_COMPILE
+          - `multimodal_compile` → STANDARD_COMPILE
+          - `ocr_parse`          → DEEP_COMPILE
+      * Anything else (None, unknown future value, garbage) →
+        STANDARD_COMPILE.
+
+    Pure / safe / never raises — used on the deserialisation path
+    where legacy payloads cross worker boundaries."""
+    if isinstance(raw, RecommendedProcessingPath):
+        return raw
+    if not isinstance(raw, str):
+        return RecommendedProcessingPath.STANDARD_COMPILE
+    cleaned = raw.strip().lower()
+    try:
+        return RecommendedProcessingPath(cleaned)
+    except ValueError:
+        pass
+    if cleaned in {"fast_text_compile", "multimodal_compile"}:
+        return RecommendedProcessingPath.STANDARD_COMPILE
+    if cleaned == "ocr_parse":
+        return RecommendedProcessingPath.DEEP_COMPILE
+    return RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def _stamp_recommended_path(
+    plan: AssessmentPlan,
+    profile: DocumentProfile,
+) -> AssessmentPlan:
+    """Derive `recommended_path` from `plan.mode` (post-coercion)
+    and return a new plan with the field stamped.
+
+    Two-mode model: every non-skip outcome maps to either
+    STANDARD_COMPILE or DEEP_COMPILE — the recommended-path enum
+    mirrors `CompileMode`.
+
+    Decision table:
+      * `mode == DEEP`                                  → DEEP_COMPILE
+      * `Capability.OCR` in required (and mode!=DEEP,
+         which shouldn't happen but defend against it)  → DEEP_COMPILE
+      * `mode == STANDARD`                              → STANDARD_COMPILE
+      * `mode == FAST` (legacy, post-belt should never
+         see this; coerce defensively)                  → STANDARD_COMPILE
+      * Anything else                                   → STANDARD_COMPILE
+
+    SKIP_EMPTY_DOCUMENT is NOT emitted here — that verdict lives on
+    the post-compile enrich plan because it requires content-level
+    signals (zero text/image/table counts despite a non-zero page
+    count) that aren't available pre-compile."""
+    if plan.mode == CompileMode.DEEP:
+        path = RecommendedProcessingPath.DEEP_COMPILE
+    elif Capability.OCR in plan.required_capabilities:
+        path = RecommendedProcessingPath.DEEP_COMPILE
+    else:
+        # STANDARD or legacy FAST (the safety belt above already
+        # coerced FAST → STANDARD; this default is belt-and-
+        # suspenders for any code path that constructs an
+        # AssessmentPlan manually without going through `assess()`).
+        path = RecommendedProcessingPath.STANDARD_COMPILE
+    if plan.recommended_path == path:
+        return plan
+    # Rebuild with the new field — AssessmentPlan is frozen.
+    return AssessmentPlan(
+        document_id=plan.document_id,
+        mode=plan.mode,
+        document_type=plan.document_type,
+        complexity=plan.complexity,
+        confidence=plan.confidence,
+        required_capabilities=plan.required_capabilities,
+        optional_capabilities=plan.optional_capabilities,
+        risk_flags=plan.risk_flags,
+        fallback_policy=plan.fallback_policy,
+        reason=plan.reason,
+        recommended_path=path,
     )
 
 

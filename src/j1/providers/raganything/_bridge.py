@@ -1245,6 +1245,7 @@ async def _insert_plain_text_directly(
         file_paths=str(source_path),
         ids=document_id,
     )
+    await _force_persist_chunks(rag)
 
     # Best-effort doc-status bookkeeping — keeps RAGAnything's view of
     # the document consistent with what `process_document_complete`
@@ -1303,6 +1304,7 @@ async def _insert_pdf_text_directly(
         file_paths=str(source_path),
         ids=document_id,
     )
+    await _force_persist_chunks(rag)
 
     # Best-effort doc-status bookkeeping.
     mark = getattr(rag, "_mark_multimodal_processing_complete", None)
@@ -1315,6 +1317,51 @@ async def _insert_pdf_text_directly(
     # Persist the extracted text for the draft walker.
     out_path = output_dir / f"{document_id}.md"
     out_path.write_text(combined, encoding="utf-8")
+
+
+async def _force_persist_chunks(rag) -> None:
+    """Flush LightRAG's `text_chunks` + `doc_status` to disk
+    unconditionally after a fast-path `ainsert`.
+
+    LightRAG's `apipeline_process_enqueue_documents` writes chunks
+    to in-memory storage in stage 1, then runs LLM-driven entity
+    extraction in stage 2, and only calls `_insert_done()` (which
+    flushes EVERY storage to disk) on stage-2 success. If entity
+    extraction fails — slow / unreachable LLM, prompt error, vector
+    upsert race — the in-memory chunks are lost and the FE's
+    Chunks tab stays empty even though parsing produced text.
+
+    For txt/FAST-mode compiles we don't care whether entity
+    extraction succeeded: the chunks are the deliverable. Force the
+    flush via `index_done_callback()` on the chunk storages so they
+    persist regardless of upstream LLM status.
+
+    Best-effort: any flush error logs + returns. Compile never
+    fails because telemetry flushing didn't work."""
+    storages = []
+    lightrag = getattr(rag, "lightrag", None)
+    if lightrag is None:
+        return
+    for name in ("text_chunks", "chunks_vdb", "full_docs", "doc_status"):
+        storage = getattr(lightrag, name, None)
+        if storage is None:
+            continue
+        callback = getattr(storage, "index_done_callback", None)
+        if callback is None:
+            continue
+        storages.append((name, callback))
+    for name, callback in storages:
+        try:
+            result = callback()
+            # `index_done_callback` may be sync or async depending on
+            # storage backend. Handle both shapes uniformly.
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as exc:  # noqa: BLE001 — flush must not fail compile
+            _log.warning(
+                "force-flush of LightRAG storage %r failed (non-fatal): %s",
+                name, exc,
+            )
 
 
 # ---- LibreOffice pre-conversion (broad format coverage) ------------

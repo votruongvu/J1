@@ -29,6 +29,30 @@ export interface CompileAttemptRecord {
   };
 }
 
+/**
+ * Operator-facing recommended processing path. Two-mode model:
+ * STANDARD_COMPILE / DEEP_COMPILE are the canonical values plus
+ * SKIP_EMPTY_DOCUMENT / FAILED for the terminal verdicts.
+ *
+ * Wire values are stable — dashboards key off them; the FE
+ * renders human-readable labels via `recommendedPathLabel`.
+ *
+ * Legacy values (`fast_text_compile`, `multimodal_compile`,
+ * `ocr_parse`) are still listed in the union for back-compat
+ * with historical artifact payloads. The label/description
+ * helpers map them onto the canonical names; production code
+ * NEVER emits them.
+ */
+export type RecommendedProcessingPath =
+  | "standard_compile"
+  | "deep_compile"
+  | "skip_empty_document"
+  | "failed"
+  // Legacy values — read-only round-trip.
+  | "fast_text_compile"
+  | "multimodal_compile"
+  | "ocr_parse";
+
 export interface AssessmentPlanPayload {
   document_id?: string;
   mode?: string;
@@ -40,6 +64,30 @@ export interface AssessmentPlanPayload {
   risk_flags?: string[];
   fallback_policy?: string;
   reason?: string;
+  /** Added in the API/UI-shape refactor. Older reports omit it;
+   * the panel falls back to deriving from `mode` when missing. */
+  recommended_path?: RecommendedProcessingPath;
+}
+
+/**
+ * Extraction evidence — what the PARSER actually extracted, kept
+ * distinct from chunking/index status. Reading this answers
+ * "did parsing work?"; reading the Chunks tab + index status
+ * answers "did chunking land?". The two must be verifiable
+ * separately so a non-empty document can't be reported COMPLETED
+ * with zero chunks.
+ */
+export interface ExtractionEvidence {
+  parser?: string;
+  parser_method?: string | null;
+  text_char_count?: number | null;
+  content_block_count?: number | null;
+  detected_content_types?: string[];
+  page_count?: number | null;
+  /** "pending_verification" — chunk count is NEVER claimed here.
+   * The FE renders this status with a "verified during compile/
+   * index" hint instead of a number. */
+  chunking_status?: string;
 }
 
 export interface CompileStrategyReport {
@@ -58,6 +106,8 @@ export interface CompileStrategyReport {
   initial_assessment_plan: AssessmentPlanPayload;
   plan_warnings: string[];
   unhandled_capabilities: string[];
+  /** Added in the API/UI-shape refactor. Older reports omit it. */
+  extraction_evidence?: ExtractionEvidence | null;
 }
 
 export interface BannerSpec {
@@ -230,4 +280,143 @@ export function resolvedCompileConfig(
      unhandled_capabilities?: string[] } {
   const last = report.attempts[report.attempts.length - 1];
   return last?.mapped_compile_config ?? {};
+}
+
+/**
+ * Coerce legacy `RecommendedProcessingPath` values onto the
+ * canonical two-mode vocabulary. Used wherever a payload reads a
+ * `recommended_path` field — old `compile_strategy_report`
+ * artifacts may carry `fast_text_compile` / `multimodal_compile`
+ * / `ocr_parse` and the UI must not show those raw strings.
+ *
+ *   fast_text_compile  → standard_compile
+ *   multimodal_compile → standard_compile
+ *   ocr_parse          → deep_compile
+ *   (anything else)    → passes through
+ */
+export function canonicalRecommendedPath(
+  path: RecommendedProcessingPath | undefined,
+): RecommendedProcessingPath | undefined {
+  switch (path) {
+    case "fast_text_compile":
+    case "multimodal_compile":
+      return "standard_compile";
+    case "ocr_parse":
+      return "deep_compile";
+    default:
+      return path;
+  }
+}
+
+/**
+ * Operator-friendly label for `RecommendedProcessingPath`. Legacy
+ * values are mapped onto the canonical two-mode labels with a
+ * "(migrated)" suffix so reviewers can tell at a glance that the
+ * artifact was written before the two-mode refactor.
+ */
+export function recommendedPathLabel(
+  path: RecommendedProcessingPath | undefined,
+): string {
+  switch (path) {
+    case "standard_compile":
+      return "Standard compile";
+    case "deep_compile":
+      return "Deep compile";
+    case "skip_empty_document":
+      return "Skip — empty document";
+    case "failed":
+      return "Assessment failed";
+    case "fast_text_compile":
+    case "multimodal_compile":
+      return "Standard compile (migrated)";
+    case "ocr_parse":
+      return "Deep compile (migrated)";
+    case undefined:
+      return "—";
+    default:
+      return path;
+  }
+}
+
+/**
+ * One-line operator hint explaining what each recommended path
+ * means. Used as a subtitle under the path badge so reviewers
+ * don't have to leave the page to understand the verdict.
+ */
+export function recommendedPathDescription(
+  path: RecommendedProcessingPath | undefined,
+): string {
+  switch (path) {
+    case "standard_compile":
+      return "Reliable default processing for normal text-first documents. "
+        + "Still runs full quality gates — not a shortcut.";
+    case "deep_compile":
+      return "Richer processing for scanned, layout-heavy, multimodal, "
+        + "or low-confidence documents.";
+    case "skip_empty_document":
+      return "Document has pages but no usable content blocks. "
+        + "Downstream enrichment would have nothing to operate on.";
+    case "failed":
+      return "Assessment couldn't complete; check warnings + retry.";
+    case "fast_text_compile":
+    case "multimodal_compile":
+      return "Legacy plan recorded before the two-mode refactor. "
+        + "Treated as Standard compile for this run.";
+    case "ocr_parse":
+      return "Legacy plan recorded before the two-mode refactor. "
+        + "Treated as Deep compile for this run.";
+    case undefined:
+      return "No recommendation available yet.";
+    default:
+      return "Unknown path.";
+  }
+}
+
+/**
+ * Backstop: if a report predates `recommended_path`, derive a
+ * reasonable value from the mode + capabilities so the FE never
+ * shows a blank slot. Older runs still render correctly.
+ *
+ * Two-mode aware: the result is always one of the canonical
+ * values (standard_compile / deep_compile / skip_empty_document
+ * / failed) — never a legacy string.
+ */
+export function recommendedPathFromReport(
+  report: CompileStrategyReport,
+): RecommendedProcessingPath {
+  const explicit = report.assessment_plan?.recommended_path;
+  if (explicit) {
+    const canonical = canonicalRecommendedPath(explicit);
+    if (canonical) return canonical;
+  }
+  const mode = report.assessment_plan?.mode;
+  const caps = new Set([
+    ...(report.assessment_plan?.required_capabilities ?? []),
+    ...(report.assessment_plan?.optional_capabilities ?? []),
+  ]);
+  if (caps.has("ocr")) return "deep_compile";
+  if (mode === "deep") return "deep_compile";
+  // Legacy mode="fast" + current mode="standard" both → standard.
+  return "standard_compile";
+}
+
+/**
+ * Pretty-print a `detected_content_types` token. Mirrors backend
+ * tokens emitted by `_build_extraction_evidence`.
+ */
+export function contentTypeLabel(token: string): string {
+  switch (token) {
+    case "text":
+      return "Text";
+    case "images":
+      return "Images";
+    case "tables":
+      return "Tables";
+    case "equations":
+      return "Equations";
+    case "scanned_pages":
+      return "Scanned pages";
+    default:
+      return token;
+  }
 }

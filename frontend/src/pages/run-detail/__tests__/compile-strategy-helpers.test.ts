@@ -13,12 +13,17 @@ import { describe, expect, it } from "vitest";
 import {
   appliedCapabilities,
   bannersForReport,
+  canonicalRecommendedPath,
   capabilityLabel,
   confidenceBucket,
+  contentTypeLabel,
   formatConfidence,
   hasModeEscalation,
   isFallbackOnly,
   modeDescription,
+  recommendedPathDescription,
+  recommendedPathFromReport,
+  recommendedPathLabel,
   resolvedCompileConfig,
   type CompileStrategyReport,
 } from "../compile-strategy-helpers";
@@ -398,5 +403,184 @@ describe("resolvedCompileConfig", () => {
   it("returns empty object when there are no attempts", () => {
     const r = _report({ attempts: [], attempts_count: 0 });
     expect(resolvedCompileConfig(r)).toEqual({});
+  });
+});
+
+
+// ---- 8) RecommendedProcessingPath helpers ------------------------
+
+
+describe("canonicalRecommendedPath", () => {
+  it("passes through current two-mode values", () => {
+    expect(canonicalRecommendedPath("standard_compile")).toBe("standard_compile");
+    expect(canonicalRecommendedPath("deep_compile")).toBe("deep_compile");
+    expect(canonicalRecommendedPath("skip_empty_document")).toBe("skip_empty_document");
+    expect(canonicalRecommendedPath("failed")).toBe("failed");
+  });
+
+  it("coerces legacy values onto the canonical two-mode model", () => {
+    expect(canonicalRecommendedPath("fast_text_compile")).toBe("standard_compile");
+    expect(canonicalRecommendedPath("multimodal_compile")).toBe("standard_compile");
+    expect(canonicalRecommendedPath("ocr_parse")).toBe("deep_compile");
+  });
+
+  it("returns undefined for undefined input", () => {
+    expect(canonicalRecommendedPath(undefined)).toBeUndefined();
+  });
+});
+
+
+describe("recommendedPathLabel", () => {
+  it("maps each two-mode path to a readable label", () => {
+    expect(recommendedPathLabel("standard_compile")).toBe("Standard compile");
+    expect(recommendedPathLabel("deep_compile")).toBe("Deep compile");
+    expect(recommendedPathLabel("skip_empty_document")).toBe("Skip — empty document");
+    expect(recommendedPathLabel("failed")).toBe("Assessment failed");
+  });
+
+  it("renders legacy values with a '(migrated)' marker", () => {
+    expect(recommendedPathLabel("fast_text_compile")).toBe("Standard compile (migrated)");
+    expect(recommendedPathLabel("multimodal_compile")).toBe("Standard compile (migrated)");
+    expect(recommendedPathLabel("ocr_parse")).toBe("Deep compile (migrated)");
+  });
+
+  it("never returns the raw 'fast' / 'multimodal' / 'ocr_parse' wire string", () => {
+    // Spec: UI must not expose FAST mode anywhere.
+    for (const legacy of ["fast_text_compile", "multimodal_compile", "ocr_parse"] as const) {
+      const label = recommendedPathLabel(legacy);
+      expect(label.toLowerCase()).not.toContain("fast");
+      expect(label.toLowerCase()).not.toContain("multimodal");
+      expect(label.toLowerCase()).not.toContain("ocr parse");
+    }
+  });
+
+  it("returns em-dash for undefined", () => {
+    expect(recommendedPathLabel(undefined)).toBe("—");
+  });
+});
+
+
+describe("recommendedPathDescription", () => {
+  it("returns a short hint for each two-mode path", () => {
+    expect(recommendedPathDescription("standard_compile")).toContain("Reliable");
+    expect(recommendedPathDescription("deep_compile")).toContain("scanned");
+    expect(recommendedPathDescription("skip_empty_document")).toContain("no usable");
+    expect(recommendedPathDescription("failed")).toMatch(/assessment/i);
+  });
+
+  it("describes legacy values as migrated", () => {
+    expect(recommendedPathDescription("fast_text_compile")).toContain("Legacy");
+    expect(recommendedPathDescription("multimodal_compile")).toContain("Legacy");
+    expect(recommendedPathDescription("ocr_parse")).toContain("Legacy");
+  });
+
+  it("returns a graceful default for undefined", () => {
+    expect(recommendedPathDescription(undefined)).toContain("No recommendation");
+  });
+});
+
+
+describe("recommendedPathFromReport", () => {
+  it("uses the explicit field when present (two-mode value)", () => {
+    const r = _report();
+    r.assessment_plan.recommended_path = "standard_compile";
+    expect(recommendedPathFromReport(r)).toBe("standard_compile");
+  });
+
+  it("coerces a legacy explicit value to its canonical two-mode form", () => {
+    // A `compile_strategy_report` artifact written before the
+    // two-mode refactor may carry `fast_text_compile`. The FE
+    // must surface it as `standard_compile`, never raw.
+    const r = _report();
+    r.assessment_plan.recommended_path = "fast_text_compile";
+    expect(recommendedPathFromReport(r)).toBe("standard_compile");
+  });
+
+  it("coerces legacy ocr_parse to deep_compile", () => {
+    const r = _report();
+    r.assessment_plan.recommended_path = "ocr_parse";
+    expect(recommendedPathFromReport(r)).toBe("deep_compile");
+  });
+
+  it("derives standard_compile from legacy mode=fast on old reports", () => {
+    const r = _report({
+      assessment_plan: { ..._report().assessment_plan, mode: "fast",
+                         recommended_path: undefined },
+    });
+    expect(recommendedPathFromReport(r)).toBe("standard_compile");
+  });
+
+  it("derives deep_compile when OCR is in required capabilities", () => {
+    const r = _report({
+      assessment_plan: {
+        ..._report().assessment_plan,
+        mode: "deep",
+        required_capabilities: ["text_extraction", "ocr"],
+        recommended_path: undefined,
+      },
+    });
+    expect(recommendedPathFromReport(r)).toBe("deep_compile");
+  });
+
+  it("derives deep_compile from mode=deep even without explicit ocr capability", () => {
+    const r = _report({
+      assessment_plan: {
+        ..._report().assessment_plan,
+        mode: "deep",
+        required_capabilities: ["text_extraction"],
+        recommended_path: undefined,
+      },
+    });
+    expect(recommendedPathFromReport(r)).toBe("deep_compile");
+  });
+
+  it("defaults to standard_compile for mode=standard on legacy reports", () => {
+    const r = _report({
+      assessment_plan: {
+        ..._report().assessment_plan,
+        mode: "standard",
+        recommended_path: undefined,
+      },
+    });
+    expect(recommendedPathFromReport(r)).toBe("standard_compile");
+  });
+
+  it("never returns a legacy enum value", () => {
+    // Regression: the backstop MUST only return canonical
+    // two-mode values, never `fast_text_compile` /
+    // `multimodal_compile` / `ocr_parse`.
+    const inputs: Array<Partial<CompileStrategyReport["assessment_plan"]>> = [
+      { mode: "fast", recommended_path: undefined },
+      { mode: "standard", recommended_path: undefined },
+      { mode: "deep", recommended_path: undefined },
+      { mode: "standard", recommended_path: "multimodal_compile" },
+      { mode: "deep", recommended_path: "ocr_parse" },
+      { recommended_path: "fast_text_compile" },
+    ];
+    const legacyValues = new Set([
+      "fast_text_compile", "multimodal_compile", "ocr_parse",
+    ]);
+    for (const ap of inputs) {
+      const r = _report({
+        assessment_plan: { ..._report().assessment_plan, ...ap },
+      });
+      const result = recommendedPathFromReport(r);
+      expect(legacyValues.has(result as string)).toBe(false);
+    }
+  });
+});
+
+
+describe("contentTypeLabel", () => {
+  it("renders detected-content tokens in operator-friendly form", () => {
+    expect(contentTypeLabel("text")).toBe("Text");
+    expect(contentTypeLabel("images")).toBe("Images");
+    expect(contentTypeLabel("tables")).toBe("Tables");
+    expect(contentTypeLabel("equations")).toBe("Equations");
+    expect(contentTypeLabel("scanned_pages")).toBe("Scanned pages");
+  });
+
+  it("falls back to the raw token for unknown content types", () => {
+    expect(contentTypeLabel("custom_blob")).toBe("custom_blob");
   });
 });

@@ -28,6 +28,8 @@ with workflow.unsafe.imports_passed_through():
         StageValidationActivityResult,
         ValidateContextResult,
         ValidateStageInput,
+        VerifyCompileActivityResult,
+        VerifyCompileInput,
     )
     from j1.orchestration.activities.processing import ProcessingActivities
     from j1.orchestration.activities.profiling import (
@@ -94,6 +96,17 @@ class WorkflowState(StrEnum):
     PAUSED = "paused"
     WAITING_FOR_BUDGET_APPROVAL = "waiting_for_budget_approval"
     WAITING_FOR_REVIEW = "waiting_for_review"
+    # Two-phase compile gate. The workflow parks here after the
+    # assessment plan is built but before the (expensive) compile
+    # activity dispatches; `trigger_compile` advances back to RUNNING.
+    # Only reached when the request opted in (`two_phase_compile=True`).
+    WAITING_FOR_COMPILE_TRIGGER = "waiting_for_compile_trigger"
+    # Post-compile health gate. Surfaces while the verification
+    # activity runs (typically a single second) so the FE timeline
+    # shows the verification phase rather than skipping straight from
+    # compile to enrich/finalize. Only reached when the request opted
+    # in (`verify_after_compile=True`).
+    VERIFYING = "verifying"
     FAILED_RECOVERABLE = "failed_recoverable"
     FAILED_FINAL = "failed_final"
     COMPLETED = "completed"
@@ -150,10 +163,70 @@ SEARCH_ATTR_REQUIRES_PREMIUM_LLM = "J1RequiresPremiumLLM"
 # Values written into `SEARCH_ATTR_INGEST_STAGE`. Operators filter
 # Temporal histories on these — keep in sync with the values quoted
 # in deployment runbooks.
+#
+# Macro-stage vocabulary (Phase 4): the workflow writes one of these
+# stable values as it moves between high-level phases, rather than
+# the raw per-operation string (`compile:doc-1`, `enrich:doc-2`,
+# etc.). The reduced cardinality lets ops dashboards group by stage
+# instead of carrying a long-tail of per-doc values. Mapping from
+# the workflow's internal `op` strings happens in
+# `_macro_ingest_stage()` below.
+INGEST_STAGE_RECEIVED = "received"
+INGEST_STAGE_ASSESSING = "assessing"
+INGEST_STAGE_ASSESSMENT_READY = "assessment_ready"
+INGEST_STAGE_COMPILE_PENDING = "compile_pending"
+INGEST_STAGE_COMPILING = "compiling"
+INGEST_STAGE_VERIFYING = "verifying"
+# Catch-all for non-macro ops (build_graph, index, enrich, finalize,
+# budget_check, review_gate). Workflow consumers that need the
+# specific stage read `current_operation` off the workflow's status
+# query instead — search attributes are for filtering, not per-event
+# detail.
+INGEST_STAGE_RUNNING = "running"
+# Legacy starting value. Kept as an alias of RECEIVED so dashboards
+# filtering on "starting" still match new runs during migration; the
+# workflow writes RECEIVED on new runs.
 INGEST_STAGE_STARTING = "starting"
 INGEST_STAGE_CANCELLED = "cancelled"
 INGEST_STAGE_COMPLETED = "completed"
 INGEST_STAGE_FAILED = "failed"
+
+
+# Per-op → macro-stage projection. `op` is the per-doc workflow
+# operation string written by `_begin()` (e.g. `compile:doc-1`,
+# `assess_compile_strategy:doc-1`, `validate`). The macro stage is
+# the coarse phase the run is in; this lets dashboards group by
+# stage without enumerating every per-doc op.
+#
+# Strip the `:doc-id` suffix before lookup so `compile:doc-1` and
+# `compile:doc-2` both map to `compiling`. Unknown ops fall back to
+# `running` so a new op accidentally bypassing the table doesn't
+# crash the upsert.
+_OP_TO_MACRO_INGEST_STAGE: dict[str, str] = {
+    "validate": INGEST_STAGE_RECEIVED,
+    "list_documents": INGEST_STAGE_RECEIVED,
+    "assess_compile_strategy": INGEST_STAGE_ASSESSING,
+    "compile_pending": INGEST_STAGE_COMPILE_PENDING,
+    "compile": INGEST_STAGE_COMPILING,
+    "verify_compile": INGEST_STAGE_VERIFYING,
+    "post_compile_assess": INGEST_STAGE_VERIFYING,
+    "assess_enrichment": INGEST_STAGE_VERIFYING,
+}
+
+
+def _macro_ingest_stage(op: str | None) -> str:
+    """Return the macro-stage value to write into
+    `SEARCH_ATTR_INGEST_STAGE` for the given workflow operation.
+
+    Pure / deterministic. Strips an optional `:doc-id` suffix before
+    table lookup so per-doc operations collapse onto one stage value.
+    Unknown ops fall back to `INGEST_STAGE_RUNNING` — operators get a
+    coarse "something's happening" signal even when the op string
+    isn't in the table."""
+    if not op:
+        return INGEST_STAGE_RUNNING
+    base, _, _ = op.partition(":")
+    return _OP_TO_MACRO_INGEST_STAGE.get(base, INGEST_STAGE_RUNNING)
 
 # Workflow signal names. Must match the `@workflow.signal`-decorated
 # method names on `ProjectProcessingWorkflow` since Temporal infers
@@ -168,6 +241,13 @@ SIGNAL_APPROVE_BUDGET = "approve_budget"
 SIGNAL_REJECT_BUDGET = "reject_budget"
 SIGNAL_APPROVE_REVIEW = "approve_review"
 SIGNAL_REJECT_REVIEW = "reject_review"
+# Signal that releases the workflow from the
+# `WAITING_FOR_COMPILE_TRIGGER` state into the compile retry loop.
+# Sent by `POST /ingestion-runs/{run_id}/compile` (via the REST
+# adapter's `compile_handler`). No-op when the workflow isn't parked
+# (the signal flips a flag the gate awaits on; the gate doesn't fire
+# at all when `two_phase_compile=False`).
+SIGNAL_TRIGGER_COMPILE = "trigger_compile"
 
 
 @dataclass(frozen=True)
@@ -275,6 +355,24 @@ class ProjectProcessingRequest:
     compile_max_attempts: int = 2
     compile_retry_min_text_chars: int = 200
     compile_retry_min_chunks: int = 1
+    # Two-phase compile control. When True, the workflow pauses
+    # AFTER the assessment plan is built and BEFORE the compile
+    # retry loop dispatches, parking in
+    # `WorkflowState.WAITING_FOR_COMPILE_TRIGGER` and surfacing
+    # `RunStatus.COMPILE_PENDING` on the IngestionRun record. The
+    # REST adapter's `POST /ingestion-runs/{id}/compile` endpoint
+    # sends `SIGNAL_TRIGGER_COMPILE` to advance the workflow. When
+    # False (default), compile dispatches inline as before.
+    two_phase_compile: bool = False
+    # Post-compile verification gate. When True, the workflow runs
+    # the `verify_compile_output` activity after each document's
+    # compile retry loop completes. Failures (zero chunks produced,
+    # missing index manifest, etc.) terminate the run with a stable
+    # `failure_code` (`CHUNK_FAILED` / `INDEX_FAILED` /
+    # `VERIFICATION_FAILED`) instead of letting an empty compile
+    # silently land at SUCCEEDED. Minimum chunks required is
+    # `compile_retry_min_chunks`.
+    verify_after_compile: bool = False
 
 
 @dataclass(frozen=True)
@@ -321,7 +419,18 @@ class _BusinessRejection(Exception):
 
     Why: lets the workflow distinguish business rejections (FAILED_FINAL) from unexpected
     exceptions (FAILED_RECOVERABLE) without exposing the distinction to callers.
+
+    `failure_code` is an optional override for the outer-handler-default
+    `ERROR_TYPE_REQUIRED_STEP_FAILED`. Verification rejections set this
+    to one of the `FAILURE_CODE_*` strings from `j1.runs.models` so the
+    final `error_report` artifact + `IngestionRun.failure_code` carry
+    the verification-specific reason (CHUNK_FAILED / INDEX_FAILED /
+    VERIFICATION_FAILED) instead of the generic step-failed label.
     """
+
+    def __init__(self, message: str, *, failure_code: str | None = None) -> None:
+        super().__init__(message)
+        self.failure_code = failure_code
 
 
 def _merge_compile_signals(
@@ -425,6 +534,149 @@ def _enrich_plan_needs_premium_llm(enrich_plan) -> bool:
     return any(t in vision_aware for t in recommended)
 
 
+def _escalation_reason(
+    initial_mode: str | None,
+    final_mode: str | None,
+    attempts: list[dict],
+    final_retry_reason: str | None,
+) -> str | None:
+    """Render a one-line operator-readable reason for compile-mode
+    escalation, or None when no escalation occurred.
+
+    Inputs:
+      * `initial_mode` / `final_mode` — when they differ, escalation
+        DID happen. The attempt records carry the per-attempt
+        retry_reason ("zero_chunks", "ocr_likely_needed", etc.)
+        that triggered each escalation; this helper joins them
+        into a single audit string.
+      * `attempts` — the per-attempt audit list from the workflow's
+        retry loop.
+      * `final_retry_reason` — the verdict the LAST attempt would
+        have escalated on if the ladder had more rungs (None when
+        the final attempt succeeded cleanly).
+
+    Returns None when initial_mode == final_mode (single-attempt
+    success) so the FE knows to suppress the escalation callout."""
+    if not initial_mode or not final_mode or initial_mode == final_mode:
+        return None
+    triggers: list[str] = []
+    for entry in attempts:
+        reason = entry.get("retry_reason") if isinstance(entry, dict) else None
+        if reason:
+            triggers.append(str(reason))
+    if final_retry_reason and final_retry_reason not in triggers:
+        triggers.append(final_retry_reason)
+    if triggers:
+        joined = ", ".join(triggers)
+        return (
+            f"compile escalated {initial_mode} → {final_mode} "
+            f"after: {joined}"
+        )
+    return f"compile escalated {initial_mode} → {final_mode}"
+
+
+def _build_extraction_evidence(compile_result) -> dict[str, Any]:
+    """Produce the `extraction_evidence` block for the
+    `compile_strategy_report` payload.
+
+    The block describes what the PARSER extracted — independent of
+    whether downstream chunking / indexing actually happened. The FE
+    renders this distinctly from chunking status so operators can
+    tell at a glance: "parsing worked, but no chunks landed" vs
+    "parsing failed entirely" vs "everything is green".
+
+    Fields:
+      * `parser`              — adapter that produced the result.
+      * `parser_method`       — adapter-level method (txt / auto /
+                                ocr / vlm-* depending on backend).
+      * `text_char_count`     — characters of extracted text.
+      * `content_block_count` — text blocks the parser emitted.
+      * `detected_content_types` — sorted list of content types the
+                                   parser actually saw (text /
+                                   images / tables / equations).
+      * `page_count`          — pages observed (None when unknown).
+      * `chunking_status`     — always `pending_verification` here.
+                                Chunk evidence is verified later
+                                via the per-stage validation gate
+                                + the chunk artifact registry; this
+                                block intentionally never claims a
+                                chunk_count.
+
+    Defensive on every field: missing `compile_result` → empty
+    block; missing keys on the result → field omitted rather than
+    zero (the FE distinguishes "unknown" from "zero")."""
+    if compile_result is None:
+        return {
+            "parser": "raganything",
+            "parser_method": None,
+            "text_char_count": None,
+            "content_block_count": None,
+            "detected_content_types": [],
+            "page_count": None,
+            "chunking_status": "pending_verification",
+        }
+    stats = getattr(compile_result, "content_stats", None) or {}
+    metrics = getattr(compile_result, "compile_metrics", None) or {}
+
+    # Parse method comes from the bridge's manifest (parser_engine
+    # field carries the resolved method); the workflow tracks the
+    # mapped method per attempt under `mapped_compile_config`.
+    parser_method = None
+    if isinstance(stats.get("parser_engine"), str):
+        parser_method = stats["parser_engine"]
+    elif isinstance(metrics.get("parser_method"), str):
+        parser_method = metrics["parser_method"]
+    elif isinstance(stats.get("parse_method"), str):
+        parser_method = stats["parse_method"]
+
+    text_chars = stats.get("total_text_chars")
+    if not isinstance(text_chars, int):
+        text_chars = metrics.get("extracted_text_chars")
+        if not isinstance(text_chars, int):
+            text_chars = None
+
+    content_blocks = stats.get("text_block_count")
+    if not isinstance(content_blocks, int):
+        content_blocks = None
+
+    page_count = stats.get("page_count")
+    if not isinstance(page_count, int):
+        page_count = None
+
+    detected: list[str] = []
+    if stats.get("has_text") is True or (
+        isinstance(content_blocks, int) and content_blocks > 0
+    ) or (isinstance(text_chars, int) and text_chars > 0):
+        detected.append("text")
+    if stats.get("has_images") is True or (
+        isinstance(stats.get("image_count"), int) and stats["image_count"] > 0
+    ):
+        detected.append("images")
+    if stats.get("has_tables") is True or (
+        isinstance(stats.get("table_count"), int) and stats["table_count"] > 0
+    ):
+        detected.append("tables")
+    if stats.get("has_equations") is True or (
+        isinstance(stats.get("equation_count"), int) and stats["equation_count"] > 0
+    ):
+        detected.append("equations")
+    if stats.get("has_scanned_pages") is True:
+        detected.append("scanned_pages")
+    return {
+        "parser": stats.get("provider") or "raganything",
+        "parser_method": parser_method,
+        "text_char_count": text_chars,
+        "content_block_count": content_blocks,
+        "detected_content_types": detected,
+        "page_count": page_count,
+        # CHUNKS ARE VERIFIED LATER — never claimed here.
+        # Operators reading this should treat extraction evidence
+        # as "what the probe saw" and check the chunks-tab / index
+        # status for actual chunk verification.
+        "chunking_status": "pending_verification",
+    }
+
+
 def _safe_now_iso() -> str:
     """Return an ISO-8601 timestamp string. Uses `workflow.now()`
     when running inside Temporal so replay sees the same value;
@@ -466,6 +718,14 @@ class ProjectProcessingWorkflow:
         self._review_gate: str | None = None
         self._review_required: bool = False
         self._budget_approval_required: bool = False
+        # Two-phase compile trigger flag — flipped by
+        # `SIGNAL_TRIGGER_COMPILE`. The compile gate consumes the
+        # flag (reads then resets to False) so a second document in
+        # a multi-doc run gates independently. None means "not yet
+        # signalled"; we use bool here because the gate's loop is
+        # `wait_condition(self._compile_triggered or self._cancelled)`
+        # and a fresh False at gate-entry means "wait again".
+        self._compile_triggered: bool = False
         self._current_operation: str | None = None
         self._pending_operation: str | None = None
         self._completed_operations: list[str] = []
@@ -546,7 +806,12 @@ class ProjectProcessingWorkflow:
             stage="workflow",
             status="running",
         )
-        self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_STARTING)
+        # RECEIVED is the canonical first-stage value (Phase 4). The
+        # legacy "starting" alias is retained as a constant for
+        # operators whose dashboards filter on it; new runs write
+        # the canonical name and `_macro_ingest_stage()` translates
+        # subsequent transitions consistently.
+        self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_RECEIVED)
 
         try:
             if not is_continuation:
@@ -742,13 +1007,19 @@ class ProjectProcessingWorkflow:
             # failed — the false-success bug this raise fixes.
             self._state = WorkflowState.FAILED_FINAL
             self._error = str(exc)
+            # Verification rejections carry a stable `failure_code` on
+            # the exception. Other business rejections fall back to
+            # the generic `ERROR_TYPE_REQUIRED_STEP_FAILED` label.
+            business_failure_code = (
+                exc.failure_code or ERROR_TYPE_REQUIRED_STEP_FAILED
+            )
             self._log_step(
                 request,
                 event="ingestion.workflow.failed",
                 stage="workflow",
                 status="failed",
                 reason=self._error,
-                error_type=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                error_type=business_failure_code,
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
             # Persist the failure-path `error_report` artifact so the
@@ -759,7 +1030,7 @@ class ProjectProcessingWorkflow:
             # regardless.
             await self._persist_error_report(
                 request,
-                failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                failure_code=business_failure_code,
                 failure_message=self._error,
             )
             # Failed runs also get a `final_summary` artifact so the
@@ -768,13 +1039,13 @@ class ProjectProcessingWorkflow:
             await self._persist_final_summary(
                 request,
                 final_status="failed",
-                failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                failure_code=business_failure_code,
                 failure_message=self._error,
             )
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
-                failure_code=ERROR_TYPE_REQUIRED_STEP_FAILED,
+                failure_code=business_failure_code,
                 failure_message=self._error,
             )
             raise ApplicationError(
@@ -881,9 +1152,14 @@ class ProjectProcessingWorkflow:
         self._pending_operation = None
         # Surface "currently running" state via Temporal search
         # attributes so the UI can group/filter active workflows by
-        # stage. Best-effort — fails silently if the attribute isn't
-        # registered with the namespace.
-        self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, op)
+        # stage. Project the per-op string onto a macro-stage value
+        # (Phase 4) so the search-attribute cardinality stays bounded
+        # — `compile:doc-1` and `compile:doc-2` both become
+        # `compiling`. Best-effort: fails silently if the attribute
+        # isn't registered with the namespace.
+        self._set_search_attribute(
+            SEARCH_ATTR_INGEST_STAGE, _macro_ingest_stage(op),
+        )
 
     def _complete(self, op: str) -> None:
         self._completed_operations.append(op)
@@ -1313,6 +1589,101 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
             pass
 
+    async def _run_post_compile_verification(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        document_id: str,
+        compile_result: "ArtifactActivityResult",
+    ) -> None:
+        """Run the `verify_compile_output` activity and either
+        proceed (passed) or raise `_BusinessRejection` with a stable
+        `failure_code` so the outer handler lifts it into the
+        run record / error report.
+
+        Surfaces a `WorkflowState.VERIFYING` transition so the
+        `get_status` query sees the verification phase while the
+        activity is in flight. On pass, the workflow returns to
+        RUNNING; on fail, the raise bubbles to the outer handler
+        which lands at FAILED_FINAL."""
+        previous_state = self._state
+        self._state = WorkflowState.VERIFYING
+        # Surface the verifying phase on the Temporal search attribute
+        # (Phase 4). The verification activity isn't run through
+        # `_begin()` — it's a synthesized gate inside the per-doc
+        # loop — so the macro-stage write happens here explicitly.
+        self._set_search_attribute(
+            SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_VERIFYING,
+        )
+        try:
+            verification = await workflow.execute_activity_method(
+                ProcessingActivities.verify_compile_output,
+                VerifyCompileInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id or "",
+                    document_id=document_id,
+                    output_artifact_ids=list(compile_result.artifact_ids),
+                    output_artifact_kinds=tuple(compile_result.kinds),
+                    min_chunks=max(1, request.compile_retry_min_chunks),
+                    require_index_manifest=False,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        finally:
+            # Restore RUNNING regardless of outcome — the outer
+            # handler flips to FAILED_FINAL on raise; on success we
+            # want the next stage to see the run as in-flight.
+            if self._state == WorkflowState.VERIFYING:
+                self._state = (
+                    previous_state
+                    if previous_state != WorkflowState.VERIFYING
+                    else WorkflowState.RUNNING
+                )
+        if not verification.passed:
+            from j1.runs.models import FAILURE_CODE_VERIFICATION_FAILED
+
+            reason_code = (
+                verification.reason_code or FAILURE_CODE_VERIFICATION_FAILED
+            )
+            self._record_step(
+                step="verify_compile",
+                status=StepStatus.FAILED,
+                required=True,
+                source=StepSource.CALLER,
+                reason=verification.message or "verification failed",
+                error=StepError(
+                    type="VerificationFailed",
+                    message=(verification.message or "verification failed")[:512],
+                    retryable=False,
+                ),
+                metadata={
+                    "document_id": document_id,
+                    "failure_code": reason_code,
+                    "chunk_count": verification.chunk_count,
+                },
+            )
+            raise _BusinessRejection(
+                (
+                    f"post-compile verification failed for {document_id} "
+                    f"({reason_code}): "
+                    f"{verification.message or 'no detail'}"
+                ),
+                failure_code=reason_code,
+            )
+        self._record_step(
+            step="verify_compile",
+            status=StepStatus.COMPLETED,
+            required=True,
+            source=StepSource.CALLER,
+            artifact_count=0,
+            metadata={
+                "document_id": document_id,
+                "chunk_count": verification.chunk_count,
+            },
+        )
+
     async def _persist_compile_strategy_report(
         self,
         request: ProjectProcessingRequest,
@@ -1328,11 +1699,20 @@ class ProjectProcessingWorkflow:
         final_warnings: list[str],
         unhandled_capabilities: list[str],
         plan_warnings: list[str],
+        compile_result: "ArtifactActivityResult | None" = None,
     ) -> None:
         """Schedule the `persist_compile_strategy_report` activity.
         Best-effort — any persistence error inside the activity is
         swallowed there, and a Temporal-side failure here is also
-        swallowed so observability never blocks ingest."""
+        swallowed so observability never blocks ingest.
+
+        When `compile_result` is supplied, the payload also carries an
+        `extraction_evidence` block surfacing what the parser actually
+        extracted (parser name, parse method, char/block counts,
+        detected content types). The FE renders this distinctly from
+        chunking status — extraction evidence is "what the probe saw",
+        chunking is "what was indexed", and the two MUST stay
+        separately verifiable."""
         if not request.correlation_id:
             return
         retry_used = bool(
@@ -1344,9 +1724,24 @@ class ProjectProcessingWorkflow:
             "schema_version": "1",
             "run_id": request.correlation_id,
             "document_id": document_id,
-            "initial_mode": initial_mode,
-            "final_mode": final_mode,
+            # Two-mode model. `selected_compile_mode` is the
+            # canonical mode of the FINAL successful (or
+            # last-attempted) compile; `initial_mode` / `final_mode`
+            # are kept for back-compat with existing FE consumers.
+            "selected_compile_mode": final_mode or initial_mode,
+            "initial_compile_mode": initial_mode,
+            "final_compile_mode": final_mode,
+            "initial_mode": initial_mode,  # legacy alias
+            "final_mode": final_mode,      # legacy alias
             "retry_used": retry_used,
+            # Operator-readable escalation reason when the retry
+            # layer escalated mode mid-flight. Empty when no
+            # escalation occurred (single-attempt success / no
+            # retry needed). Drives the FE's "compile-safety retry
+            # escalated mode" callout.
+            "escalation_reason": _escalation_reason(
+                initial_mode, final_mode, attempts, final_retry_reason,
+            ),
             "attempts_count": len(attempts),
             "attempts": list(attempts),
             "final_compile_quality": final_quality,
@@ -1356,6 +1751,21 @@ class ProjectProcessingWorkflow:
             "initial_assessment_plan": dict(initial_assessment or {}),
             "plan_warnings": list(plan_warnings),
             "unhandled_capabilities": list(unhandled_capabilities),
+            "extraction_evidence": _build_extraction_evidence(compile_result),
+            # Verification status block. Compile-stage success is
+            # NOT enough to mark the run complete — chunks + index
+            # must verify separately. This block carries the
+            # known-at-compile-time state; downstream stage gates
+            # update it as they run.
+            "verification_status": {
+                "compile": (
+                    "succeeded"
+                    if (final_quality not in {"failed"})
+                    else "failed"
+                ),
+                "chunks": "pending_verification",
+                "index": "pending_verification",
+            },
         }
         try:
             await workflow.execute_activity_method(
@@ -2128,6 +2538,15 @@ class ProjectProcessingWorkflow:
                     request, stage="ASSESS_COMPILE_STRATEGY",
                     step="assess_compile_strategy", action="completed",
                 )
+                # The assessment plan is built and ready for the
+                # compile gate to consume. Surface the canonical
+                # `assessment_ready` macro stage so ops dashboards
+                # see a stable transition between assessing and
+                # whatever runs next (compile_pending under
+                # two-phase, compiling under one-phase).
+                self._set_search_attribute(
+                    SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_ASSESSMENT_READY,
+                )
             except Exception as exc:  # noqa: BLE001 — handled per policy
                 # Surface the failure on the timeline before the
                 # fail_open / fail_closed branches handle it below.
@@ -2171,6 +2590,20 @@ class ProjectProcessingWorkflow:
         compile_op = f"{OPERATION_COMPILE}:{document_id}"
         if await self._gate_before_expensive(request, compile_op):
             return
+
+        # ---- Two-phase compile trigger --------------------------
+        # When the request opted into two-phase compile, park the
+        # workflow until the user/operator invokes
+        # `POST /ingestion-runs/{id}/compile`. The endpoint sends
+        # `SIGNAL_TRIGGER_COMPILE`, which flips `_compile_triggered`
+        # and releases the gate. Cancel still wins — a cancel
+        # received while parked drops us out without dispatching the
+        # activity. The gate also runs per-document, so a multi-doc
+        # run gates each doc separately.
+        if request.two_phase_compile:
+            await self._await_compile_trigger(document_id=document_id)
+            if self._cancelled:
+                return
 
         # ---- Compile-safety retry loop --------------------------
         # One attempt is the legacy path. When
@@ -2392,6 +2825,20 @@ class ProjectProcessingWorkflow:
         )
         self._complete(compile_op)
 
+        # ── Post-compile verification gate ─────────────────────────
+        # Run the chunk-count / index health check when the request
+        # opted in. Failure here lands a terminal FAILED with a
+        # stable `failure_code` (CHUNK_FAILED / INDEX_FAILED /
+        # VERIFICATION_FAILED) instead of letting an empty compile
+        # silently land at SUCCEEDED. The activity is fast (no
+        # artifact reads) so the gate adds negligible latency.
+        if request.verify_after_compile:
+            await self._run_post_compile_verification(
+                request,
+                document_id=document_id,
+                compile_result=compile_result,
+            )
+
         # ── Compile-strategy report ────────────────────────────────
         # Persist the AssessmentPlan + per-attempt audit + final
         # quality verdict as a `compile_strategy_report` artifact so
@@ -2422,6 +2869,7 @@ class ProjectProcessingWorkflow:
                     "plan_warnings", []
                 )
             ),
+            compile_result=compile_result,
         )
 
         # ── Post-compile enrich assessment ────────────────────────
@@ -2997,6 +3445,47 @@ class ProjectProcessingWorkflow:
         self._review_gate = None
         self._state = WorkflowState.RUNNING
 
+    async def _await_compile_trigger(self, *, document_id: str) -> None:
+        """Park the workflow until `SIGNAL_TRIGGER_COMPILE` fires.
+
+        Used only when `request.two_phase_compile=True`. The gate
+        flips `WorkflowState` to `WAITING_FOR_COMPILE_TRIGGER` and
+        sets `_current_operation` to a synthetic
+        `compile_pending:{doc_id}` op so `get_status` queries can
+        tell what the workflow is parked on. On signal, the flag is
+        consumed (reset to False) so a subsequent document in the
+        same run gates independently. A cancel received while parked
+        drops out without raising — the caller checks
+        `self._cancelled` after returning."""
+        previous_operation = self._current_operation
+        previous_state = self._state
+        self._compile_triggered = False
+        self._current_operation = f"compile_pending:{document_id}"
+        self._state = WorkflowState.WAITING_FOR_COMPILE_TRIGGER
+        # Surface the compile-pending phase on the Temporal search
+        # attribute (Phase 4). The synthetic `compile_pending` op
+        # isn't run through `_begin()`, so the macro-stage write
+        # happens here explicitly. Maps via `_macro_ingest_stage()`
+        # so a future op-name change picks up the table change.
+        self._set_search_attribute(
+            SEARCH_ATTR_INGEST_STAGE,
+            _macro_ingest_stage(self._current_operation),
+        )
+        await workflow.wait_condition(
+            lambda: self._compile_triggered or self._cancelled
+        )
+        self._current_operation = previous_operation
+        if self._cancelled:
+            return
+        self._state = (
+            previous_state
+            if previous_state not in (
+                WorkflowState.WAITING_FOR_COMPILE_TRIGGER,
+                WorkflowState.PAUSED,
+            )
+            else WorkflowState.RUNNING
+        )
+
     async def _should_stop(self) -> bool:
         await self._await_pause_or_cancel()
         return self._cancelled
@@ -3087,6 +3576,16 @@ class ProjectProcessingWorkflow:
     @workflow.signal
     def reject_review(self) -> None:
         self._review_approved = False
+
+    @workflow.signal
+    def trigger_compile(self) -> None:
+        """Release the workflow from `WAITING_FOR_COMPILE_TRIGGER`.
+
+        Sent by `POST /ingestion-runs/{id}/compile`. Idempotent — a
+        second signal while compile is already in flight is a no-op
+        (the gate consumes-and-resets the flag, so a future second
+        document in the same run will gate again as expected)."""
+        self._compile_triggered = True
 
     # ---- Query -------------------------------------------------------------
 

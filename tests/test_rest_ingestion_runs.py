@@ -392,6 +392,178 @@ def test_confirm_is_noop_for_already_running_run(client, run_store, ctx):
     assert resp.json()["data"]["status"] == "running"
 
 
+def test_confirm_transitions_run_from_canonical_assessment_ready_to_running(
+    client, run_store, ctx,
+):
+    """Phase 1: the canonical `assessment_ready` value is an alias of
+    the legacy `plan_ready`. /confirm must accept both as valid entry
+    states so workers writing canonical values still flip to running."""
+    run = _make_run("run-confirm-canonical")
+    run.status = RunStatus.ASSESSMENT_READY
+    run_store.upsert(ctx, run)
+
+    resp = client.post(
+        "/ingestion-runs/run-confirm-canonical/confirm", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "running"
+    assert run_store.get(ctx, "run-confirm-canonical").status == RunStatus.RUNNING
+
+
+def test_list_status_filter_expands_canonical_to_include_legacy(
+    client, run_store, ctx,
+):
+    """`?status=received` must match both runs persisted with the
+    canonical `received` value AND legacy `created` runs. Mirrors
+    `?status=assessment_ready` matching `plan_ready` too."""
+    legacy_run = _make_run("run-legacy-created")
+    legacy_run.status = RunStatus.CREATED
+    run_store.upsert(ctx, legacy_run)
+
+    canonical_run = _make_run("run-canonical-received")
+    canonical_run.status = RunStatus.RECEIVED
+    run_store.upsert(ctx, canonical_run)
+
+    # Unrelated run that should NOT match
+    other = _make_run("run-other-running")
+    other.status = RunStatus.RUNNING
+    run_store.upsert(ctx, other)
+
+    resp = client.get(
+        "/ingestion-runs?status=received", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    items = resp.json()["data"]["items"]
+    run_ids = {it["runId"] for it in items}
+    assert "run-legacy-created" in run_ids
+    assert "run-canonical-received" in run_ids
+    assert "run-other-running" not in run_ids
+
+
+def test_list_status_filter_legacy_query_also_matches_canonical(
+    client, run_store, ctx,
+):
+    """Symmetric: a FE that still queries with the legacy name must
+    still see runs written under the canonical name."""
+    legacy_run = _make_run("run-legacy-plan-ready")
+    legacy_run.status = RunStatus.PLAN_READY
+    run_store.upsert(ctx, legacy_run)
+
+    canonical_run = _make_run("run-canonical-assessment-ready")
+    canonical_run.status = RunStatus.ASSESSMENT_READY
+    run_store.upsert(ctx, canonical_run)
+
+    resp = client.get(
+        "/ingestion-runs?status=plan_ready", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    run_ids = {it["runId"] for it in resp.json()["data"]["items"]}
+    assert "run-legacy-plan-ready" in run_ids
+    assert "run-canonical-assessment-ready" in run_ids
+
+
+# ---- POST /ingestion-runs/{id}/compile (two-phase compile) -------
+
+
+def test_compile_returns_404_for_unknown_run(client):
+    resp = client.post(
+        "/ingestion-runs/missing/compile", headers=_HEADERS,
+    )
+    assert resp.status_code == 404
+
+
+def test_compile_transitions_run_from_compile_pending_to_running(
+    client, run_store, ctx,
+):
+    run = _make_run("run-compile")
+    run.status = RunStatus.COMPILE_PENDING
+    run_store.upsert(ctx, run)
+
+    resp = client.post(
+        "/ingestion-runs/run-compile/compile", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "running"
+
+    after = run_store.get(ctx, "run-compile")
+    assert after.status == RunStatus.RUNNING
+    assert "compileTriggeredAt" in (after.metadata or {}) or "compile_triggered_at" in (after.metadata or {})
+
+
+def test_compile_is_noop_for_run_not_in_compile_pending(
+    client, run_store, ctx,
+):
+    """Idempotency: re-issuing /compile on a running run returns the
+    current status and does not re-flip anything. Same behaviour for
+    runs in ASSESSING / PLAN_READY — only COMPILE_PENDING is a valid
+    entry state for the trigger."""
+    run = _make_run("run-compile-noop")
+    run.status = RunStatus.RUNNING
+    run_store.upsert(ctx, run)
+
+    resp = client.post(
+        "/ingestion-runs/run-compile-noop/compile", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "running"
+
+
+def test_compile_invokes_handler_with_ctx_and_run_id(
+    application_facade, workspace, run_store, reporter, job_starter, ctx,
+):
+    calls: list[tuple] = []
+
+    async def handler(c, run_id):
+        calls.append((c.tenant_id, c.project_id, run_id))
+
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        progress_reporter=reporter,
+        job_starter=job_starter,
+        compile_handler=handler,
+    )
+    test_client = TestClient(app)
+
+    run = _make_run("run-compile-handler")
+    run.status = RunStatus.COMPILE_PENDING
+    run_store.upsert(ctx, run)
+
+    resp = test_client.post(
+        "/ingestion-runs/run-compile-handler/compile", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert calls == [("acme", "alpha", "run-compile-handler")]
+
+
+def test_compile_handler_failure_does_not_block_status_flip(
+    application_facade, workspace, run_store, reporter, job_starter, ctx,
+):
+    async def broken_handler(_ctx, _run_id):
+        raise RuntimeError("temporal unreachable")
+
+    app = create_rest_api(
+        application_facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        progress_reporter=reporter,
+        job_starter=job_starter,
+        compile_handler=broken_handler,
+    )
+    test_client = TestClient(app)
+
+    run = _make_run("run-compile-broken")
+    run.status = RunStatus.COMPILE_PENDING
+    run_store.upsert(ctx, run)
+
+    resp = test_client.post(
+        "/ingestion-runs/run-compile-broken/compile", headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert run_store.get(ctx, "run-compile-broken").status == RunStatus.RUNNING
+
+
 # ---- GET /ingestion-runs/{id}/events/stream (SSE) -------------
 
 

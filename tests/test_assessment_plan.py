@@ -68,20 +68,21 @@ def _settings(**overrides) -> RAGAnythingSettings:
     return RAGAnythingSettings(**base)
 
 
-# ---- 1) fast profile produces fast AssessmentPlan ------------------
+# ---- 1) plain text → STANDARD compile mode (two-mode model) -----
 
 
-def test_fast_profile_for_simple_readable_pdf_produces_fast_plan():
-    """A `.txt` is the canonical fast case. The deterministic profile
-    + planner together produce `mode=fast` with `text_extraction`
-    required and nothing else."""
+def test_plain_text_extension_produces_standard_plan():
+    """Two-mode model: plain text → STANDARD compile mode with
+    LOW complexity, only TEXT_EXTRACTION required, and confidence
+    1.0. The bridge takes a plaintext bypass for these extensions
+    independently — the compile mode itself is standard."""
     profile = _profile(
         extension=".txt", page_count=1,
         text_extractable_ratio=1.0,
         has_images=False, has_tables=False, has_scanned_pages=False,
     )
     plan = DefaultAssessmentPlanner().assess(profile)
-    assert plan.mode == CompileMode.FAST
+    assert plan.mode == CompileMode.STANDARD
     assert plan.complexity == Complexity.LOW
     assert plan.required_capabilities == frozenset({Capability.TEXT_EXTRACTION})
     assert plan.confidence == 1.0
@@ -155,14 +156,20 @@ def test_deep_profile_image_only_extension_triggers_ocr():
     ".tsv",
     ".ini", ".cfg", ".conf", ".env",
 ])
-def test_text_only_extensions_assigned_fast_mode(extension):
-    """Every extension in the canonical 100%-text set lands in
-    FAST mode regardless of other signals (most signals are
-    irrelevant for these formats anyway)."""
+def test_text_only_extensions_assigned_standard_mode(extension):
+    """Two-mode model: every 100%-text extension lands in STANDARD
+    mode. The bridge's plaintext-bypass optimisation kicks in
+    separately based on extension — independent of the compile
+    mode, which has no FAST option."""
     profile = _profile(extension=extension, page_count=1)
     plan = DefaultAssessmentPlanner().assess(profile)
-    assert plan.mode == CompileMode.FAST, (
-        f"{extension} should map to FAST mode; got {plan.mode}"
+    assert plan.mode == CompileMode.STANDARD, (
+        f"{extension} should map to STANDARD mode; got {plan.mode}"
+    )
+    # The reason still surfaces the plaintext-bypass hint so audit
+    # logs explain why this STANDARD compile is cheap.
+    assert "plain-text" in plan.reason.lower() or (
+        "plaintext bypass" in plan.reason.lower()
     )
 
 
@@ -196,46 +203,310 @@ def test_binary_container_extensions_never_assigned_fast_mode(extension):
     )
 
 
-def test_fast_mode_safety_belt_coerces_unknown_extension():
-    """Defensive coercion: even if a future rule slips and lets FAST
-    escape for a non-text extension, `_enforce_fast_mode_safety`
-    overrides to STANDARD. Drive the override directly to verify
-    the belt fires regardless of upstream rule changes."""
+def test_legacy_fast_mode_coerces_to_standard_regardless_of_extension():
+    """Two-mode model: FAST is removed from the official vocabulary.
+    The safety belt coerces ANY FAST plan to STANDARD — even for
+    100%-text extensions where pre-refactor FAST was the answer.
+    Operators see the migration in `reason`."""
     from j1.processing.assessment import _enforce_fast_mode_safety
 
-    rogue_plan = AssessmentPlan(
+    legacy_plan = AssessmentPlan(
         document_id="d", mode=CompileMode.FAST,
         document_type="pdf", complexity=Complexity.LOW, confidence=1.0,
         required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-        reason="hypothetical rogue rule",
+        reason="legacy plan persisted before the two-mode refactor",
     )
     pdf_profile = _profile(extension=".pdf", page_count=1)
-    coerced = _enforce_fast_mode_safety(rogue_plan, pdf_profile)
+    coerced = _enforce_fast_mode_safety(legacy_plan, pdf_profile)
     assert coerced.mode == CompileMode.STANDARD
-    assert "coerced FAST→STANDARD" in coerced.reason
-    assert ".pdf" in coerced.reason
-    # Ensure the standard baseline capabilities are added (don't lose
-    # what was already required either).
+    assert "migrated legacy FAST→STANDARD" in coerced.reason
+    # Standard baseline capabilities are added; pre-existing
+    # required caps survive.
     assert Capability.TEXT_EXTRACTION in coerced.required_capabilities
     assert Capability.LAYOUT_DETECTION in coerced.required_capabilities
 
 
-def test_fast_mode_safety_belt_noop_for_text_extension():
-    """The safety belt must NOT touch a legitimate FAST-for-text
-    plan. Coercion is one-way and only fires for binary extensions."""
+def test_legacy_fast_mode_coercion_also_fires_for_text_extension():
+    """Belt fires uniformly. A FAST plan for a .txt file is still
+    coerced to STANDARD — no extension exemption in the two-mode
+    model."""
     from j1.processing.assessment import _enforce_fast_mode_safety
 
-    legit_plan = AssessmentPlan(
+    legacy_plan = AssessmentPlan(
         document_id="d", mode=CompileMode.FAST,
         document_type="plain_text",
         complexity=Complexity.LOW, confidence=1.0,
         required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-        reason="plain-text extension '.json'; no parser intensity needed",
+        reason="legacy plain-text FAST plan",
     )
-    json_profile = _profile(extension=".json", page_count=1)
-    same = _enforce_fast_mode_safety(legit_plan, json_profile)
-    assert same.mode == CompileMode.FAST
-    assert same.reason == legit_plan.reason  # untouched
+    txt_profile = _profile(extension=".txt", page_count=1)
+    coerced = _enforce_fast_mode_safety(legacy_plan, txt_profile)
+    assert coerced.mode == CompileMode.STANDARD
+    assert "migrated legacy FAST→STANDARD" in coerced.reason
+
+
+def test_safety_belt_noop_for_already_standard():
+    """The belt only acts on FAST plans. STANDARD/DEEP pass through
+    untouched."""
+    from j1.processing.assessment import _enforce_fast_mode_safety
+
+    standard_plan = AssessmentPlan(
+        document_id="d", mode=CompileMode.STANDARD,
+        document_type="pdf",
+        complexity=Complexity.MEDIUM, confidence=0.9,
+        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
+        reason="standard reason",
+    )
+    pdf_profile = _profile(extension=".pdf", page_count=1)
+    same = _enforce_fast_mode_safety(standard_plan, pdf_profile)
+    assert same is standard_plan or (
+        same.mode == CompileMode.STANDARD
+        and same.reason == "standard reason"
+    )
+
+
+# ---- RecommendedProcessingPath: derived from mode + capabilities --
+
+
+def test_recommended_path_standard_for_plain_text():
+    """Two-mode model: plain text → STANDARD compile mode → the
+    operator-intent path is STANDARD_COMPILE."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    profile = _profile(extension=".txt", page_count=1)
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.mode == CompileMode.STANDARD
+    assert plan.recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def test_recommended_path_deep_for_scanned_pdf():
+    """Scanned PDF / weak text layer / scan-only extension → OCR
+    capability required → path is DEEP_COMPILE."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.0,
+        has_scanned_pages=True,
+    )
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert Capability.OCR in plan.required_capabilities
+    assert plan.recommended_path == RecommendedProcessingPath.DEEP_COMPILE
+
+
+def test_recommended_path_standard_for_pdf_with_tables():
+    """A readable PDF with table signals → STANDARD compile mode
+    with TABLE_EXTRACTION capability → path is STANDARD_COMPILE.
+    Standard already handles multimodal capability flags; rich
+    content does not by itself escalate to deep."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.95,
+        has_tables=True,
+    )
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.mode == CompileMode.STANDARD
+    assert plan.recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def test_recommended_path_standard_default():
+    """Clean PDF with no flagged signals → STANDARD_COMPILE."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    profile = _profile(
+        extension=".pdf",
+        text_extractable_ratio=0.95,
+        page_count=5,
+    )
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def test_recommended_path_round_trips_through_payload():
+    """`to_payload` carries the path, `from_payload` reads it back.
+    Critical for the workflow→activity boundary."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    profile = _profile(extension=".txt", page_count=1)
+    plan = DefaultAssessmentPlanner().assess(profile)
+    payload = plan.to_payload()
+    assert payload["recommended_path"] == "standard_compile"
+    rehydrated = AssessmentPlan.from_payload(payload)
+    assert rehydrated.recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def test_recommended_path_from_payload_tolerates_missing_field():
+    """Older payloads (pre-API-shape-refactor) omit the field.
+    `from_payload` must fall back to STANDARD_COMPILE rather
+    than crash."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    legacy_payload = {
+        "schema_version": "1",
+        "document_id": "d",
+        "mode": "standard",
+        "document_type": "pdf",
+        "complexity": "medium",
+        "confidence": 0.8,
+        "required_capabilities": ["text_extraction"],
+        "optional_capabilities": [],
+        "risk_flags": [],
+        "fallback_policy": "degrade_with_warning",
+        "reason": "legacy",
+    }
+    plan = AssessmentPlan.from_payload(legacy_payload)
+    assert plan.recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def test_recommended_path_from_payload_coerces_legacy_values():
+    """Legacy values from before the two-mode refactor must coerce
+    on the read path:
+      * `fast_text_compile`  → STANDARD_COMPILE
+      * `multimodal_compile` → STANDARD_COMPILE
+      * `ocr_parse`          → DEEP_COMPILE
+    The actual recommended_path stored in legacy artifacts is one
+    of these strings; replaying them MUST NOT crash."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    def _payload(path_value: str) -> dict:
+        return {
+            "schema_version": "1",
+            "document_id": "d",
+            "mode": "standard",
+            "document_type": "pdf",
+            "complexity": "medium",
+            "confidence": 0.8,
+            "required_capabilities": [],
+            "optional_capabilities": [],
+            "risk_flags": [],
+            "fallback_policy": "degrade_with_warning",
+            "reason": "legacy",
+            "recommended_path": path_value,
+        }
+
+    assert AssessmentPlan.from_payload(
+        _payload("fast_text_compile"),
+    ).recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+    assert AssessmentPlan.from_payload(
+        _payload("multimodal_compile"),
+    ).recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+    assert AssessmentPlan.from_payload(
+        _payload("ocr_parse"),
+    ).recommended_path == RecommendedProcessingPath.DEEP_COMPILE
+
+
+def test_recommended_path_from_payload_tolerates_unknown_value():
+    """Future-proofing: a payload that includes a path the current
+    worker doesn't recognise must not crash replay. Fallback to
+    STANDARD_COMPILE."""
+    from j1.processing.assessment import RecommendedProcessingPath
+
+    future_payload = {
+        "schema_version": "2",
+        "document_id": "d",
+        "mode": "standard",
+        "document_type": "pdf",
+        "complexity": "medium",
+        "confidence": 0.8,
+        "required_capabilities": [],
+        "optional_capabilities": [],
+        "risk_flags": [],
+        "fallback_policy": "degrade_with_warning",
+        "reason": "from a future worker",
+        "recommended_path": "quantum_compile",
+    }
+    plan = AssessmentPlan.from_payload(future_payload)
+    assert plan.recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
+
+
+def test_planner_never_emits_legacy_compile_mode():
+    """Two-mode invariant: across the planner's rule surface the
+    only modes emitted are STANDARD and DEEP. FAST is removed from
+    the official vocabulary; the safety belt coerces any legacy
+    FAST before it leaves `assess()`."""
+    planner = DefaultAssessmentPlanner()
+    profiles = [
+        _profile(extension=".txt", page_count=1),
+        _profile(extension=".json", page_count=1),
+        _profile(extension=".pdf",
+                 text_extractable_ratio=0.95, has_tables=True),
+        _profile(extension=".pdf", text_extractable_ratio=0.0,
+                 has_scanned_pages=True),
+        _profile(extension=".xlsx"),
+        _profile(extension=".pdf",
+                 text_extractable_ratio=0.95, page_count=4),
+        _profile(extension=".tiff"),
+    ]
+    for p in profiles:
+        plan = planner.assess(p)
+        assert plan.mode in {CompileMode.STANDARD, CompileMode.DEEP}, (
+            f"planner emitted {plan.mode} for {p.extension}; "
+            "FAST is no longer in the two-mode vocabulary"
+        )
+
+
+def test_extraction_evidence_block_built_from_compile_result():
+    """The workflow's `_build_extraction_evidence` helper derives
+    the block from `compile_result.content_stats` +
+    `compile_metrics`. Verify the field mapping + that chunks are
+    NEVER claimed here (chunking_status='pending_verification')."""
+    from types import SimpleNamespace
+
+    from j1.orchestration.workflows.project_processing import (
+        _build_extraction_evidence,
+    )
+
+    compile_result = SimpleNamespace(
+        status="succeeded",
+        content_stats={
+            "provider": "raganything",
+            "parser_engine": "raganything.parse_document",
+            "total_text_chars": 8421,
+            "text_block_count": 12,
+            "page_count": 5,
+            "has_images": True,
+            "has_tables": False,
+            "image_count": 3,
+        },
+        compile_metrics={
+            "chunks_count": 99,  # ← MUST NOT bleed into extraction evidence
+            "extracted_text_chars": 8421,
+        },
+    )
+    block = _build_extraction_evidence(compile_result)
+    assert block["parser"] == "raganything"
+    assert block["parser_method"] == "raganything.parse_document"
+    assert block["text_char_count"] == 8421
+    assert block["content_block_count"] == 12
+    assert block["page_count"] == 5
+    assert "text" in block["detected_content_types"]
+    assert "images" in block["detected_content_types"]
+    assert "tables" not in block["detected_content_types"]
+    # CHUNK COUNT MUST NOT APPEAR HERE — chunks are verified
+    # separately. The block always reports pending_verification.
+    assert "chunks_count" not in block
+    assert "chunk_count" not in block
+    assert block["chunking_status"] == "pending_verification"
+
+
+def test_extraction_evidence_block_none_compile_result_safe():
+    """Defensive: missing compile_result → safe empty block.
+    The bridge calls this with None when persisting a strategy
+    report before any compile attempt completes."""
+    from j1.orchestration.workflows.project_processing import (
+        _build_extraction_evidence,
+    )
+
+    block = _build_extraction_evidence(None)
+    assert block["parser"] == "raganything"
+    assert block["parser_method"] is None
+    assert block["text_char_count"] is None
+    assert block["content_block_count"] is None
+    assert block["detected_content_types"] == []
+    assert block["page_count"] is None
+    assert block["chunking_status"] == "pending_verification"
 
 
 # ---- 4) fast plan maps to txt / light behaviour ------------------

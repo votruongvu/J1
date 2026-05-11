@@ -271,6 +271,9 @@ def test_processing_service_compile_threads_assessment_plan_to_compiler(
 @pytest.mark.parametrize(
     "mode,expected_parse_method",
     [
+        # Legacy FAST → txt is preserved as a read-path safety net
+        # for legacy plans replayed from history. The planner never
+        # emits FAST any more (see two-mode model in assessment.py).
         (CompileMode.FAST, "txt"),
         (CompileMode.STANDARD, "auto"),
         (CompileMode.DEEP, "auto"),  # no OCR required

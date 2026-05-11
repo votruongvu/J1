@@ -116,6 +116,11 @@ def _parse_int(raw: str | None, *, default: int, minimum: int) -> int:
 
 
 _RETRY_LADDER: dict[CompileMode, CompileMode | None] = {
+    # Two-mode model: STANDARD → DEEP → STOP. The planner never
+    # emits FAST any more, but if a legacy plan (or a manually-
+    # constructed test fixture) starts at FAST we escalate it
+    # straight to STANDARD on the first retry so the document
+    # still moves forward.
     CompileMode.FAST: CompileMode.STANDARD,
     CompileMode.STANDARD: CompileMode.DEEP,
     CompileMode.DEEP: None,
@@ -126,7 +131,12 @@ def next_compile_mode(current: CompileMode) -> CompileMode | None:
     """Return the mode the retry layer escalates to, or `None` when
     the document is already at the highest mode (`deep`). The
     workflow uses this as the only source of truth for "what's
-    next" — operators tuning the ladder change it here."""
+    next" — operators tuning the ladder change it here.
+
+    Two-mode model: the ladder is STANDARD → DEEP → STOP. The
+    legacy FAST entry is preserved as a safety net (escalates
+    straight to STANDARD) so legacy plans replayed from history
+    still progress."""
     return _RETRY_LADDER.get(current)
 
 

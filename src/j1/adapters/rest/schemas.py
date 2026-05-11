@@ -221,6 +221,17 @@ class IngestionRunConfirmRecord(CamelModel):
     status: str
 
 
+class IngestionRunCompileRecord(CamelModel):
+    """Response to `POST /ingestion-runs/{run_id}/compile`.
+
+    Returned shape mirrors `IngestionRunConfirmRecord` — `status` is
+    the post-trigger run status (`running` on first trigger, the
+    current status on a no-op repeat trigger)."""
+
+    run_id: str
+    status: str
+
+
 class IngestionRunControlRecord(CamelModel):
     """Response to `POST /ingestion-runs/{run_id}/{pause|resume|cancel}`.
 
