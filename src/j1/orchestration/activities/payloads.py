@@ -172,6 +172,56 @@ class PersistEnrichmentResultInput:
 
 
 @dataclass(frozen=True)
+class RunEnrichmentStageInput:
+    """Workflow → activity payload for `run_enrichment_stage`.
+
+    The activity resolves the domain pack from the registry,
+    rebuilds the `NormalizedCompileResult` + `PostCompileEnrichPlan`
+    from their persisted payloads, builds an `EnrichmentContext`,
+    runs `CompositeEnrichmentRunner`, and persists the resulting
+    `EnrichmentResult` as an `enrichment_result` artifact. Caller
+    consumes the returned payload to gate the workflow-level
+    `require_enrichment_success` check.
+
+    Pack resolution lives in the activity (not workflow) because
+    the registry is module-state — touching it from workflow code
+    would cause replay non-determinism."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str
+    # Persisted typed payloads from earlier stages. Carried as
+    # plain dicts so the Temporal data converter handles them
+    # without dataclass coupling.
+    compile_result_payload: dict[str, Any]
+    post_compile_enrich_plan_payload: dict[str, Any]
+    initial_plan_payload: dict[str, Any] | None = None
+    # Pack-resolution inputs (mirrors `BuildInitialExecutionPlanInput`).
+    domain_override: str | None = None
+    workspace_default_domain: str | None = None
+    allowed_domain_overrides: tuple[str, ...] = ()
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
+class RunEnrichmentStageResult:
+    """Activity → workflow return for `run_enrichment_stage`.
+
+    Carries the persisted enrichment payload + artifact id + the
+    decision flags the workflow needs to gate
+    `require_enrichment_success` enforcement."""
+
+    status: str  # succeeded / succeeded_with_warnings / failed / skipped
+    plan_payload: dict[str, Any] = field(default_factory=dict)
+    artifact_id: str | None = None
+    # Mirrors `PostCompileEnrichPlan.require_enrichment_success`
+    # surfaced at activity time so the workflow doesn't have to
+    # re-parse the plan to enforce the policy.
+    require_enrichment_success: bool = False
+    persist_error: str | None = None
+
+
+@dataclass(frozen=True)
 class PersistInitialExecutionPlanInput:
     """Workflow → activity payload for the
     `initial_execution_plan` artifact. Carries the cheap pre-compile

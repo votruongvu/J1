@@ -69,6 +69,8 @@ __all__ = [
     "MetadataEnrichmentModule",
     "TerminologyEnrichmentModule",
     "ValidationEnrichmentModule",
+    "build_skipped_enrichment_result",
+    "resolve_module_prompt",
 ]
 
 
@@ -566,3 +568,66 @@ def _aggregate_status(
     if any(o.status == EnrichmentModuleStatus.PARTIAL for o in outcomes):
         return "succeeded_with_warnings"
     return "succeeded"
+
+
+# ---- Wave 6.5 integration helpers -----------------------------------
+
+
+def build_skipped_enrichment_result(
+    *,
+    document_id: str,
+    reason: str,
+    domain_id: str | None = None,
+) -> EnrichmentResult:
+    """Build a sentinel `EnrichmentResult` for the no-enrichment path.
+
+    Used by the workflow when `PostCompileEnrichPlan.should_enrich`
+    is False: the workflow still persists a typed overlay so
+    downstream consumers (final report, FE panel) see an explicit
+    "enrichment skipped: <reason>" record rather than the absence
+    of an artifact (which is ambiguous — could be policy, could be
+    a write failure).
+
+    Pure / no I/O. `reason` should come from
+    `PostCompileEnrichPlan.reasons` / `blocking_issues`."""
+    return EnrichmentResult(
+        document_id=document_id,
+        status="skipped",
+        skipped_reason=reason,
+        domain_id=domain_id,
+        duration_ms=0,
+    )
+
+
+def resolve_module_prompt(
+    *,
+    domain_pack: DomainPack | None,
+    prompt_field: str,
+    builtin_default: str,
+) -> str:
+    """Resolve the prompt text a module should use.
+
+    Precedence:
+      1. `domain_pack.prompt_pack.<prompt_field>` if set
+         (non-None, non-empty).
+      2. `builtin_default` otherwise.
+
+    The active `domain_pack.prompt_addon` is prepended to whichever
+    base prompt wins so the model has domain context BEFORE the
+    task-specific instructions. When no pack is selected, only the
+    `builtin_default` is returned (no addon).
+
+    Pure / no I/O. `prompt_field` must be one of the attribute
+    names on `DomainPromptPack` — passing an unknown attribute
+    falls through to the default to keep the helper safe at module
+    construction time."""
+    if domain_pack is None:
+        return builtin_default
+    pack_prompt: str | None = getattr(
+        domain_pack.prompt_pack, prompt_field, None,
+    )
+    base = pack_prompt if pack_prompt else builtin_default
+    addon = (domain_pack.prompt_addon or "").strip()
+    if addon:
+        return f"{addon}\n\n{base}"
+    return base

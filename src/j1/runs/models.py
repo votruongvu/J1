@@ -23,6 +23,7 @@ __all__ = [
     "FAILURE_CODE_CHUNK_FAILED",
     "FAILURE_CODE_COMPILE_FAILED",
     "FAILURE_CODE_EMPTY_DOCUMENT",
+    "FAILURE_CODE_ENRICHMENT_REQUIRED",
     "FAILURE_CODE_INDEX_FAILED",
     "FAILURE_CODE_VERIFICATION_FAILED",
     "IngestionRun",
@@ -138,6 +139,12 @@ FAILURE_CODE_VERIFICATION_FAILED = "VERIFICATION_FAILED"
 # right banner copy and link to the right diagnostic.
 FAILURE_CODE_ASSESSMENT_FAILED = "ASSESSMENT_FAILED"
 FAILURE_CODE_COMPILE_FAILED = "COMPILE_FAILED"
+# Wave-6.5 enrichment-policy enforcement. Set on the run record
+# when `require_enrichment_success=True` on the active domain
+# policy AND the enrichment stage produced `status=failed`. The FE
+# renders this as "enrichment was required and did not complete";
+# raw compile artifacts remain readable on the run.
+FAILURE_CODE_ENRICHMENT_REQUIRED = "ENRICHMENT_REQUIRED"
 # Empty-document is NOT a failure in the operator sense; it's a
 # successful early-out (the document had no extractable content).
 # Surfaced as a failure_code on a terminal SUCCEEDED_WITH_WARNINGS

@@ -413,18 +413,27 @@ class EnrichmentResult:
         terminal errors across modules.
       * `model_usage` — aggregated cost/runtime across modules.
       * `duration_ms` — total enrichment-stage duration.
+      * `skipped_reason` — operator-readable reason when the entire
+        enrichment stage was skipped (e.g. SKIP verdict from the
+        post-compile assessor). Populated only when
+        `status == "skipped"`; empty otherwise.
 
     `status` aggregates the worst non-success module outcome:
-      * `SUCCEEDED` — every module RUN or domain-skipped.
-      * `SUCCEEDED_WITH_WARNINGS` — at least one PARTIAL.
-      * `FAILED` — at least one FAILED module AND
-        `require_enrichment_success` was True at the run; the
-        flag itself isn't on this record (caller owns the policy).
+      * `succeeded` — every module RUN or domain-skipped.
+      * `succeeded_with_warnings` — at least one PARTIAL.
+      * `failed` — at least one FAILED module. Caller layers the
+        `require_enrichment_success` policy on top of this value to
+        decide whether the run-level outcome is FAILED.
+      * `skipped` — the entire enrichment stage was skipped before
+        any module ran (Wave 6.5 — distinct from per-module
+        SKIPPED so the FE can render "enrichment skipped"
+        differently from "every module skipped itself").
     """
 
     document_id: str
     schema_version: str = ENRICHMENT_RESULT_SCHEMA_VERSION
-    status: str = "succeeded"  # succeeded / succeeded_with_warnings / failed
+    status: str = "succeeded"  # succeeded / succeeded_with_warnings / failed / skipped
+    skipped_reason: str = ""
     module_outcomes: tuple[EnrichmentModuleOutcome, ...] = ()
     document_metadata_overlay: DocumentMetadataOverlay = field(
         default_factory=DocumentMetadataOverlay,
@@ -447,6 +456,7 @@ class EnrichmentResult:
             "schema_version": self.schema_version,
             "document_id": self.document_id,
             "status": self.status,
+            "skipped_reason": self.skipped_reason,
             "module_outcomes": [
                 o.to_dict() for o in self.module_outcomes
             ],
@@ -479,6 +489,7 @@ class EnrichmentResult:
                 payload.get("schema_version") or ENRICHMENT_RESULT_SCHEMA_VERSION
             ),
             status=str(payload.get("status") or "succeeded"),
+            skipped_reason=str(payload.get("skipped_reason") or ""),
             module_outcomes=tuple(
                 _outcome_from_dict(o)
                 for o in (payload.get("module_outcomes") or ())

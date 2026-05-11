@@ -154,10 +154,24 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
             or name.endswith("persist_compile_strategy_report")
             or name.endswith("persist_post_compile_enrich_plan")
             or name.endswith("persist_initial_execution_plan")
+            or name.endswith("persist_compile_result_summary")
+            or name.endswith("persist_enrichment_result")
         ):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["report-1"],
                 kinds=("validation_report",),
+            )
+        if name.endswith("run_enrichment_stage"):
+            # Wave-6.5 stub: succeed cleanly so existing tests don't
+            # accidentally observe a failed-optional outcome.
+            from j1.orchestration.activities.payloads import (
+                RunEnrichmentStageResult,
+            )
+            return RunEnrichmentStageResult(
+                status="succeeded",
+                plan_payload={"document_id": "doc-1", "status": "succeeded"},
+                artifact_id="enrichment-art-1",
+                require_enrichment_success=False,
             )
         raise AssertionError(f"unexpected activity: {name}")
     return handler

@@ -25,6 +25,8 @@ with workflow.unsafe.imports_passed_through():
         PersistInitialExecutionPlanInput,
         PersistPostCompileEnrichPlanInput,
         PersistValidationReportInput,
+        RunEnrichmentStageInput,
+        RunEnrichmentStageResult,
         ProcessingActivityResult,
         ProjectScope,
         SetDocumentStatusInput,
@@ -87,6 +89,7 @@ with workflow.unsafe.imports_passed_through():
         NormalizedCompileResult,
         normalize_compile_result,
     )
+    from j1.runs.models import FAILURE_CODE_ENRICHMENT_REQUIRED
     from j1.processing.initial_execution_plan import (
         InitialExecutionPlan,
         build_initial_execution_plan,
@@ -1834,6 +1837,231 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001 — never block compile success on telemetry
             pass
 
+    async def _run_enrichment_stage(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        document_id: str,
+        compile_result: "ArtifactActivityResult",
+        enrich_plan: "PostCompileEnrichPlan",
+        initial_plan_payload: dict | None,
+    ) -> None:
+        """Dispatch the Wave-6 typed enrichment overlay stage.
+
+        Always invoked when both the initial plan + enrich plan are
+        available — the activity itself decides whether to run the
+        runner or produce a typed `skipped` overlay.
+
+        Enforces `require_enrichment_success`: a `failed` enrichment
+        when the policy requires success raises a
+        `_BusinessRejection` with
+        `FAILURE_CODE_ENRICHMENT_REQUIRED`, so the run lands at
+        FAILED_FINAL with the dedicated reason code. Raw compile
+        artifacts remain in the workspace either way.
+
+        Optional-failure handling: a `failed` enrichment when the
+        policy doesn't require success is logged + warning_count
+        bumped, but the workflow continues to graph/index/finalize.
+        Partial / warnings-only outcomes bump `_warning_count` so
+        the final status surfaces as `succeeded_with_warnings`.
+        """
+        # Build the typed `NormalizedCompileResult.to_payload()`
+        # dict to thread through to the activity. The activity
+        # reconstructs the typed dataclass on its side.
+        normalized = normalize_compile_result(
+            compile_result, document_id=document_id,
+        )
+        compile_payload = normalized.to_payload()
+        await self._emit_step_lifecycle(
+            request, stage="ENRICH",
+            step="enrich_stage", action="started",
+        )
+        try:
+            result = await workflow.execute_activity_method(
+                ProcessingActivities.run_enrichment_stage,
+                RunEnrichmentStageInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id or "",
+                    document_id=document_id,
+                    compile_result_payload=compile_payload,
+                    post_compile_enrich_plan_payload=enrich_plan.to_payload(),
+                    initial_plan_payload=initial_plan_payload,
+                    domain_override=request.domain_override,
+                    workspace_default_domain=request.workspace_default_domain,
+                    allowed_domain_overrides=(),
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception as exc:  # noqa: BLE001 — surface as step failure
+            await self._emit_step_lifecycle(
+                request, stage="ENRICH",
+                step="enrich_stage", action="failed",
+            )
+            self._log_step(
+                request,
+                event="ingestion.enrichment.stage_failed",
+                stage="enrichment",
+                status="failed",
+                document_id=document_id,
+                reason=f"activity raised: {type(exc).__name__}: {exc}",
+            )
+            # Treat an activity-level failure like a failed
+            # enrichment for require_enrichment_success purposes.
+            if enrich_plan.require_enrichment_success:
+                self._record_step(
+                    step="enrich_stage",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason=f"enrichment activity raised: {exc}",
+                    error=StepError(
+                        type="EnrichmentRequired",
+                        message=str(exc),
+                        retryable=False,
+                    ),
+                    metadata={
+                        "document_id": document_id,
+                        "failure_code": FAILURE_CODE_ENRICHMENT_REQUIRED,
+                    },
+                )
+                raise _BusinessRejection(
+                    "enrichment activity failed and "
+                    f"require_enrichment_success=True: {exc}",
+                    failure_code=FAILURE_CODE_ENRICHMENT_REQUIRED,
+                ) from exc
+            self._record_step(
+                step="enrich_stage",
+                status=StepStatus.FAILED,
+                required=False,
+                source=StepSource.CALLER,
+                reason=f"enrichment activity raised (optional): {exc}",
+                metadata={"document_id": document_id},
+            )
+            return
+
+        # Defensive: test stubs (or an unwired worker) may return
+        # None. Treat as a no-op skip so the workflow continues
+        # without recording a misleading outcome.
+        if result is None:
+            await self._emit_step_lifecycle(
+                request, stage="ENRICH",
+                step="enrich_stage", action="skipped",
+            )
+            return
+        status = (
+            getattr(result, "status", "succeeded") or "succeeded"
+        )
+        action = (
+            "completed"
+            if status in ("succeeded", "succeeded_with_warnings", "skipped")
+            else "failed"
+        )
+        await self._emit_step_lifecycle(
+            request, stage="ENRICH",
+            step="enrich_stage", action=action,
+        )
+        self._log_step(
+            request,
+            event="ingestion.enrichment.stage_completed",
+            stage="enrichment",
+            status=status,
+            document_id=document_id,
+            reason=(
+                f"enrichment_status={status} "
+                f"require_success={result.require_enrichment_success} "
+                f"persist_error={result.persist_error or 'none'}"
+            ),
+        )
+
+        # Record the enrichment step on the workflow's step_results
+        # list so the final-summary / status surface reflects the
+        # outcome. The existing `_warning_count()` method counts
+        # FAILED-but-not-required step results — recording an
+        # optional-failed step here bumps the count, lifting the
+        # final status to `succeeded_with_warnings`.
+        if status == "failed":
+            if result.require_enrichment_success:
+                self._record_step(
+                    step="enrich_stage",
+                    status=StepStatus.FAILED,
+                    required=True,
+                    source=StepSource.CALLER,
+                    reason=(
+                        "enrichment failed and "
+                        "require_enrichment_success=True"
+                    ),
+                    error=StepError(
+                        type="EnrichmentRequired",
+                        message=(
+                            f"enrichment failed for {document_id}"
+                        ),
+                        retryable=False,
+                    ),
+                    metadata={
+                        "document_id": document_id,
+                        "failure_code": FAILURE_CODE_ENRICHMENT_REQUIRED,
+                    },
+                )
+                raise _BusinessRejection(
+                    (
+                        f"enrichment failed for {document_id} and "
+                        "require_enrichment_success=True"
+                    ),
+                    failure_code=FAILURE_CODE_ENRICHMENT_REQUIRED,
+                )
+            # Optional-failure path: record as a non-required
+            # FAILED step so `_warning_count()` picks it up and
+            # the workflow continues to graph/index/finalize.
+            self._record_step(
+                step="enrich_stage",
+                status=StepStatus.FAILED,
+                required=False,
+                source=StepSource.CALLER,
+                reason="enrichment failed (optional)",
+                metadata={"document_id": document_id},
+            )
+        elif status == "succeeded_with_warnings":
+            # Record as FAILED + required=False to bump
+            # `_warning_count()` so the final status lifts to
+            # `succeeded_with_warnings`. The metadata carries the
+            # actual outcome string so the FE renders the right
+            # copy.
+            self._record_step(
+                step="enrich_stage",
+                status=StepStatus.FAILED,
+                required=False,
+                source=StepSource.CALLER,
+                reason="enrichment completed with warnings",
+                metadata={
+                    "document_id": document_id,
+                    "enrichment_status": "succeeded_with_warnings",
+                },
+            )
+        elif status == "skipped":
+            self._record_step(
+                step="enrich_stage",
+                status=StepStatus.SKIPPED,
+                required=False,
+                source=StepSource.CALLER,
+                reason="enrichment skipped by post-compile assessor",
+                metadata={"document_id": document_id},
+            )
+        else:
+            # "succeeded"
+            self._record_step(
+                step="enrich_stage",
+                status=StepStatus.COMPLETED,
+                required=False,
+                source=StepSource.CALLER,
+                reason="enrichment overlay produced",
+                metadata={
+                    "document_id": document_id,
+                    "artifact_id": result.artifact_id or "",
+                },
+            )
+
     async def _run_post_compile_enrich_assessment(
         self,
         request: ProjectProcessingRequest,
@@ -3026,6 +3254,25 @@ class ProjectProcessingWorkflow:
             step="assess_enrichment",
             action="completed" if enrich_plan is not None else "skipped",
         )
+
+        # ── Wave 6.5: typed enrichment stage ──────────────────────
+        # Dispatch the CompositeEnrichmentRunner via an activity
+        # (registry + persistence happen activity-side; the
+        # workflow stays sandbox-safe). The activity short-circuits
+        # to a typed `skipped` result when `should_enrich=False`,
+        # so the run still produces an explicit overlay record.
+        # `require_enrichment_success` enforcement runs after the
+        # activity returns — a `failed` enrichment + required flag
+        # raises `_BusinessRejection` with the dedicated failure
+        # code so the run terminates cleanly.
+        if enrich_plan is not None and initial_plan_payload is not None:
+            await self._run_enrichment_stage(
+                request,
+                document_id=document_id,
+                compile_result=compile_result,
+                enrich_plan=enrich_plan,
+                initial_plan_payload=initial_plan_payload,
+            )
 
         # ── Synthetic step: Build Content Inventory ──────────────
         # The compile activity bundles parse + chunk in one shot

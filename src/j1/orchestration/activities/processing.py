@@ -2,6 +2,7 @@ import contextlib
 import contextvars
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -53,6 +54,8 @@ from j1.orchestration.activities.payloads import (
     PersistInitialExecutionPlanInput,
     PersistPostCompileEnrichPlanInput,
     PersistValidationReportInput,
+    RunEnrichmentStageInput,
+    RunEnrichmentStageResult,
     ProcessingActivityResult,
     QueryActivityInput,
     QueryActivityResult,
@@ -89,6 +92,7 @@ ACTIVITY_PERSIST_INITIAL_EXECUTION_PLAN = "j1.processing.persist_initial_executi
 ACTIVITY_BUILD_INITIAL_EXECUTION_PLAN = "j1.processing.build_initial_execution_plan"
 ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY = "j1.processing.persist_compile_result_summary"
 ACTIVITY_PERSIST_ENRICHMENT_RESULT = "j1.processing.persist_enrichment_result"
+ACTIVITY_RUN_ENRICHMENT_STAGE = "j1.processing.run_enrichment_stage"
 ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
@@ -96,6 +100,46 @@ ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
 
 class UnknownProcessorError(LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class _PersistOutcome:
+    """Tiny helper-return for `_persist_enrichment_payload`. Carries
+    the artifact_id (None on failure) + the error message (None on
+    success). Defined as a private dataclass so the call sites don't
+    need a tuple-unpack convention."""
+
+    artifact_id: str | None
+    error: str | None
+
+
+def _persist_enrichment_payload(
+    service,
+    ctx,
+    *,
+    run_id: str,
+    document_id: str | None,
+    payload: dict,
+    actor: str,
+) -> _PersistOutcome:
+    """Persist the typed `EnrichmentResult.to_payload()` dict via
+    `ProcessingService.persist_enrichment_result`. Best-effort: a
+    write failure surfaces as a populated `error` on the return;
+    the inline payload still flows to the workflow."""
+    try:
+        record = service.persist_enrichment_result(
+            ctx,
+            run_id=run_id,
+            document_id=document_id,
+            payload=dict(payload),
+            actor=actor,
+        )
+        return _PersistOutcome(artifact_id=record.artifact_id, error=None)
+    except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+        return _PersistOutcome(
+            artifact_id=None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 class _EmptyDetectionContext:
@@ -703,6 +747,144 @@ class ProcessingActivities:
             status="succeeded",
             artifact_ids=[record.artifact_id],
             kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_RUN_ENRICHMENT_STAGE)
+    def run_enrichment_stage(
+        self, input: RunEnrichmentStageInput,
+    ) -> RunEnrichmentStageResult:
+        """Run the Wave-6 typed enrichment overlay stage (Wave 6.5).
+
+        Resolves the domain pack via the registry (override →
+        workspace default → fallback to general), rebuilds the
+        `NormalizedCompileResult` + `PostCompileEnrichPlan` from
+        their persisted payloads, builds an `EnrichmentContext`,
+        runs `CompositeEnrichmentRunner` over the default skeleton
+        module set, and persists the resulting `EnrichmentResult`
+        as an `enrichment_result` artifact.
+
+        Skipped-path handling: when `enrich_plan.should_enrich` is
+        False, the activity short-circuits to
+        `build_skipped_enrichment_result()` (typed sentinel with
+        `status="skipped"` + reason). The artifact is still
+        persisted so downstream consumers see an explicit skipped
+        record rather than the absence of an artifact.
+
+        Best-effort persistence: a write failure is recorded on
+        `persist_error` but the inline result is still returned to
+        the workflow, so `require_enrichment_success` enforcement
+        + final-summary copy stay accurate even when the artifact
+        write fails."""
+        from j1.domains.registry import default_registry, select_domain
+        from j1.processing.compile_result import NormalizedCompileResult
+        from j1.processing.enrich_assessment import PostCompileEnrichPlan
+        from j1.processing.enrichment_modules import (
+            CompositeEnrichmentRunner,
+            EnrichmentContext,
+            MetadataEnrichmentModule,
+            TerminologyEnrichmentModule,
+            ValidationEnrichmentModule,
+            build_skipped_enrichment_result,
+        )
+        from j1.processing.initial_execution_plan import InitialExecutionPlan
+
+        ctx = input.scope.to_context()
+
+        # Reconstruct typed inputs from their persisted dict payloads.
+        try:
+            compile_result = NormalizedCompileResult.from_payload(
+                dict(input.compile_result_payload),
+            )
+            enrich_plan = PostCompileEnrichPlan.from_payload(
+                dict(input.post_compile_enrich_plan_payload),
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive
+            return RunEnrichmentStageResult(
+                status="failed",
+                persist_error=(
+                    f"input payload reconstruction failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
+        initial_plan = (
+            InitialExecutionPlan.from_payload(dict(input.initial_plan_payload))
+            if input.initial_plan_payload else None
+        )
+
+        # Resolve the active domain pack.
+        registry = default_registry()
+        allowed = (
+            frozenset(input.allowed_domain_overrides)
+            if input.allowed_domain_overrides else None
+        )
+        domain_context = select_domain(
+            registry=registry,
+            detection_context=_EmptyDetectionContext(),
+            user_override=input.domain_override,
+            workspace_default=input.workspace_default_domain,
+            detection_enabled=False,
+            allowed_overrides=allowed,
+        )
+        domain_pack = registry.get(domain_context.selected_domain)
+
+        # Skip-path: build a sentinel typed overlay so the FE sees
+        # an explicit "enrichment skipped" record.
+        if not enrich_plan.should_enrich:
+            skip_reason = (
+                "; ".join(enrich_plan.blocking_issues)
+                or "; ".join(enrich_plan.reasons)
+                or "enrichment skipped by post-compile assessor"
+            )
+            skipped = build_skipped_enrichment_result(
+                document_id=input.document_id,
+                reason=skip_reason,
+                domain_id=(domain_pack.id if domain_pack else None),
+            )
+            payload = skipped.to_payload()
+            persist_error = _persist_enrichment_payload(
+                self._processing, ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=payload,
+                actor=input.actor,
+            )
+            return RunEnrichmentStageResult(
+                status="skipped",
+                plan_payload=payload,
+                artifact_id=persist_error.artifact_id,
+                require_enrichment_success=enrich_plan.require_enrichment_success,
+                persist_error=persist_error.error,
+            )
+
+        # Run-path: assemble context, dispatch the runner.
+        context = EnrichmentContext(
+            document_id=input.document_id,
+            compile_result=compile_result,
+            enrich_plan=enrich_plan,
+            domain_pack=domain_pack,
+            initial_plan=initial_plan,
+        )
+        runner = CompositeEnrichmentRunner(modules=[
+            MetadataEnrichmentModule(),
+            TerminologyEnrichmentModule(),
+            ValidationEnrichmentModule(),
+        ])
+        result = runner.run(context)
+        payload = result.to_payload()
+        persist_outcome = _persist_enrichment_payload(
+            self._processing, ctx,
+            run_id=input.run_id,
+            document_id=input.document_id,
+            payload=payload,
+            actor=input.actor,
+        )
+        return RunEnrichmentStageResult(
+            status=result.status,
+            plan_payload=payload,
+            artifact_id=persist_outcome.artifact_id,
+            require_enrichment_success=enrich_plan.require_enrichment_success,
+            persist_error=persist_outcome.error,
         )
 
     @activity.defn(name=ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY)
