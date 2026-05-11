@@ -103,29 +103,32 @@ export function CompileStrategyPanel({
   if (state.kind === "loading") {
     return (
       <div className="card" data-testid="compile-strategy-loading">
-        Loading compile strategy…
+        <div className="card__body">Loading compile strategy…</div>
       </div>
     );
   }
   if (state.kind === "missing") {
     return (
       <div className="card" data-testid="compile-strategy-missing">
-        <h3>Compile Strategy</h3>
-        <p style={{ color: "var(--text-muted)" }}>
-          No assessment data available for this run. Compile may have
-          run via the legacy single-shot path, or the report artifact
-          hasn't been written yet.
-        </p>
+        <div className="card__body">
+          <h3>Compile Strategy</h3>
+          <p style={{ color: "var(--text-muted)" }}>
+            No assessment data available for this run. The compile-strategy
+            report artifact hasn't been written yet.
+          </p>
+        </div>
       </div>
     );
   }
   if (state.kind === "error") {
     return (
       <div className="card" data-testid="compile-strategy-error">
-        <h3>Compile Strategy</h3>
-        <p style={{ color: "var(--error-fg)" }}>
-          Couldn't load compile strategy: {state.message}
-        </p>
+        <div className="card__body">
+          <h3>Compile Strategy</h3>
+          <p style={{ color: "var(--error-fg)" }}>
+            Couldn't load compile strategy: {state.message}
+          </p>
+        </div>
       </div>
     );
   }
@@ -138,7 +141,10 @@ function CompileStrategyContent({ report }: { report: CompileStrategyReport }) {
   // the compile-side: mapped config, per-attempt timeline, and
   // final-quality summary.
   return (
-    <div data-testid="compile-strategy-panel">
+    <div
+      className="compile-strategy-panel"
+      data-testid="compile-strategy-panel"
+    >
       <Banners report={report} />
       <CompileStrategyCard report={report} />
       <CompileAttemptsTimeline attempts={report.attempts} />
@@ -168,37 +174,39 @@ function CompileStrategyCard({ report }: { report: CompileStrategyReport }) {
   const planMissing = isFallbackOnly(report);
   return (
     <div className="card" data-testid="compile-strategy-card">
-      <h3>Compile Strategy</h3>
-      <dl className="kv">
-        <dt>Compiler adapter</dt>
-        <dd>{lastAttempt?.parser ?? "—"}</dd>
-        <dt>Parser</dt>
-        <dd>{lastAttempt?.parser ?? "—"}</dd>
-        <dt>parse_method</dt>
-        <dd className="mono">{lastAttempt?.parse_method ?? "—"}</dd>
-        <dt>Config source</dt>
-        <dd>
-          {planMissing
-            ? "fallback (no AssessmentPlan)"
-            : "assessment_plan"}
-        </dd>
-        <dt>Requested capabilities</dt>
-        <dd>{required.length === 0 ? "—" : <CapList caps={required} />}</dd>
-        <dt>Applied capabilities</dt>
-        <dd>{applied.length === 0 ? "—" : <CapList caps={applied} />}</dd>
-        <dt>Unhandled capabilities</dt>
-        <dd>
-          {unhandled.length === 0
-            ? <span style={{ color: "var(--success-fg)" }}>none</span>
-            : <CapList caps={unhandled} />}
-        </dd>
-        <dt>Mapped config</dt>
-        <dd>
-          <pre className="mono small-pre">
-            {JSON.stringify(mappedConfig, null, 2)}
-          </pre>
-        </dd>
-      </dl>
+      <div className="card__body">
+        <h3>Compile Strategy</h3>
+        <dl className="kv">
+          <dt>Compiler adapter</dt>
+          <dd>{lastAttempt?.parser ?? "—"}</dd>
+          <dt>Parser</dt>
+          <dd>{lastAttempt?.parser ?? "—"}</dd>
+          <dt>parse_method</dt>
+          <dd className="mono">{lastAttempt?.parse_method ?? "—"}</dd>
+          <dt>Config source</dt>
+          <dd>
+            {planMissing
+              ? "fallback (no AssessmentPlan)"
+              : "assessment_plan"}
+          </dd>
+          <dt>Requested capabilities</dt>
+          <dd>{required.length === 0 ? "—" : <CapList caps={required} />}</dd>
+          <dt>Applied capabilities</dt>
+          <dd>{applied.length === 0 ? "—" : <CapList caps={applied} />}</dd>
+          <dt>Unhandled capabilities</dt>
+          <dd>
+            {unhandled.length === 0
+              ? <span style={{ color: "var(--success-fg)" }}>none</span>
+              : <CapList caps={unhandled} />}
+          </dd>
+          <dt>Mapped config</dt>
+          <dd>
+            <pre className="mono small-pre">
+              {JSON.stringify(mappedConfig, null, 2)}
+            </pre>
+          </dd>
+        </dl>
+      </div>
     </div>
   );
 }
@@ -211,60 +219,64 @@ function CompileAttemptsTimeline({
   if (!attempts.length) {
     return (
       <div className="card" data-testid="compile-attempts-empty">
-        <h3>Compile Attempts</h3>
-        <p style={{ color: "var(--text-muted)" }}>No attempts recorded.</p>
+        <div className="card__body">
+          <h3>Compile Attempts</h3>
+          <p style={{ color: "var(--text-muted)" }}>No attempts recorded.</p>
+        </div>
       </div>
     );
   }
   return (
     <div className="card" data-testid="compile-attempts-timeline">
-      <h3>Compile Attempts</h3>
-      <ol className="attempt-list">
-        {attempts.map((a) => (
-          <li
-            key={a.attempt_number}
-            data-testid={`compile-attempt-${a.attempt_number}`}
-            className={`attempt attempt--${a.quality} attempt--status-${a.status}`}
-          >
-            <div className="attempt__head">
-              <span className="attempt__num">#{a.attempt_number}</span>
-              <span className={`badge mode-badge mode-badge--${a.mode ?? "unknown"}`}>
-                {a.mode ?? "—"}
-              </span>
-              <span className={`badge quality-badge quality-badge--${a.quality}`}>
-                {a.quality}
-              </span>
-              <span className="attempt__status mono">{a.status}</span>
-            </div>
-            <dl className="kv">
-              <dt>Parser / parse_method</dt>
-              <dd className="mono">
-                {a.parser} / {a.parse_method ?? "—"}
-              </dd>
-              <dt>chunks</dt>
-              <dd>{a.chunks_count}</dd>
-              <dt>extracted text chars</dt>
-              <dd>{a.extracted_text_chars ?? "unknown"}</dd>
-              {a.retry_reason && (
-                <>
-                  <dt>Retry reason</dt>
-                  <dd className="mono">{a.retry_reason}</dd>
-                </>
-              )}
-              {a.warnings.length > 0 && (
-                <>
-                  <dt>Warnings</dt>
-                  <dd>
-                    <ul className="bullet-list">
-                      {a.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                    </ul>
-                  </dd>
-                </>
-              )}
-            </dl>
-          </li>
-        ))}
-      </ol>
+      <div className="card__body">
+        <h3>Compile Attempts</h3>
+        <ol className="attempt-list">
+          {attempts.map((a) => (
+            <li
+              key={a.attempt_number}
+              data-testid={`compile-attempt-${a.attempt_number}`}
+              className={`attempt attempt--${a.quality} attempt--status-${a.status}`}
+            >
+              <div className="attempt__head">
+                <span className="attempt__num">#{a.attempt_number}</span>
+                <span className={`badge mode-badge mode-badge--${a.mode ?? "unknown"}`}>
+                  {a.mode ?? "—"}
+                </span>
+                <span className={`badge quality-badge quality-badge--${a.quality}`}>
+                  {a.quality}
+                </span>
+                <span className="attempt__status mono">{a.status}</span>
+              </div>
+              <dl className="kv">
+                <dt>Parser / parse_method</dt>
+                <dd className="mono">
+                  {a.parser} / {a.parse_method ?? "—"}
+                </dd>
+                <dt>chunks</dt>
+                <dd>{a.chunks_count}</dd>
+                <dt>extracted text chars</dt>
+                <dd>{a.extracted_text_chars ?? "unknown"}</dd>
+                {a.retry_reason && (
+                  <>
+                    <dt>Retry reason</dt>
+                    <dd className="mono">{a.retry_reason}</dd>
+                  </>
+                )}
+                {a.warnings.length > 0 && (
+                  <>
+                    <dt>Warnings</dt>
+                    <dd>
+                      <ul className="bullet-list">
+                        {a.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </dd>
+                  </>
+                )}
+              </dl>
+            </li>
+          ))}
+        </ol>
+      </div>
     </div>
   );
 }
@@ -295,37 +307,39 @@ function FinalQualitySummary({ report }: { report: CompileStrategyReport }) {
   const last = report.attempts[report.attempts.length - 1];
   return (
     <div className="card" data-testid="final-quality-summary">
-      <h3>Final Compile Quality</h3>
-      <dl className="kv">
-        <dt>Quality</dt>
-        <dd>
-          <span className={`badge quality-badge quality-badge--${report.final_compile_quality}`}>
-            {report.final_compile_quality}
-          </span>
-        </dd>
-        <dt>Initial mode</dt>
-        <dd>{report.initial_mode ?? "—"}</dd>
-        <dt>Final mode</dt>
-        <dd>{report.final_mode ?? "—"}</dd>
-        <dt>Retry used</dt>
-        <dd>{report.retry_used ? "yes" : "no"}</dd>
-        <dt>Attempts</dt>
-        <dd>{report.attempts_count}</dd>
-        <dt>Final chunks</dt>
-        <dd>{last?.chunks_count ?? 0}</dd>
-        <dt>Final extracted chars</dt>
-        <dd>{last?.extracted_text_chars ?? "unknown"}</dd>
-        {report.final_warnings.length > 0 && (
-          <>
-            <dt>Final warnings</dt>
-            <dd>
-              <ul className="bullet-list">
-                {report.final_warnings.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            </dd>
-          </>
-        )}
-      </dl>
+      <div className="card__body">
+        <h3>Final Compile Quality</h3>
+        <dl className="kv">
+          <dt>Quality</dt>
+          <dd>
+            <span className={`badge quality-badge quality-badge--${report.final_compile_quality}`}>
+              {report.final_compile_quality}
+            </span>
+          </dd>
+          <dt>Initial mode</dt>
+          <dd>{report.initial_mode ?? "—"}</dd>
+          <dt>Final mode</dt>
+          <dd>{report.final_mode ?? "—"}</dd>
+          <dt>Retry used</dt>
+          <dd>{report.retry_used ? "yes" : "no"}</dd>
+          <dt>Attempts</dt>
+          <dd>{report.attempts_count}</dd>
+          <dt>Final chunks</dt>
+          <dd>{last?.chunks_count ?? 0}</dd>
+          <dt>Final extracted chars</dt>
+          <dd>{last?.extracted_text_chars ?? "unknown"}</dd>
+          {report.final_warnings.length > 0 && (
+            <>
+              <dt>Final warnings</dt>
+              <dd>
+                <ul className="bullet-list">
+                  {report.final_warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </dd>
+            </>
+          )}
+        </dl>
+      </div>
     </div>
   );
 }

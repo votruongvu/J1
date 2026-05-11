@@ -3565,12 +3565,25 @@ pre.json .b {
   color: var(--text-subtle, var(--text-muted));
 }
 
+/* ---- Compile Strategy panel ----------------------------------- */
+
+/* Wrapper around the 4 inner cards (Banners, CompileStrategyCard,
+ * CompileAttemptsTimeline, FinalQualitySummary). Provides the
+ * inter-card gap that the page-level `.col` flex-gap would otherwise
+ * supply if this panel only emitted a single card. */
+.compile-strategy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 /* ---- Assessment Plan panel ------------------------------------- */
 
 .assessment-plan-panel {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding: var(--sp-6) var(--sp-7);
 }
 .assessment-plan-panel__head {
   display: flex;

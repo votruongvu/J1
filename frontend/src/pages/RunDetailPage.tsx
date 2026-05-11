@@ -29,7 +29,6 @@ import { CompileStrategyPanel } from "./run-detail/CompileStrategyPanel";
 import { CompileResultPanel } from "./run-detail/CompileResultPanel";
 import { EnrichPlanPanel } from "./run-detail/EnrichPlanPanel";
 import { EnrichmentResultPanel } from "./run-detail/EnrichmentResultPanel";
-import { InitialExecutionPlanPanel } from "./run-detail/InitialExecutionPlanPanel";
 import type {
   EnrichmentResultPayload,
   FinalIngestionReportPayload,
@@ -376,19 +375,6 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           events={events}
           enrichmentSignals={enrichmentSignals}
           finalReport={finalReport}
-        />
-      </div>
-
-      {/* Initial Execution Plan panel at the top of the
- page, mirroring the original AssessmentPlanPanel slot.
- Shows the resolved domain pack + enrichment policy +
- candidate modules. Together with the AssessmentPlanPanel
- (compile-side) they cover the pre-compile decision
- surface end-to-end. */}
-      <div style={{ marginBottom: 20 }}>
-        <InitialExecutionPlanPanel
-          runId={runId}
-          latestEvent={events.length > 0 ? events[events.length - 1] : null}
         />
       </div>
 

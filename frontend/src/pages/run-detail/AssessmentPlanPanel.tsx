@@ -136,32 +136,38 @@ export function AssessmentPlanPanel({
   if (state.kind === "loading") {
     return (
       <div className="card" data-testid="assessment-plan-loading">
-        <h3>Assessment Plan</h3>
-        <p style={{ color: "var(--text-muted)" }}>
-          Profiling document and building AssessmentPlan…
-        </p>
+        <div className="card__body">
+          <h3>Assessment Plan</h3>
+          <p style={{ color: "var(--text-muted)" }}>
+            Profiling document and building AssessmentPlan…
+          </p>
+        </div>
       </div>
     );
   }
   if (state.kind === "missing") {
     return (
       <div className="card" data-testid="assessment-plan-missing">
-        <h3>Assessment Plan</h3>
-        <p style={{ color: "var(--text-muted)" }}>
-          No assessment data available for this run yet. The plan is
-          persisted as part of the compile-strategy report once compile
-          completes.
-        </p>
+        <div className="card__body">
+          <h3>Assessment Plan</h3>
+          <p style={{ color: "var(--text-muted)" }}>
+            No assessment data available for this run yet. The plan is
+            persisted as part of the compile-strategy report once compile
+            completes.
+          </p>
+        </div>
       </div>
     );
   }
   if (state.kind === "error") {
     return (
       <div className="card" data-testid="assessment-plan-error">
-        <h3>Assessment Plan</h3>
-        <p style={{ color: "var(--error-fg)" }}>
-          Couldn't load assessment plan: {state.message}
-        </p>
+        <div className="card__body">
+          <h3>Assessment Plan</h3>
+          <p style={{ color: "var(--error-fg)" }}>
+            Couldn't load assessment plan: {state.message}
+          </p>
+        </div>
       </div>
     );
   }
