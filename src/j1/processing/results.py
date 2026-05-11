@@ -60,8 +60,7 @@ ARTIFACT_KIND_FINAL_SUMMARY = "final_summary"
 # `StageValidationResult` payload so operators can audit which
 # checks ran and which tripped. Distinct from the run-level
 # `validation_report` (which aggregates the per-stage outcomes
-# at terminal transition). See
-# [`docs/ingestion-stage-validation.md`](../../docs/ingestion-stage-validation.md).
+# at terminal transition).
 ARTIFACT_KIND_STAGE_VALIDATION_REPORT = "stage_validation_report"
 # Compile-strategy + safety-retry summary. One artifact per
 # compile-stage execution (or sequence of retries) carrying the

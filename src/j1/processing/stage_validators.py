@@ -16,8 +16,8 @@ Adding a new stage validator:
  3. Add the workflow gate that calls `validate_stage` for that
  step + records COMPLETED only on `result.passed`.
  4. Add unit tests in `tests/test_stage_validators.py`.
- 5. Update `docs/ingestion-stage-validation.md` with the new
- stage's required-output / quality-check rows.
+ 5. Update the architecture docs (under `docs/architecture/`)
+ with the new stage's required-output + quality checks.
 """
 
 from __future__ import annotations

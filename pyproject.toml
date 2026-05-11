@@ -27,9 +27,8 @@ dependencies = [
     # processing. Promoted from a transitive `raganything` dep to
     # core so the profiler works in deployments without RAGAnything
     # (e.g. a lean ingestion-only worker that delegates compile to
-    # a remote service). See `docs/ingestion-stage-validation.md`
-    # and the profiler's docstring for the lightweight-library
-    # policy.
+    # a remote service). See the profiler's docstring for the
+    # lightweight-library policy.
     "pypdf>=4.0",
 ]
 

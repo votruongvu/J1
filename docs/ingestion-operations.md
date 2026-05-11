@@ -12,8 +12,7 @@
 > for the production worker wiring runbook see
 > [`operations/production-worker-wiring.md`](operations/production-worker-wiring.md).**
 
-> Companion to [`ingestion-stability-audit.md`](./ingestion-stability-audit.md).
-> Audience: operators + the next implementation iteration.
+> Audience: operators + framework integrators.
 
 This document specifies the operational model for J1 ingestion runs:
 **resume**, **rebuild index**, **full re-index**, **delete**, and **multi-upload
@@ -56,13 +55,15 @@ J1 owns the ingestion plan; adapters execute capabilities. Every backbone stage 
 ```
 validate_context
 list_pending_documents (bulk-job mode only)
-profile_document (when planner_enabled=true)
-build_planning_result (post-compile)
-compile (mandatory backbone)
-insert_content (split mode only — pure chunk generation)
-enrich (per-artifact, when plan enables)
-build_graph (when plan enables)
+profile_document (pre-compile profiling)
+build_initial_execution_plan (pre-compile)
+compile (mandatory backbone — RAGAnything as black-box engine)
+persist_compile_result_summary (post-compile)
+persist_post_compile_enrich_plan (post-compile analysis)
+run_enrichment_stage (post-compile overlay; LLM-backed modules)
+build_graph (when graph_builder_kind set)
 index (when indexer_kind set)
+persist_final_summary + persist_final_ingestion_report (terminal)
 finalize
 ```
 
@@ -557,7 +558,7 @@ curl -s "http://localhost:8000/api/projects/<project>/ingestion-runs/<runId>/art
 
 ## 9. Manual verification commands
 
-See [`ingestion-stability-audit.md`](./ingestion-stability-audit.md) § 8 for the complete list. Quick reference:
+Quick reference for operator verification commands:
 
 ```bash
 # Backend tests

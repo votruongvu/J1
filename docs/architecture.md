@@ -224,20 +224,19 @@ for the contributor workflow.
 
 ## Legacy / compatibility notes
 
-The following docs pre-date the –12 ingestion refactor. They
-remain in the repo for compatibility / historical reference but
-**do not describe the currently shipping ingestion pipeline**.
-Each carries a deprecation banner at the top pointing to the
-authoritative replacement.
+Four docs that described removed concepts (`DefaultIngestPlanner`
+/ `IngestPlan`, "split mode" / "complete mode", pre-compile
+graph/index gating) were deleted entirely during the documentation
+cleanup. The replacement mapping lives in
+[`migration/deprecated-docs.md`](migration/deprecated-docs.md).
 
-| Legacy doc | Replacement |
+Two docs retain CURRENT operational content but mention legacy
+concepts inside banner-stamped sections:
+
+| Retained doc | Note |
 |---|---|
-| [`INGESTION_PROFILES.md`](INGESTION_PROFILES.md) | [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md) + [`architecture/domain-profiles.md`](architecture/domain-profiles.md) |
-| [`ingestion-stability-audit.md`](ingestion-stability-audit.md) | Historical audit; cross-stage state machine now lives in [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md) |
-| [`ingestion-stage-validation.md`](ingestion-stage-validation.md) | Per-stage validation contract is unchanged; the legacy "split mode" / "complete mode" distinction is gone — see [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md) |
-| [`ingestion-operations.md`](ingestion-operations.md) | Operational mechanics unchanged; the split-mode pipeline-shape sections are legacy |
-| [`ingestion-progress.md`](ingestion-progress.md) | SSE / progress surface is current; `IngestPlan` references are legacy — see [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md) |
-| [`DOMAIN_PACKS.md`](DOMAIN_PACKS.md) | Superseded by [`architecture/domain-profiles.md`](architecture/domain-profiles.md) + [`guides/adding-a-domain-profile.md`](guides/adding-a-domain-profile.md) |
+| [`ingestion-operations.md`](ingestion-operations.md) | Run-lifecycle operational mechanics (resume / rebuild-index / full-reindex / delete / batch upload) — current |
+| [`ingestion-progress.md`](ingestion-progress.md) | SSE / progress event surface — current; legacy `IngestPlan` references replaced by current `initial_execution_plan` + `post_compile_enrichment_plan` mentions |
 
 ### Retired concepts
 

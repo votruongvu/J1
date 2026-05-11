@@ -143,13 +143,11 @@ class LLMProviderRegistry:
     def try_premium_or_text(self) -> TextLLMClient | None:
         """Resolve PREMIUM if configured, otherwise TEXT.
 
- The runtime contract for `IngestPlan.requires_premium_llm`:
- when the planner flags premium accuracy as required, callers
- prefer the premium client; when no premium client is wired,
- TEXT is the documented fallback (operator-facing copy in
- docs/INGESTION_PROFILES.md § Known limitations covers the
- UX implication). Either way, the call still happens — the
- flag never silently disables work."""
+ The runtime contract for premium-LLM resolution: when a
+ caller asks for premium accuracy, prefer the premium client;
+ when no premium client is wired, TEXT is the documented
+ fallback. Either way, the call still happens — the flag
+ never silently disables work."""
         client = self.try_resolve(LLM_ROLE_PREMIUM)
         if client is not None:
             return client  # type: ignore[return-value]

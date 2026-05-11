@@ -216,13 +216,22 @@ def test_architecture_md_does_not_describe_ingest_planner_as_active():
 # ---- 6. Legacy ingestion docs carry deprecation banners ----------
 
 
+# After the documentation cleanup pass, four legacy docs that
+# DESCRIBED removed concepts (`IngestPlanner`, split mode,
+# pre-compile gating) were deleted entirely:
+#   * `docs/INGESTION_PROFILES.md`
+#   * `docs/DOMAIN_PACKS.md`
+#   * `docs/ingestion-stability-audit.md`
+#   * `docs/ingestion-stage-validation.md`
+# Their replacements live under `docs/architecture/` + `docs/guides/`.
+# See `docs/migration/deprecated-docs.md` for the full mapping.
+#
+# Two docs were KEPT because their OPERATIONAL content is current —
+# they continue to carry deprecation banners scoping the legacy
+# sections explicitly:
 _LEGACY_DOCS_THAT_NEED_BANNER: tuple[Path, ...] = (
-    _DOCS_ROOT / "INGESTION_PROFILES.md",
-    _DOCS_ROOT / "ingestion-stability-audit.md",
-    _DOCS_ROOT / "ingestion-stage-validation.md",
     _DOCS_ROOT / "ingestion-operations.md",
     _DOCS_ROOT / "ingestion-progress.md",
-    _DOCS_ROOT / "DOMAIN_PACKS.md",
 )
 
 
