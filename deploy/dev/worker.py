@@ -120,6 +120,13 @@ async def _run() -> None:
         # plumbed through to the composite so disabled modalities skip
         # their sub-enricher at construction time.
         enrichment_settings=boot.enrichment,
+        # Wave 10.6 — pass the shared LLM-call limiter through so
+        # the new EnrichmentModule adapters (text / classification /
+        # table / image) gate concurrent LLM calls with the same
+        # semaphore the legacy CompositeEnricher uses. When the
+        # limiter is None (J1_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS=0
+        # / disabled), the adapters still construct but don't gate.
+        llm_call_limiter=getattr(boot, "llm_call_limiter", None),
     )
 
     # Every J1 activity is synchronous; the Temporal SDK requires

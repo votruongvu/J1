@@ -113,8 +113,8 @@ class _FakeVisionClient:
         self._raise = raise_exc
         self.calls: list[tuple[str, dict, dict | None]] = []
 
-    def analyze_image(self, prompt: str, schema: dict,
-                      metadata: dict | None = None) -> tuple[dict, _FakeUsage]:
+    def analyze(self, prompt: str, schema: dict,
+                metadata: dict | None = None) -> tuple[dict, _FakeUsage]:
         self.calls.append((prompt, dict(schema), dict(metadata or {})))
         if self._raise:
             raise self._raise

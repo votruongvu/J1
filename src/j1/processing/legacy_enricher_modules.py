@@ -1,47 +1,60 @@
-"""Wave 10.5 — wrappers that expose the legacy LLM-backed enrichers
-through the new `EnrichmentModule` protocol.
+"""Wave 10.5 + 10.6 — legacy-compatible `EnrichmentModule`
+adapters for the post-compile enrichment stage.
 
-The legacy enrichers (`DocumentClassifier`, `RequirementExtractor`,
-`TableExtractor`, `VisualContentDescriber` in `j1/enrichers.py`)
-remain untouched. This module provides four ADAPTERS that:
+These adapters MIGRATE the legacy LLM-backed enrichment behaviour
+(text / classification / table / image) onto the new typed module
+protocol. They DO NOT invoke the legacy enricher classes in
+`j1/enrichers.py` directly — instead they re-implement the same
+prompt + JSON-schema vocabulary against the new typed analysis-
+client contracts in `enrichment_clients.py`. The result is the
+same operator-facing output (classifications, table summaries,
+image summaries, retrieval hints), now produced through the
+protocol-based pipeline so domain packs + the shared LLM-call
+limiter both reach them.
 
-  * implement `module_id` / `can_run(ctx)` / `run(ctx)` so they slot
-    into `CompositeEnrichmentRunner` next to the Wave-6 skeleton
+What each adapter provides:
+
+  * `module_id` + `can_run(ctx)` + `run(ctx)` — the Wave-6
+    `EnrichmentModule` protocol, so the adapter slots into
+    `CompositeEnrichmentRunner` next to the existing skeleton
     modules.
-  * resolve their prompt through `resolve_module_prompt` so domain
-    packs can override per-module copy via `DomainPromptPack`.
-  * route LLM calls through the shared `LLMCallLimiter` (Wave 7) so
-    concurrent worker calls stay bounded.
-  * project the LLM output into typed overlay records
-    (`ClassificationResult`, `TableSummary`, `ImageSummary`,
-    `retrieval_hints[]`, `confidence_notes[]`) with explicit
+  * Prompt resolution through `resolve_module_prompt(domain_pack,
+    prompt_field, builtin_default)` so `DomainPromptPack`
+    overrides + `prompt_addon` reach the model.
+  * LLM call routing through the shared `LLMCallLimiter` (Wave 7).
+    When the limiter is None, calls bypass the gate — same
+    behaviour the legacy `CompositeEnricher` already has.
+  * Typed output projection: `ClassificationResult`,
+    `TableSummary`, `ImageSummary`, `retrieval_hints[]`,
+    `confidence_notes[]` — each carrying explicit
     `ProvenanceLink`s back to the source compile artifact.
 
-The wrappers OWN their LLM call sites — they don't invoke the
-legacy enricher classes themselves. They reuse the legacy
-prompt + JSON-schema vocabulary verbatim so existing operator
-familiarity with the prompts carries through. Tests pin the
-prompt strings so a drift in either implementation is loud.
-
-Skip behaviour: every wrapper short-circuits when its required
+Skip behaviour: every adapter short-circuits when its required
 input is missing — no text → text/classification skip; no
 detected tables → table skip; no detected images → image skip;
-no LLM client wired → all four skip with the same "no LLM client
-configured" reason. The runner records each skip as a SKIPPED
-outcome with the wrapper's reason.
+no analysis client wired → all four skip with the same "no LLM
+client configured" reason. The runner records each skip as a
+SKIPPED outcome with the adapter's reason. Final ingestion
+reports surface these as SKIPPED module outcomes so missing
+clients are NEVER silent.
 
-Failure behaviour: a wrapper that raises mid-`run()` is caught
+Failure behaviour: an adapter that raises mid-`run()` is caught
 by the runner (existing Wave-6 behaviour). When the active
-policy is `require_enrichment_success=True` and the wrapper's
+policy is `require_enrichment_success=True` and the adapter's
 outcome is FAILED, the workflow surfaces it as
 `failed_enrichment_required`; otherwise the run completes with
 `completed_with_enrichment_warnings`.
 
-The wrappers are NOT frozen dataclasses — they cache the typed
+The adapters are NOT frozen dataclasses — they cache the typed
 outputs of the most recent `run()` so the runner can pick them
 up via `get_typed_outputs()`. This keeps `EnrichmentModuleOutcome`
 small + serialisable and avoids re-running the LLM inside the
 runner's projection step.
+
+Terminology note: this module previously described itself as
+"wrappers". They are more precisely PROTOCOL-BASED ADAPTERS:
+they don't wrap a legacy class instance; they speak the new
+protocol while preserving the legacy prompt + schema contracts.
 """
 
 from __future__ import annotations
@@ -583,16 +596,14 @@ class ImageEnrichmentModule(_LegacyWrapperBase):
         started = perf_counter()
         prompt = self._resolve_prompt(ctx.domain_pack)
         try:
-            # The vision client's `analyze_image` accepts a prompt
-            # + an output schema (mirrors the text client's
-            # `extract`). The legacy `VisualContentDescriber`
-            # calls one image at a time; here we call once for the
-            # whole batch — the schema's `images[]` array carries
-            # per-image entries. Implementations that prefer
-            # per-image calls keep working: the model just returns
-            # `images: [<one entry>]`.
+            # The vision client speaks the `VisionAnalysisClient`
+            # Protocol — `analyze(prompt, schema, metadata)`
+            # returning a JSON dict + usage. Production vision LLMs
+            # don't natively expose that shape; the bootstrap wires
+            # a `PerImageVisionAdapter` around the per-image
+            # `VisionLLMClient` so the wrapper stays vendor-neutral.
             parsed, usage = self._llm_call(
-                self._vision_client.analyze_image,
+                self._vision_client.analyze,
                 prompt, self._OUTPUT_SCHEMA,
                 metadata={
                     "module_id": self.module_id,

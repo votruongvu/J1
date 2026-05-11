@@ -369,6 +369,11 @@ def build_worker_spec(
     query_providers: Mapping[str, object] | None = None,
     llm_registry: object | None = None,
     enrichment_settings: object | None = None,
+    # Wave 10.6 — shared LLM-call limiter the bootstrap built.
+    # When None, the new EnrichmentModule adapters still construct;
+    # they just don't gate concurrent LLM calls. (CompositeEnricher
+    # behaves the same way.)
+    llm_call_limiter: object | None = None,
 ) -> WorkerSpec:
     """Build the `WorkerSpec` registered by the dev worker.
 
@@ -602,6 +607,40 @@ def build_worker_spec(
     else:
         resolved_enrichers = enrichers
 
+    # Wave 10.6 — build the per-document image-bytes provider once.
+    # It closes over the artifact registry + workspace so the
+    # PerImageVisionAdapter can read each detected image's bytes
+    # from disk at run time. Returns an empty iterable when no
+    # vision client is wired so the adapter constructs harmlessly.
+    from j1.processing.enrichment_clients import (
+        PerImageVisionAdapter,
+        TextLLMClientAdapter,
+        VisionImagePayload,
+    )
+
+    def _build_image_provider_for_activity():
+        """Return a callable the adapter binds at construction time.
+        Today the dev wiring doesn't have a per-run context to
+        thread compile-result image refs through — the adapter
+        receives an EMPTY provider so the image module skips with
+        'no images' on every run. A future wave that threads the
+        compile-result image bytes into the activity should replace
+        this with a closure over the run's detected_images list.
+        """
+        def _noop_provider() -> list[VisionImagePayload]:
+            return []
+        return _noop_provider
+
+    enrichment_text_client: object | None = None
+    enrichment_vision_client: object | None = None
+    if text_client is not None:
+        enrichment_text_client = TextLLMClientAdapter(text_client)
+    if vision_client is not None:
+        enrichment_vision_client = PerImageVisionAdapter(
+            vision_client,
+            image_provider=_build_image_provider_for_activity(),
+        )
+
     activities += ProcessingActivities(
         processing=processing,
         sources=sources,
@@ -623,6 +662,14 @@ def build_worker_spec(
         # artifact already exists. Same workspace-area JSONL backing
         # as the audit log, so a single backup covers both.
         result_cache=JsonlProcessingResultCache(workspace),
+        # Wave 10.6 — typed analysis clients + shared limiter for
+        # the new EnrichmentModule adapters (text / classification
+        # / table / image). When any client is None, the matching
+        # adapter SKIPs the module with "no LLM client configured"
+        # so the absence is loud in the final ingestion report.
+        enrichment_text_client=enrichment_text_client,
+        enrichment_vision_client=enrichment_vision_client,
+        enrichment_llm_call_limiter=llm_call_limiter,
     ).all_activities()
     activities += KnowledgeProcessingActivities(
         workspace=workspace,
