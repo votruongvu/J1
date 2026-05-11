@@ -423,6 +423,16 @@ class ProcessingActivities:
         result_cache: ProcessingResultCache | None = None,
         run_store: IngestionRunStore | None = None,
         fast_llm_consult: "FastLLMConsultCallable | None" = None,
+        # Wave 10.5 — optional LLM clients + shared limiter that the
+        # legacy-wrapper enrichment modules consume. When None (tests
+        # / dev / deployments without LLM credentials) the wrappers
+        # construct successfully but `can_run()` returns False with
+        # "no LLM client configured" — the runner records each as
+        # SKIPPED. Bootstrap wires these from the same role registry
+        # the `CompositeEnricher` uses.
+        enrichment_text_client: object | None = None,
+        enrichment_vision_client: object | None = None,
+        enrichment_llm_call_limiter: object | None = None,
     ) -> None:
         self._processing = processing
         self._sources = sources
@@ -465,6 +475,13 @@ class ProcessingActivities:
         # without changing the helper signature. Activity instances
         # share the workspace via the processing service.
         _PROCESSING_SERVICE_FOR_REGISTRY[id(self._artifacts)] = self._processing
+        # Wave 10.5 — LLM clients + shared limiter for the legacy-
+        # wrapper enrichment modules. When None, the wrappers
+        # construct cleanly but `can_run()` returns False with
+        # "no LLM client configured" so they skip per-run.
+        self._enrichment_text_client = enrichment_text_client
+        self._enrichment_vision_client = enrichment_vision_client
+        self._enrichment_llm_call_limiter = enrichment_llm_call_limiter
 
     def all_activities(self) -> list:
         return [
@@ -1165,10 +1182,24 @@ class ProcessingActivities:
             domain_pack=domain_pack,
             initial_plan=initial_plan,
         )
+        # Wave 10.5 — register the legacy-wrapper modules alongside
+        # the Wave-6 skeletons. The wrappers skip cleanly when the
+        # activity wasn't constructed with LLM clients (tests / dev
+        # without credentials) so adding them here is safe in every
+        # deployment.
+        from j1.processing.legacy_enricher_modules import (
+            build_legacy_enricher_modules,
+        )
+        legacy_modules = build_legacy_enricher_modules(
+            text_client=self._enrichment_text_client,
+            vision_client=self._enrichment_vision_client,
+            llm_call_limiter=self._enrichment_llm_call_limiter,
+        )
         runner = CompositeEnrichmentRunner(modules=[
             MetadataEnrichmentModule(),
             TerminologyEnrichmentModule(),
             ValidationEnrichmentModule(),
+            *legacy_modules,
         ])
         result = runner.run(context)
         payload = result.to_payload()

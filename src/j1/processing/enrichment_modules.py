@@ -377,6 +377,13 @@ class CompositeEnrichmentRunner:
         terminology: list[TerminologyEntry] = []
         validation: ValidationResult | None = None
         metadata_overlay = DocumentMetadataOverlay()
+        # Wave 10.5 — typed payload accumulators for wrapper modules
+        # that emit typed records through `get_typed_outputs()`.
+        classification: ClassificationResult | None = None
+        table_summaries: list[TableSummary] = []
+        image_summaries: list[ImageSummary] = []
+        retrieval_hints: list[str] = []
+        confidence_notes: list[str] = []
         warnings: list[str] = []
         errors: list[str] = []
         for module in self.modules:
@@ -414,6 +421,35 @@ class CompositeEnrichmentRunner:
                 validation = _projected_validation_result(ctx)
             if isinstance(module, MetadataEnrichmentModule):
                 metadata_overlay = _projected_metadata_overlay(ctx)
+            # Wave 10.5 — wrapper modules expose typed payloads via
+            # `get_typed_outputs()` (cached on the module instance
+            # during `run()`). Merge whatever keys we recognise.
+            # Unknown keys are tolerated so future wrappers can
+            # introduce new typed outputs without changes here.
+            if outcome.status in (
+                EnrichmentModuleStatus.RUN,
+                EnrichmentModuleStatus.PARTIAL,
+            ) and hasattr(module, "get_typed_outputs"):
+                typed = module.get_typed_outputs() or {}
+                cls_record = typed.get("classification_result")
+                if isinstance(cls_record, ClassificationResult):
+                    classification = cls_record
+                tables = typed.get("table_summaries") or ()
+                for t in tables:
+                    if isinstance(t, TableSummary):
+                        table_summaries.append(t)
+                images = typed.get("image_summaries") or ()
+                for i in images:
+                    if isinstance(i, ImageSummary):
+                        image_summaries.append(i)
+                hints = typed.get("retrieval_hints") or ()
+                for h in hints:
+                    if isinstance(h, str) and h:
+                        retrieval_hints.append(h)
+                notes = typed.get("confidence_notes") or ()
+                for n in notes:
+                    if isinstance(n, str) and n:
+                        confidence_notes.append(n)
         duration_ms = int((perf_counter() - started) * 1000)
         status = _aggregate_status(outcomes)
         return EnrichmentResult(
@@ -422,7 +458,12 @@ class CompositeEnrichmentRunner:
             module_outcomes=tuple(outcomes),
             document_metadata_overlay=metadata_overlay,
             terminology_map=tuple(terminology),
+            classification_result=classification,
+            table_summaries=tuple(table_summaries),
+            image_summaries=tuple(image_summaries),
             validation_result=validation,
+            retrieval_hints=tuple(retrieval_hints),
+            confidence_notes=tuple(confidence_notes),
             warnings=tuple(warnings),
             errors=tuple(errors),
             duration_ms=duration_ms,
