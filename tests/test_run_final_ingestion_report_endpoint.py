@@ -1,4 +1,4 @@
-"""Wave 10 — REST + service-layer tests for the
+"""REST + service-layer tests for the
 `final_ingestion_report` endpoint. Mirrors the shape of the other
 artifact-overlay endpoint tests."""
 
@@ -52,8 +52,8 @@ def _make_run(run_id: str = "run-1") -> IngestionRun:
 def _report_payload(
     *, final_status: str = "completed_with_enrichment",
 ) -> dict:
-    """Minimal `FinalIngestionReport.to_dict()` shape — enough to
-    test the wire envelope without re-running the builder."""
+    """Minimal `FinalIngestionReport.to_dict` shape — enough to
+ test the wire envelope without re-running the builder."""
     return {
         "schema_version": FINAL_INGESTION_REPORT_SCHEMA_VERSION,
         "run_id": "run-1",
@@ -161,14 +161,14 @@ def test_returns_completed_with_payload_when_artifact_exists(
     assert result["artifactId"] == "a-fir"
 
 
-# ---- 2. Unavailable / pre-Wave-10 paths ----------------------------
+# ---- 2. Unavailable / pre- paths ----------------------------
 
 
-def test_returns_unavailable_for_pre_wave10_run(service, run_store, ctx):
-    """Old runs that completed before Wave 10 won't have the report
-    artifact — the endpoint must return the documented
-    `final_ingestion_report_not_available` sentinel so the FE can
-    fall back."""
+def test_returns_unavailable_for_legacy_run(service, run_store, ctx):
+    """Old runs that completed won't have the report
+ artifact — the endpoint must return the documented
+ `final_ingestion_report_not_available` sentinel so the FE can
+ fall back."""
     run_store.upsert(ctx, _make_run())
     result = service.get_run_final_ingestion_report(ctx, "run-1")
     assert result["status"] == "unavailable"
@@ -183,8 +183,8 @@ def test_returns_unavailable_when_payload_malformed(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Artifact exists on the registry but the on-disk JSON is not a
-    dict — endpoint must surface the unavailable sentinel rather than
-    crash the FE consumer."""
+ dict — endpoint must surface the unavailable sentinel rather than
+ crash the FE consumer."""
     run_store.upsert(ctx, _make_run())
     filename = "final_ingestion_report_run-1_a-bad.json"
     full = workspace.area(ctx, WorkspaceArea.COMPILED) / filename
@@ -255,7 +255,7 @@ def test_report_payload_has_no_split_mode_vocabulary(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Operator/FE wire format must stay free of the legacy
-    pre-compile gating vocabulary."""
+ pre-compile gating vocabulary."""
     run_store.upsert(ctx, _make_run())
     _write_report_artifact(workspace, artifact_registry, ctx)
     result = service.get_run_final_ingestion_report(ctx, "run-1")

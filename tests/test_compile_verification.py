@@ -88,7 +88,7 @@ def test_health_passes_with_index_manifest_when_required():
 
 def test_health_min_chunks_zero_disables_chunk_check():
     """An empty-document compile may legitimately produce zero
-    chunks. `min_chunks=0` is the opt-out — verification should pass."""
+ chunks. `min_chunks=0` is the opt-out — verification should pass."""
     passed, reason, _msg, n = verify_compile_output_health(
         artifact_kinds=("parsed_source",),
         min_chunks=0,
@@ -103,8 +103,8 @@ def test_health_min_chunks_zero_disables_chunk_check():
 
 def test_failure_codes_are_stable_string_constants():
     """The reason codes are part of the wire/audit contract — the FE
-    and ops-grade audit consumers branch on these exact strings. Pin
-    them so a rename here is intentional and traceable."""
+ and ops-grade audit consumers branch on these exact strings. Pin
+ them so a rename here is intentional and traceable."""
     assert FAILURE_CODE_CHUNK_FAILED == "CHUNK_FAILED"
     assert FAILURE_CODE_INDEX_FAILED == "INDEX_FAILED"
     assert FAILURE_CODE_VERIFICATION_FAILED == "VERIFICATION_FAILED"
@@ -131,17 +131,17 @@ def test_workflow_state_includes_compile_trigger_and_verifying():
 
 def test_trigger_compile_signal_constant_matches_handler_name():
     """Temporal infers the signal name from the Python identifier of
-    the `@workflow.signal`-decorated method. The constant the REST
-    handler / dev wiring uses MUST match the method name verbatim;
-    a drift here silently sends the signal to nowhere."""
+ the `@workflow.signal`-decorated method. The constant the REST
+ handler / dev wiring uses MUST match the method name verbatim;
+ a drift here silently sends the signal to nowhere."""
     assert SIGNAL_TRIGGER_COMPILE == "trigger_compile"
     assert hasattr(ProjectProcessingWorkflow, "trigger_compile")
 
 
 def test_trigger_compile_signal_flips_internal_flag():
     """The signal sets `_compile_triggered=True` so the gate's
-    `wait_condition` releases. Idempotent — calling twice keeps it
-    True (the gate consumes-and-resets on entry)."""
+ `wait_condition` releases. Idempotent — calling twice keeps it
+ True (the gate consumes-and-resets on entry)."""
     wf = ProjectProcessingWorkflow()
     assert wf._compile_triggered is False
     wf.trigger_compile()
@@ -155,8 +155,8 @@ def test_trigger_compile_signal_flips_internal_flag():
 
 def test_two_phase_compile_and_verify_after_compile_default_off():
     """Backward-compat: legacy callers that don't opt in MUST see
-    the pre-Phase-2 behaviour — no gate, no verification. Both
-    flags default to False."""
+ the pre- behaviour — no gate, no verification. Both
+ flags default to False."""
     request = ProjectProcessingRequest(
         scope=ProjectScope(tenant_id="t", project_id="p"),
         compiler_kind="raganything",
@@ -181,8 +181,8 @@ def test_request_accepts_two_phase_compile_and_verify_after_compile():
 
 def test_verify_compile_result_default_shape_indicates_pass():
     """A `passed=True` result must not require an explicit
-    reason_code so callers can construct successful results
-    without specifying every optional field."""
+ reason_code so callers can construct successful results
+ without specifying every optional field."""
     r = VerifyCompileActivityResult(passed=True)
     assert r.passed is True
     assert r.reason_code is None
@@ -191,7 +191,7 @@ def test_verify_compile_result_default_shape_indicates_pass():
 
 def test_verify_compile_input_defaults_to_min_chunks_one():
     """Default policy: every non-empty compile must produce at
-    least one chunk. Callers opt out by passing `min_chunks=0`."""
+ least one chunk. Callers opt out by passing `min_chunks=0`."""
     inp = VerifyCompileInput(
         scope=ProjectScope(tenant_id="t", project_id="p"),
         run_id="run-1",

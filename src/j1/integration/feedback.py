@@ -45,9 +45,9 @@ class FeedbackStore(Protocol):
 class JsonlFeedbackStore:
     """Append-only JSONL feedback log at `<project>/runtime/feedback.jsonl`.
 
-    Mirrors the audit/cost sink pattern: one event per line, idempotent
-    appends, no in-place updates.
-    """
+ Mirrors the audit/cost sink pattern: one event per line, idempotent
+ appends, no in-place updates.
+ """
 
     def __init__(self, workspace: WorkspaceResolver) -> None:
         self._workspace = workspace

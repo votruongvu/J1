@@ -2,16 +2,16 @@
  * Guard tests for the live `ApiClient`. We verify the bits that
  * caused real integration bugs:
  *
- *   1. Every request carries `X-Tenant-Id`, `X-Project-Id`, and the
- *      auth header for the configured scheme.
- *   2. Multipart upload sends a `file` field (matching the backend's
- *      `UploadFile` parameter name) and DOES NOT inject a hard-coded
- *      `compilerKind` form field that would override the deployment
- *      default.
- *   3. The success envelope (`{ requestId, data, meta }`) is unwrapped
- *      so callers see the raw `data` payload.
- *   4. Error envelopes (`{ error: { message } }`) surface as
- *      `ApiError` with a useful message.
+ * 1. Every request carries `X-Tenant-Id`, `X-Project-Id`, and the
+ * auth header for the configured scheme.
+ * 2. Multipart upload sends a `file` field (matching the backend's
+ * `UploadFile` parameter name) and DOES NOT inject a hard-coded
+ * `compilerKind` form field that would override the deployment
+ * default.
+ * 3. The success envelope (`{ requestId, data, meta }`) is unwrapped
+ * so callers see the raw `data` payload.
+ * 4. Error envelopes (`{ error: { message } }`) surface as
+ * `ApiError` with a useful message.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -398,7 +398,7 @@ describe("ApiClient.runManualTestQuery", () => {
     const out = await makeClient().runManualTestQuery("run-1", {
       question: "hello",
     });
-    // Wire-shape regression — every Phase 1 field surfaces.
+    // Wire-shape regression — every field surfaces.
     expect(out.requestId).toBe("tq-abc");
     expect(out.runId).toBe("run-1");
     expect(out.validationStatus).toBe("passed");
@@ -426,7 +426,7 @@ describe("ApiClient.runManualTestQuery", () => {
   });
 });
 
-describe("ApiClient validation set methods (Phase 2)", () => {
+describe("ApiClient validation set methods ", () => {
   const _SET_PAYLOAD = {
     data: {
       validationSetId: "vs-1",
@@ -579,7 +579,7 @@ describe("ApiClient validation set methods (Phase 2)", () => {
   });
 });
 
-describe("ApiClient tester verdict + report (Phase 5)", () => {
+describe("ApiClient tester verdict + report ", () => {
   const _RUN_PAYLOAD = {
     data: {
       validationRunId: "vrun-1",

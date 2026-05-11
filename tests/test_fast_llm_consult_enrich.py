@@ -1,16 +1,16 @@
 """Tests for the optional fast-LLM enrich-assessment consult.
 
 Layered coverage:
-  1. Settings loader: env vars → `FastLLMConsultSettings`, including
-     defaults, malformed values, and the `is_actionable()` gate.
-  2. Response parser: `parse_fast_llm_refinement` tolerates
-     malformed JSON / unknown tasks / SKIP attempts.
-  3. Activity: `fast_llm_consult_enrich` returns
-     `consulted=False` for every disabled / misconfigured / failure
-     path; `consulted=True` only when the callable returns a usable
-     refinement.
-  4. Workflow gating: `is_consult_warranted` only fires for OPTIONAL
-     plans; SKIP / RECOMMENDED / REQUIRED skip the consult entirely.
+ 1. Settings loader: env vars → `FastLLMConsultSettings`, including
+ defaults, malformed values, and the `is_actionable` gate.
+ 2. Response parser: `parse_fast_llm_refinement` tolerates
+ malformed JSON / unknown tasks / SKIP attempts.
+ 3. Activity: `fast_llm_consult_enrich` returns
+ `consulted=False` for every disabled / misconfigured / failure
+ path; `consulted=True` only when the callable returns a usable
+ refinement.
+ 4. Workflow gating: `is_consult_warranted` only fires for OPTIONAL
+ plans; SKIP / RECOMMENDED / REQUIRED skip the consult entirely.
 
 The activity tests use a stub callable so we never need a real LLM
 client — that's the only point at which the consult contract
@@ -76,7 +76,7 @@ def test_settings_enabled_with_provider_and_model_is_actionable():
 
 def test_settings_enabled_without_provider_is_not_actionable():
     """Per spec: 'If enabled but provider/model is missing, log
-    warning and use rule-based assessment.'"""
+ warning and use rule-based assessment.'"""
     s = load_fast_llm_consult_settings(env={
         ENV_FAST_LLM_ENABLED: "true",
         ENV_FAST_LLM_MODEL: "gpt-4o-mini",
@@ -126,8 +126,8 @@ def test_parse_dict_payload_with_recommendation_and_tasks():
 
 def test_parse_skip_recommendation_is_dropped():
     """SKIP from the LLM is silently dropped — deterministic blockers
-    own SKIP. The refinement returns with reasons/tasks if any, but
-    no recommendation."""
+ own SKIP. The refinement returns with reasons/tasks if any, but
+ no recommendation."""
     refinement = parse_fast_llm_refinement({
         "recommendation": "skip",
         "add_reasons": ["LLM thinks document is junk"],
@@ -210,9 +210,9 @@ def _consult_input(rec="optional") -> FastLLMConsultEnrichInput:
 
 def _make_activities(monkeypatch, *, fast_llm_consult=None, env=None):
     """Build a `ProcessingActivities` with a no-op service stub +
-    optional fast-LLM consult callable. The activity body uses
-    `_processing` only for non-LLM paths, so a None service is safe
-    here."""
+ optional fast-LLM consult callable. The activity body uses
+ `_processing` only for non-LLM paths, so a None service is safe
+ here."""
     if env is not None:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
@@ -233,7 +233,7 @@ def _make_activities(monkeypatch, *, fast_llm_consult=None, env=None):
 
 
 def test_activity_returns_consulted_false_when_settings_disabled(monkeypatch):
-    """No env vars set → settings.is_actionable() False → consulted=False."""
+    """No env vars set → settings.is_actionable False → consulted=False."""
     monkeypatch.delenv(ENV_FAST_LLM_ENABLED, raising=False)
     monkeypatch.delenv(ENV_FAST_LLM_PROVIDER, raising=False)
     monkeypatch.delenv(ENV_FAST_LLM_MODEL, raising=False)
@@ -248,8 +248,8 @@ def test_activity_returns_consulted_false_when_settings_disabled(monkeypatch):
 
 def test_activity_returns_consulted_false_when_no_callable_wired(monkeypatch):
     """Settings actionable but no callable wired → consulted=False
-    with a clear fallback reason. Worker bootstrap couldn't construct
-    a real LLM client; ingestion still proceeds on rules."""
+ with a clear fallback reason. Worker bootstrap couldn't construct
+ a real LLM client; ingestion still proceeds on rules."""
     activities = _make_activities(
         monkeypatch, fast_llm_consult=None,
         env={
@@ -298,7 +298,7 @@ def test_activity_returns_consulted_true_when_callable_returns_refinement(
 
 def test_activity_swallows_callable_exceptions(monkeypatch):
     """Per spec: 'Never fail ingestion because optional fast-LLM
-    assessment failed.' Any callable exception → consulted=False."""
+ assessment failed.' Any callable exception → consulted=False."""
     def boom(_p, _s):
         raise TimeoutError("LLM took too long")
 
@@ -317,7 +317,7 @@ def test_activity_swallows_callable_exceptions(monkeypatch):
 
 def test_activity_swallows_callable_returning_none(monkeypatch):
     """Callable returning None (e.g. invalid JSON path swallowed
-    inside the callable) → consulted=False, ingestion continues."""
+ inside the callable) → consulted=False, ingestion continues."""
     activities = _make_activities(
         monkeypatch, fast_llm_consult=lambda _p, _s: None,
         env={
@@ -332,7 +332,7 @@ def test_activity_swallows_callable_returning_none(monkeypatch):
 
 def test_activity_rejects_unrecognised_provisional_recommendation(monkeypatch):
     """Defensive: a workflow that passes a junk
-    `provisional_recommendation` doesn't crash the activity."""
+ `provisional_recommendation` doesn't crash the activity."""
     activities = _make_activities(
         monkeypatch, fast_llm_consult=lambda _p, _s: pytest.fail("must not call"),
         env={
@@ -351,8 +351,8 @@ def test_activity_rejects_unrecognised_provisional_recommendation(monkeypatch):
 
 def test_e2e_optional_plan_upgraded_via_refinement():
     """Realistic flow: rule-based assessor → OPTIONAL → LLM consult
-    upgrades to REQUIRED → final plan carries
-    `decision_source=rule_based_with_fast_llm`."""
+ upgrades to REQUIRED → final plan carries
+ `decision_source=rule_based_with_fast_llm`."""
     base = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -374,8 +374,8 @@ def test_e2e_optional_plan_upgraded_via_refinement():
 
 def test_e2e_skip_plan_never_overruled():
     """Hard rule: deterministic SKIP must not be overridden by a
-    rogue LLM. The refinement function still flips decision_source
-    so audit logs record the consult attempt."""
+ rogue LLM. The refinement function still flips decision_source
+ so audit logs record the consult attempt."""
     base = assess_post_compile_enrich(
         SourceSignals(compile_status="failed"),
     )

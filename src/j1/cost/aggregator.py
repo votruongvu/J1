@@ -11,15 +11,15 @@ from j1.workspace.resolver import WorkspaceResolver
 class CostAggregator:
     """Reads `audit/costs.jsonl` and sums spend with optional filters.
 
-    Filtering convention: callers populate `CostBreakdown.metadata` with
-    `task_category`, `document_id`, `query_id` etc. when recording cost.
-    The aggregator looks for those keys in the persisted event metadata.
+ Filtering convention: callers populate `CostBreakdown.metadata` with
+ `task_category`, `document_id`, `query_id` etc. when recording cost.
+ The aggregator looks for those keys in the persisted event metadata.
 
-    Note: the aggregator is scoped to a single `ProjectContext`. True
-    cross-project tenant aggregation needs an external pass over multiple
-    project logs and is not implemented here — `by_levels` returns the
-    project total for the `TENANT` level.
-    """
+ Note: the aggregator is scoped to a single `ProjectContext`. True
+ cross-project tenant aggregation needs an external pass over multiple
+ project logs and is not implemented here — `by_levels` returns the
+ project total for the `TENANT` level.
+ """
 
     def __init__(self, workspace: WorkspaceResolver) -> None:
         self._workspace = workspace

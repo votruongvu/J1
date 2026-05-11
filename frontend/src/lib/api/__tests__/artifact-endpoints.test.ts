@@ -1,13 +1,13 @@
 /**
- * Wave 9B — API client wire-contract tests for the three new typed
+ * API client wire-contract tests for the three new typed
  * artifact endpoints.
  *
  * Each test verifies:
- *   (a) the client hits the documented URL,
- *   (b) the envelope is unwrapped so callers see the raw artifact
- *       payload,
- *   (c) the `"unavailable"` sentinel is passed through verbatim so
- *       the FE state machine renders the unavailable branch.
+ * (a) the client hits the documented URL,
+ * (b) the envelope is unwrapped so callers see the raw artifact
+ * payload,
+ * (c) the `"unavailable"` sentinel is passed through verbatim so
+ * the FE state machine renders the unavailable branch.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -233,7 +233,7 @@ describe("getRunEnrichmentResult", () => {
 // ---- Header injection sanity (no regression) --------------------
 
 
-describe("Wave-9B endpoints — header injection", () => {
+describe("endpoints — header injection", () => {
   it("forwards Tenant + Project + Bearer on every artifact endpoint", async () => {
     const { calls } = withFetch(() =>
       envelope({ runId: "r", status: "unavailable", plan: null }),
@@ -245,7 +245,7 @@ describe("Wave-9B endpoints — header injection", () => {
     expect(calls).toHaveLength(3);
     // Spot-check the third call's headers — the api-client builds
     // headers uniformly across methods.
-    // (The other endpoints share the same `headers()` helper so we
+    // (The other endpoints share the same `headers` helper so we
     // don't re-assert per-method.)
   });
 });

@@ -53,7 +53,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<ProgressEvent | null>(null);
   const [loadError, setLoadError] = useState<{ status: number; message: string } | null>(null);
-  // Wave 9B — typed Wave-8 artifact snapshots threaded into
+  // typed artifact snapshots threaded into
   // PrimaryStatusPanel so the success-branch copy refines per the
   // (A–F) underlying-final-status surface. Both load lazily off the
   // new endpoints; absent values fall back to the run-level signals.
@@ -61,8 +61,8 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     useState<InitialExecutionPlanPayload | null>(null);
   const [enrichmentResult, setEnrichmentResult] =
     useState<EnrichmentResultPayload | null>(null);
-  // Wave 10 — aggregated final-ingestion-report. Preferred over
-  // per-artifact projection when present; pre-Wave-10 runs return
+  // aggregated final-ingestion-report. Preferred over
+  // per-artifact projection when present; pre- runs return
   // `null` here and the FE falls back to the existing per-artifact
   // signals (initialPlan + enrichmentResult above).
   const [finalReport, setFinalReport] =
@@ -80,7 +80,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
   const terminalRef = useRef(false);
   // Debounce window for run-snapshot refreshes. A single fast run
   // can emit dozens of `step.progress` events per second; coalescing
-  // them into one `getRun()` per ~250ms keeps the request count
+  // them into one `getRun` per ~250ms keeps the request count
   // manageable while still feeling realtime. Terminal events bypass
   // the debounce (we want the authoritative final snapshot).
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,9 +145,9 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         // The api-client only fires onClose on a *backend-initiated*
         // close (caller-initiated aborts are suppressed). So we're
         // here either because:
-        //   - terminal event arrived → backend ended the generator,
-        //   - or the backend hit its 1h max-duration timeout while
-        //     the run is still in flight.
+        //  - terminal event arrived → backend ended the generator,
+        //  - or the backend hit its 1h max-duration timeout while
+        //  the run is still in flight.
         // Reconnect in the second case to avoid losing events.
         if (terminalRef.current) {
           setStreamStatus("closed");
@@ -228,7 +228,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     };
   }, [runId, client, openStream, pushToast]);
 
-  // Wave 9B — load the typed Wave-8 artifacts (initial execution
+  // load the typed artifacts (initial execution
   // plan + enrichment result overlay) so PrimaryStatusPanel can
   // branch on the underlying INGESTION_STATUS_* literal instead of
   // the coarse RUN_STATUS. Both panels also fetch their own copies
@@ -255,9 +255,9 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         if (!cancelled) setEnrichmentResult(null);
       }
     })();
-    // Wave 10 — also try the aggregated final-ingestion-report. The
+    // also try the aggregated final-ingestion-report. The
     // FE prefers this when available; falls back to the per-artifact
-    // signals above when the report is unavailable (pre-Wave-10
+    // signals above when the report is unavailable (pre-
     // runs, in-flight runs, persist failures).
     void (async () => {
       try {
@@ -274,7 +274,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
   }, [client, runId, events.length]);
 
   const enrichmentSignals: EnrichmentSignals = (() => {
-    // Wave 10 — prefer the report's enrichment summary when present.
+    // prefer the report's enrichment summary when present.
     // It's the authoritative aggregated view (uses post-compile plan
     // override when the resolved policy differs from initial-plan).
     if (finalReport?.enrichment_summary) {
@@ -287,7 +287,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           summary.require_enrichment_success ?? undefined,
       };
     }
-    // Fallback for pre-Wave-10 runs: derive from per-artifact data
+    // Fallback for pre- runs: derive from per-artifact data
     // the FE already fetched. Same semantics, slightly cruder
     // (`requireEnrichmentSuccess` comes from the initial plan
     // rather than the resolved post-compile policy).
@@ -379,12 +379,12 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         />
       </div>
 
-      {/* Wave 9B — Initial Execution Plan panel at the top of the
-          page, mirroring the original AssessmentPlanPanel slot.
-          Shows the resolved domain pack + enrichment policy +
-          candidate modules. Together with the AssessmentPlanPanel
-          (compile-side) they cover the pre-compile decision
-          surface end-to-end. */}
+      {/* Initial Execution Plan panel at the top of the
+ page, mirroring the original AssessmentPlanPanel slot.
+ Shows the resolved domain pack + enrichment policy +
+ candidate modules. Together with the AssessmentPlanPanel
+ (compile-side) they cover the pre-compile decision
+ surface end-to-end. */}
       <div style={{ marginBottom: 20 }}>
         <InitialExecutionPlanPanel
           runId={runId}
@@ -393,9 +393,9 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       </div>
 
       {/* Assessment Plan — shows the rule-based assessor's mode +
-          confidence + capabilities + reason at the top of the page
-          so operators see WHICH compile strategy J1 picked before
-          scanning compile output / timeline. */}
+ confidence + capabilities + reason at the top of the page
+ so operators see WHICH compile strategy J1 picked before
+ scanning compile output / timeline. */}
       <div style={{ marginBottom: 20 }}>
         <AssessmentPlanPanel
           runId={runId}
@@ -409,10 +409,10 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
           />
-          {/* Wave 9B — typed compile-result summary (chunks,
-              detected tables, retry history, raw refs). Surfaces
-              the same data the workflow used to decide whether
-              enrichment runs. */}
+          {/* typed compile-result summary (chunks,
+ detected tables, retry history, raw refs). Surfaces
+ the same data the workflow used to decide whether
+ enrichment runs. */}
           <CompileResultPanel
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
@@ -421,9 +421,9 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
           />
-          {/* Wave 9B — typed enrichment overlay. Renders
-              skipped/succeeded/warning/failed states with operator-
-              readable copy + per-module outcomes. */}
+          {/* typed enrichment overlay. Renders
+ skipped/succeeded/warning/failed states with operator-
+ readable copy + per-module outcomes. */}
           <EnrichmentResultPanel
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
@@ -439,11 +439,11 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       </div>
 
       {/* Results section — visible progressively as steps complete.
-          The component handles the visibility check internally so
-          the page tree stays declarative. `latestEvent` lets the
-          section refresh its summary on step.completed events,
-          unlocking newly-available result tabs without a manual
-          reload. */}
+ The component handles the visibility check internally so
+ the page tree stays declarative. `latestEvent` lets the
+ section refresh its summary on step.completed events,
+ unlocking newly-available result tabs without a manual
+ reload. */}
       <ResultsSection
         run={run}
         runId={runId}

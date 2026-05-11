@@ -5,38 +5,38 @@ User-facing console for J1 ingestion runs, built with **Vite + React 18 + TypeSc
 ## Scripts
 
 ```bash
-npm install          # install dependencies
-npm run dev          # local dev server at http://localhost:5173
-npm run build        # type-check + production build → dist/
-npm run preview      # serve the production build
-npm run typecheck    # tsc --noEmit
-npm run lint         # eslint with --max-warnings 0
-npm run lint:fix     # eslint --fix
-npm run format       # prettier --write
+npm install # install dependencies
+npm run dev # local dev server at http://localhost:5173
+npm run build # type-check + production build → dist/
+npm run preview # serve the production build
+npm run typecheck # tsc --noEmit
+npm run lint # eslint with --max-warnings 0
+npm run lint:fix # eslint --fix
+npm run format # prettier --write
 npm run format:check # prettier --check
-npm run ci           # typecheck + lint + format:check + build (run this in CI)
+npm run ci # typecheck + lint + format:check + build (run this in CI)
 ```
 
 ## Layout
 
 ```
 src/
-├── components/      Reusable UI primitives (badges, modal, banner, toast, JSON view, context bar, auth modal)
-│   └── icons.tsx    SVG icon set
+├── components/ Reusable UI primitives (badges, modal, banner, toast, JSON view, context bar, auth modal)
+│ └── icons.tsx SVG icon set
 ├── pages/
-│   ├── UploadPage.tsx
-│   ├── AllRunsPage.tsx
-│   ├── RunDetailPage.tsx       (orchestrator)
-│   └── run-detail/             header, plan card, live timeline, primary status panel, tech drawer
+│ ├── UploadPage.tsx
+│ ├── AllRunsPage.tsx
+│ ├── RunDetailPage.tsx (orchestrator)
+│ └── run-detail/ header, plan card, live timeline, primary status panel, tech drawer
 ├── lib/
-│   ├── api/         IngestionClient interface, mock client, live (REST + fetch-based SSE) client, translator
-│   ├── hooks/       useLocalStorage, useClient
-│   ├── client-context.tsx      React context for the active client
-│   ├── display.ts   centralised status / decision / severity / stage / event-type mappings
-│   └── format.ts    relativeTime helper
+│ ├── api/ IngestionClient interface, mock client, live (REST + fetch-based SSE) client, translator
+│ ├── hooks/ useLocalStorage, useClient
+│ ├── client-context.tsx React context for the active client
+│ ├── display.ts centralised status / decision / severity / stage / event-type mappings
+│ └── format.ts relativeTime helper
 ├── types/
-│   ├── ingestion.ts  domain types — runs, plans, events
-│   └── ui.ts         theme, mode, route, toast, etc.
+│ ├── ingestion.ts domain types — runs, plans, events
+│ └── ui.ts theme, mode, route, toast, etc.
 ├── App.tsx
 ├── main.tsx
 └── styles.css
@@ -54,12 +54,12 @@ src/
 ## Backend endpoints used (live mode)
 
 ```
-POST /ingestion-runs                          upload + create run
-GET  /ingestion-runs/{run_id}                  status snapshot
-GET  /ingestion-runs/{run_id}/plan             execution plan
-POST /ingestion-runs/{run_id}/confirm          confirm plan
-GET  /ingestion-runs/{run_id}/events           historical events
-GET  /ingestion-runs/{run_id}/events/stream    live SSE
+POST /ingestion-runs upload + create run
+GET /ingestion-runs/{run_id} status snapshot
+GET /ingestion-runs/{run_id}/plan execution plan
+POST /ingestion-runs/{run_id}/confirm confirm plan
+GET /ingestion-runs/{run_id}/events historical events
+GET /ingestion-runs/{run_id}/events/stream live SSE
 ```
 
 The `GET /ingestion-runs` list endpoint is not yet implemented on the backend. In live mode the All Runs view shows an explanatory banner; create runs from the Upload page and the run-detail screen works end-to-end.
@@ -71,12 +71,12 @@ The dev compose stack ships the SPA as part of `docker compose up`
 [`Dockerfile`](Dockerfile) is multi-stage:
 
 1. **`deps`** — `npm ci` against `package*.json` only, so source
-   edits don't bust the cache.
+ edits don't bust the cache.
 2. **`build`** — runs `npm run build` with `VITE_API_BASE_URL`
-   wired in as a build arg.
+ wired in as a build arg.
 3. **`run`** — `nginx:alpine` serves `dist/` and proxies `/api/*`
-   to the `api` service over the Docker bridge network. Browser
-   stays single-origin → no CORS allow-list needed on the backend.
+ to the `api` service over the Docker bridge network. Browser
+ stays single-origin → no CORS allow-list needed on the backend.
 
 Build standalone:
 
@@ -86,8 +86,8 @@ docker build -t j1-frontend frontend/
 
 # Point the bundle at an absolute backend URL
 docker build \
-  --build-arg VITE_API_BASE_URL=https://api.example.com \
-  -t j1-frontend frontend/
+ --build-arg VITE_API_BASE_URL=https://api.example.com \
+ -t j1-frontend frontend/
 ```
 
 Or via compose (rebuilds on source change):

@@ -9,18 +9,18 @@ etc.) is the deployment's job.
 
 Design choices:
 
-  * **Local / static registration only** — no plugin discovery, no
-    entry-point scanning. A deployment registers its adapters
-    explicitly. This keeps the surface small and testable; nothing
-    prevents a future plugin loader from being layered on top.
-  * **No threading lock by default** — the registry is intended to
-    be populated at composition time and read at workflow time.
-    Concurrent registration after the worker has started is unusual
-    and outside scope.
-  * **Quiet on lookup miss; loud on duplicate registration** — the
-    common case is "did anyone register a `foo`?" → caller decides.
-    The unusual case is "two adapters registered as `foo`" → fail
-    fast.
+ * **Local / static registration only** — no plugin discovery, no
+ entry-point scanning. A deployment registers its adapters
+ explicitly. This keeps the surface small and testable; nothing
+ prevents a future plugin loader from being layered on top.
+ * **No threading lock by default** — the registry is intended to
+ be populated at composition time and read at workflow time.
+ Concurrent registration after the worker has started is unusual
+ and outside scope.
+ * **Quiet on lookup miss; loud on duplicate registration** — the
+ common case is "did anyone register a `foo`?" → caller decides.
+ The unusual case is "two adapters registered as `foo`" → fail
+ fast.
 """
 
 from __future__ import annotations
@@ -48,18 +48,18 @@ class RegistryEntry:
 class CapabilityRegistry:
     """Indexes registered adapters by type, name, capability, and role.
 
-    Lookups:
-      * `get(type, name)` — exact lookup; returns the entry or `None`.
-      * `find_by_type(type)` — every entry of this type.
-      * `find_by_capability(capability)` — every entry that declares
-        this capability in its manifest.
-      * `find_by_role(role)` — every entry wired to this workflow role.
+ Lookups:
+ * `get(type, name)` — exact lookup; returns the entry or `None`.
+ * `find_by_type(type)` — every entry of this type.
+ * `find_by_capability(capability)` — every entry that declares
+ this capability in its manifest.
+ * `find_by_role(role)` — every entry wired to this workflow role.
 
-    Mutations:
-      * `register(manifest, adapter, *, role=None)` — adds the entry.
-        Duplicate `(type, name)` raises `RegistryError`.
-      * `unregister(type, name)` — removes the entry. No-op if absent.
-    """
+ Mutations:
+ * `register(manifest, adapter, *, role=None)` — adds the entry.
+ Duplicate `(type, name)` raises `RegistryError`.
+ * `unregister(type, name)` — removes the entry. No-op if absent.
+ """
 
     def __init__(self) -> None:
         self._entries: dict[tuple[str, str], RegistryEntry] = {}
@@ -124,7 +124,7 @@ class CapabilityRegistry:
         return self._entries.get((adapter_type, name))
 
     def require(self, adapter_type: str, name: str) -> RegistryEntry:
-        """Like `get()`, but raises `RegistryError` if absent."""
+        """Like `get`, but raises `RegistryError` if absent."""
         entry = self.get(adapter_type, name)
         if entry is None:
             raise RegistryError(
@@ -157,9 +157,9 @@ class CapabilityRegistry:
     def snapshot(self) -> list[dict[str, Any]]:
         """Return a JSON-friendly summary of every registered adapter.
 
-        Useful for `/capabilities`-style endpoints, structured
-        logging at startup, and tests.
-        """
+ Useful for `/capabilities`-style endpoints, structured
+ logging at startup, and tests.
+ """
         return [
             {
                 "manifest": entry.manifest.to_dict(),

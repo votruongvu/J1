@@ -1,27 +1,27 @@
-"""Wave 8 — final ingestion status vocabulary.
+"""final ingestion status vocabulary.
 
 The existing `FinalStatus` enum (`completed` / `partial_completed`
-/ `failed`) is the framework-internal verdict. Wave 8 introduces a
+/ `failed`) is the framework-internal verdict. a
 finer-grained OPERATOR-FACING status vocabulary so the FE +
 audit log can distinguish "completed without enrichment" from
 "completed with enrichment warnings" from "failed because
 required enrichment didn't complete".
 
 Both layers coexist:
-  * Workflow code still returns the internal `FinalStatus` enum.
-  * Final-report consumers (FE, audit, run-detail page) project
-    onto the new `IngestionFinalStatus` via
-    `project_final_status()`.
+ * Workflow code still returns the internal `FinalStatus` enum.
+ * Final-report consumers (FE, audit, run-detail page) project
+ onto the new `IngestionFinalStatus` via
+ `project_final_status`.
 
 The projection reads the new status from explicit signals in the
 run state:
-  * compile failure → `failed_compile`
-  * required enrichment failure → `failed_enrichment_required`
-  * enrichment skipped + run otherwise clean → `completed_without_enrichment`
-  * enrichment ran with warnings or partial failures (and policy
-    didn't require success) → `completed_with_enrichment_warnings`
-  * enrichment ran cleanly → `completed_with_enrichment`
-  * finalize itself failed → `failed_finalization`
+ * compile failure → `failed_compile`
+ * required enrichment failure → `failed_enrichment_required`
+ * enrichment skipped + run otherwise clean → `completed_without_enrichment`
+ * enrichment ran with warnings or partial failures (and policy
+ didn't require success) → `completed_with_enrichment_warnings`
+ * enrichment ran cleanly → `completed_with_enrichment`
+ * finalize itself failed → `failed_finalization`
 
 Each value is a stable string the FE branches on. Adding a new
 status is a coordinated FE + audit change; the projection helper
@@ -78,11 +78,11 @@ ALL_INGESTION_FINAL_STATUSES: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class IngestionFinalStatusProjection:
-    """The Wave-8 projected status for one run.
+    """The projected status for one run.
 
-    `status` is one of the `INGESTION_STATUS_*` literals. `reason`
-    is an operator-readable one-liner the FE can render alongside
-    the badge ("enrichment skipped: domain policy=never")."""
+ `status` is one of the `INGESTION_STATUS_*` literals. `reason`
+ is an operator-readable one-liner the FE can render alongside
+ the badge ("enrichment skipped: domain policy=never")."""
 
     status: str
     reason: str = ""
@@ -100,26 +100,26 @@ def project_final_status(
     enrichment_skipped_reason: str | None = None,
 ) -> IngestionFinalStatusProjection:
     """Project the framework's `FinalStatus` + structured signals
-    onto the Wave-8 operator-facing status vocabulary.
+ onto the operator-facing status vocabulary.
 
-    Inputs:
-      * `framework_final_status` — `FinalStatus.value` from
-        `ProjectProcessingResult` (`completed` / `partial_completed`
-        / `failed` / `cancelled` / `timed_out`).
-      * `failure_code` — `IngestionRun.failure_code` (e.g.
-        `ENRICHMENT_REQUIRED`, `COMPILE_FAILED`). Drives the
-        failed-* projection when present.
-      * `enrichment_status` — from the persisted enrichment_result
-        artifact (`succeeded` / `succeeded_with_warnings` /
-        `failed` / `skipped`). Drives the completed-* projection
-        when the framework status is success-ish.
-      * `enrichment_required` — the resolved
-        `require_enrichment_success` for this run. Tags a failed
-        enrichment as the run-failing reason when True.
-      * `enrichment_skipped_reason` — for the
-        `completed_without_enrichment` reason text.
+ Inputs:
+ * `framework_final_status` — `FinalStatus.value` from
+ `ProjectProcessingResult` (`completed` / `partial_completed`
+ / `failed` / `cancelled` / `timed_out`).
+ * `failure_code` — `IngestionRun.failure_code` (e.g.
+ `ENRICHMENT_REQUIRED`, `COMPILE_FAILED`). Drives the
+ failed-* projection when present.
+ * `enrichment_status` — from the persisted enrichment_result
+ artifact (`succeeded` / `succeeded_with_warnings` /
+ `failed` / `skipped`). Drives the completed-* projection
+ when the framework status is success-ish.
+ * `enrichment_required` — the resolved
+ `require_enrichment_success` for this run. Tags a failed
+ enrichment as the run-failing reason when True.
+ * `enrichment_skipped_reason` — for the
+ `completed_without_enrichment` reason text.
 
-    Pure — no I/O. Same inputs → same projection."""
+ Pure — no I/O. Same inputs → same projection."""
     if framework_final_status == "cancelled":
         return IngestionFinalStatusProjection(
             status=INGESTION_STATUS_CANCELLED,
@@ -199,7 +199,7 @@ def project_final_status(
 
     if framework_final_status == "completed":
         # Completed with no enrichment signals at all — typically
-        # legacy runs persisted before Wave-6 or runs where the
+        # legacy runs persisted or runs where the
         # enrichment activity wasn't dispatched.
         return IngestionFinalStatusProjection(
             status=INGESTION_STATUS_COMPLETED_WITHOUT_ENRICHMENT,

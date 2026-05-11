@@ -4,20 +4,20 @@ Every durable stage in the ingestion pipeline (compile, generate_chunks,
 enrich, graph) MUST go through this contract before being marked
 `succeeded` on the workflow's `_step_results`. The core rule is:
 
-    Never mark a stage succeeded just because a function returned
-    successfully.
+ Never mark a stage succeeded just because a function returned
+ successfully.
 
 A stage is `succeeded` only when:
 
-  1. Stage execution completed.
-  2. Required output exists.
-  3. Output is persisted.
-  4. Output can be read back.
-  5. Output passes quality checks.
-  6. Output has correct tenant/project/workspace/run/document scope.
-  7. Output links to the correct upstream input.
-  8. Validation report is saved.
-  9. Checkpoint is saved after validation passes.
+ 1. Stage execution completed.
+ 2. Required output exists.
+ 3. Output is persisted.
+ 4. Output can be read back.
+ 5. Output passes quality checks.
+ 6. Output has correct tenant/project/workspace/run/document scope.
+ 7. Output links to the correct upstream input.
+ 8. Validation report is saved.
+ 9. Checkpoint is saved after validation passes.
 
 Failure to satisfy any of these → stage is `failed`, the validation
 errors are persisted, dependent downstream stages don't run, and
@@ -91,12 +91,12 @@ VALIDATOR_VERSION = "1"
 class StageValidationCheck:
     """One named check inside a stage's validation pass.
 
-    `name` is a short snake_case identifier (e.g.
-    `chunk_count_positive`, `chunk_ids_unique`) — operators grep
-    these in audit logs to find runs that tripped a specific rule.
-    `message` is a one-line operational string explaining the
-    outcome; capped at 256 chars by the persist activity to keep
-    JSON payloads small."""
+ `name` is a short snake_case identifier (e.g.
+ `chunk_count_positive`, `chunk_ids_unique`) — operators grep
+ these in audit logs to find runs that tripped a specific rule.
+ `message` is a one-line operational string explaining the
+ outcome; capped at 256 chars by the persist activity to keep
+ JSON payloads small."""
 
     name: str
     status: str  # CHECK_STATUS_PASSED | CHECK_STATUS_WARNING | CHECK_STATUS_FAILED
@@ -107,18 +107,18 @@ class StageValidationCheck:
 class StageValidationResult:
     """The complete per-stage validation outcome.
 
-    Persisted as a `stage_validation_report` artifact (one per stage
-    per run). The workflow consults `validation_status` to decide
-    whether to mark the step COMPLETED or FAILED.
+ Persisted as a `stage_validation_report` artifact (one per stage
+ per run). The workflow consults `validation_status` to decide
+ whether to mark the step COMPLETED or FAILED.
 
-    Most fields are operational scope identifiers; `checks` is the
-    audit trail of which rules ran and `errors` / `warnings` are the
-    flat lists operators read first when triaging. `output_refs` is
-    the artifacts the stage produced; `artifact_refs` is what the
-    validator read back to verify the stage. They overlap heavily
-    today (`output_refs ⊂ artifact_refs` typically) but stay separate
-    so future validators that consult upstream artifacts (e.g. graph
-    validator reading chunk artifacts) can record them distinctly."""
+ Most fields are operational scope identifiers; `checks` is the
+ audit trail of which rules ran and `errors` / `warnings` are the
+ flat lists operators read first when triaging. `output_refs` is
+ the artifacts the stage produced; `artifact_refs` is what the
+ validator read back to verify the stage. They overlap heavily
+ today (`output_refs ⊂ artifact_refs` typically) but stay separate
+ so future validators that consult upstream artifacts (e.g. graph
+ validator reading chunk artifacts) can record them distinctly."""
 
     stage_name: str
     run_id: str
@@ -137,8 +137,8 @@ class StageValidationResult:
 
     def passed(self) -> bool:
         """True iff the stage may be marked succeeded. `warning`
-        counts as passed (warnings are surfaced but non-blocking).
-        Only `failed` blocks the COMPLETED transition."""
+ counts as passed (warnings are surfaced but non-blocking).
+ Only `failed` blocks the COMPLETED transition."""
         return self.validation_status in (
             VALIDATION_STATUS_PASSED,
             VALIDATION_STATUS_WARNING,
@@ -146,9 +146,9 @@ class StageValidationResult:
 
     def to_payload(self) -> dict[str, Any]:
         """JSON-serialisable shape for the `stage_validation_report`
-        artifact. Stable across releases — readers may exist outside
-        this codebase (audit dashboards, compliance exports). Bumping
-        a field requires a `validator_version` increment."""
+ artifact. Stable across releases — readers may exist outside
+ this codebase (audit dashboards, compliance exports). Bumping
+ a field requires a `validator_version` increment."""
         return {
             "schema_version": self.validator_version,
             "stage_name": self.stage_name,
@@ -173,14 +173,14 @@ class StageValidationResult:
 def aggregate_status(checks: list[StageValidationCheck]) -> str:
     """Roll up a list of check outcomes into a stage-level status.
 
-    Rules:
-      * any `failed` check → `failed`.
-      * else any `warning` check → `warning`.
-      * else `passed`.
+ Rules:
+ * any `failed` check → `failed`.
+ * else any `warning` check → `warning`.
+ * else `passed`.
 
-    Empty list = `passed` (a stage with no checks is trivially
-    valid; this should be rare in practice — every durable stage
-    has at least an artifact-existence check)."""
+ Empty list = `passed` (a stage with no checks is trivially
+ valid; this should be rare in practice — every durable stage
+ has at least an artifact-existence check)."""
     has_warning = False
     for c in checks:
         if c.status == CHECK_STATUS_FAILED:

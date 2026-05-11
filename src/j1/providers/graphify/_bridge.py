@@ -2,27 +2,27 @@
 
 Two integration modes:
 
-  * `mode=cli` (default): invokes `J1_GRAPHIFY_COMMAND` as a
-    subprocess. Receives J1's `GraphifyGraphRequest`, materialises a
-    line-delimited JSON input file with `(artifact_id, content_path)`
-    pairs into a temp directory, spawns the binary with
-    `--input <input.json> --output <out.json> --workdir <workdir>`,
-    parses the output JSON into J1 `ArtifactDraft`s.
-  * `mode=python`: lazy-imports a `graphify` Python package and tries
-    its public `build_graph` / `Graphify.build` entry points.
+ * `mode=cli` (default): invokes `J1_GRAPHIFY_COMMAND` as a
+ subprocess. Receives J1's `GraphifyGraphRequest`, materialises a
+ line-delimited JSON input file with `(artifact_id, content_path)`
+ pairs into a temp directory, spawns the binary with
+ `--input <input.json> --output <out.json> --workdir <workdir>`,
+ parses the output JSON into J1 `ArtifactDraft`s.
+ * `mode=python`: lazy-imports a `graphify` Python package and tries
+ its public `build_graph` / `Graphify.build` entry points.
 
 The CLI mode is what the existing env vars (`J1_GRAPHIFY_MODE=cli`,
 `J1_GRAPHIFY_COMMAND=graphify`) already promise. This module delivers
 on that promise.
 
 Defensiveness:
-  * CLI binary not on `$PATH` → `ProviderUnavailable("install graphify CLI")`.
-  * CLI exits non-zero → `ArtifactProcessingResult(status=FAILED)` with
-    the captured stderr (truncated, no secrets).
-  * Output JSON malformed → `ArtifactProcessingResult(status=FAILED)`
-    with parser error.
-  * Python mode missing the `graphify` module → `ProviderUnavailable`
-    with pip-install hint.
+ * CLI binary not on `$PATH` → `ProviderUnavailable("install graphify CLI")`.
+ * CLI exits non-zero → `ArtifactProcessingResult(status=FAILED)` with
+ the captured stderr (truncated, no secrets).
+ * Output JSON malformed → `ArtifactProcessingResult(status=FAILED)`
+ with parser error.
+ * Python mode missing the `graphify` module → `ProviderUnavailable`
+ with pip-install hint.
 """
 
 from __future__ import annotations
@@ -236,11 +236,11 @@ def _drafts_from_graph_payload(
     payload: dict, *, request_artifact_ids: list[str], mode: str,
 ) -> ArtifactProcessingResult:
     """Turn a `{"nodes": [...], "edges": [...]}` dict into one
-    `graph_json` ArtifactDraft.
+ `graph_json` ArtifactDraft.
 
-    Preserves source references (`source_block_refs` /
-    `source_artifact_ids`) when the payload includes them.
-    """
+ Preserves source references (`source_block_refs` /
+ `source_artifact_ids`) when the payload includes them.
+ """
     nodes = payload.get("nodes") or []
     edges = payload.get("edges") or []
     metadata = {

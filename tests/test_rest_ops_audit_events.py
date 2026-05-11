@@ -172,8 +172,8 @@ def client(
 
 def _read_audit(workspace, ctx) -> list[dict]:
     """Read every event from the run's audit log. Mirrors the
-    helper in test_activities_lifecycle.py — kept inline so this
-    test file stays self-contained."""
+ helper in test_activities_lifecycle.py — kept inline so this
+ test file stays self-contained."""
     path = workspace.audit(ctx) / AUDIT_LOG_FILENAME
     if not path.exists():
         return []

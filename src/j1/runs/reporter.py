@@ -3,32 +3,32 @@ publish user-facing progress.
 
 Three concrete implementations ship:
 
-  * `AuditProgressReporter` — writes through the existing
-    `AuditRecorder` so progress events become first-class entries in
-    the audit log. The frontend reads them via the same JSONL log
-    used for everything else (or via the SSE-stream endpoint, which
-    re-emits the same shape live).
-  * `TemporalHeartbeatReporter` — pumps compact step/progress
-    summaries into `temporalio.activity.heartbeat` so Temporal UI
-    sees liveness on long-running activities. Stateless.
-  * `CompositeProgressReporter` — fan-out to multiple targets.
-  * `NoopProgressReporter` — for unit tests.
+ * `AuditProgressReporter` — writes through the existing
+ `AuditRecorder` so progress events become first-class entries in
+ the audit log. The frontend reads them via the same JSONL log
+ used for everything else (or via the SSE-stream endpoint, which
+ re-emits the same shape live).
+ * `TemporalHeartbeatReporter` — pumps compact step/progress
+ summaries into `temporalio.activity.heartbeat` so Temporal UI
+ sees liveness on long-running activities. Stateless.
+ * `CompositeProgressReporter` — fan-out to multiple targets.
+ * `NoopProgressReporter` — for unit tests.
 
 Design notes:
 
-  * The reporter is a fat protocol with one method per event type.
-    Tempting to make a single `report(event_type, **kwargs)` method,
-    but the typed methods give callers a stable contract — adding a
-    new event type is an additive change, and each method can carry
-    its own argument shape (e.g. `report_step_progress` always takes
-    `current` / `total`, while `report_step_skipped` always takes
-    `reason`).
-  * The reporter is transport-free. It does NOT hold HTTP connections
-    or React state; the SSE endpoint reads from the same audit log
-    via a tail-and-publish model.
-  * Throttling lives in the audit-backed reporter (drops sub-5%
-    progress deltas to keep audit JSONL volume bounded). Callers
-    don't need to throttle themselves.
+ * The reporter is a fat protocol with one method per event type.
+ Tempting to make a single `report(event_type, **kwargs)` method,
+ but the typed methods give callers a stable contract — adding a
+ new event type is an additive change, and each method can carry
+ its own argument shape (e.g. `report_step_progress` always takes
+ `current` / `total`, while `report_step_skipped` always takes
+ `reason`).
+ * The reporter is transport-free. It does NOT hold HTTP connections
+ or React state; the SSE endpoint reads from the same audit log
+ via a tail-and-publish model.
+ * Throttling lives in the audit-backed reporter (drops sub-5%
+ progress deltas to keep audit JSONL volume bounded). Callers
+ don't need to throttle themselves.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ PROGRESS_EVENT_RUN_COMPLETED = "run.completed"
 PROGRESS_EVENT_RUN_FAILED = "run.failed"
 PROGRESS_EVENT_RUN_CANCELLED = "run.cancelled"
 PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED = "human_review.required"
-# Canonical macro-stage event vocabulary (Phase 3). Each macro
+# Canonical macro-stage event vocabulary. Each macro
 # event describes a stage as a whole — `compile.started` covers
 # the entire compile macro-stage (parse + chunk + persist), as
 # opposed to the sub-step `step.started` events which describe
@@ -121,7 +121,7 @@ PROGRESS_EVENT_HUMAN_REVIEW_REQUIRED = "human_review.required"
 #
 # Today these strings are derived client-side by projecting the
 # `(stage, event)` pair of an existing `step.*` event — see
-# `derive_macro_event_type()` below. The constants exist now so a
+# `derive_macro_event_type` below. The constants exist now so a
 # future emit-from-server change has a stable target.
 PROGRESS_EVENT_COMPILE_STARTED = "compile.started"
 PROGRESS_EVENT_COMPILE_COMPLETED = "compile.completed"
@@ -129,7 +129,7 @@ PROGRESS_EVENT_COMPILE_FAILED = "compile.failed"
 PROGRESS_EVENT_VERIFICATION_STARTED = "verification.started"
 PROGRESS_EVENT_VERIFICATION_COMPLETED = "verification.completed"
 PROGRESS_EVENT_VERIFICATION_FAILED = "verification.failed"
-# Wave 9A — post-compile assessment + enrichment macro events. The
+# post-compile assessment + enrichment macro events. The
 # workflow already emits `step.*` events under the
 # `ASSESS_ENRICHMENT` / `ENRICH` stages; the FE timeline projects
 # those onto these canonical macro names so it can draw section
@@ -182,7 +182,7 @@ def is_progress_action(action: str) -> bool:
     return action.startswith(PROGRESS_ACTION_PREFIX)
 
 
-# Macro-stage event derivation table (Phase 3). Maps an internal
+# Macro-stage event derivation table. Maps an internal
 # `(stage, step.* event)` pair to its canonical macro event name —
 # `(COMPILE, step.started)` → `compile.started`, etc. Used by the
 # FE timeline to draw macro-stage section headers around the
@@ -191,7 +191,7 @@ def is_progress_action(action: str) -> bool:
 # `stage` is normalised to uppercase before lookup so legacy
 # call sites that emit lowercase / mixed-case stage strings still
 # match. Steps that don't sit under one of the macro stages
-# (`assess_compile_strategy`, `finalize`, ...) return None and
+# (`assess_compile_strategy`, `finalize`,...) return None and
 # the FE renders them as standalone rows.
 _MACRO_STAGE_EVENT_TABLE: dict[
     tuple[str, str], dict[str, str]
@@ -210,7 +210,7 @@ _MACRO_STAGE_EVENT_TABLE: dict[
         PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_VERIFICATION_COMPLETED,
         PROGRESS_EVENT_STEP_FAILED: PROGRESS_EVENT_VERIFICATION_FAILED,
     },
-    # Wave 9A — post-compile assessment macro row. Workflow emits
+    # post-compile assessment macro row. Workflow emits
     # `step.started` then `step.completed` (or `step.skipped` when
     # the assessor returned None). The FE collapses these into a
     # single timeline node so operators see "ran the assessor → got
@@ -220,7 +220,7 @@ _MACRO_STAGE_EVENT_TABLE: dict[
         PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_ASSESS_ENRICHMENT_COMPLETED,
         PROGRESS_EVENT_STEP_SKIPPED: PROGRESS_EVENT_ASSESS_ENRICHMENT_SKIPPED,
     },
-    # Wave 9A — enrichment macro row. Workflow emits started /
+    # enrichment macro row. Workflow emits started /
     # completed / failed / skipped via `_emit_step_lifecycle(
     # stage="ENRICH", step="enrich_stage", action=…)`. FE uses
     # these to draw the enrichment overlay section.
@@ -239,24 +239,24 @@ def derive_macro_event_type(
     event_type: str,
 ) -> str | None:
     """Project an internal `step.*` event onto its canonical macro
-    event name, or None when the event doesn't sit under one of the
-    Phase-3 macro stages.
+ event name, or None when the event doesn't sit under one of the
+ macro stages.
 
-    Pure / deterministic: callers (the FE timeline + tests) can
-    derive the macro name from a stored event without round-tripping
-    to the server. `stage` is case-insensitive; `step` and
-    `event_type` must match exactly.
+ Pure / deterministic: callers (the FE timeline + tests) can
+ derive the macro name from a stored event without round-tripping
+ to the server. `stage` is case-insensitive; `step` and
+ `event_type` must match exactly.
 
-    Examples:
-        derive_macro_event_type("COMPILE", "compile", "step.started")
-        # → "compile.started"
+ Examples:
+ derive_macro_event_type("COMPILE", "compile", "step.started")
+ # → "compile.started"
 
-        derive_macro_event_type("VERIFY", "verify_compile", "step.failed")
-        # → "verification.failed"
+ derive_macro_event_type("VERIFY", "verify_compile", "step.failed")
+ # → "verification.failed"
 
-        derive_macro_event_type("ENRICH", "enrich", "step.started")
-        # → None  (enrich is not yet a macro stage in Phase 3)
-    """
+ derive_macro_event_type("ENRICH", "enrich", "step.started")
+ # → None (enrich is not yet a macro stage )
+ """
     if not stage or not step:
         return None
     key = (stage.upper(), step)
@@ -273,13 +273,13 @@ def derive_macro_event_type(
 class ProgressReporter(Protocol):
     """Hook the workflow / activities call to publish progress.
 
-    Implementations MUST be safe to call from anywhere — workflow
-    code, activity code, REST handlers. Activity-runtime-only
-    operations (Temporal heartbeats) live behind `TemporalHeartbeatReporter`
-    which silently no-ops outside an activity context.
+ Implementations MUST be safe to call from anywhere — workflow
+ code, activity code, REST handlers. Activity-runtime-only
+ operations (Temporal heartbeats) live behind `TemporalHeartbeatReporter`
+ which silently no-ops outside an activity context.
 
-    Field hygiene: callers MUST NOT pass document content, prompts,
-    or LLM outputs. Short operational strings only."""
+ Field hygiene: callers MUST NOT pass document content, prompts,
+ or LLM outputs. Short operational strings only."""
 
     def report_run_created(
         self,
@@ -468,14 +468,14 @@ _PROGRESS_DELTA_THRESHOLD = 5
 class AuditProgressReporter:
     """ProgressReporter that writes through `AuditRecorder`.
 
-    Every event becomes one audit entry with action `j1.progress.<type>`
-    and payload carrying the structured fields. Reusing the audit log
-    means:
-      * Existing JSONL persistence + retention apply for free.
-      * The SSE stream and `GET /ingestion-runs/{id}/events` endpoint
-        read from a single source of truth.
-      * Operators can grep audit JSONL with the same tools they
-        already use for compile/enrich/graph events."""
+ Every event becomes one audit entry with action `j1.progress.<type>`
+ and payload carrying the structured fields. Reusing the audit log
+ means:
+ * Existing JSONL persistence + retention apply for free.
+ * The SSE stream and `GET /ingestion-runs/{id}/events` endpoint
+ read from a single source of truth.
+ * Operators can grep audit JSONL with the same tools they
+ already use for compile/enrich/graph events."""
 
     def __init__(self, audit: AuditRecorder) -> None:
         self._audit = audit
@@ -598,13 +598,13 @@ class AuditProgressReporter:
     ) -> str:
         """Post-compile plan revision.
 
-        Emitted when the workflow replans after compile and the new
-        plan differs from the initial one — e.g. compile content
-        stats revealed images/tables/scanned pages the deterministic
-        profile missed. The payload mirrors `plan.generated` so the
-        FE can swap its plan card from the initial decision to the
-        revised one without bespoke code.
-        """
+ Emitted when the workflow replans after compile and the new
+ plan differs from the initial one — e.g. compile content
+ stats revealed images/tables/scanned pages the deterministic
+ profile missed. The payload mirrors `plan.generated` so the
+ FE can swap its plan card from the initial decision to the
+ revised one without bespoke code.
+ """
         return self._record(
             ctx,
             actor=actor,
@@ -924,20 +924,20 @@ class AuditProgressReporter:
 
 class TemporalHeartbeatReporter:
     """ProgressReporter that pumps compact progress into Temporal
-    activity heartbeats.
+ activity heartbeats.
 
-    Stateless — no audit writes, no run-record writes. Heartbeats let
-    a Temporal-side `heartbeat_timeout` fire if a long-running activity
-    stalls, and they show up in Temporal UI as the "Latest Heartbeat
-    Details" payload (handy for operator debugging without a frontend).
+ Stateless — no audit writes, no run-record writes. Heartbeats let
+ a Temporal-side `heartbeat_timeout` fire if a long-running activity
+ stalls, and they show up in Temporal UI as the "Latest Heartbeat
+ Details" payload (handy for operator debugging without a frontend).
 
-    Outside an activity context (unit tests, REST handlers) every
-    method silently no-ops — `temporalio.activity.heartbeat` raises
-    when called outside the activity runtime, and we catch.
+ Outside an activity context (unit tests, REST handlers) every
+ method silently no-ops — `temporalio.activity.heartbeat` raises
+ when called outside the activity runtime, and we catch.
 
-    Returns are always None (heartbeats don't have IDs); callers that
-    need a stable event ID must use a Composite reporter that also
-    includes an `AuditProgressReporter`."""
+ Returns are always None (heartbeats don't have IDs); callers that
+ need a stable event ID must use a Composite reporter that also
+ includes an `AuditProgressReporter`."""
 
     def __init__(self) -> None:
         # Lazy-import temporalio so non-Temporal deployments can still
@@ -1075,10 +1075,10 @@ class TemporalHeartbeatReporter:
 class CompositeProgressReporter:
     """Fan-out reporter — calls every delegate in order.
 
-    Returns the FIRST non-empty `event_id` from the delegates so
-    callers (typically an audit-backed reporter at index 0) get a
-    usable correlation cursor. Heartbeat reporters return `""` and
-    don't shadow the audit reporter's ID."""
+ Returns the FIRST non-empty `event_id` from the delegates so
+ callers (typically an audit-backed reporter at index 0) get a
+ usable correlation cursor. Heartbeat reporters return `""` and
+ don't shadow the audit reporter's ID."""
 
     def __init__(self, *reporters: ProgressReporter) -> None:
         self._reporters: tuple[ProgressReporter, ...] = tuple(reporters)

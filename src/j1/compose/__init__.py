@@ -1,14 +1,14 @@
 """Composition root.
 
 One module that:
-  * loads settings (LLM + RAGAnything + Graphify + enrichment + processing
-    defaults)
-  * constructs LLM clients per role
-  * registers them in `LLMProviderRegistry`
-  * constructs and registers compiler / graph / retrieval providers
-  * validates required roles for the selected providers (clear startup
-    errors when something's missing)
-  * publishes secrets-safe diagnostics
+ * loads settings (LLM + RAGAnything + Graphify + enrichment + processing
+ defaults)
+ * constructs LLM clients per role
+ * registers them in `LLMProviderRegistry`
+ * constructs and registers compiler / graph / retrieval providers
+ * validates required roles for the selected providers (clear startup
+ errors when something's missing)
+ * publishes secrets-safe diagnostics
 
 Used by both the API entrypoint and the worker entrypoint, so they
 agree on what's wired. Tests build a `Bootstrap` directly with fake

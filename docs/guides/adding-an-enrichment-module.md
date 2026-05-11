@@ -15,15 +15,15 @@ Every module conforms to one Protocol:
 ```python
 @runtime_checkable
 class EnrichmentModule(Protocol):
-    module_id: str
-    def can_run(self, ctx: EnrichmentContext) -> tuple[bool, str]: ...
-    def run(self, ctx: EnrichmentContext) -> EnrichmentModuleOutcome: ...
+ module_id: str
+ def can_run(self, ctx: EnrichmentContext) -> tuple[bool, str]:...
+ def run(self, ctx: EnrichmentContext) -> EnrichmentModuleOutcome:...
 ```
 
-LLM-backed modules additionally expose `get_typed_outputs()` so
+LLM-backed modules additionally expose `get_typed_outputs` so
 the runner can merge typed records (e.g. `ClassificationResult`,
 `TableSummary`, retrieval hints) onto the aggregated
-`EnrichmentResult` after `run()` returns.
+`EnrichmentResult` after `run` returns.
 
 ## Step 1 — Define the module id
 
@@ -49,8 +49,8 @@ Decide where your output lands on the `EnrichmentResult` surface
 | Terminology entries | `EnrichmentResult.terminology_map[]: TerminologyEntry[]` |
 | Validation findings | `EnrichmentResult.validation_result: ValidationResult` |
 | Document metadata key-values | `EnrichmentResult.document_metadata_overlay` |
-| Free-form retrieval hints | `EnrichmentResult.retrieval_hints: tuple[str, ...]` |
-| Confidence notes | `EnrichmentResult.confidence_notes: tuple[str, ...]` |
+| Free-form retrieval hints | `EnrichmentResult.retrieval_hints: tuple[str,...]` |
+| Confidence notes | `EnrichmentResult.confidence_notes: tuple[str,...]` |
 
 If your output doesn't fit any existing field, add a new typed
 record to `enrichment_overlay.py` first — keep it frozen + carry
@@ -71,32 +71,32 @@ Minimal skeleton example:
 ```python
 @dataclass(frozen=True)
 class GraphEntityModule:
-    module_id: str = "graph_entity_extraction"
+ module_id: str = "graph_entity_extraction"
 
-    def can_run(self, ctx: EnrichmentContext) -> tuple[bool, str]:
-        if self.module_id not in ctx.enrich_plan.recommended_tasks:
-            return False, "plan did not recommend graph entity extraction"
-        if (ctx.compile_result.extracted_text_chars or 0) <= 0:
-            return False, "compile produced no extracted text"
-        return True, "ready"
+ def can_run(self, ctx: EnrichmentContext) -> tuple[bool, str]:
+ if self.module_id not in ctx.enrich_plan.recommended_tasks:
+ return False, "plan did not recommend graph entity extraction"
+ if (ctx.compile_result.extracted_text_chars or 0) <= 0:
+ return False, "compile produced no extracted text"
+ return True, "ready"
 
-    def run(self, ctx: EnrichmentContext) -> EnrichmentModuleOutcome:
-        # ... do the work; produce typed records ...
-        provenance = ProvenanceLink(
-            source_artifact_id=(
-                ctx.compile_result.raw_artifact_refs[0]
-                if ctx.compile_result.raw_artifact_refs else None
-            ),
-            source_kind="compile",
-            relation="extracted_from",
-        )
-        return EnrichmentModuleOutcome(
-            module_id=self.module_id,
-            status=EnrichmentModuleStatus.RUN,
-            reason="extracted N entities",
-            source_refs=(provenance,),
-            model_usage=ModelUsageRecord(),
-        )
+ def run(self, ctx: EnrichmentContext) -> EnrichmentModuleOutcome:
+ #... do the work; produce typed records...
+ provenance = ProvenanceLink(
+ source_artifact_id=(
+ ctx.compile_result.raw_artifact_refs[0]
+ if ctx.compile_result.raw_artifact_refs else None
+ ),
+ source_kind="compile",
+ relation="extracted_from",
+ )
+ return EnrichmentModuleOutcome(
+ module_id=self.module_id,
+ status=EnrichmentModuleStatus.RUN,
+ reason="extracted N entities",
+ source_refs=(provenance,),
+ model_usage=ModelUsageRecord,
+ )
 ```
 
 LLM-backed modules use `_LegacyWrapperBase` for prompt resolution
@@ -104,46 +104,46 @@ LLM-backed modules use `_LegacyWrapperBase` for prompt resolution
 
 ```python
 class GraphEntityEnrichmentModule(_LegacyWrapperBase):
-    module_id = "graph_entity_extraction"
-    _PROMPT_FIELD = "graph_entity_prompt"      # add to DomainPromptPack
-    _BUILTIN_PROMPT = "Extract entities ..."   # generic; no domain vocab
-    _OUTPUT_SCHEMA = {...}
+ module_id = "graph_entity_extraction"
+ _PROMPT_FIELD = "graph_entity_prompt" # add to DomainPromptPack
+ _BUILTIN_PROMPT = "Extract entities..." # generic; no domain vocab
+ _OUTPUT_SCHEMA = {...}
 
-    def can_run(self, ctx):
-        if self._text_client is None:
-            return False, "no text LLM client configured"
-        return True, "ready"
+ def can_run(self, ctx):
+ if self._text_client is None:
+ return False, "no text LLM client configured"
+ return True, "ready"
 
-    def run(self, ctx):
-        self._typed_outputs = {}
-        started = perf_counter()
-        prompt = self._resolve_prompt(ctx.domain_pack)
-        try:
-            parsed, usage = self._llm_call(
-                self._text_client.extract,
-                prompt, self._OUTPUT_SCHEMA,
-                metadata={
-                    "module_id": self.module_id,
-                    "document_id": ctx.document_id,
-                },
-            )
-        except Exception as exc:
-            return EnrichmentModuleOutcome(
-                module_id=self.module_id,
-                status=EnrichmentModuleStatus.FAILED,
-                reason=f"graph entity LLM call failed: {type(exc).__name__}",
-                duration_ms=int((perf_counter() - started) * 1000),
-                errors=(str(exc),),
-            )
-        # ... project parsed → typed records ...
-        # self._typed_outputs = {...}
-        return EnrichmentModuleOutcome(
-            module_id=self.module_id,
-            status=EnrichmentModuleStatus.RUN,
-            reason="ok",
-            source_refs=(self._make_provenance(ctx),),
-            model_usage=_model_usage_from(usage, role="text"),
-        )
+ def run(self, ctx):
+ self._typed_outputs = {}
+ started = perf_counter
+ prompt = self._resolve_prompt(ctx.domain_pack)
+ try:
+ parsed, usage = self._llm_call(
+ self._text_client.extract,
+ prompt, self._OUTPUT_SCHEMA,
+ metadata={
+ "module_id": self.module_id,
+ "document_id": ctx.document_id,
+ },
+ )
+ except Exception as exc:
+ return EnrichmentModuleOutcome(
+ module_id=self.module_id,
+ status=EnrichmentModuleStatus.FAILED,
+ reason=f"graph entity LLM call failed: {type(exc).__name__}",
+ duration_ms=int((perf_counter - started) * 1000),
+ errors=(str(exc),),
+ )
+ #... project parsed → typed records...
+ # self._typed_outputs = {...}
+ return EnrichmentModuleOutcome(
+ module_id=self.module_id,
+ status=EnrichmentModuleStatus.RUN,
+ reason="ok",
+ source_refs=(self._make_provenance(ctx),),
+ model_usage=_model_usage_from(usage, role="text"),
+ )
 ```
 
 ## Step 4 — Register the module
@@ -153,11 +153,11 @@ Add the module to the runner construction in
 
 ```python
 runner = CompositeEnrichmentRunner(modules=[
-    MetadataEnrichmentModule(),
-    TerminologyEnrichmentModule(),
-    ValidationEnrichmentModule(),
-    *legacy_modules,
-    GraphEntityEnrichmentModule(...),    # ← new
+ MetadataEnrichmentModule,
+ TerminologyEnrichmentModule,
+ ValidationEnrichmentModule,
+ *legacy_modules,
+ GraphEntityEnrichmentModule(...), # ← new
 ])
 ```
 
@@ -169,17 +169,17 @@ If the module needs LLM clients, thread them through
 
 ## Step 5 — Project typed outputs
 
-If you cached typed records on `self._typed_outputs` in `run()`,
+If you cached typed records on `self._typed_outputs` in `run`,
 extend the runner ([`enrichment_modules.py::CompositeEnrichmentRunner.run`](../../src/j1/processing/enrichment_modules.py))
 to merge them into the aggregated `EnrichmentResult`:
 
 ```python
 if hasattr(module, "get_typed_outputs"):
-    typed = module.get_typed_outputs() or {}
-    entities = typed.get("graph_entities") or ()
-    for e in entities:
-        if isinstance(e, GraphEntity):
-            graph_entities.append(e)
+ typed = module.get_typed_outputs or {}
+ entities = typed.get("graph_entities") or 
+ for e in entities:
+ if isinstance(e, GraphEntity):
+ graph_entities.append(e)
 ```
 
 Add the new field to `EnrichmentResult` (frozen dataclass + to_payload
@@ -193,9 +193,9 @@ LLM-backed modules MUST resolve prompts via
 `resolve_module_prompt(domain_pack, prompt_field, builtin_default)`:
 
 ```
-domain_pack.prompt_pack.<prompt_field>   if set
+domain_pack.prompt_pack.<prompt_field> if set
 ↓ else
-<_BUILTIN_PROMPT>                         (generic, no domain vocab)
+<_BUILTIN_PROMPT> (generic, no domain vocab)
 ↓
 domain_pack.prompt_addon is prepended to whichever wins
 ```
@@ -213,13 +213,13 @@ helper on `_LegacyWrapperBase`:
 
 ```python
 parsed, usage = self._llm_call(
-    self._text_client.extract, prompt, schema, metadata={...},
+ self._text_client.extract, prompt, schema, metadata={...},
 )
 ```
 
 For per-image vision modules, pass the limiter into
 `PerImageVisionAdapter(..., llm_call_limiter=...)` at construction
-time and the adapter wraps each per-image call (Wave 11B).
+time and the adapter wraps each per-image call.
 
 ## Provenance
 
@@ -228,13 +228,13 @@ Every typed output MUST carry a `ProvenanceLink`. The base helper
 artifact:
 
 ```python
-provenance = self._make_provenance(ctx)   # source_artifact_id=raw[0]
-# ... or build it inline if you need per-record provenance:
+provenance = self._make_provenance(ctx) # source_artifact_id=raw[0]
+#... or build it inline if you need per-record provenance:
 provenance = ProvenanceLink(
-    source_artifact_id=record_artifact_id,
-    source_chunk_id=chunk_id,              # when applicable
-    source_kind="compile",
-    relation="extracted_from",
+ source_artifact_id=record_artifact_id,
+ source_chunk_id=chunk_id, # when applicable
+ source_kind="compile",
+ relation="extracted_from",
 )
 ```
 
@@ -249,8 +249,8 @@ provenance = ProvenanceLink(
 
 NEVER:
 
-- raise out of `run()` — return a FAILED outcome instead. The
-  runner has a defensive catch, but explicit is clearer.
+- raise out of `run` — return a FAILED outcome instead. The
+ runner has a defensive catch, but explicit is clearer.
 - mutate `ctx.compile_result` or the raw compile artifacts.
 - mutate the `DomainPack`.
 
@@ -259,7 +259,7 @@ NEVER:
 Mirror the patterns in
 [`tests/test_legacy_enricher_modules.py`](../../tests/test_legacy_enricher_modules.py):
 
-- protocol conformance (`isinstance(YourModule(), EnrichmentModule)`)
+- protocol conformance (`isinstance(YourModule, EnrichmentModule)`)
 - skip behaviour per documented `can_run` reason
 - domain prompt override + prompt_addon prepending
 - limiter routing (count `limiter.calls`)

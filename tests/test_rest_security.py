@@ -219,7 +219,7 @@ def test_invalid_api_key_header_returns_401(secure_client):
 
 
 def test_unsupported_authorization_scheme_treated_as_missing(secure_client):
-    """`Authorization: Basic ...` is not a credential we accept — should 401."""
+    """`Authorization: Basic...` is not a credential we accept — should 401."""
     headers = _headers()
     headers["Authorization"] = "Basic abc=="
     response = secure_client.get("/documents/anything", headers=headers)
@@ -416,9 +416,9 @@ def test_security_context_carries_request_id(
 
 def test_openapi_advertises_bearer_and_api_key_when_auth_enabled(secure_client):
     """When `authenticator=` is set, the OpenAPI document must
-    declare the Bearer + API-key security schemes so Swagger UI
-    renders the Authorize button. Without these schemes the
-    operator can't test protected endpoints from the docs page."""
+ declare the Bearer + API-key security schemes so Swagger UI
+ renders the Authorize button. Without these schemes the
+ operator can't test protected endpoints from the docs page."""
     spec = secure_client.get("/openapi.json").json()
     schemes = spec.get("components", {}).get("securitySchemes", {})
     assert "bearer" in schemes, f"bearer scheme missing from {schemes}"
@@ -435,9 +435,9 @@ def test_openapi_advertises_bearer_and_api_key_when_auth_enabled(secure_client):
 
 def test_openapi_marks_anonymous_paths_as_unauthenticated(secure_client):
     """`/health` and `/version` are exempt from auth even when
-    `authenticator=` is set. Their OpenAPI operations must carry an
-    empty `security: []` so Swagger UI doesn't pretend they need a
-    credential."""
+ `authenticator=` is set. Their OpenAPI operations must carry an
+ empty `security: []` so Swagger UI doesn't pretend they need a
+ credential."""
     spec = secure_client.get("/openapi.json").json()
     health = spec["paths"]["/health"]["get"]
     version = spec["paths"]["/version"]["get"]
@@ -451,8 +451,8 @@ def test_openapi_marks_anonymous_paths_as_unauthenticated(secure_client):
 
 def test_openapi_protected_paths_inherit_global_security(secure_client):
     """Protected operations don't carry their own `security` (they
-    inherit from the document-level `security` array). Swagger
-    renders the lock icon based on the global default."""
+ inherit from the document-level `security` array). Swagger
+ renders the lock icon based on the global default."""
     spec = secure_client.get("/openapi.json").json()
     # Global security advertises both schemes — operator can pick either.
     global_security = spec.get("security")

@@ -184,23 +184,23 @@ class ProjectIngestionRequestDTO:
 class ProcessingCapabilities:
     """Snapshot of which processor `kind`s the runtime accepts.
 
-    The REST adapter consults this to:
+ The REST adapter consults this to:
 
-      * Default an omitted `compilerKind` request field to
-        `default_compiler_kind` (typically the bootstrap's
-        `J1_DEFAULT_COMPILER` selection).
-      * Reject a provided `compilerKind` / `graphBuilderKind` /
-        `enricherKind` / `indexerKind` at the API boundary when the
-        runtime has nothing registered for it — instead of letting it
-        surface as a workflow failure 5 seconds later.
+ * Default an omitted `compilerKind` request field to
+ `default_compiler_kind` (typically the bootstrap's
+ `J1_DEFAULT_COMPILER` selection).
+ * Reject a provided `compilerKind` / `graphBuilderKind` /
+ `enricherKind` / `indexerKind` at the API boundary when the
+ runtime has nothing registered for it — instead of letting it
+ surface as a workflow failure 5 seconds later.
 
-    Each `<kind>_kinds` set lists what the worker has wired. An empty
-    set disables validation for that role (preserves backward
-    compatibility for deployments that don't pass capabilities).
-    `default_compiler_kind` is only consumed when `compiler_kinds`
-    is non-empty AND contains the default — a defensive consistency
-    check.
-    """
+ Each `<kind>_kinds` set lists what the worker has wired. An empty
+ set disables validation for that role (preserves backward
+ compatibility for deployments that don't pass capabilities).
+ `default_compiler_kind` is only consumed when `compiler_kinds`
+ is non-empty AND contains the default — a defensive consistency
+ check.
+ """
 
     default_compiler_kind: str | None = None
     compiler_kinds: frozenset[str] = field(default_factory=frozenset)
@@ -217,12 +217,12 @@ def capabilities_from_bootstrap(
 ) -> ProcessingCapabilities:
     """Build a `ProcessingCapabilities` from a `BootstrapResult`-shaped object.
 
-    `boot` is duck-typed (we accept anything with `.selection.compiler`,
-    `.compilers`, `.graph_builders`) so this lives in the integration
-    layer without importing `j1.compose` (which would invert the
-    dependency arrow). Pass enricher / indexer kinds explicitly —
-    those are wired by `build_worker_spec`, not by the bootstrap.
-    """
+ `boot` is duck-typed (we accept anything with `.selection.compiler`,
+ `.compilers`, `.graph_builders`) so this lives in the integration
+ layer without importing `j1.compose` (which would invert the
+ dependency arrow). Pass enricher / indexer kinds explicitly —
+ those are wired by `build_worker_spec`, not by the bootstrap.
+ """
     return ProcessingCapabilities(
         default_compiler_kind=boot.selection.compiler,
         compiler_kinds=frozenset(boot.compilers),

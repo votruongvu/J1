@@ -1,18 +1,18 @@
-"""Wave 11A — vision/image runtime wiring + hardening tests.
+"""vision/image runtime wiring + hardening tests.
 
 Pins:
-  1. `WorkspaceImageBytesProvider` resolves `compile.image`
-     artifacts into `VisionImagePayload` records.
-  2. Missing image artifacts → empty payloads + clear warnings.
-  3. The activity constructs `PerImageVisionAdapter` per-run.
-  4. Image enrichment runs end-to-end when fake vision client +
-     real workspace image bytes are present.
-  5. `ImageSummary` carries `ProvenanceLink` back to the
-     `compile.image` artifact id.
-  6. Raw compile artifacts are not mutated.
-  7. Limiter still wraps the vision analysis call.
-  8. Final ingestion report reflects image module outcomes.
-  9. Required vs optional enrichment failure mapping is stable.
+ 1. `WorkspaceImageBytesProvider` resolves `compile.image`
+ artifacts into `VisionImagePayload` records.
+ 2. Missing image artifacts → empty payloads + clear warnings.
+ 3. The activity constructs `PerImageVisionAdapter` per-run.
+ 4. Image enrichment runs end-to-end when fake vision client +
+ real workspace image bytes are present.
+ 5. `ImageSummary` carries `ProvenanceLink` back to the
+ `compile.image` artifact id.
+ 6. Raw compile artifacts are not mutated.
+ 7. Limiter still wraps the vision analysis call.
+ 8. Final ingestion report reflects image module outcomes.
+ 9. Required vs optional enrichment failure mapping is stable.
  10. No legacy gating vocabulary anywhere.
 """
 
@@ -68,8 +68,8 @@ class _FakeUsage:
 
 class _FakeVisionLLMClient:
     """Production-shape vision client: per-image bytes input, text
-    response. The activity wraps this in `PerImageVisionAdapter` at
-    `run_enrichment_stage` time."""
+ response. The activity wraps this in `PerImageVisionAdapter` at
+ `run_enrichment_stage` time."""
 
     def __init__(self, response_template='{"caption": "image %d"}'):
         self._template = response_template
@@ -106,7 +106,7 @@ def _write_image_artifact(
     suffix: str = ".png",
 ) -> ArtifactRecord:
     """Persist a `compile.image` artifact to the workspace +
-    registry so `WorkspaceImageBytesProvider` can load it back."""
+ registry so `WorkspaceImageBytesProvider` can load it back."""
     filename = f"{artifact_id}{suffix}"
     full = workspace.area(ctx, WorkspaceArea.COMPILED) / filename
     full.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +134,7 @@ def _write_image_artifact(
 
 def _make_activity(workspace, artifact_registry, **kwargs):
     """Minimal `ProcessingActivities` constructor — same composition
-    path the deploy wiring uses, but stripped to enrichment-only."""
+ path the deploy wiring uses, but stripped to enrichment-only."""
     from j1.audit.recorder import DefaultAuditRecorder
     from j1.audit.sink import JsonlAuditSink
     from j1.cost.recorder import DefaultCostRecorder
@@ -223,7 +223,7 @@ def test_provider_emits_warning_when_image_bytes_unreadable(
     workspace, artifact_registry, ctx,
 ):
     """Artifact registered but underlying file missing — provider
-    must surface a clear warning so the operator sees the miss."""
+ must surface a clear warning so the operator sees the miss."""
     now = datetime(2026, 5, 11, 12, 0, 0, tzinfo=timezone.utc)
     artifact_registry.add(ArtifactRecord(
         artifact_id="img-missing", project=ctx, kind="compile.image",
@@ -271,7 +271,7 @@ def test_provider_caches_results_across_calls(
     workspace, artifact_registry, ctx,
 ):
     """Adapter may invoke provider multiple times in one stage; the
-    cache keeps the second call from re-listing the registry."""
+ cache keeps the second call from re-listing the registry."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-1", image_bytes=b"\x89PNG\r\n",
@@ -292,8 +292,8 @@ def test_activity_constructs_per_run_image_adapter(
     workspace, artifact_registry, ctx,
 ):
     """The activity must wrap the RAW vision client in a fresh
-    `PerImageVisionAdapter` with a workspace-aware provider for
-    the current run — not use an empty bootstrap-time adapter."""
+ `PerImageVisionAdapter` with a workspace-aware provider for
+ the current run — not use an empty bootstrap-time adapter."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-a", image_bytes=b"\x89PNG\r\n",
@@ -324,10 +324,10 @@ def test_activity_image_module_skips_when_no_artifacts_loadable(
     workspace, artifact_registry, ctx,
 ):
     """`compile_result.detected_images` says images exist but no
-    matching `compile.image` artifacts are persisted → image module
-    runs but the adapter returns no payloads. The provider's
-    "no images" outcome plus the module's PARTIAL/skip logic must
-    yield a clear non-success outcome."""
+ matching `compile.image` artifacts are persisted → image module
+ runs but the adapter returns no payloads. The provider's
+ "no images" outcome plus the module's PARTIAL/skip logic must
+ yield a clear non-success outcome."""
     raw_vision = _FakeVisionLLMClient()
     activity = _make_activity(
         workspace, artifact_registry,
@@ -393,7 +393,7 @@ def test_provider_warnings_flow_to_image_module_outcome(
     workspace, artifact_registry, ctx,
 ):
     """Detected images + unreadable bytes → image outcome carries
-    operator-readable warnings."""
+ operator-readable warnings."""
     now = datetime(2026, 5, 11, 12, 0, 0, tzinfo=timezone.utc)
     artifact_registry.add(ArtifactRecord(
         artifact_id="img-missing", project=ctx, kind="compile.image",
@@ -491,7 +491,7 @@ def test_shared_limiter_wraps_vision_call(
         c for c in limiter.calls
         if c["metadata"].get("module_id") == "image_enrichment"
     ]
-    # Wave 11B — per-image limiter acquisition. One image
+    # per-image limiter acquisition. One image
     # detected → one acquisition (the `_FakeVisionLLMClient`
     # records exactly one analyze_image call too).
     assert len(image_calls) == 1
@@ -546,10 +546,10 @@ def test_final_report_records_image_module_outcome_and_summaries(
 def test_required_enrichment_failure_maps_to_failed_enrichment_required(
     workspace, artifact_registry, ctx,
 ):
-    """Wave-11A hardening — pin the failure mapping that's already
-    in place. With `require_enrichment_success=True` and a failed
-    enrichment outcome, the final-status projection lands at
-    `failed_enrichment_required` (not `completed_with_warnings`)."""
+    """ hardening — pin the failure mapping that's already
+ in place. With `require_enrichment_success=True` and a failed
+ enrichment outcome, the final-status projection lands at
+ `failed_enrichment_required` (not `completed_with_warnings`)."""
     from j1.processing.final_status import project_final_status
 
     projection = project_final_status(
@@ -563,8 +563,8 @@ def test_required_enrichment_failure_maps_to_failed_enrichment_required(
 
 def test_optional_enrichment_failure_maps_to_completed_with_warnings():
     """With `require_enrichment_success=False`, the same failed
-    outcome lands at `completed_with_enrichment_warnings` so the
-    operator sees the issue without the run being marked FAILED."""
+ outcome lands at `completed_with_enrichment_warnings` so the
+ operator sees the issue without the run being marked FAILED."""
     from j1.processing.final_status import project_final_status
 
     projection = project_final_status(
@@ -593,9 +593,9 @@ def test_enrichment_clients_source_still_has_no_legacy_vocabulary():
         assert forbidden not in src
 
 
-def test_wave11a_provider_has_no_hardcoded_civil_engineering_terms():
+def test_provider_has_no_hardcoded_civil_engineering_terms():
     """The provider is generic; no domain-specific terms should
-    leak in (the operator-readable warning copy must stay neutral)."""
+ leak in (the operator-readable warning copy must stay neutral)."""
     import inspect
     from j1.processing.enrichment_clients import WorkspaceImageBytesProvider
     src = inspect.getsource(WorkspaceImageBytesProvider)

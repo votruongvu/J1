@@ -1,6 +1,6 @@
 """Civil Engineering pack loader + detection scorer.
 
-`build_civil_engineering_pack()` reads `domain.yaml` next to this
+`build_civil_engineering_pack` reads `domain.yaml` next to this
 module and returns a `DomainPack` with the detection callable
 bound. Pure construction — no environment lookups.
 
@@ -111,9 +111,9 @@ def build_civil_engineering_pack() -> DomainPack:
 def _parse_extraction_hints(raw: Any) -> DomainExtractionHints:
     """Build a `DomainExtractionHints` from the YAML sub-mapping.
 
-    Missing block → defaults (all empty tuples). Tolerant of
-    malformed entries: non-iterable categories silently become
-    empty tuples."""
+ Missing block → defaults (all empty tuples). Tolerant of
+ malformed entries: non-iterable categories silently become
+ empty tuples."""
     if not isinstance(raw, dict) or not raw:
         return DomainExtractionHints()
 
@@ -136,7 +136,7 @@ def _parse_extraction_hints(raw: Any) -> DomainExtractionHints:
 def _parse_validation_rules(raw: Any) -> DomainValidationRules:
     """Build a `DomainValidationRules` from the YAML sub-mapping.
 
-    Same tolerance contract as `_parse_extraction_hints`."""
+ Same tolerance contract as `_parse_extraction_hints`."""
     if not isinstance(raw, dict) or not raw:
         return DomainValidationRules()
 
@@ -157,9 +157,9 @@ def _parse_validation_rules(raw: Any) -> DomainValidationRules:
 def _parse_prompt_pack(raw: Any) -> DomainPromptPack:
     """Build a `DomainPromptPack` from the YAML sub-mapping.
 
-    Each field is a single string. Missing / empty → None (the
-    enricher uses its built-in default). Heredoc-style YAML scalars
-    work; we strip surrounding whitespace."""
+ Each field is a single string. Missing / empty → None (the
+ enricher uses its built-in default). Heredoc-style YAML scalars
+ work; we strip surrounding whitespace."""
     if not isinstance(raw, dict) or not raw:
         return DomainPromptPack()
 
@@ -183,10 +183,10 @@ def _parse_prompt_pack(raw: Any) -> DomainPromptPack:
 def _parse_enrichment_policy(raw: Any) -> DomainEnrichmentPolicy:
     """Build a `DomainEnrichmentPolicy` from the YAML sub-mapping.
 
-    Missing block (None / empty dict) → policy=auto with empty lists.
-    Tolerant of malformed entries: unknown keys are ignored, lists
-    coerced via tuple(), and the policy string passes through to
-    the dataclass which raises on invalid vocabulary at startup."""
+ Missing block (None / empty dict) → policy=auto with empty lists.
+ Tolerant of malformed entries: unknown keys are ignored, lists
+ coerced via tuple, and the policy string passes through to
+ the dataclass which raises on invalid vocabulary at startup."""
     if not isinstance(raw, dict) or not raw:
         return DomainEnrichmentPolicy()
     return DomainEnrichmentPolicy(
@@ -223,9 +223,9 @@ def _parse_enrichment_policy(raw: Any) -> DomainEnrichmentPolicy:
 def _load_pack_data(path: Path) -> dict[str, Any]:
     """Load + sanity-check the pack YAML.
 
-    Tolerates missing optional sections; raises when the required
-    `id` / `version` fields are absent so misconfiguration surfaces
-    at startup rather than at request time."""
+ Tolerates missing optional sections; raises when the required
+ `id` / `version` fields are absent so misconfiguration surfaces
+ at startup rather than at request time."""
     with path.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
@@ -244,9 +244,9 @@ def _load_pack_data(path: Path) -> dict[str, Any]:
 class _DetectionRule:
     """One detection rule from the YAML.
 
-    `min_score` gates whether the rule fires; `bonus` is added to
-    the kept score so a strong-signal hit can clear the registry's
-    detection threshold even when the corpus is short."""
+ `min_score` gates whether the rule fires; `bonus` is added to
+ the kept score so a strong-signal hit can clear the registry's
+ detection threshold even when the corpus is short."""
 
     id: str
     document_type: str
@@ -346,9 +346,9 @@ def _make_detector(
 def _build_corpus(ctx) -> tuple[str, tuple[tuple[str, ...], ...], str]:
     """Concatenate detection corpus from the context.
 
-    Returns `(text_corpus, table_header_rows, image_captions_corpus)`.
-    Title gets repeated 3x so a strong title signal weighs more
-    heavily than the same term buried in a paragraph."""
+ Returns `(text_corpus, table_header_rows, image_captions_corpus)`.
+ Title gets repeated 3x so a strong title signal weighs more
+ heavily than the same term buried in a paragraph."""
     title = (getattr(ctx, "title", "") or "")
     early_pages = getattr(ctx, "early_page_text", "") or ""
     filename = getattr(ctx, "filename", "") or ""
@@ -376,10 +376,10 @@ def _score_rule(
 ) -> tuple[float, list[str]]:
     """Score one detection rule.
 
-    Score = sum of rule-signal matches (each capped at 1.0) +
-    `rule.bonus` when at least one signal hits + table-header bonus
-    when the rule's `table_header_signals` overlap a real header
-    row (e.g. BOQ tables)."""
+ Score = sum of rule-signal matches (each capped at 1.0) +
+ `rule.bonus` when at least one signal hits + table-header bonus
+ when the rule's `table_header_signals` overlap a real header
+ row (e.g. BOQ tables)."""
     hits: list[str] = []
     score = 0.0
     for signal in rule.signals:
@@ -410,7 +410,7 @@ def _matches_table_header(
     table_headers: tuple[tuple[str, ...], ...],
 ) -> bool:
     """True when ANY observed header row contains every term of
-    ANY required header signature (case-insensitive)."""
+ ANY required header signature (case-insensitive)."""
     if not rule.table_header_signals or not table_headers:
         return False
     for required in rule.table_header_signals:
@@ -425,8 +425,8 @@ def _score_keywords(
 ) -> tuple[float, list[str]]:
     """Pack-level baseline: cumulative keyword weight, capped at 1.0.
 
-    Returns the score + the hit list (truncated to a small set so
-    the evidence string stays operator-readable)."""
+ Returns the score + the hit list (truncated to a small set so
+ the evidence string stays operator-readable)."""
     hits: list[str] = []
     score = 0.0
     for sig in signals:
@@ -446,8 +446,8 @@ def _format_evidence(
     ctx,
 ) -> tuple[str, ...]:
     """Convert a hit list + structural cues into operator-readable
-    evidence strings — drives the FE Planning Report's "why this
-    domain" panel."""
+ evidence strings — drives the FE Planning Report's "why this
+ domain" panel."""
     out: list[str] = []
     keyword_hits = [h for h in hits if h != "table_header_match"][:6]
     if keyword_hits:

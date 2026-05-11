@@ -40,11 +40,11 @@ ENV_PLANNING_TRACE_BODY = "J1_PLANNING_TRACE_BODY"
 # Operator-facing plan mode. Maps to the legacy `*_planning_enabled`
 # flags below; carried as a single env so docs and dashboards have
 # one knob to point at.
-#   rule_based  → deterministic only (default; cheap + safe)
-#   llm         → LLM-assisted; deterministic plan still ships as
-#                  the rule_based comparison block
-#   hybrid      → both run; LLM result wins on agreement, rule-based
-#                  is the safety net on disagreement / failure
+#  rule_based → deterministic only (default; cheap + safe)
+#  llm → LLM-assisted; deterministic plan still ships as
+#  the rule_based comparison block
+#  hybrid → both run; LLM result wins on agreement, rule-based
+#  is the safety net on disagreement / failure
 ENV_INGEST_PLAN_MODE = "J1_INGEST_PLAN_MODE"
 
 # ---- Domain pack envs ------------------------------------------------
@@ -97,27 +97,27 @@ __all__ = [
 class PlanningSettings:
     """Resolved Planning Report settings.
 
-    `enabled` controls whether the projection is produced at all. The
-    audit-log `plan.generated` event still drives the workflow; this
-    flag only affects whether the FE Planning Report tab is populated.
+ `enabled` controls whether the projection is produced at all. The
+ audit-log `plan.generated` event still drives the workflow; this
+ flag only affects whether the FE Planning Report tab is populated.
 
-    `llm_planning_enabled` enables the optional LLM-assisted planning
-    pass. Default OFF — rule-based planning (the existing
-    `DefaultIngestPlanner`) is the documented baseline.
+ `llm_planning_enabled` enables the optional LLM-assisted planning
+ pass. Default OFF — rule-based planning (the existing
+ `DefaultIngestPlanner`) is the documented baseline.
 
-    `model_profile` names the registered FAST/PREMIUM LLM role to use
-    when `llm_planning_enabled=True`. Free-form string so deployments
-    can register their own profile names.
+ `model_profile` names the registered FAST/PREMIUM LLM role to use
+ when `llm_planning_enabled=True`. Free-form string so deployments
+ can register their own profile names.
 
-    `max_sample_blocks` and `max_preview_chars` cap the digest fed to
-    the LLM planner. Both are privacy boundaries: the planner must
-    NEVER see the full raw document.
+ `max_sample_blocks` and `max_preview_chars` cap the digest fed to
+ the LLM planner. Both are privacy boundaries: the planner must
+ NEVER see the full raw document.
 
-    `fail_open=True` (default) means: if the LLM-assisted planning path
-    fails (timeout, parse error, etc.), the rule-based decision still
-    stands and the run continues. `fail_open=False` would surface the
-    failure as a planning warning — reserved for deployments that
-    treat planning as a hard gate."""
+ `fail_open=True` (default) means: if the LLM-assisted planning path
+ fails (timeout, parse error, etc.), the rule-based decision still
+ stands and the run continues. `fail_open=False` would surface the
+ failure as a planning warning — reserved for deployments that
+ treat planning as a hard gate."""
 
     enabled: bool = True
     # Master switch for the post-compile planning stage. The Planning
@@ -169,20 +169,20 @@ def load_planning_settings(
 ) -> PlanningSettings:
     """Read every `J1_PLANNING_*` env var into typed settings.
 
-    Always returns a `PlanningSettings`. Bad numeric values raise
-    `ConfigError` so misconfiguration surfaces at startup rather than
-    silently degrading at runtime.
+ Always returns a `PlanningSettings`. Bad numeric values raise
+ `ConfigError` so misconfiguration surfaces at startup rather than
+ silently degrading at runtime.
 
-    `J1_INGEST_PLAN_MODE` is the operator-facing knob; when set it
-    overrides `J1_LLM_PLANNING_ENABLED`. The legacy env stays
-    supported for deployments that haven't migrated. Resolution rule:
-      * `J1_INGEST_PLAN_MODE=llm`     → llm_planning_enabled=True
-      * `J1_INGEST_PLAN_MODE=hybrid`  → llm_planning_enabled=True
-                                         (rule-based runs first; LLM
-                                         augments — same code path)
-      * `J1_INGEST_PLAN_MODE=rule_based` (default) → llm_planning_enabled=False
-      * unset → fall through to `J1_LLM_PLANNING_ENABLED` legacy default
-    """
+ `J1_INGEST_PLAN_MODE` is the operator-facing knob; when set it
+ overrides `J1_LLM_PLANNING_ENABLED`. The legacy env stays
+ supported for deployments that haven't migrated. Resolution rule:
+ * `J1_INGEST_PLAN_MODE=llm` → llm_planning_enabled=True
+ * `J1_INGEST_PLAN_MODE=hybrid` → llm_planning_enabled=True
+ (rule-based runs first; LLM
+ augments — same code path)
+ * `J1_INGEST_PLAN_MODE=rule_based` (default) → llm_planning_enabled=False
+ * unset → fall through to `J1_LLM_PLANNING_ENABLED` legacy default
+ """
     source = env if env is not None else os.environ
     plan_mode = _plan_mode(source)
     if plan_mode is not None:
@@ -297,7 +297,7 @@ def _csv(
     env: Mapping[str, str], key: str, *, default: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Parse a comma-separated list, lower-casing + stripping each
-    entry. Empty value falls back to the default."""
+ entry. Empty value falls back to the default."""
     raw = env.get(key)
     if raw is None or not raw.strip():
         return default
@@ -310,10 +310,10 @@ def _csv(
 def _plan_mode(env: Mapping[str, str]) -> str | None:
     """Resolve the operator-facing plan mode.
 
-    Returns None when the env var is unset (caller falls back to
-    `rule_based` + the legacy `J1_LLM_PLANNING_ENABLED` flag).
-    Raises `ConfigError` on a recognisable-but-invalid value so a
-    typo doesn't silently degrade to rule_based."""
+ Returns None when the env var is unset (caller falls back to
+ `rule_based` + the legacy `J1_LLM_PLANNING_ENABLED` flag).
+ Raises `ConfigError` on a recognisable-but-invalid value so a
+ typo doesn't silently degrade to rule_based."""
     raw = env.get(ENV_INGEST_PLAN_MODE)
     if raw is None:
         return None

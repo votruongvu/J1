@@ -3,20 +3,20 @@
 MinerU (the document parser bundled with RAGAnything) emits progress
 to its logger, not via callbacks. The lines look like:
 
-    [MinerU] Layout Preparation: 80% | 35/44
-    [MinerU] Fetching 13 files: 62%|██████▏   | 8/13 [00:49<00:31,  6.38s/it]
-    [MinerU] get transformers predictor cost: 50.12s
-    [MinerU] Hybrid processing-window run. page_count=1, ...
+ [MinerU] Layout Preparation: 80% | 35/44
+ [MinerU] Fetching 13 files: 62%|██████▏ | 8/13 [00:49<00:31, 6.38s/it]
+ [MinerU] get transformers predictor cost: 50.12s
+ [MinerU] Hybrid processing-window run. page_count=1,...
 
 To turn those into structured `step.progress` events for the frontend,
 this module provides a `MinerUProgressParser` that:
 
-  * Recognises the known progress shapes (regex over the formatted
-    line, no module-internal coupling to mineru).
-  * Returns a small structured dict per recognised line, or `None`
-    for lines we don't care about.
-  * Stays isolated inside the raganything provider — no parser-
-    specific code leaks into workflow / activity / API code.
+ * Recognises the known progress shapes (regex over the formatted
+ line, no module-internal coupling to mineru).
+ * Returns a small structured dict per recognised line, or `None`
+ for lines we don't care about.
+ * Stays isolated inside the raganything provider — no parser-
+ specific code leaks into workflow / activity / API code.
 
 The parser is intentionally tolerant: an unrecognised line is a
 no-op rather than an error. New mineru versions can add or rename
@@ -47,12 +47,12 @@ _ENGINE_NAME = "MinerU"
 class MinerUProgressEvent:
     """Normalised progress signal extracted from one mineru log line.
 
-    `stage` matches the canonical execution-plan stage labels
-    (`COMPILE`). `step` is the substep within that stage (e.g.
-    `LAYOUT_PREPARATION`, `MODEL_FETCH`). `engine` is always
-    `MinerU` so downstream consumers can group / filter by parser.
-    `progress_percent` is 0..100; `current` / `total` come from the
-    underlying tqdm-style line when present."""
+ `stage` matches the canonical execution-plan stage labels
+ (`COMPILE`). `step` is the substep within that stage (e.g.
+ `LAYOUT_PREPARATION`, `MODEL_FETCH`). `engine` is always
+ `MinerU` so downstream consumers can group / filter by parser.
+ `progress_percent` is 0..100; `current` / `total` come from the
+ underlying tqdm-style line when present."""
 
     event_type: str          # always "step.progress" or "step.completed"
     stage: str
@@ -87,7 +87,7 @@ _LAYOUT_TQDM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# `Fetching 13 files:   8%|▊         | 1/13 [00:00<00:03,  3.03it/s]`
+# `Fetching 13 files: 8%|▊ | 1/13 [00:00<00:03, 3.03it/s]`
 _FETCH_RE = re.compile(
     r"Fetching\s+(?P<total_decl>\d+)\s+files:\s*(?P<pct>\d+)%[^|]*\|[^|]*\|\s*(?P<cur>\d+)/(?P<tot>\d+)",
     re.IGNORECASE,
@@ -159,8 +159,8 @@ _PATTERNS = (
 def parse_mineru_line(line: str) -> MinerUProgressEvent | None:
     """Try each pattern in order; return the first match's event.
 
-    Returns `None` for unrecognised lines — the caller should swallow
-    those rather than treat them as parse errors."""
+ Returns `None` for unrecognised lines — the caller should swallow
+ those rather than treat them as parse errors."""
     if not line:
         return None
     for pattern, builder in _PATTERNS:
@@ -173,15 +173,15 @@ def parse_mineru_line(line: str) -> MinerUProgressEvent | None:
 class MinerUProgressParser:
     """Stateful parser that batches lines and de-duplicates events.
 
-    Use when you have a stream of log lines (from a logging handler
-    or stdout reader) and want to emit only the meaningful progress
-    deltas. Stateless callers can just call the module-level
-    `parse_mineru_line` directly.
+ Use when you have a stream of log lines (from a logging handler
+ or stdout reader) and want to emit only the meaningful progress
+ deltas. Stateless callers can just call the module-level
+ `parse_mineru_line` directly.
 
-    Throttling is the reporter's job (see
-    `AuditProgressReporter.report_step_progress`'s 5% threshold) — this
-    parser only de-duplicates exact same-percent progress events so
-    we don't repeat the SAME line twice (mineru sometimes does)."""
+ Throttling is the reporter's job (see
+ `AuditProgressReporter.report_step_progress`'s 5% threshold) — this
+ parser only de-duplicates exact same-percent progress events so
+ we don't repeat the SAME line twice (mineru sometimes does)."""
 
     def __init__(self) -> None:
         self._last_percent: dict[tuple[str, str], int] = {}

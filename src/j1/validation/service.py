@@ -1,7 +1,7 @@
 """IngestionValidationService — read/write surface for validation.
 
-Phase 1: synchronous manual test query (`run_manual_test_query`).
-Phase 2: generate / list / get validation sets, run validation,
+synchronous manual test query (`run_manual_test_query`).
+generate / list / get validation sets, run validation,
 list / get validation runs.
 
 All methods enforce run ownership via `_load_run` (raises
@@ -70,7 +70,7 @@ _TARGET_KIND_VALIDATION_RESULT = "validation_result"
 # Literal type — the REST layer can re-use it for input validation.
 _VALID_VERDICTS: frozenset[str] = frozenset({"pass", "warning", "fail"})
 
-# Hard cap on `top_k` — Phase 1's manual query is synchronous and we
+# Hard cap on `top_k` — 's manual query is synchronous and we
 # don't want a tester accidentally requesting 10k results and blocking
 # the worker. The REST layer also clamps via Pydantic but the service
 # enforces too so stand-alone callers (tests, future async paths) get
@@ -84,14 +84,14 @@ _PREVIEW_MAX_CHARS = 240
 
 
 class IngestionValidationService:
-    """Validation surface — manual queries (Phase 1) + generated
-    sets and runs (Phase 2).
+    """Validation surface — manual queries + generated
+ sets and runs.
 
-    Verdicts / human overrides / async execution arrive in later
-    phases; the constructor accepts the relevant dependencies as
-    Optional so a Phase 1-only deployment can still wire just the
-    manual-query path.
-    """
+ Verdicts / human overrides / async execution arrive in later
+ phases; the constructor accepts the relevant dependencies as
+ Optional so a only deployment can still wire just the
+ manual-query path.
+ """
 
     def __init__(
         self,
@@ -114,7 +114,7 @@ class IngestionValidationService:
         self._set_store = validation_set_store
         self._run_store_v = validation_run_store
         self._generator = test_case_generator
-        # Optional LLM judge for Phase 3 semantic checks. The runner
+        # Optional LLM judge for semantic checks. The runner
         # picks this up when it's configured; when None, optional
         # checks are simply omitted.
         self._judge = judge
@@ -129,16 +129,16 @@ class IngestionValidationService:
     ) -> ManualTestQueryResponseDTO:
         """Execute a single tester question against this run.
 
-        Phase 1: synchronous. Calls `HybridQueryEngine.query` with
-        `RunScope(run_id)` so retrieval is restricted to artifacts
-        produced by this run. Builds deterministic check results
-        from the engine output.
+ synchronous. Calls `HybridQueryEngine.query` with
+ `RunScope(run_id)` so retrieval is restricted to artifacts
+ produced by this run. Builds deterministic check results
+ from the engine output.
 
-        Raises `ReviewNotFound` (→ 404 at REST) when the run doesn't
-        exist in `(ctx.tenant_id, ctx.project_id)`. Cross-tenant /
-        cross-project access produces an identical 404 — existence
-        is never leakable.
-        """
+ Raises `ReviewNotFound` (→ 404 at REST) when the run doesn't
+ exist in `(ctx.tenant_id, ctx.project_id)`. Cross-tenant /
+ cross-project access produces an identical 404 — existence
+ is never leakable.
+ """
         run = self._load_run(ctx, run_id)
         # Reserve the request id up-front so the value the FE sees in
         # the response also lands in the audit log on the same row.
@@ -222,7 +222,7 @@ class IngestionValidationService:
             raw_response=raw_response,
         )
 
-    # ---- Phase 2: validation sets ----------------------------------------
+    # ---- validation sets ----------------------------------------
 
     def generate_validation_set(
         self,
@@ -236,18 +236,18 @@ class IngestionValidationService:
     ) -> ValidationSetDTO:
         """Generate a fresh validation set from this run's chunks.
 
-        Idempotent on `(run_id, generator_version, artifacts_hash)`:
-        when an existing set in the store has a matching hash and
-        `force=False`, the existing record is returned unchanged.
-        Set `force=True` to bypass the cache (e.g. after editing the
-        prompt or chunk content).
+ Idempotent on `(run_id, generator_version, artifacts_hash)`:
+ when an existing set in the store has a matching hash and
+ `force=False`, the existing record is returned unchanged.
+ Set `force=True` to bypass the cache (e.g. after editing the
+ prompt or chunk content).
 
-        Raises `ReviewNotFound` if the run isn't visible in the
-        caller's `(tenant, project)`.
-        Raises `RuntimeError` when Phase 2 dependencies aren't wired
-        (set store / generator) — same shape as Phase 1's missing-
-        deps degradation.
-        """
+ Raises `ReviewNotFound` if the run isn't visible in the
+ caller's `(tenant, project)`.
+ Raises `RuntimeError` when dependencies aren't wired
+ (set store / generator) — same shape as 's missing-
+ deps degradation.
+ """
         if self._set_store is None or self._generator is None or self._workspace is None:
             raise RuntimeError(
                 "validation set generation not configured "
@@ -258,7 +258,7 @@ class IngestionValidationService:
 
         run = self._load_run(ctx, run_id)
         chunks = self._project_run_chunks(ctx, run)
-        # Phase 4: gather modality artifacts the generator can
+        # gather modality artifacts the generator can
         # author cases against. Single registry scan; the partition
         # below is O(n) over the run's artifact list.
         tables, visuals, graphs = self._modality_artifacts_for_run(
@@ -267,7 +267,7 @@ class IngestionValidationService:
 
         # Generate first so we can compute the artifacts hash off
         # the sampled chunks. Cheap — no LLM call yet on the empty
-        # path; the real LLM cost is per chunk inside generate().
+        # path; the real LLM cost is per chunk inside generate.
         vset = self._generator.generate(
             run_id=run.run_id,
             document_ids=_document_ids(run),
@@ -301,7 +301,7 @@ class IngestionValidationService:
         self, ctx: ProjectContext, run_id: str,
     ) -> list[ValidationSetDTO]:
         """List sets for a run, most-recent-first. Empty list when
-        the run exists but no sets have been generated."""
+ the run exists but no sets have been generated."""
         if self._set_store is None:
             return []
         # Run-ownership check first — cross-tenant access raises 404
@@ -318,7 +318,7 @@ class IngestionValidationService:
         validation_set_id: str,
     ) -> ValidationSetDTO:
         """Fetch one set by id. Raises `ReviewNotFound` for missing /
-        cross-tenant / set-belongs-to-different-run."""
+ cross-tenant / set-belongs-to-different-run."""
         if self._set_store is None:
             raise ReviewNotFound(
                 f"validation set {validation_set_id!r} not found"
@@ -333,7 +333,7 @@ class IngestionValidationService:
             )
         return vset
 
-    # ---- Phase 2: validation runs ----------------------------------------
+    # ---- validation runs ----------------------------------------
 
     def run_validation(
         self,
@@ -343,13 +343,13 @@ class IngestionValidationService:
         *,
         actor: str = "system",
     ) -> ValidationRunDTO:
-        """Execute a validation set. Synchronous in Phase 2 — blocks
-        until every case has run. Persists three lifecycle snapshots
-        (pending → running → terminal) via the run store.
+        """Execute a validation set. Synchronous — blocks
+ until every case has run. Persists three lifecycle snapshots
+ (pending → running → terminal) via the run store.
 
-        Raises `ReviewNotFound` for unknown / cross-tenant set or run.
-        Raises `RuntimeError` when the Phase 2 dependencies aren't
-        wired."""
+ Raises `ReviewNotFound` for unknown / cross-tenant set or run.
+ Raises `RuntimeError` when the dependencies aren't
+ wired."""
         if self._run_store_v is None:
             raise RuntimeError(
                 "validation run execution not configured "
@@ -396,7 +396,7 @@ class IngestionValidationService:
             )
         return vrun
 
-    # ---- Phase 5: tester verdict ---------------------------------------
+    # ---- tester verdict ---------------------------------------
 
     def record_tester_verdict(
         self,
@@ -411,21 +411,21 @@ class IngestionValidationService:
     ) -> ValidationRunDTO:
         """Record a human override on a single validation result.
 
-        Tester verdict is INDEPENDENT of the automated
-        `validation_status` — the deterministic checks stay
-        reproducible, and the human verdict layers on top. The FE
-        renders both side-by-side; downstream tooling can treat
-        whichever it prefers as authoritative.
+ Tester verdict is INDEPENDENT of the automated
+ `validation_status` — the deterministic checks stay
+ reproducible, and the human verdict layers on top. The FE
+ renders both side-by-side; downstream tooling can treat
+ whichever it prefers as authoritative.
 
-        Persists by upserting the parent `ValidationRunDTO` with
-        the verdict-augmented result swapped in. JSONL latest-wins
-        means subsequent reads see the updated record.
+ Persists by upserting the parent `ValidationRunDTO` with
+ the verdict-augmented result swapped in. JSONL latest-wins
+ means subsequent reads see the updated record.
 
-        Raises `ReviewNotFound` for missing run / cross-tenant /
-        cross-run / unknown result. Raises `ValueError` for an
-        invalid verdict string (REST layer translates to 422 via
-        Pydantic; this guards stand-alone callers).
-        """
+ Raises `ReviewNotFound` for missing run / cross-tenant /
+ cross-run / unknown result. Raises `ValueError` for an
+ invalid verdict string (REST layer translates to 422 via
+ Pydantic; this guards stand-alone callers).
+ """
         if self._run_store_v is None:
             raise ReviewNotFound(
                 f"validation run {validation_run_id!r} not found"
@@ -470,7 +470,7 @@ class IngestionValidationService:
         )
         return updated
 
-    # ---- Phase 5: export validation report -----------------------------
+    # ---- export validation report -----------------------------
 
     def export_validation_run_report(
         self,
@@ -481,20 +481,20 @@ class IngestionValidationService:
         format: str = "markdown",
     ) -> tuple[str, str]:
         """Compose a tester-friendly report from a terminal
-        validation run.
+ validation run.
 
-        Returns `(content, media_type)` so the REST layer can set
-        the right `Content-Type` header without re-deriving from
-        the format. Two formats ship in v1:
+ Returns `(content, media_type)` so the REST layer can set
+ the right `Content-Type` header without re-deriving from
+ the format. Two formats ship in v1:
 
-          * `markdown` — narrative summary + per-case section. The
-            default — copy-pastes cleanly into PR descriptions,
-            release notes, etc.
-          * `json` — projection of the same data; downstream
-            automation should prefer the typed REST endpoints
-            (`GET /validation-runs/{id}`) but JSON-export is here
-            for parity with markdown.
-        """
+ * `markdown` — narrative summary + per-case section. The
+ default — copy-pastes cleanly into PR descriptions,
+ release notes, etc.
+ * `json` — projection of the same data; downstream
+ automation should prefer the typed REST endpoints
+ (`GET /validation-runs/{id}`) but JSON-export is here
+ for parity with markdown.
+ """
         vrun = self.get_validation_run(ctx, run_id, validation_run_id)
         fmt = (format or "markdown").lower()
         if fmt == "markdown" or fmt == "md":
@@ -514,13 +514,13 @@ class IngestionValidationService:
         self, ctx: ProjectContext, run_id: str,
     ) -> dict[str, int]:
         """Cascade-delete every validation set + run that references
-        `run_id`. Used by the hard-delete (purge) orchestration in
-        the REST layer so a purged ingestion run doesn't leave
-        dangling validation history pointing at a missing run.
+ `run_id`. Used by the hard-delete (purge) orchestration in
+ the REST layer so a purged ingestion run doesn't leave
+ dangling validation history pointing at a missing run.
 
-        Best-effort across both stores — a failure on one doesn't
-        abort the other. Returns a count report:
-          `{sets_removed: int, runs_removed: int}`."""
+ Best-effort across both stores — a failure on one doesn't
+ abort the other. Returns a count report:
+ `{sets_removed: int, runs_removed: int}`."""
         sets_removed = 0
         runs_removed = 0
         if self._set_store is not None:
@@ -542,20 +542,20 @@ class IngestionValidationService:
             "runs_removed": runs_removed,
         }
 
-    # ---- Phase 2 helpers (private) -------------------------------------
+    # ---- helpers (private) -------------------------------------
 
     def _project_run_chunks(
         self, ctx: ProjectContext, run: IngestionRun,
     ) -> list[_ChunkRecord]:
         """Use the existing `ChunkProjector` to flatten the run's
-        chunk artifacts into a list of `_ChunkRecord`. Reuses the
-        same `path_resolver` pattern the review service uses so
-        the two surfaces see identical chunk text."""
+ chunk artifacts into a list of `_ChunkRecord`. Reuses the
+ same `path_resolver` pattern the review service uses so
+ the two surfaces see identical chunk text."""
         if self._workspace is None:
             return []
         # Resolve only chunk-kind artifacts that belong to this run.
-        # Phase 4+ artifact tagging means we read directly from the
-        # registry by run_id; Phase 1's lineage fallback is preserved
+        # + artifact tagging means we read directly from the
+        # registry by run_id; 's lineage fallback is preserved
         # in `_resolve_run_artifacts` (we don't need that here yet).
         artifacts = [
             a for a in self._artifacts.list_artifacts(ctx)
@@ -581,14 +581,14 @@ class IngestionValidationService:
         self, ctx: ProjectContext, run_id: str,
     ) -> tuple[list, list, list]:
         """Partition the run's artifacts into the three modality
-        buckets (tables / visuals / graph). One pass over the
-        registry; returns the three lists in fixed order so the
-        generator's call site stays unambiguous.
+ buckets (tables / visuals / graph). One pass over the
+ registry; returns the three lists in fixed order so the
+ generator's call site stays unambiguous.
 
-        Phase 4 keeps the kind taxonomy in lockstep with
-        `j1.ingestion_review.availability` — table/image/graph
-        gating uses identical kind strings everywhere.
-        """
+ keeps the kind taxonomy in lockstep with
+ `j1.ingestion_review.availability` — table/image/graph
+ gating uses identical kind strings everywhere.
+ """
         tables: list = []
         visuals: list = []
         graphs: list = []
@@ -610,8 +610,8 @@ class IngestionValidationService:
         artifacts_content_hash: str | None,
     ) -> ValidationSetDTO | None:
         """Idempotency lookup — returns the most-recent set whose
-        `artifacts_content_hash` matches. None when no match (caller
-        proceeds to upsert the freshly generated set)."""
+ `artifacts_content_hash` matches. None when no match (caller
+ proceeds to upsert the freshly generated set)."""
         if self._set_store is None or not artifacts_content_hash:
             return None
         for existing in self._set_store.list_for_run(ctx, run_id):
@@ -714,11 +714,11 @@ class IngestionValidationService:
     def _load_run(self, ctx: ProjectContext, run_id: str) -> IngestionRun:
         """Run-ownership gate.
 
-        Same shape and behaviour as `IngestionResultReviewService._load_run`:
-        identical message on missing-vs-cross-tenant so existence is
-        not probeable. Returning the typed `ReviewNotFound` lets the
-        REST layer share the existing exception handler.
-        """
+ Same shape and behaviour as `IngestionResultReviewService._load_run`:
+ identical message on missing-vs-cross-tenant so existence is
+ not probeable. Returning the typed `ReviewNotFound` lets the
+ REST layer share the existing exception handler.
+ """
         run = self._run_store.get(ctx, run_id)
         if run is None:
             raise ReviewNotFound(f"ingestion run {run_id!r} not found")
@@ -768,11 +768,11 @@ class IngestionValidationService:
 def _document_ids(run: IngestionRun) -> list[str]:
     """Best-effort recovery of the run's target documents.
 
-    Mirrors the helper in `j1.ingestion_review.service` so the
-    validation set carries the same document_ids list the rest of
-    the review surface surfaces. Inlined rather than imported to
-    avoid coupling validation to review's private internals.
-    """
+ Mirrors the helper in `j1.ingestion_review.service` so the
+ validation set carries the same document_ids list the rest of
+ the review surface surfaces. Inlined rather than imported to
+ avoid coupling validation to review's private internals.
+ """
     raw = run.metadata.get("target_document_ids")
     if isinstance(raw, list) and raw:
         seen: list[str] = []
@@ -789,10 +789,10 @@ def _document_ids(run: IngestionRun) -> list[str]:
 def _coerce_mode(raw: str) -> QueryMode:
     """Tolerantly map a request-supplied mode string to a `QueryMode`.
 
-    Unknown values fall back to AUTO so a tester typo can't turn into
-    a 500. The REST layer additionally validates upstream, but the
-    service is the source of truth for the final dispatch.
-    """
+ Unknown values fall back to AUTO so a tester typo can't turn into
+ a 500. The REST layer additionally validates upstream, but the
+ service is the source of truth for the final dispatch.
+ """
     try:
         return QueryMode(raw)
     except ValueError:
@@ -802,15 +802,15 @@ def _coerce_mode(raw: str) -> QueryMode:
 def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]:
     """Translate `QueryResponse.sources` into the public chunk-ref DTO.
 
-    `score` is not surfaced on the engine's `SourceReference` today,
-    so we default to 0.0 — the FE renders this as a neutral indicator.
-    Hooking up real BM25 scores requires plumbing them through
-    `KnowledgeQueryProvider`, which is a Phase 2+ concern.
+ `score` is not surfaced on the engine's `SourceReference` today,
+ so we default to 0.0 — the FE renders this as a neutral indicator.
+ Hooking up real BM25 scores requires plumbing them through
+ `KnowledgeQueryProvider`, which is a + concern.
 
-    Phase 4: `artifact_kind` comes from the engine source's
-    `artifact_type` (the indexer's column name for it). Used by
-    evidence-flag detection + the modality-aware checks.
-    """
+ `artifact_kind` comes from the engine source's
+ `artifact_type` (the indexer's column name for it). Used by
+ evidence-flag detection + the modality-aware checks.
+ """
     out: list[RetrievedChunkRefDTO] = []
     for source in getattr(response, "sources", []):
         title = str(getattr(source, "title", "") or "")
@@ -831,14 +831,14 @@ def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]
 
 def _citations_from_response(response: Any) -> list[ValidationCitationDTO]:
     """Project the engine's `SourceReference` list into the local
-    validation citation DTO.
+ validation citation DTO.
 
-    Phase 1's REST endpoint emits the same list as both
-    `retrievedChunks[]` and `citations[]` because the underlying
-    `HybridQueryEngine` doesn't yet distinguish "the chunks that
-    matched" from "the chunks the answer cites." Splitting the two
-    is a Phase 2+ concern (LLM-judge attribution).
-    """
+ 's REST endpoint emits the same list as both
+ `retrievedChunks[]` and `citations[]` because the underlying
+ `HybridQueryEngine` doesn't yet distinguish "the chunks that
+ matched" from "the chunks the answer cites." Splitting the two
+ is a + concern (LLM-judge attribution).
+ """
     out: list[ValidationCitationDTO] = []
     for source in getattr(response, "sources", []):
         out.append(
@@ -857,11 +857,11 @@ def _citations_from_response(response: Any) -> list[ValidationCitationDTO]:
 def _citation_to_dict(citation: ValidationCitationDTO) -> dict[str, Any]:
     """REST schema-friendly camelCase dict.
 
-    The validation service produces dataclasses; the REST adapter
-    converts them to the response Pydantic models. Going through a
-    plain dict here keeps the REST layer the only place that needs
-    to know about CamelModel.
-    """
+ The validation service produces dataclasses; the REST adapter
+ converts them to the response Pydantic models. Going through a
+ plain dict here keeps the REST layer the only place that needs
+ to know about CamelModel.
+ """
     return {
         "artifactId": citation.artifact_id,
         "artifactType": citation.artifact_type,
@@ -876,14 +876,14 @@ def _has_artifact_kind(
     retrieved: list[RetrievedChunkRefDTO], kind_prefix: str,
 ) -> bool:
     """Return True when any retrieved item's artifact_kind starts
-    with the given prefix.
+ with the given prefix.
 
-    Phase 4: honest signal. Reads the `artifact_kind` field
-    surfaced by `_retrieved_chunks_from_response` (Phase 4a). For
-    runs predating that field — `artifact_kind` arrives as None —
-    the function returns False, which matches the historical Phase
-    1 "we don't know" stub behaviour.
-    """
+ honest signal. Reads the `artifact_kind` field
+ surfaced by `_retrieved_chunks_from_response`. For
+ runs predating that field — `artifact_kind` arrives as None —
+ the function returns False, which matches the earlier
+ "we don't know" stub behaviour.
+ """
     for chunk in retrieved:
         kind = chunk.artifact_kind or ""
         if kind.startswith(kind_prefix):
@@ -894,12 +894,12 @@ def _has_artifact_kind(
 def _engine_response_to_raw(response: Any) -> dict[str, Any]:
     """Project the engine response into a JSON-friendly dict.
 
-    Callers asking for `?includeRaw=true` get the full server-side
-    view of the engine result for debugging — citations, related
-    artifacts, graph paths, warnings, mode used. The dict is shallow
-    on purpose; deep introspection of vendor objects is out of
-    Phase 1 scope.
-    """
+ Callers asking for `?includeRaw=true` get the full server-side
+ view of the engine result for debugging — citations, related
+ artifacts, graph paths, warnings, mode used. The dict is shallow
+ on purpose; deep introspection of vendor objects is out of
+ scope.
+ """
     return {
         "answer": response.answer,
         "modeUsed": response.mode_used,
@@ -938,9 +938,9 @@ def _replace_verdict(
     notes: str | None,
 ) -> ValidationResultDTO:
     """Return a new result DTO with `tester_verdict` + `tester_notes`
-    swapped. Avoids `dataclasses.replace` so callers don't have to
-    import dataclasses just to mutate two fields. Frozen dataclasses
-    can't be edited in place — this is the supported pattern."""
+ swapped. Avoids `dataclasses.replace` so callers don't have to
+ import dataclasses just to mutate two fields. Frozen dataclasses
+ can't be edited in place — this is the supported pattern."""
     return ValidationResultDTO(
         result_id=result.result_id,
         test_case_id=result.test_case_id,
@@ -963,7 +963,7 @@ def _replace_run_results(
     results: list[ValidationResultDTO],
 ) -> ValidationRunDTO:
     """Return a new run DTO with `results` swapped. Same field-by-
-    field copy pattern as `_replace_verdict`."""
+ field copy pattern as `_replace_verdict`."""
     return ValidationRunDTO(
         validation_run_id=vrun.validation_run_id,
         validation_set_id=vrun.validation_set_id,
@@ -983,25 +983,25 @@ def _replace_run_results(
 def _render_markdown_report(vrun: ValidationRunDTO) -> str:
     """Compose a Markdown validation report for one terminal run.
 
-    Sections (in order):
-      1. Header — run id, set id, status, timestamps.
-      2. Summary — counters + recommendation + main issues.
-      3. Coverage — by-type / by-priority counts.
-      4. Per-case results — question, status, tester verdict,
-         answer, citations, checks (failed first).
+ Sections (in order):
+ 1. Header — run id, set id, status, timestamps.
+ 2. Summary — counters + recommendation + main issues.
+ 3. Coverage — by-type / by-priority counts.
+ 4. Per-case results — question, status, tester verdict,
+ answer, citations, checks (failed first).
 
-    Render rules:
-      * `executionStatus` and `validationStatus` are surfaced
-        side-by-side; the split is the operator's main signal.
-      * Tester verdicts (when set) appear next to the auto status
-        as `auto: failed → tester: pass` so the override is
-        explicit.
-      * Failed cases bubble to the top of the per-case list (the
-        thing testers want to act on).
-      * Long content is hard-wrapped to ~120 cols where reasonable;
-        we don't actually re-wrap user-provided text — that's the
-        producer's responsibility.
-    """
+ Render rules:
+ * `executionStatus` and `validationStatus` are surfaced
+ side-by-side; the split is the operator's main signal.
+ * Tester verdicts (when set) appear next to the auto status
+ as `auto: failed → tester: pass` so the override is
+ explicit.
+ * Failed cases bubble to the top of the per-case list (the
+ thing testers want to act on).
+ * Long content is hard-wrapped to ~120 cols where reasonable;
+ we don't actually re-wrap user-provided text — that's the
+ producer's responsibility.
+ """
     lines: list[str] = []
     lines.append(f"# Validation Report — {vrun.validation_run_id}")
     lines.append("")
@@ -1136,11 +1136,11 @@ def _inconclusive_response(
 ) -> ManualTestQueryResponseDTO:
     """Build a response for the engine-failure path.
 
-    `validation_status` is `inconclusive` (not `failed`) so the FE
-    renders this as "couldn't determine" rather than "the document
-    doesn't answer the question." Operators shouldn't act on a
-    failed deterministic check that didn't actually run.
-    """
+ `validation_status` is `inconclusive` (not `failed`) so the FE
+ renders this as "couldn't determine" rather than "the document
+ doesn't answer the question." Operators shouldn't act on a
+ failed deterministic check that didn't actually run.
+ """
     failure_check = ValidationCheckDTO(
         name="engine_invocation",
         severity="required",

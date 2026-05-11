@@ -1,17 +1,17 @@
-"""Phase 4 modality tests: skip gate, modality cases, modality
+""" modality tests: skip gate, modality cases, modality
 checks, honest evidence flags.
 
 Layout:
-  * Generator emits the right modality cases when artifacts exist
-    (and skips when they don't).
-  * Runner skips modality cases when matching artifacts are absent
-    (defense-in-depth — generator already gates upstream).
-  * `expected_artifact_retrieved` + `expected_graph_evidence`
-    checks fire correctly.
-  * Service-side wiring partitions modality artifacts and threads
-    them to the generator.
-  * Manual-query path's `evidence_flags` reflects the retrieved
-    artifact_kinds honestly.
+ * Generator emits the right modality cases when artifacts exist
+ (and skips when they don't).
+ * Runner skips modality cases when matching artifacts are absent
+ (defense-in-depth — generator already gates upstream).
+ * `expected_artifact_retrieved` + `expected_graph_evidence`
+ checks fire correctly.
+ * Service-side wiring partitions modality artifacts and threads
+ them to the generator.
+ * Manual-query path's `evidence_flags` reflects the retrieved
+ artifact_kinds honestly.
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def _stage_artifact(
     extra_metadata: dict | None = None,
 ) -> ArtifactRecord:
     """Stage an artifact of the requested kind. Used to construct
-    table / visual / graph fixtures for the modality tests."""
+ table / visual / graph fixtures for the modality tests."""
     area_dir = workspace.area(ctx, WorkspaceArea.ENRICHED)
     area_dir.mkdir(parents=True, exist_ok=True)
     stored = f"{artifact_id}.json"
@@ -151,7 +151,7 @@ def _stage_artifact(
 
 def test_generator_emits_table_case_when_table_artifact_present():
     """One table → one table case with expected_artifacts pointing
-    at it. Question text is deterministic (regression-friendly)."""
+ at it. Question text is deterministic (regression-friendly)."""
     table = ArtifactRecord(
         artifact_id="art-table-1",
         project=None,  # type: ignore[arg-type] — projector not exercised
@@ -238,8 +238,8 @@ def test_generator_emits_image_and_graph_cases():
 
 def test_generator_modality_caps_respect_options():
     """`max_table_cases` (etc.) bound how many cases per modality
-    even when more artifacts exist. Defends against tester input
-    that would inflate the case count."""
+ even when more artifacts exist. Defends against tester input
+ that would inflate the case count."""
     tables = [
         ArtifactRecord(
             artifact_id=f"art-table-{i}", project=None,  # type: ignore[arg-type]
@@ -271,8 +271,8 @@ def test_generator_modality_caps_respect_options():
 
 def test_generator_max_table_cases_zero_disables_tables():
     """A tester can switch off a modality entirely via the per-
-    modality cap. Lets a small budget skip modality cases without
-    affecting smoke + chunks."""
+ modality cap. Lets a small budget skip modality cases without
+ affecting smoke + chunks."""
     tables = [
         ArtifactRecord(
             artifact_id="t-1", project=None,  # type: ignore[arg-type]
@@ -305,8 +305,8 @@ def test_runner_skips_table_case_when_run_has_no_tables(
     artifact_registry, query_engine, ctx,
 ):
     """Imported set targets a table modality the run lacks. Result
-    is `skipped` with a reason; run aggregates without counting
-    the skip toward `failed`."""
+ is `skipped` with a reason; run aggregates without counting
+ the skip toward `failed`."""
     runner = DefaultValidationRunner(
         query_engine=query_engine,
         artifact_registry=artifact_registry,
@@ -346,8 +346,8 @@ def test_runner_runs_table_case_when_table_artifact_present(
     workspace, ctx, artifact_registry, query_engine,
 ):
     """When the run has a matching artifact, the gate is open and
-    the case executes normally (passes/fails on the actual checks
-    rather than skipping)."""
+ the case executes normally (passes/fails on the actual checks
+ rather than skipping)."""
     _stage_artifact(
         workspace, ctx, artifact_registry,
         artifact_id="art-table-1", kind="enriched.tables",
@@ -392,8 +392,8 @@ def test_expected_artifact_retrieved_passes_when_artifact_found(
     workspace, ctx, artifact_registry, query_engine, indexer,
 ):
     """End-to-end: the table artifact is FTS-indexed under the
-    target run, the case names it as expected, retrieval surfaces
-    it, the new check passes."""
+ target run, the case names it as expected, retrieval surfaces
+ it, the new check passes."""
     # Stage + INDEX a table artifact so retrieval can find it.
     _stage_artifact(
         workspace, ctx, artifact_registry,
@@ -437,8 +437,8 @@ def test_expected_artifact_retrieved_fails_when_artifact_missing(
     workspace, ctx, artifact_registry, query_engine,
 ):
     """The case names an artifact that exists in the run (so the
-    skip gate doesn't fire) but isn't retrievable for the
-    question. Required check fails → run is `failed`."""
+ skip gate doesn't fire) but isn't retrievable for the
+ question. Required check fails → run is `failed`."""
     _stage_artifact(
         workspace, ctx, artifact_registry,
         artifact_id="art-table-1", kind="enriched.tables",
@@ -483,8 +483,8 @@ def test_service_partitions_modality_artifacts_to_generator(
     service, run_store, ctx, workspace, artifact_registry,
 ):
     """The service builds the three modality lists and threads them
-    to the generator. Verify the resulting set has cases of all
-    three modalities."""
+ to the generator. Verify the resulting set has cases of all
+ three modalities."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_artifact(
         workspace, ctx, artifact_registry,
@@ -518,8 +518,8 @@ def test_service_metadata_surfaces_modality_counts(
     service, run_store, ctx, workspace, artifact_registry,
 ):
     """The set's metadata exposes modality artifact counts so the
-    FE can render 'N tables surveyed' subtitles without
-    re-counting."""
+ FE can render 'N tables surveyed' subtitles without
+ re-counting."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_artifact(
         workspace, ctx, artifact_registry,
@@ -541,8 +541,8 @@ def test_manual_query_evidence_flags_reflect_artifact_kinds(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """When retrieval surfaces a table artifact, `tablesUsed`
-    flips to True. Phase 1's stub returned False unconditionally;
-    Phase 4 makes it honest."""
+ flips to True. 's stub returned False unconditionally;
+ makes it honest."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_artifact(
         workspace, ctx, artifact_registry,
@@ -567,9 +567,9 @@ def test_manual_query_evidence_flags_default_to_false(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """No modality artifacts retrieved → all three flags False.
-    Honest negative — locks the contract that `False` means
-    'we can confirm this modality wasn't used,' not 'we don't
-    know.'"""
+ Honest negative — locks the contract that `False` means
+ 'we can confirm this modality wasn't used,' not 'we don't
+ know.'"""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     # Stage a regular chunk artifact (NOT table/visual/graph kind).
     area = WorkspaceArea.COMPILED

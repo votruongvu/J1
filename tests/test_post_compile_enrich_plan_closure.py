@@ -1,24 +1,24 @@
-"""Wave 5 closure tests.
+""" closure tests.
 
 Pins the spec-required surface on `PostCompileEnrichPlan` that
 landed in this slice:
 
-  * `should_enrich` boolean property.
-  * `confidence` derivation (1.0 SKIP / 0.85 policy-driven /
-    0.75 strong-signals / 0.5 ambiguous).
-  * `expected_outputs` mapping from recommended_tasks.
-  * `require_enrichment_success` sourced from domain policy.
-  * `model_tier_selection` + `concurrency_hints` sourced from
-    domain policy.
-  * `warnings` field — distinct from `reasons` + `blocking_issues`.
-  * Decision criteria:
-      - low compile quality biases OPTIONAL → RECOMMENDED.
-      - low parser score biases OPTIONAL → RECOMMENDED.
-      - compile warnings present → recorded + biases up.
-  * Wave 4 bridge: `build_signals_from_normalized_compile_result`
-    feeds the assessor with the typed compile result.
-  * Round-trip through `to_payload` / `from_payload` preserves
-    every closure field.
+ * `should_enrich` boolean property.
+ * `confidence` derivation (1.0 SKIP / 0.85 policy-driven /
+ 0.75 strong-signals / 0.5 ambiguous).
+ * `expected_outputs` mapping from recommended_tasks.
+ * `require_enrichment_success` sourced from domain policy.
+ * `model_tier_selection` + `concurrency_hints` sourced from
+ domain policy.
+ * `warnings` field — distinct from `reasons` + `blocking_issues`.
+ * Decision criteria:
+ - low compile quality biases OPTIONAL → RECOMMENDED.
+ - low parser score biases OPTIONAL → RECOMMENDED.
+ - compile warnings present → recorded + biases up.
+ * bridge: `build_signals_from_normalized_compile_result`
+ feeds the assessor with the typed compile result.
+ * Round-trip through `to_payload` / `from_payload` preserves
+ every closure field.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def test_confidence_is_1_for_blocking_skip():
 
 def test_confidence_is_high_when_domain_policy_drove_decision():
     """policy=always → confidence reflects the deliberate operator
-    choice. 0.85 is the pinned value."""
+ choice. 0.85 is the pinned value."""
     plan = assess_post_compile_enrich(
         _good_signals(), domain_pack=build_civil_engineering_pack(),
     )
@@ -100,7 +100,7 @@ def test_confidence_is_high_when_domain_policy_drove_decision():
 
 def test_confidence_lifts_when_strong_signals_back_recommendation():
     """No domain policy, but tables/images make RECOMMENDED clearly
-    justified. 0.75 is the pinned value."""
+ justified. 0.75 is the pinned value."""
     plan = assess_post_compile_enrich(
         _good_signals(has_tables=True, table_count=3),
     )
@@ -126,7 +126,7 @@ def test_expected_outputs_maps_table_enrichment_to_enriched_tables():
 
 def test_expected_outputs_maps_image_tasks_to_visuals_dedup():
     """image_captioning + vision_enrichment both produce
-    `enriched.visuals` — the projection deduplicates."""
+ `enriched.visuals` — the projection deduplicates."""
     plan = assess_post_compile_enrich(
         _good_signals(has_images=True, image_count=1),
     )
@@ -143,7 +143,7 @@ def test_expected_outputs_includes_civil_force_tasks():
 
 def test_expected_outputs_empty_when_no_tasks_recommended():
     """No-domain SKIP on failed compile → no tasks → no expected
-    outputs."""
+ outputs."""
     plan = assess_post_compile_enrich(SourceSignals(compile_status="failed"))
     assert plan.expected_outputs == ()
 
@@ -207,7 +207,7 @@ def test_warnings_carries_scanned_pages_caveat():
 
 def test_warnings_distinct_from_reasons_and_blocking_issues():
     """`warnings` is non-blocking caveat surface. Reasons explain
-    the verdict; blocking_issues lock SKIP. Three separate fields."""
+ the verdict; blocking_issues lock SKIP. Three separate fields."""
     plan = assess_post_compile_enrich(SourceSignals(compile_status="failed"))
     # blocking_issues populated (terminal SKIP), warnings empty for
     # this case (no parser warnings, no scanned pages).
@@ -221,8 +221,8 @@ def test_warnings_distinct_from_reasons_and_blocking_issues():
 
 def test_low_compile_quality_lifts_optional_to_recommended():
     """No tables/images, no domain pack — would normally be OPTIONAL.
-    With low quality, the assessor should bias up to RECOMMENDED so
-    enrichment can add retrieval-friendly metadata."""
+ With low quality, the assessor should bias up to RECOMMENDED so
+ enrichment can add retrieval-friendly metadata."""
     plan = assess_post_compile_enrich(
         _good_signals(final_compile_quality="low"),
     )
@@ -232,8 +232,8 @@ def test_low_compile_quality_lifts_optional_to_recommended():
 
 def test_low_parser_score_triggers_quality_assessment_even_when_quality_good():
     """`final_compile_quality=good` but parse_quality_score<0.5 is
-    a concrete degraded-extraction signal — assessor still adds
-    quality_assessment."""
+ a concrete degraded-extraction signal — assessor still adds
+ quality_assessment."""
     plan = assess_post_compile_enrich(
         _good_signals(parse_quality_score=0.35),
     )
@@ -243,8 +243,8 @@ def test_low_parser_score_triggers_quality_assessment_even_when_quality_good():
 
 def test_compile_warnings_bias_optional_to_recommended():
     """Compile warnings = degraded extraction signal even without
-    low-quality verdict or low scores. Bias up so enrichment can
-    add retrieval-friendly metadata."""
+ low-quality verdict or low scores. Bias up so enrichment can
+ add retrieval-friendly metadata."""
     plan = assess_post_compile_enrich(
         _good_signals(compile_warnings=("page-3 partial", "ocr fallback")),
     )
@@ -252,7 +252,7 @@ def test_compile_warnings_bias_optional_to_recommended():
     assert any("warning" in r.lower() for r in plan.reasons)
 
 
-# ---- Wave 4 bridge --------------------------------------------------
+# ---- bridge --------------------------------------------------
 
 
 def test_build_signals_from_normalized_compile_result_projects_quality():

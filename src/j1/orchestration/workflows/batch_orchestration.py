@@ -11,29 +11,29 @@ in-flight children.
 
 Design notes:
 
-  * Each child workflow_id is constructed by the REST endpoint and
-    handed to the parent in a `ChildSpec`. Keeping ID construction
-    on the REST side means the deterministic `j1-{tenant}-{project}-
-    {document_id}` derivation lives in one place — the parent just
-    forwards the id to `execute_child_workflow`.
+ * Each child workflow_id is constructed by the REST endpoint and
+ handed to the parent in a `ChildSpec`. Keeping ID construction
+ on the REST side means the deterministic `j1-{tenant}-{project}-
+ {document_id}` derivation lives in one place — the parent just
+ forwards the id to `execute_child_workflow`.
 
-  * `failure_policy` controls whether a child failure halts the
-    batch or continues to the next. Default is `"continue"` because
-    a flaky single doc shouldn't block the rest of an operator's
-    upload. `"halt"` is the safer choice for batches where every
-    document is required.
+ * `failure_policy` controls whether a child failure halts the
+ batch or continues to the next. Default is `"continue"` because
+ a flaky single doc shouldn't block the rest of an operator's
+ upload. `"halt"` is the safer choice for batches where every
+ document is required.
 
-  * Status aggregation is read-side, not parent-side. The existing
-    `derive_batch_status` helper queries each child's run record;
-    the parent doesn't track child statuses itself. This keeps the
-    parent dumb (and Temporal payloads small).
+ * Status aggregation is read-side, not parent-side. The existing
+ `derive_batch_status` helper queries each child's run record;
+ the parent doesn't track child statuses itself. This keeps the
+ parent dumb (and Temporal payloads small).
 
-  * Cancellation: operators send the cancel signal; the parent flips
-    `_cancelled`, refuses to start any further children, and lets
-    the in-flight child finish (Temporal's default
-    `ParentClosePolicy.TERMINATE` is overridden to
-    `REQUEST_CANCEL` per child so the in-flight workflow gets a
-    proper cancellation signal rather than a hard kill).
+ * Cancellation: operators send the cancel signal; the parent flips
+ `_cancelled`, refuses to start any further children, and lets
+ the in-flight child finish (Temporal's default
+ `ParentClosePolicy.TERMINATE` is overridden to
+ `REQUEST_CANCEL` per child so the in-flight workflow gets a
+ proper cancellation signal rather than a hard kill).
 """
 
 from __future__ import annotations
@@ -65,15 +65,15 @@ BATCH_FAILURE_POLICY_CONTINUE = "continue"
 class BatchChildSpec:
     """One child workflow's launch parameters.
 
-    The REST endpoint builds N of these — one per uploaded file —
-    and hands them to the parent. The parent forwards them as-is
-    to `execute_child_workflow`.
+ The REST endpoint builds N of these — one per uploaded file —
+ and hands them to the parent. The parent forwards them as-is
+ to `execute_child_workflow`.
 
-    `workflow_id` is the deterministic per-document id the existing
-    `make_per_document_starter` would have used; constructing it on
-    the REST side keeps the `j1-{tenant}-{project}-{document_id}`
-    derivation in one place.
-    """
+ `workflow_id` is the deterministic per-document id the existing
+ `make_per_document_starter` would have used; constructing it on
+ the REST side keeps the `j1-{tenant}-{project}-{document_id}`
+ derivation in one place.
+ """
 
     workflow_id: str
     document_id: str
@@ -89,8 +89,8 @@ class BatchChildSpec:
 @dataclass(frozen=True)
 class BatchOrchestrationRequest:
     """Parent workflow input. `batch_run_id` is the operator-facing
-    identifier (also the Temporal `workflow_id` of the parent — see
-    REST construction). `child_specs` are launched in list order."""
+ identifier (also the Temporal `workflow_id` of the parent — see
+ REST construction). `child_specs` are launched in list order."""
 
     scope: ProjectScope
     batch_run_id: str
@@ -102,8 +102,8 @@ class BatchOrchestrationRequest:
 @dataclass(frozen=True)
 class BatchOrchestrationResult:
     """Aggregate outcome reported back to Temporal. Intentionally
-    minimal — readers should query the per-child run records via the
-    REST run-list surface for full status."""
+ minimal — readers should query the per-child run records via the
+ REST run-list surface for full status."""
 
     batch_run_id: str
     file_count: int
@@ -118,11 +118,11 @@ class BatchOrchestrationResult:
 class BatchOrchestrationWorkflow:
     """Sequential dispatcher for an ingestion batch.
 
-    One instance per `POST /ingestion-batches` call. Lives for the
-    duration of the batch. Listens for a `cancel` signal so operators
-    can stop the batch mid-flight; in-flight children get a proper
-    Temporal cancellation, not a hard kill.
-    """
+ One instance per `POST /ingestion-batches` call. Lives for the
+ duration of the batch. Listens for a `cancel` signal so operators
+ can stop the batch mid-flight; in-flight children get a proper
+ Temporal cancellation, not a hard kill.
+ """
 
     def __init__(self) -> None:
         self._cancelled: bool = False
@@ -130,11 +130,11 @@ class BatchOrchestrationWorkflow:
     @workflow.signal
     def cancel(self) -> None:
         """Operator-initiated stop. The current child (if any) keeps
-        running because Temporal's child cancellation is requested
-        at dispatch boundary in v1; future iterations may add
-        per-child cancel signals to interrupt in-flight workflows
-        too. Setting the flag here prevents any further children
-        from launching."""
+ running because Temporal's child cancellation is requested
+ at dispatch boundary in v1; future iterations may add
+ per-child cancel signals to interrupt in-flight workflows
+ too. Setting the flag here prevents any further children
+ from launching."""
         self._cancelled = True
 
     @workflow.run

@@ -71,29 +71,29 @@ doesn't belong in core.
 A domain module is a Python package that *uses* J1, not a fork.
 
 ```
-example_domain/                          # your package
-├── pyproject.toml                       # depends on j1[raganything], etc.
+example_domain/ # your package
+├── pyproject.toml # depends on j1[raganything], etc.
 ├── src/example_domain/
-│   ├── __init__.py
-│   ├── enrichers.py                     # custom EnrichmentProcessor implementations
-│   ├── providers/                       # custom compiler / graph / retrieval adapters
-│   │   └── special_compiler.py
-│   ├── llm/                             # custom LLM clients (if needed)
-│   │   └── special_client.py
-│   ├── prompts/                         # source of truth for prompt content
-│   │   └── extract.md
-│   ├── profiles/
-│   │   └── example/                     # one profile directory per workload
-│   │       ├── profile.yaml
-│   │       ├── graph_taxonomy.yaml
-│   │       ├── query_routing.yaml
-│   │       ├── review_rules.yaml
-│   │       ├── prompts/                 # uses files copied from ../../../prompts/
-│   │       ├── schemas/
-│   │       └── report_templates/
-│   ├── workflows.py                     # any custom workflows (if you extend Temporal)
-│   ├── compose.py                       # Bootstrap helper that wires your providers in
-│   └── tests/
+│ ├── __init__.py
+│ ├── enrichers.py # custom EnrichmentProcessor implementations
+│ ├── providers/ # custom compiler / graph / retrieval adapters
+│ │ └── special_compiler.py
+│ ├── llm/ # custom LLM clients (if needed)
+│ │ └── special_client.py
+│ ├── prompts/ # source of truth for prompt content
+│ │ └── extract.md
+│ ├── profiles/
+│ │ └── example/ # one profile directory per workload
+│ │ ├── profile.yaml
+│ │ ├── graph_taxonomy.yaml
+│ │ ├── query_routing.yaml
+│ │ ├── review_rules.yaml
+│ │ ├── prompts/ # uses files copied from../../../prompts/
+│ │ ├── schemas/
+│ │ └── report_templates/
+│ ├── workflows.py # any custom workflows (if you extend Temporal)
+│ ├── compose.py # Bootstrap helper that wires your providers in
+│ └── tests/
 └── README.md
 ```
 
@@ -111,25 +111,25 @@ suite).
 The dependency arrow points strictly **outward from J1 core**:
 
 ```
-   ┌───────────────────────────────────────────┐
-   │  Deployment glue (uvicorn, secrets, …)    │   may import everything below
-   └────────────────────┬──────────────────────┘
-                        │
-   ┌────────────────────▼──────────────────────┐
-   │  Domain module (example_domain)           │   may import j1 + your providers
-   └────────────────────┬──────────────────────┘
-                        │
-   ┌────────────────────▼──────────────────────┐
-   │  J1 outer adapters (j1.adapters.*)        │   may import j1.integration + j1.<core>
-   └────────────────────┬──────────────────────┘
-                        │
-   ┌────────────────────▼──────────────────────┐
-   │  J1 integration boundary (j1.integration) │   may import j1.<core>
-   └────────────────────┬──────────────────────┘
-                        │
-   ┌────────────────────▼──────────────────────┐
-   │  J1 core (j1.processing, j1.intake, …)    │   may import nothing above
-   └───────────────────────────────────────────┘
+ ┌───────────────────────────────────────────┐
+ │ Deployment glue (uvicorn, secrets, …) │ may import everything below
+ └────────────────────┬──────────────────────┘
+ │
+ ┌────────────────────▼──────────────────────┐
+ │ Domain module (example_domain) │ may import j1 + your providers
+ └────────────────────┬──────────────────────┘
+ │
+ ┌────────────────────▼──────────────────────┐
+ │ J1 outer adapters (j1.adapters.*) │ may import j1.integration + j1.<core>
+ └────────────────────┬──────────────────────┘
+ │
+ ┌────────────────────▼──────────────────────┐
+ │ J1 integration boundary (j1.integration) │ may import j1.<core>
+ └────────────────────┬──────────────────────┘
+ │
+ ┌────────────────────▼──────────────────────┐
+ │ J1 core (j1.processing, j1.intake, …) │ may import nothing above
+ └───────────────────────────────────────────┘
 ```
 
 J1 core does NOT import from your domain module. Tests in
@@ -152,9 +152,9 @@ A domain module typically owns:
 - **Query routing** — keyword → mode hints for the intent classifier
 - **Review rules** — patterns that escalate findings to human review
 - **Prompts** — stage-keyed prompt templates consumed by your
-  enrichers / model-provider callers
+ enrichers / model-provider callers
 - **Schemas** — JSON Schemas the connectors / enrichers validate
-  against
+ against
 - **Report templates** — template files for the `ReportGenerator`
 
 To register your profile location:
@@ -163,8 +163,8 @@ To register your profile location:
 from j1 import ProfileLoader
 
 loader = ProfileLoader(search_paths=[
-    Path("/etc/example_domain/profiles"),
-    Path(__file__).parent / "profiles",
+ Path("/etc/example_domain/profiles"),
+ Path(__file__).parent / "profiles",
 ])
 profile = loader.load("example")
 ```
@@ -180,13 +180,13 @@ Your domain profile is the source of vertical-specific configuration
 Your domain module's tests should:
 
 - Use J1's hermetic fixtures (`tmp_path`, `make_test_environment`,
-  per-domain `ProjectContext`s).
+ per-domain `ProjectContext`s).
 - Test the domain module's enrichers + providers in isolation, plus
-  one end-to-end flow that exercises the J1 pipeline with your
-  configuration.
+ one end-to-end flow that exercises the J1 pipeline with your
+ configuration.
 - Never mutate `src/j1/`. If a test needs to modify J1 behaviour,
-  it's a sign that the seam is missing — open an issue against J1
-  to add the seam, don't patch the import path.
+ it's a sign that the seam is missing — open an issue against J1
+ to add the seam, don't patch the import path.
 
 J1 itself enforces:
 
@@ -203,7 +203,7 @@ domain module's CI if you have one.
 | Rule | Reason |
 |---|---|
 | **No industry vocabulary in `src/j1/`** (no `civil`, no `legal`, no `clinical`, no `<industry>_<thing>`, no customer names) | A new deployment for a different industry must not need a fork. |
-| **No phase-based names** (`phase1`, `phrase`, `step3`, `intro`, `final` — when used as core concepts) | "Phase" implies a workflow shape that may not match a deployment's reality. |
+| **No phase-based names** (``, `phrase`, `step3`, `intro`, `final` — when used as core concepts) | "Phase" implies a workflow shape that may not match a deployment's reality. |
 | **No vendor names in core paths** (no `j1.openai`, no `j1.langchain`, no `j1.raganything` outside `j1.providers/`) | Vendors belong behind providers; promoting them to core paths leaks the choice. |
 | **Use `kind` strings, not Python types, for dispatch** | Allows pluggability via configuration; documented in core. |
 | **`kb:*` is the canonical scope namespace for the J1 surface** | Used by the security layer; domain modules can introduce their own scopes for their own routes. |
@@ -217,30 +217,30 @@ These are encouraged ways to extend J1 without crossing the
 isolation line:
 
 - **Add a provider** under `j1.providers.<name>/` (or in your own
-  package — see [`add-a-provider.md`](add-a-provider.md)).
+ package — see [`add-a-provider.md`](add-a-provider.md)).
 - **Add an enricher** by implementing `EnrichmentProcessor` in your
-  domain module and registering it in your worker's processor map.
+ domain module and registering it in your worker's processor map.
 - **Add a `DomainPolicy`** (extension surface) — implement
-  [`j1.extension.contracts.DomainPolicy`](../../src/j1/extension/contracts.py)
-  and register it in the
-  [`CapabilityRegistry`](../../src/j1/extension/registry.py). The
-  three hooks (`should_index` / `requires_review` / `redact`) cover
-  the common indexing-filter / review-gate / output-redaction needs
-  without core code changes.
+ [`j1.extension.contracts.DomainPolicy`](../../src/j1/extension/contracts.py)
+ and register it in the
+ [`CapabilityRegistry`](../../src/j1/extension/registry.py). The
+ three hooks (`should_index` / `requires_review` / `redact`) cover
+ the common indexing-filter / review-gate / output-redaction needs
+ without core code changes.
 - **Add a profile** with vertical-specific taxonomy / prompts /
-  report templates.
+ report templates.
 - **Add an LLM client** under `j1.llm.<vendor>/` (or in your own
-  package via `register_trusted_prefix`) implementing the role
-  protocols.
+ package via `register_trusted_prefix`) implementing the role
+ protocols.
 - **Add a transport adapter** under `j1.adapters.<name>/` (or in your
-  own package) that maps a transport's request → an
-  `ApplicationFacade` port call. See
-  [`docs/external-integration-architecture.md`](../external-integration-architecture.md)
-  § 6.
+ own package) that maps a transport's request → an
+ `ApplicationFacade` port call. See
+ [`docs/external-integration-architecture.md`](../external-integration-architecture.md)
+ § 6.
 - **Override a default bridge** via env-driven processor hooks
-  (`J1_RAGANYTHING_*_PROCESSOR`, `J1_GRAPHIFY_GRAPH_PROCESSOR`).
+ (`J1_RAGANYTHING_*_PROCESSOR`, `J1_GRAPHIFY_GRAPH_PROCESSOR`).
 - **Compose a custom worker** with your own activity registries
-  passed into `Bootstrap`.
+ passed into `Bootstrap`.
 
 ---
 
@@ -249,21 +249,21 @@ isolation line:
 These will be rejected in code review:
 
 - Adding industry vocabulary or customer names to a J1 core module
-  (anything under `src/j1/` excluding `src/j1/profiles/`).
+ (anything under `src/j1/` excluding `src/j1/profiles/`).
 - Importing your domain module from anywhere in `src/j1/`.
 - Adding a vendor SDK import (`import openai`, `import langchain`,
-  `import raganything`) outside `src/j1/llm/<vendor>.py`,
-  `src/j1/providers/<vendor>/`, or `src/j1/adapters/<vendor>/`.
+ `import raganything`) outside `src/j1/llm/<vendor>.py`,
+ `src/j1/providers/<vendor>/`, or `src/j1/adapters/<vendor>/`.
 - Hardcoding a profile name (other than `default`) in core.
 - Adding domain-specific routes to `src/j1/adapters/rest/` —
-  domain HTTP routes belong in your own ASGI app that *also* mounts
-  J1's `create_rest_api(...)`.
+ domain HTTP routes belong in your own ASGI app that *also* mounts
+ J1's `create_rest_api(...)`.
 - Adding `kb:<vertical>` scopes to
-  [`src/j1/integration/security/scopes.py`](../../src/j1/integration/security/scopes.py)
-  — domain-specific scopes live in your domain module's scope
-  catalogue.
+ [`src/j1/integration/security/scopes.py`](../../src/j1/integration/security/scopes.py)
+ — domain-specific scopes live in your domain module's scope
+ catalogue.
 - Polluting the bundled `default` profile with anything other than
-  empty / generic placeholders.
+ empty / generic placeholders.
 
 ---
 
@@ -272,10 +272,9 @@ These will be rejected in code review:
 **Wrong** — adding a domain enricher to `src/j1/enrichers.py`:
 
 ```python
-# src/j1/enrichers.py  ← DO NOT DO THIS
-class ContractClauseExtractor(_StructuredEnricher):   # legal-specific
-    OUTPUT_KIND = "enriched.legal.clauses"
-    ...
+# src/j1/enrichers.py ← DO NOT DO THIS
+class ContractClauseExtractor(_StructuredEnricher): # legal-specific
+ OUTPUT_KIND = "enriched.legal.clauses"...
 ```
 
 **Right** — adding a domain enricher in your domain module:
@@ -285,16 +284,15 @@ class ContractClauseExtractor(_StructuredEnricher):   # legal-specific
 from j1.enrichers import _StructuredEnricher
 
 class ExampleClauseExtractor(_StructuredEnricher):
-    OUTPUT_KIND = "enriched.example.clauses"
-    ...
+ OUTPUT_KIND = "enriched.example.clauses"...
 
 # example_domain/compose.py
 from j1.compose import Bootstrap
 from example_domain.enrichers import ExampleClauseExtractor
 
 result = Bootstrap(
-    enrichers={ExampleClauseExtractor.kind: ExampleClauseExtractor(...)},
-).build()
+ enrichers={ExampleClauseExtractor.kind: ExampleClauseExtractor(...)},
+).build
 ```
 
 The framework gets none of the legal-specific knowledge; the
@@ -305,13 +303,13 @@ deployment is the only place where the two concerns meet.
 ## 12. Cross-references
 
 - [`docs/architecture.md`](../architecture.md) — the protocols
-  + workspace + workflow shapes domain modules build against
+ + workspace + workflow shapes domain modules build against
 - [`docs/extension/add-a-provider.md`](add-a-provider.md) — the
-  provider-shape recipe
+ provider-shape recipe
 - [`docs/providers.md`](../providers.md) — bundled provider
-  configuration; the same shape applies to your own
+ configuration; the same shape applies to your own
 - [`src/j1/profiles/default/`](../../src/j1/profiles/default/) —
-  reference for the profile directory shape
+ reference for the profile directory shape
 - [`src/j1/llm/classloader.py`](../../src/j1/llm/classloader.py) —
-  `register_trusted_prefix` for safely loading callables from your
-  domain module
+ `register_trusted_prefix` for safely loading callables from your
+ domain module

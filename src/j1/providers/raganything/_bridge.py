@@ -8,26 +8,26 @@ normalises the vendor's outputs back into J1
 
 Targeted vendor surface (HKUDS/RAGAnything 1.x):
 
-  from raganything import RAGAnything, RAGAnythingConfig
-  rag = RAGAnything(
-      config=RAGAnythingConfig(working_dir=..., ...),
-      llm_model_func=<callable(prompt, **kw) -> str>,
-      vision_model_func=<callable(prompt, image_data, **kw) -> str>,
-      embedding_func=<callable(texts) -> list[list[float]]>,
-  )
-  await rag.process_document_complete(file_path=..., output_dir=..., parse_method=settings.parse_method)
-  result = await rag.aquery("question", mode="hybrid")
+ from raganything import RAGAnything, RAGAnythingConfig
+ rag = RAGAnything(
+ config=RAGAnythingConfig(working_dir=...,...),
+ llm_model_func=<callable(prompt, **kw) -> str>,
+ vision_model_func=<callable(prompt, image_data, **kw) -> str>,
+ embedding_func=<callable(texts) -> list[list[float]]>,
+ )
+ await rag.process_document_complete(file_path=..., output_dir=..., parse_method=settings.parse_method)
+ result = await rag.aquery("question", mode="hybrid")
 
 Defensiveness:
-  * Vendor `import` failures → ProviderUnavailable("install raganything").
-  * Missing `RAGAnythingConfig` → falls back to passing a kwargs dict
-    to the `RAGAnything` constructor.
-  * Missing `process_document_complete` → ProviderUnavailable that
-    names the missing attribute + suggests the processor-hook override.
-  * Async-loop conflict (e.g. running inside a Temporal workflow) →
-    same — ProviderUnavailable with the override hint.
-  * Unknown output structure → walks the output dir and emits one
-    ArtifactDraft per readable text file.
+ * Vendor `import` failures → ProviderUnavailable("install raganything").
+ * Missing `RAGAnythingConfig` → falls back to passing a kwargs dict
+ to the `RAGAnything` constructor.
+ * Missing `process_document_complete` → ProviderUnavailable that
+ names the missing attribute + suggests the processor-hook override.
+ * Async-loop conflict (e.g. running inside a Temporal workflow) →
+ same — ProviderUnavailable with the override hint.
+ * Unknown output structure → walks the output dir and emits one
+ ArtifactDraft per readable text file.
 
 This keeps the framework's "vendor objects never leak past the
 adapter" rule: only J1 canonical types come out of the functions
@@ -104,10 +104,10 @@ _NATIVE_TEXT_EXTENSIONS = frozenset({
 
 class _LibreOfficeConversionError(RuntimeError):
     """Raised when soffice subprocess fails for a known runtime reason
-    (non-zero exit, no output produced, timeout). Caught at the
-    `default_compile` boundary and surfaced as a FAILED result.
-    Distinct from `ProviderUnavailable`, which is reserved for the
-    "binary not installed" infrastructure case."""
+ (non-zero exit, no output produced, timeout). Caught at the
+ `default_compile` boundary and surfaced as a FAILED result.
+ Distinct from `ProviderUnavailable`, which is reserved for the
+ "binary not installed" infrastructure case."""
 
 
 _HTTP_CLIENT_BACKENDS = frozenset({"vlm-http-client", "hybrid-http-client"})
@@ -115,40 +115,40 @@ _HTTP_CLIENT_BACKENDS = frozenset({"vlm-http-client", "hybrid-http-client"})
 
 def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
     """When `backend` is one of the HTTP-client variants
-    (`vlm-http-client`, `hybrid-http-client`), propagate J1's
-    vision-LLM config into the env vars MinerU's
-    `mineru_vl_utils.MinerUClient` reads at runtime:
-    `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`, `MINERU_VL_MODEL_NAME`,
-    and `MINERU_VL_MAX_CONCURRENCY` (caps the parallel-request
-    fanout — defaults to 1 to protect self-hosted VLM endpoints
-    from OOM under MinerU's default high-fanout pattern).
+ (`vlm-http-client`, `hybrid-http-client`), propagate J1's
+ vision-LLM config into the env vars MinerU's
+ `mineru_vl_utils.MinerUClient` reads at runtime:
+ `MINERU_VL_SERVER`, `MINERU_VL_API_KEY`, `MINERU_VL_MODEL_NAME`,
+ and `MINERU_VL_MAX_CONCURRENCY` (caps the parallel-request
+ fanout — defaults to 1 to protect self-hosted VLM endpoints
+ from OOM under MinerU's default high-fanout pattern).
 
-    Both backend names route VLM requests to the same OpenAI-compatible
-    HTTP server; only the local-computation strategy differs. Either
-    one without `MINERU_VL_SERVER` set crashes with
-    "Environment variable MINERU_VL_SERVER is not set."
+ Both backend names route VLM requests to the same OpenAI-compatible
+ HTTP server; only the local-computation strategy differs. Either
+ one without `MINERU_VL_SERVER` set crashes with
+ "Environment variable MINERU_VL_SERVER is not set."
 
-    The CLI accepts `-u/--vlm-url` for the server URL (we also pass
-    that as a kwarg to the parse call), but the API key and
-    model-name fields have no CLI flag — mineru-vl-utils reads them
-    directly from the environment. Without this propagation the
-    request reaches LM Studio with no Authorization header and an
-    auto-detected model name (which on multi-model servers picks the
-    wrong one).
+ The CLI accepts `-u/--vlm-url` for the server URL (we also pass
+ that as a kwarg to the parse call), but the API key and
+ model-name fields have no CLI flag — mineru-vl-utils reads them
+ directly from the environment. Without this propagation the
+ request reaches LM Studio with no Authorization header and an
+ auto-detected model name (which on multi-model servers picks the
+ wrong one).
 
-    With it, the existing `J1_RAGANYTHING_VLM_HTTP_*` config (already
-    wired for the rest of the stack) is the only thing the operator
-    needs in place — flipping `J1_RAGANYTHING_BACKEND` to either
-    HTTP-client variant is the sole additional change.
+ With it, the existing `J1_RAGANYTHING_VLM_HTTP_*` config (already
+ wired for the rest of the stack) is the only thing the operator
+ needs in place — flipping `J1_RAGANYTHING_BACKEND` to either
+ HTTP-client variant is the sole additional change.
 
-    Idempotent — only sets each env var when (a) the backend is an
-    HTTP-client variant, (b) we have a value, and (c) the operator
-    hasn't already exported the var directly. Operator-supplied
-    `MINERU_VL_*` always wins so existing deployments keep their
-    tuning.
+ Idempotent — only sets each env var when (a) the backend is an
+ HTTP-client variant, (b) we have a value, and (c) the operator
+ hasn't already exported the var directly. Operator-supplied
+ `MINERU_VL_*` always wins so existing deployments keep their
+ tuning.
 
-    No-op when backend is anything else (default `None` lets MinerU
-    pick its own engine and never reads these vars)."""
+ No-op when backend is anything else (default `None` lets MinerU
+ pick its own engine and never reads these vars)."""
     if settings.backend not in _HTTP_CLIENT_BACKENDS:
         return
     # Concurrency cap is propagated as a STRING because env values
@@ -178,12 +178,12 @@ def _apply_vlm_http_client_env(settings: "RAGAnythingSettings") -> None:
 def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingResult:
     """Run a real RAGAnything compile against `request.document_id`.
 
-    Reads the source file, optionally pre-converts via LibreOffice,
-    drives `RAGAnything.process_document_complete()`, and walks the
-    output for ArtifactDrafts. This is the single entry point: J1
-    runs RAGAnything as a single-activity compile (parse + chunk +
-    index together).
-    """
+ Reads the source file, optionally pre-converts via LibreOffice,
+ drives `RAGAnything.process_document_complete`, and walks the
+ output for ArtifactDrafts. This is the single entry point: J1
+ runs RAGAnything as a single-activity compile (parse + chunk +
+ index together).
+ """
     # Bridge the J1 vision LLM config into MinerU's expected env
     # vars when the operator has selected the HTTP-client backend.
     # No-op for the default `auto` parse method.
@@ -273,7 +273,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
         plan_resolved_mode[0] = compile_plan_config.resolved_mode
 
     async def _run_compile():
-        # `_ensure_lightrag_initialized` returns {"success": False, "error": ...}
+        # `_ensure_lightrag_initialized` returns {"success": False, "error":...}
         # on failure WITHOUT raising — and `process_document_complete`
         # then proceeds with `self.lightrag = None`, which blows up
         # later as `'NoneType' object has no attribute 'ainsert'`.
@@ -296,17 +296,17 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             return
 
         # Fast path for text-layer PDFs: skip MinerU entirely when the
-        # document has embedded text on most pages.  MinerU's auto mode
+        # document has embedded text on most pages. MinerU's auto mode
         # runs full layout analysis (layout blocks, OCR, formula /
         # table detection) on every page regardless of content — for a
         # normal text PDF this adds 3–5 minutes of transformer
-        # inference with no benefit.  pypdf text extraction for the
+        # inference with no benefit. pypdf text extraction for the
         # same file completes in < 1 second.
         #
         # We only activate the fast path when:
-        #   * the source is a .pdf (not already-converted other format)
-        #   * at least _PDF_TEXT_THRESHOLD fraction of sampled pages
-        #     have meaningful embedded text  (≥ 20 non-whitespace chars)
+        #  * the source is a.pdf (not already-converted other format)
+        #  * at least _PDF_TEXT_THRESHOLD fraction of sampled pages
+        #  have meaningful embedded text (≥ 20 non-whitespace chars)
         #
         # Complex documents (scanned, image-heavy, table-heavy,
         # equation-heavy) have low text extraction ratios and fall
@@ -389,7 +389,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # IMPORTANT: dispatch onto the process-persistent event loop.
     # `asyncio.run(...)` would create a fresh loop per call and
     # collide with LightRAG's module-level cached `asyncio.Lock`s,
-    # producing `RuntimeError: ... is bound to a different event
+    # producing `RuntimeError:... is bound to a different event
     # loop` on the second compile invocation in the same worker
     # process. See _persistent_loop.py for the full rationale.
     loop = get_persistent_loop()
@@ -400,7 +400,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
         ):
             loop.run_coroutine(_run_compile())
     except RuntimeError as exc:
-        # "asyncio.run() cannot be called from a running event loop"
+        # "asyncio.run cannot be called from a running event loop"
         # used to be the most likely RuntimeError here. We've moved
         # off `asyncio.run` so this branch is mostly historical —
         # leaving the actionable message in case some downstream
@@ -548,15 +548,15 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
 def _cleanup_output_dir(output_dir: Path, *, document_id: str) -> None:
     """Best-effort delete of MinerU's per-document output directory.
 
-    Runs only on the SUCCEEDED compile path. Failed compiles preserve
-    the output_dir so operators can grep through MinerU's intermediate
-    files. Honors `J1_KEEP_FAILED_INGEST_ARTIFACTS` when set to a
-    truthy value: skips even successful-path cleanup, useful when an
-    operator wants to inspect a successful parse's intermediate
-    layout/OCR files.
+ Runs only on the SUCCEEDED compile path. Failed compiles preserve
+ the output_dir so operators can grep through MinerU's intermediate
+ files. Honors `J1_KEEP_FAILED_INGEST_ARTIFACTS` when set to a
+ truthy value: skips even successful-path cleanup, useful when an
+ operator wants to inspect a successful parse's intermediate
+ layout/OCR files.
 
-    Failures are non-fatal — the disposable scratch will eventually
-    get GCd via `docker compose down -v` if nothing else."""
+ Failures are non-fatal — the disposable scratch will eventually
+ get GCd via `docker compose down -v` if nothing else."""
     keep_raw = os.environ.get("J1_KEEP_FAILED_INGEST_ARTIFACTS", "").strip().lower()
     if keep_raw in ("1", "true", "yes", "on"):
         _log.info(
@@ -589,16 +589,16 @@ def _stamp_image_decisions(
 ) -> list[ArtifactDraft]:
     """Annotate image drafts with their per-image triage decision.
 
-    Reads the manifest's `images[]` entries (each carries
-    `image_id` = the relative path under output_dir, and a
-    `decision` of `skip|triage|enrich`). For each draft whose
-    `metadata.relative_path` matches an entry's `image_id`, returns
-    a copy of the draft with `vision_decision`/`vision_role`/
-    `vision_score`/`vision_reason` merged into its metadata.
+ Reads the manifest's `images[]` entries (each carries
+ `image_id` = the relative path under output_dir, and a
+ `decision` of `skip|triage|enrich`). For each draft whose
+ `metadata.relative_path` matches an entry's `image_id`, returns
+ a copy of the draft with `vision_decision`/`vision_role`/
+ `vision_score`/`vision_reason` merged into its metadata.
 
-    Drafts without a matching entry pass through unchanged.
-    `ArtifactDraft` is frozen, so we rebuild rather than mutate.
-    """
+ Drafts without a matching entry pass through unchanged.
+ `ArtifactDraft` is frozen, so we rebuild rather than mutate.
+ """
     if not image_decisions:
         return drafts
     by_image_id: dict[str, dict[str, Any]] = {}
@@ -642,13 +642,13 @@ def _build_manifest_draft(
     compile_stats: dict[str, Any],
 ) -> ArtifactDraft:
     """Wrap the existing compile-stats dict in a canonical
-    `ParsedContentManifest` and return it as an `ArtifactDraft` of
-    kind `ARTIFACT_KIND_PARSED_CONTENT_MANIFEST`.
+ `ParsedContentManifest` and return it as an `ArtifactDraft` of
+ kind `ARTIFACT_KIND_PARSED_CONTENT_MANIFEST`.
 
-    Lazy-imports `j1.processing.manifest` to keep the bridge module
-    importable in environments where the manifest module hasn't
-    landed yet.
-    """
+ Lazy-imports `j1.processing.manifest` to keep the bridge module
+ importable in environments where the manifest module hasn't
+ landed yet.
+ """
     from j1.processing.manifest import manifest_from_compile_stats
 
     manifest_obj = manifest_from_compile_stats(
@@ -678,12 +678,12 @@ def _build_manifest_draft(
 def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessingResult:
     """Run a real RAGAnything graph build over `request.artifact_ids`.
 
-    RAGAnything constructs the knowledge graph as a side-effect of
-    document processing — this function reuses the same pipeline by
-    feeding each artifact path back through `process_document_complete`
-    and then collecting the graph artifacts the vendor writes to its
-    storage dir.
-    """
+ RAGAnything constructs the knowledge graph as a side-effect of
+ document processing — this function reuses the same pipeline by
+ feeding each artifact path back through `process_document_complete`
+ and then collecting the graph artifacts the vendor writes to its
+ storage dir.
+ """
     # Same env bridge as compile — the graph path also drives
     # `process_document_complete` which can re-invoke the VLM
     # backend when the storage dir is regenerated.
@@ -765,13 +765,13 @@ def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
 
 def _resolve_compile_config(request):
     """Map the request's `assessment_plan` (if any) into a
-    `CompileConfig`. Returns None for legacy callers without a plan;
-    the bridge then falls back to `settings.parse_method` and skips
-    config_overrides entirely.
+ `CompileConfig`. Returns None for legacy callers without a plan;
+ the bridge then falls back to `settings.parse_method` and skips
+ config_overrides entirely.
 
-    `getattr` (not direct access) tolerates legacy callers /
-    SimpleNamespace-based test fixtures that build a request
-    without the new `assessment_plan` field."""
+ `getattr` (not direct access) tolerates legacy callers /
+ SimpleNamespace-based test fixtures that build a request
+ without the new `assessment_plan` field."""
     assessment_plan = getattr(request, "assessment_plan", None)
     if assessment_plan is None:
         return None
@@ -790,17 +790,17 @@ def _prepare_compile(
 ):
     """Build a RAGAnything instance + resolve I/O paths for compile.
 
-    Vendor import happens first so a missing `raganything` package
-    surfaces the actionable pip-install hint before path / env errors.
+ Vendor import happens first so a missing `raganything` package
+ surfaces the actionable pip-install hint before path / env errors.
 
-    `config_overrides` (when supplied — typically by the AssessmentPlan
-    mapper) is applied to the `RAGAnythingConfig` instance before the
-    `RAGAnything` instance is constructed. Returns
-    `(rag, output_dir, source_path, dropped_overrides)` where
-    `dropped_overrides` lists the override field names the installed
-    vendor version doesn't expose. None / empty when no overrides
-    were supplied.
-    """
+ `config_overrides` (when supplied — typically by the AssessmentPlan
+ mapper) is applied to the `RAGAnythingConfig` instance before the
+ `RAGAnything` instance is constructed. Returns
+ `(rag, output_dir, source_path, dropped_overrides)` where
+ `dropped_overrides` lists the override field names the installed
+ vendor version doesn't expose. None / empty when no overrides
+ were supplied.
+ """
     rag, dropped_overrides = _build_rag_instance(
         text_client=request.text_client,
         vision_client=request.vision_client,
@@ -835,16 +835,16 @@ def _build_rag_instance(
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
-    Defensive about vendor API shape changes. Looks up the symbols
-    actually exported by the installed `raganything` package; if the
-    expected name isn't there, raises `ProviderUnavailable` naming
-    the missing symbol.
+ Defensive about vendor API shape changes. Looks up the symbols
+ actually exported by the installed `raganything` package; if the
+ expected name isn't there, raises `ProviderUnavailable` naming
+ the missing symbol.
 
-    `config_overrides` is the AssessmentPlan-derived per-capability
-    flag dict; applied via `_build_rag_config`. Returns
-    `(instance, dropped_override_fields)` so the caller can surface
-    the dropped names through `metadata["unhandled_capabilities"]`.
-    """
+ `config_overrides` is the AssessmentPlan-derived per-capability
+ flag dict; applied via `_build_rag_config`. Returns
+ `(instance, dropped_override_fields)` so the caller can surface
+ the dropped names through `metadata["unhandled_capabilities"]`.
+ """
     raganything_mod = _import_raganything()
     rag_cls = getattr(raganything_mod, "RAGAnything", None)
     if rag_cls is None:
@@ -895,22 +895,22 @@ def _build_rag_config(
 ):
     """Build a `RAGAnythingConfig` if the vendor exports it.
 
-    Some versions of `raganything` accept `working_dir` directly on
-    the constructor; in that case we skip the config object and pass
-    a kwargs dict instead.
+ Some versions of `raganything` accept `working_dir` directly on
+ the constructor; in that case we skip the config object and pass
+ a kwargs dict instead.
 
-    `config_overrides` is the AssessmentPlan-derived per-capability
-    flag dict from
-    [`plan_mapper.CompileConfig.to_config_overrides`](./plan_mapper.py).
-    Applied via `setattr` AFTER construction, and ONLY for fields
-    the installed `RAGAnythingConfig` actually exposes — a vendor
-    version that drops `enable_equation_processing` (say) silently
-    drops that override rather than crashing the compile. The
-    dropped fields are reported back so the bridge can surface
-    them via `metadata["unhandled_capabilities"]`.
+ `config_overrides` is the AssessmentPlan-derived per-capability
+ flag dict from
+ [`plan_mapper.CompileConfig.to_config_overrides`](./plan_mapper.py).
+ Applied via `setattr` AFTER construction, and ONLY for fields
+ the installed `RAGAnythingConfig` actually exposes — a vendor
+ version that drops `enable_equation_processing` (say) silently
+ drops that override rather than crashing the compile. The
+ dropped fields are reported back so the bridge can surface
+ them via `metadata["unhandled_capabilities"]`.
 
-    Returns `(config_or_None, dropped_field_names)`.
-    """
+ Returns `(config_or_None, dropped_field_names)`.
+ """
     cfg_cls = getattr(raganything_mod, "RAGAnythingConfig", None)
     if cfg_cls is None:
         return None, []
@@ -940,37 +940,37 @@ def _build_rag_config(
 
 def _make_text_callable(text_client) -> Callable[..., Any]:
     """RAGAnything (via LightRAG) `await`s
-    ``llm_model_func(prompt, system_prompt=..., history_messages=[...], **kw)``
-    → str.
+ ``llm_model_func(prompt, system_prompt=..., history_messages=[...], **kw)``
+ → str.
 
-    LightRAG awaits the result, so the wrapper has to be `async`.
-    Underlying `TextLLMClient.generate` is synchronous, so we run it
-    on a worker thread to keep the event loop free. Token usage is
-    dropped at the vendor boundary — RAGAnything doesn't surface it.
+ LightRAG awaits the result, so the wrapper has to be `async`.
+ Underlying `TextLLMClient.generate` is synchronous, so we run it
+ on a worker thread to keep the event loop free. Token usage is
+ dropped at the vendor boundary — RAGAnything doesn't surface it.
 
-    Critical contract: forward `system_prompt` to the underlying
-    client AND fold `history_messages` into the user prompt. Two
-    consequences flow from this:
+ Critical contract: forward `system_prompt` to the underlying
+ client AND fold `history_messages` into the user prompt. Two
+ consequences flow from this:
 
-      1. LightRAG's intended structured prompt (entity-extraction
-         template + few-shot examples in `system_prompt` + the
-         chunk content in `prompt`) reaches the model intact —
-         dropping `system_prompt` was producing degenerate
-         extractions.
-      2. The token-budget pre-flight check at the OpenAI-compat
-         boundary sees the WHOLE payload (system + history +
-         user). Without this, an oversize prompt could slip past
-         our budget check (which would only see the small user
-         message) and trip LM Studio's HTTP-400 'Context size has
-         been exceeded' for real.
+ 1. LightRAG's intended structured prompt (entity-extraction
+ template + few-shot examples in `system_prompt` + the
+ chunk content in `prompt`) reaches the model intact —
+ dropping `system_prompt` was producing degenerate
+ extractions.
+ 2. The token-budget pre-flight check at the OpenAI-compat
+ boundary sees the WHOLE payload (system + history +
+ user). Without this, an oversize prompt could slip past
+ our budget check (which would only see the small user
+ message) and trip LM Studio's HTTP-400 'Context size has
+ been exceeded' for real.
 
-    `history_messages` is folded into the user prompt as a labelled
-    block rather than passed as an OpenAI `messages[]` array,
-    because `TextLLMClient.generate()` only takes
-    `(prompt, system_prompt)` — the simplest correct path is to
-    serialise history into the prompt string. The model still sees
-    every turn; the budget check still estimates accurately.
-    """
+ `history_messages` is folded into the user prompt as a labelled
+ block rather than passed as an OpenAI `messages[]` array,
+ because `TextLLMClient.generate` only takes
+ `(prompt, system_prompt)` — the simplest correct path is to
+ serialise history into the prompt string. The model still sees
+ every turn; the budget check still estimates accurately.
+ """
 
     async def _llm_callable(
         prompt: str,
@@ -1019,25 +1019,25 @@ def _make_text_callable(text_client) -> Callable[..., Any]:
 def _make_vision_callable(vision_client) -> Callable[..., Any]:
     """RAGAnything `await`s vision_model_func(prompt, image_data, **kw) → str.
 
-    `image_data` arrives in one of two shapes depending on which call
-    site inside raganything is firing:
+ `image_data` arrives in one of two shapes depending on which call
+ site inside raganything is firing:
 
-      * **bytes** — when the caller has already read the file (the
-        less common path).
-      * **base64 string** — what
-        `raganything.modalprocessors._encode_image_to_base64` returns,
-        used by every multimodal-processor pass during compile. This
-        is the dominant path; the value is the bare base64 ASCII (no
-        `data:` prefix).
+ * **bytes** — when the caller has already read the file (the
+ less common path).
+ * **base64 string** — what
+ `raganything.modalprocessors._encode_image_to_base64` returns,
+ used by every multimodal-processor pass during compile. This
+ is the dominant path; the value is the bare base64 ASCII (no
+ `data:` prefix).
 
-    Our `OpenAICompatVisionLLMClient.analyze_image` expects **bytes**
-    so it can re-base64-encode them into a data URL. Calling it with a
-    string blows up at `base64.b64encode("...")` with `a bytes-like
-    object is required, not 'str'` — the exact error operators have
-    been seeing in the worker log with no useful context. Decode the
-    string back to bytes here so the client stays strict and the error
-    message names the failing artifact.
-    """
+ Our `OpenAICompatVisionLLMClient.analyze_image` expects **bytes**
+ so it can re-base64-encode them into a data URL. Calling it with a
+ string blows up at `base64.b64encode("...")` with `a bytes-like
+ object is required, not 'str'` — the exact error operators have
+ been seeing in the worker log with no useful context. Decode the
+ string back to bytes here so the client stays strict and the error
+ message names the failing artifact.
+ """
 
     async def _vision_callable(
         prompt: str,
@@ -1090,14 +1090,14 @@ def _make_vision_callable(vision_client) -> Callable[..., Any]:
 def _coerce_image_bytes(image_data: Any) -> bytes:
     """Normalise `image_data` from RAGAnything into raw bytes.
 
-    Accepts:
-      * `bytes` / `bytearray` / `memoryview` → returned as-is.
-      * `str` → assumed base64. Strips an optional `data:<mime>;base64,`
-        prefix (some call sites pre-format the data URL) before
-        decoding.
-    Anything else raises `ValueError` so the caller logs a clear
-    artifact-scoped error.
-    """
+ Accepts:
+ * `bytes` / `bytearray` / `memoryview` → returned as-is.
+ * `str` → assumed base64. Strips an optional `data:<mime>;base64,`
+ prefix (some call sites pre-format the data URL) before
+ decoding.
+ Anything else raises `ValueError` so the caller logs a clear
+ artifact-scoped error.
+ """
     if isinstance(image_data, (bytes, bytearray, memoryview)):
         return bytes(image_data)
     if isinstance(image_data, str):
@@ -1115,21 +1115,21 @@ def _coerce_image_bytes(image_data: Any) -> bytes:
 def _make_embedding_func(embedding_client):
     """Wrap an `EmbeddingClient` in `lightrag.utils.EmbeddingFunc`.
 
-    LightRAG does NOT accept a plain callable here — it accesses
-    `.embedding_dim` / `.max_token_size` / `.func` on this object
-    during init (see `lightrag.lightrag.LightRAG.__post_init__`).
-    Passing a plain callable causes init to silently fail and
-    `RAGAnything.lightrag` to stay `None`, surfacing later as
-    `'NoneType' object has no attribute 'ainsert'`. The wrapper's
-    inner `func` is awaited by LightRAG, so it must be async.
+ LightRAG does NOT accept a plain callable here — it accesses
+ `.embedding_dim` / `.max_token_size` / `.func` on this object
+ during init (see `lightrag.lightrag.LightRAG.__post_init__`).
+ Passing a plain callable causes init to silently fail and
+ `RAGAnything.lightrag` to stay `None`, surfacing later as
+ `'NoneType' object has no attribute 'ainsert'`. The wrapper's
+ inner `func` is awaited by LightRAG, so it must be async.
 
-    LightRAG ALSO expects the awaited result to be a numpy
-    `ndarray` — `lightrag.utils.EmbeddingFunc.__call__` reads
-    `result.size` and computes `result.size % embedding_dim` to
-    validate vector count. A Python `list[list[float]]` raises
-    `AttributeError: 'list' object has no attribute 'size'`. We
-    convert here.
-    """
+ LightRAG ALSO expects the awaited result to be a numpy
+ `ndarray` — `lightrag.utils.EmbeddingFunc.__call__` reads
+ `result.size` and computes `result.size % embedding_dim` to
+ validate vector count. A Python `list[list[float]]` raises
+ `AttributeError: 'list' object has no attribute 'size'`. We
+ convert here.
+ """
     try:
         from lightrag.utils import EmbeddingFunc
     except ImportError as exc:
@@ -1166,8 +1166,8 @@ def _is_plain_text(source_path: Path) -> bool:
 
 
 # Fraction of sampled PDF pages that must have extractable text before
-# we skip MinerU.  0.8 = at least 80 % of the first ≤5 pages carry a
-# real text layer.  Deliberately conservative: a mixed scan/text PDF
+# we skip MinerU. 0.8 = at least 80 % of the first ≤5 pages carry a
+# real text layer. Deliberately conservative: a mixed scan/text PDF
 # still routes to MinerU so we don't drop scanned content.
 _PDF_TEXT_THRESHOLD = 0.8
 
@@ -1179,21 +1179,21 @@ def _is_text_extractable_pdf(
     sample_pages: int = 5,
 ) -> bool:
     """Return True when `source_path` is a PDF whose embedded text layer
-    is rich enough for the fast-text path.
+ is rich enough for the fast-text path.
 
-    Samples up to `sample_pages` pages with pypdf (which is already a
-    transitive dependency of raganything and is imported for page-count
-    profiling elsewhere).  A page is counted as "has text" when
-    `extract_text()` yields ≥ 20 non-whitespace characters — this
-    filters out PDFs that have only a few invisible copy-protection or
-    watermark text nodes.
+ Samples up to `sample_pages` pages with pypdf (which is already a
+ transitive dependency of raganything and is imported for page-count
+ profiling elsewhere). A page is counted as "has text" when
+ `extract_text` yields ≥ 20 non-whitespace characters — this
+ filters out PDFs that have only a few invisible copy-protection or
+ watermark text nodes.
 
-    Returns False (→ full MinerU path) when:
-      * source is not a .pdf
-      * pypdf is not importable
-      * the file can't be read (corrupt, encrypted, etc.)
-      * text ratio < threshold  (scanned / image-heavy / formula-heavy)
-    """
+ Returns False (→ full MinerU path) when:
+ * source is not a.pdf
+ * pypdf is not importable
+ * the file can't be read (corrupt, encrypted, etc.)
+ * text ratio < threshold (scanned / image-heavy / formula-heavy)
+ """
     if source_path.suffix.lower() != ".pdf":
         return False
     try:
@@ -1222,17 +1222,17 @@ async def _insert_plain_text_directly(
 ) -> None:
     """Read `source_path` and insert its text directly into LightRAG.
 
-    Bypasses `RAGAnything.process_document_complete` entirely for plain
-    text — mineru's text path renders the file to a PDF and runs the
-    full PyTorch model pipeline on the rendered output, which pegs all
-    CPU cores even on a 10-byte file. Reading the bytes ourselves and
-    handing them to `lightrag.ainsert` is functionally equivalent for
-    plain text (no images / tables / formulas to extract) and orders
-    of magnitude cheaper.
+ Bypasses `RAGAnything.process_document_complete` entirely for plain
+ text — mineru's text path renders the file to a PDF and runs the
+ full PyTorch model pipeline on the rendered output, which pegs all
+ CPU cores even on a 10-byte file. Reading the bytes ourselves and
+ handing them to `lightrag.ainsert` is functionally equivalent for
+ plain text (no images / tables / formulas to extract) and orders
+ of magnitude cheaper.
 
-    Also writes the text into `output_dir` so the existing draft-walker
-    (`_drafts_from_output_dir`) discovers it without special-casing.
-    """
+ Also writes the text into `output_dir` so the existing draft-walker
+ (`_drafts_from_output_dir`) discovers it without special-casing.
+ """
     text = source_path.read_text(encoding="utf-8", errors="replace")
     if not text.strip():
         # Mirror raganything's own behaviour: skip the insert entirely
@@ -1271,20 +1271,20 @@ async def _insert_pdf_text_directly(
 ) -> None:
     """Extract text from a text-layer PDF with pypdf and insert into LightRAG.
 
-    Bypasses `RAGAnything.process_document_complete` for PDFs that have
-    reliable embedded text.  MinerU's `parse_method=auto` runs full layout
-    analysis (layout blocks, OCR, formula/table detection) on every page
-    regardless of content — for a normal 4-page text PDF this means several
-    minutes of transformer inference on CPU/GPU with no benefit.  pypdf text
-    extraction completes in < 1 second for the same file.
+ Bypasses `RAGAnything.process_document_complete` for PDFs that have
+ reliable embedded text. MinerU's `parse_method=auto` runs full layout
+ analysis (layout blocks, OCR, formula/table detection) on every page
+ regardless of content — for a normal 4-page text PDF this means several
+ minutes of transformer inference on CPU/GPU with no benefit. pypdf text
+ extraction completes in < 1 second for the same file.
 
-    Caller must first confirm the document is text-extractable via
-    `_is_text_extractable_pdf()`.  This function does NOT re-check — it
-    trusts the caller's decision and proceeds directly.
+ Caller must first confirm the document is text-extractable via
+ `_is_text_extractable_pdf`. This function does NOT re-check — it
+ trusts the caller's decision and proceeds directly.
 
-    Also writes the concatenated text into `output_dir` so the standard
-    `_drafts_from_output_dir` walker discovers it without special-casing.
-    """
+ Also writes the concatenated text into `output_dir` so the standard
+ `_drafts_from_output_dir` walker discovers it without special-casing.
+ """
     from pypdf import PdfReader
 
     reader = PdfReader(str(source_path))
@@ -1321,23 +1321,23 @@ async def _insert_pdf_text_directly(
 
 async def _force_persist_chunks(rag) -> None:
     """Flush LightRAG's `text_chunks` + `doc_status` to disk
-    unconditionally after a fast-path `ainsert`.
+ unconditionally after a fast-path `ainsert`.
 
-    LightRAG's `apipeline_process_enqueue_documents` writes chunks
-    to in-memory storage in stage 1, then runs LLM-driven entity
-    extraction in stage 2, and only calls `_insert_done()` (which
-    flushes EVERY storage to disk) on stage-2 success. If entity
-    extraction fails — slow / unreachable LLM, prompt error, vector
-    upsert race — the in-memory chunks are lost and the FE's
-    Chunks tab stays empty even though parsing produced text.
+ LightRAG's `apipeline_process_enqueue_documents` writes chunks
+ to in-memory storage in stage 1, then runs LLM-driven entity
+ extraction in stage 2, and only calls `_insert_done` (which
+ flushes EVERY storage to disk) on stage-2 success. If entity
+ extraction fails — slow / unreachable LLM, prompt error, vector
+ upsert race — the in-memory chunks are lost and the FE's
+ Chunks tab stays empty even though parsing produced text.
 
-    For txt/FAST-mode compiles we don't care whether entity
-    extraction succeeded: the chunks are the deliverable. Force the
-    flush via `index_done_callback()` on the chunk storages so they
-    persist regardless of upstream LLM status.
+ For txt/FAST-mode compiles we don't care whether entity
+ extraction succeeded: the chunks are the deliverable. Force the
+ flush via `index_done_callback` on the chunk storages so they
+ persist regardless of upstream LLM status.
 
-    Best-effort: any flush error logs + returns. Compile never
-    fails because telemetry flushing didn't work."""
+ Best-effort: any flush error logs + returns. Compile never
+ fails because telemetry flushing didn't work."""
     storages = []
     lightrag = getattr(rag, "lightrag", None)
     if lightrag is None:
@@ -1367,8 +1367,8 @@ async def _force_persist_chunks(rag) -> None:
 # ---- LibreOffice pre-conversion (broad format coverage) ------------
 #
 # RAGAnything / mineru parses PDF + modern OOXML (.docx/.xlsx/.pptx)
-# + images natively. Legacy binary office formats (Word 97-2003 .doc,
-# Excel 97-2003 .xls, PowerPoint 97-2003 .ppt), OpenDocument
+# + images natively. Legacy binary office formats (Word 97-2003.doc,
+# Excel 97-2003.xls, PowerPoint 97-2003.ppt), OpenDocument
 # (.odt/.ods/.odp), Rich Text (.rtf), Apple iWork (.pages/.numbers/
 # .key), and Microsoft Works (.wps) are NOT in mineru's parser
 # coverage. For those, we shell out to `soffice --headless
@@ -1384,7 +1384,7 @@ def _needs_pdf_conversion(
     source_path: Path, settings: "RAGAnythingSettings",
 ) -> bool:
     """Return True iff this source's extension is on the
-    per-deployment "convert before raganything" list."""
+ per-deployment "convert before raganything" list."""
     if not settings.pdf_convert_extensions:
         return False
     return source_path.suffix.lower() in settings.pdf_convert_extensions
@@ -1395,17 +1395,17 @@ def _convert_to_pdf(
 ) -> Path:
     """Run `soffice --headless --convert-to pdf` against `source_path`.
 
-    Returns the path to the produced PDF (lives in a fresh temp dir
-    under the system tempdir; caller is responsible for cleanup).
-    Raises:
-      * `ProviderUnavailable` when the LibreOffice binary isn't on
-        $PATH (operator-actionable: install libreoffice or override
-        the compiler hook).
-      * `_LibreOfficeConversionError` for runtime failures
-        (non-zero exit, no output PDF produced, timeout). These are
-        caught at the `default_compile` boundary and surfaced as a
-        FAILED `ArtifactProcessingResult`.
-    """
+ Returns the path to the produced PDF (lives in a fresh temp dir
+ under the system tempdir; caller is responsible for cleanup).
+ Raises:
+ * `ProviderUnavailable` when the LibreOffice binary isn't on
+ $PATH (operator-actionable: install libreoffice or override
+ the compiler hook).
+ * `_LibreOfficeConversionError` for runtime failures
+ (non-zero exit, no output PDF produced, timeout). These are
+ caught at the `default_compile` boundary and surfaced as a
+ FAILED `ArtifactProcessingResult`.
+ """
     binary = shutil.which(settings.libreoffice_binary)
     if binary is None:
         raise ProviderUnavailable(
@@ -1483,11 +1483,11 @@ def _drafts_from_output_dir(
 ) -> list[ArtifactDraft]:
     """One ArtifactDraft per non-empty file under `output_dir`.
 
-    RAGAnything writes parsed content (markdown, JSON metadata, image
-    descriptions) into the output directory. We don't try to interpret
-    file types — each file becomes a draft tagged with its filename in
-    metadata so consumers can branch on it.
-    """
+ RAGAnything writes parsed content (markdown, JSON metadata, image
+ descriptions) into the output directory. We don't try to interpret
+ file types — each file becomes a draft tagged with its filename in
+ metadata so consumers can branch on it.
+ """
     drafts: list[ArtifactDraft] = []
     if not output_dir.exists():
         return drafts
@@ -1524,18 +1524,18 @@ def _graph_drafts_from_storage(
 ) -> list[ArtifactDraft]:
     """Collect graph-shaped artifacts (graph_chunk_entity_relation.json etc.).
 
-    RAGAnything (via LightRAG) writes graph + entity relation files to
-    its storage directory after processing. We surface those as
-    `graph_json` drafts.
+ RAGAnything (via LightRAG) writes graph + entity relation files to
+ its storage directory after processing. We surface those as
+ `graph_json` drafts.
 
-    Excludes `kv_store_text_chunks.json` — that file contains text
-    chunks, not graph data. It's surfaced separately as
-    `kind="chunk"` artifacts via `_chunk_drafts_from_storage` so the
-    Results > Chunks tab can review them with the canonical chunk
-    DTO. Lumping them together as `graph_json` would force the chunk
-    projector to scrape them out of every graph artifact at read
-    time.
-    """
+ Excludes `kv_store_text_chunks.json` — that file contains text
+ chunks, not graph data. It's surfaced separately as
+ `kind="chunk"` artifacts via `_chunk_drafts_from_storage` so the
+ Results > Chunks tab can review them with the canonical chunk
+ DTO. Lumping them together as `graph_json` would force the chunk
+ projector to scrape them out of every graph artifact at read
+ time.
+ """
     drafts: list[ArtifactDraft] = []
     if not storage_dir.exists():
         return drafts
@@ -1546,14 +1546,14 @@ def _graph_drafts_from_storage(
     )
     # Files we exclude from graph_json. Match by lowercased filename
     # so case variants filter correctly.
-    #   * `kv_store_text_chunks.json`  → emitted as `kind="chunk"`
-    #     via `_chunk_drafts_from_storage` (canonical chunk DTO).
-    #   * `kv_store_doc_status.json`   → per-document state machine
-    #     (PENDING/HANDLING/PROCESSED/FAILED + duplicate-detection
-    #     records). Internal LightRAG bookkeeping; surfacing it as
-    #     `graph_json` puts confusing `[DUPLICATE] Original document`
-    #     rows in the Knowledge Graph tab even though no graph data
-    #     exists in the file.
+    #  * `kv_store_text_chunks.json` → emitted as `kind="chunk"`
+    #  via `_chunk_drafts_from_storage` (canonical chunk DTO).
+    #  * `kv_store_doc_status.json` → per-document state machine
+    #  (PENDING/HANDLING/PROCESSED/FAILED + duplicate-detection
+    #  records). Internal LightRAG bookkeeping; surfacing it as
+    #  `graph_json` puts confusing `[DUPLICATE] Original document`
+    #  rows in the Knowledge Graph tab even though no graph data
+    #  exists in the file.
     chunk_filenames = {
         "kv_store_text_chunks.json",
         "kv_store_doc_status.json",
@@ -1589,19 +1589,19 @@ def _force_clear_doc_status_for_id(
     file_name: str, doc_id: str,
 ) -> None:
     """Rewrite `kv_store_doc_status.json` to drop `doc_id` and any
-    `dup-*` records that reference it.
+ `dup-*` records that reference it.
 
-    Bulletproof path for the "Duplicate document detected" symptom
-    that survives `adelete_by_doc_id + delete + index_done_callback`.
-    LightRAG's in-memory state can lag behind disk (or vice-versa)
-    when storage is shared across processes; rewriting the file
-    directly removes any possibility that stale state leaks back.
+ Bulletproof path for the "Duplicate document detected" symptom
+ that survives `adelete_by_doc_id + delete + index_done_callback`.
+ LightRAG's in-memory state can lag behind disk (or vice-versa)
+ when storage is shared across processes; rewriting the file
+ directly removes any possibility that stale state leaks back.
 
-    Best-effort: file missing, malformed JSON, or write errors all
-    silently no-op so the caller proceeds with the regular cleanup
-    path. If both fail, the worst case is the original "Duplicate
-    document detected" symptom — same as before this helper existed.
-    """
+ Best-effort: file missing, malformed JSON, or write errors all
+ silently no-op so the caller proceeds with the regular cleanup
+ path. If both fail, the worst case is the original "Duplicate
+ document detected" symptom — same as before this helper existed.
+ """
     import json as _json
     import os as _os
 
@@ -1643,21 +1643,21 @@ def _detect_lightrag_doc_failure(
     storage_dir: Path, *, document_id: str,
 ) -> str | None:
     """Return the LightRAG error message for `document_id` when the
-    KV doc-status file marks it as failed; `None` otherwise.
+ KV doc-status file marks it as failed; `None` otherwise.
 
-    LightRAG writes per-document outcomes to `kv_store_doc_status.json`
-    keyed by document id. A `status == "failed"` entry means the
-    pipeline aborted internally (most commonly embedding dimension
-    mismatch on the first vector upsert). The shape we care about is:
+ LightRAG writes per-document outcomes to `kv_store_doc_status.json`
+ keyed by document id. A `status == "failed"` entry means the
+ pipeline aborted internally (most commonly embedding dimension
+ mismatch on the first vector upsert). The shape we care about is:
 
-        { "<document_id>": { "status": "failed",
-                              "error_msg": "<reason>", ... } }
+ { "<document_id>": { "status": "failed",
+ "error_msg": "<reason>",... } }
 
-    Best-effort: missing file, malformed JSON, or no entry for our
-    document id returns `None` so callers fall through to normal
-    success handling. The caller decides what to do with a returned
-    error — `default_compile` turns it into a FAILED ArtifactProcessingResult
-    so the workflow's required-step contract surfaces the real cause."""
+ Best-effort: missing file, malformed JSON, or no entry for our
+ document id returns `None` so callers fall through to normal
+ success handling. The caller decides what to do with a returned
+ error — `default_compile` turns it into a FAILED ArtifactProcessingResult
+ so the workflow's required-step contract surfaces the real cause."""
     if not storage_dir.exists():
         return None
     status_path: Path | None = None
@@ -1690,27 +1690,27 @@ def _chunk_drafts_from_storage(
     doc_id: str | None = None,
 ) -> list[ArtifactDraft]:
     """Project LightRAG's `kv_store_text_chunks.json` into canonical
-    `kind="chunk"` ArtifactDrafts — one per chunk entry **belonging
-    to the document we just inserted**.
+ `kind="chunk"` ArtifactDrafts — one per chunk entry **belonging
+ to the document we just inserted**.
 
-    LightRAG's storage is shared across all documents in the workdir
-    (`kv_store_text_chunks.json` is a top-level dict of `chunk_id →
-    {tokens, content, full_doc_id, chunk_order_index, file_path}`).
-    Without filtering, every prior insert's chunks would surface
-    under the current run — exactly the "Chunks tab shows another
-    file" bug operators hit when they re-run after a failed insert.
+ LightRAG's storage is shared across all documents in the workdir
+ (`kv_store_text_chunks.json` is a top-level dict of `chunk_id →
+ {tokens, content, full_doc_id, chunk_order_index, file_path}`).
+ Without filtering, every prior insert's chunks would surface
+ under the current run — exactly the "Chunks tab shows another
+ file" bug operators hit when they re-run after a failed insert.
 
-    Filter rule: `entry.full_doc_id == doc_id` (LightRAG's id, which
-    we pass through verbatim from `process_document_complete`).
-    When `doc_id` is None we fall back to including every chunk —
-    legacy callers + tests that don't pre-resolve the LightRAG doc
-    id keep working unchanged. The production compile path always
-    passes `doc_id` so cross-document leakage is impossible.
+ Filter rule: `entry.full_doc_id == doc_id` (LightRAG's id, which
+ we pass through verbatim from `process_document_complete`).
+ When `doc_id` is None we fall back to including every chunk —
+ legacy callers + tests that don't pre-resolve the LightRAG doc
+ id keep working unchanged. The production compile path always
+ passes `doc_id` so cross-document leakage is impossible.
 
-    Without this projector, the Chunks tab is correctly empty for
-    every run (no producer in the dev stack emitted `kind="chunk"`)
-    — even though LightRAG had the chunks on disk all along.
-    """
+ Without this projector, the Chunks tab is correctly empty for
+ every run (no producer in the dev stack emitted `kind="chunk"`)
+ — even though LightRAG had the chunks on disk all along.
+ """
     drafts: list[ArtifactDraft] = []
     if not storage_dir.exists():
         return drafts
@@ -1818,15 +1818,15 @@ _SEMANTIC_MIN_BYTES = 30 * 1024
 def _build_content_manifest(output_dir: Path) -> dict[str, Any]:
     """Build the post-parse content manifest from MinerU output.
 
-    Returns a dict with aggregate counts, derived quality scores, and
-    per-image triage decisions. Empty / missing output_dir yields an
-    empty manifest; the planner treats `None` fields as "unknown" and
-    falls back to the deterministic profile.
+ Returns a dict with aggregate counts, derived quality scores, and
+ per-image triage decisions. Empty / missing output_dir yields an
+ empty manifest; the planner treats `None` fields as "unknown" and
+ falls back to the deterministic profile.
 
-    The dict is shaped to match the keys the activity layer (`_artifact_result`
-    in `j1.orchestration.activities.processing`) projects into the
-    `ArtifactActivityResult.content_stats` field. Adding a new key here
-    requires a corresponding entry in that projection list."""
+ The dict is shaped to match the keys the activity layer (`_artifact_result`
+ in `j1.orchestration.activities.processing`) projects into the
+ `ArtifactActivityResult.content_stats` field. Adding a new key here
+ requires a corresponding entry in that projection list."""
     if not output_dir.exists():
         return {}
 
@@ -1956,12 +1956,12 @@ def _normalise_content_list_item(
     page_idx: int | None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Project one MinerU `content_list` entry into the canonical
-    `ParsedContentItem` shape.
+ `ParsedContentItem` shape.
 
-    Returns `(normalised_type, item_entry_dict)`. `item_entry` is
-    None when the entry should be dropped (empty / unrecognised
-    type).
-    """
+ Returns `(normalised_type, item_entry_dict)`. `item_entry` is
+ None when the entry should be dropped (empty / unrecognised
+ type).
+ """
     type_map: dict[str, str] = {
         "text": "text",
         "paragraph": "text",
@@ -2028,15 +2028,15 @@ def _build_image_triage(
 ) -> list[dict[str, Any]]:
     """Per-image triage decisions surfaced on the plan.
 
-    Combines two information sources:
-      * filesystem image files (size, filename heuristics)
-      * MinerU's structured content_list entries (page_idx, caption,
-        img_path) — when available
+ Combines two information sources:
+ * filesystem image files (size, filename heuristics)
+ * MinerU's structured content_list entries (page_idx, caption,
+ img_path) — when available
 
-    Each entry is a flat dict so the audit-log payload stays compact
-    and forward-compatible. Decision vocabulary mirrors
-    `j1.processing.planning.VISION_DECISION_*` (skip / triage /
-    enrich)."""
+ Each entry is a flat dict so the audit-log payload stays compact
+ and forward-compatible. Decision vocabulary mirrors
+ `j1.processing.planning.VISION_DECISION_*` (skip / triage /
+ enrich)."""
     decisions: list[dict[str, Any]] = []
 
     # Index the structured entries by image filename for cross-correlation.
@@ -2100,11 +2100,11 @@ def _classify_image(
 ) -> tuple[str, str, float, str]:
     """Filename + size + caption heuristics for one image.
 
-    Returns (decision, role, score, reason). Decisions land at one of:
-      * `skip`    — almost certainly decorative; don't burn vision LLM
-      * `enrich`  — likely semantic content; run the full vision pass
-      * `triage`  — uncertain; let a cheap vision pass classify it
-    Score is 0..1 confidence in the chosen decision."""
+ Returns (decision, role, score, reason). Decisions land at one of:
+ * `skip` — almost certainly decorative; don't burn vision LLM
+ * `enrich` — likely semantic content; run the full vision pass
+ * `triage` — uncertain; let a cheap vision pass classify it
+ Score is 0..1 confidence in the chosen decision."""
     if _DECORATIVE_NAME_RE.search(filename):
         return ("skip", "decorative", 0.9,
                 f"filename matches decorative pattern ({filename!r})")
@@ -2129,8 +2129,8 @@ def _classify_image(
 def _score_parse_quality(text_block_count: int, text_chars: int) -> float:
     """0..1 score for how well MinerU extracted text content.
 
-    A clean text PDF yields several markdown files and many chars;
-    a failed parse yields nothing or near-empty output."""
+ A clean text PDF yields several markdown files and many chars;
+ a failed parse yields nothing or near-empty output."""
     if text_block_count == 0 or text_chars == 0:
         return 0.0
     if text_chars < 100:
@@ -2142,8 +2142,8 @@ def _score_parse_quality(text_block_count: int, text_chars: int) -> float:
 
 def _score_text_sufficiency(text_chars: int, page_count: int | None) -> float:
     """0..1 score for whether the document has enough text to skip
-    vision/OCR enrichment. ~1000 chars/page is the rule of thumb for
-    a 'text-rich' page."""
+ vision/OCR enrichment. ~1000 chars/page is the rule of thumb for
+ a 'text-rich' page."""
     if text_chars == 0:
         return 0.0
     pages = page_count or 1
@@ -2158,8 +2158,8 @@ def _score_layout_complexity(
     page_count: int | None,
 ) -> float:
     """0..1 score for how visually busy the document is. ≥5 visual
-    elements per page caps at 1.0 (complex). Empty / pure-text
-    documents score 0."""
+ elements per page caps at 1.0 (complex). Empty / pure-text
+ documents score 0."""
     visuals = image_count + table_count + equation_count
     if visuals == 0:
         return 0.0
@@ -2174,9 +2174,9 @@ def _score_layout_complexity(
 def _resolve_workspace_root(ctx) -> Path:
     """Resolve `J1_DATA_ROOT` from the env at call time.
 
-    Imported lazily so this module stays cheap to load when the
-    bridge isn't actually being driven.
-    """
+ Imported lazily so this module stays cheap to load when the
+ bridge isn't actually being driven.
+ """
     import os
     root = os.environ.get("J1_DATA_ROOT")
     if not root:

@@ -5,25 +5,25 @@ failures must stay deterministic so re-runs are reproducible (an
 LLM that flips its mind between runs would create flapping
 validation outcomes — the worst kind of test infrastructure).
 
-Three judgements ship in Phase 3:
+Three judgements ship :
 
-  1. `judge_answer_covers_points` — given the question, the answer,
-     and a list of expected answer points, does the answer cover
-     each point semantically?
-  2. `judge_answer_grounded` — given the answer + the cited chunks,
-     does the answer make claims that aren't supported by the
-     citations?
-  3. `judge_negative_abstain` — for a negative (out-of-scope) test
-     case, does the answer fabricate facts that aren't in the
-     citations? Distinct from regex-based abstain detection (which
-     handles the deterministic part) — the judge only fires the
-     "no fabrication" check.
+ 1. `judge_answer_covers_points` — given the question, the answer,
+ and a list of expected answer points, does the answer cover
+ each point semantically?
+ 2. `judge_answer_grounded` — given the answer + the cited chunks,
+ does the answer make claims that aren't supported by the
+ citations?
+ 3. `judge_negative_abstain` — for a negative (out-of-scope) test
+ case, does the answer fabricate facts that aren't in the
+ citations? Distinct from regex-based abstain detection (which
+ handles the deterministic part) — the judge only fires the
+ "no fabrication" check.
 
 All three calls go through `TextLLMClient.extract(prompt, schema)` so
 the response is constrained to a known JSON shape. Failures (LLM
 unavailable, malformed JSON, transport error) collapse to "judge
 not consulted" — the optional check is then OMITTED rather than
-included-and-passing, matching the same convention as Phase 1's
+included-and-passing, matching the same convention as 's
 conditional `citation_present` check.
 """
 
@@ -43,7 +43,7 @@ _MAX_CITATION_CHARS = 2000
 # Coverage threshold: ≥80% of points must be marked covered for the
 # `answer_covers_expected_points` check to pass. Below that we fail
 # the optional check (→ `passed_with_warnings`). Tunable per
-# deployment when the time comes — for Phase 3 it's a constant.
+# deployment when the time comes — for it's a constant.
 _COVERAGE_THRESHOLD = 0.8
 
 
@@ -54,12 +54,12 @@ _COVERAGE_THRESHOLD = 0.8
 class CoverageJudgement:
     """Output of `judge_answer_covers_points`.
 
-    `points` parallels the input `expected_answer_points` — same
-    length, same order. Each entry's `covered` is the judge's call
-    on whether the answer addresses that point. `coverage_ratio` is
-    the count of covered points divided by total; the runner
-    compares it against `_COVERAGE_THRESHOLD` to decide pass/fail.
-    """
+ `points` parallels the input `expected_answer_points` — same
+ length, same order. Each entry's `covered` is the judge's call
+ on whether the answer addresses that point. `coverage_ratio` is
+ the count of covered points divided by total; the runner
+ compares it against `_COVERAGE_THRESHOLD` to decide pass/fail.
+ """
 
     @dataclass(frozen=True)
     class Point:
@@ -81,11 +81,11 @@ class CoverageJudgement:
 class GroundingJudgement:
     """Output of `judge_answer_grounded`.
 
-    `unsupported_claims` is the judge's list of statements in the
-    answer that aren't backed by the citations. `severity` of each
-    is one of `low`/`moderate`/`high` — the runner treats `moderate`
-    or higher as a failure of the optional grounding check.
-    """
+ `unsupported_claims` is the judge's list of statements in the
+ answer that aren't backed by the citations. `severity` of each
+ is one of `low`/`moderate`/`high` — the runner treats `moderate`
+ or higher as a failure of the optional grounding check.
+ """
 
     @dataclass(frozen=True)
     class Claim:
@@ -107,10 +107,10 @@ class GroundingJudgement:
 @dataclass(frozen=True)
 class FabricationJudgement:
     """Output of `judge_negative_abstain` — same shape as the
-    grounding judgement; we use a separate class so the runner
-    can branch on intent without inspecting check names. `fabricated`
-    means the answer asserts facts beyond what the (possibly empty)
-    citations support."""
+ grounding judgement; we use a separate class so the runner
+ can branch on intent without inspecting check names. `fabricated`
+ means the answer asserts facts beyond what the (possibly empty)
+ citations support."""
 
     @dataclass(frozen=True)
     class Claim:
@@ -133,8 +133,8 @@ class FabricationJudgement:
 
 class LLMJudge(Protocol):
     """Type-only protocol so callers can inject a stub in tests
-    without subclassing. `DefaultLLMJudge` is the production
-    implementation."""
+ without subclassing. `DefaultLLMJudge` is the production
+ implementation."""
 
     def judge_answer_covers_points(
         self,
@@ -268,16 +268,16 @@ _FABRICATION_PROMPT = (
 class DefaultLLMJudge:
     """Production judge backed by a `TextLLMClient`-shaped object.
 
-    Constructor takes the client directly so deployments can swap
-    a slower-but-better text model for the FAST role; the judge
-    doesn't care which role it's pointed at as long as the
-    `extract(prompt, schema)` surface works.
+ Constructor takes the client directly so deployments can swap
+ a slower-but-better text model for the FAST role; the judge
+ doesn't care which role it's pointed at as long as the
+ `extract(prompt, schema)` surface works.
 
-    Every public method returns `None` on any failure path — no
-    exceptions propagate to the runner. The runner translates a
-    `None` return into "the optional check wasn't run" (omitted
-    from `checks[]` rather than included-and-passing).
-    """
+ Every public method returns `None` on any failure path — no
+ exceptions propagate to the runner. The runner translates a
+ `None` return into "the optional check wasn't run" (omitted
+ from `checks[]` rather than included-and-passing).
+ """
 
     def __init__(self, *, text_client: Any) -> None:
         self._text_client = text_client
@@ -406,10 +406,10 @@ class DefaultLLMJudge:
         self, prompt: str, schema: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Wrapped `text_client.extract` that returns `None` on any
-        failure. The runner branches on `None` to omit the optional
-        check entirely — never to mark it failed. This keeps
-        judge-availability separate from judge-verdict in the
-        result accounting."""
+ failure. The runner branches on `None` to omit the optional
+ check entirely — never to mark it failed. This keeps
+ judge-availability separate from judge-verdict in the
+ result accounting."""
         if self._text_client is None:
             return None
         try:
@@ -427,19 +427,19 @@ class DefaultLLMJudge:
 
 def coverage_threshold() -> float:
     """Public accessor for the runner so the threshold lives in one
-    place. Tunable per profile in a future phase; constant for now."""
+ place. Tunable per profile in the future; constant for now."""
     return _COVERAGE_THRESHOLD
 
 
 def _render_citations(citations: list[dict[str, Any]]) -> str:
     """Compact, judge-friendly rendering of the citation list.
 
-    Each citation gets one line: `[i] artifact_id @ source_location:
-    body-truncated`. Body is sourced from the citation's `preview`
-    field when present; otherwise the line is just the lineage.
-    Truncation cap defends against pathological inputs that would
-    blow the LLM's context window.
-    """
+ Each citation gets one line: `[i] artifact_id @ source_location:
+ body-truncated`. Body is sourced from the citation's `preview`
+ field when present; otherwise the line is just the lineage.
+ Truncation cap defends against pathological inputs that would
+ blow the LLM's context window.
+ """
     if not citations:
         return "(no citations)"
     lines: list[str] = []

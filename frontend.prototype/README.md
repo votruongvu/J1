@@ -32,13 +32,13 @@ right) to talk to a running J1 worker + REST API.
 The UI runs against either:
 
 - **Mock mode** (default) — `mock-api.jsx` simulates every endpoint
-  with a scripted event timeline. Three demo scenarios on the upload
-  screen (warnings / failure / human review). Useful for design,
-  demos, and frontend development without a backend.
+ with a scripted event timeline. Three demo scenarios on the upload
+ screen (warnings / failure / human review). Useful for design,
+ demos, and frontend development without a backend.
 - **Live API** — `api-client.jsx` issues real HTTP requests against
-  the J1 REST surface and consumes the SSE event stream via
-  `fetch` + `ReadableStream` (native `EventSource` can't send custom
-  headers).
+ the J1 REST surface and consumes the SSE event stream via
+ `fetch` + `ReadableStream` (native `EventSource` can't send custom
+ headers).
 
 Toggle persists to `localStorage["j1.mode"]`. Both clients share the
 same interface; component code never branches on mode.
@@ -81,16 +81,16 @@ relative path.
 ## Architecture
 
 ```
-index.html                — entry, loads scripts in order
-styles.css                — design tokens (light/dark) + components
-icons.jsx                 — minimal stroke-icon set
-mock-api.jsx              — MockClient + scripted event stream + display mappings
-api-client.jsx            — ApiClient — real fetch-based client against /ingestion-runs/*
-ui.jsx                    — StatusBadge / DecisionBadge / ProgressBar / Modal / Toast / JsonView
-run-detail.jsx            — RunHeader / PlanCard / LiveTimeline / FinalResult / TechDrawer / PrimaryStatusPanel
-upload.jsx                — UploadScreen (dropzone, scenario picker, demo button)
-all-runs.jsx              — AllRunsPage (list, filters, quick-chips)
-app.jsx                   — App shell, ContextBar (mode toggle), AuthModal, RunDetailPage, routing
+index.html — entry, loads scripts in order
+styles.css — design tokens (light/dark) + components
+icons.jsx — minimal stroke-icon set
+mock-api.jsx — MockClient + scripted event stream + display mappings
+api-client.jsx — ApiClient — real fetch-based client against /ingestion-runs/*
+ui.jsx — StatusBadge / DecisionBadge / ProgressBar / Modal / Toast / JsonView
+run-detail.jsx — RunHeader / PlanCard / LiveTimeline / FinalResult / TechDrawer / PrimaryStatusPanel
+upload.jsx — UploadScreen (dropzone, scenario picker, demo button)
+all-runs.jsx — AllRunsPage (list, filters, quick-chips)
+app.jsx — App shell, ContextBar (mode toggle), AuthModal, RunDetailPage, routing
 ```
 
 ## Live API contract
@@ -98,14 +98,14 @@ app.jsx                   — App shell, ContextBar (mode toggle), AuthModal, Ru
 The `ApiClient` connects to the J1 REST surface I shipped in this
 repo. Endpoints used:
 
-| Method | Path                                          | Used for |
+| Method | Path | Used for |
 |---|---|---|
-| `POST` | `/ingestion-runs`                             | Upload + create run |
-| `GET`  | `/ingestion-runs/{run_id}`                    | Run status snapshot |
-| `GET`  | `/ingestion-runs/{run_id}/plan`               | Execution plan |
-| `POST` | `/ingestion-runs/{run_id}/confirm`            | Confirm plan |
-| `GET`  | `/ingestion-runs/{run_id}/events`             | Backfill timeline |
-| `GET`  | `/ingestion-runs/{run_id}/events/stream`      | Live SSE stream |
+| `POST` | `/ingestion-runs` | Upload + create run |
+| `GET` | `/ingestion-runs/{run_id}` | Run status snapshot |
+| `GET` | `/ingestion-runs/{run_id}/plan` | Execution plan |
+| `POST` | `/ingestion-runs/{run_id}/confirm` | Confirm plan |
+| `GET` | `/ingestion-runs/{run_id}/events` | Backfill timeline |
+| `GET` | `/ingestion-runs/{run_id}/events/stream` | Live SSE stream |
 
 **Field translation** lives entirely in `api-client.jsx`. The J1 API
 returns camelCase envelopes (`{ requestId, data, meta }` with
@@ -134,9 +134,9 @@ implements SSE with:
 
 ```
 fetch(url, { headers, signal: controller.signal })
-  → response.body.getReader()
-    → parse "id:<>\nevent:<>\ndata:<json>\n\n" frames
-      → handlers.onEvent(structuredEvent)
+ → response.body.getReader
+ → parse "id:<>\nevent:<>\ndata:<json>\n\n" frames
+ → handlers.onEvent(structuredEvent)
 ```
 
 Reconnect: on stream error, the App keeps the latest `eventId` and
@@ -155,17 +155,17 @@ docker compose -f deploy/dev/docker-compose.yml up -d --build
 python3 -m http.server 5173 --directory frontend
 
 # 3. Open http://localhost:5173.
-#    Set Tenant=acme, Project=alpha in the context bar.
-#    Click "Mock mode" → switches to "Live API".
-#    Click "New ingestion run" → upload a file.
-#    The plan appears, run starts, progress events stream in.
+# Set Tenant=acme, Project=alpha in the context bar.
+# Click "Mock mode" → switches to "Live API".
+# Click "New ingestion run" → upload a file.
+# The plan appears, run starts, progress events stream in.
 ```
 
 If you see CORS errors, the J1 dev API doesn't enable CORS by
 default. Either:
-- Add a CORS middleware to `create_rest_api()` for development, or
+- Add a CORS middleware to `create_rest_api` for development, or
 - Serve both the frontend and API behind the same origin (recommended
-  for production).
+ for production).
 
 ## States covered
 
@@ -187,10 +187,10 @@ All status / decision / severity → label + style mappings live in
 `mock-api.jsx`:
 
 - `StatusDisplay` — `CREATED`, `ASSESSING`, `PLAN_READY`,
-  `WAITING_FOR_CONFIRMATION`, `RUNNING`, `COMPLETED`,
-  `COMPLETED_WITH_WARNINGS`, `SUCCEEDED`, `SUCCEEDED_WITH_WARNINGS`,
-  `FAILED`, `AWAITING_HUMAN_REVIEW`, `REQUIRES_HUMAN_REVIEW`,
-  `CANCELLED`
+ `WAITING_FOR_CONFIRMATION`, `RUNNING`, `COMPLETED`,
+ `COMPLETED_WITH_WARNINGS`, `SUCCEEDED`, `SUCCEEDED_WITH_WARNINGS`,
+ `FAILED`, `AWAITING_HUMAN_REVIEW`, `REQUIRES_HUMAN_REVIEW`,
+ `CANCELLED`
 - `DecisionDisplay` — `RUN`, `SKIP`, `CONDITIONAL`
 - `SeverityDisplay` — `INFO` → neutral, `WARNING` → amber, `ERROR` → red
 - `StageDisplay` — `COMPILE`, `ENRICH`, `GRAPH`, `INDEX`

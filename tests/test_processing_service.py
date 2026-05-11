@@ -251,9 +251,9 @@ def test_compile_correlation_id_propagates(processing_service, workspace, ctx):
 def test_compile_tags_artifact_metadata_with_run_id(
     processing_service, ctx,
 ):
-    """Phase 4: artifacts produced inside a workflow run carry
-    `metadata["run_id"]` so the review surface can resolve them via
-    direct tag lookup, no lineage join required."""
+    """artifacts produced inside a workflow run carry
+ `metadata["run_id"]` so the review surface can resolve them via
+ direct tag lookup, no lineage join required."""
     drafts = [ArtifactDraft(kind="compiled.text", content=b"x")]
     result = processing_service.compile(
         ctx,
@@ -268,8 +268,8 @@ def test_compile_without_correlation_id_omits_run_id_tag(
     processing_service, ctx,
 ):
     """Calls outside the workflow path (no correlation_id) leave
-    `metadata.run_id` absent — the tag is purely run-scoped, never
-    fabricated."""
+ `metadata.run_id` absent — the tag is purely run-scoped, never
+ fabricated."""
     drafts = [ArtifactDraft(kind="compiled.text", content=b"x")]
     result = processing_service.compile(
         ctx,
@@ -283,8 +283,8 @@ def test_compile_producer_run_id_metadata_takes_precedence(
     processing_service, ctx,
 ):
     """If a producer explicitly stamped a different `run_id` into
-    the draft metadata, respect it — explicit producer intent is
-    authoritative over the default tag."""
+ the draft metadata, respect it — explicit producer intent is
+ authoritative over the default tag."""
     drafts = [ArtifactDraft(
         kind="compiled.text", content=b"x",
         metadata={"run_id": "producer-pinned"},
@@ -302,7 +302,7 @@ def test_enrich_tags_artifact_metadata_with_run_id(
     processing_service, ctx,
 ):
     """Same tagging behaviour for enrich — and any other stage that
-    flows through `_handle_artifact_output`."""
+ flows through `_handle_artifact_output`."""
     drafts = [ArtifactDraft(
         kind="enriched.tables", content=b'{"t":1}', suggested_extension=".json",
     )]

@@ -44,15 +44,15 @@ def resolve_available_views(
 ) -> AvailableViewsDTO:
     """Compute per-tab availability for the given run.
 
-    Inputs are intentionally minimal — the resolver is pure and
-    cheap; callers (the service) gather everything once and pass it
-    in. No I/O happens here.
+ Inputs are intentionally minimal — the resolver is pure and
+ cheap; callers (the service) gather everything once and pass it
+ in. No I/O happens here.
 
-    `planning_present` is accepted but no longer consulted — the
-    Planning Report tab is now always available (its content endpoint
-    handles the empty state). Callers can drop the kwarg at their
-    convenience; we keep the parameter for API stability across the
-    in-flight rework."""
+ `planning_present` is accepted but no longer consulted — the
+ Planning Report tab is now always available (its content endpoint
+ handles the empty state). Callers can drop the kwarg at their
+ convenience; we keep the parameter for API stability across the
+ in-flight rework."""
     artifact_kinds = {a.kind for a in artifacts}
 
     chunks_present = _CHUNK_KIND in artifact_kinds
@@ -62,13 +62,13 @@ def resolve_available_views(
     raw_present = bool(artifact_kinds)
 
     # Quality also surfaces when the run carries:
-    #   * warnings — the Quality tab renders them as a list, OR
-    #   * skipped / failed-optional step_results — the projector
-    #     emits `skippedSteps[]` / `failedOptionalSteps[]` from
-    #     `run.metadata.step_results` regardless of whether any
-    #     quality artifact landed. A run that skipped optional
-    #     stages cleanly (no warnings, no enrichment artifacts)
-    #     still has actionable rows for reviewers.
+    #  * warnings — the Quality tab renders them as a list, OR
+    #  * skipped / failed-optional step_results — the projector
+    #  emits `skippedSteps[]` / `failedOptionalSteps[]` from
+    #  `run.metadata.step_results` regardless of whether any
+    #  quality artifact landed. A run that skipped optional
+    #  stages cleanly (no warnings, no enrichment artifacts)
+    #  still has actionable rows for reviewers.
     if not quality_present and (run.warning_count or 0) > 0:
         quality_present = True
     if not quality_present and _has_actionable_step_results(run):
@@ -76,7 +76,7 @@ def resolve_available_views(
 
     # Validation tab gates: terminal-success run with at least one
     # chunk artifact. Without chunks there's nothing to query — the
-    # Phase 1 manual test query would return zero retrieval and fail
+    #  manual test query would return zero retrieval and fail
     # every check. Failed/cancelled runs disable the tab entirely
     # rather than expose a confusing "test a broken run" surface.
     validation_available = (
@@ -118,14 +118,14 @@ def resolve_available_views(
         # planning artifact exists for the run, and the FE renders
         # that reason as an empty-state inside the tab. Gating the tab
         # button on top of that produced two whole-class bugs:
-        #   * The audit-log signal (`plan.revised` event) and the
-        #     artifact signal (`planning_result` kind) were written
-        #     by independent code paths; a deployment where one path
-        #     ran but not the other left the tab disabled even when
-        #     the data existed.
-        #   * The artifact-tag run_id and the URL run_id had to match
-        #     exactly; any post-compile re-tagging or lineage-fallback
-        #     scenario silently disabled the tab.
+        #  * The audit-log signal (`plan.revised` event) and the
+        #  artifact signal (`planning_result` kind) were written
+        #  by independent code paths; a deployment where one path
+        #  ran but not the other left the tab disabled even when
+        #  the data existed.
+        #  * The artifact-tag run_id and the URL run_id had to match
+        #  exactly; any post-compile re-tagging or lineage-fallback
+        #  scenario silently disabled the tab.
         # Always-available means: one less place to lie. The tab
         # content takes responsibility for the empty state.
         parsed_content=AvailabilityDTO(available=True, reason=None),
@@ -144,9 +144,9 @@ _FAILED_OR_CANCELLED_STATUSES = frozenset({"failed", "cancelled"})
 
 def _has_actionable_step_results(run: IngestionRun) -> bool:
     """True when the run's `metadata.step_results` carries entries
-    the Quality projector would surface (skipped steps or failed
-    optional steps). Lets the Quality tab unlock on those signals
-    even when no warnings or enrichment artifacts exist."""
+ the Quality projector would surface (skipped steps or failed
+ optional steps). Lets the Quality tab unlock on those signals
+ even when no warnings or enrichment artifacts exist."""
     raw = run.metadata.get("step_results")
     if not isinstance(raw, list):
         return False
@@ -177,19 +177,19 @@ def _graph_reason(run: IngestionRun) -> str:
 
 def graph_unavailable_reason(run: IngestionRun) -> str:
     """Public version of `_graph_reason`. Single source of truth for
-    the "why no graph?" string — used by both the availability
-    resolver (`/summary`) and the graph snapshot projector
-    (`/graph`'s `unavailable.reason` field) so the FE shows the
-    same copy across surfaces.
+ the "why no graph?" string — used by both the availability
+ resolver (`/summary`) and the graph snapshot projector
+ (`/graph`'s `unavailable.reason` field) so the FE shows the
+ same copy across surfaces.
 
-    Three documented reasons in priority order:
-      1. Skipped by policy / planner.
-      2. Attempted but failed.
-      3. Generic fallback when neither signal is present.
+ Three documented reasons in priority order:
+ 1. Skipped by policy / planner.
+ 2. Attempted but failed.
+ 3. Generic fallback when neither signal is present.
 
-    Step-result-derived reasons require Phase 4's
-    `metadata["step_results"]` persistence to be effective; without
-    it the function falls back to the generic copy."""
+ Step-result-derived reasons require 's
+ `metadata["step_results"]` persistence to be effective; without
+ it the function falls back to the generic copy."""
     step_results = run.metadata.get("step_results")
     if isinstance(step_results, list):
         for entry in step_results:
@@ -198,7 +198,7 @@ def graph_unavailable_reason(run: IngestionRun) -> str:
             # Accept either lowercase ("graph", what the workflow
             # writes) or uppercase ("GRAPH", what some early test
             # fixtures used). Tolerance keeps the resolver stable
-            # across the Phase 1 → Phase 4 transition.
+            # across the → transition.
             if str(entry.get("step") or "").lower() != "graph":
                 continue
             status = str(entry.get("status") or "").lower()
@@ -224,29 +224,29 @@ _TERMINAL_SUCCESS_STATUSES = frozenset({
 
 def _is_terminal_success(run: IngestionRun) -> bool:
     """Validation-tab gate: only enable for runs that finished cleanly
-    enough to have a queryable index. Failed/cancelled runs never
-    qualify — even if some chunks slipped through, exposing a 'test
-    a broken run' surface confuses operators more than it helps."""
+ enough to have a queryable index. Failed/cancelled runs never
+ qualify — even if some chunks slipped through, exposing a 'test
+ a broken run' surface confuses operators more than it helps."""
     return str(run.status) in _TERMINAL_SUCCESS_STATUSES
 
 
 def _parsed_content_reason(run: IngestionRun) -> str:
     """Operator-readable reason for an unavailable Content Inventory.
 
-    The availability resolver now always reports the tab as available
-    — the tab content endpoint owns the empty-state messaging. This
-    helper is kept because the content endpoint still imports it for
-    its own `unavailable_reason` field when no manifest exists.
+ The availability resolver now always reports the tab as available
+ — the tab content endpoint owns the empty-state messaging. This
+ helper is kept because the content endpoint still imports it for
+ its own `unavailable_reason` field when no manifest exists.
 
-    Three precedence rules:
-      1. Run failed/cancelled before compile produced a manifest →
-         dedicated copy so reviewers don't go looking for parser output.
-      2. Run is still in compile / hasn't reached the manifest-emit
-         step yet → "compile in progress" so the FE can decide
-         whether to show a spinner vs an empty state.
-      3. Compile completed but no manifest artifact exists — typically
-         a legacy run from before this feature shipped.
-    """
+ Three precedence rules:
+ 1. Run failed/cancelled before compile produced a manifest →
+ dedicated copy so reviewers don't go looking for parser output.
+ 2. Run is still in compile / hasn't reached the manifest-emit
+ step yet → "compile in progress" so the FE can decide
+ whether to show a spinner vs an empty state.
+ 3. Compile completed but no manifest artifact exists — typically
+ a legacy run from before this feature shipped.
+ """
     if str(run.status) in _FAILED_OR_CANCELLED_STATUSES:
         return (
             "Compile stage did not produce a parsed-content manifest "
@@ -268,21 +268,21 @@ def _parsed_content_reason(run: IngestionRun) -> str:
 
 def _planning_reason(run: IngestionRun) -> str:
     """Operator-readable reason when the Planning Report tab has
-    no data to show.
+ no data to show.
 
-    The resolver no longer gates the tab on this — kept here because
-    `get_run_planning` still imports it for its own
-    `unavailable_reason` field when neither the artifact nor the
-    audit-log event yields a plan.
+ The resolver no longer gates the tab on this — kept here because
+ `get_run_planning` still imports it for its own
+ `unavailable_reason` field when neither the artifact nor the
+ audit-log event yields a plan.
 
-    Three precedence rules mirror `_parsed_content_reason`:
-      1. Run failed/cancelled before the planner emitted anything.
-      2. Run is still pre-plan (created / assessing / waiting for
-         confirmation) — the planner hasn't run yet.
-      3. Terminal run with no plan event — typically a legacy run
-         from before adaptive planning shipped, or a deployment that
-         disabled planning entirely.
-    """
+ Three precedence rules mirror `_parsed_content_reason`:
+ 1. Run failed/cancelled before the planner emitted anything.
+ 2. Run is still pre-plan (created / assessing / waiting for
+ confirmation) — the planner hasn't run yet.
+ 3. Terminal run with no plan event — typically a legacy run
+ from before adaptive planning shipped, or a deployment that
+ disabled planning entirely.
+ """
     if str(run.status) in _FAILED_OR_CANCELLED_STATUSES:
         return (
             "Planner did not produce a plan before the run ended."
@@ -297,8 +297,8 @@ def _planning_reason(run: IngestionRun) -> str:
 
 def _validation_reason(run: IngestionRun, chunks_present: bool) -> str:
     """Two operator-facing reasons in priority order: (1) the run
-    didn't complete cleanly, (2) the run completed but produced no
-    chunks. The FE renders this as a tooltip on the disabled tab."""
+ didn't complete cleanly, (2) the run completed but produced no
+ chunks. The FE renders this as a tooltip on the disabled tab."""
     if not _is_terminal_success(run):
         return "Run did not complete successfully."
     if not chunks_present:

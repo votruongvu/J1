@@ -18,10 +18,10 @@ FALLBACK_NOTE = "knowledge_first returned no sources; graph_first fallback appli
 class HybridQueryEngine:
     """Routes a `QueryRequest` to the appropriate provider.
 
-    In `AUTO` mode the classifier picks the mode. If the chosen mode is
-    `KNOWLEDGE_FIRST` and that provider returns no sources, the engine
-    additionally invokes `GRAPH_FIRST` and merges the responses (per spec).
-    """
+ In `AUTO` mode the classifier picks the mode. If the chosen mode is
+ `KNOWLEDGE_FIRST` and that provider returns no sources, the engine
+ additionally invokes `GRAPH_FIRST` and merges the responses (per spec).
+ """
 
     def __init__(
         self,

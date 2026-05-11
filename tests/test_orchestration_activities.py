@@ -214,8 +214,8 @@ def _activities_with_cache(
     *, processing_service, registry, artifact_registry, compiler, cache,
 ):
     """Build a ProcessingActivities instance wired to a cache + a
-    counting compiler so tests can prove the second invocation
-    bypasses the underlying compile call."""
+ counting compiler so tests can prove the second invocation
+ bypasses the underlying compile call."""
     from j1.orchestration.activities.processing import ProcessingActivities
     return ProcessingActivities(
         processing=processing_service,
@@ -233,11 +233,11 @@ def _activities_with_cache(
 class _CountingCompiler:
     """Compiler that tracks how many times its `compile` method runs.
 
-    Real Temporal activity retries (heartbeat-timeout, worker crash)
-    re-invoke the activity from scratch. The cache must short-circuit
-    that re-invocation when a `completed` entry exists for the same
-    input, so the underlying processor (here MinerU stand-in) is
-    NOT re-run."""
+ Real Temporal activity retries (heartbeat-timeout, worker crash)
+ re-invoke the activity from scratch. The cache must short-circuit
+ that re-invocation when a `completed` entry exists for the same
+ input, so the underlying processor (here MinerU stand-in) is
+ NOT re-run."""
 
     kind = "mock.compiler"
 
@@ -262,10 +262,10 @@ def test_compile_activity_skips_processor_when_cache_hit(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):
     """Second invocation of compile with the same inputs must NOT
-    call the underlying compiler — the artifact ids from the cached
-    `completed` entry are returned directly. This is what stops
-    Temporal retries from re-running MinerU on a successful prior
-    attempt."""
+ call the underlying compiler — the artifact ids from the cached
+ `completed` entry are returned directly. This is what stops
+ Temporal retries from re-running MinerU on a successful prior
+ attempt."""
     from j1.processing.cache import JsonlProcessingResultCache
 
     registry.add(_document(ctx))
@@ -303,15 +303,15 @@ def test_compile_activity_records_failure_in_cache(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):
     """Failures land in the cache as `failed` entries (audit trail
-    for operators inspecting repeated processing). They DO NOT block
-    retries — Temporal's retry policy is the source of truth for
-    that — but they make the cache file self-explaining: 'this doc
-    failed at compile, here's the message'.
+ for operators inspecting repeated processing). They DO NOT block
+ retries — Temporal's retry policy is the source of truth for
+ that — but they make the cache file self-explaining: 'this doc
+ failed at compile, here's the message'.
 
-    Note: `ProcessingService.compile` catches compiler exceptions
-    and returns a `FAILED` `ArtifactProcessingResult`. The activity
-    therefore sees a non-raising failed result — the cache must
-    still record it."""
+ Note: `ProcessingService.compile` catches compiler exceptions
+ and returns a `FAILED` `ArtifactProcessingResult`. The activity
+ therefore sees a non-raising failed result — the cache must
+ still record it."""
     from j1.processing.cache import (
         CACHE_STATUS_FAILED,
         JsonlProcessingResultCache,
@@ -353,8 +353,8 @@ def test_compile_activity_failed_cache_entry_does_not_short_circuit_retry(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):
     """A `failed` cache entry MUST NOT short-circuit the next attempt
-    — only `completed` entries do. Otherwise a transient first
-    failure would lock the document out of all future processing."""
+ — only `completed` entries do. Otherwise a transient first
+ failure would lock the document out of all future processing."""
     from j1.processing.cache import (
         CACHE_STATUS_FAILED,
         JsonlProcessingResultCache,
@@ -403,8 +403,8 @@ def test_compile_activity_runs_when_cache_disabled(
     processing_service, registry, artifact_registry, ctx,
 ):
     """Sanity: with `result_cache=None` (the default for deployments
-    that haven't migrated), the activity always invokes the
-    underlying compiler — preserves legacy behaviour exactly."""
+ that haven't migrated), the activity always invokes the
+ underlying compiler — preserves legacy behaviour exactly."""
     registry.add(_document(ctx))
     compiler = _CountingCompiler()
     activities = _activities_with_cache(
@@ -428,10 +428,10 @@ def test_compile_activity_writes_processing_marker_before_processor_call(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):
     """Cache visibility: while the processor is running there should
-    be a `processing` row, then a `completed` row after success.
-    Operators inspecting the cache file mid-parse see the marker;
-    latest-snapshot semantics mean the `completed` row supersedes
-    once the call returns."""
+ be a `processing` row, then a `completed` row after success.
+ Operators inspecting the cache file mid-parse see the marker;
+ latest-snapshot semantics mean the `completed` row supersedes
+ once the call returns."""
     from j1.processing.cache import (
         CACHE_STATUS_COMPLETED,
         CACHE_STATUS_PROCESSING,
@@ -497,17 +497,17 @@ def test_compile_activity_writes_processing_marker_before_processor_call(
 def test_heartbeating_thread_propagates_contextvars(workspace, ctx):
     """Regression test for the heartbeat thread silently no-op'ing.
 
-    `temporalio.activity.heartbeat()` reads the current activity from
-    a `contextvars.ContextVar`. Python `threading.Thread` does NOT
-    propagate contextvars, so a naive daemon-thread call to
-    `_safe_heartbeat` would silently swallow the resulting
-    RuntimeError and never deliver a heartbeat — letting the
-    `heartbeat_timeout` fire mid-parse on real documents.
+ `temporalio.activity.heartbeat` reads the current activity from
+ a `contextvars.ContextVar`. Python `threading.Thread` does NOT
+ propagate contextvars, so a naive daemon-thread call to
+ `_safe_heartbeat` would silently swallow the resulting
+ RuntimeError and never deliver a heartbeat — letting the
+ `heartbeat_timeout` fire mid-parse on real documents.
 
-    The fix is `contextvars.copy_context().run(...)` inside the
-    ticker loop. This test simulates the activity context with a
-    free contextvar and verifies the thread sees the same value the
-    parent set."""
+ The fix is `contextvars.copy_context.run(...)` inside the
+ ticker loop. This test simulates the activity context with a
+ free contextvar and verifies the thread sees the same value the
+ parent set."""
     import contextvars
     import threading
     import time
@@ -552,8 +552,8 @@ def test_compile_cache_key_includes_processor_version(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):
     """Bumping the compiler's `version` attribute must invalidate
-    the cache — otherwise an upgraded parser would silently reuse
-    artifacts produced by the old version."""
+ the cache — otherwise an upgraded parser would silently reuse
+ artifacts produced by the old version."""
     from j1.processing.cache import JsonlProcessingResultCache
 
     class _VersionedCompiler:

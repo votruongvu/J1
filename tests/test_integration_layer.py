@@ -4,7 +4,7 @@ Verifies:
 1. Default port implementations call the underlying J1 services.
 2. DTO converters produce the right shapes.
 3. Dependency direction stays clean — core modules don't import from
-   `j1.integration` or `j1.adapters`.
+ `j1.integration` or `j1.adapters`.
 """
 
 import ast
@@ -315,7 +315,7 @@ def test_citation_lookup_returns_self_when_no_sources(
     workspace, ctx, artifact_registry
 ):
     """Artifact with no source documents → still returns one citation entry
-    pointing at the artifact itself, so callers always get a non-empty list."""
+ pointing at the artifact itself, so callers always get a non-empty list."""
     _stage_artifact(workspace, ctx, artifact_registry, artifact_id="a-1")
     service = CitationLookupService(artifact_registry)
     citations = service.get_citations(ctx, "a-1")
@@ -505,14 +505,14 @@ def _collect_imported_modules(path: Path) -> set[str]:
 def test_core_modules_do_not_import_external_layer():
     """Core J1 modules must not depend on `j1.integration` or `j1.adapters`.
 
-    The dependency arrow points only outward: adapters depend on integration
-    ports, integration depends on core. A core file pulling something from
-    `j1.integration` or `j1.adapters` would invert that.
+ The dependency arrow points only outward: adapters depend on integration
+ ports, integration depends on core. A core file pulling something from
+ `j1.integration` or `j1.adapters` would invert that.
 
-    Exception: the top-level `src/j1/__init__.py` re-exports the public
-    surface, which legitimately includes integration + adapter types. That's
-    the package facade, not a core module.
-    """
+ Exception: the top-level `src/j1/__init__.py` re-exports the public
+ surface, which legitimately includes integration + adapter types. That's
+ the package facade, not a core module.
+ """
     offenders: list[tuple[Path, str]] = []
     for py_file in _SRC_ROOT.rglob("*.py"):
         rel = py_file.relative_to(_SRC_ROOT)
@@ -534,8 +534,8 @@ def test_core_modules_do_not_import_external_layer():
 
 def test_integration_does_not_import_protocol_adapters():
     """`j1.integration` defines ports — it must not import any protocol
-    adapter under `j1.adapters`. Adapters depend on integration, not the reverse.
-    """
+ adapter under `j1.adapters`. Adapters depend on integration, not the reverse.
+ """
     integration_root = _SRC_ROOT / "integration"
     offenders: list[tuple[Path, str]] = []
     for py_file in integration_root.rglob("*.py"):

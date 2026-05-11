@@ -5,15 +5,15 @@
  *
  * Endpoints used:
  *
- *   POST /ingestion-runs                          — upload + create run
- *   GET  /ingestion-runs/{run_id}                  — status snapshot
- *   GET  /ingestion-runs/{run_id}/plan             — execution plan
- *   POST /ingestion-runs/{run_id}/confirm          — confirm plan
- *   GET  /ingestion-runs/{run_id}/events           — historical events
- *   GET  /ingestion-runs/{run_id}/events/stream    — live SSE
+ * POST /ingestion-runs — upload + create run
+ * GET /ingestion-runs/{run_id} — status snapshot
+ * GET /ingestion-runs/{run_id}/plan — execution plan
+ * POST /ingestion-runs/{run_id}/confirm — confirm plan
+ * GET /ingestion-runs/{run_id}/events — historical events
+ * GET /ingestion-runs/{run_id}/events/stream — live SSE
  *
  * Tenant + project headers are mandatory on every request. The
- * single header-injection point is `_headers()` — every method
+ * single header-injection point is `_headers` — every method
  * routes through it.
  */
 
@@ -142,7 +142,7 @@ export class ApiClient implements IngestionClient {
   // ---- listRuns ---------------------------------------------------
   // GET /ingestion-runs — paginated list with optional `?status=`
   // repeats and a `?q=` substring filter (matches `runId` /
-  // `documentName`). Tenant + project headers come from `headers()`
+  // `documentName`). Tenant + project headers come from `headers`
   // like every other request.
   async listRuns(_ctx: ProjectContext, opts?: RunListQuery): Promise<RunListResult> {
     const params = new URLSearchParams();
@@ -262,7 +262,7 @@ export class ApiClient implements IngestionClient {
     return (data.events ?? []).map(eventFromApi);
   }
 
-  // ---- Result-review surface (Phase 7) -----------------------------
+  // ---- Result-review surface -----------------------------
   // Read-only; same envelope + tenant/project header discipline as
   // every other request.
 
@@ -451,7 +451,7 @@ export class ApiClient implements IngestionClient {
     return graphSnapshotFromApi(await this.json<unknown>(resp));
   }
 
-  // ---- runManualTestQuery (Phase 1 validation) ---------------------
+  // ---- runManualTestQuery ( validation) ---------------------
 
   async runManualTestQuery(
     runId: string,
@@ -470,7 +470,7 @@ export class ApiClient implements IngestionClient {
     return await this.json<ManualTestQueryResponse>(resp);
   }
 
-  // ---- Validation sets + runs (Phase 2) ----------------------------
+  // ---- Validation sets + runs ----------------------------
 
   async generateValidationSet(
     runId: string,
@@ -548,7 +548,7 @@ export class ApiClient implements IngestionClient {
     return await this.json<ValidationRun>(resp);
   }
 
-  // ---- Tester verdict + report (Phase 5) ---------------------------
+  // ---- Tester verdict + report ---------------------------
 
   async recordTesterVerdict(
     runId: string,

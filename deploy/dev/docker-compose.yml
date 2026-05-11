@@ -1,19 +1,19 @@
 # Local-development Docker Compose stack for J1.
 #
 # Brings up:
-#   - api          : FastAPI server (`python -m deploy.dev.api`)
-#   - worker       : Temporal worker (`python -m deploy.dev.worker`)
-#   - frontend     : Static SPA (J1 Execution Console) served by nginx
-#                    with `/api/*` proxied to the api service
-#   - temporal     : Temporal server with in-memory persistence
-#   - temporal-ui  : Browser UI for Temporal
+#  - api : FastAPI server (`python -m deploy.dev.api`)
+#  - worker : Temporal worker (`python -m deploy.dev.worker`)
+#  - frontend : Static SPA (J1 Execution Console) served by nginx
+#  with `/api/*` proxied to the api service
+#  - temporal : Temporal server with in-memory persistence
+#  - temporal-ui : Browser UI for Temporal
 #
 # Intentionally NOT included (and why — see deploy/dev/README.md § 3):
-#   - PostgreSQL   : the framework uses flat-file JSON registries +
-#                    per-project SQLite FTS5; no relational store
-#   - Redis        : not used anywhere in the framework
-#   - MinIO / S3   : workspace is filesystem-based, mounted as a
-#                    Docker volume
+#  - PostgreSQL : the framework uses flat-file JSON registries +
+#  per-project SQLite FTS5; no relational store
+#  - Redis : not used anywhere in the framework
+#  - MinIO / S3 : workspace is filesystem-based, mounted as a
+#  Docker volume
 
 name: j1-dev
 
@@ -30,7 +30,7 @@ services:
     volumes:
       - j1_workspace:/var/lib/j1
       # Bind-mount Python source so code edits land without rebuilding
-      # the image. `pip install -e .` (run during the image build)
+      # the image. `pip install -e.` (run during the image build)
       # already symlinked the j1 package; the bind mount transparently
       # replaces the baked-in source files with the host copy. Restart
       # the container after edits — there's no auto-reload (Temporal
@@ -103,7 +103,7 @@ services:
   # Code edits: the bundle is baked into the image at build time, so
   # changes under `frontend/src/` need a rebuild:
   #
-  #   docker compose -f deploy/dev/docker-compose.yml up --build frontend
+  #  docker compose -f deploy/dev/docker-compose.yml up --build frontend
   #
   # Or bypass the container entirely for HMR / fast iteration: run
   # `npm run dev` on the host (`cd frontend && npm run dev`) and
@@ -117,7 +117,7 @@ services:
         # Build-time API base URL baked into the SPA. `/api` keeps
         # the browser single-origin via nginx's proxy block. To point
         # the bundle at a different backend (staging, etc.), override:
-        #   docker compose build --build-arg VITE_API_BASE_URL=https://api.example.com frontend
+        #  docker compose build --build-arg VITE_API_BASE_URL=https://api.example.com frontend
         VITE_API_BASE_URL: ${J1_FRONTEND_API_BASE_URL:-/api}
     image: j1-frontend:latest
     container_name: j1-frontend
@@ -258,7 +258,7 @@ services:
         # Adaptive-plan signals — written when the planner runs.
         register_keyword J1RequiresVision
         register_keyword J1RequiresPremiumLLM
-        # Wave 8/9A — new pipeline surface.
+        # /9A — new pipeline surface.
         register_keyword J1DomainProfileId
         register_keyword J1EnrichmentPolicy
         register_keyword J1RequireEnrichmentSuccess

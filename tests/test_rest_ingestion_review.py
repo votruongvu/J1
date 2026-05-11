@@ -78,7 +78,7 @@ def application_facade(
     intake_service, artifact_registry, registry, feedback_store, audit_recorder,
 ):
     """Minimal facade — review endpoints don't depend on the facade,
-    but `create_rest_api` requires one."""
+ but `create_rest_api` requires one."""
     return ApplicationFacade(
         ingestion=DocumentIngestionService(intake_service),
         retrieval=RetrievalService(artifact_registry),
@@ -162,8 +162,8 @@ def test_get_summary_returns_404_for_cross_project_access(
     client, run_store, ctx,
 ):
     """A run in tenant=acme/project=alpha must not be visible from
-    tenant=acme/project=beta. Same 404 shape as a missing run — never
-    leaks existence across projects."""
+ tenant=acme/project=beta. Same 404 shape as a missing run — never
+ leaks existence across projects."""
     run_store.upsert(ctx, _make_run(run_id="cross-project"))
 
     other_headers = {TENANT_HEADER: "acme", PROJECT_HEADER: "beta"}
@@ -179,7 +179,7 @@ def test_get_summary_returns_503_when_review_service_not_configured(
     application_facade, workspace, run_store,
 ):
     """Standard graceful-degrade pattern — the endpoint 503s with a
-    clear message rather than crashing on a None lookup."""
+ clear message rather than crashing on a None lookup."""
     app = create_rest_api(
         application_facade,
         workspace=workspace,
@@ -276,7 +276,7 @@ def test_get_summary_includes_quality_summary_when_warnings_present(
 
 
 # =====================================================================
-# Phase 2 — /ingestion-runs/{id}/artifacts + .../{artifact_id}/content
+# /ingestion-runs/{id}/artifacts +.../{artifact_id}/content
 # =====================================================================
 
 
@@ -441,8 +441,8 @@ def test_get_artifact_content_404_when_artifact_belongs_to_other_run(
     client, run_store, artifact_registry, workspace, ctx,
 ):
     """The most important security test: the run-scoped content
-    endpoint must not let you read an artifact tagged for a different
-    run, even if you guess its id."""
+ endpoint must not let you read an artifact tagged for a different
+ run, even if you guess its id."""
     run_store.upsert(ctx, _make_run(run_id="mine", document_id="doc-A"))
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="theirs", kind="chunk",
@@ -467,7 +467,7 @@ def test_get_artifact_content_404_for_path_traversal_attempt(
     client, run_store, artifact_registry, ctx,
 ):
     """Tampered registry — `location` escapes the area — surfaces as
-    a uniform 404 (PathTraversalError → REVIEW_NOT_FOUND)."""
+ a uniform 404 (PathTraversalError → REVIEW_NOT_FOUND)."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     bad = ArtifactRecord(
         artifact_id="evil",
@@ -495,7 +495,7 @@ def test_get_artifact_content_404_for_path_traversal_attempt(
 
 
 # =====================================================================
-# Phase 3 — /chunks list / detail / NDJSON export
+# /chunks list / detail / NDJSON export
 # =====================================================================
 
 
@@ -670,7 +670,7 @@ def test_export_chunks_streams_ndjson(
 
 def test_export_chunks_404_for_missing_run(client):
     """Eager validation in the service means 404 hits before any
-    bytes go out — not a partial 200 response."""
+ bytes go out — not a partial 200 response."""
     resp = client.get(
         "/ingestion-runs/missing/exports/chunks.ndjson",
         headers=_HEADERS,
@@ -683,7 +683,7 @@ def test_summary_chunks_available_when_chunk_artifact_present(
     client, run_store, artifact_registry, workspace, ctx,
 ):
     """End-to-end check: when a chunk artifact exists, the summary
-    endpoint reports `availableViews.chunks.available=true`."""
+ endpoint reports `availableViews.chunks.available=true`."""
     _seed_chunks_run(
         run_store, artifact_registry, workspace, ctx,
         chunks=[{"chunk_id": "x", "body": "y"}],
@@ -696,11 +696,11 @@ def test_summary_chunks_available_when_chunk_artifact_present(
     assert views["chunks"]["reason"] is None
 
 
-# ---- Phase 4 end-to-end: terminal activity → review summary -----
+# ---- end-to-end: terminal activity → review summary -----
 
 
 # =====================================================================
-# Phase 5 — /quality-report
+# /quality-report
 # =====================================================================
 
 
@@ -855,8 +855,8 @@ def test_get_quality_report_returns_empty_shape_when_no_quality_data(
     client, run_store, ctx,
 ):
     """Run exists but there's nothing to report — endpoint still
-    succeeds with all-empty fields. The Quality tab will show its
-    empty state."""
+ succeeds with all-empty fields. The Quality tab will show its
+ empty state."""
     run_store.upsert(ctx, _make_run())
 
     resp = client.get(
@@ -875,7 +875,7 @@ def test_get_quality_report_returns_empty_shape_when_no_quality_data(
 
 
 # =====================================================================
-# Phase 6 — /graph
+# /graph
 # =====================================================================
 
 
@@ -1001,7 +1001,7 @@ def test_get_graph_returns_unavailable_skipped_by_policy(
     client, run_store, ctx,
 ):
     """End-to-end: workflow recorded GRAPH skipped by policy →
-    `/graph`'s `unavailable.reason` carries that copy."""
+ `/graph`'s `unavailable.reason` carries that copy."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "graph", "status": "skipped", "source": "policy",
@@ -1066,10 +1066,10 @@ def test_get_graph_503_when_review_service_not_configured(
 def test_summary_surfaces_step_results_after_workflow_terminal(
     client, run_store, ctx,
 ):
-    """Closes the Phase 4 loop end-to-end: the workflow's terminal
-    activity persists step_summary into IngestionRun.metadata, and
-    the review-service summary endpoint hydrates them into the FE-
-    facing `steps` field. No mock — uses the real RunsActivities."""
+    """Closes the loop end-to-end: the workflow's terminal
+ activity persists step_summary into IngestionRun.metadata, and
+ the review-service summary endpoint hydrates them into the FE-
+ facing `steps` field. No mock — uses the real RunsActivities."""
     from j1.orchestration.activities.payloads import ProjectScope
     from j1.orchestration.activities.runs import (
         ReportRunTerminalInput,
@@ -1104,7 +1104,7 @@ def test_summary_surfaces_step_results_after_workflow_terminal(
     assert steps[1]["status"] == "skipped"
     assert steps[1]["source"] == "policy"
     # Graph availability reason now correctly traces to "skipped by policy"
-    # because Phase 4 persisted the step_results that Phase 1's
+    # because persisted the step_results that 's
     # availability resolver inspects.
     assert "policy" in data["availableViews"]["graph"]["reason"].lower()
 
@@ -1122,7 +1122,7 @@ def test_get_planning_returns_unavailable_for_run_without_plan_event(
     client, run_store, ctx,
 ):
     """Run exists but no plan.generated event yet → 200 with
-    `status="unavailable"` and an operator-readable reason."""
+ `status="unavailable"` and an operator-readable reason."""
     run_store.upsert(ctx, _make_run(run_id="np"))
     resp = client.get("/ingestion-runs/np/planning", headers=_HEADERS)
     assert resp.status_code == 200
@@ -1136,7 +1136,7 @@ def test_get_planning_endpoint_projects_plan_payload(
     client, run_store, reporter, ctx,
 ):
     """End-to-end: a `plan.generated` event lands in the audit log,
-    the endpoint returns the projection in canonical camelCase."""
+ the endpoint returns the projection in canonical camelCase."""
     run_store.upsert(ctx, _make_run(run_id="pl"))
     reporter.report_plan_generated(
         ctx, run_id="pl",

@@ -1,16 +1,16 @@
-"""End-to-end REST tests for Phase 2 validation endpoints.
+"""End-to-end REST tests for validation endpoints.
 
-Six routes ship in Phase 2:
+Six routes ship :
 
-  POST /ingestion-runs/{id}/validation-sets/generate
-  GET  /ingestion-runs/{id}/validation-sets
-  GET  /ingestion-runs/{id}/validation-sets/{vs}
-  POST /ingestion-runs/{id}/validation-runs
-  GET  /ingestion-runs/{id}/validation-runs
-  GET  /ingestion-runs/{id}/validation-runs/{vr}
+ POST /ingestion-runs/{id}/validation-sets/generate
+ GET /ingestion-runs/{id}/validation-sets
+ GET /ingestion-runs/{id}/validation-sets/{vs}
+ POST /ingestion-runs/{id}/validation-runs
+ GET /ingestion-runs/{id}/validation-runs
+ GET /ingestion-runs/{id}/validation-runs/{vr}
 
 Service-level semantics (idempotency, ownership, lifecycle) are
-covered in test_validation_service_phase2; these tests verify the
+covered in test_validation_service_; these tests verify the
 REST envelope shape, headers/scope plumbing, 404 cross-tenant
 uniformity, 503 when the service isn't wired, and request validation.
 """
@@ -264,7 +264,7 @@ def test_post_generate_503_when_service_not_wired(
 
 def test_post_generate_422_for_max_cases_above_50(client, run_store, ctx):
     """Pydantic upper bound mirrors the service's hard cap.
-    51 should be rejected at the boundary, not clamped silently."""
+ 51 should be rejected at the boundary, not clamped silently."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     resp = client.post(
         "/ingestion-runs/run-1/validation-sets/generate",
@@ -394,8 +394,8 @@ def test_post_validation_run_returns_201_with_terminal_snapshot(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """v1 is synchronous — 201 means the runner finished. Body's
-    `executionStatus` is `completed` and `validationStatus`
-    reflects the case outcomes."""
+ `executionStatus` is `completed` and `validationStatus`
+ reflects the case outcomes."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -518,7 +518,7 @@ def test_get_validation_run_returns_full_payload_with_results(
     assert isinstance(data["results"], list)
     if data["results"]:
         result = data["results"][0]
-        # Phase 1 trust contract: every retrieved chunk + citation
+        #  trust contract: every retrieved chunk + citation
         # carries server-derived runId/chunkId.
         if result["retrievedChunks"]:
             assert result["retrievedChunks"][0]["runId"] == "run-1"
@@ -539,7 +539,7 @@ def test_split_status_persists_across_envelope(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Wire-shape regression: HTTP status (201) and validationStatus
-    (in body) are independent. Empty index → completed + failed."""
+ (in body) are independent. Empty index → completed + failed."""
     run_store.upsert(ctx, _make_run(run_id="empty-run"))
     # Generate a set without indexing any chunks — runner will fail.
     vs = client.post(

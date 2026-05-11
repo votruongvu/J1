@@ -8,8 +8,8 @@ adapter construction; if it isn't installed the constructor raises
 hint, so the framework's own test suite stays hermetic.
 
 What ships today:
-  * `j1.providers.raganything` — RAGAnything-backed compiler + graph + retrieval
-  * `j1.providers.graphify`    — Graphify-backed graph builder (optional)
+ * `j1.providers.raganything` — RAGAnything-backed compiler + graph + retrieval
+ * `j1.providers.graphify` — Graphify-backed graph builder (optional)
 """
 
 from j1.providers.errors import ProviderUnavailable

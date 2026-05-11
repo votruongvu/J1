@@ -1,4 +1,4 @@
-"""Enrichment overlay (Wave 6).
+"""Enrichment overlay.
 
 Typed container for the post-compile enrichment stage's output.
 The overlay is **derived** — every field carries provenance back
@@ -7,34 +7,34 @@ raw compile output stays intact in the workspace.
 
 Design contracts:
 
-  1. **Non-destructive.** Enrichment writes new typed records +
-     new artifact kinds (`enriched.tables`, `enriched.visuals`, …);
-     it never mutates the existing compile artifacts.
+ 1. **Non-destructive.** Enrichment writes new typed records +
+ new artifact kinds (`enriched.tables`, `enriched.visuals`, …);
+ it never mutates the existing compile artifacts.
 
-  2. **Provenance is explicit.** Every per-module outcome and every
-     overlay field that points at content carries
-     `source_artifact_refs` referencing the compile artifacts the
-     enrichment was derived from. The FE renders the chain
-     "this enrichment came from chunk X, which came from compile
-     output Y".
+ 2. **Provenance is explicit.** Every per-module outcome and every
+ overlay field that points at content carries
+ `source_artifact_refs` referencing the compile artifacts the
+ enrichment was derived from. The FE renders the chain
+ "this enrichment came from chunk X, which came from compile
+ output Y".
 
-  3. **Partial execution is supported.** Each module can succeed,
-     skip with a reason, fail, or run partially. The aggregated
-     `EnrichmentResult.status` reflects the worst non-success
-     outcome; per-module outcomes are preserved on the
-     `module_outcomes` list.
+ 3. **Partial execution is supported.** Each module can succeed,
+ skip with a reason, fail, or run partially. The aggregated
+ `EnrichmentResult.status` reflects the worst non-success
+ outcome; per-module outcomes are preserved on the
+ `module_outcomes` list.
 
-  4. **Domain-driven.** Modules consume `DomainExtractionHints`,
-     `DomainPromptPack`, and `DomainValidationRules` through the
-     typed contracts on `DomainPack`. No domain-specific logic
-     lives in module code; the modules read the typed fields and
-     pass them to whatever extraction/LLM machinery they wrap.
+ 4. **Domain-driven.** Modules consume `DomainExtractionHints`,
+ `DomainPromptPack`, and `DomainValidationRules` through the
+ typed contracts on `DomainPack`. No domain-specific logic
+ lives in module code; the modules read the typed fields and
+ pass them to whatever extraction/LLM machinery they wrap.
 
-  5. **No new LLM calls in this wave.** The skeleton modules
-     defined here are decision + bookkeeping only. The existing
-     LLM-backed enrichers in `j1.enrichers` keep operating as
-     today; a future slice will wrap them via the `EnrichmentModule`
-     protocol so their outputs land on the typed overlay.
+ 5. **The skeleton modules
+ defined here are decision + bookkeeping only. The existing
+ LLM-backed enrichers in `j1.enrichers` keep operating as
+ today; future code will wrap them via the `EnrichmentModule`
+ protocol so their outputs land on the typed overlay.
 
 The module is PURE — no I/O. Persistence happens at the
 `ProcessingService` layer via `persist_enrichment_result`.
@@ -73,15 +73,15 @@ ENRICHMENT_RESULT_SCHEMA_VERSION = "1"
 class EnrichmentModuleStatus(StrEnum):
     """Per-module outcome state.
 
-      * `RUN` — module executed and produced its expected outputs.
-      * `PARTIAL` — module ran but produced only some outputs
-        (e.g. table enricher recovered 2 of 5 tables). Surfaced
-        distinctly from `RUN` so reviewers see "we got some, not
-        all" instead of green-success copy.
-      * `SKIPPED` — module decided not to run; reason recorded.
-      * `FAILED` — module raised / vendor returned an error. The
-        raw compile output is untouched.
-    """
+ * `RUN` — module executed and produced its expected outputs.
+ * `PARTIAL` — module ran but produced only some outputs
+ (e.g. table enricher recovered 2 of 5 tables). Surfaced
+ distinctly from `RUN` so reviewers see "we got some, not
+ all" instead of green-success copy.
+ * `SKIPPED` — module decided not to run; reason recorded.
+ * `FAILED` — module raised / vendor returned an error. The
+ raw compile output is untouched.
+ """
 
     RUN = "run"
     PARTIAL = "partial"
@@ -95,13 +95,13 @@ class EnrichmentModuleStatus(StrEnum):
 @dataclass(frozen=True)
 class ProvenanceLink:
     """A typed back-reference from an enriched output to the raw
-    compile artifact/chunk it was derived from.
+ compile artifact/chunk it was derived from.
 
-    Pure data; the FE/audit layer resolves `source_artifact_id` /
-    `source_chunk_id` against the artifact registry when rendering.
-    `relation` is a short label ("extracted_from", "summarises",
-    "validates") so the chain is human-readable on the timeline.
-    """
+ Pure data; the FE/audit layer resolves `source_artifact_id` /
+ `source_chunk_id` against the artifact registry when rendering.
+ `relation` is a short label ("extracted_from", "summarises",
+ "validates") so the chain is human-readable on the timeline.
+ """
 
     source_artifact_id: str | None = None
     source_chunk_id: str | None = None
@@ -120,10 +120,10 @@ class ProvenanceLink:
 @dataclass(frozen=True)
 class ModelUsageRecord:
     """One LLM/model call's footprint. Aggregated per-module +
-    on the top-level result for cost/runtime visibility.
+ on the top-level result for cost/runtime visibility.
 
-    Pure data; no LLM coupling. Fields stay optional so a module
-    that doesn't call a model leaves the record empty."""
+ Pure data; no LLM coupling. Fields stay optional so a module
+ that doesn't call a model leaves the record empty."""
 
     model: str | None = None
     provider: str | None = None
@@ -148,7 +148,7 @@ class ModelUsageRecord:
 @dataclass(frozen=True)
 class TableSummary:
     """One enriched table — typed summary the FE renders without
-    re-fetching the raw artifact."""
+ re-fetching the raw artifact."""
 
     table_id: str
     title: str | None = None
@@ -196,7 +196,7 @@ class ImageSummary:
 class TerminologyEntry:
     """One terminology mapping the terminology enricher emitted.
 
-    Acts as both glossary entry + retrieval-normalisation hint."""
+ Acts as both glossary entry + retrieval-normalisation hint."""
 
     term: str
     normalized: str | None = None
@@ -218,9 +218,9 @@ class TerminologyEntry:
 class ClassificationResult:
     """Document-level classification output.
 
-    `category` is the top-level type (e.g. "method_statement"),
-    `subcategory` is an optional finer label, `confidence` is the
-    classifier's 0..1 score."""
+ `category` is the top-level type (e.g. "method_statement"),
+ `subcategory` is an optional finer label, `confidence` is the
+ classifier's 0..1 score."""
 
     category: str | None = None
     subcategory: str | None = None
@@ -246,10 +246,10 @@ class ClassificationResult:
 class DocumentMetadataOverlay:
     """Document-level metadata the enrichment stage observed.
 
-    Distinct from the raw parsed metadata: this overlay carries
-    the enricher's EXTRACTION of metadata fields the domain asked
-    for (e.g. `project_number`, `drawing_revision`). Empty when
-    the metadata enricher didn't run."""
+ Distinct from the raw parsed metadata: this overlay carries
+ the enricher's EXTRACTION of metadata fields the domain asked
+ for (e.g. `project_number`, `drawing_revision`). Empty when
+ the metadata enricher didn't run."""
 
     fields: dict[str, str] = field(default_factory=dict)
     missing_required_fields: tuple[str, ...] = ()
@@ -269,9 +269,9 @@ class DocumentMetadataOverlay:
 class ValidationFinding:
     """One observation from the validation enricher.
 
-    `field_name` is the metadata key the finding refers to (when
-    relevant) — not named `field` to avoid shadowing the
-    `dataclasses.field` import at class-definition time."""
+ `field_name` is the metadata key the finding refers to (when
+ relevant) — not named `field` to avoid shadowing the
+ `dataclasses.field` import at class-definition time."""
 
     rule: str
     severity: str = "warning"  # info / warning / error
@@ -293,9 +293,9 @@ class ValidationFinding:
 class ValidationResult:
     """Aggregate output of the validation enricher.
 
-    `passed=True` means no severity-error findings; warnings can
-    still be present. The FE renders findings + a banner driven
-    by `passed`."""
+ `passed=True` means no severity-error findings; warnings can
+ still be present. The FE renders findings + a banner driven
+ by `passed`."""
 
     passed: bool = True
     findings: tuple[ValidationFinding, ...] = ()
@@ -316,12 +316,12 @@ class ValidationResult:
 class EnrichmentModuleOutcome:
     """One module's structured outcome record.
 
-    The FE renders the module-status pill + the run/skip reason
-    from this record. `output_artifact_refs` captures the new
-    artifacts the module wrote (provenance flows back via the
-    artifact registry); `source_refs` carries explicit per-output
-    provenance for cases where multiple compile artifacts feed
-    one module."""
+ The FE renders the module-status pill + the run/skip reason
+ from this record. `output_artifact_refs` captures the new
+ artifacts the module wrote (provenance flows back via the
+ artifact registry); `source_refs` carries explicit per-output
+ provenance for cases where multiple compile artifacts feed
+ one module."""
 
     module_id: str
     status: EnrichmentModuleStatus
@@ -352,34 +352,34 @@ class EnrichmentModuleOutcome:
 
 @runtime_checkable
 class EnrichmentModule(Protocol):
-    """The interface every Wave-6 enrichment module conforms to.
+    """The interface every enrichment module conforms to.
 
-    Modules are PURE in their decision surface — `should_run()`
-    inspects inputs + domain hints and returns a yes/no with a
-    reason. Side-effect heavy work (LLM calls, artifact writes)
-    is gated behind `run()`. A module that doesn't have what it
-    needs returns a SKIPPED outcome; failure is captured as a
-    FAILED outcome with errors, never as a raised exception that
-    blows up the run."""
+ Modules are PURE in their decision surface — `should_run`
+ inspects inputs + domain hints and returns a yes/no with a
+ reason. Side-effect heavy work (LLM calls, artifact writes)
+ is gated behind `run`. A module that doesn't have what it
+ needs returns a SKIPPED outcome; failure is captured as a
+ FAILED outcome with errors, never as a raised exception that
+ blows up the run."""
 
     module_id: str
     """Stable identifier — matches `recommended_tasks` ids in
-    `PostCompileEnrichPlan` (e.g. `metadata_enrichment`,
-    `terminology_enrichment`, `validation`)."""
+ `PostCompileEnrichPlan` (e.g. `metadata_enrichment`,
+ `terminology_enrichment`, `validation`)."""
 
     def can_run(self, ctx: "EnrichmentContext") -> tuple[bool, str]:
         """Return (yes, reason). False with a reason means the
-        module will be skipped with that reason recorded in the
-        outcome. The reason is operator-readable."""
+ module will be skipped with that reason recorded in the
+ outcome. The reason is operator-readable."""
         ...
 
     def run(self, ctx: "EnrichmentContext") -> EnrichmentModuleOutcome:
         """Execute the module. MUST return a structured outcome —
-        never raise. Failures are encoded as
-        `EnrichmentModuleStatus.FAILED` with `errors` populated.
+ never raise. Failures are encoded as
+ `EnrichmentModuleStatus.FAILED` with `errors` populated.
 
-        Caller (the runner) aggregates outcomes onto the
-        `EnrichmentResult`."""
+ Caller (the runner) aggregates outcomes onto the
+ `EnrichmentResult`."""
         ...
 
 
@@ -388,47 +388,47 @@ class EnrichmentModule(Protocol):
 
 @dataclass(frozen=True)
 class EnrichmentResult:
-    """The Wave-6 typed overlay produced by the enrichment stage.
+    """The typed overlay produced by the enrichment stage.
 
-    Persisted as the `enrichment_result` artifact and surfaced
-    via `GET /ingestion-runs/{id}/enrichment-result`. Distinct from
-    the existing per-enricher artifacts (`enriched.tables`,
-    `enriched.visuals`, …) — those stay as-is; this is the
-    aggregated typed view downstream consumers (post-compile
-    reports, final summaries, FE panels) branch on.
+ Persisted as the `enrichment_result` artifact and surfaced
+ via `GET /ingestion-runs/{id}/enrichment-result`. Distinct from
+ the existing per-enricher artifacts (`enriched.tables`,
+ `enriched.visuals`, …) — those stay as-is; this is the
+ aggregated typed view downstream consumers (post-compile
+ reports, final summaries, FE panels) branch on.
 
-    Fields:
-      * `module_outcomes` — per-module structured outcome records
-        (status, reason, duration, model usage, provenance).
-      * `document_metadata_overlay` — extracted domain metadata.
-      * `terminology_map` — terminology enricher output.
-      * `classification_result` — document classifier output.
-      * `table_summaries` / `image_summaries` — per-element summaries.
-      * `validation_result` — validation enricher findings.
-      * `retrieval_hints` — additional retrieval cues
-        (synonyms, key terms) the indexer can consume.
-      * `confidence_notes` — operator-readable notes about
-        confidence ("classification confidence is low because…").
-      * `warnings` / `errors` — aggregate non-blocking caveats +
-        terminal errors across modules.
-      * `model_usage` — aggregated cost/runtime across modules.
-      * `duration_ms` — total enrichment-stage duration.
-      * `skipped_reason` — operator-readable reason when the entire
-        enrichment stage was skipped (e.g. SKIP verdict from the
-        post-compile assessor). Populated only when
-        `status == "skipped"`; empty otherwise.
+ Fields:
+ * `module_outcomes` — per-module structured outcome records
+ (status, reason, duration, model usage, provenance).
+ * `document_metadata_overlay` — extracted domain metadata.
+ * `terminology_map` — terminology enricher output.
+ * `classification_result` — document classifier output.
+ * `table_summaries` / `image_summaries` — per-element summaries.
+ * `validation_result` — validation enricher findings.
+ * `retrieval_hints` — additional retrieval cues
+ (synonyms, key terms) the indexer can consume.
+ * `confidence_notes` — operator-readable notes about
+ confidence ("classification confidence is low because…").
+ * `warnings` / `errors` — aggregate non-blocking caveats +
+ terminal errors across modules.
+ * `model_usage` — aggregated cost/runtime across modules.
+ * `duration_ms` — total enrichment-stage duration.
+ * `skipped_reason` — operator-readable reason when the entire
+ enrichment stage was skipped (e.g. SKIP verdict from the
+ post-compile assessor). Populated only when
+ `status == "skipped"`; empty otherwise.
 
-    `status` aggregates the worst non-success module outcome:
-      * `succeeded` — every module RUN or domain-skipped.
-      * `succeeded_with_warnings` — at least one PARTIAL.
-      * `failed` — at least one FAILED module. Caller layers the
-        `require_enrichment_success` policy on top of this value to
-        decide whether the run-level outcome is FAILED.
-      * `skipped` — the entire enrichment stage was skipped before
-        any module ran (Wave 6.5 — distinct from per-module
-        SKIPPED so the FE can render "enrichment skipped"
-        differently from "every module skipped itself").
-    """
+ `status` aggregates the worst non-success module outcome:
+ * `succeeded` — every module RUN or domain-skipped.
+ * `succeeded_with_warnings` — at least one PARTIAL.
+ * `failed` — at least one FAILED module. Caller layers the
+ `require_enrichment_success` policy on top of this value to
+ decide whether the run-level outcome is FAILED.
+ * `skipped` — the entire enrichment stage was skipped before
+ any module ran (distinct from per-module
+ SKIPPED so the FE can render "enrichment skipped"
+ differently from "every module skipped itself").
+ """
 
     document_id: str
     schema_version: str = ENRICHMENT_RESULT_SCHEMA_VERSION

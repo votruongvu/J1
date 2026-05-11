@@ -8,15 +8,15 @@ the bus. The bus' subscriber list (typically including a
 
 Design choices:
 - All helpers accept `bus: ApplicationEventBus | None`. When the bus is
-  `None`, the helpers are no-ops — that preserves the existing handlers'
-  behaviour for deployments that haven't opted into event publication.
+ `None`, the helpers are no-ops — that preserves the existing handlers'
+ behaviour for deployments that haven't opted into event publication.
 - Publication happens *after* the handler's primary work succeeds, so a
-  failed event publication can never affect the response.
+ failed event publication can never affect the response.
 - `actor` and `auth_type` come from the `SecurityContext`. Anonymous
-  contexts emit events with `actor=None`, which signals "system" to
-  receivers.
+ contexts emit events with `actor=None`, which signals "system" to
+ receivers.
 - `correlation_id` carries the request's X-Request-Id so receivers can
-  tie an inbound HTTP call to its outbound webhook delivery.
+ tie an inbound HTTP call to its outbound webhook delivery.
 """
 
 import logging
@@ -53,9 +53,9 @@ def publish_event(
 ) -> None:
     """Build and publish one `ApplicationEvent`. No-op when `bus is None`.
 
-    Wraps publication in a try/except so a misconfigured bus or a
-    misbehaving subscriber cannot affect the calling handler.
-    """
+ Wraps publication in a try/except so a misconfigured bus or a
+ misbehaving subscriber cannot affect the calling handler.
+ """
     if bus is None:
         return
     actor = None if security.is_anonymous else security.subject

@@ -1,11 +1,11 @@
 """End-to-end tests for the user-facing /ingestion-runs/* endpoints.
 
 Covers:
-  * `GET /ingestion-runs/{id}` — status snapshot
-  * `GET /ingestion-runs/{id}/plan` — execution plan view
-  * `GET /ingestion-runs/{id}/events` — historical progress events
-  * `GET /ingestion-runs/{id}/events/stream` — SSE shape
-  * `POST /ingestion-runs/{id}/confirm` — confirmation transition
+ * `GET /ingestion-runs/{id}` — status snapshot
+ * `GET /ingestion-runs/{id}/plan` — execution plan view
+ * `GET /ingestion-runs/{id}/events` — historical progress events
+ * `GET /ingestion-runs/{id}/events/stream` — SSE shape
+ * `POST /ingestion-runs/{id}/confirm` — confirmation transition
 
 The endpoints sit alongside `/ingestion-jobs/*` (technical surface)
 without breaking it.
@@ -90,8 +90,8 @@ def application_facade(
     audit_recorder, job_control,
 ):
     """Minimal facade for the run-related endpoints. Mirrors the
-    constructor shape used in `test_rest_adapter.py` but skips the
-    search / answer / temporal services we don't exercise here."""
+ constructor shape used in `test_rest_adapter.py` but skips the
+ search / answer / temporal services we don't exercise here."""
     from j1.integration import (
         ApplicationFacade, CitationLookupService,
         DocumentIngestionService, EventPublisherService,
@@ -120,7 +120,7 @@ def feedback_store(workspace):
 @pytest.fixture
 def started_jobs() -> list[tuple[str, str, str]]:
     """Captures (project_id, document_id, compiler_kind) per
-    job_starter call. Mirrors the pattern from test_rest_adapter.py."""
+ job_starter call. Mirrors the pattern from test_rest_adapter.py."""
     return []
 
 
@@ -147,9 +147,9 @@ def client(application_facade, workspace, run_store, job_starter, reporter) -> T
 @pytest.fixture
 def client_no_reporter(application_facade, workspace, run_store, job_starter) -> TestClient:
     """Client without a progress reporter — used to verify the
-    POST /ingestion-runs endpoint still works when the deployment
-    hasn't wired the progress surface (records are persisted; no
-    progress events are emitted)."""
+ POST /ingestion-runs endpoint still works when the deployment
+ hasn't wired the progress surface (records are persisted; no
+ progress events are emitted)."""
     app = create_rest_api(
         application_facade,
         workspace=workspace,
@@ -198,12 +198,12 @@ def test_get_run_derives_current_step_from_audit_when_record_is_empty(
     client, run_store, ctx, reporter,
 ):
     """Worker activities don't update the run-store record (the
-    run-store is API-side state; the worker emits audit events).
-    Without server-side derivation the detail endpoint's
-    `currentStage` / `currentStep` would stay null for the lifetime
-    of the run. This test pins down the round-2 fix: when the run
-    record's own `current_*` fields are empty, the GET handler
-    backfills them from the most recent `step.*` progress event."""
+ run-store is API-side state; the worker emits audit events).
+ Without server-side derivation the detail endpoint's
+ `currentStage` / `currentStep` would stay null for the lifetime
+ of the run. This test pins down the round-2 fix: when the run
+ record's own `current_*` fields are empty, the GET handler
+ backfills them from the most recent `step.*` progress event."""
     now = datetime.now(timezone.utc)
     run_store.upsert(ctx, IngestionRun(
         run_id="run-derived",
@@ -239,9 +239,9 @@ def test_get_run_keeps_record_values_when_present(
     client, run_store, ctx, reporter,
 ):
     """When the run record DOES carry `current_*` (e.g. a future
-    worker-side writer fills it), the audit-derived values must not
-    overwrite them. Only `lastEventType` is always derived because it
-    isn't on the record."""
+ worker-side writer fills it), the audit-derived values must not
+ overwrite them. Only `lastEventType` is always derived because it
+ isn't on the record."""
     run_store.upsert(ctx, _make_run("run-pinned"))
     reporter.report_step_started(
         ctx, run_id="run-pinned", stage="ENRICH", step="OTHER_STEP",
@@ -259,7 +259,7 @@ def test_get_run_keeps_record_values_when_present(
 
 def test_get_run_returns_503_when_store_not_configured(application_facade, workspace):
     """The endpoint degrades gracefully when no run store is wired —
-    deployments that don't use the runs surface aren't required to."""
+ deployments that don't use the runs surface aren't required to."""
     app = create_rest_api(application_facade, workspace=workspace)
     test_client = TestClient(app)
     resp = test_client.get("/ingestion-runs/run-1", headers=_HEADERS)
@@ -271,8 +271,8 @@ def test_get_run_returns_503_when_store_not_configured(application_facade, works
 
 def test_get_run_events_returns_progress_entries_only(client, ctx, reporter):
     """Only `j1.progress.*` audit entries with matching correlation_id
-    surface as ProgressEvents — other audit actions stay invisible to
-    the runs surface."""
+ surface as ProgressEvents — other audit actions stay invisible to
+ the runs surface."""
     reporter.report_run_created(ctx, run_id="run-2", document_id="doc-x")
     reporter.report_step_started(
         ctx, run_id="run-2", stage="COMPILE", step="parse",
@@ -299,8 +299,8 @@ def test_get_run_events_returns_progress_entries_only(client, ctx, reporter):
 
 def test_get_run_events_filters_unrelated_runs(client, ctx, reporter):
     """Events for run B must not appear in run A's timeline — the
-    correlation_id filter is what makes the runs view sane in a
-    workspace with many concurrent ingestions."""
+ correlation_id filter is what makes the runs view sane in a
+ workspace with many concurrent ingestions."""
     reporter.report_run_created(ctx, run_id="run-A", document_id="doc-A")
     reporter.report_run_created(ctx, run_id="run-B", document_id="doc-B")
 
@@ -320,8 +320,8 @@ def test_get_run_plan_returns_404_when_no_plan_recorded(client):
 
 def test_get_run_plan_returns_execution_plan_shape(client, ctx, reporter):
     """The plan endpoint must reshape the latest `plan.generated`
-    audit payload into the frontend's ExecutionPlan record with
-    per-step decisions."""
+ audit payload into the frontend's ExecutionPlan record with
+ per-step decisions."""
     plan_payload = {
         "document_id": "doc-1",
         "mode": "TEXT_ONLY",
@@ -395,9 +395,9 @@ def test_confirm_is_noop_for_already_running_run(client, run_store, ctx):
 def test_confirm_transitions_run_from_canonical_assessment_ready_to_running(
     client, run_store, ctx,
 ):
-    """Phase 1: the canonical `assessment_ready` value is an alias of
-    the legacy `plan_ready`. /confirm must accept both as valid entry
-    states so workers writing canonical values still flip to running."""
+    """the canonical `assessment_ready` value is an alias of
+ the legacy `plan_ready`. /confirm must accept both as valid entry
+ states so workers writing canonical values still flip to running."""
     run = _make_run("run-confirm-canonical")
     run.status = RunStatus.ASSESSMENT_READY
     run_store.upsert(ctx, run)
@@ -414,8 +414,8 @@ def test_list_status_filter_expands_canonical_to_include_legacy(
     client, run_store, ctx,
 ):
     """`?status=received` must match both runs persisted with the
-    canonical `received` value AND legacy `created` runs. Mirrors
-    `?status=assessment_ready` matching `plan_ready` too."""
+ canonical `received` value AND legacy `created` runs. Mirrors
+ `?status=assessment_ready` matching `plan_ready` too."""
     legacy_run = _make_run("run-legacy-created")
     legacy_run.status = RunStatus.CREATED
     run_store.upsert(ctx, legacy_run)
@@ -444,7 +444,7 @@ def test_list_status_filter_legacy_query_also_matches_canonical(
     client, run_store, ctx,
 ):
     """Symmetric: a FE that still queries with the legacy name must
-    still see runs written under the canonical name."""
+ still see runs written under the canonical name."""
     legacy_run = _make_run("run-legacy-plan-ready")
     legacy_run.status = RunStatus.PLAN_READY
     run_store.upsert(ctx, legacy_run)
@@ -494,9 +494,9 @@ def test_compile_is_noop_for_run_not_in_compile_pending(
     client, run_store, ctx,
 ):
     """Idempotency: re-issuing /compile on a running run returns the
-    current status and does not re-flip anything. Same behaviour for
-    runs in ASSESSING / PLAN_READY — only COMPILE_PENDING is a valid
-    entry state for the trigger."""
+ current status and does not re-flip anything. Same behaviour for
+ runs in ASSESSING / PLAN_READY — only COMPILE_PENDING is a valid
+ entry state for the trigger."""
     run = _make_run("run-compile-noop")
     run.status = RunStatus.RUNNING
     run_store.upsert(ctx, run)
@@ -569,7 +569,7 @@ def test_compile_handler_failure_does_not_block_status_flip(
 
 def test_sse_stream_emits_text_event_stream_content_type(client, ctx, reporter):
     """SSE response must have the right content type so browsers /
-    EventSource client libs accept it."""
+ EventSource client libs accept it."""
     reporter.report_run_created(ctx, run_id="run-sse", document_id="doc-1")
     reporter.report_run_completed(
         ctx, run_id="run-sse", final_status="succeeded",
@@ -601,8 +601,8 @@ def test_sse_stream_emits_text_event_stream_content_type(client, ctx, reporter):
 
 def test_sse_stream_data_payload_uses_camel_case(client, ctx, reporter):
     """Frontend code consuming the stream expects the same camelCase
-    field names used by `GET .../events`. The streamed payload must
-    match — operators shouldn't have to handle two casings."""
+ field names used by `GET.../events`. The streamed payload must
+ match — operators shouldn't have to handle two casings."""
     reporter.report_run_created(ctx, run_id="run-camel", document_id="doc-1")
     reporter.report_step_progress(
         ctx, run_id="run-camel", stage="COMPILE", step="LAYOUT_PREPARATION",
@@ -644,7 +644,7 @@ def test_post_ingestion_run_returns_400_when_tenant_header_missing(
     client,
 ):
     """The Tenant/Project context contract applies to every endpoint —
-    missing X-Tenant-Id is a 400, not a silent default."""
+ missing X-Tenant-Id is a 400, not a silent default."""
     files = {"file": ("doc.txt", b"hello", "text/plain")}
     resp = client.post(
         "/ingestion-runs", files=files,
@@ -666,8 +666,8 @@ def test_post_ingestion_run_creates_run_and_starts_workflow(
     client, run_store, ctx, started_jobs, workspace,
 ):
     """Composite happy path: document registered, run record
-    persisted with status=CREATED, workflow started exactly once,
-    progress events emitted to the audit log."""
+ persisted with status=CREATED, workflow started exactly once,
+ progress events emitted to the audit log."""
     files = {"file": ("hello.txt", b"hello world", "text/plain")}
     resp = client.post(
         "/ingestion-runs",
@@ -697,8 +697,8 @@ def test_post_ingestion_run_emits_run_created_and_document_received(
     client, ctx, workspace,
 ):
     """When a progress reporter is wired, POST /ingestion-runs
-    emits the first two progress events (`run.created` and
-    `document.received`) so the SSE stream has content from t=0."""
+ emits the first two progress events (`run.created` and
+ `document.received`) so the SSE stream has content from t=0."""
     files = {"file": ("hello.txt", b"hi", "text/plain")}
     resp = client.post(
         "/ingestion-runs",
@@ -721,10 +721,10 @@ def test_post_ingestion_run_works_without_progress_reporter(
     client_no_reporter, run_store, ctx,
 ):
     """Backwards compat: when no reporter is wired the endpoint
-    still creates the run record and starts the workflow — just
-    without emitting progress events. This is the migration path
-    for deployments that adopt /ingestion-runs without immediately
-    wiring the progress surface."""
+ still creates the run record and starts the workflow — just
+ without emitting progress events. This is the migration path
+ for deployments that adopt /ingestion-runs without immediately
+ wiring the progress surface."""
     files = {"file": ("hello.txt", b"hi", "text/plain")}
     resp = client_no_reporter.post(
         "/ingestion-runs",
@@ -741,8 +741,8 @@ def test_post_ingestion_run_uses_correlation_id_as_run_id_when_provided(
     client, run_store, ctx,
 ):
     """Open question default: run_id == correlation_id == workflow_id.
-    Caller-supplied correlation_id wins so the audit log + SSE
-    cursor + Temporal IDs all share one identifier."""
+ Caller-supplied correlation_id wins so the audit log + SSE
+ cursor + Temporal IDs all share one identifier."""
     files = {"file": ("hello.txt", b"hi", "text/plain")}
     resp = client.post(
         "/ingestion-runs",
@@ -767,9 +767,9 @@ def test_list_ingestion_runs_paginates_and_orders_by_started_desc(
     client, run_store, ctx,
 ):
     """The list endpoint dedupes by run_id (latest snapshot wins),
-    sorts by `startedAt` desc, and paginates the result set. Drives
-    the All Runs page so the UI can land on a stable contract before
-    the FE list code gets wired."""
+ sorts by `startedAt` desc, and paginates the result set. Drives
+ the All Runs page so the UI can land on a stable contract before
+ the FE list code gets wired."""
     from datetime import datetime, timedelta, timezone
 
     base = datetime.now(timezone.utc)
@@ -806,9 +806,9 @@ def test_list_ingestion_runs_carries_mode_and_policy_from_metadata(
     client, run_store, ctx,
 ):
     """`mode` / `policy` come from the run's metadata bag (populated
-    by the upload handler). Listing items must surface them so the
-    All Runs row meta line ("STANDARD · auto") matches the run-detail
-    page header."""
+ by the upload handler). Listing items must surface them so the
+ All Runs row meta line ("STANDARD · auto") matches the run-detail
+ page header."""
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -830,7 +830,7 @@ def test_list_ingestion_runs_carries_mode_and_policy_from_metadata(
 
 def test_list_ingestion_runs_filters_by_status_repeats(client, run_store, ctx):
     """Repeated `?status=` query params narrow the result set; the
-    FE quick-filter chips drive this."""
+ FE quick-filter chips drive this."""
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -901,9 +901,9 @@ def test_confirm_emits_plan_confirmed_progress_event(
     client, run_store, ctx,
 ):
     """Confirming a parked run must surface a `plan.confirmed` event
-    in the timeline so the SSE stream and the events-history
-    endpoint show the operator action — no need to poll the run
-    record to detect that confirmation happened."""
+ in the timeline so the SSE stream and the events-history
+ endpoint show the operator action — no need to poll the run
+ record to detect that confirmation happened."""
     run = _make_run("run-emits-confirmed")
     run.status = RunStatus.PLAN_READY
     run_store.upsert(ctx, run)
@@ -923,8 +923,8 @@ def test_confirm_persists_confirmed_at_and_confirmed_by(
     client, run_store, ctx,
 ):
     """Audit-trail metadata: who confirmed, when. Future workflow
-    integrations can compare these against `started_at` to compute
-    operator response time."""
+ integrations can compare these against `started_at` to compute
+ operator response time."""
     run = _make_run("run-meta")
     run.status = RunStatus.PLAN_READY
     run_store.upsert(ctx, run)
@@ -941,8 +941,8 @@ def test_confirm_invokes_handler_with_ctx_and_run_id(
     application_facade, workspace, run_store, reporter, job_starter, ctx,
 ):
     """The injected `confirm_handler` is the seam Temporal-signal
-    integrations plug into. Verify the REST adapter calls it with
-    (ctx, run_id) on a real confirmation transition."""
+ integrations plug into. Verify the REST adapter calls it with
+ (ctx, run_id) on a real confirmation transition."""
     calls: list[tuple] = []
 
     async def handler(c, run_id):
@@ -973,8 +973,8 @@ def test_confirm_handler_failure_does_not_block_status_flip(
     application_facade, workspace, run_store, reporter, job_starter, ctx,
 ):
     """If the downstream signal raises, the run is still marked
-    RUNNING in the store — confirmation is acknowledged at the REST
-    boundary even when the workflow couldn't be reached."""
+ RUNNING in the store — confirmation is acknowledged at the REST
+ boundary even when the workflow couldn't be reached."""
 
     async def broken_handler(_ctx, _run_id):
         raise RuntimeError("temporal unreachable")
@@ -1004,7 +1004,7 @@ def test_confirm_does_not_invoke_handler_for_already_running_run(
     application_facade, workspace, run_store, reporter, job_starter, ctx,
 ):
     """Idempotency: re-issuing confirm on a running run is a noop —
-    no signal is forwarded, no event is re-emitted."""
+ no signal is forwarded, no event is re-emitted."""
     calls: list[tuple] = []
 
     async def handler(_c, _run_id):
@@ -1035,10 +1035,10 @@ def test_confirm_does_not_invoke_handler_for_already_running_run(
 
 def test_run_failed_event_metadata_uses_camel_case(client, ctx, reporter):
     """Backend reporter writes `failure_code` / `failure_message` to
-    the audit payload (Python convention). The wire format for the
-    `metadata` bag must be camelCase so the frontend doesn't have to
-    handle two casings — the audit-to-record translator camelizes
-    keys at serialisation time."""
+ the audit payload (Python convention). The wire format for the
+ `metadata` bag must be camelCase so the frontend doesn't have to
+ handle two casings — the audit-to-record translator camelizes
+ keys at serialisation time."""
     reporter.report_run_failed(
         ctx, run_id="run-fail",
         failure_code="J1_INGEST_RUN_FAILED",
@@ -1081,8 +1081,8 @@ def test_step_failed_event_metadata_uses_camel_case(client, ctx, reporter):
 
 def test_sse_stream_closes_on_run_cancelled(client, ctx, reporter):
     """Run cancellation must close the SSE generator like
-    run.completed / run.failed do — otherwise the client idles
-    against an in-flight stream until the 1h max-duration timeout."""
+ run.completed / run.failed do — otherwise the client idles
+ against an in-flight stream until the 1h max-duration timeout."""
     reporter.report_run_created(ctx, run_id="run-cxl", document_id="doc-1")
     reporter.report_run_cancelled(
         ctx, run_id="run-cxl", reason="operator-cancelled",
@@ -1129,8 +1129,8 @@ def test_pause_flips_run_record_to_paused_and_signals_workflow(
     client, run_store, ctx, job_control,
 ):
     """Pause endpoint must do BOTH: update the run record's status
-    (so the FE polling sees PAUSED immediately) AND forward the
-    Temporal signal so the workflow stops at the next gate."""
+ (so the FE polling sees PAUSED immediately) AND forward the
+ Temporal signal so the workflow stops at the next gate."""
     run = _make_run("run-pause")
     run.status = RunStatus.RUNNING
     run.workflow_id = "wf-pause"
@@ -1155,8 +1155,8 @@ def test_pause_uses_run_id_when_workflow_id_missing(
     client, run_store, ctx, job_control,
 ):
     """For per-document workflows the workflow_id == run_id; if the
-    run record doesn't carry workflow_id we fall back to the run_id
-    so the signal still routes."""
+ run record doesn't carry workflow_id we fall back to the run_id
+ so the signal still routes."""
     run = _make_run("run-pause-fallback")
     run.status = RunStatus.RUNNING
     run.workflow_id = ""
@@ -1205,7 +1205,7 @@ def test_resume_flips_paused_back_to_running(
 
 def test_resume_409_when_run_is_running(client, run_store, ctx, job_control):
     """Resume only legal from PAUSED — running/idle should 409 so
-    the operator notices the misclick."""
+ the operator notices the misclick."""
     run = _make_run("run-running")
     run.status = RunStatus.RUNNING
     run_store.upsert(ctx, run)
@@ -1219,8 +1219,8 @@ def test_cancel_flips_run_record_to_cancelling_and_signals(
     client, run_store, ctx, job_control,
 ):
     """Cancel is one-way: status flips to CANCELLING immediately so
-    the UI shows the operator action; the workflow's terminal exit
-    later flips it to CANCELLED."""
+ the UI shows the operator action; the workflow's terminal exit
+ later flips it to CANCELLED."""
     run = _make_run("run-cancel")
     run.status = RunStatus.RUNNING
     run.workflow_id = "wf-cancel"
@@ -1237,7 +1237,7 @@ def test_cancel_flips_run_record_to_cancelling_and_signals(
 
 def test_cancel_legal_from_paused(client, run_store, ctx, job_control):
     """A paused run can still be cancelled — operators may decide to
-    abandon a paused run rather than resume it."""
+ abandon a paused run rather than resume it."""
     run = _make_run("run-paused")
     run.status = RunStatus.PAUSED
     run_store.upsert(ctx, run)
@@ -1252,9 +1252,9 @@ def test_control_signal_failure_keeps_run_record_flipped(
     client, run_store, ctx, job_control,
 ):
     """If the Temporal signal fails (worker disconnected, network
-    blip), the REST call still succeeds because the run-record
-    update IS the authoritative FE-visible flip. Operators see the
-    failure in worker logs; the FE shows the requested status."""
+ blip), the REST call still succeeds because the run-record
+ update IS the authoritative FE-visible flip. Operators see the
+ failure in worker logs; the FE shows the requested status."""
     run = _make_run("run-signal-fail")
     run.status = RunStatus.RUNNING
     run.workflow_id = "wf-fail"
@@ -1273,8 +1273,8 @@ def test_control_persists_actor_metadata(
     client, run_store, ctx, job_control,
 ):
     """For the audit trail, every control action records who and
-    when. The FE doesn't render this today, but cost/compliance
-    tooling reads it from the run record's metadata bag."""
+ when. The FE doesn't render this today, but cost/compliance
+ tooling reads it from the run record's metadata bag."""
     run = _make_run("run-meta-pause")
     run.status = RunStatus.RUNNING
     run_store.upsert(ctx, run)

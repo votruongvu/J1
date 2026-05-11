@@ -342,7 +342,7 @@ def test_magic_byte_sniff_rejects_pdf_extension_without_pdf_bytes(
     intake_service, ctx,
 ):
     """Defense-in-depth: extension allow-list passed (.pdf is allowed),
-    but the bytes don't carry the `%PDF-` header → 415."""
+ but the bytes don't carry the `%PDF-` header → 415."""
     with pytest.raises(UnsupportedFileTypeError) as excinfo:
         intake_service.register_from_stream(
             ctx,
@@ -357,7 +357,7 @@ def test_magic_byte_sniff_passes_text_extensions_with_any_bytes(
     intake_service, ctx,
 ):
     """Text formats have no stable magic bytes — extension check is
-    the only signal. Random bytes with .txt extension still register."""
+ the only signal. Random bytes with.txt extension still register."""
     record = intake_service.register_from_stream(
         ctx,
         io.BytesIO(b"\x00\x01\x02 binary-looking bytes"),

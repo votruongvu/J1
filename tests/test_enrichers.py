@@ -237,7 +237,7 @@ def test_review_required_propagates_to_artifact_record(
     processing_service, artifact_registry, default_profile, ctx
 ):
     """End-to-end: visual enricher → ProcessingService.enrich → ArtifactRecord
-    has review_status=PENDING (because VisualContentDescriber defaults review_required=True)."""
+ has review_status=PENDING (because VisualContentDescriber defaults review_required=True)."""
     artifact_registry.add(_artifact_record(ctx))
     proc = VisualContentDescriber(default_profile)
     result = processing_service.enrich(ctx, proc, _artifact_record(ctx))
@@ -360,8 +360,8 @@ def test_visual_describer_no_vision_client_returns_empty_visuals(
     default_profile, ctx,
 ):
     """Backwards-compat: deployments without a vision client wired
-    keep the original behaviour (empty visuals[] + a `reason`
-    explaining why), no crash."""
+ keep the original behaviour (empty visuals[] + a `reason`
+ explaining why), no crash."""
     descriptor = VisualContentDescriber(default_profile)
     result = descriptor.enrich(ctx, "art-1")
     assert result.status == ResultStatus.SUCCEEDED
@@ -375,8 +375,8 @@ def test_visual_describer_calls_vision_llm_and_packs_response(
     default_profile, ctx,
 ):
     """Vision client + content source wired → calls analyze_image,
-    captures the description + usage in the visuals[] entry, and
-    surfaces the model/provider for cost reconciliation."""
+ captures the description + usage in the visuals[] entry, and
+ surfaces the model/provider for cost reconciliation."""
     image_bytes = b"\x89PNG fake bytes" + b"x" * 5000
     client = _StubVisionClient()
     descriptor = VisualContentDescriber(
@@ -406,8 +406,8 @@ def test_visual_describer_uses_default_prompt_when_profile_missing_one(
     default_profile, ctx, monkeypatch,
 ):
     """`describe_visuals` may not be in the profile. The descriptor
-    must fall back to a built-in generic prompt rather than passing
-    an empty string to the vision LLM."""
+ must fall back to a built-in generic prompt rather than passing
+ an empty string to the vision LLM."""
     image_bytes = b"\x89PNG" + b"x" * 1000
     client = _StubVisionClient()
     descriptor = VisualContentDescriber(
@@ -426,8 +426,8 @@ def test_visual_describer_uses_default_prompt_when_profile_missing_one(
 
 def test_visual_describer_no_bytes_skips_vision_call(default_profile, ctx):
     """If the artifact registry doesn't yield bytes (no
-    content_source wired), don't burn a vision LLM call on empty
-    input — return a soft skip with a reason."""
+ content_source wired), don't burn a vision LLM call on empty
+ input — return a soft skip with a reason."""
     client = _StubVisionClient()
     descriptor = VisualContentDescriber(
         default_profile, vision_client=client,
@@ -446,9 +446,9 @@ def test_visual_describer_llm_failure_yields_succeeded_with_reason(
     default_profile, ctx,
 ):
     """A vision LLM exception MUST NOT fail the run. The enricher
-    surfaces the error in the `reason` field and returns SUCCEEDED
-    so the workflow's failure-propagation contract isn't tripped by
-    a flaky vendor."""
+ surfaces the error in the `reason` field and returns SUCCEEDED
+ so the workflow's failure-propagation contract isn't tripped by
+ a flaky vendor."""
     image_bytes = b"\x89PNG" + b"x" * 1000
     client = _StubVisionClient(raises=RuntimeError("rate limited"))
     descriptor = VisualContentDescriber(

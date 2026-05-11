@@ -74,7 +74,7 @@ def test_batch_store_list_returns_latest_per_id_sorted_by_recency(store, ctx):
 
 def test_batch_store_upsert_overwrites_via_latest_snapshot(store, ctx):
     """JSONL append-only contract: re-upserting the same id appends a
-    fresh snapshot; reads return the latest."""
+ fresh snapshot; reads return the latest."""
     initial = BatchRun(
         batch_run_id="batch-1",
         tenant_id=ctx.tenant_id, project_id=ctx.project_id,
@@ -134,5 +134,5 @@ def test_derive_batch_status_deleted_when_all_deleted():
 
 def test_derive_batch_status_running_when_empty():
     """Defensive: empty child list = treat as running so the FE
-    polls again rather than reporting a misleading terminal status."""
+ polls again rather than reporting a misleading terminal status."""
     assert derive_batch_status([]) == "running"

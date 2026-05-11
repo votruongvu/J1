@@ -31,8 +31,8 @@ interface KnowledgeReadinessCardProps {
   onGenerate: () => void;
   onRun: () => void;
   /** Run id of the parent ingestion run — needed for the report
-   * download. We pass it down so the card can issue the request
-   * without going back through ValidationTab. */
+ * download. We pass it down so the card can issue the request
+ * without going back through ValidationTab. */
   runId: string;
 }
 
@@ -166,8 +166,8 @@ export function KnowledgeReadinessCard({
           >
             {running ? "Running…" : "Run Validation"}
           </button>
-          {/* Phase 5 download buttons. Disabled until a run exists
-              so testers don't try to download an empty report. */}
+          {/* download buttons. Disabled until a run exists
+ so testers don't try to download an empty report. */}
           <button
             type="button"
             className="btn btn--ghost"

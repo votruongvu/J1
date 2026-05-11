@@ -1,13 +1,13 @@
-"""Wave 10.6 — end-to-end test for the worker enrichment wiring.
+"""end-to-end test for the worker enrichment wiring.
 
 Drives the production-like composition path:
 
-  bootstrap-shape inputs
-  → ProcessingActivities construction
-  → run_enrichment_stage activity
-  → fake text + vision analysis clients
-  → typed EnrichmentResult
-  → final_ingestion_report stage outcomes
+ bootstrap-shape inputs
+ → ProcessingActivities construction
+ → run_enrichment_stage activity
+ → fake text + vision analysis clients
+ → typed EnrichmentResult
+ → final_ingestion_report stage outcomes
 
 Proves the new wiring path threads text/vision/limiter through the
 activity into the legacy-compatible EnrichmentModule adapters AND
@@ -69,8 +69,8 @@ class _FakeUsage:
 
 class _FakeTextClient:
     """Returns a stable response so the test can assert on the
-    typed projection. Mirrors the production `TextLLMClient.extract`
-    signature."""
+ typed projection. Mirrors the production `TextLLMClient.extract`
+ signature."""
 
     def __init__(self, response=None):
         self._response = response or {}
@@ -83,7 +83,7 @@ class _FakeTextClient:
 
 class _FakeVisionLLMClient:
     """Production-shape vision client: per-image bytes input, text
-    response. Used through the `PerImageVisionAdapter`."""
+ response. Used through the `PerImageVisionAdapter`."""
 
     def __init__(self, response="a generic image"):
         self._response = response
@@ -99,7 +99,7 @@ class _FakeVisionLLMClient:
 
 class _RecordingLimiter:
     """Fake limiter that records every call. Used to assert the
-    bootstrap-supplied limiter actually reaches each adapter."""
+ bootstrap-supplied limiter actually reaches each adapter."""
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -121,8 +121,8 @@ def _activities(
     llm_call_limiter: object | None = None,
 ):
     """Construct `ProcessingActivities` the same way the deployment
-    wiring layer does — without spinning the wider worker. Keeps
-    the composition surface this test pins minimal."""
+ wiring layer does — without spinning the wider worker. Keeps
+ the composition surface this test pins minimal."""
     sources_dir = workspace
     audit = DefaultAuditRecorder(JsonlAuditSink(workspace))
     cost = DefaultCostRecorder(JsonlCostSink(workspace))
@@ -147,8 +147,8 @@ def _activities(
 
 
 def _compile_payload(*, chunks=5, tables=0, images=0):
-    """Produce a typed `NormalizedCompileResult.to_payload()` dict
-    matching the activity input shape."""
+    """Produce a typed `NormalizedCompileResult.to_payload` dict
+ matching the activity input shape."""
     return NormalizedCompileResult(
         document_id="doc-1",
         status="succeeded",
@@ -181,10 +181,10 @@ def test_activity_constructed_without_clients_skips_all_legacy_modules(
     workspace, artifact_registry, ctx,
 ):
     """Fresh deployment without LLM credentials: bootstrap passes
-    None for text/vision/limiter; the adapters must construct
-    cleanly + skip per-run with documented reasons. The final
-    report's enrichment_summary surfaces the missing-client skips
-    as SKIPPED module outcomes — never silent."""
+ None for text/vision/limiter; the adapters must construct
+ cleanly + skip per-run with documented reasons. The final
+ report's enrichment_summary surfaces the missing-client skips
+ as SKIPPED module outcomes — never silent."""
     activity = _activities(workspace, artifact_registry)
     result = activity.run_enrichment_stage(RunEnrichmentStageInput(
         scope=ProjectScope(tenant_id=ctx.tenant_id, project_id=ctx.project_id),
@@ -231,8 +231,8 @@ def test_activity_constructed_with_clients_runs_text_and_classification(
     workspace, artifact_registry, ctx,
 ):
     """Real wiring: text client + limiter present → text +
-    classification + (no-table-no-image) adapters all run; table
-    + image adapters still skip on input-absence."""
+ classification + (no-table-no-image) adapters all run; table
+ + image adapters still skip on input-absence."""
     text = _FakeTextClient(response={
         "category": "method_statement",
         "confidence": 0.8,
@@ -272,7 +272,7 @@ def test_activity_constructed_with_vision_runs_image_module(
     workspace, artifact_registry, ctx,
 ):
     """Vision client + image-bytes provider produce real image
-    summaries through the PerImageVisionAdapter."""
+ summaries through the PerImageVisionAdapter."""
     raw_vision = _FakeVisionLLMClient(response='{"caption": "site plan"}')
     images = [
         VisionImagePayload(image_id="i-0", image_bytes=b"\x00\x01"),
@@ -310,9 +310,9 @@ def test_final_report_shows_skipped_modules_when_clients_missing(
     workspace, artifact_registry, ctx,
 ):
     """The final ingestion report's enrichment summary must surface
-    the SKIPPED adapter outcomes so operators see the deployment-
-    side absence of LLM credentials in the report — not buried in
-    the per-artifact endpoint."""
+ the SKIPPED adapter outcomes so operators see the deployment-
+ side absence of LLM credentials in the report — not buried in
+ the per-artifact endpoint."""
     activity = _activities(workspace, artifact_registry)
     enrichment = activity.run_enrichment_stage(RunEnrichmentStageInput(
         scope=ProjectScope(tenant_id=ctx.tenant_id, project_id=ctx.project_id),
@@ -349,8 +349,8 @@ def test_final_report_shows_typed_outputs_when_clients_run(
     workspace, artifact_registry, ctx,
 ):
     """With fake clients wired, the final report's
-    `enrichment_summary` carries the typed outputs (classification +
-    retrieval hints + module outcomes)."""
+ `enrichment_summary` carries the typed outputs (classification +
+ retrieval hints + module outcomes)."""
     text = _FakeTextClient(response={
         "category": "method_statement", "confidence": 0.8,
         "requirements": [{"text": "fail-safe"}],
@@ -401,8 +401,8 @@ def test_shared_limiter_reaches_text_and_classification_adapters(
     workspace, artifact_registry, ctx,
 ):
     """One limiter instance must wrap every adapter call — the
-    operator's `J1_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS` ceiling
-    applies across the whole stage."""
+ operator's `J1_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS` ceiling
+ applies across the whole stage."""
     text = _FakeTextClient(response={"category": "x"})
     limiter = _RecordingLimiter()
     activity = _activities(
@@ -429,11 +429,11 @@ def test_shared_limiter_reaches_text_and_classification_adapters(
 # ---- 5. Legacy-vocabulary guard -----------------------------------
 
 
-def test_wave10_6_wiring_emits_no_legacy_vocabulary(
+def test_wiring_emits_no_legacy_vocabulary(
     workspace, artifact_registry, ctx,
 ):
     """The whole stage output payload must remain free of split-mode
-    + pre-compile-gating wording even with adapters wired."""
+ + pre-compile-gating wording even with adapters wired."""
     import json as _json
     text = _FakeTextClient(response={"category": "x"})
     activity = _activities(

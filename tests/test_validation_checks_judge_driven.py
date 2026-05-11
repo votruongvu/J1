@@ -1,15 +1,15 @@
-"""Phase 3 check-engine tests: negative deterministic + judge-driven
+""" check-engine tests: negative deterministic + judge-driven
 optional checks.
 
-Phase 1 deterministic check tests live in `test_validation_checks.py`.
+ deterministic check tests live in `test_validation_checks.py`.
 These tests focus on:
 
-  * `negative_answer_abstains` — required, regex-based.
-  * `answer_covers_expected_points` — optional, judge-driven.
-  * `answer_grounded_in_citations` — optional, judge-driven.
-  * `negative_no_fabrication` — optional, judge-driven.
-  * Aggregate behaviour: optional fails downgrade to
-    `passed_with_warnings`; required negative fails are `failed`.
+ * `negative_answer_abstains` — required, regex-based.
+ * `answer_covers_expected_points` — optional, judge-driven.
+ * `answer_grounded_in_citations` — optional, judge-driven.
+ * `negative_no_fabrication` — optional, judge-driven.
+ * Aggregate behaviour: optional fails downgrade to
+ `passed_with_warnings`; required negative fails are `failed`.
 """
 
 from __future__ import annotations
@@ -102,8 +102,8 @@ def _stage(workspace, ctx, artifact_registry, *, artifact_id: str) -> None:
 )
 def test_abstain_regex_matches_expected_phrases(answer):
     """Lock the abstain pattern set. False negatives (missing a real
-    abstain) are bad — the regex must catch typical LLM refusal
-    phrases."""
+ abstain) are bad — the regex must catch typical LLM refusal
+ phrases."""
     assert _is_abstain_response(answer) is True
 
 
@@ -118,7 +118,7 @@ def test_abstain_regex_matches_expected_phrases(answer):
 )
 def test_abstain_regex_does_not_match_substantive_answers(answer):
     """False positives (treating a real answer as an abstain) are
-    worse than false negatives — locked here too."""
+ worse than false negatives — locked here too."""
     assert _is_abstain_response(answer) is False
 
 
@@ -149,8 +149,8 @@ def test_negative_case_with_substantive_answer_fails(
     workspace, ctx, artifact_registry,
 ):
     """The fail mode for a negative case: the engine confidently
-    answered an out-of-scope question. Required failure → run is
-    `failed`."""
+ answered an out-of-scope question. Required failure → run is
+ `failed`."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     checks = run_checks(
         ctx=ctx, run_id="run-1",
@@ -249,7 +249,7 @@ def test_coverage_check_skipped_when_no_expected_points(
     workspace, ctx, artifact_registry,
 ):
     """No expected_answer_points → check OMITTED (not present-but-
-    passing). Same convention as Phase 1's citation_present."""
+ passing). Same convention as 's citation_present."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _CoverageJudge(CoverageJudgement(points=[]))
     checks = run_checks(
@@ -271,8 +271,8 @@ def test_coverage_check_skipped_when_judge_returns_none(
     workspace, ctx, artifact_registry,
 ):
     """Judge unavailable / failure → check OMITTED. Critical: a
-    silent judge must NEVER count as a pass; that would make
-    judge availability indistinguishable from a real verdict."""
+ silent judge must NEVER count as a pass; that would make
+ judge availability indistinguishable from a real verdict."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _CoverageJudge(None)
     checks = run_checks(
@@ -333,7 +333,7 @@ def test_grounding_check_fails_on_moderate_unsupported_claim(
     workspace, ctx, artifact_registry,
 ):
     """Moderate-or-higher severity → fail. Low severity (hedging,
-    filler) is tolerated; that's the contract for a fallible judge."""
+ filler) is tolerated; that's the contract for a fallible judge."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _GroundingJudge(
         GroundingJudgement(
@@ -365,7 +365,7 @@ def test_grounding_check_tolerates_low_severity_claims(
     workspace, ctx, artifact_registry,
 ):
     """Low-severity flags don't fail the check — common knowledge
-    filler is allowed even if technically not in citations."""
+ filler is allowed even if technically not in citations."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _GroundingJudge(
         GroundingJudgement(
@@ -392,8 +392,8 @@ def test_grounding_check_skipped_for_empty_answer(
     workspace, ctx, artifact_registry,
 ):
     """Empty answer → nothing to ground. The negative-case abstain
-    check covers blank-answer accounting; double-checking here would
-    confuse the result."""
+ check covers blank-answer accounting; double-checking here would
+ confuse the result."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _GroundingJudge(GroundingJudgement(unsupported_claims=[]))
     checks = run_checks(
@@ -452,9 +452,9 @@ def test_negative_no_fabrication_fails_on_concrete_fabrication(
     workspace, ctx, artifact_registry,
 ):
     """Hybrid mode: the answer abstained (or claims to) but the
-    judge sees concrete fabricated facts. The deterministic
-    abstain check passes (the regex matched); the optional
-    fabrication check fails → run becomes passed_with_warnings."""
+ judge sees concrete fabricated facts. The deterministic
+ abstain check passes (the regex matched); the optional
+ fabrication check fails → run becomes passed_with_warnings."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _FabricationJudge(
         FabricationJudgement(
@@ -492,10 +492,10 @@ def test_negative_no_fabrication_fails_on_concrete_fabrication(
 def test_phase_3_optional_fail_yields_passed_with_warnings(
     workspace, ctx, artifact_registry,
 ):
-    """Forward-compat regression: the Phase 1 aggregator's
-    `passed_with_warnings` rule is reachable in Phase 3 reality, not
-    just unit tests. A judge-driven optional fail with all
-    Phase 1/2 required checks passing must downgrade the run."""
+    """Forward-compat regression: the aggregator's
+ `passed_with_warnings` rule is reachable reality, not
+ just unit tests. A judge-driven optional fail with all
+ /2 required checks passing must downgrade the run."""
     _stage(workspace, ctx, artifact_registry, artifact_id="art-1")
     judge = _GroundingJudge(
         GroundingJudgement(

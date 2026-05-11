@@ -1,6 +1,6 @@
 """Composition root: build LLM clients + provider registries from env.
 
-`bootstrap_from_env()` returns a fully wired `BootstrapResult` (LLM
+`bootstrap_from_env` returns a fully wired `BootstrapResult` (LLM
 registry + compiler / graph / retrieval registries + diagnostics)
 that both the API entrypoint and the worker entrypoint use. Tests
 construct `Bootstrap` directly with a custom env mapping to control
@@ -8,15 +8,15 @@ every knob.
 
 Validation rules (from the architecture spec):
 
-  * Selected compiler MUST be registered.
-  * Selected graph provider MUST be registered.
-  * Selected retrieval provider MUST be registered.
-  * If RAGAnything is the selected compiler, text + embedding LLM
-    roles MUST be configured.
-  * If visual enrichment is enabled, the vision LLM role MUST be
-    configured.
-  * If Graphify is selected as graph provider, `J1_GRAPHIFY_ENABLED`
-    MUST be true.
+ * Selected compiler MUST be registered.
+ * Selected graph provider MUST be registered.
+ * Selected retrieval provider MUST be registered.
+ * If RAGAnything is the selected compiler, text + embedding LLM
+ roles MUST be configured.
+ * If visual enrichment is enabled, the vision LLM role MUST be
+ configured.
+ * If Graphify is selected as graph provider, `J1_GRAPHIFY_ENABLED`
+ MUST be true.
 
 Errors are actionable — they name the missing env var(s).
 """
@@ -114,20 +114,20 @@ class ProcessingSelection:
 class EnrichmentSettings:
     """Enrichment gating settings.
 
-    `enabled` is the master switch — when False, deployment wiring
-    MUST omit the enricher kind from both the API capabilities surface
-    AND the worker's enricher registry. Otherwise the workflow's
-    `_stage_enabled` will still pick up the auto-resolved enricher
-    kind from the request and run enrich anyway. The dev stack does
-    this in `deploy/dev/api.py` and `deploy/dev/worker.py`; production
-    deployments wiring their own bootstrap must mirror the gate.
+ `enabled` is the master switch — when False, deployment wiring
+ MUST omit the enricher kind from both the API capabilities surface
+ AND the worker's enricher registry. Otherwise the workflow's
+ `_stage_enabled` will still pick up the auto-resolved enricher
+ kind from the request and run enrich anyway. The dev stack does
+ this in `deploy/dev/api.py` and `deploy/dev/worker.py`; production
+ deployments wiring their own bootstrap must mirror the gate.
 
-    Per-modality flags (`images` / `tables` / `diagrams` /
-    `scanned_pages`) currently feed only the visual-modality
-    validation and `enabled_modalities()`. Honouring them within the
-    composite enricher (so e.g. images run while tables don't) is a
-    separate concern — today the composite is bundled all-or-nothing.
-    """
+ Per-modality flags (`images` / `tables` / `diagrams` /
+ `scanned_pages`) currently feed only the visual-modality
+ validation and `enabled_modalities`. Honouring them within the
+ composite enricher (so e.g. images run while tables don't) is a
+ separate concern — today the composite is bundled all-or-nothing.
+ """
     enabled: bool = True
     confidence_threshold: float = 0.75
     images: bool = True
@@ -202,12 +202,12 @@ def load_enrichment_settings(
 class BootstrapResult:
     """Everything a deployment entrypoint needs.
 
-    `llm_call_limiter` is the Wave-7 LLM-call concurrency limiter
-    threaded into every LLM-backed enricher. None when concurrency
-    settings aren't wired (legacy / mock paths) or when the
-    `EnrichmentConcurrencySettings.enabled` flag is False. Same
-    instance is reused across enrichers for one shared worker-wide
-    semaphore."""
+ `llm_call_limiter` is the LLM-call concurrency limiter
+ threaded into every LLM-backed enricher. None when concurrency
+ settings aren't wired (legacy / mock paths) or when the
+ `EnrichmentConcurrencySettings.enabled` flag is False. Same
+ instance is reused across enrichers for one shared worker-wide
+ semaphore."""
 
     selection: ProcessingSelection
     enrichment: EnrichmentSettings
@@ -216,7 +216,7 @@ class BootstrapResult:
     graph_builders: Mapping[str, object] = field(default_factory=dict)
     retrieval_providers: Mapping[str, object] = field(default_factory=dict)
     diagnostics: StartupDiagnostics = field(default_factory=StartupDiagnostics)
-    # Wave 7.5 — Optional limiter wired into LLM-backed enrichers
+    # Optional limiter wired into LLM-backed enrichers
     # at composition time. See `j1.processing.llm_call_limiter` +
     # `EnrichmentConcurrencySettings`.
     llm_call_limiter: object | None = None
@@ -230,10 +230,10 @@ class BootstrapResult:
 class Bootstrap:
     """Wraps env loading + client construction + validation.
 
-    Pass `env=` to control the entire env mapping (used by tests).
-    Pass `llm_registry=` to skip LLM-client construction entirely
-    (used by tests that wire fakes directly).
-    """
+ Pass `env=` to control the entire env mapping (used by tests).
+ Pass `llm_registry=` to skip LLM-client construction entirely
+ (used by tests that wire fakes directly).
+ """
 
     def __init__(
         self,
@@ -252,7 +252,7 @@ class Bootstrap:
 
         selection = load_processing_selection(self._env)
         enrichment = load_enrichment_settings(self._env)
-        # Wave 7.5: concurrency settings + shared limiter. Separate
+        # concurrency settings + shared limiter. Separate
         # from `EnrichmentSettings` (modality kill switches) — the
         # `EnrichmentConcurrencySettings` carries
         # `max_concurrent_llm_calls`, `timeout_seconds`,
@@ -421,19 +421,19 @@ def build_composite_enricher_from_bootstrap(
     artifact_lookup: object | None = None,
     artifact_record_lookup: object | None = None,
 ) -> object:
-    """Wave 7.5 — production helper that constructs a
-    `CompositeEnricher` with the bootstrap's LLM-call limiter +
-    enrichment modality settings already wired.
+    """production helper that constructs a
+ `CompositeEnricher` with the bootstrap's LLM-call limiter +
+ enrichment modality settings already wired.
 
-    Use this from deployment composition / activity-bootstrap code
-    so the limiter is guaranteed to reach every LLM-backed child.
-    Direct callers of `CompositeEnricher.from_default` keep working
-    — they just don't get the limiter unless they pass it
-    themselves, which the bootstrap-aware helper does for them.
+ Use this from deployment composition / activity-bootstrap code
+ so the limiter is guaranteed to reach every LLM-backed child.
+ Direct callers of `CompositeEnricher.from_default` keep working
+ — they just don't get the limiter unless they pass it
+ themselves, which the bootstrap-aware helper does for them.
 
-    Returns a `CompositeEnricher` instance. Typed as `object` here
-    to avoid a hard dependency on `j1.enrichers` from this module;
-    callers see the concrete type."""
+ Returns a `CompositeEnricher` instance. Typed as `object` here
+ to avoid a hard dependency on `j1.enrichers` from this module;
+ callers see the concrete type."""
     from j1.enrichers import CompositeEnricher
 
     return CompositeEnricher.from_default(
@@ -458,11 +458,11 @@ def build_composite_enricher_from_bootstrap(
 def _build_llm_registry(settings: LLMSettings) -> LLMProviderRegistry:
     """Construct an `LLMProviderRegistry` from typed settings.
 
-    Supports both `openai_compat` (HTTP) and `langchain` (lazy-import,
-    auto-instantiated via the safe class-loader) per role. Each role
-    is independent — text via OpenAI-compat + embeddings via LangChain
-    is a perfectly valid configuration.
-    """
+ Supports both `openai_compat` (HTTP) and `langchain` (lazy-import,
+ auto-instantiated via the safe class-loader) per role. Each role
+ is independent — text via OpenAI-compat + embeddings via LangChain
+ is a perfectly valid configuration.
+ """
     registry = LLMProviderRegistry()
 
     text_client = _build_role_client(
@@ -492,7 +492,7 @@ def _build_llm_registry(settings: LLMSettings) -> LLMProviderRegistry:
     # Optional FAST role. Same OpenAI-compat client as text — only
     # the `model` differs in typical deployments. When
     # `settings.fast` is None or unconfigured, we silently skip
-    # registration. Consumers (`registry.try_fast()`) handle the
+    # registration. Consumers (`registry.try_fast`) handle the
     # absence; the planner falls back to deterministic-only.
     if settings.fast is not None:
         fast_client = _build_role_client(
@@ -515,12 +515,12 @@ def _build_role_client(
 ):
     """Dispatch on `settings.provider` to the right concrete client factory.
 
-    Returns `None` when the role isn't configured (composition root
-    decides whether that's a fatal validation error). Wraps any
-    `LLMConfigError` / `LLMProviderUnavailable` into `ConfigError`
-    with the role name prepended so operators see "embedding LLM:
-    failed to import langchain_openai" instead of an opaque message.
-    """
+ Returns `None` when the role isn't configured (composition root
+ decides whether that's a fatal validation error). Wraps any
+ `LLMConfigError` / `LLMProviderUnavailable` into `ConfigError`
+ with the role name prepended so operators see "embedding LLM:
+ failed to import langchain_openai" instead of an opaque message.
+ """
     if not settings.is_configured:
         return None
     try:

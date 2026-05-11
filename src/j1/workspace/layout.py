@@ -13,7 +13,7 @@ class WorkspaceArea(StrEnum):
     AUDIT = "audit"
     RUNTIME = "runtime"
     # Post-ingestion validation: stores generated validation sets +
-    # validation run records (Phase 2+). Durable — losing it loses
+    # validation run records. Durable — losing it loses
     # tester history, generated test cases, and verdict notes.
     VALIDATION = "validation"
 
@@ -23,8 +23,8 @@ class WorkspaceArea(StrEnum):
 #
 # DURABLE areas: must be included in any backup. Loss is permanent.
 # REBUILDABLE areas: derived from durable state and can be reconstructed
-#   (e.g., the search index can be rebuilt from `compiled/`/`enriched/`/
-#   `graph/` artifacts).
+#  (e.g., the search index can be rebuilt from `compiled/`/`enriched/`/
+#  `graph/` artifacts).
 DURABLE_AREAS: frozenset[WorkspaceArea] = frozenset({
     WorkspaceArea.RAW,
     WorkspaceArea.COMPILED,

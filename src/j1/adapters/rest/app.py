@@ -211,7 +211,7 @@ RunConfirmHandler = Callable[[ProjectContext, str], Awaitable[None]]
 # SIGNAL_TRIGGER_COMPILE)`. When omitted, the REST adapter still
 # flips the run record's status COMPILE_PENDING → RUNNING but no
 # Temporal signal is sent — appropriate for deployments running in
-# the legacy single-phase flow.
+# the legacy single-call compile flow.
 RunCompileHandler = Callable[[ProjectContext, str], Awaitable[None]]
 JobStarter = Callable[
     [ProjectContext, str, IngestRequest], Awaitable[str]
@@ -245,19 +245,19 @@ def _default_context_resolver(request: Request) -> ProjectContext:
 
 def _enforce_tenant_binding(request: Request, ctx: ProjectContext) -> None:
     """Reject `X-Tenant-Id` headers that don't match an authenticated
-    key's tenant binding.
+ key's tenant binding.
 
-    When a deployment configures `J1_AUTH_API_KEYS` and binds a key
-    to a specific tenant, the request's `X-Tenant-Id` header MUST
-    match that binding. Anonymous keys (`tenant_id=None`) and
-    unauthenticated requests pass through — those code paths are
-    governed by scope checks, not tenant-pinning.
+ When a deployment configures `J1_AUTH_API_KEYS` and binds a key
+ to a specific tenant, the request's `X-Tenant-Id` header MUST
+ match that binding. Anonymous keys (`tenant_id=None`) and
+ unauthenticated requests pass through — those code paths are
+ governed by scope checks, not tenant-pinning.
 
-    Without this check, an authenticated key bound to tenant A could
-    pass `X-Tenant-Id: B` and access tenant B's data; the per-tenant
-    workspace path scoping doesn't catch it because the path is
-    derived from the (now-mismatched) header value.
-    """
+ Without this check, an authenticated key bound to tenant A could
+ pass `X-Tenant-Id: B` and access tenant B's data; the per-tenant
+ workspace path scoping doesn't catch it because the path is
+ derived from the (now-mismatched) header value.
+ """
     security = getattr(request.state, "security_context", None)
     if security is None or security.tenant_id is None:
         return
@@ -279,24 +279,24 @@ def _install_openapi_security(
 ) -> None:
     """Install Bearer + API-key security schemes on the OpenAPI doc.
 
-    Auth is enforced by `_security_middleware`, not by FastAPI's
-    dependency machinery — so we customise the OpenAPI document
-    directly rather than declaring dependencies on every route.
-    Effects in Swagger UI:
+ Auth is enforced by `_security_middleware`, not by FastAPI's
+ dependency machinery — so we customise the OpenAPI document
+ directly rather than declaring dependencies on every route.
+ Effects in Swagger UI:
 
-      * "Authorize" button appears top-right.
-      * Each non-anonymous operation shows a lock icon and applies
-        the chosen scheme on `Try it out` requests.
-      * Anonymous paths (`/health` / `/version`) carry an empty
-        `security: []` so Swagger doesn't pretend they need auth.
+ * "Authorize" button appears top-right.
+ * Each non-anonymous operation shows a lock icon and applies
+ the chosen scheme on `Try it out` requests.
+ * Anonymous paths (`/health` / `/version`) carry an empty
+ `security: []` so Swagger doesn't pretend they need auth.
 
-    Implementation: instead of trying to override FastAPI's
-    `app.openapi()` method (instance-attribute shadowing has been
-    flaky across SDK versions when combined with Starlette's
-    lazily-built middleware stack), we let FastAPI generate its
-    schema as usual and post-process the cached `app.openapi_schema`
-    on first call. The post-processing is idempotent: subsequent
-    calls return the already-augmented cached value."""
+ Implementation: instead of trying to override FastAPI's
+ `app.openapi` method (instance-attribute shadowing has been
+ flaky across SDK versions when combined with Starlette's
+ lazily-built middleware stack), we let FastAPI generate its
+ schema as usual and post-process the cached `app.openapi_schema`
+ on first call. The post-processing is idempotent: subsequent
+ calls return the already-augmented cached value."""
     bearer_scheme = {
         "type": "http",
         "scheme": "bearer",
@@ -318,7 +318,7 @@ def _install_openapi_security(
     _original_openapi = app.openapi
 
     def _augmented_openapi() -> dict[str, object]:
-        # FastAPI's own `openapi()` caches into `app.openapi_schema`.
+        # FastAPI's own `openapi` caches into `app.openapi_schema`.
         # We reuse that cache: first call generates + augments; later
         # calls short-circuit on the augmented marker.
         schema = _original_openapi()
@@ -345,7 +345,7 @@ def _install_openapi_security(
     # request time, so a plain instance-attribute reassignment SHOULD
     # work — but we belt-and-brace it by also augmenting via response
     # middleware below. This assignment also covers direct callers
-    # (tests, tooling) that call `app.openapi()`.
+    # (tests, tooling) that call `app.openapi`.
     app.openapi = _augmented_openapi  # type: ignore[method-assign]
 
     # Belt-and-brace: intercept the OpenAPI response in middleware
@@ -418,26 +418,26 @@ def create_rest_api(
 ) -> FastAPI:
     """Build the standard REST adapter.
 
-    Mandatory dependency: `facade` (an `ApplicationFacade`). Everything else
-    is optional and the adapter degrades gracefully:
-      * `job_starter=None`   → `POST /documents/{id}/ingest` returns 503
-      * `workspace=None`     → retrieve endpoint omits artifact text content
-      * `facade.search=None` / `.answer=None` / `.job_status=None` → those
-        endpoints return 503 too
+ Mandatory dependency: `facade` (an `ApplicationFacade`). Everything else
+ is optional and the adapter degrades gracefully:
+ * `job_starter=None` → `POST /documents/{id}/ingest` returns 503
+ * `workspace=None` → retrieve endpoint omits artifact text content
+ * `facade.search=None` / `.answer=None` / `.job_status=None` → those
+ endpoints return 503 too
 
-    `processing_capabilities` (when supplied — typically constructed
-    from `BootstrapResult.to_processing_capabilities()`) lets the API:
-      * Default an omitted `compilerKind` request field to the
-        runtime's `J1_DEFAULT_COMPILER` selection so simple clients
-        can omit it.
-      * Reject unknown `compilerKind` / `graphBuilderKind` /
-        `enricherKind` / `indexerKind` values at the API boundary
-        with a clear `INVALID_ARGUMENT` 400, instead of letting them
-        surface as a workflow `UnknownProcessorError` 5 seconds later.
-      When omitted, validation + defaulting are skipped — callers
-      MUST then provide `compilerKind` explicitly (or the request
-      fails downstream as before).
-    """
+ `processing_capabilities` (when supplied — typically constructed
+ from `BootstrapResult.to_processing_capabilities`) lets the API:
+ * Default an omitted `compilerKind` request field to the
+ runtime's `J1_DEFAULT_COMPILER` selection so simple clients
+ can omit it.
+ * Reject unknown `compilerKind` / `graphBuilderKind` /
+ `enricherKind` / `indexerKind` values at the API boundary
+ with a clear `INVALID_ARGUMENT` 400, instead of letting them
+ surface as a workflow `UnknownProcessorError` 5 seconds later.
+ When omitted, validation + defaulting are skipped — callers
+ MUST then provide `compilerKind` explicitly (or the request
+ fails downstream as before).
+ """
     app = FastAPI(
         title=api_title,
         version=version,
@@ -690,14 +690,14 @@ def create_rest_api(
     def _resolve_compiler_kind(provided: str | None) -> str:
         """Resolve + validate `compilerKind` against the runtime.
 
-        Three rules:
-          1. If the caller provided a value AND `processing_capabilities`
-             knows the registered set AND the value isn't in it → 400.
-          2. If the caller omitted the value AND `processing_capabilities`
-             carries a default → use the default.
-          3. If the caller omitted the value AND no default is
-             configured → 400 with a clear message naming the field.
-        """
+ Three rules:
+ 1. If the caller provided a value AND `processing_capabilities`
+ knows the registered set AND the value isn't in it → 400.
+ 2. If the caller omitted the value AND `processing_capabilities`
+ carries a default → use the default.
+ 3. If the caller omitted the value AND no default is
+ configured → 400 with a clear message naming the field.
+ """
         caps = processing_capabilities
         if provided is not None:
             value = provided.strip()
@@ -727,11 +727,11 @@ def create_rest_api(
     ) -> str | None:
         """Validate an optional processor-kind field.
 
-        Unlike `_resolve_compiler_kind`, optional fields are NOT
-        defaulted — `None` means "skip the stage". Validation only
-        kicks in when the caller actually supplied a value AND the
-        runtime has at least one registered kind for the role.
-        """
+ Unlike `_resolve_compiler_kind`, optional fields are NOT
+ defaulted — `None` means "skip the stage". Validation only
+ kicks in when the caller actually supplied a value AND the
+ runtime has at least one registered kind for the role.
+ """
         if provided is None:
             return None
         value = provided.strip()
@@ -750,25 +750,25 @@ def create_rest_api(
         field_name: str,
     ) -> str | None:
         """Resolve an optional processor-kind field with auto-default
-        semantics for the user-facing upload path.
+ semantics for the user-facing upload path.
 
-        Three rules:
-          1. Caller provided → validate against `registered` (same as
-             `_validate_optional_processor_kind`).
-          2. Caller omitted AND exactly one kind is registered for the
-             role → return that kind. The user-facing FE upload sends
-             only a file; without this, the workflow's `available_steps`
-             collapses to `{compile}` and every other stage is silently
-             skipped — even though the deployment had wired them.
-          3. Caller omitted AND zero or multiple kinds registered →
-             return None (the stage stays unrunnable; operator chooses
-             explicitly when ambiguous).
+ Three rules:
+ 1. Caller provided → validate against `registered` (same as
+ `_validate_optional_processor_kind`).
+ 2. Caller omitted AND exactly one kind is registered for the
+ role → return that kind. The user-facing FE upload sends
+ only a file; without this, the workflow's `available_steps`
+ collapses to `{compile}` and every other stage is silently
+ skipped — even though the deployment had wired them.
+ 3. Caller omitted AND zero or multiple kinds registered →
+ return None (the stage stays unrunnable; operator chooses
+ explicitly when ambiguous).
 
-        This is the bug fix for "uploaded runs only execute compile":
-        the previous helper returned None on every omission regardless
-        of what the deployment had registered. The validation path on
-        provided values is unchanged.
-        """
+ This is the bug fix for "uploaded runs only execute compile":
+ the previous helper returned None on every omission regardless
+ of what the deployment had registered. The validation path on
+ provided values is unchanged.
+ """
         if provided is not None:
             value = provided.strip()
             if value:
@@ -790,7 +790,7 @@ def create_rest_api(
     # interactively. The actual extraction logic still goes through
     # the (pluggable) `resolver`, so a deployment that overrides
     # `context_resolver=` keeps full control over how tenant /
-    # project are resolved (e.g. from a JWT). The Header() bindings
+    # project are resolved (e.g. from a JWT). The Header bindings
     # here are documentation only.
     def get_ctx(
         request: Request,
@@ -840,10 +840,10 @@ def create_rest_api(
     def scope_required(scope: str):
         """FastAPI dependency factory enforcing a single scope.
 
-        No-op when the security context is anonymous (i.e. auth disabled or
-        the route is in `anonymous_paths`) — that decision was already made
-        upstream by the security middleware.
-        """
+ No-op when the security context is anonymous (i.e. auth disabled or
+ the route is in `anonymous_paths`) — that decision was already made
+ upstream by the security middleware.
+ """
 
         def _dep(request: Request) -> None:
             _require_scope(get_security(request), scope)
@@ -1148,16 +1148,16 @@ def create_rest_api(
         correlation_id: str | None = None,
     ) -> None:
         """Best-effort `j1.ops.*` audit-event emission for the
-        operator-initiated ingestion ops (delete / purge / resume /
-        rebuild / reindex / batch). Routes through the existing
-        `EventPublisherService` so the event lands in the same
-        `events.jsonl` audit log every other action writes to.
+ operator-initiated ingestion ops (delete / purge / resume /
+ rebuild / reindex / batch). Routes through the existing
+ `EventPublisherService` so the event lands in the same
+ `events.jsonl` audit log every other action writes to.
 
-        Failures here MUST NOT block the operator's request — the
-        underlying mutation already succeeded and rolling it back
-        because we couldn't write a log line would be far worse.
-        Swallow + carry on; an audit gap is recoverable, a half-
-        applied mutation is not."""
+ Failures here MUST NOT block the operator's request — the
+ underlying mutation already succeeded and rolling it back
+ because we couldn't write a log line would be far worse.
+ Swallow + carry on; an audit gap is recoverable, a half-
+ applied mutation is not."""
         try:
             facade.event_publisher.publish_event(
                 ctx,
@@ -1213,7 +1213,7 @@ def create_rest_api(
         # Canonical/legacy expansion: a `?status=received` query also
         # matches runs persisted with the legacy `created` value, and
         # `?status=assessment_ready` also matches `plan_ready`. See
-        # `status_aliases()` for the table. This lets the FE migrate
+        # `status_aliases` for the table. This lets the FE migrate
         # to the canonical names without breaking existing JSONL data.
         status_filter: list[RunStatus] | None = None
         if status:
@@ -2289,7 +2289,7 @@ def create_rest_api(
         tags=["ingestion-runs"],
         summary="Get the typed enrichment overlay for an ingestion run",
         description=(
-            "Returns the Wave-6 typed enrichment overlay "
+            "Returns the typed enrichment overlay "
             "(`EnrichmentResult`): per-module outcomes with run/skip "
             "reasons + provenance, document-metadata overlay, "
             "terminology map, classification result, table / image "
@@ -2375,7 +2375,7 @@ def create_rest_api(
         tags=["ingestion-runs"],
         summary="Get the aggregated end-to-end final ingestion report",
         description=(
-            "Wave 10 — returns the typed `FinalIngestionReport` that "
+            "Returns the typed `FinalIngestionReport` that "
             "aggregates the entire ingestion pipeline (initial "
             "execution plan, compile result, post-compile enrich "
             "plan, enrichment overlay, finalize) into a single "
@@ -2383,10 +2383,10 @@ def create_rest_api(
             "truth for the run-detail page when present; the FE "
             "falls back to per-artifact endpoints when not. Returns "
             "`status=\"unavailable\"` with reason "
-            "`final_ingestion_report_not_available` for pre-Wave-10 "
-            "runs and in-flight runs that haven't reached terminal "
-            "yet. Returns 404 if the run does not exist in the "
-            "caller's tenant/project."
+            "`final_ingestion_report_not_available` for legacy runs "
+            "(no aggregate report persisted) and in-flight runs that "
+            "haven't reached terminal yet. Returns 404 if the run "
+            "does not exist in the caller's tenant/project."
         ),
         dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
     )
@@ -2435,7 +2435,7 @@ def create_rest_api(
         )
         return envelope(snapshot.model_dump(by_alias=True), _req_id(request))
 
-    # ---- Validation: manual test query (Phase 1) ---------------------
+    # ---- Validation: manual test query ---------------------
     # Stateless tester surface: ask one question against an ingested
     # run, get answer + retrieved chunks + citations + deterministic
     # check results scoped to that run. No persistence yet.
@@ -2544,7 +2544,7 @@ def create_rest_api(
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
-    # ---- Validation: generated sets + runs (Phase 2) ----------------
+    # ---- Validation: generated sets + runs ----------------
 
     @app.post(
         "/ingestion-runs/{run_id}/validation-sets/generate",
@@ -2580,7 +2580,7 @@ def create_rest_api(
                 actor=security.subject,
             )
         except RuntimeError as exc:
-            # Phase 2 dependencies not wired (set store / generator
+            #  dependencies not wired (set store / generator
             # missing). Surfaces as 503 — uniform with the rest of
             # the optional-service degradation pattern.
             raise HTTPException(503, str(exc)) from exc
@@ -2712,7 +2712,7 @@ def create_rest_api(
         vrun = service.get_validation_run(ctx, run_id, validation_run_id)
         return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
 
-    # ---- Tester verdict (Phase 5) -----------------------------------
+    # ---- Tester verdict -----------------------------------
 
     @app.post(
         "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}/results/{result_id}/verdict",
@@ -2755,7 +2755,7 @@ def create_rest_api(
             raise HTTPException(422, str(exc)) from exc
         return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
 
-    # ---- Validation report export (Phase 5) -------------------------
+    # ---- Validation report export -------------------------
 
     @app.get(
         "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}/report",
@@ -2986,13 +2986,13 @@ def create_rest_api(
     ) -> dict[str, Any] | None:
         """Build the response envelope's `meta.signal` block.
 
-        Returns None on success so untouched response shape is
-        preserved when the signal landed cleanly. On failure carries
-        `delivered=False` plus the exception class + message so the
-        FE can render a "run record updated, but the workflow may
-        not have caught the signal" advisory instead of a misleading
-        success toast.
-        """
+ Returns None on success so untouched response shape is
+ preserved when the signal landed cleanly. On failure carries
+ `delivered=False` plus the exception class + message so the
+ FE can render a "run record updated, but the workflow may
+ not have caught the signal" advisory instead of a misleading
+ success toast.
+ """
         if delivered:
             return None
         return {
@@ -3014,12 +3014,12 @@ def create_rest_api(
     ):
         """Shared body for pause / resume / cancel.
 
-        1. Look up the run record (404 if missing).
-        2. Validate the transition (409 if from a status that disallows it).
-        3. Flip the run record (FE polling sees the new state immediately).
-        4. Emit a progress event so the SSE timeline reflects the action.
-        5. Forward to the job-control facade so the workflow signal fires.
-        Returns the populated `IngestionRunControlRecord`."""
+ 1. Look up the run record (404 if missing).
+ 2. Validate the transition (409 if from a status that disallows it).
+ 3. Flip the run record (FE polling sees the new state immediately).
+ 4. Emit a progress event so the SSE timeline reflects the action.
+ 5. Forward to the job-control facade so the workflow signal fires.
+ Returns the populated `IngestionRunControlRecord`."""
         from datetime import datetime, timezone
 
         store = _require_run_store()
@@ -4528,11 +4528,11 @@ def _build_answer_stream_response(
 ) -> StreamingResponse:
     """Drive `AnswerStreamingService` and surface its events as SSE.
 
-    Auth/scope/tenant resolution have already happened by the time we
-    reach this function — they're enforced by FastAPI dependencies on
-    the route. So no extra security checks here, but no bypass either:
-    the same `Depends(scope_required(SCOPE_ANSWER))` covers both modes.
-    """
+ Auth/scope/tenant resolution have already happened by the time we
+ reach this function — they're enforced by FastAPI dependencies on
+ the route. So no extra security checks here, but no bypass either:
+ the same `Depends(scope_required(SCOPE_ANSWER))` covers both modes.
+ """
     request_id = _req_id(request)
     streaming_service = AnswerStreamingService(answer_port)
 
@@ -4686,9 +4686,9 @@ def _read_job_events(
 
 def _ingestion_run_to_list_item(run) -> IngestionRunListItem:
     """Compact projection used by `GET /ingestion-runs`. Pulls
-    `documentName` / `mode` / `policy` from the run's metadata bag
-    (populated by the upload handler) so the All Runs view can render
-    the same display fields as the upload page."""
+ `documentName` / `mode` / `policy` from the run's metadata bag
+ (populated by the upload handler) so the All Runs view can render
+ the same display fields as the upload page."""
     metadata = run.metadata or {}
     return IngestionRunListItem(
         run_id=run.run_id,
@@ -4712,10 +4712,10 @@ def _ingestion_run_to_list_item(run) -> IngestionRunListItem:
 def _optional_str(value: object) -> str | None:
     """Coerce a metadata-bag value into a non-empty str, or None.
 
-    Run metadata is `dict[str, object]` (raw JSONL passthrough), so
-    callers shouldn't trust the type. We accept anything that
-    stringifies and treat empty / missing as None so Pydantic can
-    omit the field from the wire payload entirely."""
+ Run metadata is `dict[str, object]` (raw JSONL passthrough), so
+ callers shouldn't trust the type. We accept anything that
+ stringifies and treat empty / missing as None so Pydantic can
+ omit the field from the wire payload entirely."""
     if value is None:
         return None
     text = str(value).strip()
@@ -4727,13 +4727,13 @@ def _ingestion_run_to_record(
 ) -> IngestionRunRecord:
     """Project an `IngestionRun` dataclass into the wire schema.
 
-    `latest_progress` (optional) is a small dict produced by
-    `_latest_progress_snapshot` carrying the most recent
-    `j1.progress.*` audit event for the run. When supplied AND the
-    run record's own `current_*` fields are empty, we backfill them
-    from the event so the wire payload reflects what the worker is
-    actually doing right now. The run record itself isn't mutated —
-    it stays the source of truth for terminal state."""
+ `latest_progress` (optional) is a small dict produced by
+ `_latest_progress_snapshot` carrying the most recent
+ `j1.progress.*` audit event for the run. When supplied AND the
+ run record's own `current_*` fields are empty, we backfill them
+ from the event so the wire payload reflects what the worker is
+ actually doing right now. The run record itself isn't mutated —
+ it stays the source of truth for terminal state."""
     current_stage = run.current_stage
     current_step = run.current_step
     progress_percent = run.progress_percent
@@ -4776,21 +4776,21 @@ def _latest_progress_snapshot(
     run_id: str,
 ) -> dict[str, Any] | None:
     """Return a small dict for the most recent `j1.progress.*` audit
-    entry for the run, or None if no event has been recorded.
+ entry for the run, or None if no event has been recorded.
 
-    The run-store record isn't currently updated by the worker (the
-    worker emits audit progress events; only the API process writes
-    to the run-store). Without this lookup the detail endpoint's
-    `currentStage`/`currentStep` would stay None for the lifetime of
-    the run. We tail the audit log here on each detail GET — same
-    cost as the existing events endpoint's full read but we stop at
-    the first match scanning backwards.
+ The run-store record isn't currently updated by the worker (the
+ worker emits audit progress events; only the API process writes
+ to the run-store). Without this lookup the detail endpoint's
+ `currentStage`/`currentStep` would stay None for the lifetime of
+ the run. We tail the audit log here on each detail GET — same
+ cost as the existing events endpoint's full read but we stop at
+ the first match scanning backwards.
 
-    Step events (`step.*`) are preferred over plan/run-level events
-    because they carry the `stage` / `step` the FE wants. When no
-    `step.*` event exists yet (very early in a run) we fall back to
-    whatever the most recent `j1.progress.*` entry was so
-    `lastEventType` is at least populated."""
+ Step events (`step.*`) are preferred over plan/run-level events
+ because they carry the `stage` / `step` the FE wants. When no
+ `step.*` event exists yet (very early in a run) we fall back to
+ whatever the most recent `j1.progress.*` entry was so
+ `lastEventType` is at least populated."""
     path = workspace.audit(ctx) / AUDIT_LOG_FILENAME
     if not path.exists():
         return None
@@ -4835,9 +4835,9 @@ def _read_progress_events(
     run_id: str,
 ) -> list[ProgressEventRecord]:
     """Read the audit log and project `j1.progress.*` entries for the
-    given run into the frontend's `ProgressEvent` shape. Backed by the
-    same JSONL audit store used by `_read_job_events` so there's no
-    second source of truth."""
+ given run into the frontend's `ProgressEvent` shape. Backed by the
+ same JSONL audit store used by `_read_job_events` so there's no
+ second source of truth."""
     path = workspace.audit(ctx) / AUDIT_LOG_FILENAME
     if not path.exists():
         return []
@@ -4861,13 +4861,13 @@ def _read_progress_events(
 def _progress_event_from_audit(data: dict[str, Any]) -> ProgressEventRecord:
     """Project one audit JSONL line into a `ProgressEventRecord`.
 
-    Pydantic's `alias_generator=to_camel` only camel-cases declared
-    model fields; dict CONTENTS pass through verbatim. The reporter
-    writes payloads as snake_case (Python convention), so we camelize
-    `metadata` keys HERE — that way the SSE / events-history wire
-    format is uniformly camelCase, and frontends never have to read
-    snake_case keys for `failure_code`, `error_type`, `final_status`,
-    etc."""
+ Pydantic's `alias_generator=to_camel` only camel-cases declared
+ model fields; dict CONTENTS pass through verbatim. The reporter
+ writes payloads as snake_case (Python convention), so we camelize
+ `metadata` keys HERE — that way the SSE / events-history wire
+ format is uniformly camelCase, and frontends never have to read
+ snake_case keys for `failure_code`, `error_type`, `final_status`,
+ etc."""
     payload = data.get("payload") or {}
     action: str = data["action"]
     typed_keys = {
@@ -4904,7 +4904,7 @@ def _read_run_plan(
     run_id: str,
 ) -> ExecutionPlanRecord | None:
     """Find the most recent `plan.generated` audit entry for the run
-    and reshape it into the frontend's execution-plan record."""
+ and reshape it into the frontend's execution-plan record."""
     path = workspace.audit(ctx) / AUDIT_LOG_FILENAME
     if not path.exists():
         return None
@@ -4974,11 +4974,11 @@ _SSE_MAX_DURATION_SECONDS = 60 * 60  # 1 hour — clients reconnect after.
 # Stream closes when the run reaches one of these. Mirrors the set of
 # `RunStatus` terminal values so the SSE doesn't idle-loop for an hour
 # after a non-success terminal:
-#   run.completed         → SUCCEEDED / SUCCEEDED_WITH_WARNINGS
-#   run.failed            → FAILED
-#   run.cancelled         → CANCELLED
-#   human_review.required → REQUIRES_HUMAN_REVIEW (terminal per the run
-#                           state machine; user continues via the review API)
+#  run.completed → SUCCEEDED / SUCCEEDED_WITH_WARNINGS
+#  run.failed → FAILED
+#  run.cancelled → CANCELLED
+#  human_review.required → REQUIRES_HUMAN_REVIEW (terminal per the run
+#  state machine; user continues via the review API)
 _TERMINAL_PROGRESS_TYPES = PROGRESS_TERMINAL_EVENT_TYPES
 
 
@@ -5031,16 +5031,16 @@ async def _stream_progress_events(
 def _format_progress_sse(event: ProgressEventRecord) -> bytes:
     """Format one ProgressEvent as an SSE message.
 
-    Output shape:
+ Output shape:
 
-        id: <event_id>
-        event: <event_type>
-        data: <json>
-        \\n
+ id: <event_id>
+ event: <event_type>
+ data: <json>
+ \\n
 
-    `id:` lets the client reconnect with `Last-Event-Id`. `event:`
-    lets the client subscribe to specific event types.
-    """
+ `id:` lets the client reconnect with `Last-Event-Id`. `event:`
+ lets the client subscribe to specific event types.
+ """
     payload = event.model_dump(by_alias=True, mode="json")
     body = json.dumps(payload, separators=(",", ":"))
     return (
@@ -5050,7 +5050,7 @@ def _format_progress_sse(event: ProgressEventRecord) -> bytes:
     ).encode("utf-8")
 
 
-# ---- Validation DTO → Pydantic record translators (Phase 2) ---------
+# ---- Validation DTO → Pydantic record translators ---------
 # Kept at module scope so both the GET and POST handlers reuse the
 # same projection. The validation service deals in dataclasses; the
 # REST adapter's job is to translate to the wire schema.

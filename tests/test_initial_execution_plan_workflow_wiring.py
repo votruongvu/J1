@@ -1,17 +1,17 @@
-"""Wave 3 workflow-integration tests.
+""" workflow-integration tests.
 
 Pins:
-  1. The workflow's planner-enabled path dispatches the new
-     `build_initial_execution_plan` activity AFTER `profile_document`
-     and BEFORE `compile`.
-  2. The activity's `plan_payload` flows into the compile activity
-     via the legacy `assessment_plan_payload` shape (back-compat
-     with the per-attempt compile retry loop).
-  3. The activity's `domain_profile_id` is surfaced on the
-     `ingestion.assessment.created` log event.
-  4. When the activity returns None / missing payload, the workflow
-     falls back to the in-workflow `DefaultAssessmentPlanner` and
-     still completes.
+ 1. The workflow's planner-enabled path dispatches the new
+ `build_initial_execution_plan` activity AFTER `profile_document`
+ and BEFORE `compile`.
+ 2. The activity's `plan_payload` flows into the compile activity
+ via the legacy `assessment_plan_payload` shape (back-compat
+ with the per-attempt compile retry loop).
+ 3. The activity's `domain_profile_id` is surfaced on the
+ `ingestion.assessment.created` log event.
+ 4. When the activity returns None / missing payload, the workflow
+ falls back to the in-workflow `DefaultAssessmentPlanner` and
+ still completes.
 
 These tests use the same `_patch_workflow_runtime` shape as
 `test_planner_workflow_integration.py` — synchronous handler that
@@ -96,9 +96,9 @@ def _make_handler(
     compile_captured: list[Any] | None = None,
 ):
     """Default-success handler that returns valid results for every
-    activity we expect to see. `build_result` lets a test inject a
-    specific BuildInitialExecutionPlanResult; None ⇒ build a default
-    from the real builder."""
+ activity we expect to see. `build_result` lets a test inject a
+ specific BuildInitialExecutionPlanResult; None ⇒ build a default
+ from the real builder."""
 
     def handler(method, payload, kwargs):
         name = _activity_name(method)
@@ -206,9 +206,9 @@ def test_build_payload_threads_compile_plan_into_compile_activity(
     monkeypatch,
 ):
     """The compile activity's `assessment_plan_payload` must be the
-    `compile_plan` slice of the InitialExecutionPlan payload. A
-    regression here means downstream compile-config mapping uses
-    stale data."""
+ `compile_plan` slice of the InitialExecutionPlan payload. A
+ regression here means downstream compile-config mapping uses
+ stale data."""
     compile_calls: list[Any] = []
     handler = _make_handler(compile_captured=compile_calls)
     _patch_workflow_runtime(monkeypatch, exec_handler=handler)
@@ -279,9 +279,9 @@ def test_domain_profile_id_surfaces_on_assessment_created_log(monkeypatch):
 
 
 def test_workflow_falls_back_when_build_activity_returns_none(monkeypatch):
-    """Test harnesses (and pre-Wave-3 deployments) that don't wire
-    the new activity see it return None. The workflow must continue
-    via the in-workflow `DefaultAssessmentPlanner` and finish."""
+    """Test harnesses (and pre- deployments) that don't wire
+ the new activity see it return None. The workflow must continue
+ via the in-workflow `DefaultAssessmentPlanner` and finish."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):

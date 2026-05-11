@@ -4,10 +4,10 @@ Inferred *after* compile / Content Inventory but *before* the post-
 compile execution-plan recommendations. Answers the questions the
 post-compile planner needs to make good cost/quality trade-offs:
 
-  * What kind of document is this?
-  * What is it mainly about?
-  * Who is it for?
-  * Which analysis bias is appropriate?
+ * What kind of document is this?
+ * What is it mainly about?
+ * Who is it for?
+ * Which analysis bias is appropriate?
 
 Title-first heuristic: the cheapest reliable signal is usually the
 title. We try every available title source — explicit metadata, the
@@ -53,11 +53,11 @@ __all__ = [
 class DocumentType(StrEnum):
     """User-facing document type taxonomy.
 
-    Values are stable wire strings — used by the rule-based assessor,
-    the LLM planner output schema, the FE Planning Report, and the
-    audit log. New types are additive; never renumber / rename
-    without a migration window.
-    """
+ Values are stable wire strings — used by the rule-based assessor,
+ the LLM planner output schema, the FE Planning Report, and the
+ audit log. New types are additive; never renumber / rename
+ without a migration window.
+ """
 
     POLICY = "policy"
     PROCEDURE = "procedure"
@@ -257,9 +257,9 @@ _AUDIENCE_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
 class DocumentMetadata:
     """Lightweight view the assessor reads.
 
-    Built by the workflow / activity layer from `IngestRequest`,
-    `DocumentProfile`, and the run record. Pure data; no derivations
-    happen here so the function stays trivially testable."""
+ Built by the workflow / activity layer from `IngestRequest`,
+ `DocumentProfile`, and the run record. Pure data; no derivations
+ happen here so the function stays trivially testable."""
 
     document_id: str
     filename: str | None = None
@@ -292,8 +292,8 @@ class TitleEvidence:
 @dataclass(frozen=True)
 class AnalysisBias:
     """Per-bias hints the rule-based assessor consumes when ranking
-    enrichers. Plain bool flags so the consumer can OR them with its
-    own signals; the `reason` carries operator-readable copy."""
+ enrichers. Plain bool flags so the consumer can OR them with its
+ own signals; the `reason` carries operator-readable copy."""
 
     prefer_requirement_extraction: bool = False
     prefer_risk_extraction: bool = False
@@ -308,10 +308,10 @@ class AnalysisBias:
 class DocumentUnderstanding:
     """Output of `assess_document_understanding`.
 
-    Stable wire shape — the rule-based post-compile assessor and the
-    LLM-assisted planner both consume it; the FE Planning Report
-    renders it directly. New fields are additive; readers must
-    tolerate missing keys."""
+ Stable wire shape — the rule-based post-compile assessor and the
+ LLM-assisted planner both consume it; the FE Planning Report
+ renders it directly. New fields are additive; readers must
+ tolerate missing keys."""
 
     title_source: str
     detected_title: str
@@ -341,12 +341,12 @@ def assess_document_understanding(
 ) -> DocumentUnderstanding:
     """Run the title-first document-understanding rules.
 
-    `manifest` is the parsed-content manifest emitted by compile;
-    None when called for legacy runs that pre-date the artifact.
-    `max_early_pages` caps how many early pages we inspect when the
-    title is unclear — should match `J1_PLANNING_MAX_EARLY_PAGES`.
+ `manifest` is the parsed-content manifest emitted by compile;
+ None when called for legacy runs that pre-date the artifact.
+ `max_early_pages` caps how many early pages we inspect when the
+ title is unclear — should match `J1_PLANNING_MAX_EARLY_PAGES`.
 
-    Deterministic. Pure function. No I/O."""
+ Deterministic. Pure function. No I/O."""
     candidates = _collect_title_candidates(metadata, manifest)
     chosen, title_quality = _pick_title(candidates)
     detected_title = chosen.text if chosen else ""
@@ -438,9 +438,9 @@ def _collect_title_candidates(
 ) -> list[TitleCandidate]:
     """Emit every title candidate, in declining-quality order.
 
-    The caller (`_pick_title`) walks the list and stops at the first
-    candidate that scores `clear`. Order matters: explicit metadata
-    title is the strongest signal, filename is the weakest."""
+ The caller (`_pick_title`) walks the list and stops at the first
+ candidate that scores `clear`. Order matters: explicit metadata
+ title is the strongest signal, filename is the weakest."""
     candidates: list[TitleCandidate] = []
 
     # 1. Explicit metadata title (e.g. PDF /Title key).
@@ -514,8 +514,8 @@ def _pick_title(
 ) -> tuple[TitleCandidate | None, str]:
     """Pick the best title candidate + grade its quality.
 
-    Returns `(candidate, quality)` where quality is one of
-    `TITLE_QUALITY_CLEAR / AMBIGUOUS / MISSING / GENERIC`."""
+ Returns `(candidate, quality)` where quality is one of
+ `TITLE_QUALITY_CLEAR / AMBIGUOUS / MISSING / GENERIC`."""
     if not candidates:
         return None, TITLE_QUALITY_MISSING
 
@@ -567,9 +567,9 @@ def _grade_title(text: str) -> str:
 
 def _has_topic_word(words: list[str]) -> bool:
     """A title is more likely 'clear' when it contains a topic noun
-    rather than only generic structure words. We approximate this by
-    checking for words longer than 4 chars that aren't in the generic
-    vocabulary — a rough proxy for "carries information"."""
+ rather than only generic structure words. We approximate this by
+ checking for words longer than 4 chars that aren't in the generic
+ vocabulary — a rough proxy for "carries information"."""
     return any(len(w) > 4 and w.lower() not in _GENERIC_TITLE_WORDS for w in words)
 
 
@@ -585,11 +585,11 @@ def _detect_document_type(
     filename: str | None,
 ) -> tuple[DocumentType, float, list[TitleEvidence]]:
     """Match the title + early-page corpus + filename against the
-    keyword catalogue. Returns `(type, confidence, evidence)`.
+ keyword catalogue. Returns `(type, confidence, evidence)`.
 
-    Confidence scoring: `clear` title hit → 0.85; `ambiguous` title
-    hit → 0.65; corpus-only match → 0.55; filename-only → 0.4;
-    no match → 0.3 (UNKNOWN)."""
+ Confidence scoring: `clear` title hit → 0.85; `ambiguous` title
+ hit → 0.65; corpus-only match → 0.55; filename-only → 0.4;
+ no match → 0.3 (UNKNOWN)."""
     haystack = detection_corpus.lower()
     title_lower = title.lower()
     filename_lower = (filename or "").lower()
@@ -673,7 +673,7 @@ def _derive_primary_topic(
     manifest: ParsedContentManifest | None,
 ) -> str:
     """Best-effort one-line topic. Falls back to the document type
-    label when no better signal is available."""
+ label when no better signal is available."""
     if title and len(title.split()) >= 3:
         return _truncate(title, 120)
     # Try the first heading from the manifest.
@@ -688,7 +688,7 @@ def _derive_primary_topic(
 
 def _derive_business_domain(corpus: str, document_type: DocumentType) -> str:
     """Coarse domain bucket. Catalogue-based; missing domains fall
-    back to an empty string."""
+ back to an empty string."""
     haystack = corpus.lower()
     domains = [
         ("finance", ("revenue", "ebitda", "fiscal", "tax", "invoice")),
@@ -799,7 +799,7 @@ def _derive_importance(
     manifest: ParsedContentManifest | None,
 ) -> str:
     """Coarse importance bucket. High-value types default to high;
-    `unknown` with weak title evidence defaults to low."""
+ `unknown` with weak title evidence defaults to low."""
     high_value = {
         DocumentType.SYSTEM_REQUIREMENT_SPECIFICATION,
         DocumentType.BUSINESS_REQUIREMENT,
@@ -829,7 +829,7 @@ def _derive_importance(
 
 def _expected_information_types(document_type: DocumentType) -> list[str]:
     """The taxonomy entry on the wire schema's
-    `expected_information_types`. Stable per-type list."""
+ `expected_information_types`. Stable per-type list."""
     by_type: dict[DocumentType, list[str]] = {
         DocumentType.SYSTEM_REQUIREMENT_SPECIFICATION: [
             "requirements", "responsibilities", "tables",
@@ -891,10 +891,10 @@ def _bias_for_type(
     manifest: ParsedContentManifest | None,
 ) -> AnalysisBias:
     """Per-type analysis bias. The rule-based assessor reads these
-    flags to gate its enrichment recommendations.
+ flags to gate its enrichment recommendations.
 
-    The reason field is operator-readable and surfaces in the FE
-    Planning Report's "why this plan" panel."""
+ The reason field is operator-readable and surfaces in the FE
+ Planning Report's "why this plan" panel."""
     has_tables = bool(manifest and manifest.stats.tables)
     has_images = bool(manifest and manifest.stats.images)
 
@@ -983,8 +983,8 @@ def _collect_early_page_text(
     max_early_pages: int,
 ) -> str:
     """Concatenate text previews from the first `max_early_pages`
-    pages of the manifest. Used as a corpus for keyword detection.
-    No raw document content; only the parser's previews."""
+ pages of the manifest. Used as a corpus for keyword detection.
+ No raw document content; only the parser's previews."""
     if manifest is None or not manifest.items:
         return ""
     parts: list[str] = []
@@ -1025,13 +1025,13 @@ def _build_detection_corpus(
 
 def _humanize_filename_stem(stem: str) -> str:
     """`scan_2025_05_01-final` → `scan 2025 05 01 final`. Used so the
-    title grader doesn't have to think about underscores/dashes."""
+ title grader doesn't have to think about underscores/dashes."""
     return re.sub(r"[_\-]+", " ", stem).strip()
 
 
 def _title_source_to_evidence_source(source: str) -> str:
     """Map TitleCandidate.source to the wire schema's evidence
-    source vocabulary."""
+ source vocabulary."""
     return {
         "metadata": "title",
         "title_block": "title",

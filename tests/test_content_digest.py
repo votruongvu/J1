@@ -85,8 +85,8 @@ def test_page_references_preserved():
 
 def test_no_full_raw_document_content():
     """Privacy invariant: no preview is allowed to be larger than
-    the configured cap. The fixture creates 1500-char items but the
-    digest must truncate."""
+ the configured cap. The fixture creates 1500-char items but the
+ digest must truncate."""
     manifest = _manifest_with_n_blocks(20)
     digest = build_content_digest(
         manifest=manifest, understanding=None,
@@ -98,8 +98,8 @@ def test_no_full_raw_document_content():
 
 def test_empty_manifest_returns_empty_digest_with_caps_recorded():
     """Caller-supplied caps are echoed even when the manifest is
-    empty — the audit trail needs to know what would have been
-    enforced."""
+ empty — the audit trail needs to know what would have been
+ enforced."""
     digest = build_content_digest(
         manifest=None, understanding=None,
         max_sample_blocks=20, max_preview_chars=300, max_early_pages=3,

@@ -1,15 +1,15 @@
 /**
- * Wave 9B — Enrichment Result panel.
+ * Enrichment Result panel.
  *
  * Renders the typed `EnrichmentResult` overlay via
  * `GET /ingestion-runs/{id}/enrichment-result`. Surfaces:
- *   - the run-level enrichment status (succeeded / warnings /
- *     failed / skipped) — with operator-readable reason copy;
- *   - per-module outcomes (which modules ran, which were skipped,
- *     warnings/errors per module);
- *   - what enrichment ACTUALLY ADDED (metadata, terminology,
- *     validation findings) so operators can see real value, not
- *     just "ran" badges.
+ * - the run-level enrichment status (succeeded / warnings /
+ * failed / skipped) — with operator-readable reason copy;
+ * - per-module outcomes (which modules ran, which were skipped,
+ * warnings/errors per module);
+ * - what enrichment ACTUALLY ADDED (metadata, terminology,
+ * validation findings) so operators can see real value, not
+ * just "ran" badges.
  *
  * Treats `skipped` as a neutral outcome (not a failure). Empty /
  * skeleton module outputs render as a neutral "no enrichment

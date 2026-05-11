@@ -2,11 +2,11 @@
  * `<IngestionStepIcon />` — single drop-in component for every
  * place the J1 UI shows an ingestion step's progress.
  *
- *   <IngestionStepIcon
- *     step="parse_source_content"
- *     status="running"
- *     size="md"
- *   />
+ * <IngestionStepIcon
+ * step="parse_source_content"
+ * status="running"
+ * size="md"
+ * />
  *
  * The `step` prop accepts the canonical user-facing id
  * (`parse_source_content`, …) or any internal synonym that
@@ -16,11 +16,11 @@
  *
  * Status drives both the per-icon animation and the frame's tint
  * + corner badge:
- *   * `running`   — animated icon, no badge
- *   * `completed` — paused icon, green ✓ badge
- *   * `pending`   — paused, desaturated, no badge
- *   * `skipped`   — paused, dimmer than pending
- *   * `failed`    — paused, sepia, amber ! badge
+ * * `running` — animated icon, no badge
+ * * `completed` — paused icon, green ✓ badge
+ * * `pending` — paused, desaturated, no badge
+ * * `skipped` — paused, dimmer than pending
+ * * `failed` — paused, sepia, amber ! badge
  */
 
 import { type CSSProperties, type ComponentType } from "react";
@@ -51,7 +51,7 @@ export const INGESTION_STEP_ICONS: Record<
   ProcessingStepId,
   ComponentType<IngestionIconProps>
 > = {
-  // Pre-compile assessment phase — reuses the planning glyph since
+  // Pre-compile assessment stage — reuses the planning glyph since
   // the AssessmentPlan IS what used to be called the plan.
   assess_compile_strategy: PlanIcon,
   parse_source_content: ParseIcon,
@@ -66,7 +66,7 @@ export const INGESTION_STEP_ICONS: Record<
 };
 
 /** Status vocabulary the UI passes in. Mirrors `ProcessingStepStatus`
- *  from `@/lib/processing-steps`. */
+ * from `@/lib/processing-steps`. */
 export type StepStatus =
   | "running"
   | "completed"
@@ -76,11 +76,11 @@ export type StepStatus =
 
 interface IngestionStepIconProps {
   /**
-   * Canonical id (e.g. `parse_source_content`) OR any internal
-   * synonym (e.g. `compile`, `plan.revised`, `chunks`). The
-   * normaliser folds synonyms; unknown strings fall back to a
-   * neutral frame.
-   */
+ * Canonical id (e.g. `parse_source_content`) OR any internal
+ * synonym (e.g. `compile`, `plan.revised`, `chunks`). The
+ * normaliser folds synonyms; unknown strings fall back to a
+ * neutral frame.
+ */
   step: string | ProcessingStepId | null | undefined;
   status?: StepStatus;
   size?: IngestionIconProps["size"];

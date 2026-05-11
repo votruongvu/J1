@@ -5,25 +5,25 @@ Implements the framework's `KnowledgeCompiler`, `GraphBuilder`, and
 
 Constructor pattern:
 
-    from j1 import LLMProviderRegistry
-    from j1.providers.raganything import RAGAnythingCompiler
+ from j1 import LLMProviderRegistry
+ from j1.providers.raganything import RAGAnythingCompiler
 
-    compiler = RAGAnythingCompiler.from_default(
-        llm_registry=registry,
-        settings=raganything_settings,
-    )
+ compiler = RAGAnythingCompiler.from_default(
+ llm_registry=registry,
+ settings=raganything_settings,
+ )
 
-`from_default()` lazily imports `raganything` and raises
+`from_default` lazily imports `raganything` and raises
 `ProviderUnavailable("install raganything")` if the library is not
 installed — the framework's own tests don't need the dep.
 
 Tests inject a fake by passing a callable directly:
 
-    compiler = RAGAnythingCompiler(
-        llm_registry=registry,
-        settings=raganything_settings,
-        compile_callable=my_fake,
-    )
+ compiler = RAGAnythingCompiler(
+ llm_registry=registry,
+ settings=raganything_settings,
+ compile_callable=my_fake,
+ )
 """
 
 from j1.providers.raganything.compiler import (

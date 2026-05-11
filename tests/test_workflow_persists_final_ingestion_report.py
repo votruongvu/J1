@@ -1,11 +1,11 @@
-"""Wave 10 — workflow integration tests.
+"""workflow integration tests.
 
 Pins:
-  1. Success terminal dispatches `persist_final_ingestion_report`.
-  2. Failure terminal (compile failure) dispatches the activity too —
-     best-effort report persistence is the contract.
-  3. The activity input carries the framework final status,
-     failure code, document id, and run timing.
+ 1. Success terminal dispatches `persist_final_ingestion_report`.
+ 2. Failure terminal (compile failure) dispatches the activity too —
+ best-effort report persistence is the contract.
+ 3. The activity input carries the framework final status,
+ failure code, document id, and run timing.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def _patch_workflow_runtime(monkeypatch, *, exec_handler):
 
 def _success_handler():
     """Handler that returns success for every activity. Mirrors the
-    Wave 8 / 9A workflow test fixture shape."""
+ / 9A workflow test fixture shape."""
 
     def handler(method, payload, _kwargs):
         name = _activity_name(method)
@@ -222,8 +222,8 @@ def test_workflow_dispatches_persist_final_ingestion_report_on_compile_failure(
     monkeypatch,
 ):
     """Compile failure is the canonical test for the best-effort
-    failure-path report write — the workflow MUST still attempt the
-    report persist even when the run is failing."""
+ failure-path report write — the workflow MUST still attempt the
+ report persist even when the run is failing."""
     captured = _patch_workflow_runtime(
         monkeypatch, exec_handler=_compile_failure_handler(),
     )

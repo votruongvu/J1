@@ -27,8 +27,8 @@ from j1.projects.context import ProjectContext
 
 class _CapturingReporter:
     """Records every progress call. Mirrors the test reporter in
-    test_progress_workflow_integration.py — kept inline here so
-    these tests stay independently runnable."""
+ test_progress_workflow_integration.py — kept inline here so
+ these tests stay independently runnable."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
@@ -56,11 +56,11 @@ class _CapturingReporter:
 
 def _install_fake_raganything(monkeypatch, log_lines: list[str]):
     """Install a fake `raganything` module whose
-    `process_document_complete` emits the supplied log lines via
-    the `mineru` logger before completing.
+ `process_document_complete` emits the supplied log lines via
+ the `mineru` logger before completing.
 
-    Mirrors the existing fake-raganything pattern from
-    test_raganything_libreoffice_preconvert.py."""
+ Mirrors the existing fake-raganything pattern from
+ test_raganything_libreoffice_preconvert.py."""
 
     class _FakeConfig:
         def __init__(self, **kwargs):
@@ -100,7 +100,7 @@ def _build_request(
     document_bytes: bytes = b"%PDF-1.4 fake bytes",
 ):
     """Factory: places a fake source file under the tenant/project
-    raw/ area and returns a RAGAnythingCompileRequest."""
+ raw/ area and returns a RAGAnythingCompileRequest."""
     raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / document_filename).write_bytes(document_bytes)
@@ -136,9 +136,9 @@ def test_mineru_log_line_during_compile_routes_to_reporter(
     tmp_path, monkeypatch,
 ):
     """A `[MinerU] Layout Preparation: 50% | 22/44` line emitted
-    DURING `process_document_complete` becomes a structured
-    `step.progress` call on the reporter — without any
-    workflow-side log parsing or stdout capture."""
+ DURING `process_document_complete` becomes a structured
+ `step.progress` call on the reporter — without any
+ workflow-side log parsing or stdout capture."""
     monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
     _install_fake_raganything(monkeypatch, log_lines=[
         "[MinerU] Layout Preparation: 50% | 22/44",
@@ -176,9 +176,9 @@ def test_mineru_log_handler_not_attached_when_run_id_missing(
     tmp_path, monkeypatch,
 ):
     """The handler is a no-op when `run_id` is empty, even with a
-    reporter present. The reporter's per-event correlation requires
-    a stable run_id; without one the handler installation is skipped
-    entirely so unrelated log output isn't captured."""
+ reporter present. The reporter's per-event correlation requires
+ a stable run_id; without one the handler installation is skipped
+ entirely so unrelated log output isn't captured."""
     monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
     _install_fake_raganything(monkeypatch, log_lines=[
         "[MinerU] Layout Preparation: 80% | 35/44",
@@ -198,8 +198,8 @@ def test_mineru_log_handler_not_attached_when_run_id_missing(
 
 def test_mineru_log_handler_no_op_without_reporter(tmp_path, monkeypatch):
     """Backwards-compat: existing callers don't pass a reporter and
-    the bridge runs unchanged. Verify by capturing whether ANY
-    handler was attached to the mineru logger after the call."""
+ the bridge runs unchanged. Verify by capturing whether ANY
+ handler was attached to the mineru logger after the call."""
     monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
     _install_fake_raganything(monkeypatch, log_lines=[])
 

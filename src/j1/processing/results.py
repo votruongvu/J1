@@ -84,14 +84,14 @@ ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN = "post_compile_enrich_plan"
 # `AssessmentPlan`. Read by the FE's initial-plan panel and by the
 # post-compile assessor to derive the candidate list.
 ARTIFACT_KIND_INITIAL_EXECUTION_PLAN = "initial_execution_plan"
-# Normalized compile result (Wave 4). Typed projection of what the
+# Normalized compile result. Typed projection of what the
 # compile activity returned — chunks_count, detected_tables /
 # detected_images, quality_signals, retry_history, etc. Read by the
 # FE's Compile Result panel and by the post-compile enrichment
 # assessor; raw vendor output stays in the workspace and is
 # referenced by id via `raw_artifact_refs`.
 ARTIFACT_KIND_COMPILE_RESULT_SUMMARY = "compile_result_summary"
-# Typed enrichment overlay (Wave 6). Produced by
+# Typed enrichment overlay. Produced by
 # `j1.processing.enrichment_modules.CompositeEnrichmentRunner` after
 # the post-compile enrichment plan opts in; carries per-module
 # outcomes, document-metadata overlay, terminology map,
@@ -101,10 +101,10 @@ ARTIFACT_KIND_COMPILE_RESULT_SUMMARY = "compile_result_summary"
 # they are; this is the AGGREGATED typed view downstream consumers
 # branch on.
 ARTIFACT_KIND_ENRICHMENT_RESULT = "enrichment_result"
-# Wave 10 — end-to-end run summary artifact. The aggregated view
+# end-to-end run summary artifact. The aggregated view
 # the FE renders on the run-detail page + the operator/debug
 # report consumed by the audit log. Produced at workflow terminal
-# (success OR failure) so every Wave-10+ run carries a single
+# (success OR failure) so every run carries a single
 # authoritative report rather than a fan-out across artifact kinds.
 ARTIFACT_KIND_FINAL_INGESTION_REPORT = "final_ingestion_report"
 

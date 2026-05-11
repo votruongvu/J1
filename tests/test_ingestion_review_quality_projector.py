@@ -1,14 +1,14 @@
 """Unit tests for QualityReportProjector — no service, no REST.
 
 Exercises the projection rules directly:
-  * Overall-confidence priority chain (explicit > modality mean >
-    default_confidence > metadata.confidence > None).
-  * Modality grouping with sample-count aggregation.
-  * Low-confidence findings from both confidence + consistency
-    sources, with traceability fields preserved.
-  * Step-result splitting (skipped vs failed-optional).
-  * `include_raw` toggle.
-  * Resilience to missing files / bad JSON / wrong artifact kind.
+ * Overall-confidence priority chain (explicit > modality mean >
+ default_confidence > metadata.confidence > None).
+ * Modality grouping with sample-count aggregation.
+ * Low-confidence findings from both confidence + consistency
+ sources, with traceability fields preserved.
+ * Step-result splitting (skipped vs failed-optional).
+ * `include_raw` toggle.
+ * Resilience to missing files / bad JSON / wrong artifact kind.
 """
 
 from __future__ import annotations
@@ -100,8 +100,8 @@ def test_project_skips_non_quality_artifacts(tmp_path):
 
 
 def test_project_skips_markdown_sibling(tmp_path):
-    """Confidence-assessment .md siblings carry no signal — project
-    only the .json."""
+    """Confidence-assessment.md siblings carry no signal — project
+ only the.json."""
     md_path = tmp_path / "ca.md"
     md_path.write_text("# md only", encoding="utf-8")
     projector = QualityReportProjector(path_resolver=_resolver({"a1": md_path}))
@@ -187,7 +187,7 @@ def test_overall_confidence_falls_back_to_default_field(tmp_path):
 
 def test_overall_confidence_falls_back_to_metadata(tmp_path):
     """The base enricher writes `metadata["confidence"]` as a string;
-    the projector must coerce and surface it as a last resort."""
+ the projector must coerce and surface it as a last resort."""
     p = tmp_path / "ca.json"
     _write_json(p, {})  # no payload-level confidence
     projector = QualityReportProjector(path_resolver=_resolver({"a1": p}))
@@ -258,7 +258,7 @@ def test_modality_confidences_accept_camelcase(tmp_path):
 
 def test_low_confidence_findings_from_assessments(tmp_path):
     """Confidence-assessment entries with score < 0.7 surface as
-    findings; >= 0.7 are excluded as noise."""
+ findings; >= 0.7 are excluded as noise."""
     p = tmp_path / "ca.json"
     _write_json(p, {"assessments": [
         {"modality": "tables", "confidence": 0.85},  # excluded
@@ -309,7 +309,7 @@ def test_low_confidence_findings_from_consistency(tmp_path):
 
 def test_finding_artifact_id_falls_back_to_producing_artifact(tmp_path):
     """Producer didn't pin `artifact_id` on the finding — the
-    artifact that produced the finding becomes the lineage anchor."""
+ artifact that produced the finding becomes the lineage anchor."""
     p = tmp_path / "consistency.json"
     _write_json(p, {"findings": [
         {"score": 0.1, "category": "x"},

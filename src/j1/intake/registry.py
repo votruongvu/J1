@@ -33,10 +33,10 @@ class SourceRegistry(Protocol):
     ) -> None:
         """Transition a document's status.
 
-        Called by the workflow after each document finishes (or fails)
-        to flip it off `PENDING` so subsequent project-wide jobs
-        don't re-pick the same documents. Raises
-        `DocumentNotFoundError` if the document isn't registered."""
+ Called by the workflow after each document finishes (or fails)
+ to flip it off `PENDING` so subsequent project-wide jobs
+ don't re-pick the same documents. Raises
+ `DocumentNotFoundError` if the document isn't registered."""
         ...
 
 

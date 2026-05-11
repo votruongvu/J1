@@ -14,10 +14,10 @@ from j1.integration.security.errors import AuthenticationError
 class Credential:
     """Wire-format-neutral credential carried from an adapter to authenticators.
 
-    `scheme` mirrors the standard HTTP authentication schemes (e.g. `bearer`,
-    `api_key`); `token` is the opaque secret. Adapters extract these from
-    headers, query strings, or other transport-specific places.
-    """
+ `scheme` mirrors the standard HTTP authentication schemes (e.g. `bearer`,
+ `api_key`); `token` is the opaque secret. Adapters extract these from
+ headers, query strings, or other transport-specific places.
+ """
 
     scheme: str
     token: str
@@ -26,10 +26,10 @@ class Credential:
 class Authenticator(Protocol):
     """Maps a `Credential` to a `SecurityContext` or rejects it.
 
-    Implementations must be vendor-neutral and free of HTTP / JWT-library
-    types — those belong in adapters. Callers should treat
-    `AuthenticationError` as the only signalling channel for failure.
-    """
+ Implementations must be vendor-neutral and free of HTTP / JWT-library
+ types — those belong in adapters. Callers should treat
+ `AuthenticationError` as the only signalling channel for failure.
+ """
 
     def authenticate(self, credential: Credential) -> SecurityContext: ...
 
@@ -45,10 +45,10 @@ class ApiKeyRecord:
 class ApiKeyAuthenticator:
     """Validates opaque API keys against an in-memory map.
 
-    The map's source (file, env, secrets manager) is the caller's concern.
-    Recognised schemes: `bearer` and `api_key`. Other schemes are rejected
-    so a chain via `CompositeAuthenticator` can fall through.
-    """
+ The map's source (file, env, secrets manager) is the caller's concern.
+ Recognised schemes: `bearer` and `api_key`. Other schemes are rejected
+ so a chain via `CompositeAuthenticator` can fall through.
+ """
 
     SUPPORTED_SCHEMES = frozenset({"bearer", "api_key"})
 
@@ -76,15 +76,15 @@ class ApiKeyAuthenticator:
 class JwtAuthenticator:
     """Placeholder for a future JWT / OAuth 2.1 / OIDC authenticator.
 
-    The concrete verifier (signature check, JWKS fetch, claim mapping) is
-    injected so the integration layer never imports a JWT library directly.
-    A `verifier` callable returns the validated claims as a plain dict;
-    `claims_mapper` converts those claims into a `SecurityContext`.
+ The concrete verifier (signature check, JWKS fetch, claim mapping) is
+ injected so the integration layer never imports a JWT library directly.
+ A `verifier` callable returns the validated claims as a plain dict;
+ `claims_mapper` converts those claims into a `SecurityContext`.
 
-    Until a deployment configures a verifier, calling `authenticate` raises
-    `AuthenticationError` — the framework ships the protocol but no default
-    crypto.
-    """
+ Until a deployment configures a verifier, calling `authenticate` raises
+ `AuthenticationError` — the framework ships the protocol but no default
+ crypto.
+ """
 
     def __init__(
         self,
@@ -131,10 +131,10 @@ def _default_jwt_claims_mapper(claims: Mapping[str, object]) -> SecurityContext:
 class CompositeAuthenticator:
     """Tries multiple authenticators in order; returns the first to succeed.
 
-    Useful for accepting both API keys and JWTs at the same endpoint without
-    coupling them. Raises the last `AuthenticationError` if all delegates
-    reject — callers see one consolidated 401.
-    """
+ Useful for accepting both API keys and JWTs at the same endpoint without
+ coupling them. Raises the last `AuthenticationError` if all delegates
+ reject — callers see one consolidated 401.
+ """
 
     def __init__(self, delegates: list[Authenticator]) -> None:
         if not delegates:

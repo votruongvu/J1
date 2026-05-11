@@ -2,11 +2,11 @@
 
 Two layers:
 
-  1. Profile → AssessmentPlan via `DefaultAssessmentPlanner`. Pure
-     rule-based; no I/O, no vendor imports.
-  2. AssessmentPlan → RAGAnything `CompileConfig` via
-     `map_assessment_to_raganything_config`. The only place
-     RAGAnything-specific knowledge of the plan lives.
+ 1. Profile → AssessmentPlan via `DefaultAssessmentPlanner`. Pure
+ rule-based; no I/O, no vendor imports.
+ 2. AssessmentPlan → RAGAnything `CompileConfig` via
+ `map_assessment_to_raganything_config`. The only place
+ RAGAnything-specific knowledge of the plan lives.
 
 The user's spec calls for 10 specific test cases; this file covers
 each, plus a vendor-neutrality check that fails CI if anyone
@@ -56,9 +56,9 @@ def _profile(**overrides) -> DocumentProfile:
 
 def _settings(**overrides) -> RAGAnythingSettings:
     """RAGAnythingSettings builder. Tests construct settings DIRECTLY
-    via the dataclass (bypassing the env loader's URL guard) since
-    the plan mapper only reads `parse_method` + the supports_*
-    fields, not the VLM URL."""
+ via the dataclass (bypassing the env loader's URL guard) since
+ the plan mapper only reads `parse_method` + the supports_*
+ fields, not the VLM URL."""
     base = dict(
         parse_method="auto",
         backend="vlm-http-client",
@@ -73,9 +73,9 @@ def _settings(**overrides) -> RAGAnythingSettings:
 
 def test_plain_text_extension_produces_standard_plan():
     """Two-mode model: plain text → STANDARD compile mode with
-    LOW complexity, only TEXT_EXTRACTION required, and confidence
-    1.0. The bridge takes a plaintext bypass for these extensions
-    independently — the compile mode itself is standard."""
+ LOW complexity, only TEXT_EXTRACTION required, and confidence
+ 1.0. The bridge takes a plaintext bypass for these extensions
+ independently — the compile mode itself is standard."""
     profile = _profile(
         extension=".txt", page_count=1,
         text_extractable_ratio=1.0,
@@ -93,7 +93,7 @@ def test_plain_text_extension_produces_standard_plan():
 
 def test_standard_profile_for_readable_pdf_with_tables_produces_standard_plan():
     """A readable PDF with tables flagged should land in standard
-    mode with TABLE_EXTRACTION required."""
+ mode with TABLE_EXTRACTION required."""
     profile = _profile(
         extension=".pdf",
         text_extractable_ratio=0.95,
@@ -113,8 +113,8 @@ def test_standard_profile_for_readable_pdf_with_tables_produces_standard_plan():
 
 def test_deep_profile_when_ocr_required_produces_deep_plan_with_ocr():
     """Scanned PDF (text_extractable_ratio < 0.1) → deep mode +
-    OCR + LAYOUT_DETECTION required. Risk flag surfaces the
-    quality concern for a future optimisation pass."""
+ OCR + LAYOUT_DETECTION required. Risk flag surfaces the
+ quality concern for a future optimisation pass."""
     profile = _profile(
         extension=".pdf",
         text_extractable_ratio=0.0,
@@ -132,7 +132,7 @@ def test_deep_profile_when_ocr_required_produces_deep_plan_with_ocr():
 
 def test_deep_profile_image_only_extension_triggers_ocr():
     """`.tiff` and similar scan-only extensions are treated as
-    deep + OCR even when other signals are unknown."""
+ deep + OCR even when other signals are unknown."""
     profile = _profile(extension=".tiff", page_count=1)
     plan = DefaultAssessmentPlanner().assess(profile)
     assert plan.mode == CompileMode.DEEP
@@ -158,9 +158,9 @@ def test_deep_profile_image_only_extension_triggers_ocr():
 ])
 def test_text_only_extensions_assigned_standard_mode(extension):
     """Two-mode model: every 100%-text extension lands in STANDARD
-    mode. The bridge's plaintext-bypass optimisation kicks in
-    separately based on extension — independent of the compile
-    mode, which has no FAST option."""
+ mode. The bridge's plaintext-bypass optimisation kicks in
+ separately based on extension — independent of the compile
+ mode, which has no FAST option."""
     profile = _profile(extension=extension, page_count=1)
     plan = DefaultAssessmentPlanner().assess(profile)
     assert plan.mode == CompileMode.STANDARD, (
@@ -184,9 +184,9 @@ def test_text_only_extensions_assigned_standard_mode(extension):
 ])
 def test_binary_container_extensions_never_assigned_fast_mode(extension):
     """Spec contract: PDF / DOCX / PPTX / XLSX / etc. are binary
-    containers that may carry images, tables, or scanned regions
-    invisible to the file extension. The planner must NEVER choose
-    FAST for these — even when every signal looks clean."""
+ containers that may carry images, tables, or scanned regions
+ invisible to the file extension. The planner must NEVER choose
+ FAST for these — even when every signal looks clean."""
     profile = _profile(
         extension=extension,
         page_count=10,
@@ -205,9 +205,9 @@ def test_binary_container_extensions_never_assigned_fast_mode(extension):
 
 def test_legacy_fast_mode_coerces_to_standard_regardless_of_extension():
     """Two-mode model: FAST is removed from the official vocabulary.
-    The safety belt coerces ANY FAST plan to STANDARD — even for
-    100%-text extensions where pre-refactor FAST was the answer.
-    Operators see the migration in `reason`."""
+ The safety belt coerces ANY FAST plan to STANDARD — even for
+ 100%-text extensions where pre-refactor FAST was the answer.
+ Operators see the migration in `reason`."""
     from j1.processing.assessment import _enforce_fast_mode_safety
 
     legacy_plan = AssessmentPlan(
@@ -227,9 +227,9 @@ def test_legacy_fast_mode_coerces_to_standard_regardless_of_extension():
 
 
 def test_legacy_fast_mode_coercion_also_fires_for_text_extension():
-    """Belt fires uniformly. A FAST plan for a .txt file is still
-    coerced to STANDARD — no extension exemption in the two-mode
-    model."""
+    """Belt fires uniformly. A FAST plan for a.txt file is still
+ coerced to STANDARD — no extension exemption in the two-mode
+ model."""
     from j1.processing.assessment import _enforce_fast_mode_safety
 
     legacy_plan = AssessmentPlan(
@@ -247,7 +247,7 @@ def test_legacy_fast_mode_coercion_also_fires_for_text_extension():
 
 def test_safety_belt_noop_for_already_standard():
     """The belt only acts on FAST plans. STANDARD/DEEP pass through
-    untouched."""
+ untouched."""
     from j1.processing.assessment import _enforce_fast_mode_safety
 
     standard_plan = AssessmentPlan(
@@ -270,7 +270,7 @@ def test_safety_belt_noop_for_already_standard():
 
 def test_recommended_path_standard_for_plain_text():
     """Two-mode model: plain text → STANDARD compile mode → the
-    operator-intent path is STANDARD_COMPILE."""
+ operator-intent path is STANDARD_COMPILE."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     profile = _profile(extension=".txt", page_count=1)
@@ -281,7 +281,7 @@ def test_recommended_path_standard_for_plain_text():
 
 def test_recommended_path_deep_for_scanned_pdf():
     """Scanned PDF / weak text layer / scan-only extension → OCR
-    capability required → path is DEEP_COMPILE."""
+ capability required → path is DEEP_COMPILE."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     profile = _profile(
@@ -296,9 +296,9 @@ def test_recommended_path_deep_for_scanned_pdf():
 
 def test_recommended_path_standard_for_pdf_with_tables():
     """A readable PDF with table signals → STANDARD compile mode
-    with TABLE_EXTRACTION capability → path is STANDARD_COMPILE.
-    Standard already handles multimodal capability flags; rich
-    content does not by itself escalate to deep."""
+ with TABLE_EXTRACTION capability → path is STANDARD_COMPILE.
+ Standard already handles multimodal capability flags; rich
+ content does not by itself escalate to deep."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     profile = _profile(
@@ -326,7 +326,7 @@ def test_recommended_path_standard_default():
 
 def test_recommended_path_round_trips_through_payload():
     """`to_payload` carries the path, `from_payload` reads it back.
-    Critical for the workflow→activity boundary."""
+ Critical for the workflow→activity boundary."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     profile = _profile(extension=".txt", page_count=1)
@@ -339,8 +339,8 @@ def test_recommended_path_round_trips_through_payload():
 
 def test_recommended_path_from_payload_tolerates_missing_field():
     """Older payloads (pre-API-shape-refactor) omit the field.
-    `from_payload` must fall back to STANDARD_COMPILE rather
-    than crash."""
+ `from_payload` must fall back to STANDARD_COMPILE rather
+ than crash."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     legacy_payload = {
@@ -362,12 +362,12 @@ def test_recommended_path_from_payload_tolerates_missing_field():
 
 def test_recommended_path_from_payload_coerces_legacy_values():
     """Legacy values from before the two-mode refactor must coerce
-    on the read path:
-      * `fast_text_compile`  → STANDARD_COMPILE
-      * `multimodal_compile` → STANDARD_COMPILE
-      * `ocr_parse`          → DEEP_COMPILE
-    The actual recommended_path stored in legacy artifacts is one
-    of these strings; replaying them MUST NOT crash."""
+ on the read path:
+ * `fast_text_compile` → STANDARD_COMPILE
+ * `multimodal_compile` → STANDARD_COMPILE
+ * `ocr_parse` → DEEP_COMPILE
+ The actual recommended_path stored in legacy artifacts is one
+ of these strings; replaying them MUST NOT crash."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     def _payload(path_value: str) -> dict:
@@ -399,8 +399,8 @@ def test_recommended_path_from_payload_coerces_legacy_values():
 
 def test_recommended_path_from_payload_tolerates_unknown_value():
     """Future-proofing: a payload that includes a path the current
-    worker doesn't recognise must not crash replay. Fallback to
-    STANDARD_COMPILE."""
+ worker doesn't recognise must not crash replay. Fallback to
+ STANDARD_COMPILE."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     future_payload = {
@@ -423,9 +423,9 @@ def test_recommended_path_from_payload_tolerates_unknown_value():
 
 def test_planner_never_emits_legacy_compile_mode():
     """Two-mode invariant: across the planner's rule surface the
-    only modes emitted are STANDARD and DEEP. FAST is removed from
-    the official vocabulary; the safety belt coerces any legacy
-    FAST before it leaves `assess()`."""
+ only modes emitted are STANDARD and DEEP. FAST is removed from
+ the official vocabulary; the safety belt coerces any legacy
+ FAST before it leaves `assess`."""
     planner = DefaultAssessmentPlanner()
     profiles = [
         _profile(extension=".txt", page_count=1),
@@ -449,9 +449,9 @@ def test_planner_never_emits_legacy_compile_mode():
 
 def test_extraction_evidence_block_built_from_compile_result():
     """The workflow's `_build_extraction_evidence` helper derives
-    the block from `compile_result.content_stats` +
-    `compile_metrics`. Verify the field mapping + that chunks are
-    NEVER claimed here (chunking_status='pending_verification')."""
+ the block from `compile_result.content_stats` +
+ `compile_metrics`. Verify the field mapping + that chunks are
+ NEVER claimed here (chunking_status='pending_verification')."""
     from types import SimpleNamespace
 
     from j1.orchestration.workflows.project_processing import (
@@ -493,8 +493,8 @@ def test_extraction_evidence_block_built_from_compile_result():
 
 def test_extraction_evidence_block_none_compile_result_safe():
     """Defensive: missing compile_result → safe empty block.
-    The bridge calls this with None when persisting a strategy
-    report before any compile attempt completes."""
+ The bridge calls this with None when persisting a strategy
+ report before any compile attempt completes."""
     from j1.orchestration.workflows.project_processing import (
         _build_extraction_evidence,
     )
@@ -586,7 +586,7 @@ def test_deep_plan_with_ocr_required_maps_to_parse_method_ocr():
 
 def test_deep_plan_without_ocr_falls_back_to_auto():
     """Deep mode but OCR not required (e.g. complex but text-
-    extractable layout) → `auto`, not `ocr`."""
+ extractable layout) → `auto`, not `ocr`."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.DEEP,
         document_type="pdf", complexity=Complexity.HIGH,
@@ -604,7 +604,7 @@ def test_deep_plan_without_ocr_falls_back_to_auto():
 
 def test_env_default_parse_method_does_not_override_plan_choice():
     """Even if `J1_RAGANYTHING_PARSE_METHOD=auto` (the env default),
-    a fast plan must still resolve to `txt`. Plan > env."""
+ a fast plan must still resolve to `txt`. Plan > env."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.FAST,
         document_type="plain_text", complexity=Complexity.LOW,
@@ -618,10 +618,10 @@ def test_env_default_parse_method_does_not_override_plan_choice():
 
 def test_env_allowed_parse_methods_constrains_plan_choice():
     """When the operator restricts the deployment via an allow-list,
-    a plan that requests an out-of-list method is degraded to the
-    deployment default with a warning. Env is the operator's
-    safety hatch — settings carry the allow-list as a real field
-    populated by `load_raganything_settings`."""
+ a plan that requests an out-of-list method is degraded to the
+ deployment default with a warning. Env is the operator's
+ safety hatch — settings carry the allow-list as a real field
+ populated by `load_raganything_settings`."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.FAST,
         document_type="plain_text", complexity=Complexity.LOW,
@@ -643,9 +643,9 @@ def test_env_allowed_parse_methods_constrains_plan_choice():
 
 def test_assessment_plan_dataclass_is_vendor_neutral():
     """Lock the AssessmentPlan field set so a future change can't
-    sneak `parse_method` / `parser` / `mineru_*` / `raganything_*`
-    into the vendor-neutral contract. The mapper translates; the
-    plan describes intent only."""
+ sneak `parse_method` / `parser` / `mineru_*` / `raganything_*`
+ into the vendor-neutral contract. The mapper translates; the
+ plan describes intent only."""
     forbidden_substrings = (
         "parse_method", "parser", "mineru", "raganything",
         "vlm", "backend",
@@ -665,10 +665,10 @@ def test_assessment_plan_dataclass_is_vendor_neutral():
 
 def test_planner_does_not_call_process_document_complete(monkeypatch):
     """The AssessmentPlanner runs against a pre-parsed
-    `DocumentProfile`; it MUST never trigger heavy compile work.
-    Guard against a future change that pulls in RAGAnything for
-    "deeper signals" — the cost would defeat the whole point of
-    pre-compile assessment."""
+ `DocumentProfile`; it MUST never trigger heavy compile work.
+ Guard against a future change that pulls in RAGAnything for
+ "deeper signals" — the cost would defeat the whole point of
+ pre-compile assessment."""
     # Set a tripwire on the bridge's compile entrypoint. Importing
     # it lazily so the test doesn't pay the import cost when it
     # asserts non-call.
@@ -694,10 +694,10 @@ def test_planner_does_not_call_process_document_complete(monkeypatch):
 
 def test_unsupported_capability_records_warning_under_default_policy():
     """Default `fallback_policy=DEGRADE_WITH_WARNING`: a required
-    capability the deployment can't honour (per the real
-    `supports_image` settings field) produces a warning on the
-    CompileConfig, NOT a hard failure. The compile still runs with
-    whatever the parser CAN do, and operators see the gap."""
+ capability the deployment can't honour (per the real
+ `supports_image` settings field) produces a warning on the
+ CompileConfig, NOT a hard failure. The compile still runs with
+ whatever the parser CAN do, and operators see the gap."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -718,9 +718,9 @@ def test_unsupported_capability_records_warning_under_default_policy():
 
 def test_unsupported_capability_raises_under_fail_policy():
     """`fallback_policy=FAIL` is the strict mode for callers that
-    can't proceed without the capability. Mapper raises
-    `CompileCapabilityUnsupported` so the compile activity records
-    a stage failure with the missing capability in the message."""
+ can't proceed without the capability. Mapper raises
+ `CompileCapabilityUnsupported` so the compile activity records
+ a stage failure with the missing capability in the message."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -744,9 +744,9 @@ def test_unsupported_capability_raises_under_fail_policy():
 
 def test_standard_plan_with_table_cap_sets_enable_table_processing_true():
     """Standard plan + TABLE_EXTRACTION required → mapper emits
-    `enable_table_processing=True` on the config-overrides slice
-    AND on the CompileConfig field. The bridge applies the slice
-    onto `RAGAnythingConfig` before parser invocation."""
+ `enable_table_processing=True` on the config-overrides slice
+ AND on the CompileConfig field. The bridge applies the slice
+ onto `RAGAnythingConfig` before parser invocation."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -764,9 +764,9 @@ def test_standard_plan_with_table_cap_sets_enable_table_processing_true():
 
 def test_fast_plan_disables_image_and_equation_config_flags():
     """Fast plan with NO image/formula capabilities required → mapper
-    emits `enable_image_processing=False` and
-    `enable_equation_processing=False` so RAGAnythingConfig skips the
-    expensive paths. Table also off (fast mode default)."""
+ emits `enable_image_processing=False` and
+ `enable_equation_processing=False` so RAGAnythingConfig skips the
+ expensive paths. Table also off (fast mode default)."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.FAST,
         document_type="plain_text", complexity=Complexity.LOW,
@@ -781,9 +781,9 @@ def test_fast_plan_disables_image_and_equation_config_flags():
 
 def test_deep_plan_enables_image_table_equation_config_flags():
     """Deep plan → all three RAGAnythingConfig flags True regardless
-    of whether each capability is in `required_capabilities`. The
-    deep mode's whole point is to maximise extraction quality, so
-    the per-capability defaults flip ON together."""
+ of whether each capability is in `required_capabilities`. The
+ deep mode's whole point is to maximise extraction quality, so
+ the per-capability defaults flip ON together."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.DEEP,
         document_type="pdf", complexity=Complexity.HIGH,
@@ -802,9 +802,9 @@ def test_deep_plan_enables_image_table_equation_config_flags():
 
 def test_parse_method_still_maps_correctly_alongside_config_flags():
     """The CompileConfig split (parser_kwargs vs config_overrides)
-    must NOT regress the parse_method mapping. Each mode still
-    resolves the same way — txt / auto / ocr — independent of
-    the per-capability flag values."""
+ must NOT regress the parse_method mapping. Each mode still
+ resolves the same way — txt / auto / ocr — independent of
+ the per-capability flag values."""
     fast = map_assessment_to_raganything_config(
         AssessmentPlan(
             document_id="d", mode=CompileMode.FAST,
@@ -841,8 +841,8 @@ def test_parse_method_still_maps_correctly_alongside_config_flags():
 
 def test_to_parser_kwargs_does_not_leak_config_overrides():
     """`to_parser_kwargs` must only return values that are valid
-    `process_document_complete` kwargs. Per-capability switches
-    (config-layer concern) MUST NOT appear here."""
+ `process_document_complete` kwargs. Per-capability switches
+ (config-layer concern) MUST NOT appear here."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -863,9 +863,9 @@ def test_to_parser_kwargs_does_not_leak_config_overrides():
 
 def test_compile_request_assessment_plan_field_defaults_to_none():
     """`RAGAnythingCompileRequest.assessment_plan` defaults to None
-    so legacy callers + every existing test keep working without
-    constructing a plan. The bridge falls back to settings.parse_method
-    in this case."""
+ so legacy callers + every existing test keep working without
+ constructing a plan. The bridge falls back to settings.parse_method
+ in this case."""
     from j1.providers.raganything.compiler import RAGAnythingCompileRequest
     from j1.projects.context import ProjectContext
     req = RAGAnythingCompileRequest(

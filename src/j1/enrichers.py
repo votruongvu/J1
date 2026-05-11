@@ -34,11 +34,11 @@ PROCESSOR_CONFIDENCE_ASSESSOR = "enricher.confidence_assessor"
 class _StructuredEnricher:
     """Base class for generic enrichment processors.
 
-    Subclasses set: kind, artifact_type, prompt_name, confidence_default,
-    review_required_default, and override _produce(ctx, artifact_id) to return
-    (json_data, markdown_text). Profiles supply prompts and config; processors
-    themselves carry no domain logic.
-    """
+ Subclasses set: kind, artifact_type, prompt_name, confidence_default,
+ review_required_default, and override _produce(ctx, artifact_id) to return
+ (json_data, markdown_text). Profiles supply prompts and config; processors
+ themselves carry no domain logic.
+ """
 
     kind: str = "enricher.base"
     artifact_type: str = "enriched.unknown"
@@ -87,12 +87,12 @@ class _StructuredEnricher:
         # is recorded on every artifact's metadata for provenance.
         self._domain_prompt_addon = domain_prompt_addon.strip()
         self._domain_id = domain_id
-        # Wave-7 concurrency limiter. Optional — when None, LLM
-        # calls run directly (preserves the pre-Wave-7 behaviour for
+        #  concurrency limiter. Optional — when None, LLM
+        # calls run directly (preserves the pre- behaviour for
         # deployments that haven't wired the limiter). When set,
-        # every call to `_text_client.extract()` /
-        # `_vision_client.analyze_image()` flows through
-        # `limiter.run()`, which enforces a worker-wide concurrency
+        # every call to `_text_client.extract` /
+        # `_vision_client.analyze_image` flows through
+        # `limiter.run`, which enforces a worker-wide concurrency
         # ceiling + per-call timeout + bounded retries.
         self._llm_call_limiter = llm_call_limiter
 
@@ -205,13 +205,13 @@ class _StructuredEnricher:
 # TableExtractor / FormulaExtractor / RiskExtractor / RiskExtractor /
 # ConsistencyChecker / ConfidenceAssessor) all follow the same shape:
 #
-#   1. Skip when the artifact isn't text-shaped (chunks + compile
-#      markdown count; images / graph_json don't).
-#   2. Skip when no `text_client` was wired (legacy stub behaviour).
-#   3. Read the artifact bytes via `content_source`, decode as UTF-8.
-#   4. Build a prompt = profile_prompt() OR class default.
-#   5. Call `text_client.extract(prompt, schema)` for structured JSON.
-#   6. Render a small markdown summary alongside the JSON.
+#  1. Skip when the artifact isn't text-shaped (chunks + compile
+#  markdown count; images / graph_json don't).
+#  2. Skip when no `text_client` was wired (legacy stub behaviour).
+#  3. Read the artifact bytes via `content_source`, decode as UTF-8.
+#  4. Build a prompt = profile_prompt OR class default.
+#  5. Call `text_client.extract(prompt, schema)` for structured JSON.
+#  6. Render a small markdown summary alongside the JSON.
 #
 # The shared base class consolidates the boilerplate so subclasses
 # only have to declare {output_key, schema, default_prompt,
@@ -238,9 +238,9 @@ _NON_TEXT_KINDS = frozenset({
 
 def _is_text_kind(kind: str | None) -> bool:
     """True when an artifact of `kind` is reasonable to feed an
-    LLM-backed text enricher. False for binary / image / graph
-    artifacts. Empty/None falls back to True so callers without an
-    `artifact_lookup` don't lose the legacy behaviour."""
+ LLM-backed text enricher. False for binary / image / graph
+ artifacts. Empty/None falls back to True so callers without an
+ `artifact_lookup` don't lose the legacy behaviour."""
     if not kind:
         return True
     normalised = kind.strip().lower()
@@ -253,19 +253,19 @@ def _is_text_kind(kind: str | None) -> bool:
 
 class _LLMBackedEnricher(_StructuredEnricher):
     """Shared scaffolding for enrichers that delegate extraction to
-    a structured-output LLM call.
+ a structured-output LLM call.
 
-    Subclasses declare:
-      * `_OUTPUT_KEY` — top-level JSON key in the response (e.g.
-        `"tables"`, `"requirements"`)
-      * `_OUTPUT_SCHEMA` — JSON schema passed to `text_client.extract`
-      * `_DEFAULT_PROMPT` — fallback when profile prompt is absent
-      * `_render_md(json_data)` — turn the structured response into
-        the markdown sibling artifact
+ Subclasses declare:
+ * `_OUTPUT_KEY` — top-level JSON key in the response (e.g.
+ `"tables"`, `"requirements"`)
+ * `_OUTPUT_SCHEMA` — JSON schema passed to `text_client.extract`
+ * `_DEFAULT_PROMPT` — fallback when profile prompt is absent
+ * `_render_md(json_data)` — turn the structured response into
+ the markdown sibling artifact
 
-    The base handles the kind gate, content read, error wrapping,
-    and the legacy stub fallback when `text_client` is None.
-    """
+ The base handles the kind gate, content read, error wrapping,
+ and the legacy stub fallback when `text_client` is None.
+ """
 
     _OUTPUT_KEY: str = "items"
     _OUTPUT_SCHEMA: dict[str, Any] = {}
@@ -332,7 +332,7 @@ class _LLMBackedEnricher(_StructuredEnricher):
         # When the LLM client carries a context-window budget,
         # shrink `body` further so prompt + schema + instructions
         # fit. The 25% buffer accommodates the schema serialisation
-        # the `extract()` wrapper appends + safety drift in the
+        # the `extract` wrapper appends + safety drift in the
         # fallback estimator. With no configured window this is a
         # no-op (body stays at the char cap above).
         body = self._fit_body_to_budget(body, prompt)
@@ -340,7 +340,7 @@ class _LLMBackedEnricher(_StructuredEnricher):
         # guidance ahead of the per-enricher prompt so the model has
         # domain context BEFORE the task-specific instructions. The
         # addon is empty for runs without an active domain pack —
-        # the resulting `full_prompt` matches the pre-Phase-2-W2
+        # the resulting `full_prompt` matches the pre-W2
         # shape in that case.
         if self._domain_prompt_addon:
             full_prompt = (
@@ -361,10 +361,10 @@ class _LLMBackedEnricher(_StructuredEnricher):
             )
 
         try:
-            # Route through the Wave-7 limiter when wired —
+            # Route through the limiter when wired —
             # enforces worker-wide concurrency + per-call timeout
             # + bounded retries. Falls back to direct invocation
-            # when no limiter is configured (pre-Wave-7 behaviour).
+            # when no limiter is configured (pre- behaviour).
             if self._llm_call_limiter is not None:
                 parsed, _usage = self._llm_call_limiter.run(
                     self._text_client.extract,
@@ -408,15 +408,15 @@ class _LLMBackedEnricher(_StructuredEnricher):
 
     def _fit_body_to_budget(self, body: str, profile_prompt: str) -> str:
         """Shrink `body` so the assembled prompt fits the LLM's
-        configured context window (when one is set).
+ configured context window (when one is set).
 
-        The prompt the enricher sends has three components:
-        `profile_prompt` (with schema appended by `extract()`),
-        boilerplate instructions, and `body`. Reserve a bookkeeping
-        budget for everything that ISN'T body and then truncate
-        body to fit. Falls back gracefully when no context window
-        is configured (returns body unchanged).
-        """
+ The prompt the enricher sends has three components:
+ `profile_prompt` (with schema appended by `extract`),
+ boilerplate instructions, and `body`. Reserve a bookkeeping
+ budget for everything that ISN'T body and then truncate
+ body to fit. Falls back gracefully when no context window
+ is configured (returns body unchanged).
+ """
         text_client = self._text_client
         context_window = getattr(
             getattr(text_client, "_settings", None),
@@ -448,7 +448,7 @@ class _LLMBackedEnricher(_StructuredEnricher):
             "Respond ONLY with JSON matching the schema. "
             "Do not include prose around the JSON.\n\n---\n\n"
         )
-        # Reserve an extra schema-serialisation margin: `extract()`
+        # Reserve an extra schema-serialisation margin: `extract`
         # serialises the JSON schema into the prompt, which can
         # be 200-1500 tokens depending on shape. Use 25% of the
         # available budget as a safe reservation.
@@ -466,7 +466,7 @@ class _LLMBackedEnricher(_StructuredEnricher):
 
     def _stub_response(self, artifact_id: str) -> dict[str, Any]:
         """Empty-output shape returned when the LLM isn't available
-        or content is empty. Subclasses can override to add fields."""
+ or content is empty. Subclasses can override to add fields."""
         return {
             "source_artifact_id": artifact_id,
             self._OUTPUT_KEY: [],
@@ -483,7 +483,7 @@ class _LLMBackedEnricher(_StructuredEnricher):
 
     def _render_md(self, json_data: dict[str, Any]) -> str:
         """Default markdown renderer — subclasses override for
-        domain-specific formatting (tables, requirements, etc.)."""
+ domain-specific formatting (tables, requirements, etc.)."""
         items = json_data.get(self._OUTPUT_KEY) or []
         title = self._OUTPUT_KEY.replace("_", " ").title()
         lines = [f"# {title}", "", f"Total: {len(items)}", ""]
@@ -550,11 +550,11 @@ class DocumentClassifier(_LLMBackedEnricher):
         json_data, _md = super()._produce(ctx, artifact_id)
         # Preserve legacy fields the original stub emitted so existing
         # consumers / tests don't break:
-        #   * `byte_size`   — informative when text_client is unwired
-        #   * `prompt_used` — bool, true iff the active profile
-        #                     supplied the `classify_document` prompt
-        #   * `classification` — always present (defaults to [] when
-        #                       the model didn't emit one)
+        #  * `byte_size` — informative when text_client is unwired
+        #  * `prompt_used` — bool, true iff the active profile
+        #  supplied the `classify_document` prompt
+        #  * `classification` — always present (defaults to [] when
+        #  the model didn't emit one)
         json_data["byte_size"] = len(self._read_content(ctx, artifact_id))
         json_data["prompt_used"] = bool(self._profile_prompt())
         json_data.setdefault("classification", [])
@@ -711,21 +711,21 @@ class TableExtractor(_LLMBackedEnricher):
 class VisualContentDescriber(_StructuredEnricher):
     """Vision-LLM enricher for image artifacts.
 
-    Three-state behaviour, picked based on what the deployment wired:
-      * `vision_client` is None         → no-op (returns empty visuals
-        list). Keeps existing tests / deployments without a vision
-        provider working.
-      * `vision_client` set, no bytes   → no-op with a `reason` field
-        explaining why (the artifact registry didn't expose payload
-        loading for this artifact).
-      * `vision_client` + bytes         → calls
-        `vision_client.analyze_image(...)` with the prompt configured
-        in the active profile (`describe_visuals` key) and packs the
-        response into the structured `visuals` entry.
+ Three-state behaviour, picked based on what the deployment wired:
+ * `vision_client` is None → no-op (returns empty visuals
+ list). Keeps existing tests / deployments without a vision
+ provider working.
+ * `vision_client` set, no bytes → no-op with a `reason` field
+ explaining why (the artifact registry didn't expose payload
+ loading for this artifact).
+ * `vision_client` + bytes → calls
+ `vision_client.analyze_image(...)` with the prompt configured
+ in the active profile (`describe_visuals` key) and packs the
+ response into the structured `visuals` entry.
 
-    The result is marked `review_required=True` (the class default)
-    so a human gets to confirm vision-generated descriptions before
-    they're treated as authoritative."""
+ The result is marked `review_required=True` (the class default)
+ so a human gets to confirm vision-generated descriptions before
+ they're treated as authoritative."""
 
     kind = PROCESSOR_VISUAL_DESCRIBER
     artifact_type = ARTIFACT_TYPE_VISUALS
@@ -774,8 +774,8 @@ class VisualContentDescriber(_StructuredEnricher):
 
     def enrich(self, ctx, artifact_id):
         """Override to short-circuit non-image artifacts BEFORE
-        `_produce` runs. Returns `SKIPPED` (no drafts) so the
-        composite doesn't add this no-op to the Visuals card."""
+ `_produce` runs. Returns `SKIPPED` (no drafts) so the
+ composite doesn't add this no-op to the Visuals card."""
         if not self._enabled:
             return ArtifactProcessingResult(
                 status=ResultStatus.SKIPPED,
@@ -859,7 +859,7 @@ class VisualContentDescriber(_StructuredEnricher):
         # Call the vision LLM. `media_type=None` lets the implementation
         # default (typically image/png). `metadata` is forwarded for
         # the provider's telemetry — useful when reconciling spend.
-        # Route through the Wave-7 limiter when wired (same pattern
+        # Route through the limiter when wired (same pattern
         # as the text path): worker-wide concurrency + per-call
         # timeout + bounded retries.
         try:
@@ -919,18 +919,18 @@ class VisualContentDescriber(_StructuredEnricher):
 def _is_image_kind(kind: str | None) -> bool:
     """Decide whether VCD should run on an artifact of `kind`.
 
-    Image-shaped kinds in the J1 taxonomy:
-      * `compile.image` — the `_drafts_from_output_dir` helper stamps
-        `.png` / `.jpg` / `.webp` files with this suffix.
-      * Anything ending in `.image` for forward-compat with future
-        producers that follow the same convention.
-      * `enriched.visuals` — already a visual artifact, but
-        re-enriching it would loop. Treat as image-shaped so the
-        composite doesn't double-enrich (and so a deployment that
-        chains enrich passes still has VCD see it).
+ Image-shaped kinds in the J1 taxonomy:
+ * `compile.image` — the `_drafts_from_output_dir` helper stamps
+ `.png` / `.jpg` / `.webp` files with this suffix.
+ * Anything ending in `.image` for forward-compat with future
+ producers that follow the same convention.
+ * `enriched.visuals` — already a visual artifact, but
+ re-enriching it would loop. Treat as image-shaped so the
+ composite doesn't double-enrich (and so a deployment that
+ chains enrich passes still has VCD see it).
 
-    Everything else (chunks, compile.metadata, graph_json,
-    enriched.tables, etc.) is non-image and gets a SKIPPED result."""
+ Everything else (chunks, compile.metadata, graph_json,
+ enriched.tables, etc.) is non-image and gets a SKIPPED result."""
     if not kind:
         return False
     normalised = kind.strip().lower()
@@ -1283,27 +1283,27 @@ def _filter_generic_enrichers(
 ) -> tuple[type[_StructuredEnricher], ...]:
     """Drop sub-enrichers whose modality the deployment disabled.
 
-    Mapping (only modalities with a single owning enricher are
-    gated here; per-modality split for the rest is design-future):
+ Mapping (only modalities with a single owning enricher are
+ gated here; per-modality split for the rest is design-future):
 
-      * `tables_enabled=False` → drop `TableExtractor`. Sole
-        producer of `enriched.tables`.
-      * `images_enabled` / `diagrams_enabled` / `scanned_pages_enabled`
-        — `VisualContentDescriber` (VCD) is the only generic
-        enricher that consumes the vision LLM, and it doesn't
-        differentiate photos from diagrams from scanned-page
-        captures (vendor parser tags artifacts uniformly). VCD
-        runs when **any** of the three visual flags is enabled and
-        is dropped only when **all three** are explicitly False.
-        That matches the operator-facing semantic "kill all visual
-        enrichment" without falsely promising fine-grained control
-        the parser doesn't provide today.
+ * `tables_enabled=False` → drop `TableExtractor`. Sole
+ producer of `enriched.tables`.
+ * `images_enabled` / `diagrams_enabled` / `scanned_pages_enabled`
+ — `VisualContentDescriber` (VCD) is the only generic
+ enricher that consumes the vision LLM, and it doesn't
+ differentiate photos from diagrams from scanned-page
+ captures (vendor parser tags artifacts uniformly). VCD
+ runs when **any** of the three visual flags is enabled and
+ is dropped only when **all three** are explicitly False.
+ That matches the operator-facing semantic "kill all visual
+ enrichment" without falsely promising fine-grained control
+ the parser doesn't provide today.
 
-    `None` (the default for any flag) means "no opinion — keep the
-    enricher". Callers that don't pass settings see the legacy
-    "run everything" behaviour. Anything not mapped above always
-    runs.
-    """
+ `None` (the default for any flag) means "no opinion — keep the
+ enricher". Callers that don't pass settings see the legacy
+ "run everything" behaviour. Anything not mapped above always
+ runs.
+ """
     visual_flags = (images_enabled, diagrams_enabled, scanned_pages_enabled)
     visual_explicit_off = all(flag is False for flag in visual_flags)
     if visual_explicit_off:
@@ -1319,24 +1319,24 @@ def _filter_generic_enrichers(
 
 class CompositeEnricher:
     """Bundles every generic enricher and runs them in sequence,
-    returning the union of their `ArtifactDraft`s.
+ returning the union of their `ArtifactDraft`s.
 
-    The Results > Assets tab needs `enriched.tables` /
-    `enriched.visuals` / `enriched.formulas` artifacts to populate.
-    Each child enricher produces ONE kind, so wiring them
-    individually means an upload would pick exactly one (the
-    workflow runs one `enricher_kind` per run). Bundling them as a
-    single registered kind keeps the auto-default semantic intact —
-    one registered kind → unambiguous auto-pick on FE upload — while
-    still emitting the full set of enriched.* artifacts the Assets +
-    Quality tabs rely on.
+ The Results > Assets tab needs `enriched.tables` /
+ `enriched.visuals` / `enriched.formulas` artifacts to populate.
+ Each child enricher produces ONE kind, so wiring them
+ individually means an upload would pick exactly one (the
+ workflow runs one `enricher_kind` per run). Bundling them as a
+ single registered kind keeps the auto-default semantic intact —
+ one registered kind → unambiguous auto-pick on FE upload — while
+ still emitting the full set of enriched.* artifacts the Assets +
+ Quality tabs rely on.
 
-    The composite degrades gracefully: a child that raises (e.g. its
-    profile prompt is missing) is logged and skipped — the rest still
-    run. Failures of individual children do NOT fail the workflow's
-    enrich step; the operator sees the failures via the artifacts
-    that DID land + the quality report's surfaced warnings.
-    """
+ The composite degrades gracefully: a child that raises (e.g. its
+ profile prompt is missing) is logged and skipped — the rest still
+ run. Failures of individual children do NOT fail the workflow's
+ enrich step; the operator sees the failures via the artifacts
+ that DID land + the quality report's surfaced warnings.
+ """
 
     kind = COMPOSITE_ENRICHER_KIND
 
@@ -1370,12 +1370,12 @@ class CompositeEnricher:
         tables_enabled: bool | None = None,
         diagrams_enabled: bool | None = None,
         scanned_pages_enabled: bool | None = None,
-        # Wave-7 concurrency limiter. When provided, the same
+        #  concurrency limiter. When provided, the same
         # `LLMCallLimiter` instance is threaded into every LLM-
         # backed child enricher so all of their LLM calls share one
         # worker-wide semaphore. Pass through `BootstrapResult.
         # llm_call_limiter` from the production composition path.
-        # None preserves the pre-Wave-7 behaviour for tests +
+        # None preserves the pre- behaviour for tests +
         # legacy deployments.
         llm_call_limiter: Any | None = None,
     ) -> None:
@@ -1465,11 +1465,11 @@ class CompositeEnricher:
             drafts.extend(result.drafts)
             cost_events.extend(result.cost_events)
         # Surface composite outcome via top-level status:
-        #   * Any drafts produced → SUCCEEDED.
-        #   * No drafts but at least one child ran successfully (all
-        #     skipped / no-op) → SUCCEEDED with empty drafts.
-        #   * Every child failed → FAILED so the workflow records the
-        #     enrich step as failed-optional.
+        #  * Any drafts produced → SUCCEEDED.
+        #  * No drafts but at least one child ran successfully (all
+        #  skipped / no-op) → SUCCEEDED with empty drafts.
+        #  * Every child failed → FAILED so the workflow records the
+        #  enrich step as failed-optional.
         if not drafts and failed_kinds and not skipped_kinds:
             return ArtifactProcessingResult(
                 status=ResultStatus.FAILED,
@@ -1507,37 +1507,37 @@ def _construct_child(
 ) -> _StructuredEnricher:
     """Build one composite child, forwarding clients per child class.
 
-    Vision client + artifact_lookup → only `VisualContentDescriber`.
-      * `vision_client` is the only client VCD specifically uses.
-      * `artifact_lookup` lets VCD ask "is this artifact an image?"
-        without itself depending on the registry — the wiring layer
-        provides the closure. With it, VCD returns SKIPPED for
-        non-image artifacts (chunks, metadata) instead of polluting
-        the Visuals card with stub "Image bytes not available"
-        markdown for every chunk artifact in the run.
+ Vision client + artifact_lookup → only `VisualContentDescriber`.
+ * `vision_client` is the only client VCD specifically uses.
+ * `artifact_lookup` lets VCD ask "is this artifact an image?"
+ without itself depending on the registry — the wiring layer
+ provides the closure. With it, VCD returns SKIPPED for
+ non-image artifacts (chunks, metadata) instead of polluting
+ the Visuals card with stub "Image bytes not available"
+ markdown for every chunk artifact in the run.
 
-    Text + embedding clients → forwarded to every child via the base
-    `_StructuredEnricher.__init__(..., text_client=, embedding_client=)`
-    kwargs. Today most concrete enrichers ignore these (their
-    `_produce` methods emit empty arrays — see module docstring), but
-    the wiring is in place so a future LLM-backed implementation can
-    pick the clients up via `self._text_client` / `self._embedding_client`
-    without re-plumbing the composite. This is the same pattern the
-    `model:` slot was reserved for; it stays in place too for
-    backwards-compat with adapters that read `_model`.
+ Text + embedding clients → forwarded to every child via the base
+ `_StructuredEnricher.__init__(..., text_client=, embedding_client=)`
+ kwargs. Today most concrete enrichers ignore these (their
+ `_produce` methods emit empty arrays — see module docstring), but
+ the wiring is in place so a future LLM-backed implementation can
+ pick the clients up via `self._text_client` / `self._embedding_client`
+ without re-plumbing the composite. This is the same pattern the
+ `model:` slot was reserved for; it stays in place too for
+ backwards-compat with adapters that read `_model`.
 
-    Without this dispatch, the composite either:
-      * silently keeps text/embedding clients out of reach for any
-        future enricher implementation, OR
-      * passes `vision_client=` to every child → every other enricher
-        crashes the composite at startup.
-    """
+ Without this dispatch, the composite either:
+ * silently keeps text/embedding clients out of reach for any
+ future enricher implementation, OR
+ * passes `vision_client=` to every child → every other enricher
+ crashes the composite at startup.
+ """
     common_kwargs: dict[str, Any] = {"content_source": content_source}
     if text_client is not None:
         common_kwargs["text_client"] = text_client
     if embedding_client is not None:
         common_kwargs["embedding_client"] = embedding_client
-    # Wave-7: thread the limiter into every LLM-capable child so all
+    # thread the limiter into every LLM-capable child so all
     # of their LLM calls share one worker-wide semaphore. Pure
     # passthrough — children without LLM call sites silently ignore
     # the kwarg.

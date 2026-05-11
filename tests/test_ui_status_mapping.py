@@ -1,14 +1,14 @@
-"""Wave 9A — UI status mapping projection tests.
+"""UI status mapping projection tests.
 
 Pins the contract surface for FE branching:
 
-  1. Every `INGESTION_STATUS_*` terminal value projects onto a valid
-     `UI_STATE_*` with non-empty headline + valid severity.
-  2. Mid-run macro stages project onto RUNNING / PENDING.
-  3. The mapping is total: any input produces a deterministic
-     `UIRunState`; unknown inputs land on a non-crashing default.
-  4. The 6-state surface is closed — no Wave-2 / Wave-5 legacy
-     vocabulary (no `split_mode`, no `pre_compile_gating`).
+ 1. Every `INGESTION_STATUS_*` terminal value projects onto a valid
+ `UI_STATE_*` with non-empty headline + valid severity.
+ 2. Mid-run macro stages project onto RUNNING / PENDING.
+ 3. The mapping is total: any input produces a deterministic
+ `UIRunState`; unknown inputs land on a non-crashing default.
+ 4. The 6-state surface is closed — no / legacy
+ vocabulary (no `split_mode`, no `pre_compile_gating`).
 """
 
 from __future__ import annotations
@@ -119,9 +119,9 @@ def test_terminal_status_projects_to_correct_ui_state(
 
 def test_every_final_status_in_vocabulary_has_a_projection():
     """The projector MUST handle every `INGESTION_STATUS_*` value
-    declared in `final_status.py`. Adding a new status without
-    updating this projector is a coordinated change — this test
-    enforces it."""
+ declared in `final_status.py`. Adding a new status without
+ updating this projector is a coordinated change — this test
+ enforces it."""
     seen_ui_states = {
         project_ui_state(final_status=s, is_terminal=True).ui_state
         for s in ALL_INGESTION_FINAL_STATUSES
@@ -175,7 +175,7 @@ def test_failed_stage_without_final_status_projects_to_failed():
 
 def test_completely_unknown_inputs_fall_back_to_pending():
     """The FE consumer can't crash on stale or malformed inputs —
-    the projector must always produce a `UIRunState`."""
+ the projector must always produce a `UIRunState`."""
     result = project_ui_state()  # all defaults
     assert isinstance(result, UIRunState)
     assert result.ui_state in ALL_UI_STATES
@@ -183,8 +183,8 @@ def test_completely_unknown_inputs_fall_back_to_pending():
 
 def test_unknown_final_status_projects_to_failed_with_explicit_headline():
     """Schema drift between backend + this projector lands as FAILED
-    with the unknown literal in the headline — the FE renders the
-    operator-visible badge but logs the unknown string."""
+ with the unknown literal in the headline — the FE renders the
+ operator-visible badge but logs the unknown string."""
     result = project_ui_state(
         final_status="some_made_up_status",
         is_terminal=True,
@@ -195,8 +195,8 @@ def test_unknown_final_status_projects_to_failed_with_explicit_headline():
 
 def test_is_terminal_overrides_stage_when_set():
     """A terminal projection MUST win over a stale stage — e.g. the
-    workflow may have a lingering `compiling` stage write while the
-    final status is `completed_with_enrichment`."""
+ workflow may have a lingering `compiling` stage write while the
+ final status is `completed_with_enrichment`."""
     result = project_ui_state(
         ingest_stage="compiling",
         final_status=INGESTION_STATUS_COMPLETED_WITH_ENRICHMENT,
@@ -207,7 +207,7 @@ def test_is_terminal_overrides_stage_when_set():
 
 def test_final_status_supplied_implies_terminal():
     """The FE may not set `is_terminal` explicitly — supplying a
-    final_status is enough to take the terminal branch."""
+ final_status is enough to take the terminal branch."""
     result = project_ui_state(
         final_status=INGESTION_STATUS_COMPLETED_WITH_ENRICHMENT,
     )
@@ -215,7 +215,7 @@ def test_final_status_supplied_implies_terminal():
 
 
 def test_to_dict_is_stable_wire_format():
-    """The FE consumes `.to_dict()` over HTTP — keys must be stable."""
+    """The FE consumes `.to_dict` over HTTP — keys must be stable."""
     result = project_ui_state(
         final_status=INGESTION_STATUS_COMPLETED_WITH_ENRICHMENT,
         is_terminal=True,
@@ -231,8 +231,8 @@ def test_to_dict_is_stable_wire_format():
 
 
 def test_ui_status_mapping_module_has_no_legacy_vocabulary():
-    """The module must not reintroduce pre-Wave-6 split-mode or
-    pre-compile-gating terminology."""
+    """The module must not reintroduce pre- split-mode or
+ pre-compile-gating terminology."""
     import inspect
     from j1.processing import ui_status_mapping
     src = inspect.getsource(ui_status_mapping)
@@ -248,5 +248,5 @@ def test_ui_status_mapping_module_has_no_legacy_vocabulary():
 
 def test_ui_state_surface_is_closed_at_six():
     """The FE state machine is 6 states. Adding a 7th is a coordinated
-    FE + backend change — this test forces the conversation."""
+ FE + backend change — this test forces the conversation."""
     assert len(ALL_UI_STATES) == 6

@@ -10,7 +10,7 @@
 export const RUN_STATUS = {
   // Legacy CREATED and canonical RECEIVED are equivalent — a run
   // written under either value renders the same badge. The backend's
-  // `canonical_status()` helper folds CREATED onto RECEIVED for
+  // `canonical_status` helper folds CREATED onto RECEIVED for
   // status-filter expansion; treat them as interchangeable here.
   CREATED: "CREATED",
   RECEIVED: "RECEIVED",

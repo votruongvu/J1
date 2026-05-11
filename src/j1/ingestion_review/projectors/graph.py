@@ -4,11 +4,11 @@ The producer side (today: LightRAG via the RAGAnything bridge) writes
 several JSON files into its storage area, all surfaced uniformly as
 `kind="graph_json"` artifacts:
 
-  * `vdb_entities.json` / `*entit*.json`     — entity records.
-  * `vdb_relationships.json` / `*relation*`  — relation records.
-  * `kv_store_*.json`                        — internal KV stores
-                                                (text chunks, doc
-                                                status, llm cache).
+ * `vdb_entities.json` / `*entit*.json` — entity records.
+ * `vdb_relationships.json` / `*relation*` — relation records.
+ * `kv_store_*.json` — internal KV stores
+ (text chunks, doc
+ status, llm cache).
 
 The projector classifies each artifact by filename + content shape,
 extracts entities and relations, and emits a vendor-neutral DTO.
@@ -72,9 +72,9 @@ _DROPPED_METADATA_KEYS = frozenset({
 class GraphSnapshotProjector:
     """Projects `graph_json` artifacts into a neutral graph snapshot.
 
-    Same construction pattern as the chunk + quality projectors —
-    takes a `path_resolver` callable so it inherits the path-traversal
-    guard from the caller's context."""
+ Same construction pattern as the chunk + quality projectors —
+ takes a `path_resolver` callable so it inherits the path-traversal
+ guard from the caller's context."""
 
     def __init__(self, *, path_resolver) -> None:
         self._path_resolver = path_resolver
@@ -89,15 +89,15 @@ class GraphSnapshotProjector:
     ) -> GraphSnapshotDTO:
         """Build the snapshot.
 
-        `unavailable_reason` is set by the caller when no graph data
-        was produced for the run (skipped by policy, planner, or
-        attempt failed). When set, the projector returns an empty
-        snapshot with `unavailable` populated — even if there are
-        graph artifacts present.
+ `unavailable_reason` is set by the caller when no graph data
+ was produced for the run (skipped by policy, planner, or
+ attempt failed). When set, the projector returns an empty
+ snapshot with `unavailable` populated — even if there are
+ graph artifacts present.
 
-        `max_nodes` / `max_edges` are per-list caps. The projector
-        truncates each list independently and reports per-list flags
-        in `truncated`."""
+ `max_nodes` / `max_edges` are per-list caps. The projector
+ truncates each list independently and reports per-list flags
+ in `truncated`."""
         truncated = GraphTruncatedDTO(
             limits=GraphTruncationLimitsDTO(
                 max_nodes=max_nodes,
@@ -239,10 +239,10 @@ def _classify_artifact(
 ) -> str | None:
     """Decide which sub-projector to apply.
 
-    Returns `"entities"`, `"relations"`, `"mixed"`, `"graphml"`, or
-    None to skip. Decision uses (1) filename hints from the location,
-    (2) explicit `metadata["filename"]` set by
-    `_graph_drafts_from_storage`, (3) file extension."""
+ Returns `"entities"`, `"relations"`, `"mixed"`, `"graphml"`, or
+ None to skip. Decision uses (1) filename hints from the location,
+ (2) explicit `metadata["filename"]` set by
+ `_graph_drafts_from_storage`, (3) file extension."""
     suffix = PurePosixPath(path.name).suffix.lower()
     name = (
         artifact.metadata.get("filename")
@@ -287,11 +287,11 @@ def _iter_entities(
 ) -> Iterable[GraphEntityDTO]:
     """Yield neutral entity DTOs from one entity-bearing payload.
 
-    Tolerates two top-level shapes:
-      * Object keyed by entity id → `{ "ent-1": {...}, "ent-2": {...} }`
-      * List of records → `[{...}, {...}]`
-      * Object with `entities`/`nodes` key wrapping the above.
-    """
+ Tolerates two top-level shapes:
+ * Object keyed by entity id → `{ "ent-1": {...}, "ent-2": {...} }`
+ * List of records → `[{...}, {...}]`
+ * Object with `entities`/`nodes` key wrapping the above.
+ """
     candidates = _entries(payload, "entities", "nodes")
     for index, (key, raw) in enumerate(candidates):
         if not isinstance(raw, dict):
@@ -310,12 +310,12 @@ def _project_entity(
 ) -> GraphEntityDTO | None:
     """One LightRAG-style entity record → `GraphEntityDTO`.
 
-    Field name precedence (snake_case + camelCase + LightRAG-internal):
-      id   : __id__ / id / entity_name / __name__ / name / fallback_id
-      type : __entity_type__ / entity_type / type
-      desc : __description__ / description
-      src  : __source_id__ / source_id  (split on common delimiters)
-    """
+ Field name precedence (snake_case + camelCase + LightRAG-internal):
+ id : __id__ / id / entity_name / __name__ / name / fallback_id
+ type : __entity_type__ / entity_type / type
+ desc : __description__ / description
+ src : __source_id__ / source_id (split on common delimiters)
+ """
     entity_id = (
         _str_field(raw, "__id__", "id", "entity_name", "__name__", "name")
         or fallback_id
@@ -399,11 +399,11 @@ def _entries(
 ) -> Iterable[tuple[str | None, Any]]:
     """Yield `(key, value)` pairs from a payload that might be:
 
-      * a top-level list                  → `(None, item)` per item
-      * an object keyed by entity id      → `(key, value)` per pair
-      * an object containing one of `list_keys` (e.g. `entities`)
-        whose value is either of the above
-    """
+ * a top-level list → `(None, item)` per item
+ * an object keyed by entity id → `(key, value)` per pair
+ * an object containing one of `list_keys` (e.g. `entities`)
+ whose value is either of the above
+ """
     if isinstance(payload, list):
         for entry in payload:
             yield None, entry
@@ -499,9 +499,9 @@ def _parse_graphml(
 ) -> tuple[list[GraphEntityDTO], list[GraphRelationDTO]]:
     """Parse a `.graphml` file into neutral entity/relation DTOs.
 
-    Tolerates the file being malformed or empty — returns empty
-    lists rather than raising. Caller logs the artifact id so the
-    skip is visible to operators."""
+ Tolerates the file being malformed or empty — returns empty
+ lists rather than raising. Caller logs the artifact id so the
+ skip is visible to operators."""
     import xml.etree.ElementTree as ET
 
     try:

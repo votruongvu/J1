@@ -2,16 +2,16 @@
 
 Verifies:
 - GET /exports/{documents,sources,chunks,citations,metadata,feedback}.ndjson
-  return Content-Type: application/x-ndjson with one JSON record per line.
+ return Content-Type: application/x-ndjson with one JSON record per line.
 - POST /imports/{documents,sources,metadata}.ndjson return the standard
-  envelope with succeeded / skippedIdempotent / failures fields.
+ envelope with succeeded / skippedIdempotent / failures fields.
 - Auth + scope rules apply identically (kb:read / kb:audit.read for
-  exports; kb:ingest for imports).
+ exports; kb:ingest for imports).
 - Idempotent re-import of an exported file does not double-write.
 - Partial failure responses include the line number, error code, and
-  recordId where available.
+ recordId where available.
 - /imports/metadata.ndjson is a no-op verifier (does not change the
-  registry; reports INTEGRITY_MISMATCH when fields don't line up).
+ registry; reports INTEGRITY_MISMATCH when fields don't line up).
 - Capability advertisement turns off when the services aren't wired.
 """
 

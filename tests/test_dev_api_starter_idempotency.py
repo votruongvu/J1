@@ -59,8 +59,8 @@ def test_starter_uses_deterministic_workflow_id_and_use_existing_conflict_policy
 
 def test_starter_returns_same_id_for_repeated_uploads_of_same_document():
     """Two starts with the same `document_id` produce the same workflow
-    id. Combined with `id_conflict_policy=USE_EXISTING`, the second
-    call returns the existing handle instead of starting a new run."""
+ id. Combined with `id_conflict_policy=USE_EXISTING`, the second
+ call returns the existing handle instead of starting a new run."""
     client = _RecordingClient()
     starter = make_per_document_starter(
         client_provider=lambda: client,

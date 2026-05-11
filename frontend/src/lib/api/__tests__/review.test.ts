@@ -1,5 +1,5 @@
 /**
- * Tests for the Phase 7 review surface in the live ApiClient and the
+ * Tests for the review surface in the live ApiClient and the
  * `runSummaryFromApi` / `qualityReportFromApi` translators.
  *
  * Parallel to `api-client.test.ts`'s style: stub `fetch`, verify the
@@ -589,7 +589,7 @@ describe("ApiClient.getRunArtifactContent", () => {
     expect(result.contentType).toBe("application/json");
     expect(result.filename).toBe("abc.json");
     expect(result.etag).toBe("sha256-deadbeef");
-    // Blob is a real one — round-trip via text() to confirm.
+    // Blob is a real one — round-trip via text to confirm.
     expect(await result.blob.text()).toBe("the-bytes");
   });
 

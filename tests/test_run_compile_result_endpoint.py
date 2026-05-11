@@ -194,7 +194,7 @@ def test_picks_latest_artifact_when_multiple_exist(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Compile + replay can produce duplicate summary artifacts.
-    Most-recent wins."""
+ Most-recent wins."""
     run_store.upsert(ctx, _make_run())
     old_payload = _make_payload()
     old_payload["chunks_count"] = 0

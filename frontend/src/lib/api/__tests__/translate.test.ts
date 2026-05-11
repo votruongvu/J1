@@ -3,24 +3,24 @@
  * backend field names. These tests pin the contract for the bugs
  * fixed during the integration audit:
  *
- *   - Backend `RunStatus` is lowercase on the wire (StrEnum). The
- *     translator must upper-case it. It does NOT collapse
- *     `SUCCEEDED → COMPLETED`: predicate sets in
- *     `lib/constants/runStatus.ts` carry both spellings, and a
- *     collapse silently disables status checks against the
- *     `SUCCEEDED` constants.
- *   - The backend wraps unknown payload keys into `metadata` as a
- *     plain dict, which preserves snake_case (`failure_code`,
- *     `failure_message`, `error_type`, `error_message`, `reason`,
- *     `gate`). The translator must read those snake_case keys.
- *   - `step.warning` puts the warning text on the top-level
- *     `message` field (no `metadata.warning` exists). The
- *     translator mirrors it onto `data.warning` so the timeline's
- *     warning-emphasis panel renders.
- *   - `step.failed` carries `error_type` / `error_message` whereas
- *     `run.failed` uses `failure_code` / `failure_message`. The
- *     translator collapses both shapes onto the FE's single
- *     `failure_code` / `failure_message` pair.
+ * - Backend `RunStatus` is lowercase on the wire (StrEnum). The
+ * translator must upper-case it. It does NOT collapse
+ * `SUCCEEDED → COMPLETED`: predicate sets in
+ * `lib/constants/runStatus.ts` carry both spellings, and a
+ * collapse silently disables status checks against the
+ * `SUCCEEDED` constants.
+ * - The backend wraps unknown payload keys into `metadata` as a
+ * plain dict, which preserves snake_case (`failure_code`,
+ * `failure_message`, `error_type`, `error_message`, `reason`,
+ * `gate`). The translator must read those snake_case keys.
+ * - `step.warning` puts the warning text on the top-level
+ * `message` field (no `metadata.warning` exists). The
+ * translator mirrors it onto `data.warning` so the timeline's
+ * warning-emphasis panel renders.
+ * - `step.failed` carries `error_type` / `error_message` whereas
+ * `run.failed` uses `failure_code` / `failure_message`. The
+ * translator collapses both shapes onto the FE's single
+ * `failure_code` / `failure_message` pair.
  */
 
 import { describe, expect, it } from "vitest";

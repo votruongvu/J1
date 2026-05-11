@@ -1,17 +1,17 @@
-"""Wave 8 tests — workflow refactor.
+""" tests — workflow refactor.
 
 Pins the four contract surfaces this wave delivers:
 
 1. Final-status projection (`project_final_status`) — mapping
-   framework status + structured signals onto the Wave-8
-   operator-facing vocabulary.
-2. Workflow's `_wave8_enrichment_outcome` helper — projects the
-   activity result onto the fine-grained outcome label.
+ framework status + structured signals onto the 
+ operator-facing vocabulary.
+2. Workflow's `__enrichment_outcome` helper — projects the
+ activity result onto the fine-grained outcome label.
 3. `resolve_require_enrichment_success` is consulted by the
-   active enrichment-stage activity, not the raw plan field.
+ active enrichment-stage activity, not the raw plan field.
 4. Idempotency: the activity short-circuits when an
-   `enrichment_result` artifact already exists for the same
-   (run, doc) pair.
+ `enrichment_result` artifact already exists for the same
+ (run, doc) pair.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from j1.orchestration.activities.processing import (
 )
 from j1.orchestration.workflows.project_processing import (
     _project_search_attr_final_status,
-    _wave8_enrichment_outcome,
+    _enrichment_outcome_label,
 )
 from j1.processing.enrichment_policy import (
     REQUIRE_SUCCESS_SOURCE_DOMAIN,
@@ -140,14 +140,14 @@ def test_projection_returns_cancelled():
 
 def test_projection_legacy_completed_no_enrichment_signals():
     """Completed framework status + no enrichment signals →
-    completed_without_enrichment (legacy/pre-Wave-6 run)."""
+ completed_without_enrichment (legacy/pre- run)."""
     p = project_final_status(framework_final_status="completed")
     assert p.status == INGESTION_STATUS_COMPLETED_WITHOUT_ENRICHMENT
 
 
 def test_all_projected_values_are_in_vocabulary():
     """Every projection path produces a value in the documented
-    `ALL_INGESTION_FINAL_STATUSES` tuple."""
+ `ALL_INGESTION_FINAL_STATUSES` tuple."""
     paths = [
         ("completed", None, "succeeded", False, None),
         ("completed", None, "skipped", False, "x"),
@@ -173,7 +173,7 @@ def test_all_projected_values_are_in_vocabulary():
         )
 
 
-# ---- 2. _wave8_enrichment_outcome ----------------------------------
+# ---- 2. __enrichment_outcome ----------------------------------
 
 
 @pytest.mark.parametrize(
@@ -192,9 +192,9 @@ def test_all_projected_values_are_in_vocabulary():
 def test_wave8_outcome_projection_pinned(
     activity_status, require_success, expected_outcome,
 ):
-    """Activity status + require_success → fine-grained Wave-8
-    outcome label. Drives final-status search attr + step metadata."""
-    assert _wave8_enrichment_outcome(
+    """Activity status + require_success → fine-grained 
+ outcome label. Drives final-status search attr + step metadata."""
+    assert _enrichment_outcome_label(
         enrichment_status=activity_status,
         require_success=require_success,
     ) == expected_outcome
@@ -205,9 +205,9 @@ def test_wave8_outcome_projection_pinned(
 
 def test_resolver_picks_env_default_when_domain_has_no_opinion():
     """The activity reads `EnrichmentConcurrencySettings.require_
-    enrichment_success` as env_default. When the domain pack has
-    no opinion (default policy=auto + require=False), the env
-    value wins."""
+ enrichment_success` as env_default. When the domain pack has
+ no opinion (default policy=auto + require=False), the env
+ value wins."""
     r = resolve_require_enrichment_success(
         domain_policy=DomainEnrichmentPolicy(),
         env_default=True,
@@ -250,7 +250,7 @@ def _enrich_step(metadata: dict) -> StepResult:
 
 def test_search_attr_projector_reads_enrichment_outcome_metadata():
     """The `J1FinalStatus` search-attribute value comes from the
-    most-recent `enrich_stage` step's `enrichment_outcome` metadata."""
+ most-recent `enrich_stage` step's `enrichment_outcome` metadata."""
     enrich = _enrich_step({
         "document_id": "d",
         "enrichment_outcome": "completed",
@@ -303,7 +303,7 @@ def test_search_attr_projector_handles_partial_completed_warnings():
 
 def test_search_attr_projector_no_enrichment_steps_falls_back():
     """Runs without any enrich_stage step still get a sensible
-    projection — completed_without_enrichment."""
+ projection — completed_without_enrichment."""
     status = _project_search_attr_final_status(
         framework_final_status="completed",
         step_results=[],
@@ -316,7 +316,7 @@ def test_search_attr_projector_no_enrichment_steps_falls_back():
 
 class _FakeArtifactRegistry:
     """Minimal in-memory artifact registry honouring the
-    `list_artifacts(kind=...)` slice of the protocol."""
+ `list_artifacts(kind=...)` slice of the protocol."""
 
     def __init__(self, records: list[ArtifactRecord]) -> None:
         self._records = records
@@ -361,7 +361,7 @@ def _make_enrichment_artifact(
 
 def test_idempotency_returns_none_on_miss():
     """No matching artifact → return None so activity runs the
-    stage normally."""
+ stage normally."""
     registry = _FakeArtifactRegistry([])
     ctx = object()
     result = _find_existing_enrichment_result(
@@ -372,7 +372,7 @@ def test_idempotency_returns_none_on_miss():
 
 def test_idempotency_finds_existing_artifact_for_run():
     """An artifact with matching `metadata.run_id` triggers a
-    short-circuit return."""
+ short-circuit return."""
     artifact = _make_enrichment_artifact(run_id="run-1")
     registry = _FakeArtifactRegistry([artifact])
     ctx = object()
@@ -387,7 +387,7 @@ def test_idempotency_finds_existing_artifact_for_run():
 
 def test_idempotency_picks_latest_when_multiple_matches():
     """Replay can produce two enrichment_result artifacts for the
-    same run. Most recent wins."""
+ same run. Most recent wins."""
     old = _make_enrichment_artifact(
         run_id="run-1", artifact_id="art-old",
         updated_at=datetime(2026, 5, 10, 11, 0, 0, tzinfo=timezone.utc),
@@ -405,7 +405,7 @@ def test_idempotency_picks_latest_when_multiple_matches():
 
 def test_idempotency_ignores_other_runs_artifacts():
     """Artifacts from a different run_id must NOT trigger the
-    short-circuit — each run gets its own enrichment."""
+ short-circuit — each run gets its own enrichment."""
     other = _make_enrichment_artifact(run_id="other-run")
     registry = _FakeArtifactRegistry([other])
     result = _find_existing_enrichment_result(
@@ -416,7 +416,7 @@ def test_idempotency_ignores_other_runs_artifacts():
 
 def test_idempotency_empty_run_id_skips_lookup():
     """Defensive: an empty run_id (test fixture / legacy path)
-    short-circuits the helper without crashing."""
+ short-circuits the helper without crashing."""
     registry = _FakeArtifactRegistry([
         _make_enrichment_artifact(run_id="run-1"),
     ])
@@ -428,7 +428,7 @@ def test_idempotency_empty_run_id_skips_lookup():
 
 def test_idempotency_registry_failure_falls_through_safely():
     """If `list_artifacts` raises, the helper returns None so the
-    activity re-runs rather than crashing."""
+ activity re-runs rather than crashing."""
 
     class _BrokenRegistry:
         def list_artifacts(self, ctx, *, kind=None):
@@ -445,7 +445,7 @@ def test_idempotency_registry_failure_falls_through_safely():
 
 def test_wave8_outcome_module_has_no_split_mode_strings():
     """Final-status module must not reintroduce split-mode
-    vocabulary."""
+ vocabulary."""
     import inspect
     from j1.processing import final_status
     src = inspect.getsource(final_status)
@@ -454,8 +454,8 @@ def test_wave8_outcome_module_has_no_split_mode_strings():
 
 
 def test_search_attr_constants_do_not_include_legacy_gating():
-    """The new Wave-8 search attrs must not encode pre-compile
-    gating vocabulary."""
+    """The new search attrs must not encode pre-compile
+ gating vocabulary."""
     from j1.orchestration.workflows import project_processing as mod
     import inspect
     src = inspect.getsource(mod)

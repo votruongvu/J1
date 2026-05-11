@@ -130,8 +130,8 @@ function Row({ testCase, result, hasRun, onSelect }: RowProps) {
 }
 
 function _evidenceSummary(tc: ValidationTestCase): string {
-  // Compact "what does this case expect to find?" hint. Phase 4
-  // will add table/image/graph variants; Phase 2 emits chunks +
+  // Compact "what does this case expect to find?" hint. 
+  // will add table/image/graph variants; emits chunks +
   // pages.
   const parts: string[] = [];
   if (tc.expectedChunks.length) {

@@ -23,19 +23,19 @@ build it:
 - **Durable execution** — workflow state survives worker restarts.
 - **At-least-once activity execution** with deterministic retries.
 - **Long-lived signals** — pause / resume / cancel / approve-budget
-  / approve-review.
+ / approve-review.
 - **Versioning hooks** — for evolving workflow code over time.
 - **Cluster + UI** — operators can see in-flight workflows without
-  J1 building a job dashboard.
+ J1 building a job dashboard.
 
 The framework's workflow contract is:
 
 - **Workflows coordinate; activities act.** Workflow code is
-  deterministic, holds only IDs / metadata, and decides ordering.
-  Activities perform I/O.
+ deterministic, holds only IDs / metadata, and decides ordering.
+ Activities perform I/O.
 - **Workflow state is small.** `WorkflowStatus` carries counts +
-  IDs + an error string — never document bytes, embeddings, or
-  artifact bodies.
+ IDs + an error string — never document bytes, embeddings, or
+ artifact bodies.
 
 ---
 
@@ -48,7 +48,7 @@ Temporal server (`temporalio/auto-setup` with Postgres for
 Temporal's own storage) plus the Temporal Web UI:
 
 ```bash
-cp .env.example .env
+cp.env.example.env
 docker compose -f deploy/dev/docker-compose.yml up --build
 ```
 
@@ -70,7 +70,7 @@ export J1_TEMPORAL_NAMESPACE=my-namespace
 export J1_TEMPORAL_TASK_QUEUE=j1-processing
 # Optional:
 export J1_TEMPORAL_TLS=true
-export J1_TEMPORAL_API_KEY=...    # Temporal Cloud / authenticated cluster
+export J1_TEMPORAL_API_KEY=... # Temporal Cloud / authenticated cluster
 ```
 
 Full reference: [`docs/configuration/environment.md`](../configuration/environment.md) § 2.
@@ -83,8 +83,7 @@ Full reference: [`docs/configuration/environment.md`](../configuration/environme
 
 The minimal entrypoint is [`deploy/dev/worker.py`](../../deploy/dev/worker.py):
 
-```bash
-.venv/bin/python -m deploy.dev.worker
+```bash.venv/bin/python -m deploy.dev.worker
 ```
 
 It builds an `ApplicationFacade`, registers the bundled workflows
@@ -99,8 +98,8 @@ workflow types and the flat activity callable list:
 ```python
 @dataclass(frozen=True)
 class WorkerSpec:
-    workflows: Sequence[type] = ()
-    activities: Sequence[Callable] = ()
+ workflows: Sequence[type] = 
+ activities: Sequence[Callable] = 
 ```
 
 Concurrency and the activity executor are passed at *worker
@@ -108,9 +107,9 @@ construction time*, not on `WorkerSpec`:
 
 ```python
 build_worker(client, settings, spec, *,
-             activity_executor=None, max_concurrent_activities=None) -> Worker
+ activity_executor=None, max_concurrent_activities=None) -> Worker
 run_worker(client, settings, spec, *,
-           activity_executor=None, max_concurrent_activities=None) -> None
+ activity_executor=None, max_concurrent_activities=None) -> None
 ```
 
 > **All shipped J1 activities are synchronous** (regular `def`, not
@@ -121,7 +120,7 @@ run_worker(client, settings, spec, *,
 
 A production worker typically follows the same shape as
 [`deploy/dev/_wiring.py::build_worker_spec`](../../deploy/dev/_wiring.py)
-— wire the activity classes, collect their `.all_activities()`
+— wire the activity classes, collect their `.all_activities`
 callables, and hand them to `WorkerSpec`:
 
 ```python
@@ -130,48 +129,46 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from j1 import (
-    AccountingActivities, DocumentProcessingWorkflow,
-    KnowledgeProcessingActivities, ProcessingActivities,
-    ProjectActivities, ProjectLifecycleActivities,
-    ProjectProcessingWorkflow, ReviewActivities, SearchActivities,
-    WorkerSpec, build_client, load_temporal_settings, run_worker,
+ AccountingActivities, DocumentProcessingWorkflow,
+ KnowledgeProcessingActivities, ProcessingActivities,
+ ProjectActivities, ProjectLifecycleActivities,
+ ProjectProcessingWorkflow, ReviewActivities, SearchActivities,
+ WorkerSpec, build_client, load_temporal_settings, run_worker,
 )
-# ... plus your wired-up registries, services, and processor maps
+#... plus your wired-up registries, services, and processor maps
 
-async def main():
-    temporal = load_temporal_settings()
-    client = await build_client(temporal)
+async def main:
+ temporal = load_temporal_settings
+ client = await build_client(temporal)
 
-    activities: list = []
-    activities += ProjectLifecycleActivities(...).all_activities()
-    activities += ProjectActivities(...).all_activities()
-    activities += AccountingActivities(...).all_activities()
-    activities += SearchActivities(indexers={...}).all_activities()
-    activities += ReviewActivities(...).all_activities()
-    activities += ProcessingActivities(
-        compilers={...}, enrichers={...}, graph_builders={...},
-        indexers={...}, query_providers={...},
-        ...
-    ).all_activities()
-    activities += KnowledgeProcessingActivities(
-        compilers={...}, enrichers={...}, graph_builders={...},
-        ...
-    ).all_activities()
+ activities: list = []
+ activities += ProjectLifecycleActivities(...).all_activities
+ activities += ProjectActivities(...).all_activities
+ activities += AccountingActivities(...).all_activities
+ activities += SearchActivities(indexers={...}).all_activities
+ activities += ReviewActivities(...).all_activities
+ activities += ProcessingActivities(
+ compilers={...}, enrichers={...}, graph_builders={...},
+ indexers={...}, query_providers={...},...
+ ).all_activities
+ activities += KnowledgeProcessingActivities(
+ compilers={...}, enrichers={...}, graph_builders={...},...
+ ).all_activities
 
-    spec = WorkerSpec(
-        workflows=[ProjectProcessingWorkflow, DocumentProcessingWorkflow],
-        activities=activities,
-    )
+ spec = WorkerSpec(
+ workflows=[ProjectProcessingWorkflow, DocumentProcessingWorkflow],
+ activities=activities,
+ )
 
-    max_conc = int(os.environ.get("J1_WORKER_MAX_CONCURRENT_ACTIVITIES", "5"))
-    with ThreadPoolExecutor(max_workers=max_conc) as executor:
-        await run_worker(
-            client, temporal, spec,
-            activity_executor=executor,
-            max_concurrent_activities=max_conc,
-        )
+ max_conc = int(os.environ.get("J1_WORKER_MAX_CONCURRENT_ACTIVITIES", "5"))
+ with ThreadPoolExecutor(max_workers=max_conc) as executor:
+ await run_worker(
+ client, temporal, spec,
+ activity_executor=executor,
+ max_concurrent_activities=max_conc,
+ )
 
-asyncio.run(main())
+asyncio.run(main)
 ```
 
 For the full reference wiring (registries, services, audit/cost
@@ -187,10 +184,7 @@ Multiple worker processes can share the same task queue — Temporal
 distributes activity tasks across them. Scale horizontally:
 
 ```bash
-# N processes, all pointed at the same J1_TEMPORAL_TASK_QUEUE
-.venv/bin/python -m deploy.dev.worker &
-.venv/bin/python -m deploy.dev.worker &
-.venv/bin/python -m deploy.dev.worker &
+# N processes, all pointed at the same J1_TEMPORAL_TASK_QUEUE.venv/bin/python -m deploy.dev.worker &.venv/bin/python -m deploy.dev.worker &.venv/bin/python -m deploy.dev.worker &
 ```
 
 Important caveat: J1's bundled JSON registries
@@ -200,8 +194,8 @@ many-worker deployments writing to the same project, either:
 
 - Run a single worker per `(tenant_id, project_id)`, OR
 - Plug in registry implementations that *are* concurrency-safe
-  (Postgres / a real KV store) — both registries are behind
-  Protocols, swap the impl.
+ (Postgres / a real KV store) — both registries are behind
+ Protocols, swap the impl.
 
 ---
 
@@ -212,11 +206,11 @@ The REST adapter triggers workflows via a deployment-supplied
 
 ```
 POST /ingestion-jobs
-  → REST handler
-    → ApplicationFacade.job_control.start_project_job(...)
-      → job_starter(workflow_request)            ← deployment glue
-        → temporalio.Client.start_workflow(...)
-          → ProjectProcessingWorkflow.run(...)
+ → REST handler
+ → ApplicationFacade.job_control.start_project_job(...)
+ → job_starter(workflow_request) ← deployment glue
+ → temporalio.Client.start_workflow(...)
+ → ProjectProcessingWorkflow.run(...)
 ```
 
 The job starter is **not** part of `j1.adapters.rest` — it lives in
@@ -236,15 +230,15 @@ The full project pipeline. Internal state machine (visible via the
 on the workflow's return value):
 
 ```
-RUNNING ──┬─► PAUSED ──► RUNNING                          (pause / resume signal)
-          ├─► WAITING_FOR_BUDGET_APPROVAL ──► RUNNING     (approve_budget signal)
-          │                            └──► CANCELLED      (reject_budget / cancel signal)
-          ├─► WAITING_FOR_REVIEW ──► RUNNING               (approve_review signal)
-          │                    └──► CANCELLED              (reject_review / cancel signal)
-          ├─► COMPLETED                                    (returns ProjectProcessingResult)
-          ├─► CANCELLED                                    (returns ProjectProcessingResult)
-          ├─► FAILED_RECOVERABLE                           (raises ApplicationError, type=J1_INGEST_UNEXPECTED_ERROR)
-          └─► FAILED_FINAL                                 (raises ApplicationError, type=J1_INGEST_REQUIRED_STEP_FAILED)
+RUNNING ──┬─► PAUSED ──► RUNNING (pause / resume signal)
+ ├─► WAITING_FOR_BUDGET_APPROVAL ──► RUNNING (approve_budget signal)
+ │ └──► CANCELLED (reject_budget / cancel signal)
+ ├─► WAITING_FOR_REVIEW ──► RUNNING (approve_review signal)
+ │ └──► CANCELLED (reject_review / cancel signal)
+ ├─► COMPLETED (returns ProjectProcessingResult)
+ ├─► CANCELLED (returns ProjectProcessingResult)
+ ├─► FAILED_RECOVERABLE (raises ApplicationError, type=J1_INGEST_UNEXPECTED_ERROR)
+ └─► FAILED_FINAL (raises ApplicationError, type=J1_INGEST_REQUIRED_STEP_FAILED)
 ```
 
 **Failure-propagation contract.** When the internal state ends in
@@ -268,8 +262,8 @@ Stages:
 1. Validate the project context.
 2. List pending documents.
 3. (Optional, when adaptive planning is enabled) Profile each
-   document and build an `IngestPlan`. See
-   [architecture § 8](../architecture.md#8-adaptive-ingestion-planning).
+ document and build an `IngestPlan`. See
+ [architecture § 8](../architecture.md#8-adaptive-ingestion-planning).
 4. Compile each (with optional review gate after).
 5. Enrich each (with optional review gate after).
 6. Build the graph (with optional review gate after).
@@ -314,18 +308,18 @@ gets stuck.
 
 1. Register the attributes with your Temporal namespace:
 
-   ```bash
-   temporal operator search-attribute create \
-     --namespace default \
-     --name J1IngestStage --type Keyword
-   temporal operator search-attribute create \
-     --namespace default \
-     --name J1IngestMode --type Keyword
-   ```
+ ```bash
+ temporal operator search-attribute create \
+ --namespace default \
+ --name J1IngestStage --type Keyword
+ temporal operator search-attribute create \
+ --namespace default \
+ --name J1IngestMode --type Keyword
+ ```
 
 2. Set `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` in the deployment
-   environment. The API / JobStarter reads this and passes it
-   through to `ProjectProcessingRequest.search_attributes_enabled`.
+ environment. The API / JobStarter reads this and passes it
+ through to `ProjectProcessingRequest.search_attributes_enabled`.
 
 For dev clusters using `temporalio/auto-setup`, the attributes
 **must** be registered after the namespace is created (i.e. after
@@ -367,22 +361,22 @@ exposes a single thin wrapper around `temporalio.activity.heartbeat`:
 from j1 import heartbeat
 
 def my_long_running_activity(input):
-    for chunk in iterate_corpus(input):
-        process(chunk)
-        heartbeat({"chunk": chunk.id})    # safe outside an activity context
+ for chunk in iterate_corpus(input):
+ process(chunk)
+ heartbeat({"chunk": chunk.id}) # safe outside an activity context
 ```
 
 The helper is a no-op outside an activity context (so unit tests
 that call the activity function directly don't blow up). The two
 long-running shipped activities — `compile` and `build_graph` —
-heartbeat at start and finish (via `_safe_heartbeat()` in
+heartbeat at start and finish (via `_safe_heartbeat` in
 [`activities/processing.py`](../../src/j1/orchestration/activities/processing.py)),
 and the workflow declares `heartbeat_timeout=2m` for them. The
 remaining shipped activities (`enrich`, `index`, `query`,
 `profile_document`, lifecycle, accounting, review, search) are
 short-lived and treated as bounded units of work. If you write a
 custom activity that may exceed the configured start-to-close
-timeout, call `heartbeat()` inside its loop and set the activity's
+timeout, call `heartbeat` inside its loop and set the activity's
 `heartbeat_timeout` accordingly when registering.
 
 ### 6.1 Repeated processing of the same document
@@ -395,73 +389,73 @@ ports for one upload).
 Diagnosis order:
 
 1. **Open Temporal UI → the workflow → the failing activity.** Look
-   at "Attempt count" and the failure type of each attempt. If it's
-   `ActivityTaskTimedOut` with `HEARTBEAT_TIMEOUT`, the activity is
-   exceeding the heartbeat budget.
+ at "Attempt count" and the failure type of each attempt. If it's
+ `ActivityTaskTimedOut` with `HEARTBEAT_TIMEOUT`, the activity is
+ exceeding the heartbeat budget.
 2. **`docker compose logs --tail=500 worker | grep -E "Started local
-   mineru-api|TimeoutError|HeartbeatTimeout|j1\.processing\.compile"`**
-   to count the actual subprocess starts and see the cause between
-   them.
+ mineru-api|TimeoutError|HeartbeatTimeout|j1\.processing\.compile"`**
+ to count the actual subprocess starts and see the cause between
+ them.
 3. **Inspect the cache file** at `$J1_DATA_ROOT/<tenant>/<project>/
-   audit/processing_results.jsonl`. Each row records one
-   activity outcome — `completed` / `failed` — with the error
-   message. Multiple `failed` rows for one `cache_key` mean retries
-   ARE happening; one `completed` row means the cache is doing its
-   job.
+ audit/processing_results.jsonl`. Each row records one
+ activity outcome — `completed` / `failed` — with the error
+ message. Multiple `failed` rows for one `cache_key` mean retries
+ ARE happening; one `completed` row means the cache is doing its
+ job.
 
 Mechanisms that prevent or detect this:
 
 - **Heartbeat ticker**
-  ([`activities/processing.py:_heartbeating`](../../src/j1/orchestration/activities/processing.py)).
-  Compile / enrich / build_graph / index wrap their synchronous
-  call in a context manager that emits `activity.heartbeat` every
-  30 s. Combined with `heartbeat_timeout=5m`, this means a true
-  worker hang is detected within ~5 minutes; legitimate long parses
-  are not killed.
+ ([`activities/processing.py:_heartbeating`](../../src/j1/orchestration/activities/processing.py)).
+ Compile / enrich / build_graph / index wrap their synchronous
+ call in a context manager that emits `activity.heartbeat` every
+ 30 s. Combined with `heartbeat_timeout=5m`, this means a true
+ worker hang is detected within ~5 minutes; legitimate long parses
+ are not killed.
 - **Bounded compile retries** (`COMPILE_RETRY` =
-  `max_attempts=2`). One transient infrastructure blip (worker
-  crash, brief network failure) gets one re-attempt; that's it. No
-  multiplicative parse cost from a 5-attempt default.
+ `max_attempts=2`). One transient infrastructure blip (worker
+ crash, brief network failure) gets one re-attempt; that's it. No
+ multiplicative parse cost from a 5-attempt default.
 - **Processing-result cache**
-  ([`processing/cache.py`](../../src/j1/processing/cache.py)). Keyed
-  on `(document_hash, processor_kind, processor_version, mode)` —
-  any change in those produces a fresh cache row. On activity
-  retry, a `completed` entry short-circuits the underlying
-  processor call; the cached `artifact_ids` are returned directly.
-  `failed` entries are recorded for operator visibility but do NOT
-  block retry.
+ ([`processing/cache.py`](../../src/j1/processing/cache.py)). Keyed
+ on `(document_hash, processor_kind, processor_version, mode)` —
+ any change in those produces a fresh cache row. On activity
+ retry, a `completed` entry short-circuits the underlying
+ processor call; the cached `artifact_ids` are returned directly.
+ `failed` entries are recorded for operator visibility but do NOT
+ block retry.
 - **Deterministic workflow_id**
-  ([`deploy/dev/api.py:make_per_document_starter`](../../deploy/dev/api.py)).
-  Per-document workflow IDs derived from `(tenant, project,
-  document_id)` where `document_id` is content-addressed via the
-  intake service's checksum dedup. Re-uploading identical bytes
-  collides on the workflow_id. The starter passes
-  `id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING`, so a
-  re-upload while a workflow with that id is still running returns
-  the existing handle instead of erroring or starting a parallel
-  run — the FE then polls the in-flight run. Once the original
-  workflow completes, the cache short-circuits any new attempt to
-  re-parse the same content.
+ ([`deploy/dev/api.py:make_per_document_starter`](../../deploy/dev/api.py)).
+ Per-document workflow IDs derived from `(tenant, project,
+ document_id)` where `document_id` is content-addressed via the
+ intake service's checksum dedup. Re-uploading identical bytes
+ collides on the workflow_id. The starter passes
+ `id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING`, so a
+ re-upload while a workflow with that id is still running returns
+ the existing handle instead of erroring or starting a parallel
+ run — the FE then polls the in-flight run. Once the original
+ workflow completes, the cache short-circuits any new attempt to
+ re-parse the same content.
 
 Workflow vs activity replay:
 
 - **Workflow code replays** during recovery — `workflow.logger`
-  output is replay-aware and not duplicated to operators.
+ output is replay-aware and not duplicated to operators.
 - **Activity retries actually run again** — that's a real
-  re-execution of the activity body. The cache lookup is what
-  makes that re-execution cheap when the underlying work was
-  already done.
+ re-execution of the activity body. The cache lookup is what
+ makes that re-execution cheap when the underlying work was
+ already done.
 
 Custom long-running activities that you write should:
 
 1. Wrap the synchronous body in `with _heartbeating({...}):` (or
-   call `j1.heartbeat()` inside the loop with progress details).
+ call `j1.heartbeat` inside the loop with progress details).
 2. Set `heartbeat_timeout` at registration.
 3. Compute a deterministic cache key from the input that decides the
-   output (NOT including run_id, attempt number, or anything
-   ephemeral) and consult `JsonlProcessingResultCache` (or your own
-   `ProcessingResultCache` Protocol implementation) before invoking
-   the expensive call.
+ output (NOT including run_id, attempt number, or anything
+ ephemeral) and consult `JsonlProcessingResultCache` (or your own
+ `ProcessingResultCache` Protocol implementation) before invoking
+ the expensive call.
 
 ---
 
@@ -508,47 +502,47 @@ status = await handle.query("get_status")
 ## 8. Recovery behavior
 
 - **Worker crash** — Temporal redrives any in-flight activities up
-  to the retry budget. No state loss.
+ to the retry budget. No state loss.
 - **Activity panic / unhandled exception** — Temporal records the
-  attempt as failed, applies the retry policy, then either retries
-  or fails the activity (which may fail the workflow depending on
-  the workflow code).
+ attempt as failed, applies the retry policy, then either retries
+ or fails the activity (which may fail the workflow depending on
+ the workflow code).
 - **Workflow worker upgrade with code changes** — guard
-  non-deterministic changes behind Temporal's `patched()` /
-  `versioning` API. J1's workflows are designed to be small and
-  evolve carefully; large changes warrant a new workflow type.
+ non-deterministic changes behind Temporal's `patched` /
+ `versioning` API. J1's workflows are designed to be small and
+ evolve carefully; large changes warrant a new workflow type.
 - **Storage corruption** — durable: raw + compiled + enriched +
-  graph artifacts; rebuildable: search index. Audit + cost JSONLs
-  are append-only and survive process restarts.
+ graph artifacts; rebuildable: search index. Audit + cost JSONLs
+ are append-only and survive process restarts.
 - **Temporal cluster outage** — workers reconnect; the workflow
-  history is durable in Temporal's storage, so workflows resume
-  from where they paused (assuming the cluster comes back).
+ history is durable in Temporal's storage, so workflows resume
+ from where they paused (assuming the cluster comes back).
 
 ---
 
 ## 9. Production notes (non-exhaustive)
 
 - The bundled compose file uses `temporalio/auto-setup` with
-  Postgres. **Do not deploy `auto-setup` to production.** Use
-  `temporalio/server` against Cassandra or Postgres, plus
-  Elasticsearch for advanced search. See Temporal's own deployment
-  guide.
+ Postgres. **Do not deploy `auto-setup` to production.** Use
+ `temporalio/server` against Cassandra or Postgres, plus
+ Elasticsearch for advanced search. See Temporal's own deployment
+ guide.
 - Mount `J1_DATA_ROOT` on durable shared storage (NFS, EFS, Azure
-  Files) when multiple workers share a project. Single-writer JSON
-  registries are fine when work is partitioned by project.
+ Files) when multiple workers share a project. Single-writer JSON
+ registries are fine when work is partitioned by project.
 - Set retention on the Temporal namespace appropriate for your
-  workflow lengths + audit needs.
+ workflow lengths + audit needs.
 - Wire authentication on the REST surface
-  ([`docs/security.md`](../security.md)). Temporal's own access
-  control is managed at the cluster / namespace level — separate
-  concern.
+ ([`docs/security.md`](../security.md)). Temporal's own access
+ control is managed at the cluster / namespace level — separate
+ concern.
 - Plan for review-gate latency. Workflows in
-  `WAITING_FOR_REVIEW` are cheap on Temporal but unbounded in
-  wall-clock — make sure your retention covers the longest
-  realistic review window.
+ `WAITING_FOR_REVIEW` are cheap on Temporal but unbounded in
+ wall-clock — make sure your retention covers the longest
+ realistic review window.
 - Alert on `FAILED_RECOVERABLE` and `FAILED_FINAL` workflow
-  states. The latter is a business-rejection terminal state; the
-  former indicates an unexpected exception that needs investigation.
+ states. The latter is a business-rejection terminal state; the
+ former indicates an unexpected exception that needs investigation.
 
 ---
 
@@ -564,8 +558,8 @@ status = await handle.query("get_status")
 | Workflow stuck in `WAITING_FOR_BUDGET_APPROVAL` | Check cost log + send `approve_budget` (or `reject_budget`) via Temporal client / REST |
 | Workflow stuck in `WAITING_FOR_REVIEW` | Reviewer hasn't acted — see `GET /reviews` + `POST /reviews/{id}/decision` |
 | Activity heartbeat timeout on `compile` / `build_graph` | The vendor call (typically mineru / raganything) hung longer than `HEARTBEAT_TIMEOUT=2m`. Investigate the parser logs. If the worker is running MinerU's local VLM backend, first-page parses can take minutes on CPU — set `J1_RAGANYTHING_BACKEND=vlm-http-client` so MinerU offloads VLM inference to your OpenAI-compat endpoint (LM Studio / vLLM / hosted) instead of running the model in-process. |
-| Activity heartbeat timeout on a custom activity | Your activity exceeded its `start_to_close_timeout` without heartbeating — call `j1.heartbeat()` periodically inside the activity body and set `heartbeat_timeout` when registering. |
-| Web UI shows workflow as `Failed` with `J1_INGEST_*` type | The failure-propagation contract: a required step actually failed. Read `get_status().step_results` to find which stage and why; the audit log carries the same data with full payloads. |
+| Activity heartbeat timeout on a custom activity | Your activity exceeded its `start_to_close_timeout` without heartbeating — call `j1.heartbeat` periodically inside the activity body and set `heartbeat_timeout` when registering. |
+| Web UI shows workflow as `Failed` with `J1_INGEST_*` type | The failure-propagation contract: a required step actually failed. Read `get_status.step_results` to find which stage and why; the audit log carries the same data with full payloads. |
 | `BadSearchAttributes: Namespace … has no mapping defined for search attribute J1IngestStage` (or `J1IngestMode`) | Search attribute upserts are enabled but the namespace doesn't know about the keys. Either register them with `temporal operator search-attribute create --namespace … --name J1IngestStage --type Keyword` (and the same for `J1IngestMode`), or set `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=false` to disable upserts entirely. The error happens at activation completion (server-side) — the worker can't recover from it without one of those two changes. |
 
 For REST-side issues see [`docs/troubleshooting.md`](../troubleshooting.md).
@@ -592,17 +586,17 @@ uploads a tiny Markdown fixture, and polls
 `/ingestion-runs/{id}` until the run reaches a terminal status.
 
 ```bash
-J1_E2E=1 .venv/bin/pytest -m e2e -s
+J1_E2E=1.venv/bin/pytest -m e2e -s
 ```
 
 Requirements:
 
 - Docker Desktop / Compose v2 on `PATH`.
 - The default `J1_E2E_API_BASE=http://localhost:8000` matches the
-  port published by `deploy/dev/docker-compose.yml`. Override the
-  env var if you've remapped ports.
+ port published by `deploy/dev/docker-compose.yml`. Override the
+ env var if you've remapped ports.
 - The test always tears down the stack (`docker compose down -v`)
-  even on failure.
+ even on failure.
 
 The test is **not** in the default `pytest -q` run; CI must opt in
 explicitly because it requires Docker.

@@ -36,21 +36,21 @@ class ArtifactRegistry(Protocol):
         metadata: dict,
     ) -> None:
         """Replace the artifact's `metadata` dict in-place. Used by
-        the soft-delete path to set `metadata.deleted_at` without
-        rewriting the artifact's content. Raises
-        `ArtifactNotFoundError` if the id isn't registered."""
+ the soft-delete path to set `metadata.deleted_at` without
+ rewriting the artifact's content. Raises
+ `ArtifactNotFoundError` if the id isn't registered."""
         ...
 
     def delete_by_artifact_id(
         self, ctx: ProjectContext, artifact_id: str,
     ) -> bool:
         """Physically remove the registry record for `artifact_id`.
-        Used by the hard-delete (purge) path AFTER the artifact's
-        on-disk file has been removed. Returns True iff a record
-        was removed; False if the id wasn't present (idempotent —
-        purge is allowed to run twice). Raising on missing would
-        force the caller to coordinate with file-deletion ordering,
-        which is unnecessary friction."""
+ Used by the hard-delete (purge) path AFTER the artifact's
+ on-disk file has been removed. Returns True iff a record
+ was removed; False if the id wasn't present (idempotent —
+ purge is allowed to run twice). Raising on missing would
+ force the caller to coordinate with file-deletion ordering,
+ which is unnecessary friction."""
         ...
 
 
@@ -95,8 +95,8 @@ class JsonArtifactRegistry:
         self, ctx: ProjectContext, artifact_id: str, metadata: dict,
     ) -> None:
         """Rewrite `metadata` for one artifact. Used by soft-delete
-        to set `metadata.deleted_at` without touching the artifact
-        bytes. Atomic via tmp-file + rename in `_write`."""
+ to set `metadata.deleted_at` without touching the artifact
+ bytes. Atomic via tmp-file + rename in `_write`."""
         from dataclasses import replace as _replace
         records = self._read(ctx)
         for i, r in enumerate(records):

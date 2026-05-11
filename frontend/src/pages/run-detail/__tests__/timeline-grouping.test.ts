@@ -1,5 +1,5 @@
 /**
- * Pure-logic tests for the Phase-3 macro-stage timeline projection
+ * Pure-logic tests for the macro-stage timeline projection
  * (`timeline-grouping.ts`).
  *
  * Mirrors the backend's `test_macro_event_derivation.py`. The two

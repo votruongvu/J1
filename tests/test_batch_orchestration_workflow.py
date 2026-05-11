@@ -33,7 +33,7 @@ def _scope() -> ProjectScope:
 
 def _spec(*, document_id: str, run_id: str, **overrides) -> BatchChildSpec:
     """Build a child spec with sane defaults so each test can focus
-    on the one or two fields it cares about."""
+ on the one or two fields it cares about."""
     return BatchChildSpec(
         workflow_id=f"j1-acme-alpha-{document_id}",
         document_id=document_id,
@@ -49,14 +49,14 @@ def _spec(*, document_id: str, run_id: str, **overrides) -> BatchChildSpec:
 
 def _patch_child_dispatch(monkeypatch, *, side_effect=None):
     """Replace `workflow.execute_child_workflow` with a recorder.
-    Returns the call list — each entry is a `(workflow_id,
-    correlation_id, document_id)` tuple. `side_effect` is an
-    optional callable invoked with the same args before recording;
-    it can raise (e.g. `ApplicationError`) to simulate child failure.
+ Returns the call list — each entry is a `(workflow_id,
+ correlation_id, document_id)` tuple. `side_effect` is an
+ optional callable invoked with the same args before recording;
+ it can raise (e.g. `ApplicationError`) to simulate child failure.
 
-    Also patches `workflow.logger` to a stdlib logger because the
-    real `workflow.logger` raises outside a Temporal runtime — and
-    the workflow's failure-handling path logs warnings."""
+ Also patches `workflow.logger` to a stdlib logger because the
+ real `workflow.logger` raises outside a Temporal runtime — and
+ the workflow's failure-handling path logs warnings."""
     import logging
     calls: list[tuple[str, str, str]] = []
 
@@ -79,8 +79,8 @@ def _patch_child_dispatch(monkeypatch, *, side_effect=None):
 
 def test_dispatches_children_sequentially_in_listed_order(monkeypatch):
     """Three child specs → three dispatches in the same order. The
-    awaited `execute_child_workflow` enforces sequential semantics
-    (next child waits for the previous one's terminal state)."""
+ awaited `execute_child_workflow` enforces sequential semantics
+ (next child waits for the previous one's terminal state)."""
     calls = _patch_child_dispatch(monkeypatch)
     wf = BatchOrchestrationWorkflow()
     request = BatchOrchestrationRequest(
@@ -115,9 +115,9 @@ def test_dispatches_children_sequentially_in_listed_order(monkeypatch):
 
 def test_continue_policy_keeps_dispatching_after_child_failure(monkeypatch):
     """Default `failure_policy="continue"` lets a single flaky
-    document fail without blocking the rest of the batch. The
-    failed run id shows up in `failed_run_ids`; remaining children
-    still launch."""
+ document fail without blocking the rest of the batch. The
+ failed run id shows up in `failed_run_ids`; remaining children
+ still launch."""
     def _maybe_fail(wf_id: str, child_request) -> None:
         if child_request.correlation_id == "run-B":
             raise ApplicationError("simulated child failure", non_retryable=True)
@@ -145,8 +145,8 @@ def test_continue_policy_keeps_dispatching_after_child_failure(monkeypatch):
 
 def test_halt_policy_stops_after_first_failure(monkeypatch):
     """`failure_policy="halt"` aborts the batch on the first child
-    failure. Used when every document is required (e.g. a multi-part
-    upload that only makes sense as a unit)."""
+ failure. Used when every document is required (e.g. a multi-part
+ upload that only makes sense as a unit)."""
     def _fail_b(wf_id: str, child_request) -> None:
         if child_request.correlation_id == "run-B":
             raise ApplicationError("hard fail", non_retryable=True)
@@ -177,7 +177,7 @@ def test_halt_policy_stops_after_first_failure(monkeypatch):
 
 def test_all_failed_reports_failed_status(monkeypatch):
     """When zero children succeed and at least one failed, the
-    batch is `failed` (not `partial_completed`)."""
+ batch is `failed` (not `partial_completed`)."""
     def _always_fail(wf_id: str, child_request) -> None:
         raise ApplicationError("everything fails", non_retryable=True)
 
@@ -200,10 +200,10 @@ def test_all_failed_reports_failed_status(monkeypatch):
 
 def test_cancel_signal_stops_further_dispatch(monkeypatch):
     """Cancelling the parent sets `_cancelled`; subsequent iterations
-    of the dispatch loop break out before launching the next child.
-    The `cancelled` boolean + `cancelled` final_status surface so
-    operators can distinguish "operator stopped this" from "batch
-    failed organically."""
+ of the dispatch loop break out before launching the next child.
+ The `cancelled` boolean + `cancelled` final_status surface so
+ operators can distinguish "operator stopped this" from "batch
+ failed organically."""
     wf = BatchOrchestrationWorkflow()
 
     def _cancel_after_first(wf_id: str, child_request) -> None:
@@ -231,8 +231,8 @@ def test_cancel_signal_stops_further_dispatch(monkeypatch):
 
 def test_cancellation_during_in_flight_child_marks_batch_cancelled(monkeypatch):
     """If Temporal cancels the parent while a child is in flight,
-    the dispatch await raises `CancelledError`. The parent flips
-    `_cancelled`, breaks out of the loop, and reports `cancelled`."""
+ the dispatch await raises `CancelledError`. The parent flips
+ `_cancelled`, breaks out of the loop, and reports `cancelled`."""
     def _raise_cancel(wf_id: str, child_request) -> None:
         if child_request.correlation_id == "run-A":
             raise CancelledError("parent cancelled")
@@ -254,9 +254,9 @@ def test_cancellation_during_in_flight_child_marks_batch_cancelled(monkeypatch):
 
 def test_empty_batch_returns_completed_with_zero_counts(monkeypatch):
     """Defensive: an empty `child_specs` is a degenerate case
-    (the REST endpoint rejects this with 400 BEFORE dispatching the
-    parent), but the workflow MUST still terminate cleanly if the
-    spec list is empty — never hang waiting for nothing."""
+ (the REST endpoint rejects this with 400 BEFORE dispatching the
+ parent), but the workflow MUST still terminate cleanly if the
+ spec list is empty — never hang waiting for nothing."""
     calls = _patch_child_dispatch(monkeypatch)
     wf = BatchOrchestrationWorkflow()
     request = BatchOrchestrationRequest(
@@ -270,7 +270,7 @@ def test_empty_batch_returns_completed_with_zero_counts(monkeypatch):
 
 def test_workflow_registration_is_temporal_compatible():
     """Sanity check — the workflow class carries the temporal
-    decorator marker so `WorkerSpec(workflows=[...])` accepts it."""
+ decorator marker so `WorkerSpec(workflows=[...])` accepts it."""
     assert hasattr(
         BatchOrchestrationWorkflow, "__temporal_workflow_definition",
     )

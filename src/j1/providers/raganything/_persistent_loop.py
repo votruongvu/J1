@@ -8,7 +8,7 @@ and the various `pipeline_status` / `internal_lock` / `data_init_lock`
 singletons live in `lightrag.kg.shared_storage`. Every
 `asyncio.Lock` is **bound to the event loop that first awaited it**;
 re-entering the lock from a different loop raises
-``RuntimeError: ... is bound to a different event loop``.
+``RuntimeError:... is bound to a different event loop``.
 
 The bridge previously drove RAGAnything via ``asyncio.run(coro)``,
 which creates a fresh loop per compile/query call. The first
@@ -25,15 +25,15 @@ loop's own scheduling.
 What this is NOT
 ----------------
 * This is NOT a general-purpose persistent loop for J1. Reach for
-  it only when you're crossing the boundary into a library that
-  caches asyncio primitives module-wide (LightRAG today; consider
-  others on a case-by-case basis).
+ it only when you're crossing the boundary into a library that
+ caches asyncio primitives module-wide (LightRAG today; consider
+ others on a case-by-case basis).
 * This does NOT spawn one loop per activity. The whole point is
-  that there's one loop per process, shared.
+ that there's one loop per process, shared.
 * This does NOT auto-restart after a crash. If the loop thread
-  dies, subsequent calls raise ``RuntimeError`` and the worker
-  needs a restart. That matches Temporal-activity semantics:
-  a poisoned worker should be cycled, not patched up at runtime.
+ dies, subsequent calls raise ``RuntimeError`` and the worker
+ needs a restart. That matches Temporal-activity semantics:
+ a poisoned worker should be cycled, not patched up at runtime.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ _T = TypeVar("_T")
 class _PersistentEventLoop:
     """Owns one asyncio loop running on a daemon thread.
 
-    Construction is lazy via :func:`get_persistent_loop` so test
-    suites that never touch RAGAnything pay nothing for it.
-    """
+ Construction is lazy via :func:`get_persistent_loop` so test
+ suites that never touch RAGAnything pay nothing for it.
+ """
 
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -82,7 +82,7 @@ class _PersistentEventLoop:
             self._loop.run_forever()
         finally:
             # Drain any pending callbacks before close — otherwise
-            # `loop.close()` raises noisy "Event loop is closed"
+            # `loop.close` raises noisy "Event loop is closed"
             # warnings on tasks that finish post-stop.
             try:
                 pending = asyncio.all_tasks(self._loop)
@@ -99,14 +99,14 @@ class _PersistentEventLoop:
     def run_coroutine(self, coro: Awaitable[_T]) -> _T:
         """Schedule `coro` on the persistent loop and block until done.
 
-        Caller blocks the calling thread (a Temporal activity
-        worker thread) — same blocking semantics as the previous
-        ``asyncio.run`` call site. Raised exceptions inside the
-        coroutine surface to the caller verbatim.
-        """
+ Caller blocks the calling thread (a Temporal activity
+ worker thread) — same blocking semantics as the previous
+ ``asyncio.run`` call site. Raised exceptions inside the
+ coroutine surface to the caller verbatim.
+ """
         # `run_coroutine_threadsafe` is the only correct way to
         # bridge a coroutine from one thread into a loop running
-        # in another. ``Future.result()`` blocks the calling
+        # in another. ``Future.result`` blocks the calling
         # thread until the loop completes the coroutine.
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
@@ -114,9 +114,9 @@ class _PersistentEventLoop:
     def shutdown(self) -> None:
         """Stop the loop and join the thread.
 
-        Only used by tests today — production process shutdown
-        relies on the daemon flag. Calling this twice is a no-op.
-        """
+ Only used by tests today — production process shutdown
+ relies on the daemon flag. Calling this twice is a no-op.
+ """
         if not self._loop.is_running():
             return
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -126,7 +126,7 @@ class _PersistentEventLoop:
 
 
 # Module-level singleton. Lazily constructed on first
-# `get_persistent_loop()` call so test runs that never touch
+# `get_persistent_loop` call so test runs that never touch
 # RAGAnything don't spawn a thread.
 _loop_singleton: _PersistentEventLoop | None = None
 _loop_lock = threading.Lock()
@@ -134,11 +134,11 @@ _loop_lock = threading.Lock()
 
 def get_persistent_loop() -> _PersistentEventLoop:
     """Return the process-wide persistent event loop, creating it
-    on first call. Thread-safe.
+ on first call. Thread-safe.
 
-    Two `get_persistent_loop()` callers from different threads
-    will see the same loop — that's the whole point.
-    """
+ Two `get_persistent_loop` callers from different threads
+ will see the same loop — that's the whole point.
+ """
     global _loop_singleton
     if _loop_singleton is not None:
         return _loop_singleton
@@ -152,10 +152,10 @@ def get_persistent_loop() -> _PersistentEventLoop:
 def reset_persistent_loop_for_tests() -> None:
     """Test-only: shut down + clear the singleton.
 
-    Tests that exercise the persistent loop should call this in
-    teardown so a leaked loop from one test doesn't bleed locks
-    into the next. Production code never calls this.
-    """
+ Tests that exercise the persistent loop should call this in
+ teardown so a leaked loop from one test doesn't bleed locks
+ into the next. Production code never calls this.
+ """
     global _loop_singleton
     with _loop_lock:
         if _loop_singleton is not None:

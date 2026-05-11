@@ -1,32 +1,32 @@
-"""Enrichment module skeletons + composite runner (Wave 6).
+"""Enrichment module skeletons + composite runner.
 
 The protocol + sub-records live in `enrichment_overlay.py`. This
 module wires:
 
-  * `EnrichmentContext` — typed input bundle the runner passes to
-    every module (CompileResult, domain pack, resolved policy, etc.)
-  * Skeleton implementations of the modules the existing
-    `j1.enrichers.CompositeEnricher` doesn't cover:
-      - `MetadataEnrichmentModule`
-      - `TerminologyEnrichmentModule`
-      - `ValidationEnrichmentModule`
-    Each skeleton makes a decision (run / skip) based on cheap
-    signals and produces a typed outcome. **No LLM calls yet** —
-    deferred to the per-module wiring slice that comes after the
-    overall runner ships.
+ * `EnrichmentContext` — typed input bundle the runner passes to
+ every module (CompileResult, domain pack, resolved policy, etc.)
+ * Skeleton implementations of the modules the existing
+ `j1.enrichers.CompositeEnricher` doesn't cover:
+ - `MetadataEnrichmentModule`
+ - `TerminologyEnrichmentModule`
+ - `ValidationEnrichmentModule`
+ Each skeleton makes a decision (run / skip) based on cheap
+ signals and produces a typed outcome. **No LLM calls yet** —
+ deferred to per-module wiring that comes after the
+ overall runner ships.
 
-  * `CompositeEnrichmentRunner` — orchestrates a list of modules,
-    aggregates outcomes, builds the typed `EnrichmentResult`.
+ * `CompositeEnrichmentRunner` — orchestrates a list of modules,
+ aggregates outcomes, builds the typed `EnrichmentResult`.
 
 Modules consume the domain layer through typed interfaces only:
-  * `DomainExtractionHints` for metadata fields / terminology /
-    table-image hints (sets WHICH things to look for).
-  * `DomainValidationRules` for required-metadata / quality
-    conditions (drives the validation module).
-  * `DomainPromptPack` for per-module prompt overrides (the
-    skeleton modules don't call LLMs yet, but the protocol is
-    plumbed so a future slice plugs LLM clients in without
-    touching the orchestrator).
+ * `DomainExtractionHints` for metadata fields / terminology /
+ table-image hints (sets WHICH things to look for).
+ * `DomainValidationRules` for required-metadata / quality
+ conditions (drives the validation module).
+ * `DomainPromptPack` for per-module prompt overrides (the
+ skeleton modules don't call LLMs yet, but the protocol is
+ plumbed so future LLM-client wiring plugs in without
+ touching the orchestrator).
 
 Domain-agnostic by construction: no module branches on
 `domain_id`; behaviour is driven entirely by the typed hints.
@@ -89,10 +89,10 @@ MODULE_ID_VALIDATION = "validation"
 class EnrichmentContext:
     """Everything a module needs at decision/run time, bundled.
 
-    Pure data — passed by value through the runner. Modules read
-    typed fields; no module mutates the context. Optional fields
-    (e.g. `domain_pack`) carry None for runs without a pack.
-    """
+ Pure data — passed by value through the runner. Modules read
+ typed fields; no module mutates the context. Optional fields
+ (e.g. `domain_pack`) carry None for runs without a pack.
+ """
 
     document_id: str
     compile_result: NormalizedCompileResult
@@ -101,7 +101,7 @@ class EnrichmentContext:
     resolved_policy: ResolvedEnrichmentPolicy | None = None
     initial_plan: InitialExecutionPlan | None = None
     # Caller-supplied resource hints. The runner doesn't enforce
-    # these — modules read them as guidance. Wave 7 will turn the
+    # these — modules read them as guidance. will turn the
     # bottom-rung concurrency knobs into a real semaphore.
     resource_hints: dict[str, Any] = field(default_factory=dict)
 
@@ -113,25 +113,25 @@ class EnrichmentContext:
 class MetadataEnrichmentModule:
     """Decision-only skeleton for the metadata enricher.
 
-    Runs when:
-      * the post-compile plan has `metadata_enrichment` in
-        `recommended_tasks`, OR
-      * the domain pack declares `required_metadata_fields` that
-        the compile result reports missing.
+ Runs when:
+ * the post-compile plan has `metadata_enrichment` in
+ `recommended_tasks`, OR
+ * the domain pack declares `required_metadata_fields` that
+ the compile result reports missing.
 
-    Produces a typed `DocumentMetadataOverlay` carrying the list
-    of fields the LLM-backed metadata extractor SHOULD target.
-    Until the LLM wiring slice lands, the module records its
-    decision + a SKIPPED outcome with `reason="awaiting LLM
-    extractor wiring"`.
+ Produces a typed `DocumentMetadataOverlay` carrying the list
+ of fields the LLM-backed metadata extractor SHOULD target.
+ Until LLM wiring lands, the module records its
+ decision + a SKIPPED outcome with `reason="awaiting LLM
+ extractor wiring"`.
 
-    The overlay+outcome are surfaced via the runner so:
-      * the FE / report can show "metadata enrichment recommended:
-        N fields", and
-      * the future LLM-wired version slots in by changing the
-        outcome status from SKIPPED → RUN with the actual extracted
-        fields.
-    """
+ The overlay+outcome are surfaced via the runner so:
+ * the FE / report can show "metadata enrichment recommended:
+ N fields", and
+ * the future LLM-wired version slots in by changing the
+ outcome status from SKIPPED → RUN with the actual extracted
+ fields.
+ """
 
     module_id: str = MODULE_ID_METADATA_ENRICHMENT
     target_metadata_fields: tuple[str, ...] = ()
@@ -177,17 +177,17 @@ class MetadataEnrichmentModule:
 class TerminologyEnrichmentModule:
     """Decision-only skeleton for the terminology enricher.
 
-    Runs when the domain pack supplies non-empty
-    `extraction_hints.terminology_hints`. Output: typed list of
-    `TerminologyEntry` records the indexer/retrieval layer can
-    consume as synonyms/normalisation rules.
+ Runs when the domain pack supplies non-empty
+ `extraction_hints.terminology_hints`. Output: typed list of
+ `TerminologyEntry` records the indexer/retrieval layer can
+ consume as synonyms/normalisation rules.
 
-    Skeleton behaviour: emits one `TerminologyEntry` per hint
-    where the hint has an `=` separator (e.g. `"RFI = Request for
-    Information"` → term=RFI, definition="Request for Information").
-    Hints that don't follow the convention surface as warnings.
-    No LLM call — pure projection over the domain hints.
-    """
+ Skeleton behaviour: emits one `TerminologyEntry` per hint
+ where the hint has an `=` separator (e.g. `"RFI = Request for
+ Information"` → term=RFI, definition="Request for Information").
+ Hints that don't follow the convention surface as warnings.
+ No LLM call — pure projection over the domain hints.
+ """
 
     module_id: str = MODULE_ID_TERMINOLOGY_ENRICHMENT
 
@@ -256,21 +256,21 @@ class TerminologyEnrichmentModule:
 class ValidationEnrichmentModule:
     """Decision-only skeleton for the validation enricher.
 
-    Runs whenever the domain pack supplies `validation_rules` with
-    any non-empty list. Produces a typed `ValidationResult`
-    carrying findings for:
+ Runs whenever the domain pack supplies `validation_rules` with
+ any non-empty list. Produces a typed `ValidationResult`
+ carrying findings for:
 
-      * each `required_metadata_field` declared by the pack that
-        the compile result reports missing — surfaces a "warning"
-        finding.
-      * each entry in `expected_document_structure` — surfaces an
-        "info" finding noting what the operator should check
-        (the skeleton can't auto-assert structure; the LLM-wired
-        version will).
+ * each `required_metadata_field` declared by the pack that
+ the compile result reports missing — surfaces a "warning"
+ finding.
+ * each entry in `expected_document_structure` — surfaces an
+ "info" finding noting what the operator should check
+ (the skeleton can't auto-assert structure; the LLM-wired
+ version will).
 
-    No LLM call — pure projection over compile metadata + domain
-    validation rules.
-    """
+ No LLM call — pure projection over compile metadata + domain
+ validation rules.
+ """
 
     module_id: str = MODULE_ID_VALIDATION
 
@@ -356,18 +356,18 @@ class ValidationEnrichmentModule:
 class CompositeEnrichmentRunner:
     """Orchestrates a sequence of `EnrichmentModule` instances.
 
-    Pure orchestration — calls each module's `can_run` then `run`,
-    catching any unexpected exception as a FAILED outcome (modules
-    are protocol-bound to NOT raise; the catch is defensive). The
-    runner aggregates outcomes onto the typed `EnrichmentResult`,
-    computes the overall status, and stitches in the typed payloads
-    individual modules emit through helpers exposed on this class.
+ Pure orchestration — calls each module's `can_run` then `run`,
+ catching any unexpected exception as a FAILED outcome (modules
+ are protocol-bound to NOT raise; the catch is defensive). The
+ runner aggregates outcomes onto the typed `EnrichmentResult`,
+ computes the overall status, and stitches in the typed payloads
+ individual modules emit through helpers exposed on this class.
 
-    Today the skeletons populate the outcome record only — the
-    typed payload-side fields (terminology_map, validation_result,
-    etc.) are wired in by the runner via dedicated helpers so the
-    future LLM-wired modules can return both an outcome AND the
-    typed output in one shot."""
+ Today the skeletons populate the outcome record only — the
+ typed payload-side fields (terminology_map, validation_result,
+ etc.) are wired in by the runner via dedicated helpers so the
+ future LLM-wired modules can return both an outcome AND the
+ typed output in one shot."""
 
     modules: list[EnrichmentModule] = field(default_factory=list)
 
@@ -377,8 +377,8 @@ class CompositeEnrichmentRunner:
         terminology: list[TerminologyEntry] = []
         validation: ValidationResult | None = None
         metadata_overlay = DocumentMetadataOverlay()
-        # Wave 10.5 — typed payload accumulators for wrapper modules
-        # that emit typed records through `get_typed_outputs()`.
+        # typed payload accumulators for wrapper modules
+        # that emit typed records through `get_typed_outputs`.
         classification: ClassificationResult | None = None
         table_summaries: list[TableSummary] = []
         image_summaries: list[ImageSummary] = []
@@ -411,7 +411,7 @@ class CompositeEnrichmentRunner:
             warnings.extend(outcome.warnings)
             errors.extend(outcome.errors)
             # Project module-specific typed payloads onto the
-            # aggregated overlay. Wave-6 skeletons emit just the
+            # aggregated overlay. skeletons emit just the
             # outcome; the runner reconstructs the typed payloads
             # from the module's input context (deterministic
             # projection — same inputs → same payload).
@@ -421,9 +421,9 @@ class CompositeEnrichmentRunner:
                 validation = _projected_validation_result(ctx)
             if isinstance(module, MetadataEnrichmentModule):
                 metadata_overlay = _projected_metadata_overlay(ctx)
-            # Wave 10.5 — wrapper modules expose typed payloads via
-            # `get_typed_outputs()` (cached on the module instance
-            # during `run()`). Merge whatever keys we recognise.
+            # wrapper modules expose typed payloads via
+            # `get_typed_outputs` (cached on the module instance
+            # during `run`). Merge whatever keys we recognise.
             # Unknown keys are tolerated so future wrappers can
             # introduce new typed outputs without changes here.
             if outcome.status in (
@@ -482,11 +482,11 @@ def _resolve_metadata_targets(
 ) -> tuple[str, ...]:
     """Pick the metadata-field list the module targets.
 
-    Precedence:
-      1. Caller-supplied `explicit_targets` (constructor kwarg).
-      2. Domain pack's `extraction_hints.metadata_fields`.
-      3. Compile result's `metadata_presence.required_fields`.
-    """
+ Precedence:
+ 1. Caller-supplied `explicit_targets` (constructor kwarg).
+ 2. Domain pack's `extraction_hints.metadata_fields`.
+ 3. Compile result's `metadata_presence.required_fields`.
+ """
     if explicit_targets:
         return explicit_targets
     if ctx.domain_pack is not None:
@@ -501,10 +501,10 @@ def _projected_terminology_entries(
 ) -> list[TerminologyEntry]:
     """Project the domain terminology hints into typed records.
 
-    Mirrors the body of `TerminologyEnrichmentModule.run` — keeps
-    the projection deterministic across the module + runner so a
-    test fixture asserting the overlay terminology doesn't have to
-    sequence through the module's exception path."""
+ Mirrors the body of `TerminologyEnrichmentModule.run` — keeps
+ the projection deterministic across the module + runner so a
+ test fixture asserting the overlay terminology doesn't have to
+ sequence through the module's exception path."""
     if ctx.domain_pack is None:
         return []
     provenance = ProvenanceLink(
@@ -533,7 +533,7 @@ def _projected_validation_result(
     ctx: EnrichmentContext,
 ) -> ValidationResult:
     """Project compile metadata-presence + domain rules into a
-    typed ValidationResult. Pure / deterministic."""
+ typed ValidationResult. Pure / deterministic."""
     assert ctx.domain_pack is not None
     rules = ctx.domain_pack.validation_rules
     findings: list[ValidationFinding] = []
@@ -575,9 +575,9 @@ def _projected_metadata_overlay(
     ctx: EnrichmentContext,
 ) -> DocumentMetadataOverlay:
     """Project the compile metadata-presence + domain hints into
-    a typed metadata overlay. The skeleton populates only the
-    `missing_required_fields` list + provenance; field VALUES are
-    deferred to the LLM-wired version."""
+ a typed metadata overlay. The skeleton populates only the
+ `missing_required_fields` list + provenance; field VALUES are
+ deferred to the LLM-wired version."""
     provenance: tuple[ProvenanceLink, ...] = ()
     if ctx.compile_result.raw_artifact_refs:
         provenance = (
@@ -597,13 +597,13 @@ def _aggregate_status(
     outcomes: list[EnrichmentModuleOutcome],
 ) -> str:
     """Compute the top-level `EnrichmentResult.status` from the
-    per-module outcomes.
+ per-module outcomes.
 
-    Returns:
-      * `succeeded` — every outcome is RUN or SKIPPED.
-      * `succeeded_with_warnings` — at least one PARTIAL.
-      * `failed` — at least one FAILED.
-    """
+ Returns:
+ * `succeeded` — every outcome is RUN or SKIPPED.
+ * `succeeded_with_warnings` — at least one PARTIAL.
+ * `failed` — at least one FAILED.
+ """
     if any(o.status == EnrichmentModuleStatus.FAILED for o in outcomes):
         return "failed"
     if any(o.status == EnrichmentModuleStatus.PARTIAL for o in outcomes):
@@ -611,7 +611,7 @@ def _aggregate_status(
     return "succeeded"
 
 
-# ---- Wave 6.5 integration helpers -----------------------------------
+# ---- integration helpers -----------------------------------
 
 
 def build_skipped_enrichment_result(
@@ -622,15 +622,15 @@ def build_skipped_enrichment_result(
 ) -> EnrichmentResult:
     """Build a sentinel `EnrichmentResult` for the no-enrichment path.
 
-    Used by the workflow when `PostCompileEnrichPlan.should_enrich`
-    is False: the workflow still persists a typed overlay so
-    downstream consumers (final report, FE panel) see an explicit
-    "enrichment skipped: <reason>" record rather than the absence
-    of an artifact (which is ambiguous — could be policy, could be
-    a write failure).
+ Used by the workflow when `PostCompileEnrichPlan.should_enrich`
+ is False: the workflow still persists a typed overlay so
+ downstream consumers (final report, FE panel) see an explicit
+ "enrichment skipped: <reason>" record rather than the absence
+ of an artifact (which is ambiguous — could be policy, could be
+ a write failure).
 
-    Pure / no I/O. `reason` should come from
-    `PostCompileEnrichPlan.reasons` / `blocking_issues`."""
+ Pure / no I/O. `reason` should come from
+ `PostCompileEnrichPlan.reasons` / `blocking_issues`."""
     return EnrichmentResult(
         document_id=document_id,
         status="skipped",
@@ -648,20 +648,20 @@ def resolve_module_prompt(
 ) -> str:
     """Resolve the prompt text a module should use.
 
-    Precedence:
-      1. `domain_pack.prompt_pack.<prompt_field>` if set
-         (non-None, non-empty).
-      2. `builtin_default` otherwise.
+ Precedence:
+ 1. `domain_pack.prompt_pack.<prompt_field>` if set
+ (non-None, non-empty).
+ 2. `builtin_default` otherwise.
 
-    The active `domain_pack.prompt_addon` is prepended to whichever
-    base prompt wins so the model has domain context BEFORE the
-    task-specific instructions. When no pack is selected, only the
-    `builtin_default` is returned (no addon).
+ The active `domain_pack.prompt_addon` is prepended to whichever
+ base prompt wins so the model has domain context BEFORE the
+ task-specific instructions. When no pack is selected, only the
+ `builtin_default` is returned (no addon).
 
-    Pure / no I/O. `prompt_field` must be one of the attribute
-    names on `DomainPromptPack` — passing an unknown attribute
-    falls through to the default to keep the helper safe at module
-    construction time."""
+ Pure / no I/O. `prompt_field` must be one of the attribute
+ names on `DomainPromptPack` — passing an unknown attribute
+ falls through to the default to keep the helper safe at module
+ construction time."""
     if domain_pack is None:
         return builtin_default
     pack_prompt: str | None = getattr(

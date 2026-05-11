@@ -14,15 +14,15 @@ implementation can land later without changing the integration layer.
 ## 1. Why deferred
 
 - The framework's current public surface is REST + webhook + queue;
-  MCP is a separate transport that re-uses the same application
-  ports. The Protocol-driven design means MCP can land independently.
+ MCP is a separate transport that re-uses the same application
+ ports. The Protocol-driven design means MCP can land independently.
 - Adding MCP today would require a `mcp` Python SDK dependency and a
-  durable session/transport story (stdio, HTTP/SSE, WebSocket — the
-  spec is in flux). Per the project's repeated constraint to "avoid
-  large rewrites" and "no mandatory broker dependencies unless the
-  repo already uses them", we keep MCP as a documented gap.
+ durable session/transport story (stdio, HTTP/SSE, WebSocket — the
+ spec is in flux). Per the project's repeated constraint to "avoid
+ large rewrites" and "no mandatory broker dependencies unless the
+ repo already uses them", we keep MCP as a documented gap.
 - The cross-cutting contracts MCP would consume (security context,
-  scopes, ports, error envelope) are already in place — see § 3.
+ scopes, ports, error envelope) are already in place — see § 3.
 
 ---
 
@@ -32,17 +32,17 @@ When the adapter lands, it MUST satisfy the same architectural rules
 as the existing REST adapter:
 
 1. Live in `j1.adapters.mcp/` — never inside `j1.integration.*` or
-   any core package.
+ any core package.
 2. Take an `ApplicationFacade` and a `SecurityContext` resolver from
-   the inbound transport. Never bypass the security layer.
+ the inbound transport. Never bypass the security layer.
 3. Map MCP tool calls → port methods on `ApplicationFacade`. Never
-   reach into `j1.processing.*`, `j1.query.*`, or other core
-   packages directly.
+ reach into `j1.processing.*`, `j1.query.*`, or other core
+ packages directly.
 4. Use the same `SCOPE_*` constants for authorization. No custom
-   scope strings.
+ scope strings.
 5. Emit failures via the same `AuthorizationError` /
-   `AuthenticationError` types — translation to MCP error codes is
-   the adapter's job.
+ `AuthenticationError` types — translation to MCP error codes is
+ the adapter's job.
 
 The dependency-direction guards in
 [`tests/test_external_integration_consistency.py`](../tests/test_external_integration_consistency.py)
@@ -60,23 +60,23 @@ The recommended mapping for MCP tools, mirroring the REST surface:
 
 | MCP tool name (suggested) | Backed by `ApplicationFacade.*` | Required scope |
 |---|---|---|
-| `kb.search`              | `search.search(...)`            | `kb:search`     |
-| `kb.retrieve`            | `search.search(...)` (block view) | `kb:retrieve` |
-| `kb.answer`              | `answer.answer(...)`            | `kb:answer`     |
-| `kb.get_document`        | `source_lookup.get_source(...)` | `kb:read`       |
-| `kb.list_artifacts`      | `retrieval.list_artifacts(...)` | `kb:read`       |
-| `kb.get_artifact`        | `retrieval.get_artifact(...)`   | `kb:read`       |
-| `kb.get_citation`        | `citation_lookup.get_citations(...)` | `kb:read`  |
+| `kb.search` | `search.search(...)` | `kb:search` |
+| `kb.retrieve` | `search.search(...)` (block view) | `kb:retrieve` |
+| `kb.answer` | `answer.answer(...)` | `kb:answer` |
+| `kb.get_document` | `source_lookup.get_source(...)` | `kb:read` |
+| `kb.list_artifacts` | `retrieval.list_artifacts(...)` | `kb:read` |
+| `kb.get_artifact` | `retrieval.get_artifact(...)` | `kb:read` |
+| `kb.get_citation` | `citation_lookup.get_citations(...)` | `kb:read` |
 
 ### Write tools (default-DISABLED — must be explicitly enabled)
 
 | MCP tool name (suggested) | Backed by | Required scope |
 |---|---|---|
-| `kb.upload_document`      | `ingestion.register_document(...)` | `kb:ingest` |
-| `kb.start_ingestion_job`  | `job_control.start_project_job(...)` | `kb:ingest` |
-| `kb.submit_feedback`      | `feedback.submit_feedback(...)` | `kb:feedback` |
-| `kb.apply_review_decision` | `review.apply_decision(...)`   | `kb:admin`  |
-| `kb.create_project`       | `project_admin.create_project(...)` | `kb:admin` |
+| `kb.upload_document` | `ingestion.register_document(...)` | `kb:ingest` |
+| `kb.start_ingestion_job` | `job_control.start_project_job(...)` | `kb:ingest` |
+| `kb.submit_feedback` | `feedback.submit_feedback(...)` | `kb:feedback` |
+| `kb.apply_review_decision` | `review.apply_decision(...)` | `kb:admin` |
+| `kb.create_project` | `project_admin.create_project(...)` | `kb:admin` |
 
 The "default-disabled" pattern: the adapter's constructor takes an
 `enable_write_tools: bool = False` parameter. When `False` the write
@@ -109,9 +109,9 @@ internal exceptions exactly as the SSE adapter does:
 | Source exception | MCP error |
 |---|---|
 | `AuthenticationError` | `-32001` (unauthorized) — no exception text leaked |
-| `AuthorizationError`  | `-32003` (forbidden) — `data.required_scope` set |
+| `AuthorizationError` | `-32003` (forbidden) — `data.required_scope` set |
 | `DocumentNotFoundError` / `ArtifactNotFoundError` | `-32602` (invalid params) — public message only |
-| Any other `J1Error`   | `-32603` (internal error) — generic safe message; full exception logged with `correlation_id` |
+| Any other `J1Error` | `-32603` (internal error) — generic safe message; full exception logged with `correlation_id` |
 
 The numeric codes above are the JSON-RPC convention; the framework's
 own error codes (`UNAUTHENTICATED`, `INSUFFICIENT_SCOPE`, …) live in
@@ -141,10 +141,10 @@ This file goes away when:
 - A `src/j1/adapters/mcp/` package exists.
 - It implements the contracts in §§ 2–6.
 - It has a corresponding `tests/test_rest_mcp.py` (or similar)
-  covering at least: read-tool dispatch, write-tool default-disable,
-  scope enforcement, error masking, security-context propagation.
+ covering at least: read-tool dispatch, write-tool default-disable,
+ scope enforcement, error masking, security-context propagation.
 - The MCP-adjacent rows in `external-integration-architecture.md` § 2
-  switch from "not shipped" to "shipped".
+ switch from "not shipped" to "shipped".
 - A `docs/mcp.md` replaces this file with the user-facing guide.
 
 Until then: **MCP is intentionally absent from the framework**.

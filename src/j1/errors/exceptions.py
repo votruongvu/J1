@@ -64,9 +64,9 @@ class DuplicateDocumentError(IntakeError):
 class UploadTooLargeError(IntakeError):
     """Raised when an upload exceeds the configured size cap.
 
-    Carries the observed size + the cap so the REST adapter can
-    surface a 413 response with actionable diagnostics.
-    """
+ Carries the observed size + the cap so the REST adapter can
+ surface a 413 response with actionable diagnostics.
+ """
 
     def __init__(
         self,
@@ -82,10 +82,10 @@ class UploadTooLargeError(IntakeError):
 
 class UnsupportedFileTypeError(IntakeError):
     """Raised when an upload's filename extension isn't in the
-    configured allow-list. Surfaces as 415 at the REST boundary
-    with the offending extension and the allowed set in the
-    response details so the client can render an actionable
-    message."""
+ configured allow-list. Surfaces as 415 at the REST boundary
+ with the offending extension and the allowed set in the
+ response details so the client can render an actionable
+ message."""
 
     def __init__(
         self,

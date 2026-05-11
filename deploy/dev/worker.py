@@ -2,9 +2,9 @@
 
 Run via:
 
-    python -m deploy.dev.worker
+ python -m deploy.dev.worker
 
-The container's CMD wraps this. Calls `bootstrap_from_env()` so the
+The container's CMD wraps this. Calls `bootstrap_from_env` so the
 selection env vars (`J1_DEFAULT_COMPILER`, `J1_DEFAULT_GRAPH_PROVIDER`,
 `J1_DEFAULT_RETRIEVAL_PROVIDER`) actually take effect — the dev
 stack defaults to `mock` for all three, which wires the bundled
@@ -120,7 +120,7 @@ async def _run() -> None:
         # plumbed through to the composite so disabled modalities skip
         # their sub-enricher at construction time.
         enrichment_settings=boot.enrichment,
-        # Wave 10.6 — pass the shared LLM-call limiter through so
+        # pass the shared LLM-call limiter through so
         # the new EnrichmentModule adapters (text / classification /
         # table / image) gate concurrent LLM calls with the same
         # semaphore the legacy CompositeEnricher uses. When the

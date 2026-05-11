@@ -19,20 +19,20 @@ consume.
 > [configuration/environment.md](configuration/environment.md).
 
 ```
-                  ┌──────────────────────────────────┐
-                  │  j1.compose.Bootstrap            │
-                  │   .build()                       │
-                  └─────────┬────────────────────────┘
-                            │ produces
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-  LLMProviderRegistry   compilers /         StartupDiagnostics
-                        graph_builders /
-                        retrieval_providers
+ ┌──────────────────────────────────┐
+ │ j1.compose.Bootstrap │
+ │.build │
+ └─────────┬────────────────────────┘
+ │ produces
+ ┌───────────────────┼───────────────────┐
+ ▼ ▼ ▼
+ LLMProviderRegistry compilers / StartupDiagnostics
+ graph_builders /
+ retrieval_providers
 ```
 
 Two entrypoints share **one composition path** — the API and the worker
-both call `bootstrap_from_env()` (or build a `Bootstrap` directly with
+both call `bootstrap_from_env` (or build a `Bootstrap` directly with
 fakes for tests).
 
 ---
@@ -45,12 +45,12 @@ distinct, swappable client with its own Protocol in
 use:
 
 - **Text** — used by the RAGAnything compiler / graph / retrieval,
-  enrichment cleanup, and answer synthesis.
+ enrichment cleanup, and answer synthesis.
 - **Vision** — used only by visual enrichment (images, diagrams,
-  scanned pages). Not constructed unless visual enrichment is on.
+ scanned pages). Not constructed unless visual enrichment is on.
 - **Embedding** — used by RAGAnything chunk indexing and vector
-  retrieval. Required when RAGAnything (or any embedding-using
-  provider) is selected.
+ retrieval. Required when RAGAnything (or any embedding-using
+ provider) is selected.
 
 Each role is configured **independently** via its own `J1_*` env
 vars — a deployment is free to mix providers across roles (e.g.
@@ -118,7 +118,7 @@ catalog OR a fully-qualified `module:Class` path) plus any kwargs
 you want passed to the constructor:
 
 ```bash
-pip install j1[langchain-openai]   # or [langchain-anthropic], etc.
+pip install j1[langchain-openai] # or [langchain-anthropic], etc.
 
 # Text role via LangChain's ChatOpenAI
 J1_TEXT_LLM_PROVIDER=langchain
@@ -135,13 +135,13 @@ J1_EMBEDDING_LANGCHAIN_CONFIG={"class":"OpenAIEmbeddings","api_key":"sk-..."}
 
 The class-loader's allowlist accepts:
 - Short aliases from
-  [`CHAT_MODEL_CATALOG`](../src/j1/llm/classloader.py) /
-  [`EMBEDDING_CATALOG`](../src/j1/llm/classloader.py) (e.g.
-  `ChatOpenAI`, `ChatAnthropic`, `ChatOllama`, `OpenAIEmbeddings`,
-  `HuggingFaceEmbeddings`, ...).
+ [`CHAT_MODEL_CATALOG`](../src/j1/llm/classloader.py) /
+ [`EMBEDDING_CATALOG`](../src/j1/llm/classloader.py) (e.g.
+ `ChatOpenAI`, `ChatAnthropic`, `ChatOllama`, `OpenAIEmbeddings`,
+ `HuggingFaceEmbeddings`,...).
 - Any fully-qualified path under `langchain*` or `j1.*`.
 - Any path under a prefix the deployment registers via
-  `j1.register_trusted_prefix("mycompany_kb")`.
+ `j1.register_trusted_prefix("mycompany_kb")`.
 
 This is the safest config-driven option: it can't accidentally
 import `subprocess` or anything else off `sys.path`.
@@ -155,17 +155,17 @@ instantiates the LangChain model directly and hands it in:
 ```python
 from langchain_openai import ChatOpenAI
 from j1 import (
-    Bootstrap, LangChainTextLLMClient, LLM_ROLE_TEXT,
-    LLMProviderRegistry, TextLLMSettings,
+ Bootstrap, LangChainTextLLMClient, LLM_ROLE_TEXT,
+ LLMProviderRegistry, TextLLMSettings,
 )
 
 chat_model = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 text_client = LangChainTextLLMClient(
-    chat_model,
-    settings=TextLLMSettings(provider="langchain", model="gpt-4o-mini"),
+ chat_model,
+ settings=TextLLMSettings(provider="langchain", model="gpt-4o-mini"),
 )
 registry = LLMProviderRegistry({LLM_ROLE_TEXT: text_client})
-result = Bootstrap(llm_registry=registry).build()
+result = Bootstrap(llm_registry=registry).build
 ```
 
 Both paths produce the same `LLMProviderRegistry` shape; mix them per
@@ -231,25 +231,25 @@ Three construction paths — pick the one that fits:
 pip install j1[raganything]
 ```
 
-That's it. With no processor hook configured, `from_default()` reaches
+That's it. With no processor hook configured, `from_default` reaches
 the bundled bridge in
 [`j1.providers.raganything._bridge`](../src/j1/providers/raganything/_bridge.py),
 which:
 - Lazy-imports `raganything` (`ProviderUnavailable` with pip-install
-  hint when missing).
+ hint when missing).
 - Constructs `RAGAnything(config=RAGAnythingConfig(...), llm_model_func,
-  vision_model_func, embedding_func)` with adapters that translate
-  J1's `TextLLMClient` / `VisionLLMClient` / `EmbeddingClient` into
-  the `(prompt, **kwargs) -> str` and `(texts) -> list[list[float]]`
-  shapes the vendor expects.
+ vision_model_func, embedding_func)` with adapters that translate
+ J1's `TextLLMClient` / `VisionLLMClient` / `EmbeddingClient` into
+ the `(prompt, **kwargs) -> str` and `(texts) -> list[list[float]]`
+ shapes the vendor expects.
 - Drives `process_document_complete(file_path, output_dir,
-  parse_method="auto")` (compile / graph) or `aquery(question,
-  mode="hybrid")` (retrieval).
+ parse_method="auto")` (compile / graph) or `aquery(question,
+ mode="hybrid")` (retrieval).
 - Walks the output / storage directory and emits one `ArtifactDraft`
-  per file produced. The compile path tags `.json` outputs as
-  `compiled.text.metadata`, `.md`/`.txt` as `compiled.text`, image
-  outputs as `compiled.text.image`. The graph path surfaces
-  `graph_chunk_entity_relation.json` and friends as `graph_json`.
+ per file produced. The compile path tags `.json` outputs as
+ `compiled.text.metadata`, `.md`/`.txt` as `compiled.text`, image
+ outputs as `compiled.text.image`. The graph path surfaces
+ `graph_chunk_entity_relation.json` and friends as `graph_json`.
 
 The async API is driven via `asyncio.run`; if the framework is itself
 running inside a live event loop (e.g. a custom worker), the bridge
@@ -293,17 +293,17 @@ multi-format coverage.
 Failure modes:
 
 - **Binary not on `$PATH`** → `ProviderUnavailable` at the first
-  legacy-format compile. The error message lists every escape
-  hatch (install LibreOffice; set
-  `J1_RAGANYTHING_LIBREOFFICE_BINARY` to an absolute path; shrink
-  `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS`; override the whole
-  compile via `J1_RAGANYTHING_COMPILER_PROCESSOR`).
+ legacy-format compile. The error message lists every escape
+ hatch (install LibreOffice; set
+ `J1_RAGANYTHING_LIBREOFFICE_BINARY` to an absolute path; shrink
+ `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS`; override the whole
+ compile via `J1_RAGANYTHING_COMPILER_PROCESSOR`).
 - **soffice non-zero exit / no output / timeout** →
-  `ArtifactProcessingResult(status=FAILED, error=…, metadata={"stage": "preconvert"})`.
-  The workflow's standard retry / review path handles it like any
-  other compile failure.
+ `ArtifactProcessingResult(status=FAILED, error=…, metadata={"stage": "preconvert"})`.
+ The workflow's standard retry / review path handles it like any
+ other compile failure.
 - **Native format (`.pdf`, `.docx`, etc.)** → bridge skips
-  LibreOffice entirely; subprocess is never invoked.
+ LibreOffice entirely; subprocess is never invoked.
 
 #### B) Env-driven processor hooks (override the default bridge)
 
@@ -343,12 +343,12 @@ from j1 import RAGAnythingCompiler, RAGAnythingSettings, LLMProviderRegistry
 from j1.providers.raganything.compiler import RAGAnythingCompileRequest
 
 def my_compile(request: RAGAnythingCompileRequest):
-    return ArtifactProcessingResult(status=ResultStatus.SUCCEEDED, drafts=[...])
+ return ArtifactProcessingResult(status=ResultStatus.SUCCEEDED, drafts=[...])
 
 compiler = RAGAnythingCompiler(
-    llm_registry=registry,
-    settings=RAGAnythingSettings(),
-    compile_callable=my_compile,    # full control, no env / class-loader
+ llm_registry=registry,
+ settings=RAGAnythingSettings,
+ compile_callable=my_compile, # full control, no env / class-loader
 )
 ```
 
@@ -379,17 +379,17 @@ temp dir under `J1_GRAPHIFY_WORKDIR` and invokes:
 
 ```
 $J1_GRAPHIFY_COMMAND \
-    --input  <tmp>/input.json  \
-    --output <tmp>/output.json \
-    --workdir $J1_GRAPHIFY_WORKDIR
+ --input <tmp>/input.json \
+ --output <tmp>/output.json \
+ --workdir $J1_GRAPHIFY_WORKDIR
 ```
 
 The output JSON is parsed into a single `graph_json` `ArtifactDraft`
 preserving the input artifact IDs as `source_artifact_ids`.
 
 ```bash
-J1_GRAPHIFY_MODE=cli                       # default
-J1_GRAPHIFY_COMMAND=graphify               # or absolute path
+J1_GRAPHIFY_MODE=cli # default
+J1_GRAPHIFY_COMMAND=graphify # or absolute path
 J1_GRAPHIFY_WORKDIR=./data/graphify
 ```
 
@@ -430,12 +430,12 @@ J1_GRAPHIFY_GRAPH_PROCESSOR=mypkg.processors:graphify_build
 point that:
 
 1. Loads every `J1_*` setting (LLM roles + RAGAnything + Graphify +
-   enrichment + selection)
+ enrichment + selection)
 2. Constructs LLM clients for whichever roles are configured
 3. Constructs the selected compiler / graph / retrieval providers
 4. **Validates** required roles per selection (text + embedding for
-   RAGAnything; vision when visual enrichment is enabled; Graphify
-   only when both selected and enabled)
+ RAGAnything; vision when visual enrichment is enabled; Graphify
+ only when both selected and enabled)
 5. Produces a `StartupDiagnostics` snapshot with no secrets in it
 
 ### Typical entrypoint use
@@ -444,14 +444,14 @@ point that:
 from j1 import bootstrap_from_env, render_startup_diagnostics
 import logging
 
-result = bootstrap_from_env()
+result = bootstrap_from_env
 for line in render_startup_diagnostics(result.diagnostics):
-    logging.info(line)
+ logging.info(line)
 
 # result.compilers["raganything"] is a registered KnowledgeCompiler
 # result.graph_builders["raganything"] is a registered GraphBuilder
 # result.retrieval_providers["raganything"] is a registered QueryProvider
-# result.llm_registry.text() returns the text client
+# result.llm_registry.text returns the text client
 ```
 
 ### Test use
@@ -465,8 +465,8 @@ from j1 import Bootstrap, LLMProviderRegistry
 class _FakeText: provider = "fake"; model = "fake-text"
 class _FakeEmbed: provider = "fake"; model = "fake-embed"
 
-reg = LLMProviderRegistry({"text": _FakeText(), "embedding": _FakeEmbed()})
-result = Bootstrap(env={"J1_ENRICH_ENABLED": "false"}, llm_registry=reg).build()
+reg = LLMProviderRegistry({"text": _FakeText, "embedding": _FakeEmbed})
+result = Bootstrap(env={"J1_ENRICH_ENABLED": "false"}, llm_registry=reg).build
 ```
 
 The composition root uses *exactly the same path* in production and in
@@ -482,7 +482,7 @@ tests — so wiring bugs surface in either place equally.
 | `J1_DEFAULT_COMPILER=raganything` AND no embedding LLM | `ConfigError: RAGAnything compiler requires embedding LLM role(s)` |
 | Visual enrichment enabled AND no vision LLM | `ConfigError: Visual enrichment is enabled but no vision LLM is configured` |
 | `J1_DEFAULT_GRAPH_PROVIDER=graphify` AND `J1_GRAPHIFY_ENABLED` is unset / false | `ConfigError: graphify is selected but Graphify is not enabled. Set J1_GRAPHIFY_ENABLED=true` |
-| `J1_DEFAULT_*=<unknown>` | `ConfigError: <name> is not a registered <kind> provider. Built-in providers: ...` |
+| `J1_DEFAULT_*=<unknown>` | `ConfigError: <name> is not a registered <kind> provider. Built-in providers:...` |
 
 Every error names the env var(s) the operator needs to set.
 
@@ -494,18 +494,18 @@ A secrets-safe snapshot of what's wired:
 
 ```
 J1 startup diagnostics:
-  compilers: raganything
-  graph providers: raganything
-  retrieval providers: raganything
-  enrichment providers: (none registered)
-  selected compiler: raganything
-  selected graph: raganything
-  selected retrieval: raganything
-  enrichment: enabled modalities=[images, tables, diagrams, scanned_pages]
-  graphify: disabled
-  llm[embedding]: provider=openai_compat model=text-embedding-v3 dim=1024
-  llm[text]: provider=openai_compat model=qwen-plus
-  llm[vision]: provider=openai_compat model=qwen-vl-plus
+ compilers: raganything
+ graph providers: raganything
+ retrieval providers: raganything
+ enrichment providers: (none registered)
+ selected compiler: raganything
+ selected graph: raganything
+ selected retrieval: raganything
+ enrichment: enabled modalities=[images, tables, diagrams, scanned_pages]
+ graphify: disabled
+ llm[embedding]: provider=openai_compat model=text-embedding-v3 dim=1024
+ llm[text]: provider=openai_compat model=qwen-plus
+ llm[vision]: provider=openai_compat model=qwen-vl-plus
 ```
 
 What's **never** printed: API keys, base URLs, LangChain config dicts,
@@ -522,17 +522,17 @@ backend. Imagine wiring up a third-party "FooDocs" compiler:
 
 1. Create `src/j1/providers/foodocs/`.
 2. Implement the relevant Protocol from
-   [`j1.processing.contracts`](../src/j1/processing/contracts.py)
-   (`KnowledgeCompiler` for a compiler, `GraphBuilder` for a graph
-   builder, `QueryProvider` for retrieval).
+ [`j1.processing.contracts`](../src/j1/processing/contracts.py)
+ (`KnowledgeCompiler` for a compiler, `GraphBuilder` for a graph
+ builder, `QueryProvider` for retrieval).
 3. Receive any LLM client(s) via constructor — pull from
-   `LLMProviderRegistry`, never read env vars.
+ `LLMProviderRegistry`, never read env vars.
 4. Lazy-import the vendor library inside the default factory; raise
-   `ProviderUnavailable("install foodocs")` if missing.
+ `ProviderUnavailable("install foodocs")` if missing.
 5. Add settings + `load_foodocs_settings(env=...)` mirroring the
-   existing settings modules.
-6. Register the provider in `j1.compose.bootstrap.Bootstrap.build()`
-   under a new selection branch.
+ existing settings modules.
+6. Register the provider in `j1.compose.bootstrap.Bootstrap.build`
+ under a new selection branch.
 
 That's it. No core code changes; the existing
 `ProcessingService`/`ProjectProcessingWorkflow`/`HybridQueryEngine`

@@ -168,7 +168,7 @@ def test_estimate_with_explicit_input_tokens():
 
 def test_estimate_defaults_to_max_output_tokens():
     """Without expected_output_tokens, the estimator uses selection.max_output_tokens
-    so the worst-case bound is preserved."""
+ so the worst-case bound is preserved."""
     router = ModelRouter()
     estimator = CostEstimator(router)
     selection = router.select(TaskCategory.CLASSIFICATION)
@@ -458,7 +458,7 @@ def test_estimate_then_guard_blocks_when_projected_over(
     workspace, ctx, cost_recorder, audit_recorder
 ):
     """Realistic flow: record some past spend, estimate the next call,
-    let the guard decide allow/warn/block."""
+ let the guard decide allow/warn/block."""
     # Past spend on this run.
     _record_cost(cost_recorder, ctx, amount="0.045", correlation_id="run-1")
 

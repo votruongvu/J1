@@ -59,11 +59,11 @@ __all__ = [
 class ProcessingCacheEntry:
     """One entry in the processing-result cache.
 
-    The fields after `status` are the operationally interesting
-    metadata Temporal UI / operators want to see when investigating
-    repeated processing. None of them are required to drive cache
-    behaviour — the lookup uses `cache_key` alone — but they make
-    the audit trail self-explaining without a separate join."""
+ The fields after `status` are the operationally interesting
+ metadata Temporal UI / operators want to see when investigating
+ repeated processing. None of them are required to drive cache
+ behaviour — the lookup uses `cache_key` alone — but they make
+ the audit trail self-explaining without a separate join."""
 
     cache_key: str
     document_id: str
@@ -90,10 +90,10 @@ def make_cache_key(
 ) -> str:
     """Deterministic cache key from the inputs that decide the output.
 
-    Stable hex digest so it survives serialisation / cross-language
-    consumers without ambiguity. `processor_version` and `mode` are
-    optional — empty values produce the same key, which is the right
-    default when a processor has no notion of versioning yet."""
+ Stable hex digest so it survives serialisation / cross-language
+ consumers without ambiguity. `processor_version` and `mode` are
+ optional — empty values produce the same key, which is the right
+ default when a processor has no notion of versioning yet."""
     digest = hashlib.sha256()
     for part in (document_hash, processor_kind, processor_version, mode):
         digest.update((part or "").encode("utf-8"))
@@ -120,9 +120,9 @@ class ProcessingResultCache(Protocol):
 class JsonlProcessingResultCache:
     """JSONL-backed cache; latest snapshot per `cache_key` wins.
 
-    Lives under the workspace's audit area so a single backup covers
-    both the cache and the run records / progress events that
-    reference its entries."""
+ Lives under the workspace's audit area so a single backup covers
+ both the cache and the run records / progress events that
+ reference its entries."""
 
     def __init__(self, workspace: WorkspaceResolver) -> None:
         self._workspace = workspace

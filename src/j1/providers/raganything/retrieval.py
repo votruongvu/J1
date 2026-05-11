@@ -94,9 +94,9 @@ class RAGAnythingQueryProvider:
 def _build_default_query_callable() -> QueryCallable:
     """Real default boundary — drives RAGAnything's `aquery`.
 
-    Calls `RAGAnything(...).aquery(question, mode="hybrid")` via
-    `asyncio.run`. Returns J1 canonical `QueryResult`.
-    """
+ Calls `RAGAnything(...).aquery(question, mode="hybrid")` via
+ `asyncio.run`. Returns J1 canonical `QueryResult`.
+ """
 
     def _delegate(request: RAGAnythingQueryRequest) -> QueryResult:
         from j1.providers.raganything._bridge import default_query

@@ -2,10 +2,10 @@
 
 Pins the contract of the new `/ingestion-runs/{id}/enrich-plan`
 endpoint at the service layer:
-  * artifact present → status=completed + plan payload + artifactId
-  * artifact missing → status=unavailable + reason
-  * unreadable / malformed payload → status=unavailable + reason
-  * missing run → ReviewNotFound
+ * artifact present → status=completed + plan payload + artifactId
+ * artifact missing → status=unavailable + reason
+ * unreadable / malformed payload → status=unavailable + reason
+ * missing run → ReviewNotFound
 
 The REST adapter layer is a thin envelope, so testing the service
 method covers the contract end-to-end."""
@@ -70,8 +70,8 @@ def _write_enrich_plan_artifact(
     artifact_id: str = "a-enrich-plan",
 ) -> dict:
     """Write a `post_compile_enrich_plan` artifact's bytes into the
-    COMPILED workspace area + register the record. Returns the
-    payload that was written."""
+ COMPILED workspace area + register the record. Returns the
+ payload that was written."""
     if payload is None:
         payload = {
             "schema_version": "1",
@@ -136,7 +136,7 @@ def test_returns_unavailable_when_no_enrich_plan_artifact(
     service, run_store, ctx,
 ):
     """Run exists but never produced an enrich plan artifact —
-    surface as unavailable + reason. Don't 404 (run is real)."""
+ surface as unavailable + reason. Don't 404 (run is real)."""
     run_store.upsert(ctx, _make_run())
     result = service.get_run_enrich_plan(ctx, "run-1")
     assert result["status"] == "unavailable"
@@ -149,8 +149,8 @@ def test_returns_unavailable_when_payload_malformed(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Artifact exists but on-disk JSON isn't a dict (or unreadable).
-    Surface as unavailable so the FE renders a placeholder rather
-    than crashing."""
+ Surface as unavailable so the FE renders a placeholder rather
+ than crashing."""
     run_store.upsert(ctx, _make_run())
     # Register the artifact with a location but write a non-object
     # payload — passes JSON parsing but fails the dict check.
@@ -190,7 +190,7 @@ def test_does_not_leak_cross_project_enrich_plan(
     service, run_store, artifact_registry, workspace, ctx, other_ctx,
 ):
     """A run + its artifact in project alpha must not be visible from
-    project beta — service uses ctx-scoped reads end-to-end."""
+ project beta — service uses ctx-scoped reads end-to-end."""
     run_store.upsert(ctx, _make_run())
     _write_enrich_plan_artifact(workspace, artifact_registry, ctx)
     with pytest.raises(ReviewNotFound):
@@ -201,7 +201,7 @@ def test_picks_latest_artifact_when_multiple_exist(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Replays + retries can produce duplicate artifacts. The service
-    must return the most recent one."""
+ must return the most recent one."""
     run_store.upsert(ctx, _make_run())
     _write_enrich_plan_artifact(
         workspace, artifact_registry, ctx,

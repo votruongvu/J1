@@ -36,30 +36,30 @@ SAFE_GENERATION_FAILED_PAYLOAD: dict[str, Any] = {
 class AnswerStreamingService:
     """Drives the answer-stream lifecycle.
 
-    Wraps a vendor-neutral `AnswerPort` (today the same `AnswerService`
-    used by non-streaming `/answer`) and emits the seven framework
-    `STREAM_EVENT_*` types in spec order. The wrapped port runs
-    unchanged — this service neither rewrites retrieval nor touches the
-    `HybridQueryEngine`.
+ Wraps a vendor-neutral `AnswerPort` (today the same `AnswerService`
+ used by non-streaming `/answer`) and emits the seven framework
+ `STREAM_EVENT_*` types in spec order. The wrapped port runs
+ unchanged — this service neither rewrites retrieval nor touches the
+ `HybridQueryEngine`.
 
-    **Streaming model.** The current `AnswerPort` is synchronous /
-    single-shot; once a real token-streaming `ModelProvider` is wired
-    in, this service is the only place that needs to change. Today the
-    answer text is synthesised first, then chunked into N
-    `generation.delta` events word-by-word so consumers can still render
-    incrementally. The API surface and event types are the same in both
-    worlds.
+ **Streaming model.** The current `AnswerPort` is synchronous /
+ single-shot; once a real token-streaming `ModelProvider` is wired
+ in, this service is the only place that needs to change. Today the
+ answer text is synthesised first, then chunked into N
+ `generation.delta` events word-by-word so consumers can still render
+ incrementally. The API surface and event types are the same in both
+ worlds.
 
-    **Security.** The service never inspects credentials or applies
-    scope rules — that's the adapter's job. It does carry the resolved
-    `SecurityContext` so receivers (e.g. event-bus webhooks) get the
-    same `kbactor` attribution as non-streaming answers.
+ **Security.** The service never inspects credentials or applies
+ scope rules — that's the adapter's job. It does carry the resolved
+ `SecurityContext` so receivers (e.g. event-bus webhooks) get the
+ same `kbactor` attribution as non-streaming answers.
 
-    **Error handling.** Any exception during retrieval/generation is
-    masked with `SAFE_GENERATION_FAILED_PAYLOAD` and emitted as
-    `answer.failed`. The full exception is logged with the request_id
-    for operator triage but never surfaces in the stream.
-    """
+ **Error handling.** Any exception during retrieval/generation is
+ masked with `SAFE_GENERATION_FAILED_PAYLOAD` and emitted as
+ `answer.failed`. The full exception is logged with the request_id
+ for operator triage but never surfaces in the stream.
+ """
 
     def __init__(
         self,
@@ -81,9 +81,9 @@ class AnswerStreamingService:
     ) -> AnswerDTO | None:
         """Run the full lifecycle, pushing events to `handler`.
 
-        Returns the final `AnswerDTO` on success, `None` on failure
-        (the failure is surfaced via the `answer.failed` event).
-        """
+ Returns the final `AnswerDTO` on success, `None` on failure
+ (the failure is surfaced via the `answer.failed` event).
+ """
         actor = (
             security.subject
             if security is not None and not security.is_anonymous
@@ -169,11 +169,11 @@ class AnswerStreamingService:
 def _chunk_text(text: str, words_per_chunk: int) -> list[str]:
     """Split `text` into space-joined word chunks of `words_per_chunk`.
 
-    Empty / whitespace-only text yields an empty list (no deltas
-    emitted) — receivers shouldn't see a hollow `generation.delta`.
-    Trailing whitespace is preserved within chunks via `split()`'s
-    default behaviour.
-    """
+ Empty / whitespace-only text yields an empty list (no deltas
+ emitted) — receivers shouldn't see a hollow `generation.delta`.
+ Trailing whitespace is preserved within chunks via `split`'s
+ default behaviour.
+ """
     words = text.split()
     if not words:
         return []

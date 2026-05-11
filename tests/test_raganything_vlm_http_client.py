@@ -11,10 +11,10 @@ settings-load with a clear migration error.
 When backend=vlm-http-client, the bridge propagates the operator's
 vision-LLM config into the env vars MinerU's
 `mineru_vl_utils.MinerUClient` reads:
-  * `MINERU_VL_SERVER` (also overridable via the `-u` CLI flag,
-    forwarded as the `vlm_url` kwarg)
-  * `MINERU_VL_API_KEY`
-  * `MINERU_VL_MODEL_NAME`
+ * `MINERU_VL_SERVER` (also overridable via the `-u` CLI flag,
+ forwarded as the `vlm_url` kwarg)
+ * `MINERU_VL_API_KEY`
+ * `MINERU_VL_MODEL_NAME`
 
 Without the env propagation the request reaches LM Studio with no
 Authorization header and an auto-detected model name. With it, the
@@ -40,9 +40,9 @@ from j1.providers.raganything.settings import (
 
 def test_settings_inherit_vlm_url_from_j1_vision_when_unset():
     """The operator typically only sets `J1_VISION_LLM_BASE_URL` for
-    the rest of the stack. Reading the same value into the
-    raganything settings means flipping parse_method is the only
-    additional change required."""
+ the rest of the stack. Reading the same value into the
+ raganything settings means flipping parse_method is the only
+ additional change required."""
     s = load_raganything_settings(env={
         "J1_VISION_LLM_BASE_URL": "http://host.docker.internal:1234/v1",
         "J1_VISION_LLM_API_KEY": "lm-studio",
@@ -55,8 +55,8 @@ def test_settings_inherit_vlm_url_from_j1_vision_when_unset():
 
 def test_settings_explicit_vlm_overrides_j1_vision():
     """When MinerU should hit a DIFFERENT VLM than the project-wide
-    vision LLM (e.g. a faster but less-accurate model just for
-    layout), the explicit `J1_RAGANYTHING_VLM_HTTP_*` vars win."""
+ vision LLM (e.g. a faster but less-accurate model just for
+ layout), the explicit `J1_RAGANYTHING_VLM_HTTP_*` vars win."""
     s = load_raganything_settings(env={
         "J1_VISION_LLM_BASE_URL": "http://primary:1234/v1",
         "J1_VISION_LLM_API_KEY": "primary-key",
@@ -72,10 +72,10 @@ def test_settings_explicit_vlm_overrides_j1_vision():
 
 def test_settings_load_rejects_when_no_vlm_url_set():
     """J1 forces MinerU into HTTP-client mode and refuses to start
-    without an externally-managed VLM endpoint. An empty env (no
-    `J1_RAGANYTHING_VLM_HTTP_SERVER_URL` and no `J1_VISION_LLM_BASE_URL`
-    fallback) must fail at load with `ConfigError` — operators get
-    a clear migration message instead of a mid-compile crash."""
+ without an externally-managed VLM endpoint. An empty env (no
+ `J1_RAGANYTHING_VLM_HTTP_SERVER_URL` and no `J1_VISION_LLM_BASE_URL`
+ fallback) must fail at load with `ConfigError` — operators get
+ a clear migration message instead of a mid-compile crash."""
     from j1.errors.exceptions import ConfigError
     with pytest.raises(ConfigError) as excinfo:
         load_raganything_settings(env={})
@@ -86,8 +86,8 @@ def test_settings_load_rejects_when_no_vlm_url_set():
 
 def test_settings_load_rejects_when_vlm_url_blank():
     """An operator who exports `J1_VISION_LLM_BASE_URL=` (empty
-    string) must hit the same rejection as the unset case —
-    whitespace-only strings are normalised to "no URL"."""
+ string) must hit the same rejection as the unset case —
+ whitespace-only strings are normalised to "no URL"."""
     from j1.errors.exceptions import ConfigError
     with pytest.raises(ConfigError):
         load_raganything_settings(env={
@@ -101,16 +101,16 @@ def test_settings_load_rejects_when_vlm_url_blank():
 @pytest.fixture(autouse=True)
 def _isolate_mineru_env(monkeypatch):
     """Each test starts with a clean MinerU env so leakage between
-    tests can't paper over a real bug."""
+ tests can't paper over a real bug."""
     for name in ("MINERU_VL_SERVER", "MINERU_VL_API_KEY", "MINERU_VL_MODEL_NAME"):
         monkeypatch.delenv(name, raising=False)
 
 
 def test_apply_is_noop_when_backend_is_unset():
     """The default backend (None) lets MinerU pick its own engine —
-    typically a local one. The bridge must NOT consult VLM env vars
-    in that case; setting them could accidentally break local runs
-    where mineru's code branches on env-var presence."""
+ typically a local one. The bridge must NOT consult VLM env vars
+ in that case; setting them could accidentally break local runs
+ where mineru's code branches on env-var presence."""
     settings = RAGAnythingSettings(
         parse_method="auto",
         backend=None,
@@ -126,7 +126,7 @@ def test_apply_is_noop_when_backend_is_unset():
 
 def test_apply_is_noop_for_local_backends():
     """Pipeline / vlm-auto-engine / hybrid-auto-engine all run the
-    VLM locally — they shouldn't touch the HTTP client env vars."""
+ VLM locally — they shouldn't touch the HTTP client env vars."""
     for backend in ("pipeline", "vlm-auto-engine", "hybrid-auto-engine"):
         settings = RAGAnythingSettings(
             parse_method="auto",
@@ -155,8 +155,8 @@ def test_apply_sets_env_vars_for_vlm_http_client():
 
 def test_apply_skips_unset_fields():
     """A field of None means 'don't touch this env var' — preserves
-    operator-supplied values and lets MinerU fall through to its
-    own defaults (e.g. auto-detect model from /v1/models)."""
+ operator-supplied values and lets MinerU fall through to its
+ own defaults (e.g. auto-detect model from /v1/models)."""
     settings = RAGAnythingSettings(
         parse_method="auto",
         backend="vlm-http-client",
@@ -172,9 +172,9 @@ def test_apply_skips_unset_fields():
 
 def test_apply_does_not_overwrite_operator_supplied_env(monkeypatch):
     """If the operator explicitly exported `MINERU_VL_*` env vars
-    (e.g. wrapping the worker with a different VLM than J1's vision
-    role), the settings-derived values must NOT shadow them.
-    Operator intent always wins."""
+ (e.g. wrapping the worker with a different VLM than J1's vision
+ role), the settings-derived values must NOT shadow them.
+ Operator intent always wins."""
     monkeypatch.setenv("MINERU_VL_SERVER", "http://operator-set:7777")
     monkeypatch.setenv("MINERU_VL_MODEL_NAME", "operator-pinned")
     settings = RAGAnythingSettings(
@@ -194,8 +194,8 @@ def test_apply_does_not_overwrite_operator_supplied_env(monkeypatch):
 
 def test_apply_idempotent_when_called_twice():
     """The bridge calls this from both `default_compile` and
-    `default_build_graph` per request. Calling it twice in a row
-    must not blow up or change the env state on the second call."""
+ `default_build_graph` per request. Calling it twice in a row
+ must not blow up or change the env state on the second call."""
     settings = RAGAnythingSettings(
         parse_method="auto",
         backend="vlm-http-client",
@@ -216,9 +216,9 @@ def test_apply_idempotent_when_called_twice():
 
 def test_parse_method_rejects_backend_value_with_migration_message():
     """Operators previously told to set
-    `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` (incorrect — that's
-    a backend value) must get a clear migration error at startup
-    instead of mineru's cryptic 'Invalid value for -m' mid-compile."""
+ `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` (incorrect — that's
+ a backend value) must get a clear migration error at startup
+ instead of mineru's cryptic 'Invalid value for -m' mid-compile."""
     with pytest.raises(ValueError) as excinfo:
         load_raganything_settings(env={
             "J1_RAGANYTHING_PARSE_METHOD": "vlm-http-client",
@@ -250,8 +250,8 @@ def test_backend_rejects_unknown_value():
 
 def test_backend_defaults_to_vlm_http_client_when_unset():
     """J1 forces external-only operation — the loader's default is
-    `vlm-http-client` so an operator who exports just the VLM URL
-    gets a working setup with no extra config."""
+ `vlm-http-client` so an operator who exports just the VLM URL
+ gets a working setup with no extra config."""
     s = load_raganything_settings(env={
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
     })
@@ -260,10 +260,10 @@ def test_backend_defaults_to_vlm_http_client_when_unset():
 
 def test_backend_accepts_only_external_http_client_variants():
     """`vlm-http-client` and `hybrid-http-client` are the only
-    permitted backends. The local-model variants (`pipeline` /
-    `vlm-auto-engine` / `hybrid-auto-engine`) are rejected at load
-    time with an actionable migration message — no surprise
-    multi-gigabyte HF downloads inside the worker."""
+ permitted backends. The local-model variants (`pipeline` /
+ `vlm-auto-engine` / `hybrid-auto-engine`) are rejected at load
+ time with an actionable migration message — no surprise
+ multi-gigabyte HF downloads inside the worker."""
     from j1.errors.exceptions import ConfigError
     for backend in ("vlm-http-client", "hybrid-http-client"):
         s = load_raganything_settings(env={

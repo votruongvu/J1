@@ -5,13 +5,13 @@ latest-snapshot-wins reads, scoped under the workspace's
 `validation` area so the storage layout follows the same
 tenant/project hierarchy the rest of the framework uses.
 
-Two stores ship in Phase 2:
+Two stores ship :
 
-  * `JsonlValidationSetStore` — one record per generated set,
-    upserted when generation completes (and on any future edit).
-  * `JsonlValidationRunStore` — one record per run execution,
-    upserted at three lifecycle points: pending → running →
-    completed/failed/cancelled.
+ * `JsonlValidationSetStore` — one record per generated set,
+ upserted when generation completes (and on any future edit).
+ * `JsonlValidationRunStore` — one record per run execution,
+ upserted at three lifecycle points: pending → running →
+ completed/failed/cancelled.
 
 Records are stored as flat dicts via `_serialization.to_jsonable`,
 hydrated back into typed dataclasses on read. Malformed lines are
@@ -91,9 +91,9 @@ class ValidationRunStore(Protocol):
 class JsonlValidationSetStore:
     """Append-only JSONL set store. Latest snapshot wins per set id.
 
-    Sets are typically written once at generation time and never
-    edited (Phase 2). Phase 5's editing workflow will append revised
-    snapshots; the latest-wins read makes that change a one-liner."""
+ Sets are typically written once at generation time and never
+ edited. 's editing workflow will append revised
+ snapshots; the latest-wins read makes that change a one-liner."""
 
     def __init__(self, workspace: WorkspaceResolver) -> None:
         self._workspace = workspace
@@ -139,9 +139,9 @@ class JsonlValidationSetStore:
 
     def purge_for_run(self, ctx: ProjectContext, run_id: str) -> int:
         """Rewrite the JSONL file minus every snapshot whose
-        `run_id` matches. Used by the hard-delete (purge) cascade
-        so a purged run doesn't leave dangling validation sets.
-        Returns the number of removed snapshots."""
+ `run_id` matches. Used by the hard-delete (purge) cascade
+ so a purged run doesn't leave dangling validation sets.
+ Returns the number of removed snapshots."""
         return _purge_jsonl_by_run_id(self._path(ctx), run_id)
 
     def _iter_all(self, ctx: ProjectContext) -> Iterable[ValidationSetDTO]:
@@ -165,7 +165,7 @@ class JsonlValidationSetStore:
 
 class JsonlValidationRunStore:
     """Same pattern as ValidationSetStore. Upserted multiple times
-    per run lifecycle: `pending` → `running` → terminal."""
+ per run lifecycle: `pending` → `running` → terminal."""
 
     def __init__(self, workspace: WorkspaceResolver) -> None:
         self._workspace = workspace
@@ -209,7 +209,7 @@ class JsonlValidationRunStore:
 
     def purge_for_run(self, ctx: ProjectContext, run_id: str) -> int:
         """Same shape as `JsonlValidationSetStore.purge_for_run` —
-        cascade-delete every validation-run snapshot for `run_id`."""
+ cascade-delete every validation-run snapshot for `run_id`."""
         return _purge_jsonl_by_run_id(self._path(ctx), run_id)
 
     def _iter_all(self, ctx: ProjectContext) -> Iterable[ValidationRunDTO]:
@@ -371,12 +371,12 @@ def _summary_from_payload(payload: dict) -> ValidationSummaryDTO:
 
 def _purge_jsonl_by_run_id(path, run_id: str) -> int:
     """Atomically rewrite an append-only JSONL file with all snapshots
-    for `run_id` removed. Returns the number of removed lines.
+ for `run_id` removed. Returns the number of removed lines.
 
-    Shared by both validation stores because the read shape is
-    identical (one JSON object per line, top-level `run_id` field).
-    Atomic via tmp-file + rename so a mid-purge crash can't corrupt
-    the file. No-op when the file doesn't exist."""
+ Shared by both validation stores because the read shape is
+ identical (one JSON object per line, top-level `run_id` field).
+ Atomic via tmp-file + rename so a mid-purge crash can't corrupt
+ the file. No-op when the file doesn't exist."""
     if not path.exists():
         return 0
     kept: list[str] = []

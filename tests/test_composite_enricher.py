@@ -44,8 +44,8 @@ def default_profile() -> Profile:
 @pytest.fixture
 def empty_profile() -> Profile:
     """Fallback used when ProfileLoader fails — exercises the
-    'no profile' path the worker wiring takes when the profiles
-    directory isn't present."""
+ 'no profile' path the worker wiring takes when the profiles
+ directory isn't present."""
     return Profile(profile_id="default", metadata={})
 
 
@@ -56,8 +56,8 @@ def ctx() -> ProjectContext:
 
 def test_composite_kind_is_stable():
     """Worker registration + REST capabilities both reference
-    `COMPOSITE_ENRICHER_KIND`. Pin the value so a rename in one place
-    can't silently de-sync the two."""
+ `COMPOSITE_ENRICHER_KIND`. Pin the value so a rename in one place
+ can't silently de-sync the two."""
     assert COMPOSITE_ENRICHER_KIND == "j1.enricher.composite"
     assert CompositeEnricher.kind == COMPOSITE_ENRICHER_KIND
 
@@ -71,9 +71,9 @@ def test_from_default_constructs_one_child_per_generic_enricher(
 
 def test_enrich_returns_union_of_child_drafts(default_profile, ctx):
     """End-to-end: run the composite over an artifact id and confirm
-    every Assets-tab kind shows up at least once. Stub-mode children
-    produce empty arrays in their JSON, but they STILL emit drafts
-    of the right kind — that's what the FE needs to flip the tab."""
+ every Assets-tab kind shows up at least once. Stub-mode children
+ produce empty arrays in their JSON, but they STILL emit drafts
+ of the right kind — that's what the FE needs to flip the tab."""
     composite = CompositeEnricher.from_default(default_profile)
     result = composite.enrich(ctx, "art-1")
 
@@ -81,7 +81,7 @@ def test_enrich_returns_union_of_child_drafts(default_profile, ctx):
     kinds = {d.kind for d in result.drafts}
     # Each generic enricher's `artifact_type` should appear at least
     # once. The exact draft count varies per enricher (some produce
-    # both .json and .md, some json-only).
+    # both.json and.md, some json-only).
     expected_kinds = {
         ARTIFACT_TYPE_DOCUMENT_MAP,
         ARTIFACT_TYPE_REQUIREMENTS,
@@ -105,8 +105,8 @@ def test_enrich_includes_processor_name_metadata(default_profile, ctx):
 
 def test_enrich_isolates_individual_child_failures(default_profile, ctx):
     """A child that raises must not blow up the composite — its
-    failure surfaces under `metadata.failed_kinds` and the rest of
-    the children still run."""
+ failure surfaces under `metadata.failed_kinds` and the rest of
+ the children still run."""
 
     class _Boom:
         kind = "test.boom"
@@ -141,9 +141,9 @@ def test_enrich_isolates_individual_child_failures(default_profile, ctx):
 
 def test_enrich_returns_failed_when_every_child_fails(default_profile, ctx):
     """If every child failed AND none skipped, the composite's
-    overall result is FAILED — so the workflow records the enrich
-    step as a failed-optional and the FE's Quality tab can surface
-    it."""
+ overall result is FAILED — so the workflow records the enrich
+ step as a failed-optional and the FE's Quality tab can surface
+ it."""
 
     class _Boom:
         kind = "test.boom"
@@ -163,7 +163,7 @@ def test_enrich_returns_failed_when_every_child_fails(default_profile, ctx):
 
 def test_enrich_classifies_skipped_children_as_skipped(default_profile, ctx):
     """A SKIPPED child (e.g. enabled=False) is recorded in
-    `skipped_kinds` so operators can see why nothing landed."""
+ `skipped_kinds` so operators can see why nothing landed."""
 
     class _Skipper:
         kind = "test.skipper"
@@ -187,9 +187,9 @@ def test_enrich_classifies_skipped_children_as_skipped(default_profile, ctx):
 
 def test_constructs_with_empty_profile_no_crash(empty_profile, ctx):
     """The dev `_wiring.py` falls back to `Profile(profile_id="default",
-    metadata={})` when ProfileLoader fails. The composite must still
-    construct and run — its children handle missing prompts via
-    `_profile_prompt` returning empty string."""
+ metadata={})` when ProfileLoader fails. The composite must still
+ construct and run — its children handle missing prompts via
+ `_profile_prompt` returning empty string."""
     composite = CompositeEnricher.from_default(empty_profile)
     result = composite.enrich(ctx, "art-1")
     # Children produce stub outputs in this state; the composite
@@ -203,8 +203,8 @@ def test_constructs_with_empty_profile_no_crash(empty_profile, ctx):
 
 class _StubVisionClient:
     """Minimal vision client double — returns a fixed description so
-    we can assert the composite actually called through to the
-    client instead of falling back to the stub markdown."""
+ we can assert the composite actually called through to the
+ client instead of falling back to the stub markdown."""
 
     provider = "stub"
     model = "stub-vision"
@@ -226,9 +226,9 @@ def test_composite_forwards_vision_client_only_to_visual_describer(
     default_profile,
 ):
     """The fix for 'No vision LLM configured' bug: the composite must
-    pass the vision client to `VisualContentDescriber` AND must NOT
-    pass it to other children (which would crash with TypeError —
-    no other generic enricher accepts a `vision_client` kwarg)."""
+ pass the vision client to `VisualContentDescriber` AND must NOT
+ pass it to other children (which would crash with TypeError —
+ no other generic enricher accepts a `vision_client` kwarg)."""
     from j1.enrichers import VisualContentDescriber
     composite = CompositeEnricher.from_default(
         default_profile, vision_client=_StubVisionClient(),
@@ -258,9 +258,9 @@ def test_composite_with_vision_client_does_not_emit_no_vision_stub(
     default_profile, ctx, tmp_path,
 ):
     """End-to-end: a composite WITH a vision client and image bytes
-    must NOT emit 'No vision LLM configured — visual enrichment
-    skipped' markdown. It should call the vision client and embed
-    the description."""
+ must NOT emit 'No vision LLM configured — visual enrichment
+ skipped' markdown. It should call the vision client and embed
+ the description."""
     # Stub `content_source` returns image bytes so VCD takes the
     # 'analyze' branch instead of 'no bytes available'.
     def _content_source(_ctx, _artifact_id: str) -> bytes:
@@ -294,9 +294,9 @@ def test_composite_without_vision_client_emits_no_vision_stub(
     default_profile, ctx,
 ):
     """Counter-test: when the deployment has no vision client
-    configured (no `J1_VISION_LLM_*` env vars), the composite must
-    still construct but VCD emits the 'No vision LLM configured'
-    stub. Pinning this so the fallback contract stays explicit."""
+ configured (no `J1_VISION_LLM_*` env vars), the composite must
+ still construct but VCD emits the 'No vision LLM configured'
+ stub. Pinning this so the fallback contract stays explicit."""
     composite = CompositeEnricher.from_default(
         default_profile, vision_client=None,
     )
@@ -325,9 +325,9 @@ class _StubEmbeddingClient:
 
 def test_composite_forwards_text_client_to_every_child(default_profile):
     """The base `_StructuredEnricher.__init__` accepts a `text_client`
-    kwarg; the composite must forward it so future LLM-backed
-    enricher implementations (TableExtractor / RiskExtractor / …)
-    can read `self._text_client` without re-plumbing the composite."""
+ kwarg; the composite must forward it so future LLM-backed
+ enricher implementations (TableExtractor / RiskExtractor / …)
+ can read `self._text_client` without re-plumbing the composite."""
     text_client = _StubTextClient()
     composite = CompositeEnricher.from_default(
         default_profile, text_client=text_client,
@@ -348,7 +348,7 @@ def test_composite_forwards_embedding_client_to_every_child(default_profile):
 
 def test_composite_skips_text_client_when_unset(default_profile):
     """Default = None means 'no client wired' — every child sees
-    `_text_client = None` and falls through to its stub `_produce`."""
+ `_text_client = None` and falls through to its stub `_produce`."""
     composite = CompositeEnricher.from_default(default_profile)
     for child in composite._enrichers:
         assert getattr(child, "_text_client", None) is None
@@ -360,10 +360,10 @@ def test_composite_skips_text_client_when_unset(default_profile):
 
 def test_vcd_skips_when_artifact_kind_is_chunk(default_profile, ctx):
     """Regression: the workflow runs enrich on EVERY compile artifact
-    (chunks + metadata + images). Without the artifact_lookup gate,
-    VCD emits a stub `enriched.visuals` draft for every chunk
-    artifact in the run, polluting the Visuals card with 'Image
-    bytes not available — visual enrichment skipped' messages."""
+ (chunks + metadata + images). Without the artifact_lookup gate,
+ VCD emits a stub `enriched.visuals` draft for every chunk
+ artifact in the run, polluting the Visuals card with 'Image
+ bytes not available — visual enrichment skipped' messages."""
     from j1.enrichers import VisualContentDescriber
     from j1.processing.status import ResultStatus
 
@@ -385,8 +385,8 @@ def test_vcd_skips_when_artifact_kind_is_chunk(default_profile, ctx):
 
 def test_vcd_runs_for_compile_image_kind(default_profile, ctx):
     """The bridge's `_drafts_from_output_dir` stamps PNG/JPG outputs
-    with `kind="compile.image"`. VCD must NOT skip those — they're
-    the actual image artifacts the visual enrichment exists for."""
+ with `kind="compile.image"`. VCD must NOT skip those — they're
+ the actual image artifacts the visual enrichment exists for."""
     from j1.enrichers import VisualContentDescriber
     from j1.processing.status import ResultStatus
 
@@ -414,8 +414,8 @@ def test_vcd_runs_for_compile_image_kind(default_profile, ctx):
 
 def test_vcd_runs_for_enriched_visuals_kind(default_profile, ctx):
     """`enriched.visuals` is the dedicated kind for image artifacts
-    that have already been pre-classified as visual content. VCD
-    must run on those (not skip)."""
+ that have already been pre-classified as visual content. VCD
+ must run on those (not skip)."""
     from j1.enrichers import VisualContentDescriber
     from j1.processing.status import ResultStatus
 
@@ -437,9 +437,9 @@ def test_vcd_runs_for_enriched_visuals_kind(default_profile, ctx):
 
 def test_vcd_runs_for_every_kind_when_lookup_unset(default_profile, ctx):
     """Backwards-compat: callers that don't supply an
-    `artifact_lookup` get the legacy behaviour where VCD runs on
-    every artifact regardless of kind. Some test fixtures rely on
-    this."""
+ `artifact_lookup` get the legacy behaviour where VCD runs on
+ every artifact regardless of kind. Some test fixtures rely on
+ this."""
     from j1.enrichers import VisualContentDescriber
     from j1.processing.status import ResultStatus
 
@@ -459,9 +459,9 @@ def test_vcd_runs_for_every_kind_when_lookup_unset(default_profile, ctx):
 
 def test_vcd_skipped_disabled_short_circuits_before_lookup(default_profile, ctx):
     """`enabled=False` MUST short-circuit before the lookup runs —
-    a disabled enricher shouldn't make registry calls. Pinning the
-    order so a future tweak doesn't accidentally call lookup on
-    every artifact when the operator turned VCD off."""
+ a disabled enricher shouldn't make registry calls. Pinning the
+ order so a future tweak doesn't accidentally call lookup on
+ every artifact when the operator turned VCD off."""
     from j1.enrichers import VisualContentDescriber
     from j1.processing.status import ResultStatus
 
@@ -483,8 +483,8 @@ def test_vcd_skipped_disabled_short_circuits_before_lookup(default_profile, ctx)
 
 def test_is_image_kind_recognises_documented_kinds():
     """Pin the matcher's contract so a future kind taxonomy change
-    is caught before it accidentally turns the Visuals card into a
-    chunk dumping ground."""
+ is caught before it accidentally turns the Visuals card into a
+ chunk dumping ground."""
     from j1.enrichers import _is_image_kind
 
     # Image-shaped — VCD runs.
@@ -506,9 +506,9 @@ def test_is_image_kind_recognises_documented_kinds():
 
 def test_composite_forwards_all_three_clients_independently(default_profile):
     """Vision + text + embedding can all be wired together. The
-    dispatch in `_construct_child` must NOT cross-wire (e.g. send
-    vision_client to non-VCD children) and must apply text +
-    embedding to every child."""
+ dispatch in `_construct_child` must NOT cross-wire (e.g. send
+ vision_client to non-VCD children) and must apply text +
+ embedding to every child."""
     from j1.enrichers import VisualContentDescriber
     vision = _StubVisionClient()
     text_client = _StubTextClient()
@@ -547,7 +547,7 @@ def test_composite_forwards_all_three_clients_independently(default_profile):
 
 def test_default_keeps_every_child_when_no_modality_flags(default_profile):
     """Sanity: existing callers that don't pass per-modality flags
-    get the legacy "run everything" composite."""
+ get the legacy "run everything" composite."""
     composite = CompositeEnricher.from_default(default_profile)
     child_classes = {type(c) for c in composite._enrichers}
     assert TableExtractor in child_classes
@@ -557,8 +557,8 @@ def test_default_keeps_every_child_when_no_modality_flags(default_profile):
 
 def test_images_alone_off_keeps_visual_describer(default_profile):
     """The three visual flags collectively gate VCD. With only
-    `images=False` and the other two unset (None), VCD still runs
-    because diagrams / scanned_pages haven't been opted out."""
+ `images=False` and the other two unset (None), VCD still runs
+ because diagrams / scanned_pages haven't been opted out."""
     composite = CompositeEnricher.from_default(
         default_profile, images_enabled=False,
     )
@@ -580,8 +580,8 @@ def test_tables_disabled_drops_table_extractor(default_profile):
 
 def test_all_visual_off_plus_tables_off_drops_both(default_profile):
     """Master visual kill switch: all three visual flags False
-    drops VCD. Combined with tables=False both visuals + tables
-    sub-enrichers are removed."""
+ drops VCD. Combined with tables=False both visuals + tables
+ sub-enrichers are removed."""
     composite = CompositeEnricher.from_default(
         default_profile,
         images_enabled=False,
@@ -597,8 +597,8 @@ def test_all_visual_off_plus_tables_off_drops_both(default_profile):
 
 def test_explicit_true_keeps_modality(default_profile):
     """Passing `True` is the same as the default `None` — modality
-    runs. Locked here so a future refactor that flips the flag's
-    meaning can't silently regress."""
+ runs. Locked here so a future refactor that flips the flag's
+ meaning can't silently regress."""
     composite = CompositeEnricher.from_default(
         default_profile,
         images_enabled=True,
@@ -611,8 +611,8 @@ def test_explicit_true_keeps_modality(default_profile):
 
 def test_visual_describer_runs_when_only_diagrams_enabled(default_profile):
     """The three visual flags collectively gate VCD: any True keeps
-    it. Operator with `images=false, diagrams=true, scanned=false`
-    still gets visual enrichment because diagrams need it."""
+ it. Operator with `images=false, diagrams=true, scanned=false`
+ still gets visual enrichment because diagrams need it."""
     composite = CompositeEnricher.from_default(
         default_profile,
         images_enabled=False,
@@ -627,8 +627,8 @@ def test_visual_describer_dropped_only_when_all_three_visual_flags_off(
     default_profile,
 ):
     """When images AND diagrams AND scanned_pages are explicitly
-    False, the visual describer is dropped — that's the operator-
-    facing 'kill all visual enrichment' semantic."""
+ False, the visual describer is dropped — that's the operator-
+ facing 'kill all visual enrichment' semantic."""
     composite = CompositeEnricher.from_default(
         default_profile,
         images_enabled=False,

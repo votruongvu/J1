@@ -13,9 +13,9 @@ _log = logging.getLogger(__name__)
 class DeliveryExecutor(Protocol):
     """Anything that can run a delivery callable in the background.
 
-    Defined as a Protocol so callers can plug in a Temporal worker
-    submission, an asyncio loop, or a synchronous executor for tests.
-    """
+ Defined as a Protocol so callers can plug in a Temporal worker
+ submission, an asyncio loop, or a synchronous executor for tests.
+ """
 
     def submit(self, fn: Callable[..., None], /, *args, **kwargs) -> Future: ...
 
@@ -23,9 +23,9 @@ class DeliveryExecutor(Protocol):
 class DirectExecutor:
     """Runs callables synchronously — handy for tests and Temporal activities.
 
-    Wraps the result in a `Future` so the interface matches
-    `concurrent.futures.Executor` without pulling in the real one.
-    """
+ Wraps the result in a `Future` so the interface matches
+ `concurrent.futures.Executor` without pulling in the real one.
+ """
 
     def submit(self, fn: Callable[..., None], /, *args, **kwargs) -> Future:
         future: Future = Future()
@@ -39,10 +39,10 @@ class DirectExecutor:
 class ThreadPoolDeliveryExecutor:
     """Background thread pool — the default for fire-and-forget delivery.
 
-    Wraps `concurrent.futures.ThreadPoolExecutor` so we can shut it down
-    cleanly. The pool is intentionally small: webhook delivery is I/O
-    bound and we don't want to flood remote endpoints.
-    """
+ Wraps `concurrent.futures.ThreadPoolExecutor` so we can shut it down
+ cleanly. The pool is intentionally small: webhook delivery is I/O
+ bound and we don't want to flood remote endpoints.
+ """
 
     def __init__(self, max_workers: int = 4) -> None:
         self._pool = ThreadPoolExecutor(
@@ -59,12 +59,12 @@ class ThreadPoolDeliveryExecutor:
 class WebhookEventSubscriber:
     """Bridges `ApplicationEventBus` events to `WebhookDeliveryService`.
 
-    Looks up matching subscriptions for each event and submits a delivery
-    job per subscription. Submission is fire-and-forget (returns the
-    `Future` for callers who care, but doesn't await it). Failures are
-    swallowed and logged — the event bus contract requires `handle` to
-    not raise.
-    """
+ Looks up matching subscriptions for each event and submits a delivery
+ job per subscription. Submission is fire-and-forget (returns the
+ `Future` for callers who care, but doesn't await it). Failures are
+ swallowed and logged — the event bus contract requires `handle` to
+ not raise.
+ """
 
     def __init__(
         self,

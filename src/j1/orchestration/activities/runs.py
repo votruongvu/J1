@@ -49,10 +49,10 @@ __all__ = [
 class StepSummaryEntry:
     """One entry in the run-terminal step summary.
 
-    Mirrors `StepResult` but lives in the activity-payload module
-    (Temporal-serialisable) so workflow → activity → reporter
-    round-trips cleanly. Kept compact — operators consume this in
-    the run.completed event payload, not the full StepResult."""
+ Mirrors `StepResult` but lives in the activity-payload module
+ (Temporal-serialisable) so workflow → activity → reporter
+ round-trips cleanly. Kept compact — operators consume this in
+ the run.completed event payload, not the full StepResult."""
 
     step: str
     status: str
@@ -66,11 +66,11 @@ class StepSummaryEntry:
 class ReportRunTerminalInput:
     """Workflow → activity payload for run.completed / run.failed.
 
-    The activity reports through the configured ProgressReporter.
-    `final_status` is one of the FinalStatus enum values
-    (succeeded / partial_completed / failed / cancelled / timed_out)
-    — the activity decides whether to call report_run_completed or
-    report_run_failed based on this string."""
+ The activity reports through the configured ProgressReporter.
+ `final_status` is one of the FinalStatus enum values
+ (succeeded / partial_completed / failed / cancelled / timed_out)
+ — the activity decides whether to call report_run_completed or
+ report_run_failed based on this string."""
 
     scope: ProjectScope
     run_id: str
@@ -92,12 +92,12 @@ class ReportRunTerminalInput:
 class ReportPlanGeneratedInput:
     """Workflow → activity payload for `plan.generated` events.
 
-    The planner runs in workflow code (replay-deterministic, no I/O),
-    but the audit-log write that backs the FE's
-    `GET /ingestion-runs/{id}/plan` endpoint must happen in activity
-    context. This payload carries the serialised `IngestPlan` (as a
-    plain dict for Temporal-data-converter compatibility) plus the
-    scope + correlation needed to record it under the right run."""
+ The planner runs in workflow code (replay-deterministic, no I/O),
+ but the audit-log write that backs the FE's
+ `GET /ingestion-runs/{id}/plan` endpoint must happen in activity
+ context. This payload carries the serialised `IngestPlan` (as a
+ plain dict for Temporal-data-converter compatibility) plus the
+ scope + correlation needed to record it under the right run."""
 
     scope: ProjectScope
     run_id: str
@@ -109,11 +109,11 @@ class ReportPlanGeneratedInput:
 class ReportPlanRevisedInput:
     """Workflow → activity payload for `plan.revised` events.
 
-    Emitted after a successful post-compile replan that changed at
-    least one step's enabled state. Carries the same plan shape as
-    `ReportPlanGeneratedInput` plus a human-readable `reason` string
-    summarising what changed (used by the FE plan card to explain
-    "why did this run unlock the graph step?")."""
+ Emitted after a successful post-compile replan that changed at
+ least one step's enabled state. Carries the same plan shape as
+ `ReportPlanGeneratedInput` plus a human-readable `reason` string
+ summarising what changed (used by the FE plan card to explain
+ "why did this run unlock the graph step?")."""
 
     scope: ProjectScope
     run_id: str
@@ -125,8 +125,8 @@ class ReportPlanRevisedInput:
 @dataclass(frozen=True)
 class ReportStepSkippedInput:
     """Workflow → activity payload for step.skipped events that fire
-    at workflow time (planner / policy / config decided to skip),
-    not at activity-execution time."""
+ at workflow time (planner / policy / config decided to skip),
+ not at activity-execution time."""
 
     scope: ProjectScope
     run_id: str
@@ -140,17 +140,17 @@ class ReportStepSkippedInput:
 @dataclass(frozen=True)
 class ReportStepLifecycleInput:
     """Workflow → activity payload for synthetic `step.started` /
-    `step.completed` events.
+ `step.completed` events.
 
-    Some user-facing steps (e.g. `build_content_inventory`,
-    `generate_knowledge_chunks`) don't run as standalone activities
-    — they're sub-phases of `compile`. The workflow synthesises
-    their step.* events through this activity so the audit timeline,
-    SSE stream, and FE all see them as first-class steps with
-    accurate ordering. The underlying compile activity still emits
-    its own `compile` events; the synthetic events are additive
-    and use distinct step names so consumers don't see duplicates.
-    """
+ Some user-facing steps (e.g. `build_content_inventory`,
+ `generate_knowledge_chunks`) don't run as standalone activities
+ — they're sub-phases of `compile`. The workflow synthesises
+ their step.* events through this activity so the audit timeline,
+ SSE stream, and FE all see them as first-class steps with
+ accurate ordering. The underlying compile activity still emits
+ its own `compile` events; the synthetic events are additive
+ and use distinct step names so consumers don't see duplicates.
+ """
 
     scope: ProjectScope
     run_id: str
@@ -168,9 +168,9 @@ class ReportStepLifecycleInput:
 
 class RunsActivities:
     """Bundle of run-progress activities. Registered alongside the
-    other activity classes at worker startup. The workflow calls
-    these via `execute_activity_method` so the reporter call happens
-    in activity context (where audit-log writes are safe)."""
+ other activity classes at worker startup. The workflow calls
+ these via `execute_activity_method` so the reporter call happens
+ in activity context (where audit-log writes are safe)."""
 
     def __init__(
         self,
@@ -203,10 +203,10 @@ class RunsActivities:
     def report_plan_generated(self, input: ReportPlanGeneratedInput) -> None:
         """Write `j1.progress.plan.generated` to the audit log.
 
-        The FE's `GET /ingestion-runs/{id}/plan` reads from this
-        entry, so without the activity firing the run-detail page
-        sits on "Generating plan…" forever. Best-effort like the
-        other reporter activities — failure is logged, never raised."""
+ The FE's `GET /ingestion-runs/{id}/plan` reads from this
+ entry, so without the activity firing the run-detail page
+ sits on "Generating plan…" forever. Best-effort like the
+ other reporter activities — failure is logged, never raised."""
         if self._reporter is None:
             return
         ctx = input.scope.to_context()
@@ -224,13 +224,13 @@ class RunsActivities:
         self, input: ReportStepLifecycleInput,
     ) -> None:
         """Write a synthetic `step.started` / `step.completed` to
-        the audit log.
+ the audit log.
 
-        Synthesised by the workflow for user-facing sub-steps that
-        don't have their own activity (e.g. `build_content_inventory`,
-        `generate_knowledge_chunks` — both happen inside compile but
-        the FE renders them as separate steps). Best-effort like
-        every reporter activity — failure is logged, never raised."""
+ Synthesised by the workflow for user-facing sub-steps that
+ don't have their own activity (e.g. `build_content_inventory`,
+ `generate_knowledge_chunks` — both happen inside compile but
+ the FE renders them as separate steps). Best-effort like
+ every reporter activity — failure is logged, never raised."""
         if self._reporter is None:
             return
         ctx = input.scope.to_context()
@@ -264,10 +264,10 @@ class RunsActivities:
     def report_plan_revised(self, input: ReportPlanRevisedInput) -> None:
         """Write `j1.progress.plan.revised` to the audit log.
 
-        Same best-effort contract as `report_plan_generated`. The
-        FE polls `GET /ingestion-runs/{id}/plan` after a revision
-        event and reads the latest `plan.revised` if present (else
-        falls back to `plan.generated`)."""
+ Same best-effort contract as `report_plan_generated`. The
+ FE polls `GET /ingestion-runs/{id}/plan` after a revision
+ event and reads the latest `plan.revised` if present (else
+ falls back to `plan.generated`)."""
         if self._reporter is None:
             return
         ctx = input.scope.to_context()
@@ -295,9 +295,9 @@ class RunsActivities:
         if self._reporter is None:
             return
         # Translate `final_status` to the appropriate reporter call.
-        # `cancelled`        → run.cancelled (its own terminal type so
-        #                      the SSE stream closes cleanly without
-        #                      pretending the run failed).
+        # `cancelled` → run.cancelled (its own terminal type so
+        #  the SSE stream closes cleanly without
+        #  pretending the run failed).
         # `failed` / `timed_out` → run.failed.
         # `succeeded` / `partial_completed` → run.completed (the
         # frontend distinguishes via `warning_count` and `final_status`
@@ -335,20 +335,20 @@ class RunsActivities:
 
     def _persist_run_terminal(self, ctx, input: ReportRunTerminalInput) -> None:
         """Update the IngestionRun record's status / failure / timing
-        fields so the FE's polling sees the terminal state even if
-        the audit-event emission below fails.
+ fields so the FE's polling sees the terminal state even if
+ the audit-event emission below fails.
 
-        Maps `final_status` (operator-facing string) to `RunStatus`
-        (the run record's enum). Unknown values fall back to FAILED
-        with the original string in `failure_code` so the FE has a
-        breadcrumb.
+ Maps `final_status` (operator-facing string) to `RunStatus`
+ (the run record's enum). Unknown values fall back to FAILED
+ with the original string in `failure_code` so the FE has a
+ breadcrumb.
 
-        Also persists the workflow's `step_summary` into
-        `metadata["step_results"]` so the review surface
-        (`/ingestion-runs/{id}/summary`) can render the per-stage
-        recap without scraping the audit log. Same atomic write as
-        the status flip — if the upsert fails for any reason, the FE
-        sees neither change."""
+ Also persists the workflow's `step_summary` into
+ `metadata["step_results"]` so the review surface
+ (`/ingestion-runs/{id}/summary`) can render the per-stage
+ recap without scraping the audit log. Same atomic write as
+ the status flip — if the upsert fails for any reason, the FE
+ sees neither change."""
         if self._run_store is None:
             return
         run = None
@@ -392,7 +392,7 @@ class RunsActivities:
         run.updated_at = now
 
         # Persist step_summary into metadata["step_results"] so the
-        # review surface (Phase 1 + onwards) can render the per-stage
+        # review surface ( + onwards) can render the per-stage
         # recap directly off the run record. Plain dicts only — keep
         # the JSONL store free of dataclass coupling. Empty summaries
         # leave the existing key alone (a re-run after a crash should

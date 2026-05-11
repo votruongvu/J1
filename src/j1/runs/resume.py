@@ -64,7 +64,7 @@ RESUMABLE_STAGES: frozenset[str] = frozenset({"enrich", "graph"})
 
 def _normalise(value: Any) -> Any:
     """Coerce enum / dataclass values to JSON-friendly primitives so
-    the hash is stable across StrEnum vs str representations."""
+ the hash is stable across StrEnum vs str representations."""
     if value is None:
         return None
     if hasattr(value, "value") and not isinstance(value, (str, int, float, bool)):
@@ -80,9 +80,9 @@ def _normalise(value: Any) -> Any:
 
 def build_settings_snapshot(request: Any) -> dict[str, Any]:
     """Return the minimal dict that captures everything we hash for
-    compatibility. `request` is anything with attribute access matching
-    `RESUME_SETTINGS_FIELDS` (typically `ProjectProcessingRequest` or
-    a duck-type test stub)."""
+ compatibility. `request` is anything with attribute access matching
+ `RESUME_SETTINGS_FIELDS` (typically `ProjectProcessingRequest` or
+ a duck-type test stub)."""
     return {
         field: _normalise(getattr(request, field, None))
         for field in RESUME_SETTINGS_FIELDS
@@ -91,7 +91,7 @@ def build_settings_snapshot(request: Any) -> dict[str, Any]:
 
 def compute_settings_hash(snapshot: Mapping[str, Any]) -> str:
     """SHA256 of the canonical settings snapshot. Sorted-key JSON so
-    the hash is order-stable across Python dict iteration changes."""
+ the hash is order-stable across Python dict iteration changes."""
     payload = json.dumps(
         {k: _normalise(v) for k, v in snapshot.items()},
         sort_keys=True,
@@ -105,9 +105,9 @@ def compatible_settings(
     candidate: Mapping[str, Any],
 ) -> bool:
     """True iff every field in `RESUME_SETTINGS_FIELDS` matches between
-    snapshot (the prior run) and candidate (the proposed new run).
-    Comparison runs through `_normalise` so a `StrEnum` vs a plain
-    string compares equal."""
+ snapshot (the prior run) and candidate (the proposed new run).
+ Comparison runs through `_normalise` so a `StrEnum` vs a plain
+ string compares equal."""
     return compute_settings_hash(snapshot) == compute_settings_hash(candidate)
 
 
@@ -116,9 +116,9 @@ def settings_diff(
     candidate: Mapping[str, Any],
 ) -> dict[str, dict[str, Any]]:
     """Return `{field: {"before": x, "after": y}}` for every differing
-    field. Empty dict iff the two snapshots are compatible. The
-    operator-facing 412 response includes this diff so the caller can
-    see why resume was rejected without guessing."""
+ field. Empty dict iff the two snapshots are compatible. The
+ operator-facing 412 response includes this diff so the caller can
+ see why resume was rejected without guessing."""
     out: dict[str, dict[str, Any]] = {}
     for field in RESUME_SETTINGS_FIELDS:
         before = _normalise(snapshot.get(field))
@@ -139,8 +139,8 @@ def build_resume_snapshot(
     snapshot_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the dict that gets stored on `IngestionRun.metadata
-    ["resume_snapshot"]` at terminal transition. Pure — no I/O, no
-    timezone surprises (defaults to UTC now)."""
+ ["resume_snapshot"]` at terminal transition. Pure — no I/O, no
+ timezone surprises (defaults to UTC now)."""
     settings_snapshot = build_settings_snapshot(request)
     completed_steps: list[str] = []
     failed_steps: list[str] = []

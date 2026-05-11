@@ -1,4 +1,4 @@
-# Technical debt — ingestion pipeline (Wave 12 snapshot)
+# Technical debt — ingestion pipeline ( snapshot)
 
 This page records known asymmetries + deferred work in the new
 ingestion pipeline. Nothing here is load-bearing — each item is
@@ -9,16 +9,16 @@ or an explicit "deferred to a future wave" deferral.
 
 **Current behaviour:**
 - The runtime SKIP path (assessor said `should_enrich=False`) writes
-  the reason to `EnrichmentResult.skipped_reason` — a top-level
-  field on the typed overlay.
+ the reason to `EnrichmentResult.skipped_reason` — a top-level
+ field on the typed overlay.
 - Per-module SKIPPED outcomes (e.g. `"no text LLM client configured"`)
-  write the reason to `EnrichmentModuleOutcome.reason` — inside
-  `module_outcomes[]`.
+ write the reason to `EnrichmentModuleOutcome.reason` — inside
+ `module_outcomes[]`.
 
 **Final-report builder reads both:**
 - `_enrichment_skipped_reason_from_payload` checks
-  `enrichment_result.skipped_reason` first, falls back to `reason`
-  for older payloads.
+ `enrichment_result.skipped_reason` first, falls back to `reason`
+ for older payloads.
 - `_build_enrichment_summary` does the same.
 
 **Future cleanup:** unify the field name on the wire payload (one
@@ -34,9 +34,9 @@ fallback entry:
 
 ```jsonc
 {
-  "image_id": "art-1",
-  "caption": null,
-  "metadata": { "error": "TimeoutError: ..." }
+ "image_id": "art-1",
+ "caption": null,
+ "metadata": { "error": "TimeoutError:..." }
 }
 ```
 
@@ -44,7 +44,7 @@ The FE renders this as a missing-caption row; the operator sees
 the issue through `image_enrichment.outcome.warnings` (provider-
 side warnings) but not directly via the typed summary.
 
-**Wave 12 small cleanup (shipped):** the runner now projects
+** small cleanup (shipped):** the runner now projects
 `image_summaries[].metadata.error` entries onto
 `ImageSummary.warnings[]` so the typed overlay is the operator's
 trace path. See `enrichment_clients.py::PerImageVisionAdapter`.
@@ -53,13 +53,13 @@ trace path. See `enrichment_clients.py::PerImageVisionAdapter`.
 
 **Current behaviour:**
 - `NormalizedCompileResult.detected_images[].image_id` is the
-  parser's internal identifier (e.g. MinerU's image counter).
+ parser's internal identifier (e.g. MinerU's image counter).
 - `ImageSummary.image_id` and `provenance.source_artifact_id` use
-  the registry-side `ArtifactRecord.artifact_id` of the matching
-  `compile.image` artifact.
+ the registry-side `ArtifactRecord.artifact_id` of the matching
+ `compile.image` artifact.
 - The two **do not correlate today**. The image module keys
-  outputs on the durable artifact id; the parser-internal id is
-  surfaced on the `image_summaries[].metadata` only.
+ outputs on the durable artifact id; the parser-internal id is
+ surfaced on the `image_summaries[].metadata` only.
 
 **Why:** the parser doesn't (and shouldn't) know about the
 artifact registry. The producer that writes the `compile.image`
@@ -81,7 +81,7 @@ are the only worker entrypoints. They follow the documented Wave
 **Risk:** when staging / prod deployments are built, they MUST
 follow the same shape — bootstrap → raw clients → per-run image
 adapter inside the activity. A copy-paste that wraps the vision
-client at bootstrap (Wave 10.6's now-superseded pattern) would
+client at bootstrap ('s now-superseded pattern) would
 silently revert image enrichment to the empty-provider state.
 
 **Documentation:** see [Production worker wiring runbook](./operations/production-worker-wiring.md).
@@ -96,16 +96,16 @@ the factory extraction is deferred.
 ## E. `final_summary` vs `final_ingestion_report`
 
 **Current state:**
-- `final_summary` (Wave 8) carries the executed-step table +
-  artifact-kind counts + the failure-code trio. Persisted at every
-  terminal.
-- `final_ingestion_report` (Wave 10) is the typed aggregate
-  preferred by the FE + the operator runbook.
+- `final_summary` carries the executed-step table +
+ artifact-kind counts + the failure-code trio. Persisted at every
+ terminal.
+- `final_ingestion_report` is the typed aggregate
+ preferred by the FE + the operator runbook.
 
 **Both are written:** the workflow calls `_persist_final_summary`
 THEN `_persist_final_ingestion_report`. Consumers should prefer
 the report; `final_summary` remains for backward compatibility
-with pre-Wave-10 tooling.
+with pre- tooling.
 
 **Future cleanup:** when no consumers read `final_summary` directly,
 deprecate the write. Not urgent — `final_summary` is small + the
@@ -115,21 +115,21 @@ write is best-effort.
 
 **Current state:** the `LLMCallLimiter` is a single semaphore that
 spans all enrichment LLM calls (text + classification + table +
-image). Per-image vision calls are individually bounded (Wave 11B),
+image). Per-image vision calls are individually bounded,
 but the bound applies to the SAME global semaphore.
 
 **Why:** the limiter was built to bound a single deployment's total
 LLM-cost surface. Per-tier semaphores (premium ≤ N, fast ≤ M)
 would let operators tune cost differently per tier.
 
-**Future cleanup:** add a `tier` arg to `LLMCallLimiter.run()` that
+**Future cleanup:** add a `tier` arg to `LLMCallLimiter.run` that
 acquires from a per-tier sub-semaphore. Requires a model-selector
 that produces tier labels — interacts with the existing
 `select_model_tier` helper.
 
 ## G. Empty `vision_image_provider` in dev wiring (now resolved)
 
-**Resolved in Wave 11A.** Previously the dev wiring constructed
+**Resolved.** Previously the dev wiring constructed
 `PerImageVisionAdapter(raw_vision, image_provider=lambda: [])` at
 worker startup, which meant image enrichment skipped on every run
 even with a vision client wired.
@@ -143,11 +143,11 @@ follow the same shape — see runbook.
 
 **Current state:**
 - `final_ingestion_report.retry_counts.compile` is sourced from
-  `compile_result_summary.retry_attempts[]`.
+ `compile_result_summary.retry_attempts[]`.
 - `final_ingestion_report.retry_counts.enrichment` is always 0
-  today.
+ today.
 
-**Why:** Wave 7 didn't ship per-module retry accounting inside
+**Why:** didn't ship per-module retry accounting inside
 the limiter. The field is reserved for that work.
 
 **Future cleanup:** when the limiter ships retry stats per
@@ -162,19 +162,19 @@ slot is in place but always 0.
 even when `_call` raises. The fake limiters in tests record
 acquisitions but don't enforce the symmetry directly.
 
-**Pinned by:** the existing Wave-7 limiter unit tests already
-prove release-on-raise; the Wave-11B suite asserts the
+**Pinned by:** the existing limiter unit tests already
+prove release-on-raise; the suite asserts the
 acquisition count under failures.
 
 **Future cleanup:** none required. Documented for the audit trail.
 
 ## J. `j1.enrichers` legacy enrichers still exist
 
-**Current state:** the Wave-10.5 adapters DON'T invoke the
+**Current state:** the adapters DON'T invoke the
 classes in `j1/enrichers.py` directly — they re-implement the same
 prompt + JSON-schema vocabulary against the typed analysis-client
 contracts. The legacy enrichers continue to run via
-`CompositeEnricher.from_default()` for non-protocol consumers (the
+`CompositeEnricher.from_default` for non-protocol consumers (the
 old workflow `enrich` activity).
 
 **Future cleanup:** when the `enrich` activity is removed (or

@@ -1,15 +1,15 @@
-"""Tests for Phase 2 service methods on `IngestionValidationService`.
+"""Tests for service methods on `IngestionValidationService`.
 
-Covers the generate / list / get / run methods. The Phase 1 manual-
+Covers the generate / list / get / run methods. The manual-
 test-query tests live in `test_validation_service.py`; the runner
 + generator + check primitives have their own focused suites.
 These tests verify the service-level wiring:
 
-  * ownership gates fire on every method
-  * idempotency on regeneration
-  * lifecycle persistence (pending → running → completed snapshots
-    all land in the run store)
-  * audit events fire
+ * ownership gates fire on every method
+ * idempotency on regeneration
+ * lifecycle persistence (pending → running → completed snapshots
+ all land in the run store)
+ * audit events fire
 """
 
 from __future__ import annotations
@@ -90,8 +90,8 @@ def service(
     run_store, artifact_registry, query_engine, audit_recorder,
     workspace, set_store, vrun_store,
 ) -> IngestionValidationService:
-    """Phase-2-complete service: every Phase 2 dependency wired so
-    generate / list / run all work."""
+    """complete service: every dependency wired so
+ generate / list / run all work."""
     return IngestionValidationService(
         run_store=run_store,
         artifact_registry=artifact_registry,
@@ -137,7 +137,7 @@ def _stage_chunk(
     stored = f"{artifact_id}.json"
     # Generator reads chunk *body* via the projector. Producer
     # convention: a `kind="chunk"` artifact is JSON `{"chunkId",
-    # "body", ...}`. Mirror that here.
+    # "body",...}`. Mirror that here.
     import json
     payload = {"chunkId": chunk_id, "body": content.decode("utf-8")}
     (area_dir / stored).write_bytes(json.dumps(payload).encode("utf-8"))
@@ -171,7 +171,7 @@ def test_generate_set_persists_and_returns_dto(
     set_store,
 ):
     """Happy path: generate writes the set to the store and returns
-    the same DTO the FE will receive on the response."""
+ the same DTO the FE will receive on the response."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -197,8 +197,8 @@ def test_generate_set_is_idempotent_on_same_artifacts(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Re-generating with the same chunks reuses the existing set
-    (hash match). This keeps the FE's "Generate" button safe to
-    click twice without producing a confusing duplicate set."""
+ (hash match). This keeps the FE's "Generate" button safe to
+ click twice without producing a confusing duplicate set."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -216,8 +216,8 @@ def test_generate_set_force_bypasses_cache(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """`force=True` short-circuits the idempotency cache so a tester
-    can explicitly request a fresh generation (e.g. after editing
-    the prompt). New set id, same content."""
+ can explicitly request a fresh generation (e.g. after editing
+ the prompt). New set id, same content."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -235,7 +235,7 @@ def test_generate_set_caps_max_cases(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Service-side cap matches the runner's MAX_CASES_PER_RUN.
-    Defends against a tester accidentally requesting 1000 cases."""
+ Defends against a tester accidentally requesting 1000 cases."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     for i in range(20):
         _stage_chunk(
@@ -268,8 +268,8 @@ def test_generate_set_emits_audit_event(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Tester actions must surface in the audit log so the run's
-    /events SSE stream picks them up. Locks the action name + the
-    targetId binding."""
+ /events SSE stream picks them up. Locks the action name + the
+ targetId binding."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -310,7 +310,7 @@ def test_list_validation_sets_orders_recent_first(
 
 def test_list_validation_sets_unknown_run_raises_review_not_found(service, ctx):
     """Missing run must 404 — never return [] (which would leak
-    existence: 'this run isn't yours' vs. 'this run has no sets')."""
+ existence: 'this run isn't yours' vs. 'this run has no sets')."""
     with pytest.raises(ReviewNotFound):
         service.list_validation_sets(ctx, "ghost")
 
@@ -327,7 +327,7 @@ def test_get_validation_set_for_wrong_run_raises(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """A set written for run-A must not be fetchable via run-B's
-    URL — defense-in-depth on top of run ownership."""
+ URL — defense-in-depth on top of run ownership."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     run_store.upsert(ctx, _make_run(run_id="run-B"))
     _stage_chunk(
@@ -350,8 +350,8 @@ def test_run_validation_persists_lifecycle_snapshots(
     vrun_store,
 ):
     """The runner emits three lifecycle states; the store should
-    have all three written. A FE polling /list_validation_runs
-    after the call sees the terminal record (latest wins)."""
+ have all three written. A FE polling /list_validation_runs
+ after the call sees the terminal record (latest wins)."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -426,7 +426,7 @@ def test_list_validation_runs_filters_to_run(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Listing under run-A must not surface validation runs that
-    belong to run-B, even within the same project."""
+ belong to run-B, even within the same project."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     run_store.upsert(ctx, _make_run(run_id="run-B"))
     _stage_chunk(
@@ -470,16 +470,16 @@ def test_get_validation_run_for_wrong_run_raises(
         service.get_validation_run(ctx, "run-B", vrun_a.validation_run_id)
 
 
-# ---- Phase 1 / Phase 2 deps independence ---------------------------
+# ---- / deps independence ---------------------------
 
 
 def test_phase_1_only_construction_still_works(
     run_store, artifact_registry, query_engine, audit_recorder, ctx,
 ):
-    """A Phase 1-only deployment (no validation_set_store /
-    validation_run_store / generator) must still ship — manual
-    test query is the only surface available, and that's the
-    Phase 1 contract."""
+    """A only deployment (no validation_set_store /
+ validation_run_store / generator) must still ship — manual
+ test query is the only surface available, and that's the
+ contract."""
     svc = IngestionValidationService(
         run_store=run_store,
         artifact_registry=artifact_registry,
@@ -495,12 +495,12 @@ def test_phase_1_only_construction_still_works(
     )
     assert response is not None
 
-    # Phase 2 generation 503-equivalent: explicit RuntimeError.
+    #  generation 503-equivalent: explicit RuntimeError.
     with pytest.raises(RuntimeError, match="not configured"):
         svc.generate_validation_set(ctx, "run-1")
     with pytest.raises(RuntimeError, match="not configured"):
         svc.run_validation(ctx, "run-1", "vs-1")
 
-    # Phase 2 read methods degrade gracefully (empty list).
+    #  read methods degrade gracefully (empty list).
     assert svc.list_validation_sets(ctx, "run-1") == []
     assert svc.list_validation_runs(ctx, "run-1") == []

@@ -2,21 +2,21 @@
 
 Covers:
 - Channel mapping is total (every shipped event type maps somewhere).
-- channel_for() falls back to kb.audit for unknown types (safe default).
+- channel_for falls back to kb.audit for unknown types (safe default).
 - NoopEventPublisher accepts events without raising.
 - InMemoryEventPublisher records published events with the resolved
-  channel + standard headers (eventId, eventType, occurredAt,
-  producer, schemaVersion, correlationId, tenantId, actor, authType,
-  idempotencyKey).
+ channel + standard headers (eventId, eventType, occurredAt,
+ producer, schemaVersion, correlationId, tenantId, actor, authType,
+ idempotencyKey).
 - Headers omit fields the source event didn't carry (e.g. anonymous
-  events have no actor / authType).
+ events have no actor / authType).
 - BusEventPublisher delegates into ApplicationEventBus and is
-  failure-isolated.
+ failure-isolated.
 - CompositeEventPublisher fans out and survives delegate failures.
 - load_event_publisher_settings reads env vars and rejects unknown
-  publisher types.
+ publisher types.
 - The publisher's `publish` method NEVER raises (publication failures
-  must not break the caller's primary work).
+ must not break the caller's primary work).
 """
 
 import pytest
@@ -125,7 +125,7 @@ def test_noop_publisher_accepts_events_silently():
 
 def test_noop_publisher_publish_never_raises():
     pub = NoopEventPublisher()
-    # Even with a malformed event, .publish() must not raise.
+    # Even with a malformed event,.publish must not raise.
     pub.publish(_event(id="", type=""))
 
 
@@ -319,7 +319,7 @@ def test_settings_normalises_publisher_type_case():
 
 def test_settings_rejects_unknown_publisher_type():
     """Real broker adapters use their own type strings — built-in
-    factory must NOT silently accept them."""
+ factory must NOT silently accept them."""
     with pytest.raises(ConfigError, match="unsupported"):
         load_event_publisher_settings(env={"J1_EVENT_PUBLISHER_TYPE": "kafka"})
 
@@ -335,8 +335,8 @@ def test_settings_dataclass_is_frozen():
 
 def test_default_publisher_does_not_emit_full_document_content():
     """The framework's own publish_document_uploaded helper carries
-    only checksum/size/mime — never the bytes. Verifies this contract
-    via a representative event payload."""
+ only checksum/size/mime — never the bytes. Verifies this contract
+ via a representative event payload."""
     pub = InMemoryEventPublisher()
     pub.publish(_event(data={
         "documentId": "doc-1",

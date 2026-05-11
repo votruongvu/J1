@@ -1,5 +1,5 @@
 /**
- * Wave 9B — FE vocabulary guard.
+ * FE vocabulary guard.
  *
  * Pins that no legacy gating / split-mode language appears in
  * user-facing strings. The check inspects the runtime maps in
@@ -56,7 +56,7 @@ describe("StatusDisplay + EventTypeDisplay", () => {
 // ---- 2. New macro-event labels are present + business-friendly ---
 
 
-describe("New macro-event labels (Wave 9A/9B)", () => {
+describe("New macro-event labels (macro-event labels)", () => {
   it("renders 'Base compile' wording for compile macro events", () => {
     expect(EventTypeDisplay["compile.started"]).toContain("Base compile");
     expect(EventTypeDisplay["compile.completed"]).toContain("Base compile");
@@ -99,7 +99,7 @@ const _NEW_PANEL_PATHS = [
 
 
 function _readPanel(rel: string): string {
-  // process.cwd() during vitest run is the frontend directory.
+  // process.cwd during vitest run is the frontend directory.
   return readFileSync(join(process.cwd(), rel), "utf-8");
 }
 

@@ -2,14 +2,14 @@
 
 Three layers:
 
-  1. **`evaluate_compile_quality`** (pure, no I/O) — gold-bucket
-     decisions for retry vs. no-retry vs. failed.
-  2. **Settings env loader** — `CompileRetrySettings` reads env
-     correctly + degrades on bad values.
-  3. **Workflow integration** — the retry loop dispatches the
-     compile activity, escalates the AssessmentPlan's mode on
-     low-quality results, persists the per-attempt audit trail,
-     and respects `max_compile_attempts`.
+ 1. **`evaluate_compile_quality`** (pure, no I/O) — gold-bucket
+ decisions for retry vs. no-retry vs. failed.
+ 2. **Settings env loader** — `CompileRetrySettings` reads env
+ correctly + degrades on bad values.
+ 3. **Workflow integration** — the retry loop dispatches the
+ compile activity, escalates the AssessmentPlan's mode on
+ low-quality results, persists the per-attempt audit trail,
+ and respects `max_compile_attempts`.
 
 The workflow tests use the same activity-monkeypatch pattern as
 `test_project_processing_workflow.py`. Each test asserts on the
@@ -86,7 +86,7 @@ def _result(
 
 def test_quality_good_when_chunks_and_text_present():
     """Happy path: chunk drafts + chars above threshold → GOOD,
-    no retry."""
+ no retry."""
     from j1.processing.results import ArtifactDraft
     drafts = [
         ArtifactDraft(kind=ARTIFACT_KIND_CHUNK, content=b"x", suggested_extension=".json")
@@ -112,7 +112,7 @@ def test_quality_zero_chunks_triggers_retry():
 
 def test_quality_low_text_triggers_retry():
     """Chunks present but extracted_text_chars below threshold —
-    `low_text_chars` retry-reason."""
+ `low_text_chars` retry-reason."""
     from j1.processing.results import ArtifactDraft
     drafts = [ArtifactDraft(kind=ARTIFACT_KIND_CHUNK, content=b"x", suggested_extension=".json")]
     verdict = evaluate_compile_quality(
@@ -125,9 +125,9 @@ def test_quality_low_text_triggers_retry():
 
 def test_quality_low_text_with_plan_required_ocr_uses_ocr_reason():
     """Same low-text condition but the plan required OCR + the
-    parse_method didn't fire OCR → distinct `ocr_likely_needed`
-    reason so the retry layer escalates to a mode that DOES enable
-    OCR."""
+ parse_method didn't fire OCR → distinct `ocr_likely_needed`
+ reason so the retry layer escalates to a mode that DOES enable
+ OCR."""
     from j1.processing.results import ArtifactDraft
     drafts = [ArtifactDraft(kind=ARTIFACT_KIND_CHUNK, content=b"x", suggested_extension=".json")]
     verdict = evaluate_compile_quality(
@@ -151,8 +151,8 @@ def test_quality_failure_with_recoverable_pattern_triggers_retry():
 
 def test_quality_failure_with_unrecoverable_pattern_does_not_retry():
     """Hard failures (file-not-found, license errors, vendor crashes
-    that don't match the recoverable patterns) don't retry — burning
-    another expensive compile attempt won't change the outcome."""
+ that don't match the recoverable patterns) don't retry — burning
+ another expensive compile attempt won't change the outcome."""
     verdict = evaluate_compile_quality(
         _result(
             status=ResultStatus.FAILED,
@@ -165,8 +165,8 @@ def test_quality_failure_with_unrecoverable_pattern_does_not_retry():
 
 def test_quality_unknown_text_chars_skips_text_rule():
     """When `total_text_chars` is missing from metadata, the
-    chars-below-threshold rule must NOT fire defensively.
-    Unknown ≠ 'pretend it's 0'."""
+ chars-below-threshold rule must NOT fire defensively.
+ Unknown ≠ 'pretend it's 0'."""
     from j1.processing.results import ArtifactDraft
     drafts = [ArtifactDraft(kind=ARTIFACT_KIND_CHUNK, content=b"x", suggested_extension=".json")]
     verdict = evaluate_compile_quality(
@@ -275,11 +275,11 @@ def _plain_text_profile() -> DocumentProfile:
 
 def test_standard_compile_with_zero_chunks_retries_to_deep(monkeypatch):
     """Two-mode model: planner emits STANDARD for plain-text
-    profiles (the bridge takes the plaintext bypass at runtime).
-    First compile attempt returns ZERO chunks → quality LOW with
-    `zero_chunks` retry reason → workflow escalates to DEEP and
-    re-dispatches. Second attempt returns chunks; final quality
-    GOOD."""
+ profiles (the bridge takes the plaintext bypass at runtime).
+ First compile attempt returns ZERO chunks → quality LOW with
+ `zero_chunks` retry reason → workflow escalates to DEEP and
+ re-dispatches. Second attempt returns chunks; final quality
+ GOOD."""
     compile_payloads: list[CompileActivityInput] = []
     strategy_report_payload: dict = {}
 
@@ -405,9 +405,9 @@ def test_standard_compile_with_low_text_and_ocr_required_retries_to_deep(
     monkeypatch,
 ):
     """Standard compile returns chunks but very few chars; the
-    planner had OCR in `required_capabilities` (because the profile
-    looked scanned-ish). Retry must escalate to DEEP and force OCR
-    on the retry payload."""
+ planner had OCR in `required_capabilities` (because the profile
+ looked scanned-ish). Retry must escalate to DEEP and force OCR
+ on the retry payload."""
     compile_payloads: list[CompileActivityInput] = []
     strategy_payload: dict = {}
 
@@ -532,9 +532,9 @@ def test_standard_compile_with_low_text_and_ocr_required_retries_to_deep(
 
 def test_deep_failure_does_not_retry_endlessly(monkeypatch):
     """Plan starts at DEEP (scanned profile). Compile returns LOW
-    quality. Retry layer evaluates `next_compile_mode(deep)=None` →
-    no escalation → workflow stops at one attempt + records the
-    final low quality with explanation."""
+ quality. Retry layer evaluates `next_compile_mode(deep)=None` →
+ no escalation → workflow stops at one attempt + records the
+ final low quality with explanation."""
     compile_payloads: list[CompileActivityInput] = []
     strategy_payload: dict = {}
 
@@ -608,7 +608,7 @@ def test_deep_failure_does_not_retry_endlessly(monkeypatch):
 
 def test_max_attempts_respected(monkeypatch):
     """`max_compile_attempts=1` disables retry — even if the first
-    attempt is low-quality, no second attempt fires."""
+ attempt is low-quality, no second attempt fires."""
     compile_payloads: list = []
 
     def handler(method, payload, kwargs):
@@ -670,8 +670,8 @@ def test_max_attempts_respected(monkeypatch):
 
 def test_retry_disabled_skips_evaluator_entirely(monkeypatch):
     """`compile_retry_enabled=False` — even with zero chunks, no
-    second attempt fires. Operators that want to gate retry off
-    in production keep the legacy single-shot behaviour."""
+ second attempt fires. Operators that want to gate retry off
+ in production keep the legacy single-shot behaviour."""
     compile_payloads: list = []
 
     def handler(method, payload, kwargs):
@@ -730,12 +730,12 @@ def test_retry_disabled_skips_evaluator_entirely(monkeypatch):
 
 def test_retry_does_not_double_write_chunks(monkeypatch):
     """Each attempt's mode is part of the activity-side cache key
-    (`_compile_cache_key_parts` includes mode). Escalating from
-    fast→standard creates a NEW cache row + NEW compile invocation,
-    but the prior attempt's artifacts are NOT re-emitted by the
-    workflow — only the latest attempt's `compile_result.artifact_ids`
-    feed `_produced_artifact_ids`. We verify by counting the
-    artifact_ids the workflow extends after retry."""
+ (`_compile_cache_key_parts` includes mode). Escalating from
+ fast→standard creates a NEW cache row + NEW compile invocation,
+ but the prior attempt's artifacts are NOT re-emitted by the
+ workflow — only the latest attempt's `compile_result.artifact_ids`
+ feed `_produced_artifact_ids`. We verify by counting the
+ artifact_ids the workflow extends after retry."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -803,9 +803,9 @@ def test_retry_does_not_double_write_chunks(monkeypatch):
 
 def test_legacy_path_no_assessment_plan_skips_retry_loop(monkeypatch):
     """`planner_enabled=False` (legacy bulk-job path): no
-    AssessmentPlan is built → retry loop runs once with
-    `assessment_plan_payload=None` and the bridge falls back to
-    settings.parse_method. Backward compat guard."""
+ AssessmentPlan is built → retry loop runs once with
+ `assessment_plan_payload=None` and the bridge falls back to
+ settings.parse_method. Backward compat guard."""
     compile_payloads: list = []
 
     def handler(method, payload, kwargs):

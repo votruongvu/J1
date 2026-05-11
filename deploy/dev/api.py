@@ -2,16 +2,16 @@
 
 Run via:
 
-    python -m deploy.dev.api
+ python -m deploy.dev.api
 
 The container's CMD wraps this. NOT a production deployment — see
 `docs/architecture.md` § 17 for the full wiring story. Calls
-`bootstrap_from_env()` so the API can:
+`bootstrap_from_env` so the API can:
 
-  * Default omitted `compilerKind` request fields to
-    `J1_DEFAULT_COMPILER`.
-  * Reject unknown processor kinds at the API boundary with a clear
-    400 instead of letting them surface as workflow failures later.
+ * Default omitted `compilerKind` request fields to
+ `J1_DEFAULT_COMPILER`.
+ * Reject unknown processor kinds at the API boundary with a clear
+ 400 instead of letting them surface as workflow failures later.
 """
 
 import contextlib
@@ -64,32 +64,32 @@ def make_per_document_starter(
 ):
     """Build the `JobStarter` closure used by `POST /documents/{id}/ingest`.
 
-    Lifted out of `_build_app` so its behaviour (deterministic
-    workflow id, single-document scoping, USE_EXISTING conflict
-    policy) is unit-testable without standing up the entire app.
+ Lifted out of `_build_app` so its behaviour (deterministic
+ workflow id, single-document scoping, USE_EXISTING conflict
+ policy) is unit-testable without standing up the entire app.
 
-    Crucial:
+ Crucial:
 
-      * Scopes the workflow to the SINGLE document just uploaded
-        (`target_document_ids=(document_id,)`). Without this filter
-        the workflow would call `list_pending_documents` and re-
-        process every PENDING document in the project — once on the
-        first upload, twice on the second, three times on the third,
-        … The bulk-job path (`job_control.start_project_job`)
-        intentionally leaves the filter empty.
+ * Scopes the workflow to the SINGLE document just uploaded
+ (`target_document_ids=(document_id,)`). Without this filter
+ the workflow would call `list_pending_documents` and re-
+ process every PENDING document in the project — once on the
+ first upload, twice on the second, three times on the third,
+ … The bulk-job path (`job_control.start_project_job`)
+ intentionally leaves the filter empty.
 
-      * Workflow id is `j1-{tenant_id}-{project_id}-{document_id}` —
-        deterministic per (tenant, project, document). Combined with
-        intake's checksum-based dedup, re-uploading the same file
-        always lands on the same workflow id.
+ * Workflow id is `j1-{tenant_id}-{project_id}-{document_id}` —
+ deterministic per (tenant, project, document). Combined with
+ intake's checksum-based dedup, re-uploading the same file
+ always lands on the same workflow id.
 
-      * `id_conflict_policy=USE_EXISTING`. If a workflow with this
-        id is already running (re-upload of an in-flight file), do
-        NOT spawn a parallel run — return the existing handle.
-        Combined with `ProcessingResultCache`, this means a single
-        physical file is never parsed twice in parallel and never
-        re-parsed once already completed.
-    """
+ * `id_conflict_policy=USE_EXISTING`. If a workflow with this
+ id is already running (re-upload of an in-flight file), do
+ NOT spawn a parallel run — return the existing handle.
+ Combined with `ProcessingResultCache`, this means a single
+ physical file is never parsed twice in parallel and never
+ re-parsed once already completed.
+ """
 
     async def _start(ctx, document_id, body) -> str:
         client = client_provider()
@@ -163,21 +163,21 @@ def make_batch_starter(
 ):
     """Build the `BatchStarter` closure used by `POST /ingestion-batches`.
 
-    The closure dispatches ONE `BatchOrchestrationWorkflow` per call;
-    that parent fans out the child workflows sequentially via
-    `execute_child_workflow`. Replaces the previous "REST handler
-    fans out N concurrent workflows" pattern (which depended on the
-    worker-wide `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` env var to
-    serialize). With the parent workflow, multiple batches can run
-    in parallel — each batch is internally sequential, batches are
-    independent.
+ The closure dispatches ONE `BatchOrchestrationWorkflow` per call;
+ that parent fans out the child workflows sequentially via
+ `execute_child_workflow`. Replaces the previous "REST handler
+ fans out N concurrent workflows" pattern (which depended on the
+ worker-wide `J1_WORKER_MAX_CONCURRENT_ACTIVITIES=1` env var to
+ serialize). With the parent workflow, multiple batches can run
+ in parallel — each batch is internally sequential, batches are
+ independent.
 
-    Parent workflow id: `j1-batch-{batch_run_id}` so operators can
-    spot batches in the Temporal UI vs single-doc workflows. The
-    batch_run_id is the FE-facing identifier; using it directly
-    avoids the need for a follow-up "what's the workflow id for
-    batch X" lookup.
-    """
+ Parent workflow id: `j1-batch-{batch_run_id}` so operators can
+ spot batches in the Temporal UI vs single-doc workflows. The
+ batch_run_id is the FE-facing identifier; using it directly
+ avoids the need for a follow-up "what's the workflow id for
+ batch X" lookup.
+ """
 
     async def _start(ctx, batch_run_id, child_specs) -> str:
         client = client_provider()
@@ -402,7 +402,7 @@ def _build_app():
         # Read-only review surface for completed runs (Results tabs).
         # Without this the FE's `/ingestion-runs/{id}/summary` 503s.
         review_service=build_review_service(workspace),
-        # Manual test query (Phase 1 validation). Returns None when
+        # Manual test query ( validation). Returns None when
         # no profile is loaded — the REST endpoint then 503s, which
         # is fine because the FE's Validation tab availability gate
         # in `availableViews.validation` will already be off.

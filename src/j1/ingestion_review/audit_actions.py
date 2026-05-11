@@ -15,8 +15,8 @@ purge's `artifacts_purged` count) — keep payload fields stable
 across releases since the audit log is the historical record.
 
 These constants are imported by:
-  * `j1.adapters.rest.app` — emit at the operator boundary.
-  * `tests/test_*.py` — assert on action strings.
+ * `j1.adapters.rest.app` — emit at the operator boundary.
+ * `tests/test_*.py` — assert on action strings.
 """
 
 from __future__ import annotations

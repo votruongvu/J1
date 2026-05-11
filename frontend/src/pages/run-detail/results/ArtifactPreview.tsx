@@ -24,8 +24,8 @@ interface ArtifactPreviewProps {
   runId: string;
   record: ReviewArtifactRecord;
   /** When true, suppresses the surrounding chrome (used by AssetsTab
-   * cards). The default layout is taller and includes a download
-   * button — appropriate for the Raw Artifacts viewer. */
+ * cards). The default layout is taller and includes a download
+ * button — appropriate for the Raw Artifacts viewer. */
   compact?: boolean;
 }
 

@@ -1,4 +1,4 @@
-"""Wave 7 — concurrency limiter + bounded retry around LLM calls.
+"""concurrency limiter + bounded retry around LLM calls.
 
 The enrichment stage's `_LLMBackedEnricher` classes call vendor
 LLM clients synchronously. Without a global ceiling, a multi-doc
@@ -15,22 +15,22 @@ via `limiter.run(fn, *args, **kwargs)`.
 
 Design rules:
 
-  1. **Single shared semaphore per worker.** Module-global +
-     wired at bootstrap. Sharing between text + vision clients
-     prevents one tier monopolising the slots; ops who want
-     per-tier separation can wire two limiters explicitly.
-  2. **Bounded retries.** `retry_limit=N` means at most `1 + N`
-     total attempts. Exceptions that aren't retryable
-     (`TimeoutError` from the limiter itself, `_NonRetryable`)
-     re-raise immediately.
-  3. **Timeout = soft skip at the call site.** The limiter
-     raises `TimeoutError` after `timeout_seconds`; the legacy
-     enricher base class already converts exceptions into a soft-
-     skip response so the run continues.
-  4. **No async coupling.** Enrichers are sync today;
-     `threading.Semaphore` works for both single-threaded + multi-
-     threaded workers. A future async migration can swap to
-     `asyncio.Semaphore` without changing call sites.
+ 1. **Single shared semaphore per worker.** Module-global +
+ wired at bootstrap. Sharing between text + vision clients
+ prevents one tier monopolising the slots; ops who want
+ per-tier separation can wire two limiters explicitly.
+ 2. **Bounded retries.** `retry_limit=N` means at most `1 + N`
+ total attempts. Exceptions that aren't retryable
+ (`TimeoutError` from the limiter itself, `_NonRetryable`)
+ re-raise immediately.
+ 3. **Timeout = soft skip at the call site.** The limiter
+ raises `TimeoutError` after `timeout_seconds`; the legacy
+ enricher base class already converts exceptions into a soft-
+ skip response so the run continues.
+ 4. **No async coupling.** Enrichers are sync today;
+ `threading.Semaphore` works for both single-threaded + multi-
+ threaded workers. A future async migration can swap to
+ `asyncio.Semaphore` without changing call sites.
 """
 
 from __future__ import annotations
@@ -55,23 +55,23 @@ T = TypeVar("T")
 
 class LLMCallTimeout(TimeoutError):
     """Raised by `LLMCallLimiter.run` when a call exceeds the
-    configured `timeout_seconds`. Separate from the stdlib
-    `TimeoutError` so callers can distinguish limiter-timeouts
-    from vendor-client timeouts that come up from below."""
+ configured `timeout_seconds`. Separate from the stdlib
+ `TimeoutError` so callers can distinguish limiter-timeouts
+ from vendor-client timeouts that come up from below."""
 
 
 class NonRetryableError(Exception):
     """Wrapper exception callers can raise inside the limited
-    callable to short-circuit retry. The limiter unwraps and
-    re-raises the original `__cause__` so the call site sees the
-    underlying error untouched."""
+ callable to short-circuit retry. The limiter unwraps and
+ re-raises the original `__cause__` so the call site sees the
+ underlying error untouched."""
 
 
 @dataclass(frozen=True)
 class LimiterCallStats:
     """One call's bookkeeping. Returned by `run_with_stats` so the
-    `ModelUsageRecord.duration_ms` on the per-module outcome can
-    be populated without timing the call separately."""
+ `ModelUsageRecord.duration_ms` on the per-module outcome can
+ be populated without timing the call separately."""
 
     attempts: int
     duration_ms: int
@@ -80,12 +80,12 @@ class LimiterCallStats:
 
 class LLMCallLimiter:
     """Thread-safe limiter wrapping per-LLM-call concurrency,
-    timeouts, and bounded retries.
+ timeouts, and bounded retries.
 
-    Single instance per worker — pass through to every enricher's
-    constructor via dependency injection. Reading `max_concurrency`
-    after construction reflects the original setting (it's the
-    semaphore's initial value, not the current available slot count)."""
+ Single instance per worker — pass through to every enricher's
+ constructor via dependency injection. Reading `max_concurrency`
+ after construction reflects the original setting (it's the
+ semaphore's initial value, not the current available slot count)."""
 
     def __init__(
         self,
@@ -132,10 +132,10 @@ class LLMCallLimiter:
         **kwargs: Any,
     ) -> T:
         """Run `fn(*args, **kwargs)` under the limiter. Returns
-        `fn`'s return value. Raises `LLMCallTimeout` if the call
-        couldn't acquire a slot OR exceeded the per-call timeout
-        once running. Bounded retries are applied transparently;
-        the caller sees a single return / raise."""
+ `fn`'s return value. Raises `LLMCallTimeout` if the call
+ couldn't acquire a slot OR exceeded the per-call timeout
+ once running. Bounded retries are applied transparently;
+ the caller sees a single return / raise."""
         result, _stats = self.run_with_stats(fn, *args, **kwargs)
         return result
 
@@ -146,8 +146,8 @@ class LLMCallLimiter:
         **kwargs: Any,
     ) -> tuple[T, LimiterCallStats]:
         """Like `run` but also returns `LimiterCallStats` so the
-        caller can populate `ModelUsageRecord.duration_ms` without
-        timing the call separately."""
+ caller can populate `ModelUsageRecord.duration_ms` without
+ timing the call separately."""
         attempts = 0
         last_exc: BaseException | None = None
         started_total = time.perf_counter()
@@ -188,14 +188,14 @@ class LLMCallLimiter:
         kwargs: dict,
     ) -> T:
         """Acquire one slot, run `fn`, release. Raises
-        `LLMCallTimeout` when:
-          * the slot wait exceeds `timeout_seconds`, OR
-          * `fn` itself blocks longer than `timeout_seconds` after
-            the slot was acquired.
+ `LLMCallTimeout` when:
+ * the slot wait exceeds `timeout_seconds`, OR
+ * `fn` itself blocks longer than `timeout_seconds` after
+ the slot was acquired.
 
-        The acquire-side timeout is the semaphore's built-in
-        timeout; the run-side timeout is enforced by running `fn`
-        in a worker thread + joining with the remaining budget."""
+ The acquire-side timeout is the semaphore's built-in
+ timeout; the run-side timeout is enforced by running `fn`
+ in a worker thread + joining with the remaining budget."""
         acquire_started = time.perf_counter()
         acquired = self._semaphore.acquire(
             blocking=True, timeout=self._timeout_seconds,
@@ -223,11 +223,11 @@ def _call_with_timeout(
 ) -> T:
     """Run `fn(*args, **kwargs)` with a wall-clock timeout.
 
-    The implementation spins up a worker thread + joins with the
-    deadline. If the join times out, raises `LLMCallTimeout` — the
-    worker thread keeps running but the caller's call returns the
-    timeout. This is the cleanest signal we can produce without
-    cooperative cancellation from the vendor client."""
+ The implementation spins up a worker thread + joins with the
+ deadline. If the join times out, raises `LLMCallTimeout` — the
+ worker thread keeps running but the caller's call returns the
+ timeout. This is the cleanest signal we can produce without
+ cooperative cancellation from the vendor client."""
     if timeout_seconds <= 0:
         raise LLMCallTimeout(
             "no time remaining after slot acquisition"
@@ -257,9 +257,9 @@ def _call_with_timeout(
 
 def build_limiter_from_settings(settings) -> LLMCallLimiter:
     """Construct an `LLMCallLimiter` from
-    `EnrichmentConcurrencySettings`. Convenience wrapper used by
-    the worker bootstrap so the limiter + settings stay in sync
-    without the call-site spelling out every field."""
+ `EnrichmentConcurrencySettings`. Convenience wrapper used by
+ the worker bootstrap so the limiter + settings stay in sync
+ without the call-site spelling out every field."""
     return LLMCallLimiter(
         max_concurrency=settings.max_concurrent_llm_calls,
         timeout_seconds=settings.timeout_seconds,

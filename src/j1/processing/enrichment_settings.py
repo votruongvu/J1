@@ -1,4 +1,4 @@
-"""Wave 7 — enrichment LLM + concurrency settings.
+"""enrichment LLM + concurrency settings.
 
 Centralises the deployment-level knobs that gate enrichment-stage
 LLM calls. Read once at worker bootstrap from environment
@@ -7,65 +7,65 @@ constructors. Pure / no I/O at module import time.
 
 Env-var vocabulary (all optional; defaults below are dev-safe):
 
-  * `J1_ENRICHMENT_ENABLED`                       (default `true`)
-  * `J1_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS`      (default `1`)
-  * `J1_ENRICHMENT_MAX_CONCURRENT_ENRICHMENT_TASKS` (default `1`)
-  * `J1_ENRICHMENT_TIMEOUT_SECONDS`               (default `120`)
-  * `J1_ENRICHMENT_RETRY_LIMIT`                   (default `1`)
-  * `J1_ENRICHMENT_REQUIRE_SUCCESS`               (default `false`)
-  * `J1_DEFAULT_ENRICHMENT_MODEL_TIER`            (default `fast`)
-  * `J1_ENRICHMENT_DEV_MODE_CONSERVATIVE_LIMITS`  (default `true`)
+ * `J1_ENRICHMENT_ENABLED` (default `true`)
+ * `J1_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS` (default `1`)
+ * `J1_ENRICHMENT_MAX_CONCURRENT_ENRICHMENT_TASKS` (default `1`)
+ * `J1_ENRICHMENT_TIMEOUT_SECONDS` (default `120`)
+ * `J1_ENRICHMENT_RETRY_LIMIT` (default `1`)
+ * `J1_ENRICHMENT_REQUIRE_SUCCESS` (default `false`)
+ * `J1_DEFAULT_ENRICHMENT_MODEL_TIER` (default `fast`)
+ * `J1_ENRICHMENT_DEV_MODE_CONSERVATIVE_LIMITS` (default `true`)
 
 Design rules:
 
-  1. **Dev-safe defaults.** The defaults must NEVER overload a
-     small laptop or shared CI runner. `MAX_CONCURRENT_LLM_CALLS=1`
-     serialises every enricher's LLM call by default; ops who want
-     parallelism opt in explicitly via the env var.
+ 1. **Dev-safe defaults.** The defaults must NEVER overload a
+ small laptop or shared CI runner. `MAX_CONCURRENT_LLM_CALLS=1`
+ serialises every enricher's LLM call by default; ops who want
+ parallelism opt in explicitly via the env var.
 
-  2. **Separate from Temporal concurrency.** This module knows
-     nothing about Temporal worker concurrency / activity slots.
-     The limiter wraps the per-LLM-client call site; Temporal's
-     own worker concurrency is configured separately.
-     `max_concurrent_llm_calls` is specifically the EXTERNAL LLM
-     call ceiling — the limit that bounds outbound HTTP requests
-     to vendor APIs (OpenAI, local LM Studio, etc.). Temporal
-     worker activity concurrency lives in worker config
-     (`max_concurrent_activities`) and isn't affected by this
-     setting.
+ 2. **Separate from Temporal concurrency.** This module knows
+ nothing about Temporal worker concurrency / activity slots.
+ The limiter wraps the per-LLM-client call site; Temporal's
+ own worker concurrency is configured separately.
+ `max_concurrent_llm_calls` is specifically the EXTERNAL LLM
+ call ceiling — the limit that bounds outbound HTTP requests
+ to vendor APIs (OpenAI, local LM Studio, etc.). Temporal
+ worker activity concurrency lives in worker config
+ (`max_concurrent_activities`) and isn't affected by this
+ setting.
 
-  3. **One shared semaphore is intentional for now.** The Wave-7
-     limiter wraps every LLM client (text + vision) with ONE
-     shared semaphore so the worker-wide ceiling is the single
-     knob operators tune. Per-tier semaphores (separate budgets
-     for text vs. vision) are deferred — they're a real
-     optimisation when one tier becomes a bottleneck, but
-     premature today. The split can be added later by passing
-     different `LLMCallLimiter` instances to different enricher
-     subclasses at composition time.
+ 3. **One shared semaphore is intentional for now.** The 
+ limiter wraps every LLM client (text + vision) with ONE
+ shared semaphore so the worker-wide ceiling is the single
+ knob operators tune. Per-tier semaphores (separate budgets
+ for text vs. vision) are deferred — they're a real
+ optimisation when one tier becomes a bottleneck, but
+ premature today. The split can be added later by passing
+ different `LLMCallLimiter` instances to different enricher
+ subclasses at composition time.
 
-  4. **Compile retry stays separate.** `J1_COMPILE_*` knobs live on
-     `ProjectProcessingRequest.compile_*` fields and the
-     `compile_retry` module — Wave 7 enrichment settings don't
-     mention them. Two different retry budgets, two different
-     failure modes.
+ 4. **Compile retry stays separate.** `J1_COMPILE_*` knobs live on
+ `ProjectProcessingRequest.compile_*` fields and the
+ `compile_retry` module — enrichment settings don't
+ mention them. Two different retry budgets, two different
+ failure modes.
 
-  5. **Conservative-limits dev mode.** When
-     `J1_ENRICHMENT_DEV_MODE_CONSERVATIVE_LIMITS=true` (default)
-     the loader caps every concurrency knob at the dev-safe
-     ceiling regardless of the operator-supplied value. Lets a
-     deployment script set ambitious production values + the env
-     stay safe for dev/test without manual stripping.
+ 5. **Conservative-limits dev mode.** When
+ `J1_ENRICHMENT_DEV_MODE_CONSERVATIVE_LIMITS=true` (default)
+ the loader caps every concurrency knob at the dev-safe
+ ceiling regardless of the operator-supplied value. Lets a
+ deployment script set ambitious production values + the env
+ stay safe for dev/test without manual stripping.
 
-  6. **Skeleton modules don't need limiter wiring.** The Wave-6
-     skeleton modules (`MetadataEnrichmentModule`,
-     `TerminologyEnrichmentModule`, `ValidationEnrichmentModule`)
-     don't call LLMs — they project compile signals + domain
-     hints into typed records. The limiter is plumbed via
-     `_LLMBackedEnricher.__init__` for the legacy enrichers in
-     `j1.enrichers` that DO call LLMs. When the LLM-wiring slice
-     ships, the new modules take the same `llm_call_limiter`
-     kwarg.
+ 6. **Skeleton modules don't need limiter wiring.** The 
+ skeleton modules (`MetadataEnrichmentModule`,
+ `TerminologyEnrichmentModule`, `ValidationEnrichmentModule`)
+ don't call LLMs — they project compile signals + domain
+ hints into typed records. The limiter is plumbed via
+ `_LLMBackedEnricher.__init__` for the legacy enrichers in
+ `j1.enrichers` that DO call LLMs. When the LLM wiring
+ ships, the new modules take the same `llm_call_limiter`
+ kwarg.
 """
 
 from __future__ import annotations
@@ -140,15 +140,15 @@ DEV_SAFE_RETRY_LIMIT = 1
 class EnrichmentConcurrencySettings:
     """The resolved enrichment-stage settings for one worker.
 
-    Pure data — built once at bootstrap from
-    `load_enrichment_settings()` and passed through to the
-    `LLMCallLimiter` + enricher constructors. Every field has a
-    documented default so missing env vars produce a safe config."""
+ Pure data — built once at bootstrap from
+ `load_enrichment_settings` and passed through to the
+ `LLMCallLimiter` + enricher constructors. Every field has a
+ documented default so missing env vars produce a safe config."""
 
     enabled: bool = True
     # Per-LLM-call ceiling enforced by the limiter — caps the
-    # number of in-flight `text_client.extract()` /
-    # `vision_client.analyze_image()` calls across enrichers.
+    # number of in-flight `text_client.extract` /
+    # `vision_client.analyze_image` calls across enrichers.
     max_concurrent_llm_calls: int = DEV_SAFE_MAX_CONCURRENT_LLM_CALLS
     # Per-document enrichment-task ceiling. Today's
     # `CompositeEnricher` runs sequentially so this is informational;
@@ -185,8 +185,8 @@ def load_enrichment_settings(
     env: dict[str, str] | None = None,
 ) -> EnrichmentConcurrencySettings:
     """Build an `EnrichmentConcurrencySettings` from `env` (defaults
-    to `os.environ`). Tolerant: malformed values fall back to
-    documented defaults rather than crashing the worker."""
+ to `os.environ`). Tolerant: malformed values fall back to
+ documented defaults rather than crashing the worker."""
     source = env if env is not None else os.environ
     enabled = _read_bool(
         source, ENV_ENRICHMENT_ENABLED, default=True,

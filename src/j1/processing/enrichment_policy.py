@@ -2,12 +2,12 @@
 
 Implements the precedence chain the spec mandates:
 
-    request override
-    > project / profile setting (if available)
-    > domain profile default
-    > system default
+ request override
+ > project / profile setting (if available)
+ > domain profile default
+ > system default
 
-Wave-5 closure left domain policy as the only input; this module
+ closure left domain policy as the only input; this module
 adds the higher-precedence layers so per-run operator overrides
 + per-project defaults can flow into the post-compile analyzer
 without modifying domain packs.
@@ -16,13 +16,13 @@ The resolver is PURE — no I/O, no LLM, no Temporal coupling. Same
 inputs → same `ResolvedEnrichmentPolicy`, every time.
 
 What this module deliberately is NOT:
-  * a full enrichment-policy framework with per-task overrides.
-    The Wave-5 spec asks for `auto / always / never` as the only
-    operator-facing knob. Per-task force/deny lists stay on
-    `DomainEnrichmentPolicy`.
-  * a config loader. The system default lives as a constant here
-    (`SYSTEM_DEFAULT_POLICY`); deployment code injects request /
-    project values explicitly.
+ * a full enrichment-policy framework with per-task overrides.
+ The spec asks for `auto / always / never` as the only
+ operator-facing knob. Per-task force/deny lists stay on
+ `DomainEnrichmentPolicy`.
+ * a config loader. The system default lives as a constant here
+ (`SYSTEM_DEFAULT_POLICY`); deployment code injects request /
+ project values explicitly.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ POLICY_SOURCE_SYSTEM_DEFAULT = "system_default"
 # system default is for tests + edge-case deployments without one.
 SYSTEM_DEFAULT_POLICY = ENRICHMENT_POLICY_AUTO
 
-# Wave 7.5 — backstop for the require-enrichment-success flag. Set
+# backstop for the require-enrichment-success flag. Set
 # to False because the cautious default is "don't fail the run
 # when optional enrichment fails". Deployments that need the
 # opposite default flip `J1_ENRICHMENT_REQUIRE_SUCCESS=true` at
@@ -85,10 +85,10 @@ _VALID_POLICIES = frozenset({
 class ResolvedEnrichmentPolicy:
     """The active enrichment policy for one run, plus its provenance.
 
-    `policy` is the literal string (`auto` / `always` / `never`) the
-    analyzer + workflow consume. `source` records which precedence
-    layer won — operators see "Policy: always (from request)" in
-    the FE / final report instead of guessing why it's set."""
+ `policy` is the literal string (`auto` / `always` / `never`) the
+ analyzer + workflow consume. `source` records which precedence
+ layer won — operators see "Policy: always (from request)" in
+ the FE / final report instead of guessing why it's set."""
 
     policy: str
     source: str
@@ -106,18 +106,18 @@ def resolve_enrichment_policy(
 ) -> ResolvedEnrichmentPolicy:
     """Resolve the active enrichment policy for one run.
 
-    Precedence (highest first):
-      1. `request_override` — operator's per-run choice.
-      2. `project_default` — workspace/project-level config.
-      3. `domain_policy.policy` — domain pack default.
-      4. `system_default` — system backstop (`auto`).
+ Precedence (highest first):
+ 1. `request_override` — operator's per-run choice.
+ 2. `project_default` — workspace/project-level config.
+ 3. `domain_policy.policy` — domain pack default.
+ 4. `system_default` — system backstop (`auto`).
 
-    Invalid values at any layer are skipped (the resolver falls
-    through to the next layer) — keeps a typo in one config from
-    crashing the workflow. The lowest layer (`system_default`) is
-    validated at construction-time; an invalid value there is a
-    deployment bug worth raising.
-    """
+ Invalid values at any layer are skipped (the resolver falls
+ through to the next layer) — keeps a typo in one config from
+ crashing the workflow. The lowest layer (`system_default`) is
+ validated at construction-time; an invalid value there is a
+ deployment bug worth raising.
+ """
     if _is_valid(request_override):
         return ResolvedEnrichmentPolicy(
             policy=request_override,  # type: ignore[arg-type]
@@ -151,7 +151,7 @@ def _is_valid(value: str | None) -> bool:
     return isinstance(value, str) and value in _VALID_POLICIES
 
 
-# ---- Wave 7.5: require_enrichment_success precedence chain ---------
+# ---- require_enrichment_success precedence chain ---------
 
 
 # Source vocabulary for `ResolvedRequireSuccess.source`. Mirrors
@@ -167,12 +167,12 @@ REQUIRE_SUCCESS_SOURCE_SYSTEM_DEFAULT = POLICY_SOURCE_SYSTEM_DEFAULT
 class ResolvedRequireSuccess:
     """The resolved `require_enrichment_success` flag for one run.
 
-    Distinct from the policy literal (`auto / always / never`) — a
-    domain pack can have `policy=always` AND
-    `require_enrichment_success=False` (recommend enrichment but
-    don't fail the run if the LLM is down). The FE renders the
-    source so operators see why the run was treated as
-    require-success."""
+ Distinct from the policy literal (`auto / always / never`) — a
+ domain pack can have `policy=always` AND
+ `require_enrichment_success=False` (recommend enrichment but
+ don't fail the run if the LLM is down). The FE renders the
+ source so operators see why the run was treated as
+ require-success."""
 
     require_enrichment_success: bool
     source: str
@@ -194,36 +194,36 @@ def resolve_require_enrichment_success(
 ) -> ResolvedRequireSuccess:
     """Resolve the active `require_enrichment_success` flag.
 
-    Precedence (highest first):
-      1. `request_override` — operator's per-run choice.
-         Pass None (default) when the request shape doesn't carry
-         the flag yet; the resolver falls through.
-      2. `project_default` — workspace/project-level config.
-      3. `domain_policy.require_enrichment_success` — pack opinion.
-         A pack with the default `False` STILL counts as having
-         expressed an opinion — operators see "from domain" in the
-         source label. Pack-absent runs fall through.
-      4. `env_default` — env-level fallback
-         (`J1_ENRICHMENT_REQUIRE_SUCCESS`, surfaced via
-         `EnrichmentConcurrencySettings.require_enrichment_success`).
-      5. `system_default` — hardcoded False backstop.
+ Precedence (highest first):
+ 1. `request_override` — operator's per-run choice.
+ Pass None (default) when the request shape doesn't carry
+ the flag yet; the resolver falls through.
+ 2. `project_default` — workspace/project-level config.
+ 3. `domain_policy.require_enrichment_success` — pack opinion.
+ A pack with the default `False` STILL counts as having
+ expressed an opinion — operators see "from domain" in the
+ source label. Pack-absent runs fall through.
+ 4. `env_default` — env-level fallback
+ (`J1_ENRICHMENT_REQUIRE_SUCCESS`, surfaced via
+ `EnrichmentConcurrencySettings.require_enrichment_success`).
+ 5. `system_default` — hardcoded False backstop.
 
-    Distinct precedence from the policy resolver — this is the
-    spec's:
+ Distinct precedence from the policy resolver — this is the
+ spec's:
 
-        request override, if available
-        > domain/profile policy
-        > env/config default
-        > system default false
+ request override, if available
+ > domain/profile policy
+ > env/config default
+ > system default false
 
-    Note: the spec puts `domain/profile` ABOVE `env` here, in
-    contrast to the policy resolver which puts `project_default`
-    above `domain_policy`. The spec's intent: operators set env
-    values to STANDARDIZE deployment behaviour, but a domain pack
-    that explicitly declares its requirement (e.g. "regulated data
-    domain — enrichment failure = run failure") should win over a
-    generic env default. Implementation: domain layer wins over
-    env_default; request/project still win over both."""
+ Note: the spec puts `domain/profile` ABOVE `env` here, in
+ contrast to the policy resolver which puts `project_default`
+ above `domain_policy`. The spec's intent: operators set env
+ values to STANDARDIZE deployment behaviour, but a domain pack
+ that explicitly declares its requirement (e.g. "regulated data
+ domain — enrichment failure = run failure") should win over a
+ generic env default. Implementation: domain layer wins over
+ env_default; request/project still win over both."""
     if request_override is not None:
         return ResolvedRequireSuccess(
             require_enrichment_success=bool(request_override),
@@ -256,15 +256,15 @@ def _domain_pack_expresses_opinion(
     policy: DomainEnrichmentPolicy,
 ) -> bool:
     """A domain pack 'expresses an opinion' about
-    require_enrichment_success when:
-      * its policy literal is something other than `auto` (i.e. the
-        pack is deliberately marked always/never), OR
-      * its `require_enrichment_success` field is True.
+ require_enrichment_success when:
+ * its policy literal is something other than `auto` (i.e. the
+ pack is deliberately marked always/never), OR
+ * its `require_enrichment_success` field is True.
 
-    A pack defaulting to (policy=auto, require_success=False) is
-    a no-op overlay — the resolver falls through to the env layer
-    so deployments can express a fleet-wide default without every
-    pack having to opt in."""
+ A pack defaulting to (policy=auto, require_success=False) is
+ a no-op overlay — the resolver falls through to the env layer
+ so deployments can express a fleet-wide default without every
+ pack having to opt in."""
     if policy.require_enrichment_success:
         return True
     if policy.policy != ENRICHMENT_POLICY_AUTO:

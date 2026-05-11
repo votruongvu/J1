@@ -1,4 +1,4 @@
-"""Wave 6 REST + service-layer tests for the enrichment-result
+""" REST + service-layer tests for the enrichment-result
 endpoint. Mirrors the shape of the other artifact-overlay
 endpoint tests (initial_execution_plan, compile_result, etc.):
 completed / unavailable / 404 / cross-project / replay-latest."""

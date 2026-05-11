@@ -27,9 +27,9 @@ import {
 interface EnrichPlanPanelProps {
   runId: string;
   /** SSE event from the parent. Same refetch pattern as the
-   * AssessmentPlanPanel — needed so a panel mounted before
-   * post-compile assessment runs picks up the artifact when it
-   * lands instead of sticking on "unavailable" forever. */
+ * AssessmentPlanPanel — needed so a panel mounted before
+ * post-compile assessment runs picks up the artifact when it
+ * lands instead of sticking on "unavailable" forever. */
   latestEvent?: ProgressEvent | null;
 }
 

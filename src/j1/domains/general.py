@@ -25,9 +25,9 @@ without strong evidence."""
 def build_general_pack() -> DomainPack:
     """Construct the generic fallback pack.
 
-    A no-op detector — the registry skips packs whose `detect=None`,
-    so generic never competes with domain packs in auto-detection.
-    """
+ A no-op detector — the registry skips packs whose `detect=None`,
+ so generic never competes with domain packs in auto-detection.
+ """
     return DomainPack(
         id=DOMAIN_GENERAL,
         display_name="Generic",

@@ -9,54 +9,54 @@ prod, single-tenant deploy, …).
 ## Current state
 
 - `deploy/dev/_wiring.py` + `deploy/dev/worker.py` are the only
-  existing entrypoints. They follow the documented pattern in full.
+ existing entrypoints. They follow the documented pattern in full.
 - **No staging / prod entrypoint exists yet.** Future deployment
-  artefacts (helm chart, docker image, terraform module, …) must
-  follow the shape below.
+ artefacts (helm chart, docker image, terraform module, …) must
+ follow the shape below.
 - The development worker is the reference implementation. Treat any
-  staging/prod variant as a port of `deploy/dev/_wiring.py` with
-  deployment-specific secrets + endpoints, not a new design.
+ staging/prod variant as a port of `deploy/dev/_wiring.py` with
+ deployment-specific secrets + endpoints, not a new design.
 
 ## The wiring shape
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ 1. bootstrap_from_env()                                          │
-│    → BootstrapResult{ llm_registry, llm_call_limiter,            │
-│                       compilers, graph_builders,                 │
-│                       enrichment_concurrency_settings }          │
+│ 1. bootstrap_from_env │
+│ → BootstrapResult{ llm_registry, llm_call_limiter, │
+│ compilers, graph_builders, │
+│ enrichment_concurrency_settings } │
 ├──────────────────────────────────────────────────────────────────┤
-│ 2. Resolve clients from boot.llm_registry                        │
-│    text_client     = registry.try_text()                         │
-│    vision_client   = registry.try_vision()                       │
-│    embedding_cl    = registry.try_embedding()                    │
-│    (any may be None — fresh deploys without credentials)         │
+│ 2. Resolve clients from boot.llm_registry │
+│ text_client = registry.try_text │
+│ vision_client = registry.try_vision │
+│ embedding_cl = registry.try_embedding │
+│ (any may be None — fresh deploys without credentials) │
 ├──────────────────────────────────────────────────────────────────┤
-│ 3. Wrap text client (optional, explicit)                         │
-│    text_adapter = TextLLMClientAdapter(text_client)              │
-│    Vision client passes through RAW — adapter is per-run.        │
+│ 3. Wrap text client (optional, explicit) │
+│ text_adapter = TextLLMClientAdapter(text_client) │
+│ Vision client passes through RAW — adapter is per-run. │
 ├──────────────────────────────────────────────────────────────────┤
-│ 4. ProcessingActivities(...)                                     │
-│      processing=..., sources=..., artifacts=...,                 │
-│      enrichment_text_client=text_adapter,                        │
-│      enrichment_vision_client=vision_client,    # raw            │
-│      enrichment_llm_call_limiter=boot.llm_call_limiter           │
+│ 4. ProcessingActivities(...) │
+│ processing=..., sources=..., artifacts=..., │
+│ enrichment_text_client=text_adapter, │
+│ enrichment_vision_client=vision_client, # raw │
+│ enrichment_llm_call_limiter=boot.llm_call_limiter │
 ├──────────────────────────────────────────────────────────────────┤
-│ 5. Activity-side per run (inside run_enrichment_stage):          │
-│      provider = WorkspaceImageBytesProvider(                     │
-│          artifact_registry, workspace, ctx, document_id, run_id) │
-│      vision_adapter = PerImageVisionAdapter(                     │
-│          raw_vision_client,                                      │
-│          image_provider=provider,                                │
-│          llm_call_limiter=self._enrichment_llm_call_limiter)     │
-│      modules = build_legacy_enricher_modules(                    │
-│          text_client=enrichment_text_client,                     │
-│          vision_client=vision_adapter,                           │
-│          llm_call_limiter=self._enrichment_llm_call_limiter)     │
+│ 5. Activity-side per run (inside run_enrichment_stage): │
+│ provider = WorkspaceImageBytesProvider( │
+│ artifact_registry, workspace, ctx, document_id, run_id) │
+│ vision_adapter = PerImageVisionAdapter( │
+│ raw_vision_client, │
+│ image_provider=provider, │
+│ llm_call_limiter=self._enrichment_llm_call_limiter) │
+│ modules = build_legacy_enricher_modules( │
+│ text_client=enrichment_text_client, │
+│ vision_client=vision_adapter, │
+│ llm_call_limiter=self._enrichment_llm_call_limiter) │
 ├──────────────────────────────────────────────────────────────────┤
-│ 6. Runtime: each per-image vision call is individually limiter-  │
-│    bounded (Wave 11B). Text / classification / table modules     │
-│    are bounded one-call-per-module-invocation.                   │
+│ 6. Runtime: each per-image vision call is individually limiter- │
+│ bounded. Text / classification / table modules │
+│ are bounded one-call-per-module-invocation. │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,24 +70,24 @@ Bootstrap reads typed settings from env vars and returns the
 ```python
 from j1.compose.bootstrap import bootstrap_from_env
 
-boot = bootstrap_from_env()
-# boot.llm_registry           — LLMProviderRegistry
-# boot.llm_call_limiter       — LLMCallLimiter | None
-# boot.compilers              — Mapping[str, KnowledgeCompiler]
-# boot.enrichment             — EnrichmentSettings (modality flags)
-# boot.enrichment_concurrency_settings  — EnrichmentConcurrencySettings | None
+boot = bootstrap_from_env
+# boot.llm_registry — LLMProviderRegistry
+# boot.llm_call_limiter — LLMCallLimiter | None
+# boot.compilers — Mapping[str, KnowledgeCompiler]
+# boot.enrichment — EnrichmentSettings (modality flags)
+# boot.enrichment_concurrency_settings — EnrichmentConcurrencySettings | None
 ```
 
 ### 2. Resolve LLM clients
 
-The registry exposes `try_*()` accessors that return `None` when
+The registry exposes `try_*` accessors that return `None` when
 the role isn't configured:
 
 ```python
-text_client      = boot.llm_registry.try_text()       # TextLLMClient | None
-vision_client    = boot.llm_registry.try_vision()     # VisionLLMClient | None
-embedding_client = boot.llm_registry.try_embedding()  # EmbeddingClient | None
-fast_client      = boot.llm_registry.try_fast()       # TextLLMClient | None
+text_client = boot.llm_registry.try_text # TextLLMClient | None
+vision_client = boot.llm_registry.try_vision # VisionLLMClient | None
+embedding_client = boot.llm_registry.try_embedding # EmbeddingClient | None
+fast_client = boot.llm_registry.try_fast # TextLLMClient | None
 ```
 
 A `None` here is **not a failure** — it's the documented
@@ -106,7 +106,7 @@ dependency arrow visible:
 from j1.processing.enrichment_clients import TextLLMClientAdapter
 
 enrichment_text_client = (
-    TextLLMClientAdapter(text_client) if text_client else None
+ TextLLMClientAdapter(text_client) if text_client else None
 )
 ```
 
@@ -122,20 +122,20 @@ Thread the three enrichment kwargs through:
 from j1.orchestration.activities.processing import ProcessingActivities
 
 activity = ProcessingActivities(
-    processing=processing_service,
-    sources=source_registry,
-    artifacts=artifact_registry,
-    compilers=dict(boot.compilers),
-    enrichers=dict(resolved_enrichers),
-    graph_builders=dict(boot.graph_builders),
-    indexers={SqliteSearchIndexer.kind: indexer, **(indexers or {})},
-    query_providers=dict(boot.retrieval_providers),
-    progress_reporter=progress_reporter,
-    result_cache=JsonlProcessingResultCache(workspace),
-    # ↓ Wave 10.6 + 11A + 11B
-    enrichment_text_client=enrichment_text_client,        # adapter (or None)
-    enrichment_vision_client=vision_client,                # RAW client
-    enrichment_llm_call_limiter=boot.llm_call_limiter,    # shared limiter
+ processing=processing_service,
+ sources=source_registry,
+ artifacts=artifact_registry,
+ compilers=dict(boot.compilers),
+ enrichers=dict(resolved_enrichers),
+ graph_builders=dict(boot.graph_builders),
+ indexers={SqliteSearchIndexer.kind: indexer, **(indexers or {})},
+ query_providers=dict(boot.retrieval_providers),
+ progress_reporter=progress_reporter,
+ result_cache=JsonlProcessingResultCache(workspace),
+ # ↓ + 11A + 11B
+ enrichment_text_client=enrichment_text_client, # adapter (or None)
+ enrichment_vision_client=vision_client, # RAW client
+ enrichment_llm_call_limiter=boot.llm_call_limiter, # shared limiter
 )
 ```
 
@@ -146,21 +146,21 @@ deployment-side work** required here — this is documented for the
 audit trail. The activity:
 
 - Builds `WorkspaceImageBytesProvider(artifact_registry, workspace,
-  ctx, document_id, run_id)` so the provider resolves
-  `compile.image` artifacts for the current run.
+ ctx, document_id, run_id)` so the provider resolves
+ `compile.image` artifacts for the current run.
 - Wraps the raw vision client in `PerImageVisionAdapter(raw,
-  image_provider=provider, llm_call_limiter=...)`.
+ image_provider=provider, llm_call_limiter=...)`.
 - Calls `build_legacy_enricher_modules(text_client=...,
-  vision_client=adapter, llm_call_limiter=...)`.
+ vision_client=adapter, llm_call_limiter=...)`.
 - Registers the four legacy-compatible adapter modules alongside
-  the Wave-6 skeleton modules in `CompositeEnrichmentRunner`.
+ the skeleton modules in `CompositeEnrichmentRunner`.
 
 ### 6. Backward-compatible path
 
 If the caller (tests, alternate composition) supplies a
 pre-constructed `VisionAnalysisClient` (any object with `.analyze`),
 the activity uses it as-is — no re-wrap. This preserves the
-Wave-10.6 test composition without forcing every test to construct
+ test composition without forcing every test to construct
 a provider.
 
 ## Configuration / env settings
@@ -217,17 +217,17 @@ All of these surface in `final_ingestion_report.enrichment_summary.module_outcom
 After deploying a new worker:
 
 1. Hit `GET /capabilities` — confirms which provider kinds the API
-   knows about.
+ knows about.
 2. Upload a small PDF → wait for `run.completed` event.
 3. Fetch `GET /ingestion-runs/{run_id}/final-ingestion-report`:
-   - Verify `final_status == "completed_with_enrichment"` (or
-     `"completed_without_enrichment"` if the plan said SKIP).
-   - Verify `enrichment_summary.module_outcomes` includes the 7
-     module ids (3 skeletons + 4 legacy-compatible adapters).
-   - Verify any SKIPPED modules carry a useful reason.
+ - Verify `final_status == "completed_with_enrichment"` (or
+ `"completed_without_enrichment"` if the plan said SKIP).
+ - Verify `enrichment_summary.module_outcomes` includes the 7
+ module ids (3 skeletons + 4 legacy-compatible adapters).
+ - Verify any SKIPPED modules carry a useful reason.
 4. If you wired vision: upload a PDF with images → confirm
-   `image_summaries[]` is populated + `provenance.source_artifact_id`
-   points at a `compile.image` artifact.
+ `image_summaries[]` is populated + `provenance.source_artifact_id`
+ points at a `compile.image` artifact.
 
 ## Related pages
 

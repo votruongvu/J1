@@ -121,9 +121,9 @@ _OCTET_STREAM = "application/octet-stream"
 def _derive_media_type(location: str) -> tuple[str, bool]:
     """Return `(media_type, is_inline)` for an artifact location.
 
-    `is_inline=False` means the FE should download the file rather
-    than try to render it; the REST handler sets `Content-Disposition:
-    attachment` for those."""
+ `is_inline=False` means the FE should download the file rather
+ than try to render it; the REST handler sets `Content-Disposition:
+ attachment` for those."""
     ext = PurePosixPath(location).suffix.lower()
     media = _INLINE_MEDIA_TYPES.get(ext)
     if media is None:
@@ -134,8 +134,8 @@ def _derive_media_type(location: str) -> tuple[str, bool]:
 @dataclass(frozen=True)
 class ArtifactContent:
     """Bytes + metadata for one artifact, returned by
-    `read_run_artifact_content`. The REST handler turns this into a
-    `Response`; the service stays framework-agnostic."""
+ `read_run_artifact_content`. The REST handler turns this into a
+ `Response`; the service stays framework-agnostic."""
 
     artifact_id: str
     bytes: bytes
@@ -149,9 +149,9 @@ class ArtifactContent:
 class IngestionResultReviewService:
     """Read-only review surface for completed ingestion runs.
 
-    Constructor takes the data sources directly — no facade, no
-    container — so the wiring layer is explicit and the service is
-    trivially constructable in tests."""
+ Constructor takes the data sources directly — no facade, no
+ container — so the wiring layer is explicit and the service is
+ trivially constructable in tests."""
 
     def __init__(
         self,
@@ -178,12 +178,12 @@ class IngestionResultReviewService:
     def summarize_run(self, ctx: ProjectContext, run_id: str) -> RunSummaryDTO:
         """Build a Results-tab Overview projection for the given run.
 
-        Returns a `RunSummaryDTO` with the data the FE needs to render
-        the Overview tab AND decide which other tabs to enable
-        (`available_views`).
+ Returns a `RunSummaryDTO` with the data the FE needs to render
+ the Overview tab AND decide which other tabs to enable
+ (`available_views`).
 
-        Raises `ReviewNotFound` when the run doesn't exist in the
-        caller's tenant/project."""
+ Raises `ReviewNotFound` when the run doesn't exist in the
+ caller's tenant/project."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         warnings = self._read_warnings(ctx, run_id)
@@ -230,10 +230,10 @@ class IngestionResultReviewService:
     ) -> ArtifactPageDTO:
         """Return artifacts produced by `run`, paginated.
 
-        Filtering by `kind` happens AFTER run-scoping — the page count
-        always reflects the run's filtered set, never the project-wide
-        artifact count. Ordering is `created_at` ascending so re-fetching
-        a page yields the same items even if new artifacts arrive."""
+ Filtering by `kind` happens AFTER run-scoping — the page count
+ always reflects the run's filtered set, never the project-wide
+ artifact count. Ordering is `created_at` ascending so re-fetching
+ a page yields the same items even if new artifacts arrive."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         if kind is not None:
@@ -263,10 +263,10 @@ class IngestionResultReviewService:
     ) -> ArtifactContent:
         """Read the bytes for one artifact, verifying full ownership.
 
-        Ownership chain: tenant + project (from `ctx`) → run (must
-        exist in ctx) → artifact (must belong to the run). Any break
-        raises `ReviewNotFound` so cross-tenant / cross-run probing
-        looks identical to "missing"."""
+ Ownership chain: tenant + project (from `ctx`) → run (must
+ exist in ctx) → artifact (must belong to the run). Any break
+ raises `ReviewNotFound` so cross-tenant / cross-run probing
+ looks identical to "missing"."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         record = _find_artifact(artifacts, artifact_id)
@@ -312,10 +312,10 @@ class IngestionResultReviewService:
     ) -> ChunkPageDTO:
         """Return chunks produced by the run, paginated.
 
-        `status` is matched against `chunk.metadata["status"]` (case-
-        insensitive). `min_confidence` drops chunks whose `confidence`
-        is below the threshold OR missing — so the filter is a strict
-        floor, never a "show me chunks I don't know about" loophole."""
+ `status` is matched against `chunk.metadata["status"]` (case-
+ insensitive). `min_confidence` drops chunks whose `confidence`
+ is below the threshold OR missing — so the filter is a strict
+ floor, never a "show me chunks I don't know about" loophole."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         records = self._project_chunks(ctx, artifacts)
@@ -342,10 +342,10 @@ class IngestionResultReviewService:
     ) -> ChunkDetailDTO:
         """Return one chunk in detail view (full body + lineage).
 
-        Scans every chunk in the run; this is fine for typical document
-        sizes (hundreds to a few thousand chunks). If a deployment grows
-        past that, the projector should add a per-request index — left
-        for a follow-up."""
+ Scans every chunk in the run; this is fine for typical document
+ sizes (hundreds to a few thousand chunks). If a deployment grows
+ past that, the projector should add a per-request index — left
+ for a follow-up."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         records = self._project_chunks(ctx, artifacts)
@@ -366,11 +366,11 @@ class IngestionResultReviewService:
     ) -> Iterable[bytes]:
         """Return a streaming NDJSON byte iterator, one line per chunk.
 
-        Validation (`_load_run` → ownership check → projection) runs
-        EAGERLY at call time so a `ReviewNotFound` propagates BEFORE
-        the REST handler hands the iterator to `StreamingResponse`.
-        Otherwise the response would already be 200 by the time the
-        generator's first `next()` raised."""
+ Validation (`_load_run` → ownership check → projection) runs
+ EAGERLY at call time so a `ReviewNotFound` propagates BEFORE
+ the REST handler hands the iterator to `StreamingResponse`.
+ Otherwise the response would already be 200 by the time the
+ generator's first `next` raised."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         records = self._project_chunks(ctx, artifacts)
@@ -394,19 +394,19 @@ class IngestionResultReviewService:
     ) -> QualityReportDTO:
         """Compose the run's quality report as a neutral DTO.
 
-        Inputs (composed inside the projector):
-          * `enriched.confidence_assessment` artifacts → overall +
-            modality + low-confidence findings.
-          * `enriched.consistency_findings` artifacts →
-            low-confidence findings (consistency side).
-          * Audit-log warnings for the run → `warnings[]`.
-          * Persisted `step_results` → `skippedSteps[]` /
-            `failedOptionalSteps[]`.
+ Inputs (composed inside the projector):
+ * `enriched.confidence_assessment` artifacts → overall +
+ modality + low-confidence findings.
+ * `enriched.consistency_findings` artifacts →
+ low-confidence findings (consistency side).
+ * Audit-log warnings for the run → `warnings[]`.
+ * Persisted `step_results` → `skippedSteps[]` /
+ `failedOptionalSteps[]`.
 
-        `include_raw=True` populates the optional `rawDebug` field with
-        the unprojected source JSON. Off by default — vendor-shaped
-        payloads should never reach the FE through the standard
-        contract."""
+ `include_raw=True` populates the optional `rawDebug` field with
+ the unprojected source JSON. Off by default — vendor-shaped
+ payloads should never reach the FE through the standard
+ contract."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
         warnings = self._read_warnings(ctx, run_id)
@@ -435,14 +435,14 @@ class IngestionResultReviewService:
     ) -> GraphSnapshotDTO:
         """Project the run's graph_json artifacts into a neutral DTO.
 
-        When the run produced no graph artifacts, the snapshot's
-        `unavailable.reason` is populated with the same copy used by
-        `availableViews.graph.reason` in the run summary — single
-        source of truth via `graph_unavailable_reason()`.
+ When the run produced no graph artifacts, the snapshot's
+ `unavailable.reason` is populated with the same copy used by
+ `availableViews.graph.reason` in the run summary — single
+ source of truth via `graph_unavailable_reason`.
 
-        `max_nodes` / `max_edges` are per-list caps applied in the
-        projector. The REST handler clamps them to
-        `ABS_MAX_GRAPH_NODES` / `ABS_MAX_GRAPH_EDGES` upstream."""
+ `max_nodes` / `max_edges` are per-list caps applied in the
+ projector. The REST handler clamps them to
+ `ABS_MAX_GRAPH_NODES` / `ABS_MAX_GRAPH_EDGES` upstream."""
         run = self._load_run(ctx, run_id)
         artifacts = self._resolve_run_artifacts(ctx, run)
 
@@ -468,20 +468,20 @@ class IngestionResultReviewService:
         run_id: str,
     ) -> ContentInventoryDTO:
         """Project the run's `parsed_content_manifest` artifact into
-        a normalized DTO the FE consumes for the Content Inventory
-        tab.
+ a normalized DTO the FE consumes for the Content Inventory
+ tab.
 
-        Reads ALL parsed-content manifest artifacts produced by this
-        run and aggregates them — typically there's one per document,
-        but a multi-document run combines them so the FE can show
-        a single "what did the parser find?" view.
+ Reads ALL parsed-content manifest artifacts produced by this
+ run and aggregates them — typically there's one per document,
+ but a multi-document run combines them so the FE can show
+ a single "what did the parser find?" view.
 
-        When no manifest artifact exists (legacy runs, runs that
-        haven't reached the manifest-emit step yet, runs that failed
-        during compile), returns a `status="unavailable"` payload
-        with the same operator-readable reason the availability
-        resolver uses — single source of truth for the empty-state
-        copy."""
+ When no manifest artifact exists (legacy runs, runs that
+ haven't reached the manifest-emit step yet, runs that failed
+ during compile), returns a `status="unavailable"` payload
+ with the same operator-readable reason the availability
+ resolver uses — single source of truth for the empty-state
+ copy."""
         from j1.processing.manifest import ParsedContentManifest
         from j1.processing.results import ARTIFACT_KIND_PARSED_CONTENT_MANIFEST
 
@@ -613,23 +613,23 @@ class IngestionResultReviewService:
     ) -> PlanningResultDTO:
         """Build the Planning Report response for the given run.
 
-        Resolution order:
-          1. **`planning_result` artifact (preferred).** When the
-             post-compile planning activity ran, it persists the full
-             Processing Plan as an artifact. We project that into the
-             DTO and surface every section the FE renders (Document
-             Understanding, Content Report, Quality Report, Execution
-             Plan, rule-based comparison).
-          2. **Audit-log fallback.** Older runs (pre-Phase 2 of
-             post-compile planning, or runs where the activity was
-             disabled / failed) only have `plan.generated` events in
-             the audit log. We project those into the same DTO with
-             `source="audit_log"`.
-          3. **Unavailable.** Neither source yielded a plan — return
-             `status="unavailable"` + an operator-readable reason.
+ Resolution order:
+ 1. **`planning_result` artifact (preferred).** When the
+ post-compile planning activity ran, it persists the full
+ Processing Plan as an artifact. We project that into the
+ DTO and surface every section the FE renders (Document
+ Understanding, Content Report, Quality Report, Execution
+ Plan, rule-based comparison).
+ 2. **Audit-log fallback.** Older runs (pre- of
+ post-compile planning, or runs where the activity was
+ disabled / failed) only have `plan.generated` events in
+ the audit log. We project those into the same DTO with
+ `source="audit_log"`.
+ 3. **Unavailable.** Neither source yielded a plan — return
+ `status="unavailable"` + an operator-readable reason.
 
-        Raises `ReviewNotFound` when the run doesn't exist in the
-        caller's tenant/project."""
+ Raises `ReviewNotFound` when the run doesn't exist in the
+ caller's tenant/project."""
         run = self._load_run(ctx, run_id)
 
         # 1. Try the post-compile planning_result artifact first.
@@ -714,18 +714,18 @@ class IngestionResultReviewService:
         ctx: ProjectContext,
         run_id: str,
     ) -> dict:
-        """Return the Wave-6 typed enrichment overlay for `run_id`.
+        """Return the typed enrichment overlay for `run_id`.
 
-        Reads the `enrichment_result` artifact (persisted after the
-        post-compile enrichment stage runs). Same envelope shape as
-        the other overlay endpoints: `status / runId / plan /
-        artifactId` (`plan` carries the
-        `EnrichmentResult.to_payload()` dict here).
+ Reads the `enrichment_result` artifact (persisted after the
+ post-compile enrichment stage runs). Same envelope shape as
+ the other overlay endpoints: `status / runId / plan /
+ artifactId` (`plan` carries the
+ `EnrichmentResult.to_payload` dict here).
 
-        Returns `status="unavailable"` with an operator-readable
-        `unavailableReason` when no enrichment_result artifact has
-        been persisted yet — e.g. enrichment was skipped by policy,
-        the run predates the overlay, or persistence failed."""
+ Returns `status="unavailable"` with an operator-readable
+ `unavailableReason` when no enrichment_result artifact has
+ been persisted yet — e.g. enrichment was skipped by policy,
+ the run predates the overlay, or persistence failed."""
         from j1.processing.results import ARTIFACT_KIND_ENRICHMENT_RESULT
 
         run = self._load_run(ctx, run_id)
@@ -792,15 +792,15 @@ class IngestionResultReviewService:
     ) -> dict:
         """Return the typed normalized compile result for `run_id`.
 
-        Reads the `compile_result_summary` artifact (persisted by
-        `_persist_compile_result_summary` after compile + retry loop
-        completes). Mirrors `get_run_initial_execution_plan` /
-        `get_run_enrich_plan` envelope shape; `plan` is the
-        `NormalizedCompileResult.to_payload()` dict.
+ Reads the `compile_result_summary` artifact (persisted by
+ `_persist_compile_result_summary` after compile + retry loop
+ completes). Mirrors `get_run_initial_execution_plan` /
+ `get_run_enrich_plan` envelope shape; `plan` is the
+ `NormalizedCompileResult.to_payload` dict.
 
-        Returns `status="unavailable"` with a reason when the
-        artifact wasn't persisted (legacy run, compile failed before
-        the persist step, persistence failed)."""
+ Returns `status="unavailable"` with a reason when the
+ artifact wasn't persisted (legacy run, compile failed before
+ the persist step, persistence failed)."""
         from j1.processing.results import ARTIFACT_KIND_COMPILE_RESULT_SUMMARY
 
         run = self._load_run(ctx, run_id)
@@ -866,17 +866,17 @@ class IngestionResultReviewService:
     ) -> dict:
         """Return the pre-compile initial execution plan for `run_id`.
 
-        Reads the `initial_execution_plan` artifact (persisted by the
-        workflow's pre-compile `build_initial_execution_plan` activity).
-        When no artifact exists — e.g. legacy run, profiling failed,
-        run hasn't reached the pre-compile build yet — the response
-        carries `status="unavailable"` with an operator-readable
-        reason. Schema is the `InitialExecutionPlan.to_payload()`
-        dict, exposed under the `plan` field; the wrapping dict adds
-        `runId` / `documentId` / `unavailableReason` for FE rendering.
+ Reads the `initial_execution_plan` artifact (persisted by the
+ workflow's pre-compile `build_initial_execution_plan` activity).
+ When no artifact exists — e.g. legacy run, profiling failed,
+ run hasn't reached the pre-compile build yet — the response
+ carries `status="unavailable"` with an operator-readable
+ reason. Schema is the `InitialExecutionPlan.to_payload`
+ dict, exposed under the `plan` field; the wrapping dict adds
+ `runId` / `documentId` / `unavailableReason` for FE rendering.
 
-        Raises `ReviewNotFound` when the run doesn't exist in the
-        caller's tenant/project."""
+ Raises `ReviewNotFound` when the run doesn't exist in the
+ caller's tenant/project."""
         from j1.processing.results import ARTIFACT_KIND_INITIAL_EXECUTION_PLAN
 
         run = self._load_run(ctx, run_id)
@@ -941,22 +941,22 @@ class IngestionResultReviewService:
         ctx: ProjectContext,
         run_id: str,
     ) -> dict:
-        """Wave 10 — return the aggregated end-to-end final ingestion
-        report for `run_id`.
+        """return the aggregated end-to-end final ingestion
+ report for `run_id`.
 
-        Reads the `final_ingestion_report` artifact (persisted by
-        the workflow at terminal). Same envelope shape as the other
-        artifact endpoints:
-          * `status="completed"` + the typed `report` payload when the
-            artifact exists and was readable.
-          * `status="unavailable"` + `unavailableReason` when the
-            artifact wasn't persisted yet (in-flight run), or for
-            pre-Wave-10 runs that completed before this artifact
-            kind was introduced. The FE falls back to per-artifact
-            endpoints in this case.
+ Reads the `final_ingestion_report` artifact (persisted by
+ the workflow at terminal). Same envelope shape as the other
+ artifact endpoints:
+ * `status="completed"` + the typed `report` payload when the
+ artifact exists and was readable.
+ * `status="unavailable"` + `unavailableReason` when the
+ artifact wasn't persisted yet (in-flight run), or for
+ pre- runs that completed before this artifact
+ kind was introduced. The FE falls back to per-artifact
+ endpoints in this case.
 
-        Raises `ReviewNotFound` when the run doesn't exist in the
-        caller's tenant/project."""
+ Raises `ReviewNotFound` when the run doesn't exist in the
+ caller's tenant/project."""
         from j1.processing.results import ARTIFACT_KIND_FINAL_INGESTION_REPORT
 
         run = self._load_run(ctx, run_id)
@@ -975,8 +975,9 @@ class IngestionResultReviewService:
                 **base,
                 "status": "unavailable",
                 "unavailableReason": (
-                    "final_ingestion_report_not_available — this run "
-                    "predates Wave 10 or hasn't reached terminal yet"
+                    "final_ingestion_report_not_available — this is a "
+                    "legacy run with no aggregate report, or the run "
+                    "has not reached terminal yet"
                 ),
                 "report": None,
             }
@@ -1021,18 +1022,18 @@ class IngestionResultReviewService:
     ) -> dict:
         """Return the post-compile rule-based enrich-plan for `run_id`.
 
-        Reads the `post_compile_enrich_plan` artifact (persisted by
-        the workflow's `_run_post_compile_enrich_assessment` step).
-        When no artifact exists — e.g. legacy run, compile failed
-        before assessment, run hasn't reached post-compile yet — the
-        response carries `status="unavailable"` with an
-        operator-readable reason. Schema is the
-        `PostCompileEnrichPlan.to_payload()` dict, exposed under the
-        `plan` field; the wrapping dict adds `runId` /
-        `documentId` / `unavailableReason` for FE rendering.
+ Reads the `post_compile_enrich_plan` artifact (persisted by
+ the workflow's `_run_post_compile_enrich_assessment` step).
+ When no artifact exists — e.g. legacy run, compile failed
+ before assessment, run hasn't reached post-compile yet — the
+ response carries `status="unavailable"` with an
+ operator-readable reason. Schema is the
+ `PostCompileEnrichPlan.to_payload` dict, exposed under the
+ `plan` field; the wrapping dict adds `runId` /
+ `documentId` / `unavailableReason` for FE rendering.
 
-        Raises `ReviewNotFound` when the run doesn't exist in the
-        caller's tenant/project."""
+ Raises `ReviewNotFound` when the run doesn't exist in the
+ caller's tenant/project."""
         from j1.processing.results import ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN
 
         run = self._load_run(ctx, run_id)
@@ -1096,13 +1097,13 @@ class IngestionResultReviewService:
         self, ctx: ProjectContext, run, run_id: str,
     ) -> "PlanningResultDTO | None":
         """Return a `PlanningResultDTO` projected from the run's
-        `planning_result` artifact, or None when no artifact exists.
+ `planning_result` artifact, or None when no artifact exists.
 
-        Production path for runs whose post-compile planning activity
-        ran. The projector translates the artifact's persistent shape
-        into the DTO in one place so the audit-log fallback and the
-        artifact path don't drift.
-        """
+ Production path for runs whose post-compile planning activity
+ ran. The projector translates the artifact's persistent shape
+ into the DTO in one place so the audit-log fallback and the
+ artifact path don't drift.
+ """
         from j1.processing.planning_result import PlanningResult
         from j1.processing.results import ARTIFACT_KIND_PLANNING_RESULT
 
@@ -1139,12 +1140,12 @@ class IngestionResultReviewService:
         self, ctx: ProjectContext, run_id: str,
     ) -> tuple[dict | None, str | None]:
         """Walk the audit log and return the most recent
-        `plan.generated` / `plan.revised` payload for `run_id`.
+ `plan.generated` / `plan.revised` payload for `run_id`.
 
-        Single source of truth for "what plan does the FE render?".
-        Mirrors the REST adapter's `_read_run_plan` but stays in the
-        service so the projector can return a richer DTO without
-        leaking parsing logic into the adapter."""
+ Single source of truth for "what plan does the FE render?".
+ Mirrors the REST adapter's `_read_run_plan` but stays in the
+ service so the projector can return a richer DTO without
+ leaking parsing logic into the adapter."""
         path = self._workspace.audit(ctx) / AUDIT_LOG_FILENAME
         if not path.exists():
             return None, None
@@ -1185,7 +1186,7 @@ class IngestionResultReviewService:
         self, ctx: ProjectContext, run_id: str,
     ) -> bool:
         """Cheap existence check used by `summarize_run` to set
-        `availableViews.planning`. Avoids reshaping the payload."""
+ `availableViews.planning`. Avoids reshaping the payload."""
         path = self._workspace.audit(ctx) / AUDIT_LOG_FILENAME
         if not path.exists():
             return False
@@ -1209,12 +1210,12 @@ class IngestionResultReviewService:
         self, ctx: ProjectContext, run: IngestionRun,
     ) -> PlanningContentDigestDTO | None:
         """Build the lightweight content digest from the parsed-content
-        manifest artifact, capped by the deployment's planning settings.
+ manifest artifact, capped by the deployment's planning settings.
 
-        Returns None when no manifest exists yet — typical when the
-        Planning Report is consumed mid-run, before compile finishes.
-        The DTO's `digest=None` lets the FE render the rule-based
-        assessment without a digest panel."""
+ Returns None when no manifest exists yet — typical when the
+ Planning Report is consumed mid-run, before compile finishes.
+ The DTO's `digest=None` lets the FE render the rule-based
+ assessment without a digest panel."""
         from j1.processing.manifest import ParsedContentManifest
         from j1.processing.results import (
             ARTIFACT_KIND_PARSED_CONTENT_MANIFEST,
@@ -1268,14 +1269,14 @@ class IngestionResultReviewService:
     ) -> PlanningLLMRecommendationDTO:
         """Assemble the LLM-recommendation block.
 
-        Today this is a thin skeleton driven by:
-          * The plan payload's `fast_llm_used` flag — if the rule-based
-            planner already consulted a fast LLM hint, surface that.
-          * The deployment's `J1_LLM_PLANNING_ENABLED` setting.
+ Today this is a thin skeleton driven by:
+ * The plan payload's `fast_llm_used` flag — if the rule-based
+ planner already consulted a fast LLM hint, surface that.
+ * The deployment's `J1_LLM_PLANNING_ENABLED` setting.
 
-        Phase 2 will swap in a real LLM-assisted planner that produces
-        a structured recommendation; the DTO shape is forwards
-        compatible so adding the call doesn't break consumers."""
+ will swap in a real LLM-assisted planner that produces
+ a structured recommendation; the DTO shape is forwards
+ compatible so adding the call doesn't break consumers."""
         if not self._planning_settings.llm_planning_enabled:
             return PlanningLLMRecommendationDTO(
                 status="disabled",
@@ -1310,21 +1311,21 @@ class IngestionResultReviewService:
     ) -> dict[str, Any]:
         """Soft-delete an ingestion run.
 
-        Tombstones the `IngestionRun` record (status=DELETED) and
-        every `ArtifactRecord` belonging to the run (sets
-        `metadata.deleted_at`). Tombstoned records stay on disk for
-        audit; `_resolve_run_artifacts` excludes them from every
-        read path so the FE no longer surfaces them.
+ Tombstones the `IngestionRun` record (status=DELETED) and
+ every `ArtifactRecord` belonging to the run (sets
+ `metadata.deleted_at`). Tombstoned records stay on disk for
+ audit; `_resolve_run_artifacts` excludes them from every
+ read path so the FE no longer surfaces them.
 
-        Idempotent — calling twice produces the same response shape;
-        the second call counts zero newly-tombstoned records.
+ Idempotent — calling twice produces the same response shape;
+ the second call counts zero newly-tombstoned records.
 
-        Returns a deletion-report dict the REST layer envelopes:
-        `{run_id, status, tombstoned_artifact_count, was_already_deleted, deleted_at}`.
+ Returns a deletion-report dict the REST layer envelopes:
+ `{run_id, status, tombstoned_artifact_count, was_already_deleted, deleted_at}`.
 
-        Raises `ReviewNotFound` if the run doesn't exist.
-        Raises `RunStillActive` (409 at the REST boundary) if the run
-        is currently RUNNING — operators must `cancel` first."""
+ Raises `ReviewNotFound` if the run doesn't exist.
+ Raises `RunStillActive` (409 at the REST boundary) if the run
+ is currently RUNNING — operators must `cancel` first."""
         from datetime import datetime, timezone
         from j1.runs.models import RunStatus
 
@@ -1370,7 +1371,7 @@ class IngestionResultReviewService:
                     continue
                 except Exception:  # noqa: BLE001
                     pass
-            # Fallback: replace via add() — works on the in-memory
+            # Fallback: replace via add — works on the in-memory
             # test fixture, no-ops on a real registry that rejects
             # duplicate ids.
             from dataclasses import replace as _replace
@@ -1407,34 +1408,34 @@ class IngestionResultReviewService:
         candidate_settings: dict[str, Any],
     ) -> dict[str, Any]:
         """Validate that the prior run is resumable under the candidate
-        settings and return the carry-forward plan.
+ settings and return the carry-forward plan.
 
-        Pure validation — does NOT create a new run record or dispatch
-        a workflow. The REST endpoint composes this with run-record
-        creation and workflow dispatch (so the service stays
-        store-agnostic and easy to test).
+ Pure validation — does NOT create a new run record or dispatch
+ a workflow. The REST endpoint composes this with run-record
+ creation and workflow dispatch (so the service stays
+ store-agnostic and easy to test).
 
-        `candidate_settings` is the proposed-new-run settings dict
-        (same shape as `RESUME_SETTINGS_FIELDS`). When the prior run's
-        snapshot hash matches, the returned dict carries:
+ `candidate_settings` is the proposed-new-run settings dict
+ (same shape as `RESUME_SETTINGS_FIELDS`). When the prior run's
+ snapshot hash matches, the returned dict carries:
 
-            {
-              "run_id": str,                 # the prior run id
-              "snapshot": dict,              # the full resume_snapshot
-              "resumable_steps": list[str],  # steps the new run can skip
-              "carry_forward_artifact_ids": list[str],
-              "carry_forward_artifact_kinds": list[str],
-            }
+ {
+ "run_id": str, # the prior run id
+ "snapshot": dict, # the full resume_snapshot
+ "resumable_steps": list[str], # steps the new run can skip
+ "carry_forward_artifact_ids": list[str],
+ "carry_forward_artifact_kinds": list[str],
+ }
 
-        Raises:
-          - `ReviewNotFound` if the run doesn't exist (404).
-          - `RunStillActive` if the run is in an in-flight state (409).
-          - `ResumeNotPossible` if the run is DELETED, terminated
-            without a snapshot, or status is otherwise non-terminal
-            in a way resume can't proceed (412).
-          - `ResumeIncompatible` if `candidate_settings` doesn't match
-            the prior settings hash (412 with structured diff).
-        """
+ Raises:
+ - `ReviewNotFound` if the run doesn't exist (404).
+ - `RunStillActive` if the run is in an in-flight state (409).
+ - `ResumeNotPossible` if the run is DELETED, terminated
+ without a snapshot, or status is otherwise non-terminal
+ in a way resume can't proceed (412).
+ - `ResumeIncompatible` if `candidate_settings` doesn't match
+ the prior settings hash (412 with structured diff).
+ """
         from j1.ingestion_review.exceptions import (
             ResumeIncompatible, ResumeNotPossible,
         )
@@ -1505,43 +1506,43 @@ class IngestionResultReviewService:
     ) -> dict[str, Any]:
         """Hard-delete an ingestion run.
 
-        Physically removes:
-          1. Each artifact file on disk (via `Path.unlink`).
-          2. Each artifact record in the registry (via
-             `delete_by_artifact_id`).
-          3. Every JSONL snapshot of the run record (via
-             `IngestionRunStore.purge`).
+ Physically removes:
+ 1. Each artifact file on disk (via `Path.unlink`).
+ 2. Each artifact record in the registry (via
+ `delete_by_artifact_id`).
+ 3. Every JSONL snapshot of the run record (via
+ `IngestionRunStore.purge`).
 
-        Audit-log events are PRESERVED — compliance requires the
-        full history of what happened, even after the run record is
-        gone. Validation sets / runs that reference this run_id are
-        cascaded separately by the REST orchestration (the review
-        service doesn't own those stores).
+ Audit-log events are PRESERVED — compliance requires the
+ full history of what happened, even after the run record is
+ gone. Validation sets / runs that reference this run_id are
+ cascaded separately by the REST orchestration (the review
+ service doesn't own those stores).
 
-        `require_already_deleted=True` (default) refuses to operate
-        on a run that hasn't been soft-deleted first. Two-step
-        ritual reduces accidental data loss — the operator does
-        DELETE → confirm → POST /purge. Set False to skip the gate
-        when an operator explicitly invokes purge on an undeleted
-        terminal run (admin tooling).
+ `require_already_deleted=True` (default) refuses to operate
+ on a run that hasn't been soft-deleted first. Two-step
+ ritual reduces accidental data loss — the operator does
+ DELETE → confirm → POST /purge. Set False to skip the gate
+ when an operator explicitly invokes purge on an undeleted
+ terminal run (admin tooling).
 
-        Returns a report dict the REST layer envelopes:
-          {
-            "run_id": str,
-            "artifacts_purged": int,        # records removed
-            "files_deleted": int,            # files actually removed from disk
-            "files_missing": int,            # already absent (idempotent path)
-            "snapshots_removed": int,        # JSONL snapshots of run record
-            "purged_at": str (ISO),
-          }
+ Returns a report dict the REST layer envelopes:
+ {
+ "run_id": str,
+ "artifacts_purged": int, # records removed
+ "files_deleted": int, # files actually removed from disk
+ "files_missing": int, # already absent (idempotent path)
+ "snapshots_removed": int, # JSONL snapshots of run record
+ "purged_at": str (ISO),
+ }
 
-        Raises:
-          - `ReviewNotFound` if the run doesn't exist (404).
-          - `RunStillActive` if the run is in an in-flight state (409).
-          - `RunNotTerminal` if `require_already_deleted=True` and
-            the run isn't already soft-deleted (409 — operator
-            must `DELETE` first).
-        """
+ Raises:
+ - `ReviewNotFound` if the run doesn't exist (404).
+ - `RunStillActive` if the run is in an in-flight state (409).
+ - `RunNotTerminal` if `require_already_deleted=True` and
+ the run isn't already soft-deleted (409 — operator
+ must `DELETE` first).
+ """
         from j1.ingestion_review.exceptions import RunNotTerminal
         from j1.runs.models import RunStatus
 
@@ -1625,27 +1626,27 @@ class IngestionResultReviewService:
         run_id: str,
     ) -> dict[str, Any]:
         """Validate that the prior run has chunks the index can re-read
-        and return the carry-forward chunk artifact IDs.
+ and return the carry-forward chunk artifact IDs.
 
-        Pure validation — does NOT create a new run record or dispatch
-        a workflow. The REST endpoint composes this with run-record
-        creation and workflow dispatch.
+ Pure validation — does NOT create a new run record or dispatch
+ a workflow. The REST endpoint composes this with run-record
+ creation and workflow dispatch.
 
-        Returns:
-            {
-              "run_id": str,                            # the prior run id
-              "chunk_artifact_ids": list[str],          # carry-forward IDs
-              "chunk_artifact_kinds": list[str],        # parallel kinds
-              "indexer_kind": str | None,               # the prior run's indexer
-            }
+ Returns:
+ {
+ "run_id": str, # the prior run id
+ "chunk_artifact_ids": list[str], # carry-forward IDs
+ "chunk_artifact_kinds": list[str], # parallel kinds
+ "indexer_kind": str | None, # the prior run's indexer
+ }
 
-        Raises:
-          - `ReviewNotFound` if the run doesn't exist (404).
-          - `RunStillActive` if the run is in an in-flight state (409).
-          - `ResumeNotPossible` if the run is DELETED, never produced
-            chunks, or has no resume snapshot for the carry-forward
-            (412).
-        """
+ Raises:
+ - `ReviewNotFound` if the run doesn't exist (404).
+ - `RunStillActive` if the run is in an in-flight state (409).
+ - `ResumeNotPossible` if the run is DELETED, never produced
+ chunks, or has no resume snapshot for the carry-forward
+ (412).
+ """
         from j1.ingestion_review.exceptions import ResumeNotPossible
         from j1.runs.models import RunStatus
 
@@ -1712,16 +1713,16 @@ class IngestionResultReviewService:
     ) -> list[_ChunkRecord]:
         """Run the chunk projector against this run's artifacts.
 
-        Centralized so list / detail / export all see the same chunks
-        in the same order — pagination invariants depend on this."""
+ Centralized so list / detail / export all see the same chunks
+ in the same order — pagination invariants depend on this."""
         projector = ChunkProjector(path_resolver=self._artifact_path_resolver(ctx))
         return projector.project_records(artifacts)
 
     def _artifact_path_resolver(self, ctx: ProjectContext):
         """Closure binding the path-traversal guard to the caller's
-        context. Passed to projectors so they can stay workspace-
-        agnostic — used by both `ChunkProjector` and
-        `QualityReportProjector`."""
+ context. Passed to projectors so they can stay workspace-
+ agnostic — used by both `ChunkProjector` and
+ `QualityReportProjector`."""
         def _resolve(record: ArtifactRecord) -> Path:
             return self._resolve_artifact_path(ctx, record)
         return _resolve
@@ -1730,16 +1731,16 @@ class IngestionResultReviewService:
         self, ctx: ProjectContext, record: ArtifactRecord,
     ) -> Path:
         """Resolve `record.location` to an absolute path on disk, with
-        a defense-in-depth path-traversal guard.
+ a defense-in-depth path-traversal guard.
 
-        `location` is registry-controlled (we wrote it via
-        `ProcessingService._register_draft` as `f"{area}/{filename}"`),
-        but a tampered registry — or a future producer that writes
-        `..` into the field — must not be able to escape the project
-        workspace. Two checks:
+ `location` is registry-controlled (we wrote it via
+ `ProcessingService._register_draft` as `f"{area}/{filename}"`),
+ but a tampered registry — or a future producer that writes
+ `..` into the field — must not be able to escape the project
+ workspace. Two checks:
 
-          1. The first path segment must name a known `WorkspaceArea`.
-          2. The resolved path must stay within the area directory."""
+ 1. The first path segment must name a known `WorkspaceArea`.
+ 2. The resolved path must stay within the area directory."""
         location = record.location.strip()
         if not location:
             raise ReviewNotFound("artifact has no location")
@@ -1784,29 +1785,29 @@ class IngestionResultReviewService:
     ) -> list[ArtifactRecord]:
         """Return artifacts produced by `run`.
 
-        Two strategies, applied in order:
+ Two strategies, applied in order:
 
-          1. **Direct tag** — match `record.metadata["run_id"] == run.run_id`.
-             Fast path for runs whose artifacts were tagged at registration
-             time (Phase 4).
+ 1. **Direct tag** — match `record.metadata["run_id"] == run.run_id`.
+ Fast path for runs whose artifacts were tagged at registration
+ time.
 
-          2. **Lineage fallback (transitive)** — start from artifacts whose
-             `source_document_ids` overlaps the run's target document set
-             (typically the compile-stage outputs), then iteratively pull in
-             any artifact whose `source_artifact_ids` overlaps the
-             accumulating set. The iteration is required because downstream
-             stages (graph_json, enriched.*) record `source_artifact_ids`
-             pointing at compile artifacts — they carry NO
-             `source_document_ids`, so a single-hop check leaves them
-             unresolved. Without this walk the Graph tab silently disables
-             on legacy untagged runs even though graph_json artifacts
-             exist on disk.
+ 2. **Lineage fallback (transitive)** — start from artifacts whose
+ `source_document_ids` overlaps the run's target document set
+ (typically the compile-stage outputs), then iteratively pull in
+ any artifact whose `source_artifact_ids` overlaps the
+ accumulating set. The iteration is required because downstream
+ stages (graph_json, enriched.*) record `source_artifact_ids`
+ pointing at compile artifacts — they carry NO
+ `source_document_ids`, so a single-hop check leaves them
+ unresolved. Without this walk the Graph tab silently disables
+ on legacy untagged runs even though graph_json artifacts
+ exist on disk.
 
-        `include_deleted=True` opts into seeing tombstoned records.
-        Used by the hard-delete (purge) path which needs to physically
-        remove the same files soft-delete tombstoned. Every other
-        caller wants the default (False) — soft-deleted artifacts
-        stay invisible to read surfaces."""
+ `include_deleted=True` opts into seeing tombstoned records.
+ Used by the hard-delete (purge) path which needs to physically
+ remove the same files soft-delete tombstoned. Every other
+ caller wants the default (False) — soft-deleted artifacts
+ stay invisible to read surfaces."""
         all_artifacts = self._artifacts.list_artifacts(ctx)
         # Soft-deleted artifact filter: any record carrying
         # `metadata.deleted_at` is hidden from every read path. The
@@ -1874,11 +1875,11 @@ class IngestionResultReviewService:
     ) -> list[WarningDTO]:
         """Read WARNING/ERROR-severity progress events for the run.
 
-        Reads the JSONL audit log directly using the same pattern as
-        `_read_progress_events` in the REST adapter — duplication is
-        intentional for Phase 1 (small, isolated surface). Phase 5 may
-        extract a shared `AuditLogReader` once the quality projector
-        also needs it."""
+ Reads the JSONL audit log directly using the same pattern as
+ `_read_progress_events` in the REST adapter — duplication is
+ intentional for (small, isolated surface). may
+ extract a shared `AuditLogReader` once the quality projector
+ also needs it."""
         path = self._workspace.audit(ctx) / AUDIT_LOG_FILENAME
         if not path.exists():
             return []
@@ -1948,9 +1949,9 @@ def _artifact_record_to_dto(record: ArtifactRecord) -> ArtifactRecordDTO:
 def _document_ids(run: IngestionRun) -> list[str]:
     """Best-effort recovery of the document set this run covered.
 
-    `IngestionRun.document_id` is always present; runs that target
-    multiple documents may also list them under
-    `metadata["target_document_ids"]`."""
+ `IngestionRun.document_id` is always present; runs that target
+ multiple documents may also list them under
+ `metadata["target_document_ids"]`."""
     raw = run.metadata.get("target_document_ids")
     if isinstance(raw, list) and raw:
         seen: list[str] = []
@@ -1986,10 +1987,10 @@ def _filter_chunks(
 ) -> list[_ChunkRecord]:
     """Apply optional list-endpoint filters.
 
-    `status` is matched case-insensitively against `metadata["status"]`
-    (a free-form field producers may set). `min_confidence` is a
-    strict floor — chunks without a confidence score are excluded
-    when the filter is active."""
+ `status` is matched case-insensitively against `metadata["status"]`
+ (a free-form field producers may set). `min_confidence` is a
+ strict floor — chunks without a confidence score are excluded
+ when the filter is active."""
     if status is None and min_confidence is None:
         return records
     needle = status.strip().lower() if status else None
@@ -2009,9 +2010,9 @@ def _filter_chunks(
 def _coerce_step_results(raw: object) -> list[StepResultDTO]:
     """Hydrate step results persisted in run metadata.
 
-    The workflow writes these as plain dicts (Phase 4); be liberal
-    about shape so a partial write or schema drift doesn't blow up
-    the whole summary endpoint."""
+ The workflow writes these as plain dicts; be liberal
+ about shape so a partial write or schema drift doesn't blow up
+ the whole summary endpoint."""
     if not isinstance(raw, list):
         return []
     out: list[StepResultDTO] = []
@@ -2053,8 +2054,8 @@ def _quality_summary(
 ) -> QualitySummaryDTO | None:
     """Tiny projection for the Overview scorecard.
 
-    Returns None when there's nothing useful to show; the FE then
-    omits the scorecard rather than rendering an empty box."""
+ Returns None when there's nothing useful to show; the FE then
+ omits the scorecard rather than rendering an empty box."""
     overall = run.metadata.get("overall_confidence")
     overall_value: float | None = None
     if isinstance(overall, (int, float)):
@@ -2094,25 +2095,25 @@ def _planning_artifact_to_dto(
 ) -> PlanningResultDTO:
     """Project a `PlanningResult` artifact into the wire DTO.
 
-    Surfaces every section the FE Planning Report renders:
-      * `assessment` — same compact summary the audit-log path emits
-        so downstream code (Planning Report tab, badges) can read one
-        DTO regardless of source.
-      * `decisions` — projected from `execution_plan.steps` so the FE
-        renders one consistent table.
-      * `document_understanding`, `content_report`, `quality_report`,
-        `execution_plan`, `rule_based_assessment`,
-        `rule_based_comparison` — surfaced verbatim as dicts; the FE
-        knows the shape.
+ Surfaces every section the FE Planning Report renders:
+ * `assessment` — same compact summary the audit-log path emits
+ so downstream code (Planning Report tab, badges) can read one
+ DTO regardless of source.
+ * `decisions` — projected from `execution_plan.steps` so the FE
+ renders one consistent table.
+ * `document_understanding`, `content_report`, `quality_report`,
+ `execution_plan`, `rule_based_assessment`,
+ `rule_based_comparison` — surfaced verbatim as dicts; the FE
+ knows the shape.
 
-    Designed so older bundles that only consume `assessment` /
-    `decisions` keep working — the rich fields live on top, optional.
-    """
+ Designed so older bundles that only consume `assessment` /
+ `decisions` keep working — the rich fields live on top, optional.
+ """
     plan = dict(result.execution_plan or {})
     # Defensive: `steps` is contractually a dict keyed by step name.
     # An LLM-emitted plan occasionally returns a list of step
-    # objects; treating it as a list crashes the downstream `.get()`
-    # / `.items()` calls with
+    # objects; treating it as a list crashes the downstream `.get`
+    # / `.items` calls with
     # `AttributeError: 'list' object has no attribute 'get'` —
     # observed mid-run as the BUILD_CONTENT_INVENTORY-stage failure.
     # Coerce list-shaped input by keying off `name` / `step_id`;
@@ -2235,11 +2236,11 @@ def _planning_artifact_to_dto(
 
 def _collect_plan_reasons(plan_dict: dict) -> list[str]:
     """Pull per-step reasons + plan-level warnings into a single
-    operator-readable list for the Planning Report's assessment block.
+ operator-readable list for the Planning Report's assessment block.
 
-    Dedupes preserving order — a planner that names the same reason
-    on two steps (e.g. 'mode text_only does not include enrichment'
-    on enrich + graph) is normalised to one entry."""
+ Dedupes preserving order — a planner that names the same reason
+ on two steps (e.g. 'mode text_only does not include enrichment'
+ on enrich + graph) is normalised to one entry."""
     seen: list[str] = []
     seen_set: set[str] = set()
     for step in plan_dict.get("steps") or []:
@@ -2257,10 +2258,10 @@ def _collect_plan_reasons(plan_dict: dict) -> list[str]:
 
 def _sum_optional(values) -> int | None:
     """Sum a stream of `int | None`. Returns None when EVERY value
-    is None (e.g. no producer surfaced page_count); otherwise sums
-    the populated entries. Used by the Content Inventory aggregator
-    so a missing per-document signal doesn't zero out the aggregate
-    silently."""
+ is None (e.g. no producer surfaced page_count); otherwise sums
+ the populated entries. Used by the Content Inventory aggregator
+ so a missing per-document signal doesn't zero out the aggregate
+ silently."""
     materialized = [v for v in values if v is not None]
     if not materialized:
         return None

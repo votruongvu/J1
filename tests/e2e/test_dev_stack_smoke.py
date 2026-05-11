@@ -8,13 +8,13 @@ fresh checkout.
 
 Deliberately opt-in:
 
-  * Marked `@pytest.mark.e2e` (declared in `pyproject.toml`) so it
-    is excluded from the default `pytest -q` run.
-  * Skipped unless `J1_E2E=1` is exported.
+ * Marked `@pytest.mark.e2e` (declared in `pyproject.toml`) so it
+ is excluded from the default `pytest -q` run.
+ * Skipped unless `J1_E2E=1` is exported.
 
 Invoke locally:
 
-    J1_E2E=1 .venv/bin/pytest -m e2e -s
+ J1_E2E=1.venv/bin/pytest -m e2e -s
 
 Tear-down always runs (even on failure) to leave the host clean.
 """

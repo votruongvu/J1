@@ -1,7 +1,7 @@
 /**
  * Unit tests for the small artifact helpers — pure functions, no
  * DOM or network. Component-level rendering is covered by Playwright
- * (Phase 11).
+ *.
  */
 
 import { describe, expect, it } from "vitest";

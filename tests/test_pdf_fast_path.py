@@ -1,17 +1,17 @@
 """Tests for the PDF text-layer fast path that bypasses MinerU.
 
 The fast path activates when >= 80 % of sampled PDF pages have
-extractable text.  It inserts the extracted text directly into
+extractable text. It inserts the extracted text directly into
 LightRAG via `lightrag.ainsert`, skipping
 `RAGAnything.process_document_complete` (which starts MinerU and runs
 minutes of transformer inference for no benefit on plain text PDFs).
 
 Coverage:
-  * `_is_text_extractable_pdf` correctly classifies text vs scan PDFs.
-  * `DeterministicDocumentProfiler` now populates
-    `text_extractable_ratio` and `has_scanned_pages` for PDFs.
-  * `default_compile` uses fast path (no MinerU) for text-layer PDFs.
-  * `default_compile` falls through to MinerU for scanned PDFs.
+ * `_is_text_extractable_pdf` correctly classifies text vs scan PDFs.
+ * `DeterministicDocumentProfiler` now populates
+ `text_extractable_ratio` and `has_scanned_pages` for PDFs.
+ * `default_compile` uses fast path (no MinerU) for text-layer PDFs.
+ * `default_compile` falls through to MinerU for scanned PDFs.
 """
 
 from __future__ import annotations
@@ -273,8 +273,8 @@ def _make_fake_rag_with_storage_callbacks(
     ainsert_mock: AsyncMock,
 ) -> tuple[SimpleNamespace, dict[str, AsyncMock]]:
     """Like `_make_fake_rag`, but each LightRAG kv-storage exposes an
-    `index_done_callback` mock so tests can verify the bridge flushes
-    them after the fast-path `ainsert`."""
+ `index_done_callback` mock so tests can verify the bridge flushes
+ them after the fast-path `ainsert`."""
     callbacks: dict[str, AsyncMock] = {
         "text_chunks": AsyncMock(),
         "chunks_vdb": AsyncMock(),
@@ -298,13 +298,13 @@ def _make_fake_rag_with_storage_callbacks(
 
 def test_text_pdf_fast_path_force_flushes_chunks_to_disk(tmp_path):
     """Regression: in txt/FAST mode the fast-path calls
-    `lightrag.ainsert(text)` directly, which writes chunks to
-    in-memory storage but only flushes them to disk if LightRAG's
-    LLM-driven entity extraction succeeds. The bridge must force
-    `index_done_callback()` on each chunk storage so chunks land
-    on disk regardless of entity-extraction outcome — otherwise
-    the FE's Chunks tab stays empty for every fast-path run.
-    See `_force_persist_chunks` in `_bridge.py`."""
+ `lightrag.ainsert(text)` directly, which writes chunks to
+ in-memory storage but only flushes them to disk if LightRAG's
+ LLM-driven entity extraction succeeds. The bridge must force
+ `index_done_callback` on each chunk storage so chunks land
+ on disk regardless of entity-extraction outcome — otherwise
+ the FE's Chunks tab stays empty for every fast-path run.
+ See `_force_persist_chunks` in `_bridge.py`."""
     pytest.importorskip("pypdf")
     pytest.importorskip("reportlab")
 
@@ -332,9 +332,9 @@ def test_text_pdf_fast_path_force_flushes_chunks_to_disk(tmp_path):
 
 def test_fast_path_force_flush_swallows_callback_errors(tmp_path):
     """The flush is best-effort: if any storage's
-    `index_done_callback` raises, the compile must still complete
-    successfully. We never want a telemetry flush failure to
-    surface as a compile FAILED."""
+ `index_done_callback` raises, the compile must still complete
+ successfully. We never want a telemetry flush failure to
+ surface as a compile FAILED."""
     pytest.importorskip("pypdf")
     pytest.importorskip("reportlab")
 
@@ -366,9 +366,9 @@ def test_fast_path_force_flush_swallows_callback_errors(tmp_path):
 
 def test_fast_path_force_flush_handles_sync_callbacks(tmp_path):
     """Some LightRAG storage backends expose `index_done_callback`
-    as a sync function (returns None) instead of a coroutine. The
-    bridge must support both shapes — the helper inspects the
-    return value before awaiting."""
+ as a sync function (returns None) instead of a coroutine. The
+ bridge must support both shapes — the helper inspects the
+ return value before awaiting."""
     pytest.importorskip("pypdf")
     pytest.importorskip("reportlab")
 

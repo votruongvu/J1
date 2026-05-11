@@ -10,19 +10,19 @@ keeps the workflow code focused on flow control.
 
 Design constraints (from the spec):
 
-  * Retry only on CLEAR quality failures — the
-    `CompileQualityEvaluator` decides what counts.
-  * Bounded attempt count — `max_compile_attempts` defaults to 2
-    (one retry). `deep` mode never retries beyond itself.
-  * Idempotent — every attempt carries an `attempt_number` and the
-    workflow uses the existing per-(document, processor_kind,
-    version, mode) cache to avoid double-writing artifacts when
-    Temporal retries a single attempt mid-flight. The cache key
-    DOES include the attempt mode, so escalating from `fast` to
-    `standard` is treated as a fresh cache entry, not a duplicate.
-  * Vendor-neutral — `CompileAttemptRecord` mirrors the
-    `AssessmentPlan` shape's vocabulary (`mode`, `parse_method`)
-    rather than RAGAnything-specific names.
+ * Retry only on CLEAR quality failures — the
+ `CompileQualityEvaluator` decides what counts.
+ * Bounded attempt count — `max_compile_attempts` defaults to 2
+ (one retry). `deep` mode never retries beyond itself.
+ * Idempotent — every attempt carries an `attempt_number` and the
+ workflow uses the existing per-(document, processor_kind,
+ version, mode) cache to avoid double-writing artifacts when
+ Temporal retries a single attempt mid-flight. The cache key
+ DOES include the attempt mode, so escalating from `fast` to
+ `standard` is treated as a fresh cache entry, not a duplicate.
+ * Vendor-neutral — `CompileAttemptRecord` mirrors the
+ `AssessmentPlan` shape's vocabulary (`mode`, `parse_method`)
+ rather than RAGAnything-specific names.
 """
 
 from __future__ import annotations
@@ -50,14 +50,14 @@ DEFAULT_MIN_CHUNKS = 1
 @dataclass(frozen=True)
 class CompileRetrySettings:
     """Operator-tunable retry knobs. Plain dataclass so the workflow
-    can pass it across the Temporal data converter without dragging
-    in env-reading code from this module.
+ can pass it across the Temporal data converter without dragging
+ in env-reading code from this module.
 
-    Read once at REST/dev-wiring boundary via
-    `load_compile_retry_settings()` and threaded through
-    `ProjectProcessingRequest.compile_retry_*` fields. The workflow
-    reconstructs the dataclass from those fields for evaluator calls.
-    """
+ Read once at REST/dev-wiring boundary via
+ `load_compile_retry_settings` and threaded through
+ `ProjectProcessingRequest.compile_retry_*` fields. The workflow
+ reconstructs the dataclass from those fields for evaluator calls.
+ """
 
     enabled: bool = DEFAULT_RETRY_ENABLED
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
@@ -69,8 +69,8 @@ def load_compile_retry_settings(
     env: Mapping[str, str] | None = None,
 ) -> CompileRetrySettings:
     """Read retry settings from the env. Unknown / unparseable values
-    quietly fall back to defaults — retry is a safety net, not a
-    correctness gate."""
+ quietly fall back to defaults — retry is a safety net, not a
+ correctness gate."""
     source = env if env is not None else os.environ
     return CompileRetrySettings(
         enabled=_parse_bool(
@@ -129,14 +129,14 @@ _RETRY_LADDER: dict[CompileMode, CompileMode | None] = {
 
 def next_compile_mode(current: CompileMode) -> CompileMode | None:
     """Return the mode the retry layer escalates to, or `None` when
-    the document is already at the highest mode (`deep`). The
-    workflow uses this as the only source of truth for "what's
-    next" — operators tuning the ladder change it here.
+ the document is already at the highest mode (`deep`). The
+ workflow uses this as the only source of truth for "what's
+ next" — operators tuning the ladder change it here.
 
-    Two-mode model: the ladder is STANDARD → DEEP → STOP. The
-    legacy FAST entry is preserved as a safety net (escalates
-    straight to STANDARD) so legacy plans replayed from history
-    still progress."""
+ Two-mode model: the ladder is STANDARD → DEEP → STOP. The
+ legacy FAST entry is preserved as a safety net (escalates
+ straight to STANDARD) so legacy plans replayed from history
+ still progress."""
     return _RETRY_LADDER.get(current)
 
 
@@ -146,15 +146,15 @@ def next_compile_mode(current: CompileMode) -> CompileMode | None:
 @dataclass(frozen=True)
 class CompileAttemptRecord:
     """One audit entry for one compile attempt. Persisted on
-    `ArtifactProcessingResult.metadata["compile_attempts"]` as a
-    list of dicts (via `to_payload()`) so the audit log + FE
-    timeline see a stable shape.
+ `ArtifactProcessingResult.metadata["compile_attempts"]` as a
+ list of dicts (via `to_payload`) so the audit log + FE
+ timeline see a stable shape.
 
-    Vendor-neutral by design: `mode` is `CompileMode.value`,
-    `parse_method` is the resolved string (`txt` / `auto` / `ocr`).
-    Adapter-specific fields live on the per-attempt
-    `mapped_compile_config` dict — that's where RAGAnything's
-    `enable_*` toggles surface."""
+ Vendor-neutral by design: `mode` is `CompileMode.value`,
+ `parse_method` is the resolved string (`txt` / `auto` / `ocr`).
+ Adapter-specific fields live on the per-attempt
+ `mapped_compile_config` dict — that's where RAGAnything's
+ `enable_*` toggles surface."""
 
     attempt_number: int
     mode: str  # CompileMode.value

@@ -23,9 +23,9 @@ from j1.providers.raganything._persistent_loop import (
 @pytest.fixture(autouse=True)
 def _isolate_loop():
     """Each test gets a fresh loop singleton. Without this, a leaked
-    loop from one test would surface as cross-test pollution
-    (locks stay alive in module state). Production never resets
-    the loop — only the test suite does."""
+ loop from one test would surface as cross-test pollution
+ (locks stay alive in module state). Production never resets
+ the loop — only the test suite does."""
     reset_persistent_loop_for_tests()
     yield
     reset_persistent_loop_for_tests()
@@ -33,7 +33,7 @@ def _isolate_loop():
 
 def test_run_coroutine_returns_value():
     """Sanity smoke: a coroutine's return value bubbles back to
-    the calling thread."""
+ the calling thread."""
     loop = get_persistent_loop()
 
     async def _co():
@@ -44,7 +44,7 @@ def test_run_coroutine_returns_value():
 
 def test_run_coroutine_propagates_exceptions():
     """Errors inside the coroutine surface to the caller — same
-    contract `asyncio.run` had."""
+ contract `asyncio.run` had."""
     loop = get_persistent_loop()
 
     async def _bomb():
@@ -56,10 +56,10 @@ def test_run_coroutine_propagates_exceptions():
 
 def test_lock_survives_across_dispatches():
     """The headline fix: a Lock acquired on the first dispatch
-    must be re-acquirable on the second. With `asyncio.run`, this
-    raises `RuntimeError: ... is bound to a different event loop`
-    on the second call (different loop). With the persistent
-    loop, the lock stays bound to the same loop forever."""
+ must be re-acquirable on the second. With `asyncio.run`, this
+ raises `RuntimeError:... is bound to a different event loop`
+ on the second call (different loop). With the persistent
+ loop, the lock stays bound to the same loop forever."""
     loop = get_persistent_loop()
     lock = None
 
@@ -83,8 +83,8 @@ def test_lock_survives_across_dispatches():
 
 def test_get_persistent_loop_returns_same_instance():
     """Singleton contract: every caller in the process sees the
-    same loop. Two `get_persistent_loop()` calls in different
-    threads must return identity-equal objects."""
+ same loop. Two `get_persistent_loop` calls in different
+ threads must return identity-equal objects."""
     a = get_persistent_loop()
     b = get_persistent_loop()
     assert a is b
@@ -92,8 +92,8 @@ def test_get_persistent_loop_returns_same_instance():
 
 def test_reset_creates_fresh_singleton():
     """Test isolation: `reset_persistent_loop_for_tests` swaps in
-    a fresh loop. Locks created against the old loop are dead;
-    new ones bind to the new loop."""
+ a fresh loop. Locks created against the old loop are dead;
+ new ones bind to the new loop."""
     a = get_persistent_loop()
     reset_persistent_loop_for_tests()
     b = get_persistent_loop()
@@ -102,9 +102,9 @@ def test_reset_creates_fresh_singleton():
 
 def test_concurrent_dispatches_from_multiple_threads():
     """Concurrent compile activities (Temporal worker threads
-    invoking the bridge in parallel) must all complete cleanly.
-    Locks the cooperative-scheduling contract: dispatches from
-    different threads cooperate inside the single loop."""
+ invoking the bridge in parallel) must all complete cleanly.
+ Locks the cooperative-scheduling contract: dispatches from
+ different threads cooperate inside the single loop."""
     import threading
 
     loop = get_persistent_loop()
@@ -140,9 +140,9 @@ def test_concurrent_dispatches_from_multiple_threads():
 
 def test_shutdown_is_idempotent():
     """Calling `shutdown` twice in a row (e.g. during teardown
-    plus a finalizer) must not raise. The helper's daemon-thread
-    flag is the production safety net; explicit shutdown is the
-    test-side cleanup. Both paths must be tolerant."""
+ plus a finalizer) must not raise. The helper's daemon-thread
+ flag is the production safety net; explicit shutdown is the
+ test-side cleanup. Both paths must be tolerant."""
     loop = get_persistent_loop()
     loop.shutdown()
     loop.shutdown()  # no raise
@@ -150,10 +150,10 @@ def test_shutdown_is_idempotent():
 
 def test_keyed_lock_dict_pattern_survives_calls():
     """LightRAG's actual bug shape — replicated. Locks live in a
-    dict keyed by name; the dict is module-level and persists
-    across calls. With the persistent loop, the dict-cached
-    locks remain usable on the second call (same loop). With
-    `asyncio.run`, this would fail."""
+ dict keyed by name; the dict is module-level and persists
+ across calls. With the persistent loop, the dict-cached
+ locks remain usable on the second call (same loop). With
+ `asyncio.run`, this would fail."""
     loop = get_persistent_loop()
     cache: dict[str, asyncio.Lock] = {}
 

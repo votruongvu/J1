@@ -1,4 +1,4 @@
-"""Wave 10.5 + 10.6 — legacy-compatible `EnrichmentModule`
+""" + 10.6 — legacy-compatible `EnrichmentModule`
 adapters for the post-compile enrichment stage.
 
 These adapters MIGRATE the legacy LLM-backed enrichment behaviour
@@ -14,20 +14,20 @@ limiter both reach them.
 
 What each adapter provides:
 
-  * `module_id` + `can_run(ctx)` + `run(ctx)` — the Wave-6
-    `EnrichmentModule` protocol, so the adapter slots into
-    `CompositeEnrichmentRunner` next to the existing skeleton
-    modules.
-  * Prompt resolution through `resolve_module_prompt(domain_pack,
-    prompt_field, builtin_default)` so `DomainPromptPack`
-    overrides + `prompt_addon` reach the model.
-  * LLM call routing through the shared `LLMCallLimiter` (Wave 7).
-    When the limiter is None, calls bypass the gate — same
-    behaviour the legacy `CompositeEnricher` already has.
-  * Typed output projection: `ClassificationResult`,
-    `TableSummary`, `ImageSummary`, `retrieval_hints[]`,
-    `confidence_notes[]` — each carrying explicit
-    `ProvenanceLink`s back to the source compile artifact.
+ * `module_id` + `can_run(ctx)` + `run(ctx)` — the 
+ `EnrichmentModule` protocol, so the adapter slots into
+ `CompositeEnrichmentRunner` next to the existing skeleton
+ modules.
+ * Prompt resolution through `resolve_module_prompt(domain_pack,
+ prompt_field, builtin_default)` so `DomainPromptPack`
+ overrides + `prompt_addon` reach the model.
+ * LLM call routing through the shared `LLMCallLimiter`.
+ When the limiter is None, calls bypass the gate — same
+ behaviour the legacy `CompositeEnricher` already has.
+ * Typed output projection: `ClassificationResult`,
+ `TableSummary`, `ImageSummary`, `retrieval_hints[]`,
+ `confidence_notes[]` — each carrying explicit
+ `ProvenanceLink`s back to the source compile artifact.
 
 Skip behaviour: every adapter short-circuits when its required
 input is missing — no text → text/classification skip; no
@@ -38,16 +38,16 @@ SKIPPED outcome with the adapter's reason. Final ingestion
 reports surface these as SKIPPED module outcomes so missing
 clients are NEVER silent.
 
-Failure behaviour: an adapter that raises mid-`run()` is caught
-by the runner (existing Wave-6 behaviour). When the active
+Failure behaviour: an adapter that raises mid-`run` is caught
+by the runner (existing behaviour). When the active
 policy is `require_enrichment_success=True` and the adapter's
 outcome is FAILED, the workflow surfaces it as
 `failed_enrichment_required`; otherwise the run completes with
 `completed_with_enrichment_warnings`.
 
 The adapters are NOT frozen dataclasses — they cache the typed
-outputs of the most recent `run()` so the runner can pick them
-up via `get_typed_outputs()`. This keeps `EnrichmentModuleOutcome`
+outputs of the most recent `run` so the runner can pick them
+up via `get_typed_outputs`. This keeps `EnrichmentModuleOutcome`
 small + serialisable and avoids re-running the LLM inside the
 runner's projection step.
 
@@ -250,9 +250,9 @@ _IMAGE_OUTPUT_SCHEMA: dict[str, Any] = {
 class _LegacyWrapperBase:
     """Shared wiring for legacy-enricher wrappers.
 
-    Carries the LLM client + limiter + per-run typed output cache.
-    Subclasses set `module_id`, `_PROMPT_FIELD`, `_BUILTIN_PROMPT`,
-    `_OUTPUT_SCHEMA`, and implement `can_run` + `run`."""
+ Carries the LLM client + limiter + per-run typed output cache.
+ Subclasses set `module_id`, `_PROMPT_FIELD`, `_BUILTIN_PROMPT`,
+ `_OUTPUT_SCHEMA`, and implement `can_run` + `run`."""
 
     module_id: str = "legacy_wrapper"
     _PROMPT_FIELD: str = ""
@@ -270,8 +270,8 @@ class _LegacyWrapperBase:
         self._vision_client = vision_client
         self._llm_call_limiter = llm_call_limiter
         # Per-run typed output cache — the runner reads this via
-        # `get_typed_outputs()` after `run()` returns. Reset at the
-        # start of each `run()`.
+        # `get_typed_outputs` after `run` returns. Reset at the
+        # start of each `run`.
         self._typed_outputs: dict[str, Any] = {}
 
     def _resolve_prompt(self, domain_pack: DomainPack | None) -> str:
@@ -289,9 +289,9 @@ class _LegacyWrapperBase:
     ) -> tuple[Any, Any]:
         """Route an LLM call through the shared limiter when wired.
 
-        The limiter's `run()` returns the wrapped callable's value
-        unchanged; we unpack the (parsed, usage) tuple the
-        text/vision clients return either way."""
+ The limiter's `run` returns the wrapped callable's value
+ unchanged; we unpack the (parsed, usage) tuple the
+ text/vision clients return either way."""
         if self._llm_call_limiter is not None:
             return self._llm_call_limiter.run(
                 callable_, *args, metadata=metadata or {},
@@ -300,9 +300,9 @@ class _LegacyWrapperBase:
 
     def get_typed_outputs(self) -> dict[str, Any]:
         """Return the typed records produced by the most recent
-        `run()` so `CompositeEnrichmentRunner` can merge them into
-        the aggregated `EnrichmentResult`. Returns an empty dict
-        when `run()` hasn't been called or produced no output."""
+ `run` so `CompositeEnrichmentRunner` can merge them into
+ the aggregated `EnrichmentResult`. Returns an empty dict
+ when `run` hasn't been called or produced no output."""
         return dict(self._typed_outputs)
 
     def _make_provenance(self, ctx: Any) -> ProvenanceLink:
@@ -323,12 +323,12 @@ class _LegacyWrapperBase:
 
 class TextEnrichmentModule(_LegacyWrapperBase):
     """Wraps the requirement-extraction style of text enrichment
-    into the `EnrichmentModule` protocol.
+ into the `EnrichmentModule` protocol.
 
-    Output projection:
-      * Each extracted requirement's text → `retrieval_hints[]`.
-      * Each `confidence_notes[]` entry → `confidence_notes[]`.
-    """
+ Output projection:
+ * Each extracted requirement's text → `retrieval_hints[]`.
+ * Each `confidence_notes[]` entry → `confidence_notes[]`.
+ """
 
     module_id: str = MODULE_ID_TEXT_ENRICHMENT
     _PROMPT_FIELD = "text_enrichment_prompt"
@@ -404,8 +404,8 @@ class TextEnrichmentModule(_LegacyWrapperBase):
 class ClassificationEnrichmentModule(_LegacyWrapperBase):
     """Wraps the document-classifier enricher.
 
-    Output projection: a single `ClassificationResult` carrying
-    category + subcategory + confidence + candidate list."""
+ Output projection: a single `ClassificationResult` carrying
+ category + subcategory + confidence + candidate list."""
 
     module_id: str = MODULE_ID_CLASSIFICATION_ENRICHMENT
     _PROMPT_FIELD = "classification_prompt"
@@ -483,10 +483,10 @@ class ClassificationEnrichmentModule(_LegacyWrapperBase):
 class TableEnrichmentModule(_LegacyWrapperBase):
     """Wraps the table-extractor enricher.
 
-    Output projection: one `TableSummary` per detected table.
-    Skips when `compile_result.detected_tables` is empty so the
-    operator gets a clear "no tables detected" reason instead of
-    an "LLM said nothing" outcome."""
+ Output projection: one `TableSummary` per detected table.
+ Skips when `compile_result.detected_tables` is empty so the
+ operator gets a clear "no tables detected" reason instead of
+ an "LLM said nothing" outcome."""
 
     module_id: str = MODULE_ID_TABLE_ENRICHMENT
     _PROMPT_FIELD = "table_enrichment_prompt"
@@ -572,9 +572,9 @@ class TableEnrichmentModule(_LegacyWrapperBase):
 class ImageEnrichmentModule(_LegacyWrapperBase):
     """Wraps the visual-content-describer enricher.
 
-    Output projection: one `ImageSummary` per detected image.
-    Routes through the vision LLM client (text client is unused).
-    Skips cleanly when `compile_result.detected_images` is empty."""
+ Output projection: one `ImageSummary` per detected image.
+ Routes through the vision LLM client (text client is unused).
+ Skips cleanly when `compile_result.detected_images` is empty."""
 
     module_id: str = MODULE_ID_IMAGE_ENRICHMENT
     _PROMPT_FIELD = "image_enrichment_prompt"
@@ -603,7 +603,7 @@ class ImageEnrichmentModule(_LegacyWrapperBase):
             # a `PerImageVisionAdapter` around the per-image
             # `VisionLLMClient`.
             #
-            # Wave 11B — the adapter owns the per-image limiter
+            # the adapter owns the per-image limiter
             # acquisition. We DO NOT wrap the outer `analyze` call
             # with our own limiter (`_llm_call`) — that would
             # double-acquire (one outer + one per image). Calling
@@ -635,7 +635,7 @@ class ImageEnrichmentModule(_LegacyWrapperBase):
             image_id = _optional_str(raw.get("image_id"))
             if not image_id:
                 continue
-            # Wave 12 cleanup — the `PerImageVisionAdapter` writes
+            #  cleanup — the `PerImageVisionAdapter` writes
             # per-image errors onto `entry.metadata.error` when an
             # individual vision call raises. Lift that error onto
             # `ImageSummary.warnings` so the typed overlay carries
@@ -690,14 +690,14 @@ def build_legacy_enricher_modules(
     llm_call_limiter: object | None = None,
 ) -> list[Any]:
     """Return the four legacy-wrapper modules wired with the
-    deployment's text + vision clients + shared limiter.
+ deployment's text + vision clients + shared limiter.
 
-    Activities call this at construction time; when any client is
-    None, the matching wrappers still construct cleanly — their
-    `can_run()` returns False with `"no LLM client configured"`
-    so the runner records them as SKIPPED. This keeps the worker
-    safe to construct in dev / test environments without real LLM
-    credentials."""
+ Activities call this at construction time; when any client is
+ None, the matching wrappers still construct cleanly — their
+ `can_run` returns False with `"no LLM client configured"`
+ so the runner records them as SKIPPED. This keeps the worker
+ safe to construct in dev / test environments without real LLM
+ credentials."""
     return [
         TextEnrichmentModule(
             text_client=text_client,
@@ -771,10 +771,10 @@ def _extract_candidates(
 
 def _model_usage_from(usage: object, *, role: str) -> ModelUsageRecord:
     """Project the legacy LLM client's `usage` return into a typed
-    `ModelUsageRecord`. The text/vision clients return objects with
-    `model`, `input_tokens`, `output_tokens`, etc. fields — we read
-    via `getattr` so the helper tolerates either dict or attr
-    access without coupling to a specific client type."""
+ `ModelUsageRecord`. The text/vision clients return objects with
+ `model`, `input_tokens`, `output_tokens`, etc. fields — we read
+ via `getattr` so the helper tolerates either dict or attr
+ access without coupling to a specific client type."""
     if usage is None:
         return ModelUsageRecord(role=role)
 

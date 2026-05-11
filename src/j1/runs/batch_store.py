@@ -37,10 +37,10 @@ __all__ = [
 class BatchRun:
     """One multi-upload batch.
 
-    `run_ids` is the ordered list of child IngestionRun ids (one per
-    file). `file_count` is `len(run_ids)` at creation. The batch's
-    aggregate status is derived from the child runs at read-time —
-    never persisted, never goes stale."""
+ `run_ids` is the ordered list of child IngestionRun ids (one per
+ file). `file_count` is `len(run_ids)` at creation. The batch's
+ aggregate status is derived from the child runs at read-time —
+ never persisted, never goes stale."""
 
     batch_run_id: str
     tenant_id: str
@@ -149,14 +149,14 @@ def _batch_from_payload(payload: dict) -> BatchRun:
 def derive_batch_status(child_statuses: Iterable[str]) -> str:
     """Aggregate child IngestionRun statuses → batch-level status.
 
-    Rules:
-      * any child still active → `running`.
-      * all `succeeded` (or `succeeded_with_warnings`) → `completed`.
-      * all `succeeded` + ≥1 `succeeded_with_warnings` → `completed_with_warnings`.
-      * mix of succeeded + failed → `partially_failed`.
-      * all `failed` (or `cancelled`) → `failed`.
-      * all `deleted` → `deleted`.
-    """
+ Rules:
+ * any child still active → `running`.
+ * all `succeeded` (or `succeeded_with_warnings`) → `completed`.
+ * all `succeeded` + ≥1 `succeeded_with_warnings` → `completed_with_warnings`.
+ * mix of succeeded + failed → `partially_failed`.
+ * all `failed` (or `cancelled`) → `failed`.
+ * all `deleted` → `deleted`.
+ """
     statuses = [str(s).lower() for s in child_statuses]
     if not statuses:
         return "running"

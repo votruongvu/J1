@@ -5,11 +5,11 @@ arrays + "Total: 0" markdown. The Option-3 work upgrades them to
 real `text_client.extract(...)` calls with structured-output
 schemas. These tests pin:
 
-  * Stub fallback when no `text_client` is wired (legacy contract).
-  * Real extraction when a client IS wired.
-  * Skip path when the artifact kind isn't text-shaped.
-  * LLM error handling (soft skip + error field).
-  * Per-enricher schema + markdown rendering.
+ * Stub fallback when no `text_client` is wired (legacy contract).
+ * Real extraction when a client IS wired.
+ * Skip path when the artifact kind isn't text-shaped.
+ * LLM error handling (soft skip + error field).
+ * Per-enricher schema + markdown rendering.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from j1.projects.context import ProjectContext
 
 class _StubTextClient:
     """Returns a canned JSON response from `extract` so tests can
-    drive each enricher end-to-end without a real LLM."""
+ drive each enricher end-to-end without a real LLM."""
 
     provider = "stub"
     model = "stub-text"
@@ -88,8 +88,8 @@ def empty_profile() -> Profile:
 
 def _content_source(_text: bytes):
     """Build a minimal `content_source` returning the given bytes
-    for any artifact_id. The enrichers don't care which id; the
-    text content drives extraction."""
+ for any artifact_id. The enrichers don't care which id; the
+ text content drives extraction."""
     def _src(_ctx, _artifact_id: str) -> bytes:
         return _text
     return _src
@@ -110,9 +110,9 @@ def test_returns_empty_stub_when_no_text_client(
     cls, output_key, artifact_type, empty_profile, ctx,
 ):
     """Without a text_client, every LLM-backed enricher must
-    degrade to the legacy empty-output contract — same shape the
-    stubs used to produce. This is what makes adopting the new
-    base class safe for deployments that haven't wired LLMs."""
+ degrade to the legacy empty-output contract — same shape the
+ stubs used to produce. This is what makes adopting the new
+ base class safe for deployments that haven't wired LLMs."""
     enricher = cls(empty_profile)
     result = enricher.enrich(ctx, "art-1")
     assert result.status is ResultStatus.SUCCEEDED
@@ -301,9 +301,9 @@ def test_document_classifier_returns_real_sections_and_classification(empty_prof
 ])
 def test_skips_non_text_artifact_when_lookup_provided(cls, empty_profile, ctx):
     """All LLM-backed text enrichers must skip image/graph artifacts
-    when an `artifact_lookup` is wired. Without this, the workflow
-    would feed image bytes to a text LLM and pollute the Assets
-    cards with garbage extractions."""
+ when an `artifact_lookup` is wired. Without this, the workflow
+ would feed image bytes to a text LLM and pollute the Assets
+ cards with garbage extractions."""
     def _lookup(_ctx, _artifact_id: str) -> str:
         return "compile.image"
 
@@ -324,7 +324,7 @@ def test_skips_non_text_artifact_when_lookup_provided(cls, empty_profile, ctx):
 
 def test_runs_for_text_kinds(empty_profile, ctx):
     """Text-shaped kinds (chunk, compile, compile.metadata) must
-    NOT skip — they're the inputs the enrichers exist for."""
+ NOT skip — they're the inputs the enrichers exist for."""
     for kind in ("chunk", "compile", "compile.metadata", "compile.text"):
         def _lookup(_ctx, _artifact_id: str, _k=kind) -> str:
             return _k
@@ -346,8 +346,8 @@ def test_runs_for_text_kinds(empty_profile, ctx):
 
 def test_llm_error_yields_error_field_not_crash(empty_profile, ctx):
     """A flaky LLM call must NOT bubble up — it surfaces as an
-    `error` field on the JSON draft so the operator sees what
-    happened without the workflow failing."""
+ `error` field on the JSON draft so the operator sees what
+ happened without the workflow failing."""
     client = _StubTextClient(raises=RuntimeError("rate limited"))
     extractor = TableExtractor(
         empty_profile,
@@ -386,8 +386,8 @@ def test_is_text_kind_recognises_text_shapes():
 
 def test_empty_content_falls_back_to_stub(empty_profile, ctx):
     """When `content_source` returns b"" (artifact missing on disk
-    / not yet written), the enricher must NOT hit the LLM with an
-    empty body. Falls through to the legacy empty-output stub."""
+ / not yet written), the enricher must NOT hit the LLM with an
+ empty body. Falls through to the legacy empty-output stub."""
     client = _StubTextClient(extract_response={"tables": [{"x": 1}]})
     extractor = TableExtractor(
         empty_profile,

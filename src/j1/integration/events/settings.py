@@ -26,11 +26,11 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 class WebhookSettings:
     """Webhook configuration loaded from the environment.
 
-    `subscriptions` is the resolved list of static `WebhookSubscription`
-    records. Deployments wanting an API-managed registry replace this
-    with their own `WebhookSubscriptionRegistry` implementation and
-    ignore these settings.
-    """
+ `subscriptions` is the resolved list of static `WebhookSubscription`
+ records. Deployments wanting an API-managed registry replace this
+ with their own `WebhookSubscriptionRegistry` implementation and
+ ignore these settings.
+ """
 
     enabled: bool = False
     subscriptions: tuple[WebhookSubscription, ...] = field(default_factory=tuple)

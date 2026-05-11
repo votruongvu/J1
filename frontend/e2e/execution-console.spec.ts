@@ -5,13 +5,13 @@
  * cleanly on `run.completed` (with the default "warnings" scenario,
  * `run.completed` is the terminal). The test asserts:
  *
- *   1. The user can set Tenant + Project in the context bar.
- *   2. Clicking "New ingestion run" → "Run demo document" creates a
- *      run and navigates to the detail page.
- *   3. The run header shows the document name + status badge.
- *   4. The timeline appends events live (without a manual refresh).
- *   5. The stream pill flips from "Live" to "Stream closed" once
- *      the terminal event arrives.
+ * 1. The user can set Tenant + Project in the context bar.
+ * 2. Clicking "New ingestion run" → "Run demo document" creates a
+ * run and navigates to the detail page.
+ * 3. The run header shows the document name + status badge.
+ * 4. The timeline appends events live (without a manual refresh).
+ * 5. The stream pill flips from "Live" to "Stream closed" once
+ * the terminal event arrives.
  *
  * If any of those break, the integration is broken — independent of
  * what unit tests say about individual modules.

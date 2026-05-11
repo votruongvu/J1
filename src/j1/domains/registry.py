@@ -2,13 +2,13 @@
 
 Single entry point the planner uses to:
 
-  1. List the registered domains (for the API/FE).
-  2. Resolve the domain for a given run, applying the
-     spec's selection precedence:
-         user override → workspace default → auto-detect → fallback.
-  3. Auto-detect by running each pack's detection function against a
-     `DetectionContext` and picking the highest-confidence match
-     above the configured threshold.
+ 1. List the registered domains (for the API/FE).
+ 2. Resolve the domain for a given run, applying the
+ spec's selection precedence:
+ user override → workspace default → auto-detect → fallback.
+ 3. Auto-detect by running each pack's detection function against a
+ `DetectionContext` and picking the highest-confidence match
+ above the configured threshold.
 
 Pure data + small functions — no I/O, no Temporal coupling. The
 activity layer constructs a `DetectionContext` from the workflow
@@ -62,17 +62,17 @@ DEFAULT_MIN_DETECTION_CONFIDENCE = 0.65
 class DomainRegistry:
     """In-process registry of `DomainPack` instances.
 
-    Mutable on construction (`register`), immutable in production
-    use — `default_registry()` returns a singleton initialised at
-    import time. Tests build their own to control which packs are
-    visible."""
+ Mutable on construction (`register`), immutable in production
+ use — `default_registry` returns a singleton initialised at
+ import time. Tests build their own to control which packs are
+ visible."""
 
     def __init__(self) -> None:
         self._packs: dict[str, DomainPack] = {}
 
     def register(self, pack: DomainPack) -> None:
         """Add a pack. Re-registering the same id replaces the entry
-        — used by tests to swap stub packs for the production ones."""
+ — used by tests to swap stub packs for the production ones."""
         self._packs[pack.id] = pack
 
     def get(self, domain_id: str) -> DomainPack | None:
@@ -87,10 +87,10 @@ class DomainRegistry:
     def extended_document_types(self) -> set[str]:
         """Union of every registered pack's `extends_document_types`.
 
-        Used by the planning-result validator so wire-schema
-        `document_type` is accepted whenever ANY registered pack
-        contributes the type — letting domain packs widen the
-        taxonomy without core code changes."""
+ Used by the planning-result validator so wire-schema
+ `document_type` is accepted whenever ANY registered pack
+ contributes the type — letting domain packs widen the
+ taxonomy without core code changes."""
         out: set[str] = set()
         for pack in self._packs.values():
             out.update(pack.extends_document_types)
@@ -103,9 +103,9 @@ class DomainRegistry:
 @dataclass(frozen=True)
 class _SelectionInputs:
     """Scratch struct grouping the resolver's inputs. Keeping the
-    public function signature wide reduces coupling — a future
-    deployment that supplies a different override scheme just calls
-    the same function with different inputs."""
+ public function signature wide reduces coupling — a future
+ deployment that supplies a different override scheme just calls
+ the same function with different inputs."""
 
     user_override: str | None
     workspace_default: str | None
@@ -126,21 +126,21 @@ def select_domain(
 ) -> DomainContext:
     """Resolve the selected domain for one run.
 
-    Returns a `DomainContext` ready to attach to `planning_result.json`.
-    Always returns a context — never None — so callers don't branch
-    on absence. The fallback context's `selected_domain="general"`
-    + `selection_source="fallback_general"` is the documented default.
+ Returns a `DomainContext` ready to attach to `planning_result.json`.
+ Always returns a context — never None — so callers don't branch
+ on absence. The fallback context's `selected_domain="general"`
+ + `selection_source="fallback_general"` is the documented default.
 
-    Selection precedence:
+ Selection precedence:
 
-      1. **User override** (validated against `allowed_overrides`).
-         Honored even when the evidence is weak; a warning is added
-         when the chosen pack's confidence is below threshold.
-      2. **Workspace default** (same validation).
-      3. **Auto-detection** if enabled — run every pack's `detect()`,
-         pick the highest-confidence above the threshold.
-      4. **Fallback** to `general`.
-    """
+ 1. **User override** (validated against `allowed_overrides`).
+ Honored even when the evidence is weak; a warning is added
+ when the chosen pack's confidence is below threshold.
+ 2. **Workspace default** (same validation).
+ 3. **Auto-detection** if enabled — run every pack's `detect`,
+ pick the highest-confidence above the threshold.
+ 4. **Fallback** to `general`.
+ """
     inputs = _SelectionInputs(
         user_override=_clean(user_override),
         workspace_default=_clean(workspace_default),
@@ -230,10 +230,10 @@ def _resolve_override(
 ) -> DomainContext:
     """Apply a user/workspace override.
 
-    Validates the override against the allowlist; falls back when
-    the requested pack isn't registered or isn't allowed. Even when
-    the override is honored we still run detection so the result
-    carries audit-friendly evidence."""
+ Validates the override against the allowlist; falls back when
+ the requested pack isn't registered or isn't allowed. Even when
+ the override is honored we still run detection so the result
+ carries audit-friendly evidence."""
     if domain_id == DOMAIN_GENERAL:
         return _fallback_context(
             confidence=1.0,
@@ -310,7 +310,7 @@ def _resolve_override(
 def _run_detection(
     registry: DomainRegistry, detection_context: object,
 ) -> list[DomainDetectionResult]:
-    """Run every registered pack's `detect()` and collect results."""
+    """Run every registered pack's `detect` and collect results."""
     results: list[DomainDetectionResult] = []
     for pack in registry.list():
         if pack.id == DOMAIN_GENERAL or pack.detect is None:
@@ -362,10 +362,10 @@ _DEFAULT_REGISTRY: DomainRegistry | None = None
 def default_registry() -> DomainRegistry:
     """Return the process-wide default registry.
 
-    Lazy-built on first call so import-time circular imports stay
-    impossible (the civil pack needs the registry models, the
-    registry can build packs on demand). Tests may construct their
-    own `DomainRegistry()` instead of using the singleton."""
+ Lazy-built on first call so import-time circular imports stay
+ impossible (the civil pack needs the registry models, the
+ registry can build packs on demand). Tests may construct their
+ own `DomainRegistry` instead of using the singleton."""
     global _DEFAULT_REGISTRY
     if _DEFAULT_REGISTRY is None:
         registry = DomainRegistry()

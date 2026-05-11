@@ -1882,7 +1882,7 @@ pre,
   margin-top: 8px;
 }
 
-/* Macro-stage section header (Phase 3). Visually similar to a
+/* Macro-stage section header. Visually similar to a
  * tl-item but the dot is solid (no icon) and the text is the
  * macro-stage title. Sits on the same left-rail as the regular
  * timeline items so the rail visually groups the steps under it. */
@@ -2708,7 +2708,7 @@ pre.json .b {
   color: var(--text-subtle);
 }
 
-/* ── Wave 10 — per-(A–F) variants ─────────────────────── */
+/* ── Per-(A–F) final-status variants ─────────────────────── */
 /* Each underlying-final-status literal gets its own accent so
    operators can tell at a glance which outcome they're looking
    at — without changing the base `psp--success / warnings /

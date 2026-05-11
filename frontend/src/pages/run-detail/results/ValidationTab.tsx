@@ -1,16 +1,16 @@
 /**
- * Validation tab — Phase 2.
+ * Validation tab.
  *
  * Composes the Knowledge Readiness card, Generated Test Cases
  * table, manual query console, and the result-detail drawer.
  *
  * Lifecycle:
- *   - On mount: fetch the latest validation set + latest run.
- *   - Generate Set → POST /validation-sets/generate; refresh.
- *   - Run Validation → POST /validation-runs; refresh; show
- *     summary on the card.
- *   - Click row → fetch full ValidationRun detail and open drawer
- *     scrolled to that result.
+ * - On mount: fetch the latest validation set + latest run.
+ * - Generate Set → POST /validation-sets/generate; refresh.
+ * - Run Validation → POST /validation-runs; refresh; show
+ * summary on the card.
+ * - Click row → fetch full ValidationRun detail and open drawer
+ * scrolled to that result.
  *
  * The split between executionStatus (job state) and validationStatus
  * (test outcome) is honoured throughout — the readiness card shows
@@ -37,7 +37,7 @@ interface ValidationTabProps {
 
 export function ValidationTab({ runId }: ValidationTabProps) {
   const client = useClient();
-  // Latest set in the project for THIS run. Phase 2 ships only one
+  // Latest set in the project for THIS run. ships only one
   // active set per run; if multiple ever exist, we show the most
   // recent (server returns newest-first).
   const [setItem, setSetItem] = useState<ValidationSetListItem | null>(null);
@@ -200,7 +200,7 @@ export function ValidationTab({ runId }: ValidationTabProps) {
         onClose={() => setDrawerResultId(null)}
         // Refresh latestRun (and the table) after a verdict is
         // recorded so the per-row badge re-renders without the
-        // tester having to navigate away. Phase 5 contract: the
+        // tester having to navigate away. contract: the
         // verdict POST returns the updated snapshot, so a single
         // refetch is enough.
         onVerdictRecorded={() => void refresh()}

@@ -2,11 +2,11 @@
 
 Pins the contract of `/ingestion-runs/{id}/initial-execution-plan`
 at the service layer:
-  * artifact present → status=completed + plan payload + artifactId
-  * artifact missing → status=unavailable + reason
-  * unreadable / malformed payload → status=unavailable + reason
-  * missing run → ReviewNotFound
-  * cross-project leakage prevented
+ * artifact present → status=completed + plan payload + artifactId
+ * artifact missing → status=unavailable + reason
+ * unreadable / malformed payload → status=unavailable + reason
+ * missing run → ReviewNotFound
+ * cross-project leakage prevented
 
 Mirrors `test_run_enrich_plan_endpoint.py` shape; the REST adapter
 is a thin envelope so service-layer coverage is end-to-end.
@@ -109,8 +109,8 @@ def _write_plan_artifact(
     updated_at: datetime | None = None,
 ) -> dict:
     """Write an `initial_execution_plan` artifact's bytes into the
-    COMPILED workspace area + register the record. Returns the
-    payload that was written."""
+ COMPILED workspace area + register the record. Returns the
+ payload that was written."""
     if payload is None:
         payload = _make_payload()
     filename = f"initial_execution_plan_{run_id}_{artifact_id}.json"
@@ -166,7 +166,7 @@ def test_returns_unavailable_when_no_initial_plan_artifact(
     service, run_store, ctx,
 ):
     """Run exists but never produced a pre-compile plan artifact —
-    surface as unavailable + reason. Don't 404 (run is real)."""
+ surface as unavailable + reason. Don't 404 (run is real)."""
     run_store.upsert(ctx, _make_run())
     result = service.get_run_initial_execution_plan(ctx, "run-1")
     assert result["status"] == "unavailable"
@@ -179,7 +179,7 @@ def test_returns_unavailable_when_payload_malformed(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Artifact exists but on-disk JSON isn't a dict. Surface as
-    unavailable so the FE renders a placeholder rather than crashing."""
+ unavailable so the FE renders a placeholder rather than crashing."""
     run_store.upsert(ctx, _make_run())
     filename = "initial_execution_plan_run-1_a-bad.json"
     full = workspace.area(ctx, WorkspaceArea.COMPILED) / filename
@@ -220,7 +220,7 @@ def test_does_not_leak_cross_project_initial_plan(
     service, run_store, artifact_registry, workspace, ctx, other_ctx,
 ):
     """A run + its artifact in project alpha must not be visible from
-    project beta — service uses ctx-scoped reads end-to-end."""
+ project beta — service uses ctx-scoped reads end-to-end."""
     run_store.upsert(ctx, _make_run())
     _write_plan_artifact(workspace, artifact_registry, ctx)
     with pytest.raises(ReviewNotFound):
@@ -234,7 +234,7 @@ def test_picks_latest_artifact_when_multiple_exist(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Replays + retries can produce duplicate plan artifacts. The
-    service must return the most recent (highest updated_at)."""
+ service must return the most recent (highest updated_at)."""
     run_store.upsert(ctx, _make_run())
     older_payload = _make_payload()
     older_payload["domain_profile_id"] = "general"

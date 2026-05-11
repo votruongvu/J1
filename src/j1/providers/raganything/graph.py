@@ -1,6 +1,6 @@
 """RAGAnything-backed `GraphBuilder`.
 
-Same construction pattern as the compiler: `from_default()` lazy-
+Same construction pattern as the compiler: `from_default` lazy-
 imports the vendor library; tests inject a callable directly.
 """
 
@@ -88,12 +88,12 @@ class RAGAnythingGraphBuilder:
 def _build_default_graph_callable() -> GraphCallable:
     """Real default boundary — collects RAGAnything's graph artifacts.
 
-    RAGAnything builds the knowledge graph as a side-effect of
-    `process_document_complete()`. This callable scans the
-    storage_dir for graph-shaped output files (graph_*.json, entity-
-    relation files, etc.) and surfaces them as `graph_json`
-    `ArtifactDraft`s.
-    """
+ RAGAnything builds the knowledge graph as a side-effect of
+ `process_document_complete`. This callable scans the
+ storage_dir for graph-shaped output files (graph_*.json, entity-
+ relation files, etc.) and surfaces them as `graph_json`
+ `ArtifactDraft`s.
+ """
 
     def _delegate(request: RAGAnythingGraphRequest) -> ArtifactProcessingResult:
         from j1.providers.raganything._bridge import default_build_graph

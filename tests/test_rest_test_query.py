@@ -1,12 +1,12 @@
 """End-to-end tests for POST /ingestion-runs/{run_id}/test-query.
 
 Verifies the REST surface plumbs the validation service correctly:
-  * envelope shape + new validation-specific fields
-  * tenant/project header plumbing
-  * 404 cross-tenant + 404 missing run
-  * 503 when validation_service isn't wired
-  * server-derived chunkId / runId on citations + retrieved chunks
-  * `validationStatus` ≠ HTTP status (the executionStatus / outcome split)
+ * envelope shape + new validation-specific fields
+ * tenant/project header plumbing
+ * 404 cross-tenant + 404 missing run
+ * 503 when validation_service isn't wired
+ * server-derived chunkId / runId on citations + retrieved chunks
+ * `validationStatus` ≠ HTTP status (the executionStatus / outcome split)
 
 Detailed check semantics live in test_validation_checks.py;
 end-to-end query/answer plumbing in test_validation_service.py — these
@@ -200,7 +200,7 @@ def _stage_chunk(
 
 def test_test_query_returns_404_for_missing_run(client):
     """Run that doesn't exist → 404 with REVIEW_NOT_FOUND code, same
-    shape as the rest of the review surface."""
+ shape as the rest of the review surface."""
     resp = client.post(
         "/ingestion-runs/missing/test-query",
         json={"question": "anything"},
@@ -212,7 +212,7 @@ def test_test_query_returns_404_for_missing_run(client):
 
 def test_test_query_returns_404_for_cross_project(client, run_store, ctx):
     """Run exists in (acme, alpha) but request comes from (acme, beta)
-    — must look identical to a missing run. Existence isn't probeable."""
+ — must look identical to a missing run. Existence isn't probeable."""
     run_store.upsert(ctx, _make_run(run_id="run-x"))
 
     other = {TENANT_HEADER: "acme", PROJECT_HEADER: "beta"}
@@ -239,9 +239,9 @@ def test_test_query_returns_503_when_service_not_configured(
     client_no_validation, run_store, ctx,
 ):
     """When the deployment didn't pass `validation_service=` to
-    `create_rest_api`, the endpoint returns 503 — uniform with the
-    rest of the optional-service degradation pattern (e.g.
-    review_service)."""
+ `create_rest_api`, the endpoint returns 503 — uniform with the
+ rest of the optional-service degradation pattern (e.g.
+ review_service)."""
     run_store.upsert(ctx, _make_run(run_id="run-x"))
     resp = client_no_validation.post(
         "/ingestion-runs/run-x/test-query",
@@ -257,8 +257,8 @@ def test_test_query_returns_503_when_service_not_configured(
 def test_test_query_returns_envelope_with_validation_status(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
-    """Wire-shape regression. Body must carry every Phase 1 field —
-    new validators / FE renderers depend on each one being present."""
+    """Wire-shape regression. Body must carry every field —
+ new validators / FE renderers depend on each one being present."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -290,9 +290,9 @@ def test_citations_carry_server_derived_chunk_id_and_run_id(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Trust rule: chunkId/runId on citations come from the FTS row,
-    not from anything the LLM or the request body says. We verify
-    the server-side wiring by confirming the FE-visible values
-    match the metadata we wrote at index time."""
+ not from anything the LLM or the request body says. We verify
+ the server-side wiring by confirming the FE-visible values
+ match the metadata we wrote at index time."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -321,8 +321,8 @@ def test_validation_status_failed_when_no_chunks_indexed(
     client, run_store, ctx,
 ):
     """HTTP=200 (the query ran), validationStatus=failed (no
-    retrieval). This is the canonical 'split status' demonstration
-    at the REST boundary."""
+ retrieval). This is the canonical 'split status' demonstration
+ at the REST boundary."""
     run_store.upsert(ctx, _make_run(run_id="run-empty"))
 
     resp = client.post(
@@ -342,8 +342,8 @@ def test_validation_status_failed_when_no_chunks_indexed(
 
 def test_top_k_above_50_rejected_by_pydantic(client, run_store, ctx):
     """Pydantic upper bound is 50 (matches the service's hard cap).
-    A request asking for more should fail validation early — 422,
-    not 200-with-clamping."""
+ A request asking for more should fail validation early — 422,
+ not 200-with-clamping."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     resp = client.post(
         "/ingestion-runs/run-A/test-query",

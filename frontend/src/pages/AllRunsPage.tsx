@@ -529,9 +529,9 @@ function RunRow({ item, onClick, onRefresh, pushToast }: RunRowProps) {
                   }}
                 >
                   {/* Running rows show the active step's pixel icon
-                      so operators can scan the list and see *what*
-                      each in-flight run is doing. Non-running rows
-                      omit the icon — current_step is stale otherwise. */}
+ so operators can scan the list and see *what*
+ each in-flight run is doing. Non-running rows
+ omit the icon — current_step is stale otherwise. */}
                   {isRunning ? (
                     <IngestionStepIcon
                       step={item.currentStep}

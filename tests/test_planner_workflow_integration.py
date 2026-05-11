@@ -2,22 +2,22 @@
 
 Pin the contract of the post-`_build_plan`-removal workflow:
 
-  1. `planner_enabled=False` skips even the cheap pre-compile profile.
-  2. `planner_enabled=True` runs `profile_document` pre-compile, then
-     `DefaultAssessmentPlanner` to derive the AssessmentPlan that
-     drives compile config — but does NOT call any IngestPlanner /
-     `_build_plan` / `_apply_post_compile_planning` / planning-result
-     activity.
-  3. The workflow emits an `ingestion.assessment.created` log event
-     (not the old `ingestion.plan.created`).
-  4. A `profile_document` failure under fail_closed surfaces as a
-     workflow failure.
-  5. Synthetic step events for `build_content_inventory` and
-     `generate_knowledge_chunks` still fire in the user-facing order
-     after compile succeeds.
-  6. Caller-supplied graph_builder_kind keeps graph runnable; the
-     graph stage is gated on compile evidence + the post-compile
-     enrich plan, not a pre-compile plan.
+ 1. `planner_enabled=False` skips even the cheap pre-compile profile.
+ 2. `planner_enabled=True` runs `profile_document` pre-compile, then
+ `DefaultAssessmentPlanner` to derive the AssessmentPlan that
+ drives compile config — but does NOT call any IngestPlanner /
+ `_build_plan` / `_apply_post_compile_planning` / planning-result
+ activity.
+ 3. The workflow emits an `ingestion.assessment.created` log event
+ (not the old `ingestion.plan.created`).
+ 4. A `profile_document` failure under fail_closed surfaces as a
+ workflow failure.
+ 5. Synthetic step events for `build_content_inventory` and
+ `generate_knowledge_chunks` still fire in the user-facing order
+ after compile succeeds.
+ 6. Caller-supplied graph_builder_kind keeps graph runnable; the
+ graph stage is gated on compile evidence + the post-compile
+ enrich plan, not a pre-compile plan.
 
 Regression guards: any reintroduction of `_build_plan`,
 `_apply_post_compile_planning`, or the `build_planning_result`
@@ -88,8 +88,8 @@ _PROFILE_SIMPLE_TEXT = DocumentProfile(
 
 def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
     """Build a handler that returns success for every stage. The
-    `profile` fixture is returned by `profile_document` when planner
-    is enabled."""
+ `profile` fixture is returned by `profile_document` when planner
+ is enabled."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -162,7 +162,7 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
                 kinds=("validation_report",),
             )
         if name.endswith("run_enrichment_stage"):
-            # Wave-6.5 stub: succeed cleanly so existing tests don't
+            #  stub: succeed cleanly so existing tests don't
             # accidentally observe a failed-optional outcome.
             from j1.orchestration.activities.payloads import (
                 RunEnrichmentStageResult,
@@ -182,7 +182,7 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
 
 def test_planner_disabled_does_not_call_profile_document(monkeypatch):
     """Legacy callers must not pay the profiling cost when they
-    haven't opted in."""
+ haven't opted in."""
     captured = _patch_workflow_runtime(
         monkeypatch, exec_handler=_full_pipeline_handler(),
     )
@@ -209,7 +209,7 @@ def test_planner_disabled_does_not_call_profile_document(monkeypatch):
 
 def test_planner_enabled_calls_profile_document_pre_compile(monkeypatch):
     """With `planner_enabled=True`, `profile_document` runs once
-    BEFORE `compile` so the AssessmentPlan can drive compile config."""
+ BEFORE `compile` so the AssessmentPlan can drive compile config."""
     captured = _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(profile=_PROFILE_SIMPLE_TEXT),
@@ -243,9 +243,9 @@ def test_planner_enabled_calls_profile_document_pre_compile(monkeypatch):
 
 def test_workflow_does_not_call_old_planner_activities(monkeypatch):
     """Regression guard: the workflow must NOT invoke any of the
-    deleted planner-related activities. If a future refactor
-    accidentally re-introduces a `build_planning_result` or
-    `report_plan_generated` dispatch, this test catches it."""
+ deleted planner-related activities. If a future refactor
+ accidentally re-introduces a `build_planning_result` or
+ `report_plan_generated` dispatch, this test catches it."""
     captured = _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(profile=_PROFILE_SIMPLE_TEXT),
@@ -275,7 +275,7 @@ def test_workflow_does_not_call_old_planner_activities(monkeypatch):
 
 def test_workflow_does_not_invoke_build_plan_method():
     """Static guard: the workflow class must not expose `_build_plan`
-    or `_apply_post_compile_planning` as methods anymore."""
+ or `_apply_post_compile_planning` as methods anymore."""
     wf = ProjectProcessingWorkflow()
     assert not hasattr(wf, "_build_plan"), (
         "_build_plan must be deleted from the workflow"
@@ -293,7 +293,7 @@ def test_workflow_does_not_invoke_build_plan_method():
 
 def test_workflow_module_does_not_export_old_planner_helpers():
     """Module-level audit: the deleted helpers must no longer be
-    importable from the workflow module."""
+ importable from the workflow module."""
     import j1.orchestration.workflows.project_processing as wf_module
     for name in (
         "_apply_post_compile_planning",
@@ -311,8 +311,8 @@ def test_workflow_module_does_not_export_old_planner_helpers():
 
 def test_planner_enabled_records_assessment_created_log_event(monkeypatch):
     """The workflow logs an `ingestion.assessment.created` event
-    (not the old `ingestion.plan.created`) so operators can verify
-    the AssessmentPlan ran."""
+ (not the old `ingestion.plan.created`) so operators can verify
+ the AssessmentPlan ran."""
     captured_logs: list[dict] = []
 
     class _StubLogger:
@@ -353,8 +353,8 @@ def test_profile_document_failure_under_fail_closed_surfaces_as_workflow_failure
     monkeypatch,
 ):
     """Under `fail_closed`, a `profile_document` failure must
-    propagate to the workflow as a business rejection (FAILED_FINAL),
-    not silently downgrade to no-AssessmentPlan."""
+ propagate to the workflow as a business rejection (FAILED_FINAL),
+ not silently downgrade to no-AssessmentPlan."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -399,8 +399,8 @@ def test_profile_document_failure_under_fail_open_continues_with_settings(
     monkeypatch,
 ):
     """Under default `fail_open`, a `profile_document` failure logs
-    + continues without an AssessmentPlan; the bridge falls back to
-    `settings.parse_method`."""
+ + continues without an AssessmentPlan; the bridge falls back to
+ `settings.parse_method`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -471,9 +471,9 @@ def _collect_step_lifecycle_calls(captured) -> list[dict]:
 
 def test_workflow_emits_build_content_inventory_after_compile(monkeypatch):
     """The user-facing flow lists `Build Content Inventory` as a
-    distinct step. Internally it's part of compile, so the workflow
-    synthesises the lifecycle event right after compile.completed —
-    pinned here so a future refactor can't silently re-bundle them."""
+ distinct step. Internally it's part of compile, so the workflow
+ synthesises the lifecycle event right after compile.completed —
+ pinned here so a future refactor can't silently re-bundle them."""
     captured = _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(profile=_PROFILE_SIMPLE_TEXT),
@@ -497,7 +497,7 @@ def test_workflow_emits_build_content_inventory_after_compile(monkeypatch):
 
 def test_workflow_emits_generate_knowledge_chunks_after_compile(monkeypatch):
     """Pin the synthetic Generate Knowledge Chunks events. They fire
-    even though chunks land at compile time."""
+ even though chunks land at compile time."""
     captured = _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(profile=_PROFILE_SIMPLE_TEXT),
@@ -524,7 +524,7 @@ def test_workflow_emits_generate_knowledge_chunks_after_compile(monkeypatch):
 
 def test_synthetic_steps_fire_in_user_facing_order(monkeypatch):
     """`Build Content Inventory` comes before `Generate Knowledge
-    Chunks` in the user-facing timeline; both come after compile."""
+ Chunks` in the user-facing timeline; both come after compile."""
     captured = _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(profile=_PROFILE_SIMPLE_TEXT),
@@ -561,7 +561,7 @@ def test_synthetic_steps_fire_in_user_facing_order(monkeypatch):
 
 def test_caller_supplied_graph_kind_runs_when_compile_good(monkeypatch):
     """A successful compile + caller-supplied graph_builder_kind
-    runs the graph stage."""
+ runs the graph stage."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(profile=_PROFILE_SIMPLE_TEXT),

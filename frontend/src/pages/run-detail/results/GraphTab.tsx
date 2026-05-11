@@ -4,15 +4,15 @@
  * Renders the neutral graph snapshot returned by
  * `GET /ingestion-runs/{id}/graph`:
  *
- *   - When `unavailable.reason` is set, show the empty state with
- *     the reason (single source of truth: matches
- *     `availableViews.graph.reason` in the run summary).
- *   - When entities/relations were truncated, show a banner above
- *     the tables with the cap that was applied.
- *   - Always show two tables (entities + relations) with a shared
- *     search box and an entity-type facet. Graph visualisation is
- *     out of scope for v1 — tables are sufficient for review work
- *     and don't pull in a viz dependency.
+ * - When `unavailable.reason` is set, show the empty state with
+ * the reason (single source of truth: matches
+ * `availableViews.graph.reason` in the run summary).
+ * - When entities/relations were truncated, show a banner above
+ * the tables with the cap that was applied.
+ * - Always show two tables (entities + relations) with a shared
+ * search box and an entity-type facet. Graph visualisation is
+ * out of scope for v1 — tables are sufficient for review work
+ * and don't pull in a viz dependency.
  */
 
 import { useEffect, useMemo, useState } from "react";

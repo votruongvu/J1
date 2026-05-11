@@ -20,7 +20,7 @@ from j1.runs import NoopProgressReporter
 
 def test_parses_simple_layout_progress_line():
     """The basic format observed in dev runs:
-    `[MinerU] Layout Preparation: 80% | 35/44`"""
+ `[MinerU] Layout Preparation: 80% | 35/44`"""
     event = parse_mineru_line("[MinerU] Layout Preparation: 80% | 35/44")
     assert event is not None
     assert event.event_type == "step.progress"
@@ -35,7 +35,7 @@ def test_parses_simple_layout_progress_line():
 
 def test_parses_tqdm_layout_progress_line():
     """tqdm format (mineru emits this when running through loguru):
-    `Layout Preparation: 100%|██████████| 1/1 [00:00<00:00, 43.03it/s]`"""
+ `Layout Preparation: 100%|██████████| 1/1 [00:00<00:00, 43.03it/s]`"""
     event = parse_mineru_line(
         "Layout Preparation: 100%|██████████| 1/1 [00:00<00:00, 43.03it/s]"
     )
@@ -58,7 +58,7 @@ def test_parses_model_fetch_line():
 
 def test_parses_predictor_loaded_as_step_completed():
     """`get transformers predictor cost: 50.12s` marks model-load
-    completion. Surface as step.completed at 100%."""
+ completion. Surface as step.completed at 100%."""
     event = parse_mineru_line(
         "[MinerU] get transformers predictor cost: 50.12s"
     )
@@ -77,7 +77,7 @@ def test_unrecognised_line_returns_none():
 
 def test_no_false_positive_on_mention_without_progress():
     """A line that mentions 'Layout' without a progress signature
-    must NOT be parsed as progress."""
+ must NOT be parsed as progress."""
     event = parse_mineru_line("[MinerU] Layout module initialized")
     assert event is None
 
@@ -87,8 +87,8 @@ def test_no_false_positive_on_mention_without_progress():
 
 def test_streaming_parser_deduplicates_repeated_progress_lines():
     """MinerU sometimes emits the SAME tqdm percentage twice in
-    quick succession. The streaming parser drops duplicates so the
-    reporter doesn't get spammed."""
+ quick succession. The streaming parser drops duplicates so the
+ reporter doesn't get spammed."""
     parser = MinerUProgressParser()
     events = list(parser.feed([
         "[MinerU] Layout Preparation: 25% | 11/44",
@@ -101,7 +101,7 @@ def test_streaming_parser_deduplicates_repeated_progress_lines():
 
 def test_streaming_parser_passes_completion_through_even_if_pct_matches():
     """A `step.completed` event must always pass through, even when
-    the progress percent matches the last seen value."""
+ the progress percent matches the last seen value."""
     parser = MinerUProgressParser()
     events = list(parser.feed([
         "[MinerU] Fetching 13 files: 100%|██████████| 13/13 [00:49<00:00]",
@@ -117,8 +117,8 @@ def test_streaming_parser_passes_completion_through_even_if_pct_matches():
 
 def test_attach_handler_no_op_when_reporter_is_none():
     """A `None` reporter must NOT install a global logging handler
-    — important because deployments that opt out shouldn't have
-    their logs intercepted."""
+ — important because deployments that opt out shouldn't have
+ their logs intercepted."""
     ctx = ProjectContext(tenant_id="acme", project_id="alpha")
     mineru_logger = logging.getLogger("mineru")
     handler_count_before = len(mineru_logger.handlers)
@@ -129,8 +129,8 @@ def test_attach_handler_no_op_when_reporter_is_none():
 
 def test_attach_handler_routes_log_lines_into_reporter(monkeypatch):
     """End-to-end: when the handler is attached and mineru emits a
-    progress line, the reporter receives a structured `step.progress`
-    call. Without this integration the parser is dead code."""
+ progress line, the reporter receives a structured `step.progress`
+ call. Without this integration the parser is dead code."""
     captured: list[dict] = []
 
     class _CapturingReporter(NoopProgressReporter):
@@ -185,8 +185,8 @@ def test_attach_handler_routes_log_lines_into_reporter(monkeypatch):
 
 def test_handler_removed_on_context_exit():
     """The handler MUST be detached when the `with` block exits, so
-    subsequent log activity in unrelated code paths doesn't get
-    captured. This is a regression guard against handler leaks."""
+ subsequent log activity in unrelated code paths doesn't get
+ captured. This is a regression guard against handler leaks."""
     ctx = ProjectContext(tenant_id="acme", project_id="alpha")
     reporter = NoopProgressReporter()
     mineru_logger = logging.getLogger("mineru")

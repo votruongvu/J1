@@ -1,16 +1,16 @@
 /**
  * Tests for the fetch-based SSE parser. The backend wire layout is:
  *
- *   id: <event_id>
- *   event: <event_type>
- *   data: <camelCase JSON ProgressEventRecord>
- *   <blank line>
+ * id: <event_id>
+ * event: <event_type>
+ * data: <camelCase JSON ProgressEventRecord>
+ * <blank line>
  *
  * The parser must:
- *   - extract `id`, `event`, and JSON-decode `data`,
- *   - skip comment-only frames (lines starting with `:`),
- *   - join multi-line `data:` fields with `\n`,
- *   - tolerate partial chunks across reads.
+ * - extract `id`, `event`, and JSON-decode `data`,
+ * - skip comment-only frames (lines starting with `:`),
+ * - join multi-line `data:` fields with `\n`,
+ * - tolerate partial chunks across reads.
  */
 
 import { describe, expect, it } from "vitest";

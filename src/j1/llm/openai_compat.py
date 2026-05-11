@@ -53,17 +53,17 @@ def _json_response_format(
 ) -> dict[str, Any]:
     """Build the `response_format` payload for a JSON-only response.
 
-    Prefers the newer `json_schema` shape when a schema is supplied —
-    that's what LM Studio (and OpenAI's strict-mode structured outputs)
-    require. The older `json_object` shape is the fallback for endpoints
-    that only need "valid JSON, any shape." LM Studio rejects
-    `json_object` outright with `'response_format.type' must be
-    'json_schema' or 'text'`, so any caller emitting structured output
-    against an LM Studio endpoint must pass the schema through.
+ Prefers the newer `json_schema` shape when a schema is supplied —
+ that's what LM Studio (and OpenAI's strict-mode structured outputs)
+ require. The older `json_object` shape is the fallback for endpoints
+ that only need "valid JSON, any shape." LM Studio rejects
+ `json_object` outright with `'response_format.type' must be
+ 'json_schema' or 'text'`, so any caller emitting structured output
+ against an LM Studio endpoint must pass the schema through.
 
-    The wrapper name `j1_extract` is informational — OpenAI's strict
-    structured-output rules require a name, but the value isn't
-    surfaced to the model."""
+ The wrapper name `j1_extract` is informational — OpenAI's strict
+ structured-output rules require a name, but the value isn't
+ surfaced to the model."""
     if schema is not None:
         return {
             "type": "json_schema",
@@ -79,18 +79,18 @@ def _json_response_format(
 def _normalize_base_url(raw: str) -> str:
     """Trim trailing slashes and accidental leaf-path suffixes.
 
-    Examples:
-        ``https://api.openai.com/v1``                       → unchanged
-        ``https://api.openai.com/v1/``                      → ``…/v1``
-        ``https://api.openai.com/v1/chat/completions``      → ``…/v1``
-        ``https://api.openai.com/v1/embeddings/``           → ``…/v1``
+ Examples:
+ ``https://api.openai.com/v1`` → unchanged
+ ``https://api.openai.com/v1/`` → ``…/v1``
+ ``https://api.openai.com/v1/chat/completions`` → ``…/v1``
+ ``https://api.openai.com/v1/embeddings/`` → ``…/v1``
 
-    Does NOT auto-add ``/v1`` — that's vendor-dependent (vLLM /
-    Ollama / DashScope all expect it included in `base_url`; some
-    self-hosted endpoints don't have a version segment at all).
-    Misconfiguration of the version segment surfaces as a clear
-    HTTP-404 error message that names the URL we tried.
-    """
+ Does NOT auto-add ``/v1`` — that's vendor-dependent (vLLM /
+ Ollama / DashScope all expect it included in `base_url`; some
+ self-hosted endpoints don't have a version segment at all).
+ Misconfiguration of the version segment surfaces as a clear
+ HTTP-404 error message that names the URL we tried.
+ """
     cleaned = (raw or "").strip().rstrip("/")
     for suffix in _LEAF_PATH_SUFFIXES:
         if cleaned.endswith(suffix):
@@ -129,13 +129,13 @@ class _BaseOpenAICompatClient:
     def _enforce_token_budget(self, body: Mapping[str, Any]) -> None:
         """Pre-flight context-window check.
 
-        Only fires for chat-completion calls (`body["messages"]`).
-        Embedding calls skip — they have their own per-item token cap
-        (`max_input_tokens`) handled in `embed_batch`. When the role's
-        settings don't carry a `context_window_tokens` (legacy /
-        operator-didn't-set-it), the helper is a no-op so backwards
-        compatibility is preserved.
-        """
+ Only fires for chat-completion calls (`body["messages"]`).
+ Embedding calls skip — they have their own per-item token cap
+ (`max_input_tokens`) handled in `embed_batch`. When the role's
+ settings don't carry a `context_window_tokens` (legacy /
+ operator-didn't-set-it), the helper is a no-op so backwards
+ compatibility is preserved.
+ """
         messages = body.get("messages")
         if not isinstance(messages, list):
             return
@@ -229,13 +229,13 @@ class _BaseOpenAICompatClient:
     ) -> str:
         """Build the LLMProviderUnavailable message for a failed HTTP call.
 
-        Always includes the constructed URL so misconfigured base_urls
-        are visible at a glance. For 404 specifically, adds a hint
-        about the most common cause — `base_url` missing the `/v1`
-        segment, or pointing at a non-OpenAI-compatible endpoint.
-        Body excerpt is truncated to keep upstream error pages from
-        flooding logs / surfacing as huge tracebacks.
-        """
+ Always includes the constructed URL so misconfigured base_urls
+ are visible at a glance. For 404 specifically, adds a hint
+ about the most common cause — `base_url` missing the `/v1`
+ segment, or pointing at a non-OpenAI-compatible endpoint.
+ Body excerpt is truncated to keep upstream error pages from
+ flooding logs / surfacing as huge tracebacks.
+ """
         detail = body_text[:500]
         message = (
             f"{self._settings.provider} returned HTTP {status_code} for "

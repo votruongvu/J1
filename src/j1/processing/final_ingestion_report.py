@@ -1,4 +1,4 @@
-"""Wave 10 — end-to-end final ingestion report.
+"""end-to-end final ingestion report.
 
 The `final_ingestion_report` artifact is the operator-facing summary
 of one ingestion run. It aggregates the pre-compile plan, compile
@@ -8,30 +8,29 @@ render on the run-detail page without fanning out to N artifact
 endpoints.
 
 The report is the single source of truth for downstream consumers
-(audit dashboards, the FE state machine, the operator CLI). Wave 9B
-introduced per-artifact endpoints; Wave 10 adds this aggregate on
-top — pre-Wave-10 runs return `"unavailable"` from the read service
+(audit dashboards, the FE state machine, the operator CLI). per-artifact endpoints; this aggregate on
+top — pre- runs return `"unavailable"` from the read service
 so the FE falls back to the per-artifact endpoints.
 
 Builders here are PURE — they take the inputs the workflow already
-has (`IngestionRun`, persisted artifact payloads, the Wave-8 final
+has (`IngestionRun`, persisted artifact payloads, the final
 status projection) and emit the typed report. No I/O. Same inputs →
 same payload.
 
 Vocabulary:
-  * `final_status`         — Wave-8 `INGESTION_STATUS_*` literal.
-  * `final_status_reason`  — operator-readable one-line explanation.
-  * `stages[]`             — fixed ordered list of `StageSummary`
-                             entries the FE renders as a timeline.
-  * `compile_summary`      — denormalised typed view over the
-                             compile-result artifact (so the FE
-                             can render the headline numbers from
-                             one fetch).
-  * `enrichment_summary`   — denormalised typed view over the
-                             enrichment-result artifact.
-  * `artifact_refs`        — dict of artifact-kind → artifact_id
-                             so the FE can deep-link to the
-                             detailed per-artifact endpoints.
+ * `final_status` — `INGESTION_STATUS_*` literal.
+ * `final_status_reason` — operator-readable one-line explanation.
+ * `stages[]` — fixed ordered list of `StageSummary`
+ entries the FE renders as a timeline.
+ * `compile_summary` — denormalised typed view over the
+ compile-result artifact (so the FE
+ can render the headline numbers from
+ one fetch).
+ * `enrichment_summary` — denormalised typed view over the
+ enrichment-result artifact.
+ * `artifact_refs` — dict of artifact-kind → artifact_id
+ so the FE can deep-link to the
+ detailed per-artifact endpoints.
 
 Forbidden vocabulary: this module MUST NOT mention legacy
 pre-compile gating concepts. Tests in
@@ -138,12 +137,12 @@ _VALID_STAGE_STATUSES: frozenset[str] = frozenset({
 class StageSummary:
     """One stage's terminal state in the report timeline.
 
-    Pure data. The FE renders this as a row on the pipeline
-    timeline; the operator CLI / audit log reads the same shape.
+ Pure data. The FE renders this as a row on the pipeline
+ timeline; the operator CLI / audit log reads the same shape.
 
-    `artifact_refs` carries kind→artifact_id pointers for any
-    artifacts produced by this stage so a downstream consumer can
-    deep-link without re-resolving the artifact registry."""
+ `artifact_refs` carries kind→artifact_id pointers for any
+ artifacts produced by this stage so a downstream consumer can
+ deep-link without re-resolving the artifact registry."""
 
     stage_id: str
     label: str
@@ -174,8 +173,8 @@ class StageSummary:
 @dataclass(frozen=True)
 class CompileSummary:
     """Denormalised compile-stage signals. The FE reads these
-    instead of re-fetching the compile-result artifact for the
-    headline numbers on the run-detail page."""
+ instead of re-fetching the compile-result artifact for the
+ headline numbers on the run-detail page."""
 
     compile_engine: str | None = None
     compile_status: str | None = None
@@ -210,8 +209,8 @@ class CompileSummary:
 @dataclass(frozen=True)
 class EnrichmentSummary:
     """Denormalised enrichment-overlay signals. The FE reads these
-    instead of re-fetching the enrichment-result artifact for the
-    headline numbers + skip-reason + module-count display."""
+ instead of re-fetching the enrichment-result artifact for the
+ headline numbers + skip-reason + module-count display."""
 
     should_enrich: bool = False
     enrichment_status: str | None = None  # succeeded / succeeded_with_warnings / failed / skipped / pending
@@ -252,8 +251,8 @@ class EnrichmentSummary:
 
 @dataclass(frozen=True)
 class FinalIngestionReport:
-    """The Wave-10 end-to-end report. Pure data. Persisted as the
-    `final_ingestion_report` artifact at workflow terminal."""
+    """The end-to-end report. Pure data. Persisted as the
+ `final_ingestion_report` artifact at workflow terminal."""
 
     schema_version: str
     run_id: str
@@ -307,8 +306,8 @@ class FinalIngestionReport:
 @dataclass(frozen=True)
 class ReportSourceInputs:
     """Everything the workflow has at terminal that the builder
-    needs to produce a `FinalIngestionReport`. Plain dicts so the
-    workflow can hand persisted artifact payloads through unchanged."""
+ needs to produce a `FinalIngestionReport`. Plain dicts so the
+ workflow can hand persisted artifact payloads through unchanged."""
 
     run_id: str
     document_id: str | None
@@ -336,8 +335,8 @@ class ReportSourceInputs:
     # `NormalizedCompileResult`) — surface so operators can locate
     # the preserved vendor output.
     raw_compile_artifact_refs: tuple[str, ...] = ()
-    # Operator-supplied notes; empty by default. Wave 10 doesn't
-    # provide a write surface for these; reserved for Wave 11+.
+    # Operator-supplied notes; empty by default. doesn't
+    # provide a write surface for these; reserved for.
     operator_notes: tuple[str, ...] = ()
 
 
@@ -348,7 +347,7 @@ def build_final_ingestion_report(
     inputs: ReportSourceInputs,
 ) -> FinalIngestionReport:
     """Project the workflow's terminal-time state onto the typed
-    report. Pure. Same inputs → same output."""
+ report. Pure. Same inputs → same output."""
 
     duration_ms = _compute_duration_ms(inputs.started_at, inputs.completed_at)
 
@@ -469,7 +468,7 @@ def _enrichment_skipped_reason_from_payload(
     enrich_plan_payload: dict[str, Any] | None,
 ) -> str | None:
     if enrichment_payload and enrichment_payload.get("status") == "skipped":
-        # Wave 11B — `EnrichmentResult` serialises the skip reason
+        # `EnrichmentResult` serialises the skip reason
         # under `skipped_reason`; fall back to `reason` for older
         # payloads that pre-date the rename.
         reason = (
@@ -583,7 +582,7 @@ def _build_enrichment_summary(
         warnings = [str(w) for w in (enrichment_result.get("warnings") or [])]
         errors = [str(e) for e in (enrichment_result.get("errors") or [])]
         if enrichment_status == "skipped":
-            # Wave 11B — the enrichment payload exposes the
+            # the enrichment payload exposes the
             # operator-readable reason under `skipped_reason` (the
             # `EnrichmentResult` schema's serialised field). Older
             # paths used `reason` — keep both readable so a payload
@@ -638,11 +637,11 @@ def _build_stages(
 ) -> tuple[StageSummary, ...]:
     """Build the 6 fixed stage summaries.
 
-    Status inference is conservative — each stage transitions
-    PENDING → RUNNING → SUCCEEDED / SUCCEEDED_WITH_WARNINGS /
-    FAILED / SKIPPED based on what the upstream artifacts tell us.
-    Missing artifacts → stage stays PENDING (with `reasons` carrying
-    the "not produced" explanation)."""
+ Status inference is conservative — each stage transitions
+ PENDING → RUNNING → SUCCEEDED / SUCCEEDED_WITH_WARNINGS /
+ FAILED / SKIPPED based on what the upstream artifacts tell us.
+ Missing artifacts → stage stays PENDING (with `reasons` carrying
+ the "not produced" explanation)."""
 
     stages: list[StageSummary] = []
 
@@ -842,7 +841,7 @@ def _pluck_refs(
     artifact_refs: dict[str, str], *keys: str,
 ) -> dict[str, str]:
     """Return a sub-dict of artifact_refs with the keys that exist.
-    Empty when none of the keys are present."""
+ Empty when none of the keys are present."""
     return {k: artifact_refs[k] for k in keys if k in artifact_refs}
 
 

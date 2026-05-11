@@ -1,5 +1,5 @@
 /**
- * Wave 9B — Compile Result Summary panel.
+ * Compile Result Summary panel.
  *
  * Renders the typed `NormalizedCompileResult` artifact via
  * `GET /ingestion-runs/{id}/compile-result`. Surfaces the post-

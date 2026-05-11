@@ -68,29 +68,29 @@ def _write_text(path: Path, body: str) -> None:
 _GRAPHML_SAMPLE = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns">
-  <key id="d0" for="node" attr.name="entity_type" attr.type="string"/>
-  <key id="d1" for="node" attr.name="description" attr.type="string"/>
-  <key id="d2" for="node" attr.name="source_id" attr.type="string"/>
-  <key id="d3" for="edge" attr.name="weight" attr.type="double"/>
-  <key id="d4" for="edge" attr.name="description" attr.type="string"/>
-  <key id="d5" for="edge" attr.name="keywords" attr.type="string"/>
-  <graph edgedefault="undirected">
-    <node id="Acme Corp">
-      <data key="d0">ORGANIZATION</data>
-      <data key="d1">A logistics company.</data>
-      <data key="d2">chunk-1;chunk-2</data>
-    </node>
-    <node id="Jane Doe">
-      <data key="d0">PERSON</data>
-      <data key="d1">CEO of Acme.</data>
-      <data key="d2">chunk-1</data>
-    </node>
-    <edge source="Acme Corp" target="Jane Doe">
-      <data key="d3">8.5</data>
-      <data key="d4">Jane is CEO of Acme.</data>
-      <data key="d5">leadership, role</data>
-    </edge>
-  </graph>
+ <key id="d0" for="node" attr.name="entity_type" attr.type="string"/>
+ <key id="d1" for="node" attr.name="description" attr.type="string"/>
+ <key id="d2" for="node" attr.name="source_id" attr.type="string"/>
+ <key id="d3" for="edge" attr.name="weight" attr.type="double"/>
+ <key id="d4" for="edge" attr.name="description" attr.type="string"/>
+ <key id="d5" for="edge" attr.name="keywords" attr.type="string"/>
+ <graph edgedefault="undirected">
+ <node id="Acme Corp">
+ <data key="d0">ORGANIZATION</data>
+ <data key="d1">A logistics company.</data>
+ <data key="d2">chunk-1;chunk-2</data>
+ </node>
+ <node id="Jane Doe">
+ <data key="d0">PERSON</data>
+ <data key="d1">CEO of Acme.</data>
+ <data key="d2">chunk-1</data>
+ </node>
+ <edge source="Acme Corp" target="Jane Doe">
+ <data key="d3">8.5</data>
+ <data key="d4">Jane is CEO of Acme.</data>
+ <data key="d5">leadership, role</data>
+ </edge>
+ </graph>
 </graphml>
 """
 
@@ -113,8 +113,8 @@ def test_project_returns_unavailable_when_caller_supplies_reason():
 
 def test_project_returns_generic_unavailable_when_no_artifacts():
     """No graph artifacts AND no caller-supplied reason → generic
-    fallback. This is the defense-in-depth branch for direct
-    projector callers (tests); the service always passes a reason."""
+ fallback. This is the defense-in-depth branch for direct
+ projector callers (tests); the service always passes a reason."""
     projector = GraphSnapshotProjector(path_resolver=lambda _r: Path("/nope"))
     snapshot = projector.project(artifacts=[])
     assert snapshot.unavailable is not None
@@ -137,8 +137,8 @@ def test_project_skips_non_graph_artifacts(tmp_path):
 
 def test_project_extracts_entities_from_keyed_dict_lightrag_shape(tmp_path):
     """LightRAG's `vdb_entities.json` is typically a top-level dict
-    keyed by entity id with `__id__` / `__entity_type__` /
-    `__source_id__` fields per record."""
+ keyed by entity id with `__id__` / `__entity_type__` /
+ `__source_id__` fields per record."""
     path = tmp_path / "vdb_entities.json"
     _write_json(path, {
         "person:alice": {
@@ -201,8 +201,8 @@ def test_project_accepts_wrapped_entities_key(tmp_path):
 
 def test_project_synthesises_entity_id_when_no_identifying_fields(tmp_path):
     """No `id` / `name` / `entity_name` AND no dict key → projector
-    fabricates `<artifact_id>#node-<index>` so the FE can still
-    address the node."""
+ fabricates `<artifact_id>#node-<index>` so the FE can still
+ address the node."""
     path = tmp_path / "vdb_entities.json"
     # Only carries a description; nothing usable as an id.
     _write_json(path, [{"description": "anonymous record"}])
@@ -215,7 +215,7 @@ def test_project_synthesises_entity_id_when_no_identifying_fields(tmp_path):
 
 def test_project_uses_name_field_as_id_when_no_explicit_id(tmp_path):
     """`name` / `entity_name` / `__name__` is in the id priority
-    chain — a record with only a name still gets a sensible id."""
+ chain — a record with only a name still gets a sensible id."""
     path = tmp_path / "vdb_entities.json"
     _write_json(path, [{"name": "Alice"}])
     projector = GraphSnapshotProjector(path_resolver=_resolver({"a1": path}))
@@ -228,7 +228,7 @@ def test_project_uses_name_field_as_id_when_no_explicit_id(tmp_path):
 
 def test_project_splits_source_ids_on_sep_delimiter(tmp_path):
     """LightRAG variants delimit `source_id` with `<SEP>` instead of
-    semicolons. Projector handles both."""
+ semicolons. Projector handles both."""
     path = tmp_path / "vdb_entities.json"
     _write_json(path, {
         "e1": {"__source_id__": "chunk-a<SEP>chunk-b<SEP>chunk-c"},
@@ -273,7 +273,7 @@ def test_project_extracts_relations_with_lightrag_field_names(tmp_path):
 
 def test_project_drops_relation_without_endpoints(tmp_path):
     """A relation record missing src or tgt is undrawable — drop it
-    silently rather than crash the snapshot."""
+ silently rather than crash the snapshot."""
     path = tmp_path / "vdb_relationships.json"
     _write_json(path, [
         {"src": "a", "tgt": "b", "label": "ok"},
@@ -293,7 +293,7 @@ def test_project_drops_relation_without_endpoints(tmp_path):
 
 def test_project_handles_mixed_entity_relation_file(tmp_path):
     """`graph_chunk_entity_relation.json` carries both entities AND
-    relations under their own keys. Projector must surface both."""
+ relations under their own keys. Projector must surface both."""
     path = tmp_path / "graph_chunk_entity_relation.json"
     _write_json(path, {
         "entities": [{"id": "e1", "name": "X"}],
@@ -312,7 +312,7 @@ def test_project_handles_mixed_entity_relation_file(tmp_path):
 
 def test_project_skips_internal_kv_store_files(tmp_path):
     """LightRAG's `kv_store_*.json` files (text chunks, doc status,
-    LLM cache) carry no graph data — projector must skip cleanly."""
+ LLM cache) carry no graph data — projector must skip cleanly."""
     paths = {
         "k1": tmp_path / "kv_store_text_chunks.json",
         "k2": tmp_path / "kv_store_full_docs.json",
@@ -362,8 +362,8 @@ def test_project_truncates_entities_at_max_nodes(tmp_path):
 
 def test_project_truncates_relations_independently(tmp_path):
     """Per-list caps: a graph with 10 nodes and 100 edges + caps
-    (50 nodes / 50 edges) must truncate ONLY relations — not
-    entities."""
+ (50 nodes / 50 edges) must truncate ONLY relations — not
+ entities."""
     e_path = tmp_path / "vdb_entities.json"
     _write_json(e_path, [{"id": f"e{i}"} for i in range(10)])
     r_path = tmp_path / "vdb_relationships.json"
@@ -421,8 +421,8 @@ def test_project_dedupes_entities_across_artifacts(tmp_path):
 
 def test_project_stats_carry_contributing_artifact_ids(tmp_path):
     """`stats.source_artifact_ids` must list the artifacts that
-    actually contributed records — empty / KV-only files don't
-    appear there."""
+ actually contributed records — empty / KV-only files don't
+ appear there."""
     e_path = tmp_path / "vdb_entities.json"
     _write_json(e_path, [{"id": "e1"}])
     kv_path = tmp_path / "kv_store_text_chunks.json"
@@ -446,10 +446,10 @@ def test_project_stats_carry_contributing_artifact_ids(tmp_path):
 
 def test_project_skips_artifact_when_path_resolver_raises(tmp_path):
     """Path-resolver failure (e.g. path-traversal guard rejected a
-    tampered location) is a degraded state — the artifact EXISTS so
-    `unavailable` stays None (the FE shows empty tables, not the
-    skipped-graph empty state). Reserve `unavailable` for "the run
-    never produced a graph at all" semantics."""
+ tampered location) is a degraded state — the artifact EXISTS so
+ `unavailable` stays None (the FE shows empty tables, not the
+ skipped-graph empty state). Reserve `unavailable` for "the run
+ never produced a graph at all" semantics."""
     def _bad(_r):
         raise RuntimeError("blocked")
     projector = GraphSnapshotProjector(path_resolver=_bad)
@@ -478,7 +478,7 @@ def test_project_skips_invalid_json(tmp_path):
 
 def test_project_handles_empty_graphml_gracefully(tmp_path):
     """Empty `.graphml` (no <node>/<edge>) yields 0 entities + 0
-    relations rather than crashing the projector."""
+ relations rather than crashing the projector."""
     path = tmp_path / "graph_chunk_entity_relation.graphml"
     path.write_text("<graphml/>", encoding="utf-8")
     projector = GraphSnapshotProjector(path_resolver=_resolver({"a1": path}))
@@ -493,10 +493,10 @@ def test_project_handles_empty_graphml_gracefully(tmp_path):
 
 def test_project_extracts_entities_and_relations_from_graphml(tmp_path):
     """LightRAG's canonical entity-relation graph lives in
-    `graph_chunk_entity_relation.graphml`. The projector must read
-    `<node>` elements as entities and `<edge>` elements as relations,
-    pulling attributes from `<data key="dN">` children whose `dN`
-    references the corresponding `<key attr.name=...>` declaration."""
+ `graph_chunk_entity_relation.graphml`. The projector must read
+ `<node>` elements as entities and `<edge>` elements as relations,
+ pulling attributes from `<data key="dN">` children whose `dN`
+ references the corresponding `<key attr.name=...>` declaration."""
     path = tmp_path / "graph_chunk_entity_relation.graphml"
     _write_text(path, _GRAPHML_SAMPLE)
 

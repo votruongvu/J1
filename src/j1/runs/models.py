@@ -41,50 +41,50 @@ __all__ = [
 class RunStatus(StrEnum):
     """Lifecycle status of a single ingestion run.
 
-    The state machine, from the user's perspective:
+ The state machine, from the user's perspective:
 
-        CREATED  →  ASSESSING  →  PLAN_READY
-                                     │
-                                     ├──▶  WAITING_FOR_CONFIRMATION
-                                     │             │
-                                     │             ▼
-                                     └──▶  RUNNING  ⇄  PAUSED
-                                              │
-                                              ▼
-                                          CANCELLING (operator stop)
-        ┌─────────────────────────────────────┤
-        ▼                                     ▼
-        SUCCEEDED                             FAILED
-        SUCCEEDED_WITH_WARNINGS               CANCELLED
-        REQUIRES_HUMAN_REVIEW                 (terminal)
-        (terminal)
+ CREATED → ASSESSING → PLAN_READY
+ │
+ ├──▶ WAITING_FOR_CONFIRMATION
+ │ │
+ │ ▼
+ └──▶ RUNNING ⇄ PAUSED
+ │
+ ▼
+ CANCELLING (operator stop)
+ ┌─────────────────────────────────────┤
+ ▼ ▼
+ SUCCEEDED FAILED
+ SUCCEEDED_WITH_WARNINGS CANCELLED
+ REQUIRES_HUMAN_REVIEW (terminal)
+ (terminal)
 
-    `WAITING_FOR_CONFIRMATION` is reached only when the deployment
-    has opted into manual confirmation (auto-run is the default; the
-    confirmation gate is configured per-run via the ingest request).
+ `WAITING_FOR_CONFIRMATION` is reached only when the deployment
+ has opted into manual confirmation (auto-run is the default; the
+ confirmation gate is configured per-run via the ingest request).
 
-    `PAUSED` and `CANCELLING` are operator-driven intermediate states.
-    PAUSED is reversible (resume → RUNNING). CANCELLING is one-way:
-    the workflow is winding down, will land at CANCELLED at terminal
-    once any in-flight activity finishes.
+ `PAUSED` and `CANCELLING` are operator-driven intermediate states.
+ PAUSED is reversible (resume → RUNNING). CANCELLING is one-way:
+ the workflow is winding down, will land at CANCELLED at terminal
+ once any in-flight activity finishes.
 
-    `COMPILE_PENDING` and `VERIFYING` are intermediate states for the
-    two-phase compile model. The workflow parks at `COMPILE_PENDING`
-    after assessment finishes; `POST /ingestion-runs/{id}/compile`
-    advances it to RUNNING. `VERIFYING` runs immediately after the
-    compile activity to gate chunk-count / index health checks; a
-    failure here lands at terminal FAILED with one of the
-    `FAILURE_CODE_*` reason codes.
+ `COMPILE_PENDING` and `VERIFYING` are intermediate states for the
+ two-phase compile model. The workflow parks at `COMPILE_PENDING`
+ after assessment finishes; `POST /ingestion-runs/{id}/compile`
+ advances it to RUNNING. `VERIFYING` runs immediately after the
+ compile activity to gate chunk-count / index health checks; a
+ failure here lands at terminal FAILED with one of the
+ `FAILURE_CODE_*` reason codes.
 
-    Canonical-vs-legacy names: `RECEIVED`, `ASSESSMENT_READY`, and
-    `COMPILING` are the canonical names introduced by the
-    macro-stage simplification (Phase 1 of the workflow refactor).
-    `CREATED`, `PLAN_READY`, and `RUNNING` remain as readable
-    legacy values for runs persisted by older worker builds — new
-    runs SHOULD be written with the canonical names. See
-    `canonical_status()` and `LEGACY_TO_CANONICAL_STATUS` for the
-    translation table; downstream callers (REST status filters, FE
-    predicate sets) treat each pair as equivalent."""
+ Canonical-vs-legacy names: `RECEIVED`, `ASSESSMENT_READY`, and
+ `COMPILING` are the canonical names introduced by the
+ macro-stage simplification ( of the workflow refactor).
+ `CREATED`, `PLAN_READY`, and `RUNNING` remain as readable
+ legacy values for runs persisted by older worker builds — new
+ runs SHOULD be written with the canonical names. See
+ `canonical_status` and `LEGACY_TO_CANONICAL_STATUS` for the
+ translation table; downstream callers (REST status filters, FE
+ predicate sets) treat each pair as equivalent."""
 
     CREATED = "created"
     RECEIVED = "received"
@@ -133,13 +133,13 @@ PROGRESS_SEVERITY_ERROR = "ERROR"
 FAILURE_CODE_CHUNK_FAILED = "CHUNK_FAILED"
 FAILURE_CODE_INDEX_FAILED = "INDEX_FAILED"
 FAILURE_CODE_VERIFICATION_FAILED = "VERIFICATION_FAILED"
-# Macro-stage failure codes (Phase 1). Distinct from the generic
+# Macro-stage failure codes. Distinct from the generic
 # `ERROR_TYPE_REQUIRED_STEP_FAILED` label — they pin the failure
 # to a specific macro stage so the FE/operator UI can render the
 # right banner copy and link to the right diagnostic.
 FAILURE_CODE_ASSESSMENT_FAILED = "ASSESSMENT_FAILED"
 FAILURE_CODE_COMPILE_FAILED = "COMPILE_FAILED"
-# Wave-6.5 enrichment-policy enforcement. Set on the run record
+#  enrichment-policy enforcement. Set on the run record
 # when `require_enrichment_success=True` on the active domain
 # policy AND the enrichment stage produced `status=failed`. The FE
 # renders this as "enrichment was required and did not complete";
@@ -159,7 +159,7 @@ FAILURE_CODE_EMPTY_DOCUMENT = "EMPTY_DOCUMENT"
 # UI rendering; new code SHOULD use the canonical names but old
 # runs persisted with legacy values keep working. Callers that
 # need to compare statuses across the boundary use
-# `canonical_status()` to fold legacy values onto the canonical
+# `canonical_status` to fold legacy values onto the canonical
 # row first. Empty for statuses with no legacy alias.
 LEGACY_TO_CANONICAL_STATUS: dict[str, str] = {
     "created": "received",
@@ -176,19 +176,19 @@ LEGACY_TO_CANONICAL_STATUS: dict[str, str] = {
 def canonical_status(value: str | RunStatus) -> str:
     """Fold a legacy run-status string onto its canonical name.
 
-    Used by predicate sets (REST status filters, FE active-state
-    checks) so a query for `status=received` matches both runs
-    written with the new name AND runs written with the legacy
-    `created` value. Unknown values pass through unchanged."""
+ Used by predicate sets (REST status filters, FE active-state
+ checks) so a query for `status=received` matches both runs
+ written with the new name AND runs written with the legacy
+ `created` value. Unknown values pass through unchanged."""
     raw = value.value if isinstance(value, RunStatus) else str(value)
     return LEGACY_TO_CANONICAL_STATUS.get(raw, raw)
 
 
 def status_aliases(value: str | RunStatus) -> tuple[str, ...]:
     """Return all aliases that compare-equal to `value` (canonical
-    + every legacy that maps to it). Used by the REST list filter
-    to expand `?status=received` into `(received, created)` for
-    the underlying store query."""
+ + every legacy that maps to it). Used by the REST list filter
+ to expand `?status=received` into `(received, created)` for
+ the underlying store query."""
     canonical = canonical_status(value)
     aliases = [canonical]
     for legacy, mapped in LEGACY_TO_CANONICAL_STATUS.items():
@@ -201,15 +201,15 @@ def status_aliases(value: str | RunStatus) -> tuple[str, ...]:
 class IngestionRun:
     """One ingestion attempt of one document.
 
-    The `run_id` is the public identifier the frontend uses; it's
-    distinct from `workflow_id` (Temporal's identifier) so the
-    framework can hide Temporal-specific naming from end users.
+ The `run_id` is the public identifier the frontend uses; it's
+ distinct from `workflow_id` (Temporal's identifier) so the
+ framework can hide Temporal-specific naming from end users.
 
-    Mutability: this dataclass is mutable on purpose — the in-memory
-    record is updated as the run progresses (status, current_stage,
-    current_step, progress_percent, etc.) and the JSONL store
-    appends a fresh snapshot on each update. Readers reconstruct the
-    latest state by replaying the log."""
+ Mutability: this dataclass is mutable on purpose — the in-memory
+ record is updated as the run progresses (status, current_stage,
+ current_step, progress_percent, etc.) and the JSONL store
+ appends a fresh snapshot on each update. Readers reconstruct the
+ latest state by replaying the log."""
 
     run_id: str
     document_id: str
@@ -242,16 +242,16 @@ class IngestionRun:
 class ProgressEvent:
     """One entry in an `IngestionRun`'s progress timeline.
 
-    Persisted via the existing `AuditRecorder` (action=`j1.progress.*`)
-    so historical events are queryable through the same JSONL audit
-    log used for everything else; the SSE stream re-emits the same
-    shape live. `event_id` is allocated by the audit recorder and
-    matches the `AuditEvent.event_id` for the same entry — clients
-    can use it as a resume cursor.
+ Persisted via the existing `AuditRecorder` (action=`j1.progress.*`)
+ so historical events are queryable through the same JSONL audit
+ log used for everything else; the SSE stream re-emits the same
+ shape live. `event_id` is allocated by the audit recorder and
+ matches the `AuditEvent.event_id` for the same entry — clients
+ can use it as a resume cursor.
 
-    Field hygiene: `message`, `engine`, `provider` are short
-    operational strings. `metadata` is a small structured dict —
-    NEVER document content, prompts, or model outputs."""
+ Field hygiene: `message`, `engine`, `provider` are short
+ operational strings. `metadata` is a small structured dict —
+ NEVER document content, prompts, or model outputs."""
 
     event_id: str
     run_id: str

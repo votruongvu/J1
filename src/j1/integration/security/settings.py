@@ -23,10 +23,10 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 class SecuritySettings:
     """Security configuration loaded from the environment.
 
-    `api_keys` is the **already-resolved** map of token → record. Callers
-    keep secrets out of code by pointing `J1_AUTH_API_KEYS_FILE` at a
-    secrets-managed JSON file (or by injecting `api_keys` programmatically).
-    """
+ `api_keys` is the **already-resolved** map of token → record. Callers
+ keep secrets out of code by pointing `J1_AUTH_API_KEYS_FILE` at a
+ secrets-managed JSON file (or by injecting `api_keys` programmatically).
+ """
 
     auth_required: bool = False
     api_keys: Mapping[str, ApiKeyRecord] = field(default_factory=dict)

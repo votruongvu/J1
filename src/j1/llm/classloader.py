@@ -2,10 +2,10 @@
 
 Two accepted forms:
 
-  * Short alias from the built-in catalog: ``"ChatOpenAI"`` →
-    imports ``langchain_openai.ChatOpenAI``.
-  * Fully-qualified ``"module.path:ClassName"`` (or
-    ``"module.path.ClassName"``).
+ * Short alias from the built-in catalog: ``"ChatOpenAI"`` →
+ imports ``langchain_openai.ChatOpenAI``.
+ * Fully-qualified ``"module.path:ClassName"`` (or
+ ``"module.path.ClassName"``).
 
 Why a catalog? LangChain's class names are stable across versions but
 their containing modules move (``langchain.chat_models`` →
@@ -58,10 +58,10 @@ EMBEDDING_CATALOG: dict[str, str] = {
 
 # Fully-qualified specs are accepted if their top-level package matches
 # one of these prefixes. Two forms are supported:
-#   * exact match on the top-level package, e.g. ``"j1"``
-#   * underscore-terminated prefix that matches by head-startswith,
-#     e.g. ``"langchain_"`` matches ``langchain_openai``,
-#     ``langchain_anthropic``, …
+#  * exact match on the top-level package, e.g. ``"j1"``
+#  * underscore-terminated prefix that matches by head-startswith,
+#  e.g. ``"langchain_"`` matches ``langchain_openai``,
+#  ``langchain_anthropic``, …
 # Plain ``"langchain"`` covers the legacy umbrella `langchain` package.
 _TRUSTED_PREFIXES: tuple[str, ...] = (
     "langchain",
@@ -83,26 +83,26 @@ def resolve_embedding_model(spec: str) -> Any:
 def resolve_callable(spec: str) -> Any:
     """Import any function/class by ``module:name`` or ``module.name`` spec.
 
-    Used by the RAGAnything / Graphify adapters to load a deployment-
-    supplied processor callable from an env var. Subject to the same
-    trusted-prefix allowlist as `resolve_chat_model`, but with one
-    additional carve-out: any path under the deployment's own package
-    space is allowed if its first segment is registered via
-    `register_trusted_prefix(...)`.
-    """
+ Used by the RAGAnything / Graphify adapters to load a deployment-
+ supplied processor callable from an env var. Subject to the same
+ trusted-prefix allowlist as `resolve_chat_model`, but with one
+ additional carve-out: any path under the deployment's own package
+ space is allowed if its first segment is registered via
+ `register_trusted_prefix(...)`.
+ """
     return _resolve_qualified(spec, what="callable")
 
 
 def register_trusted_prefix(prefix: str) -> None:
     """Add an import-prefix to the trusted-allowlist for class-loading.
 
-    Deployments call this once at startup if they want to load custom
-    classes outside the LangChain / j1 namespaces. Example::
+ Deployments call this once at startup if they want to load custom
+ classes outside the LangChain / j1 namespaces. Example::
 
-        register_trusted_prefix("mycompany_kb")
+ register_trusted_prefix("mycompany_kb")
 
-    Idempotent. Prefix should NOT end with ``.``.
-    """
+ Idempotent. Prefix should NOT end with ``.``.
+ """
     global _TRUSTED_PREFIXES
     p = prefix.strip().rstrip(".")
     if not p:

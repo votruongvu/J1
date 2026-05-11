@@ -1,20 +1,20 @@
 """Execute a validation set against an ingestion run.
 
-Phase 2 ships `DefaultValidationRunner`. It:
+ ships `DefaultValidationRunner`. It:
 
-  1. Loops the set's test cases in priority order (smoke first).
-  2. For each case, drives the existing `HybridQueryEngine` with
-     `RunScope` so retrieval is restricted to artifacts produced
-     by the run under test.
-  3. Composes `ValidationCheckDTO[]` from the engine output using
-     the Phase 1 deterministic check engine, plus Phase 2's
-     case-specific checks (expected chunks, expected pages).
-  4. Aggregates per-case statuses + a coverage breakdown into a
-     `ValidationSummaryDTO`.
-  5. Emits the lifecycle states to a callback (`pending` →
-     `running` → `completed`/`failed`/`cancelled`) so the service
-     can persist each transition without the runner having to know
-     about the store.
+ 1. Loops the set's test cases in priority order (smoke first).
+ 2. For each case, drives the existing `HybridQueryEngine` with
+ `RunScope` so retrieval is restricted to artifacts produced
+ by the run under test.
+ 3. Composes `ValidationCheckDTO[]` from the engine output using
+ the deterministic check engine, plus 's
+ case-specific checks (expected chunks, expected pages).
+ 4. Aggregates per-case statuses + a coverage breakdown into a
+ `ValidationSummaryDTO`.
+ 5. Emits the lifecycle states to a callback (`pending` →
+ `running` → `completed`/`failed`/`cancelled`) so the service
+ can persist each transition without the runner having to know
+ about the store.
 
 Synchronous in-process execution. Hard cap on test-case count
 enforced upstream — the runner trusts what it gets.
@@ -51,7 +51,7 @@ from j1.validation.judge import LLMJudge
 _log = logging.getLogger("j1.validation.runner")
 
 
-# Phase 2 check augmentations layered on top of Phase 1's six.
+#  check augmentations layered on top of 's six.
 # They run as `required` checks when the case carries the
 # corresponding expected_* field; absent expected lists make the
 # check a no-op (the DTO is omitted, NOT included-and-passing — same
@@ -59,7 +59,7 @@ _log = logging.getLogger("j1.validation.runner")
 _CHECK_EXPECTED_CHUNK_IN_TOPK = "expected_chunk_in_topk"
 _CHECK_EXPECTED_PAGE_IN_CITATIONS = "expected_page_in_citations"
 
-# Phase 4 modality-aware checks. `expected_artifact_retrieved`
+#  modality-aware checks. `expected_artifact_retrieved`
 # applies to table/image cases (the case names a specific
 # artifact id and the runner verifies retrieval surfaced it).
 # `expected_graph_evidence` applies to graph cases (the case
@@ -79,14 +79,14 @@ _MODALITY_KIND_BY_CASE_TYPE: dict[str, frozenset[str]] = {
 }
 
 
-# Synchronous in-process limit. Matches the Phase 2 plan's "≤ 50
+# Synchronous in-process limit. Matches the plan's "≤ 50
 # cases per run" decision. The REST handler also clamps; this is
 # defense-in-depth so a stand-alone caller (test, future async
 # path) gets the same guarantee.
 MAX_CASES_PER_RUN = 50
 
 # Score floor used to categorise low-confidence retrieval. Tunable
-# per profile in a future phase; Phase 2 ships a constant. Below
+# per profile in the future; ships a constant. Below
 # this BM25-rank-derived floor we still pass `retrieved_chunks_present`
 # but flag it as a soft signal in `recommended_action`.
 _LOW_CONFIDENCE_SCORE_FLOOR = 0.0  # placeholder — engine doesn't surface scores yet
@@ -99,16 +99,16 @@ _PREVIEW_MAX_CHARS = 240
 class DefaultValidationRunner:
     """Drives one validation set to completion.
 
-    Constructor takes the engine + artifact registry directly — the
-    runner stays decoupled from REST, the store, and the audit log.
-    The service layer composes those.
+ Constructor takes the engine + artifact registry directly — the
+ runner stays decoupled from REST, the store, and the audit log.
+ The service layer composes those.
 
-    `lifecycle_callback` is the seam for persistence: the runner
-    calls it before/after running so the caller can upsert the
-    pending / running / completed snapshot. Signature:
-    `(vrun: ValidationRunDTO) -> None`. Default no-op so unit
-    tests don't have to wire a store.
-    """
+ `lifecycle_callback` is the seam for persistence: the runner
+ calls it before/after running so the caller can upsert the
+ pending / running / completed snapshot. Signature:
+ `(vrun: ValidationRunDTO) -> None`. Default no-op so unit
+ tests don't have to wire a store.
+ """
 
     def __init__(
         self,
@@ -121,7 +121,7 @@ class DefaultValidationRunner:
         self._query_engine = query_engine
         self._artifacts = artifact_registry
         self._on_lifecycle = lifecycle_callback or (lambda _vrun: None)
-        # Optional LLM judge for Phase 3 semantic checks. When None
+        # Optional LLM judge for semantic checks. When None
         # the runner skips the optional checks entirely — the
         # checks engine returns nothing for them, which leaves the
         # result accounting deterministic.
@@ -135,9 +135,9 @@ class DefaultValidationRunner:
         actor: str = "system",
     ) -> ValidationRunDTO:
         """Execute every case in the set and return the terminal
-        snapshot. Callers persist as they see fit — the lifecycle
-        callback fires three times so a JSONL store can append the
-        pending/running/completed snapshots atomically."""
+ snapshot. Callers persist as they see fit — the lifecycle
+ callback fires three times so a JSONL store can append the
+ pending/running/completed snapshots atomically."""
         validation_run_id = f"vrun-{uuid.uuid4().hex[:12]}"
         started_at = _iso_now()
 
@@ -157,7 +157,7 @@ class DefaultValidationRunner:
         )
         self._safe_lifecycle(pending)
 
-        # 2. running — actively executing. For Phase 2 this is a
+        # 2. running — actively executing. For this is a
         # narrow window (synchronous), but a long-running case
         # would let the FE render an "executing X/N" indicator.
         running = _replace_status(
@@ -165,11 +165,11 @@ class DefaultValidationRunner:
         )
         self._safe_lifecycle(running)
 
-        # Phase 4: snapshot which artifact kinds exist for this
+        # snapshot which artifact kinds exist for this
         # run BEFORE looping. Modality cases are gated against
         # this set — a `type="table"` case is skipped when the
         # run produced no `enriched.tables`. Computing once
-        # bounds the registry I/O at one list_artifacts() call.
+        # bounds the registry I/O at one list_artifacts call.
         try:
             available_kinds = self._available_kinds_for_run(ctx, vset.run_id)
         except Exception:  # noqa: BLE001 — registry hiccup, treat as no info
@@ -224,17 +224,17 @@ class DefaultValidationRunner:
         available_kinds: frozenset[str] = frozenset(),
     ) -> ValidationResultDTO:
         """Drive one test case end-to-end. Always returns a result —
-        an engine exception becomes a `failed` result with the
-        exception message in `failure_reason`.
+ an engine exception becomes a `failed` result with the
+ exception message in `failure_reason`.
 
-        Phase 4: when the case names a modality (table/image/graph)
-        the run doesn't have, the case short-circuits to a
-        `skipped` result. Skipped cases don't count toward the
-        run's `validation_status`, so a tester importing a generic
-        validation set onto a text-only run isn't punished for
-        modalities the run doesn't have.
-        """
-        # Skip-applicability gate (Phase 4 defense-in-depth — the
+ when the case names a modality (table/image/graph)
+ the run doesn't have, the case short-circuits to a
+ `skipped` result. Skipped cases don't count toward the
+ run's `validation_status`, so a tester importing a generic
+ validation set onto a text-only run isn't punished for
+ modalities the run doesn't have.
+ """
+        # Skip-applicability gate ( defense-in-depth — the
         # generator already gates upstream).
         skip_reason = _modality_skip_reason(case, available_kinds)
         if skip_reason is not None:
@@ -288,7 +288,7 @@ class DefaultValidationRunner:
         retrieved = _retrieved_chunks_from_response(response)
         citations = _citations_from_response(response)
 
-        # Phase 1 + Phase 3 deterministic and judge-driven checks.
+        #  + deterministic and judge-driven checks.
         # Run-checks branches internally on `case_type` to swap
         # required positive-case checks for the negative abstain
         # check, and appends optional judge-driven checks when a
@@ -306,7 +306,7 @@ class DefaultValidationRunner:
             question=case.question,
             judge=self._judge,
         )
-        # Phase 2 case-specific checks layered on top. Skipped for
+        #  case-specific checks layered on top. Skipped for
         # negative cases — by definition there's no expected
         # chunk/page (the question is out-of-scope).
         if case.type != "negative":
@@ -314,7 +314,7 @@ class DefaultValidationRunner:
                 checks.append(_check_expected_chunk_in_topk(case, retrieved))
             if case.expected_pages:
                 checks.append(_check_expected_page_in_citations(case, citations))
-            # Phase 4 modality checks. Required when the case
+            #  modality checks. Required when the case
             # names expected modality evidence; skipped (omitted)
             # when the corresponding expected list is empty.
             if case.expected_artifacts:
@@ -348,14 +348,14 @@ class DefaultValidationRunner:
         self, ctx: ProjectContext, run_id: str,
     ) -> frozenset[str]:
         """One-shot scan of the registry for kinds present in this
-        run. Cached per `run()` call so `_execute_case` can apply
-        the modality skip gate without re-querying.
+ run. Cached per `run` call so `_execute_case` can apply
+ the modality skip gate without re-querying.
 
-        Looks at `metadata.run_id == run_id` per artifact — same
-        contract the chunk projector uses. Phase 5+ might layer in
-        a registry-side index for this lookup, but for v1 the
-        single-pass scan is fine (artifact counts are bounded).
-        """
+ Looks at `metadata.run_id == run_id` per artifact — same
+ contract the chunk projector uses. + might layer in
+ a registry-side index for this lookup, but for v1 the
+ single-pass scan is fine (artifact counts are bounded).
+ """
         kinds: set[str] = set()
         for record in self._artifacts.list_artifacts(ctx):
             if record.metadata.get("run_id") == run_id:
@@ -364,7 +364,7 @@ class DefaultValidationRunner:
 
     def _safe_lifecycle(self, vrun: ValidationRunDTO) -> None:
         """Lifecycle callback failures must not fail the run. The
-        runner is the source of truth; persistence is best-effort."""
+ runner is the source of truth; persistence is best-effort."""
         try:
             self._on_lifecycle(vrun)
         except Exception:  # noqa: BLE001
@@ -379,8 +379,8 @@ class DefaultValidationRunner:
         cases: list[ValidationTestCaseDTO],
     ) -> list[ValidationTestCaseDTO]:
         """Smoke first, then normal, then deep. Within a priority
-        bucket, preserve the generator's original order — that's
-        the document-section order, useful for visual scanning."""
+ bucket, preserve the generator's original order — that's
+ the document-section order, useful for visual scanning."""
         priority_rank = {"smoke": 0, "normal": 1, "deep": 2}
         return sorted(
             cases,
@@ -388,7 +388,7 @@ class DefaultValidationRunner:
         )
 
 
-# ---- Phase 2 case-specific checks ----------------------------------
+# ---- case-specific checks ----------------------------------
 
 
 def _modality_skip_reason(
@@ -396,13 +396,13 @@ def _modality_skip_reason(
     available_kinds: frozenset[str],
 ) -> str | None:
     """Return a human-readable reason when the case targets a
-    modality the run lacks; None when the case is applicable.
+ modality the run lacks; None when the case is applicable.
 
-    Cases of type retrieval/answer/citation/negative are always
-    applicable — they don't depend on a particular artifact kind.
-    Modality cases (table/image/graph) skip when their kind set
-    has zero overlap with the run's `available_kinds`.
-    """
+ Cases of type retrieval/answer/citation/negative are always
+ applicable — they don't depend on a particular artifact kind.
+ Modality cases (table/image/graph) skip when their kind set
+ has zero overlap with the run's `available_kinds`.
+ """
     required_kinds = _MODALITY_KIND_BY_CASE_TYPE.get(case.type)
     if required_kinds is None:
         return None
@@ -419,9 +419,9 @@ def _check_expected_artifact_retrieved(
     retrieved: list[RetrievedChunkRefDTO],
 ) -> ValidationCheckDTO:
     """Required: at least one of `expected_artifacts` must surface
-    in the retrieved set's `artifact_id`s. Phase 4's headline
-    table/image check — 'is the table I named in the test
-    actually retrievable for this question?'"""
+ in the retrieved set's `artifact_id`s. 's headline
+ table/image check — 'is the table I named in the test
+ actually retrievable for this question?'"""
     expected = set(case.expected_artifacts)
     actual = {c.artifact_id for c in retrieved if c.artifact_id}
     overlap = expected & actual
@@ -447,14 +447,14 @@ def _check_expected_graph_evidence(
     response: Any,
 ) -> ValidationCheckDTO:
     """Required for graph cases: at least one of the expected
-    graph node ids must appear in the engine's `graph_paths`
-    (the entity ids surfaced by `GraphQueryProvider`).
+ graph node ids must appear in the engine's `graph_paths`
+ (the entity ids surfaced by `GraphQueryProvider`).
 
-    Edge ids aren't checked separately yet — the engine doesn't
-    surface them as standalone identifiers, only as part of a
-    path. When edge-level identification ships in a future
-    engine pass, this check grows to include them.
-    """
+ Edge ids aren't checked separately yet — the engine doesn't
+ surface them as standalone identifiers, only as part of a
+ path. When edge-level identification ships in a future
+ engine pass, this check grows to include them.
+ """
     expected_nodes = set(case.expected_graph_nodes)
     paths = list(getattr(response, "graph_paths", []))
     seen_nodes: set[str] = set()
@@ -483,8 +483,8 @@ def _check_expected_chunk_in_topk(
     retrieved: list[RetrievedChunkRefDTO],
 ) -> ValidationCheckDTO:
     """Required: at least one of `expected_chunks` must show up in
-    the retrieved set's chunk_ids. Phase 2's headline assertion —
-    'is the chunk we cited as ground-truth retrievable?'"""
+ the retrieved set's chunk_ids. 's headline assertion —
+ 'is the chunk we cited as ground-truth retrievable?'"""
     expected = set(case.expected_chunks)
     actual = {c.chunk_id for c in retrieved if c.chunk_id}
     overlap = expected & actual
@@ -510,11 +510,11 @@ def _check_expected_page_in_citations(
     citations: list[ValidationCitationDTO],
 ) -> ValidationCheckDTO:
     """Required: at least one citation's `source_location` must
-    overlap the case's `expected_pages`. Page locations come from
-    the indexer's `source_location` column verbatim — we accept
-    any string match (e.g. 'p.3', 'page-3', '3') since producers
-    don't yet share a single page-format convention.
-    """
+ overlap the case's `expected_pages`. Page locations come from
+ the indexer's `source_location` column verbatim — we accept
+ any string match (e.g. 'p.3', 'page-3', '3') since producers
+ don't yet share a single page-format convention.
+ """
     expected = {str(p) for p in case.expected_pages}
     actual = {
         str(c.source_location) for c in citations
@@ -548,10 +548,10 @@ def _aggregate_validation_status(
     results: list[ValidationResultDTO],
 ) -> ValidationStatus:
     """Roll the per-case `status` field up into the run's
-    `validation_status`. Strict precedence: any failed → failed;
-    any warning → passed_with_warnings; otherwise passed.
-    `skipped` doesn't affect the run-level status (that's the
-    contract — a skipped modality check shouldn't gate the verdict)."""
+ `validation_status`. Strict precedence: any failed → failed;
+ any warning → passed_with_warnings; otherwise passed.
+ `skipped` doesn't affect the run-level status (that's the
+ contract — a skipped modality check shouldn't gate the verdict)."""
     if not results:
         return "inconclusive"
     if any(r.status == "failed" for r in results):
@@ -565,10 +565,10 @@ def _result_status_from_validation_status(
     status: ValidationStatus,
 ) -> str:
     """Map the per-case validation_status onto the per-result
-    `status` field's narrower vocabulary. The pass/warning/fail
-    triplet is what shows up in `summary.passed/warning/failed`,
-    which is why `inconclusive` collapses to `failed` here — we
-    don't want it counted in any other bucket."""
+ `status` field's narrower vocabulary. The pass/warning/fail
+ triplet is what shows up in `summary.passed/warning/failed`,
+ which is why `inconclusive` collapses to `failed` here — we
+ don't want it counted in any other bucket."""
     if status == "passed":
         return "passed"
     if status == "passed_with_warnings":
@@ -578,9 +578,9 @@ def _result_status_from_validation_status(
 
 def _failure_reason_from_checks(checks: list[ValidationCheckDTO]) -> str | None:
     """First failed required check's detail. Surfaces on the
-    Result Detail drawer as the headline 'why did this fail?'
-    string — testers shouldn't have to scan all checks to find
-    the cause."""
+ Result Detail drawer as the headline 'why did this fail?'
+ string — testers shouldn't have to scan all checks to find
+ the cause."""
     for c in checks:
         if not c.passed and c.severity == "required":
             return c.detail or f"check {c.name!r} failed"
@@ -592,10 +592,10 @@ def _build_summary(
     results: list[ValidationResultDTO],
 ) -> ValidationSummaryDTO:
     """Compose the run-level summary. Counters reconcile to `total`;
-    `main_issues` surfaces up to three failure detail strings to
-    drive the Knowledge Readiness card's "what broke?" copy.
-    `recommended_action` is a human-readable string the FE renders
-    as the card subtitle."""
+ `main_issues` surfaces up to three failure detail strings to
+ drive the Knowledge Readiness card's "what broke?" copy.
+ `recommended_action` is a human-readable string the FE renders
+ as the card subtitle."""
     total = len(results)
     counts = {"passed": 0, "warning": 0, "failed": 0, "skipped": 0}
     issues: list[str] = []
@@ -690,8 +690,8 @@ def _replace_status(
     failure_message: str | None = None,
 ) -> ValidationRunDTO:
     """Return a new `ValidationRunDTO` with the named fields swapped.
-    Avoids `dataclasses.replace` so callers don't import `dataclasses`
-    just to mutate one field."""
+ Avoids `dataclasses.replace` so callers don't import `dataclasses`
+ just to mutate one field."""
     return ValidationRunDTO(
         validation_run_id=vrun.validation_run_id,
         validation_set_id=vrun.validation_set_id,

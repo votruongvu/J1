@@ -1,18 +1,18 @@
 """Tests for the composition root.
 
 Covers:
-  * Default selection: raganything compiler / graph / retrieval
-  * Bootstrap fails clearly when RAGAnything compiler selected without
-    text + embedding LLM roles
-  * Bootstrap fails clearly when visual enrichment is enabled without
-    a vision LLM
-  * Bootstrap fails clearly when graphify is selected without
-    `J1_GRAPHIFY_ENABLED=true`
-  * Bootstrap succeeds when graphify is enabled AND selected (with
-    fakes for the LLM clients)
-  * Diagnostics snapshot reports compiler / graph / retrieval, the
-    selected providers, the LLM roles, and never leaks secrets
-  * `bootstrap_from_env` is the entrypoint shortcut
+ * Default selection: raganything compiler / graph / retrieval
+ * Bootstrap fails clearly when RAGAnything compiler selected without
+ text + embedding LLM roles
+ * Bootstrap fails clearly when visual enrichment is enabled without
+ a vision LLM
+ * Bootstrap fails clearly when graphify is selected without
+ `J1_GRAPHIFY_ENABLED=true`
+ * Bootstrap succeeds when graphify is enabled AND selected (with
+ fakes for the LLM clients)
+ * Diagnostics snapshot reports compiler / graph / retrieval, the
+ selected providers, the LLM roles, and never leaks secrets
+ * `bootstrap_from_env` is the entrypoint shortcut
 """
 
 import json
@@ -296,10 +296,10 @@ def test_bootstrap_from_env_returns_result(monkeypatch):
 def test_bootstrap_mock_selection_registers_all_three_without_llm():
     """`J1_DEFAULT_*=mock` everywhere should boot with no LLM credentials.
 
-    This is the configuration the bundled `.env.example` ships with —
-    it lets the dev Docker stack run a complete workflow end-to-end
-    without forcing the developer to provision an LLM endpoint.
-    """
+ This is the configuration the bundled `.env.example` ships with —
+ it lets the dev Docker stack run a complete workflow end-to-end
+ without forcing the developer to provision an LLM endpoint.
+ """
     env = {
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
@@ -335,9 +335,9 @@ def test_bootstrap_mock_compiler_carries_correct_kind():
 def test_bootstrap_mock_compiler_runs_against_real_processing_service(tmp_path):
     """Sanity: the bootstrapped mock compiler can actually execute.
 
-    Proves the dev-stack default produces a real successful workflow
-    end-to-end (not just "starts up without error").
-    """
+ Proves the dev-stack default produces a real successful workflow
+ end-to-end (not just "starts up without error").
+ """
     from j1.processing.results import ResultStatus
     from j1.projects.context import ProjectContext
 
@@ -360,8 +360,8 @@ def test_bootstrap_mock_compiler_runs_against_real_processing_service(tmp_path):
 
 def test_bootstrap_mixed_selection_mock_compiler_raganything_graph():
     """Selections are independent — mocking the compiler while keeping
-    a real graph provider must work (and the real provider's LLM
-    requirements still apply)."""
+ a real graph provider must work (and the real provider's LLM
+ requirements still apply)."""
     env = {
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",
@@ -378,7 +378,7 @@ def test_bootstrap_mixed_selection_mock_compiler_raganything_graph():
 
 def test_bootstrap_mock_compiler_alone_does_not_satisfy_raganything_retrieval():
     """`mock` doesn't auto-fill other roles — selecting raganything for
-    a different stage still needs LLM credentials."""
+ a different stage still needs LLM credentials."""
     env = {
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_DEFAULT_COMPILER": "mock",

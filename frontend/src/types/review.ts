@@ -330,19 +330,19 @@ export interface PlanningResult {
   rawArtifactId?: string | null;
   domainContext?: PlanningDomainContext | null;
   /**
-   * Operator-facing planner mode.
-   *   "rule_based"           — deterministic only
-   *   "llm"                  — LLM-assisted; rule-based runs first
-   *   "hybrid"               — both run; rule-based is the safety net
-   *   "rule_based_fallback"  — LLM ran but failed/invalid; kept rules
-   */
+ * Operator-facing planner mode.
+ * "rule_based" — deterministic only
+ * "llm" — LLM-assisted; rule-based runs first
+ * "hybrid" — both run; rule-based is the safety net
+ * "rule_based_fallback" — LLM ran but failed/invalid; kept rules
+ */
   plannerMode?: string | null;
 }
 
 /**
  * Post-compile rule-based enrich plan, served by
  * `GET /ingestion-runs/{run_id}/enrich-plan`. Mirrors the backend's
- * `PostCompileEnrichPlan.to_payload()` shape under `plan` plus a
+ * `PostCompileEnrichPlan.to_payload` shape under `plan` plus a
  * thin envelope for run-scope metadata + unavailable reasons.
  */
 export interface RunEnrichPlanResponse {
@@ -367,7 +367,7 @@ export interface PostCompileEnrichPlanPayload {
   source_signals: Record<string, unknown>;
   /** "rule_based" | "rule_based_with_fast_llm" */
   decision_source: "rule_based" | "rule_based_with_fast_llm";
-  /** Wave 5+ — closure fields (always present on new runs; absent on legacy). */
+  /** closure fields (always present on new runs; absent on legacy). */
   should_enrich?: boolean;
   confidence?: number;
   require_enrichment_success?: boolean;
@@ -375,10 +375,10 @@ export interface PostCompileEnrichPlanPayload {
 }
 
 
-// ---- Wave 8 typed artifact endpoints ----------------------------
+// ---- typed artifact endpoints ----------------------------
 
 /**
- * Shared envelope for the three Wave-8 artifact endpoints. All three
+ * Shared envelope for the three artifact endpoints. All three
  * (`/initial-execution-plan`, `/compile-result`, `/enrichment-result`)
  * return the same 7-key wire shape — `status="completed"` carries
  * the typed `plan` payload; `status="unavailable"` carries an
@@ -397,7 +397,7 @@ export interface RunArtifactEnvelope<TPlan> {
 
 /**
  * Pre-compile initial execution plan payload (mirrors
- * `InitialExecutionPlan.to_payload()` in Python). Cheap profile +
+ * `InitialExecutionPlan.to_payload` in Python). Cheap profile +
  * resolved domain pack + enrichment policy + candidate modules.
  */
 export interface InitialExecutionPlanPayload {
@@ -416,7 +416,7 @@ export interface InitialExecutionPlanPayload {
 
 
 /**
- * Typed `NormalizedCompileResult.to_payload()` projection. Bridges
+ * Typed `NormalizedCompileResult.to_payload` projection. Bridges
  * the vendor-specific compile output into a stable FE-facing shape
  * — chunks, detected tables/images, retry history, quality
  * signals. Raw vendor blob stays in the workspace; the FE only
@@ -444,7 +444,7 @@ export interface NormalizedCompileResultPayload {
 
 
 /**
- * Typed `EnrichmentResult.to_payload()` projection. The post-compile
+ * Typed `EnrichmentResult.to_payload` projection. The post-compile
  * overlay carrying per-module outcomes, document-metadata, terminology,
  * validation findings, and aggregate model usage.
  */
@@ -490,12 +490,12 @@ export type RunEnrichmentResultResponse =
   RunArtifactEnvelope<EnrichmentResultPayload>;
 
 
-// ---- Wave 10 — final_ingestion_report --------------------------
+// ---- final_ingestion_report --------------------------
 
 /**
  * Aggregated end-to-end report — the single source of truth the
  * run-detail page prefers when present. Mirrors the Python
- * `FinalIngestionReport.to_dict()` shape. The envelope uses
+ * `FinalIngestionReport.to_dict` shape. The envelope uses
  * `report` as the payload key (vs. `plan` on the other artifact
  * endpoints).
  */
@@ -574,7 +574,7 @@ export interface FinalIngestionReportPayload {
   started_at?: string | null;
   completed_at?: string | null;
   duration_ms?: number | null;
-  /** Wave-8 `INGESTION_STATUS_*` literal. */
+  /** `INGESTION_STATUS_*` literal. */
   final_status: string;
   final_status_reason?: string;
   stages?: StageSummaryPayload[];
@@ -587,7 +587,7 @@ export interface FinalIngestionReportPayload {
   operator_notes?: string[];
 }
 
-// ---- Validation (Phase 1: manual test query) --------------------
+// ---- Validation (manual test query) --------------------
 
 export interface ValidationCheck {
   name: string;
@@ -618,9 +618,9 @@ export interface ValidationRetrievedChunk {
   sourceLocation?: string | null;
   score: number;
   preview: string;
-  // Phase 4 — artifact kind verbatim from the FTS index. Lets the
+  // artifact kind verbatim from the FTS index. Lets the
   // FE branch on modality (e.g. table icon for `enriched.tables`).
-  // Optional because pre-Phase-4 backends don't surface it.
+  // Optional because pre- backends don't surface it.
   artifactKind?: string | null;
 }
 
@@ -658,7 +658,7 @@ export interface ManualTestQueryResponse {
   rawResponse?: Record<string, unknown> | null;
 }
 
-// ---- Validation sets and runs (Phase 2) -------------------------
+// ---- Validation sets and runs -------------------------
 
 export type ValidationTestType =
   | "retrieval"
@@ -867,7 +867,7 @@ export interface ReviewQualityReport {
   rawDebug?: Record<string, unknown> | null;
 }
 
-// ---- Chunks (Phase 8) --------------------------------------------
+// ---- Chunks --------------------------------------------
 
 export interface ReviewLinkedAsset {
   artifactId: string;
@@ -919,17 +919,17 @@ export interface ReviewChunkListQuery {
   pageSize?: number;
   status?: string;
   /** Strict floor — chunks without a confidence score are excluded
-   * when this is set. */
+ * when this is set. */
   minConfidence?: number;
 }
 
-// ---- Artifacts (Phase 9) ------------------------------------------
+// ---- Artifacts ------------------------------------------
 
 export interface ReviewArtifactRecord {
   artifactId: string;
   kind: string;
   /** Server-side path (`<area>/<filename>`). Opaque to the FE; used
-   * only as a label / filename hint. */
+ * only as a label / filename hint. */
   location: string;
   contentHash: string;
   byteSize: number;
@@ -960,7 +960,7 @@ export interface ReviewArtifactListQuery {
  * Bytes + metadata returned by `getRunArtifactContent`.
  *
  * Component code receives a `Blob` it can hand to `URL.createObjectURL`
- * for inline previews, OR turn into text via `blob.text()` for JSON
+ * for inline previews, OR turn into text via `blob.text` for JSON
  * / markdown viewers. Cleanup of object URLs is the caller's
  * responsibility.
  */
@@ -968,13 +968,13 @@ export interface ReviewArtifactContent {
   blob: Blob;
   contentType: string;
   /** Suggested download filename from `Content-Disposition`, or null
-   * when the artifact was served inline. */
+ * when the artifact was served inline. */
   filename: string | null;
   /** ETag value WITHOUT the surrounding quotes, or null when absent. */
   etag: string | null;
 }
 
-// ---- Graph (Phase 10) --------------------------------------------
+// ---- Graph --------------------------------------------
 
 export interface ReviewGraphEntity {
   id: string;
@@ -1001,8 +1001,8 @@ export interface ReviewGraphRelation {
 
 export interface ReviewGraphStats {
   /** Full count BEFORE truncation. The FE compares against
-   * `truncated.limits` to know if a re-fetch with a higher cap is
-   * worthwhile. */
+ * `truncated.limits` to know if a re-fetch with a higher cap is
+ * worthwhile. */
   entityCount: number;
   relationCount: number;
   sourceArtifactIds: string[];
@@ -1024,8 +1024,8 @@ export interface ReviewGraphSnapshot {
   relations: ReviewGraphRelation[];
   truncated: ReviewGraphTruncation;
   /** Populated only when the run produced no graph data (skipped /
-   * planner-skipped / failed). When set, the FE should render the
-   * skipped empty state — entities + relations are guaranteed empty. */
+ * planner-skipped / failed). When set, the FE should render the
+ * skipped empty state — entities + relations are guaranteed empty. */
   unavailable: ReviewGraphUnavailable | null;
 }
 

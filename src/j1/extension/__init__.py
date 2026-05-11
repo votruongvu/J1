@@ -3,22 +3,22 @@ that adapters / connectors / providers / domain policies plug into.
 
 Public surface (recommended import path):
 
-    from j1.extension import (
-        # Contracts
-        SourceConnector, CompilerAdapter, EnrichmentAdapter,
-        GraphAdapter, RetrievalAdapter, RerankerAdapter,
-        LLMProviderAdapter, EmbeddingProviderAdapter,
-        VisionProviderAdapter, OutputFormatter,
-        EvaluationAdapter, DomainPolicy,
-        # Primitives
-        Source, SourceMetadata, Document, Artifact, Chunk,
-        Collection, Evidence, Citation, RetrievalResult,
-        GraphNode, GraphEdge, WorkflowState, ProviderConfig,
-        EvaluationResult,
-        # Infrastructure
-        AdapterManifest, ManifestError,
-        CapabilityRegistry, RegistryEntry, RegistryError,
-    )
+ from j1.extension import (
+ # Contracts
+ SourceConnector, CompilerAdapter, EnrichmentAdapter,
+ GraphAdapter, RetrievalAdapter, RerankerAdapter,
+ LLMProviderAdapter, EmbeddingProviderAdapter,
+ VisionProviderAdapter, OutputFormatter,
+ EvaluationAdapter, DomainPolicy,
+ # Primitives
+ Source, SourceMetadata, Document, Artifact, Chunk,
+ Collection, Evidence, Citation, RetrievalResult,
+ GraphNode, GraphEdge, WorkflowState, ProviderConfig,
+ EvaluationResult,
+ # Infrastructure
+ AdapterManifest, ManifestError,
+ CapabilityRegistry, RegistryEntry, RegistryError,
+ )
 
 The extension layer is **additive** — it does not replace the legacy
 core protocols under `j1.processing.contracts` or the role-based
@@ -31,8 +31,8 @@ shape — they're the adapter-pattern wrappers used by
 `ExternalKnowledgeCompiler` / `ExternalGraphBuilder`). To keep
 imports unambiguous, the extension contracts are NOT re-exported
 from the top-level `j1.__init__` namespace. Always import them via
-`from j1.extension import ...` or `from j1.extension.contracts
-import ...`.
+`from j1.extension import...` or `from j1.extension.contracts
+import...`.
 """
 
 from j1.extension.contracts import (

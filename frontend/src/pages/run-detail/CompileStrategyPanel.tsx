@@ -29,7 +29,7 @@ import {
 interface CompileStrategyPanelProps {
   runId: string;
   /** SSE event from the parent. See `AssessmentPlanPanel` for the
-   * full rationale; same pattern. */
+ * full rationale; same pattern. */
   latestEvent?: ProgressEvent | null;
 }
 

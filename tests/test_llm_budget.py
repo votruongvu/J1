@@ -1,18 +1,18 @@
 """Unit tests for the token-budget utility.
 
 Covers:
-  * `estimate_tokens` — char/word floor, safety bump, edge cases.
-  * `estimate_messages_tokens` — per-message overhead, image
-    cost, malformed parts.
-  * `TokenBudget.available_input_tokens` — arithmetic, clamping,
-    None passthrough.
-  * `pack_text_for_budget` — fit short, truncate long, marker
-    placement, empty-budget edge.
-  * `pack_context_items` — keep highest-priority, drop overflow,
-    return order.
-  * `enforce_budget` — no-op when window is None, raises
-    `LLMContextOverflowError` with diagnostic dict on overflow,
-    succeeds + returns diagnostic on fit.
+ * `estimate_tokens` — char/word floor, safety bump, edge cases.
+ * `estimate_messages_tokens` — per-message overhead, image
+ cost, malformed parts.
+ * `TokenBudget.available_input_tokens` — arithmetic, clamping,
+ None passthrough.
+ * `pack_text_for_budget` — fit short, truncate long, marker
+ placement, empty-budget edge.
+ * `pack_context_items` — keep highest-priority, drop overflow,
+ return order.
+ * `enforce_budget` — no-op when window is None, raises
+ `LLMContextOverflowError` with diagnostic dict on overflow,
+ succeeds + returns diagnostic on fit.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def test_estimate_tokens_zero_for_empty():
 
 def test_estimate_tokens_returns_at_least_one_for_non_empty():
     """Single short token must not round to zero — that would
-    let a one-char input look free under any budget."""
+ let a one-char input look free under any budget."""
     assert estimate_tokens("a") >= 1
 
 
@@ -56,8 +56,8 @@ def test_estimate_tokens_grows_with_length():
 
 def test_estimate_tokens_includes_safety_bump():
     """The estimator multiplies by ~1.10 for safety. A 100-char
-    pure-ASCII string should estimate to MORE than 25 tokens
-    (raw len(text)/4 = 25; safety bump pushes higher)."""
+ pure-ASCII string should estimate to MORE than 25 tokens
+ (raw len(text)/4 = 25; safety bump pushes higher)."""
     text = "a" * 100
     # Word-based path: 1 "word" → 1/0.75 = 1.33 tokens. Char-based
     # path: 100/4 = 25 tokens. Max is 25; *1.10 = 27.5 → 28.
@@ -66,9 +66,9 @@ def test_estimate_tokens_includes_safety_bump():
 
 def test_estimate_tokens_handles_unicode_safely():
     """CJK / Vietnamese text shouldn't round-trip to zero. The
-    char path saves us when the word-tokenizer can't split.
-    Locked here so a future regex change doesn't silently
-    under-estimate non-ASCII content."""
+ char path saves us when the word-tokenizer can't split.
+ Locked here so a future regex change doesn't silently
+ under-estimate non-ASCII content."""
     cjk = "你好世界" * 20  # 80 chars, no whitespace
     estimate = estimate_tokens(cjk)
     # 80 / 4 = 20; safety bump → ~22.
@@ -80,8 +80,8 @@ def test_estimate_tokens_handles_unicode_safely():
 
 def test_estimate_messages_includes_per_message_overhead():
     """Two empty messages should still cost 8 tokens (4 per
-    message overhead). Locks the OpenAI-style chat-format
-    framing accounting."""
+ message overhead). Locks the OpenAI-style chat-format
+ framing accounting."""
     messages = [
         {"role": "system", "content": ""},
         {"role": "user", "content": ""},
@@ -104,8 +104,8 @@ def test_estimate_messages_sums_content_tokens():
 
 def test_estimate_messages_handles_vision_content_parts():
     """Vision API: `content` is a list with text + image_url
-    parts. Image parts get a flat conservative cost so the
-    boundary defends against most cases."""
+ parts. Image parts get a flat conservative cost so the
+ boundary defends against most cases."""
     messages = [
         {
             "role": "user",
@@ -150,7 +150,7 @@ def test_budget_arithmetic():
 
 def test_budget_disabled_when_no_window():
     """`context_window_tokens=None` → available is None → boundary
-    check is a no-op. Critical backward-compat path."""
+ check is a no-op. Critical backward-compat path."""
     budget = TokenBudget(
         context_window_tokens=None,
         reserved_output_tokens=1024,
@@ -161,9 +161,9 @@ def test_budget_disabled_when_no_window():
 
 def test_budget_clamps_at_zero_when_misconfigured():
     """If max_output_tokens > context_window, we'd otherwise go
-    negative. Clamp at zero so the boundary rejects every prompt
-    with a clear error — a misconfiguration shouldn't silently
-    let absurdly small prompts through either."""
+ negative. Clamp at zero so the boundary rejects every prompt
+ with a clear error — a misconfiguration shouldn't silently
+ let absurdly small prompts through either."""
     budget = TokenBudget(
         context_window_tokens=512,
         reserved_output_tokens=2048,
@@ -174,7 +174,7 @@ def test_budget_clamps_at_zero_when_misconfigured():
 
 def test_budget_diagnostic_dict_carries_all_fields():
     """Diagnostic shape locked — operators read these keys off
-    error logs to know which knob to turn."""
+ error logs to know which knob to turn."""
     budget = TokenBudget(
         context_window_tokens=8192,
         reserved_output_tokens=1024,
@@ -197,7 +197,7 @@ def test_pack_text_returns_unchanged_when_under_budget():
 
 def test_pack_text_truncates_when_over_budget():
     """Long text → truncated + marker appended. Caller sees the
-    cut explicitly; downstream models can recognise the marker."""
+ cut explicitly; downstream models can recognise the marker."""
     long_text = "alpha beta gamma delta " * 200  # ~1200 tokens
     out = pack_text_for_budget(long_text, max_tokens=50)
     assert len(out) < len(long_text)
@@ -208,13 +208,13 @@ def test_pack_text_truncates_when_over_budget():
 
 def test_pack_text_empty_budget_returns_empty():
     """Zero-budget short-circuits to empty — caller will hit the
-    boundary check next and surface the actionable error."""
+ boundary check next and surface the actionable error."""
     assert pack_text_for_budget("anything", max_tokens=0) == ""
 
 
 def test_pack_text_marker_only_when_too_tight():
     """When budget is too small for even the marker, return just
-    the marker — caller treats this as overflow."""
+ the marker — caller treats this as overflow."""
     out = pack_text_for_budget("alpha " * 1000, max_tokens=2)
     # The marker IS roughly that long; result is the marker
     # itself, no body content.
@@ -228,12 +228,12 @@ def test_pack_text_marker_only_when_too_tight():
 
 def test_pack_context_keeps_top_items():
     """First 2 fit; third pushes past — gets dropped. Locks the
-    'rank order; never re-rank' contract.
+ 'rank order; never re-rank' contract.
 
-    Budget computed from the actual estimator instead of a fixed
-    integer so the test stays valid when the safety-bump constant
-    changes (the contract — keep first two, drop third — does not).
-    """
+ Budget computed from the actual estimator instead of a fixed
+ integer so the test stays valid when the safety-bump constant
+ changes (the contract — keep first two, drop third — does not).
+ """
     items = ["aaaa" * 10, "bbbb" * 10, "cccc" * 10]
     # Set a budget that fits exactly two items but not three.
     per_item = estimate_tokens(items[0])
@@ -287,8 +287,8 @@ def test_enforce_budget_passes_when_under_budget():
 
 def test_enforce_budget_no_op_when_window_none():
     """The legacy compat path: no `context_window_tokens` → no
-    raise, returns the diagnostic. Existing deployments that
-    haven't opted in must NOT see new errors."""
+ raise, returns the diagnostic. Existing deployments that
+ haven't opted in must NOT see new errors."""
     big = "x" * 100_000
     messages = [{"role": "user", "content": big}]
     budget = TokenBudget(
@@ -303,8 +303,8 @@ def test_enforce_budget_no_op_when_window_none():
 
 def test_enforce_budget_raises_with_diagnostic_on_overflow():
     """Critical: raises BEFORE any HTTP call. Diagnostic dict on
-    the exception carries the budget arithmetic so operators
-    know which knob to turn."""
+ the exception carries the budget arithmetic so operators
+ know which knob to turn."""
     messages = [
         {"role": "system", "content": "be helpful"},
         {"role": "user", "content": "x " * 5000},  # ~6000+ tokens
@@ -328,9 +328,9 @@ def test_enforce_budget_raises_with_diagnostic_on_overflow():
 
 def test_enforce_budget_overflow_when_clamped_to_zero():
     """Misconfigured window (output reserve > window) → available
-    clamps to 0 → every non-empty prompt overflows. This makes a
-    misconfiguration visible immediately at the first call rather
-    than letting it through silently."""
+ clamps to 0 → every non-empty prompt overflows. This makes a
+ misconfiguration visible immediately at the first call rather
+ than letting it through silently."""
     messages = [{"role": "user", "content": "x"}]
     budget = TokenBudget(
         context_window_tokens=512,

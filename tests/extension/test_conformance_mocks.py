@@ -1,8 +1,8 @@
 """Conformance suite — runs every shared harness against every mock.
 
 This file proves both:
-  * the harness functions in `j1.extension.conformance` work, and
-  * each mock adapter ships in a conformant state.
+ * the harness functions in `j1.extension.conformance` work, and
+ * each mock adapter ships in a conformant state.
 
 Vendor / domain test suites should mirror this file against their
 own adapters — see `docs/extension/conformance-tests.md`.

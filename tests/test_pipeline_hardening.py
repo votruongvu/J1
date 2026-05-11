@@ -1,20 +1,20 @@
-"""Wave 11B — full pipeline hardening + failure matrix.
+"""full pipeline hardening + failure matrix.
 
 Pins:
-  1. `PerImageVisionAdapter` acquires the limiter per image
-     (one image = one acquisition; N images = N acquisitions;
-     a failed image call still releases its slot).
-  2. The shared limiter spans text/classification/table/image paths.
-  3. `ImageSummary.image_id` + `provenance.source_artifact_id` use
-     artifact-backed identifiers (Wave 11A behaviour explicitly
-     pinned here against the parser-internal id drift risk).
-  4. Both adapter-construction paths work — production (raw client
-     wrapped per-run) + backward-compatible (pre-built adapter).
-  5. Final-status matrix A–F is fully covered.
-  6. Retry counts + idempotency: compile retry count surfaces;
-     enrichment retry count stays 0 today.
-  7. Missing-client + missing-bytes outcomes are loud.
-  8. No legacy gating vocabulary leaks into runtime payloads.
+ 1. `PerImageVisionAdapter` acquires the limiter per image
+ (one image = one acquisition; N images = N acquisitions;
+ a failed image call still releases its slot).
+ 2. The shared limiter spans text/classification/table/image paths.
+ 3. `ImageSummary.image_id` + `provenance.source_artifact_id` use
+ artifact-backed identifiers ( behaviour explicitly
+ pinned here against the parser-internal id drift risk).
+ 4. Both adapter-construction paths work — production (raw client
+ wrapped per-run) + backward-compatible (pre-built adapter).
+ 5. Final-status matrix A–F is fully covered.
+ 6. Retry counts + idempotency: compile retry count surfaces;
+ enrichment retry count stays 0 today.
+ 7. Missing-client + missing-bytes outcomes are loud.
+ 8. No legacy gating vocabulary leaks into runtime payloads.
 
 The tests use fake LLM clients; no real external calls.
 """
@@ -107,10 +107,10 @@ class _FakeVisionLLMClient:
 
 
 class _RecordingLimiter:
-    """Records each call + the metadata snapshot. `run()` is symmetric
-    on raise (acquire+release happen via the inner callable's try/
-    finally inside the limiter; tests inspect `calls` to verify the
-    acquire count)."""
+    """Records each call + the metadata snapshot. `run` is symmetric
+ on raise (acquire+release happen via the inner callable's try/
+ finally inside the limiter; tests inspect `calls` to verify the
+ acquire count)."""
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -171,9 +171,9 @@ def _write_image_artifact(
 
 def _compile_payload(*, chunks: int = 5, images: int = 0,
                     text_chars: int = 5_000, retries: int = 0):
-    """Generate a `NormalizedCompileResult.to_payload()` shape with
-    a retry-attempts list of length `retries+1` so `retry_count`
-    derives as `retries`."""
+    """Generate a `NormalizedCompileResult.to_payload` shape with
+ a retry-attempts list of length `retries+1` so `retry_count`
+ derives as `retries`."""
     attempts = [
         {"attempt_number": i + 1, "status": "succeeded"}
         for i in range(retries + 1)
@@ -212,8 +212,7 @@ def _enrich_plan_payload(*, require_success: bool = False,
 def test_per_image_limiter_acquires_once_per_image(
     workspace, artifact_registry, ctx,
 ):
-    """N images detected → N adapter-side limiter acquisitions
-    (Wave 11B). Each per-image vision call gets its own slot."""
+    """N images detected → N adapter-side limiter acquisitions. Each per-image vision call gets its own slot."""
     for i in range(3):
         _write_image_artifact(
             workspace, artifact_registry, ctx,
@@ -274,9 +273,9 @@ def test_failed_per_image_call_still_releases_limiter_and_continues(
     workspace, artifact_registry, ctx,
 ):
     """When image #2 raises, the adapter records the error on the
-    entry but continues to image #3. All three images still produce
-    a limiter acquisition (the limiter's `run()` releases on raise
-    via its own try/finally; the adapter doesn't re-acquire)."""
+ entry but continues to image #3. All three images still produce
+ a limiter acquisition (the limiter's `run` releases on raise
+ via its own try/finally; the adapter doesn't re-acquire)."""
     for i in range(3):
         _write_image_artifact(
             workspace, artifact_registry, ctx,
@@ -317,9 +316,9 @@ def test_shared_limiter_reaches_text_and_image_paths(
     workspace, artifact_registry, ctx,
 ):
     """The same limiter instance is acquired by both text-shaped
-    adapters (one outer call per text/classification/table) and the
-    image adapter (per image). Proves the limiter is the GLOBAL
-    bound for enrichment LLM calls."""
+ adapters (one outer call per text/classification/table) and the
+ image adapter (per image). Proves the limiter is the GLOBAL
+ bound for enrichment LLM calls."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-1", image_bytes=b"\x89PNG\r\n",
@@ -356,8 +355,8 @@ def test_image_summary_image_id_is_artifact_backed(
     workspace, artifact_registry, ctx,
 ):
     """`ImageSummary.image_id` must use the registry artifact id —
-    the trace operators can deep-link to. NOT the parser-internal
-    `DetectedImage.image_id`."""
+ the trace operators can deep-link to. NOT the parser-internal
+ `DetectedImage.image_id`."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="art-img-XYZ", image_bytes=b"\x89PNG\r\n",
@@ -385,9 +384,9 @@ def test_parser_internal_image_id_mismatch_does_not_break_enrichment(
     workspace, artifact_registry, ctx,
 ):
     """`DetectedImage.image_id` says `"detected-0"` while the
-    artifact id is `"art-img-A"`. The two don't correlate today;
-    enrichment should still succeed and key the summary on the
-    artifact id."""
+ artifact id is `"art-img-A"`. The two don't correlate today;
+ enrichment should still succeed and key the summary on the
+ artifact id."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="art-img-A", image_bytes=b"\x89PNG\r\n",
@@ -413,9 +412,9 @@ def test_parser_internal_image_id_mismatch_does_not_break_enrichment(
 def test_missing_parser_id_does_not_block_enrichment(
     workspace, artifact_registry, ctx,
 ):
-    """`detected_images = ()` paired with EXISTING artifacts —
-    image module's can_run checks the typed list, which is empty.
-    SKIPPED with the standard reason; provider is never reached."""
+    """`detected_images = ` paired with EXISTING artifacts —
+ image module's can_run checks the typed list, which is empty.
+ SKIPPED with the standard reason; provider is never reached."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="art-img-1", image_bytes=b"\x89PNG\r\n",
@@ -449,7 +448,7 @@ def test_production_path_constructs_per_run_adapter(
     workspace, artifact_registry, ctx,
 ):
     """Bootstrap passes raw VisionLLMClient → activity wraps in
-    `PerImageVisionAdapter` per run, with the per-run provider."""
+ `PerImageVisionAdapter` per run, with the per-run provider."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-1", image_bytes=b"\x89PNG\r\n",
@@ -478,8 +477,8 @@ def test_backward_compatible_path_uses_supplied_adapter_unchanged(
     workspace, artifact_registry, ctx,
 ):
     """When the caller supplies a pre-built adapter (any object
-    with `.analyze`), the activity uses it as-is — doesn't try to
-    re-wrap. Preserves Wave-10.6 test composition."""
+ with `.analyze`), the activity uses it as-is — doesn't try to
+ re-wrap. Preserves test composition."""
     class _PrebuiltAdapter:
         def __init__(self):
             self.calls: list = []
@@ -591,8 +590,8 @@ def test_matrix_F_failed_finalization():
 ])
 def test_matrix_projection_is_total_and_does_not_crash(framework_status):
     """The projector must produce a status for every framework
-    final-status literal — even unrecognised combinations fall
-    through cleanly."""
+ final-status literal — even unrecognised combinations fall
+ through cleanly."""
     p = project_final_status(
         framework_final_status=framework_status,
         failure_code=None,
@@ -652,7 +651,7 @@ def test_compile_retry_count_surfaces_through_report(
     workspace, artifact_registry, ctx,
 ):
     """The final-report builder reads `retry_attempts` off the
-    compile_result_summary payload and exposes `retry_counts.compile`."""
+ compile_result_summary payload and exposes `retry_counts.compile`."""
     report = build_final_ingestion_report(ReportSourceInputs(
         run_id="run-retry", document_id="doc-1", document_name="x.pdf",
         tenant_id=ctx.tenant_id, project_id=ctx.project_id,
@@ -673,8 +672,8 @@ def test_enrichment_failure_does_not_rerun_compile(
     workspace, artifact_registry, ctx,
 ):
     """Wiring guard — the activity invokes the enrichment stage
-    only once. A failed image call inside enrichment doesn't loop
-    back to compile."""
+ only once. A failed image call inside enrichment doesn't loop
+ back to compile."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-1", image_bytes=b"\x89PNG\r\n",
@@ -698,7 +697,7 @@ def test_raw_compile_artifacts_are_not_overwritten_on_enrichment_retry(
     workspace, artifact_registry, ctx,
 ):
     """Replay the enrichment stage twice; raw compile-image bytes
-    + content_hash + byte_size remain unchanged."""
+ + content_hash + byte_size remain unchanged."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-pre", image_bytes=b"\x89PNG\r\n\xde\xad\xbe\xef",
@@ -806,7 +805,7 @@ def test_enrichment_payload_has_no_legacy_gating_vocabulary(
     workspace, artifact_registry, ctx,
 ):
     """End-to-end enrichment payload (post-runner) must stay free
-    of the legacy gating + split-mode vocabulary."""
+ of the legacy gating + split-mode vocabulary."""
     _write_image_artifact(
         workspace, artifact_registry, ctx,
         artifact_id="img-1", image_bytes=b"\x89PNG\r\n",
@@ -836,7 +835,7 @@ def test_enrichment_payload_has_no_legacy_gating_vocabulary(
 
 def test_legacy_enricher_modules_source_has_no_hardcoded_civil_terms():
     """Domain specialisation belongs in `DomainPromptPack`, NEVER
-    in the adapter source. Recheck explicitly at Wave-11B."""
+ in the adapter source. Recheck explicitly at."""
     import inspect
     from j1.processing import legacy_enricher_modules
     src = inspect.getsource(legacy_enricher_modules)
@@ -854,9 +853,9 @@ def test_legacy_enricher_modules_source_has_no_hardcoded_civil_terms():
 
 def test_domain_prompt_pack_is_the_only_prompt_override_source():
     """A prompt-override path that isn't `DomainPromptPack` would
-    create domain-specific text in adapters. Pin that the only
-    source for per-domain prompts goes through
-    `resolve_module_prompt(domain_pack, prompt_field, builtin)`."""
+ create domain-specific text in adapters. Pin that the only
+ source for per-domain prompts goes through
+ `resolve_module_prompt(domain_pack, prompt_field, builtin)`."""
     import inspect
     from j1.processing import legacy_enricher_modules
     src = inspect.getsource(legacy_enricher_modules)

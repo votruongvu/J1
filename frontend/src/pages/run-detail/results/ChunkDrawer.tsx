@@ -2,8 +2,8 @@
  * Chunk detail drawer.
  *
  * Two view modes selected via top-level toggle:
- *   - "Readable" — full body in a pre-wrap block, plus lineage panel.
- *   - "Raw JSON" — entire detail DTO via `JsonView`.
+ * - "Readable" — full body in a pre-wrap block, plus lineage panel.
+ * - "Raw JSON" — entire detail DTO via `JsonView`.
  *
  * Lineage panel is always visible above the body (or below the JSON
  * — whichever the active view places more naturally) so reviewers

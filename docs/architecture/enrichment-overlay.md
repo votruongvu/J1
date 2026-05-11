@@ -9,27 +9,27 @@ that consumers branch on, with `ProvenanceLink`s back to the
 source compile artifact.
 
 ```
-                    ┌───────────────────────┐
-                    │ NormalizedCompileResult│  (immutable source-of-truth)
-                    └───────────┬───────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │  CompositeEnrichmentRunner │
-                    │  (Wave-6 skeletons +       │
-                    │   Wave-10.5 LLM adapters)  │
-                    └───────────┬───────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │  EnrichmentResult     │  (typed overlay)
-                    │  ├ module_outcomes[]  │
-                    │  ├ classification     │
-                    │  ├ table_summaries[]  │
-                    │  ├ image_summaries[]  │
-                    │  ├ retrieval_hints[]  │
-                    │  └ provenance refs    │
-                    └───────────────────────┘
+ ┌───────────────────────┐
+ │ NormalizedCompileResult│ (immutable source-of-truth)
+ └───────────┬───────────┘
+ │
+ ▼
+ ┌───────────────────────┐
+ │ CompositeEnrichmentRunner │
+ │ ( skeletons + │
+ │ LLM adapters) │
+ └───────────┬───────────┘
+ │
+ ▼
+ ┌───────────────────────┐
+ │ EnrichmentResult │ (typed overlay)
+ │ ├ module_outcomes[] │
+ │ ├ classification │
+ │ ├ table_summaries[] │
+ │ ├ image_summaries[] │
+ │ ├ retrieval_hints[] │
+ │ └ provenance refs │
+ └───────────────────────┘
 ```
 
 ## Why overlay, not mutation
@@ -42,16 +42,16 @@ truth and lets the final-status projection say
 honestly. Concretely:
 
 - `NormalizedCompileResult` is a frozen dataclass — adapters can't
-  mutate it.
+ mutate it.
 - `raw_artifact_refs[]` carries the IDs of the on-disk vendor
-  output. Compile bytes are never rewritten by enrichment.
+ output. Compile bytes are never rewritten by enrichment.
 - Every typed overlay record carries a `ProvenanceLink` pointing
-  back to the source compile artifact, so a downstream consumer
-  that wants to read the raw evidence can.
+ back to the source compile artifact, so a downstream consumer
+ that wants to read the raw evidence can.
 - A failed enrichment → `EnrichmentResult.status = "failed"` →
-  the workflow still completes (unless
-  `require_enrichment_success = True`) with the compile output
-  intact.
+ the workflow still completes (unless
+ `require_enrichment_success = True`) with the compile output
+ intact.
 
 ## Module protocol
 
@@ -61,16 +61,16 @@ Every module — skeleton or LLM-backed — conforms to the
 ```python
 @runtime_checkable
 class EnrichmentModule(Protocol):
-    module_id: str
-    def can_run(self, ctx: EnrichmentContext) -> tuple[bool, str]: ...
-    def run(self, ctx: EnrichmentContext) -> EnrichmentModuleOutcome: ...
+ module_id: str
+ def can_run(self, ctx: EnrichmentContext) -> tuple[bool, str]:...
+ def run(self, ctx: EnrichmentContext) -> EnrichmentModuleOutcome:...
 ```
 
 `can_run` is the skip gate; `run` produces the structured outcome
 (`status` ∈ `RUN / PARTIAL / SKIPPED / FAILED`). LLM-backed
-adapter modules additionally expose `get_typed_outputs()` so the
+adapter modules additionally expose `get_typed_outputs` so the
 runner can merge typed records onto the aggregated
-`EnrichmentResult` after `run()` returns.
+`EnrichmentResult` after `run` returns.
 
 See [Adding an enrichment module](../guides/adding-an-enrichment-module.md)
 for the recipe.
@@ -92,9 +92,9 @@ LLM-backed adapters resolve their prompts through one helper:
 
 ```python
 resolve_module_prompt(
-    domain_pack=ctx.domain_pack,
-    prompt_field="text_enrichment_prompt",
-    builtin_default=DEFAULT_TEXT_ENRICHMENT_PROMPT,
+ domain_pack=ctx.domain_pack,
+ prompt_field="text_enrichment_prompt",
+ builtin_default=DEFAULT_TEXT_ENRICHMENT_PROMPT,
 )
 ```
 
@@ -116,15 +116,15 @@ listed in [`domain-profiles.md`](./domain-profiles.md#what-must-not-happen).
 
 ## Shared LLM-call limiter
 
-A single `LLMCallLimiter` (Wave 7) is constructed by the bootstrap
+A single `LLMCallLimiter` is constructed by the bootstrap
 and threaded into every LLM-backed adapter. The limiter:
 
 - Bounds concurrent worker LLM calls by `J1_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS`.
-- Wraps each `text_client.extract()` call in
-  `TextEnrichmentModule` / `ClassificationEnrichmentModule` /
-  `TableEnrichmentModule`.
-- Wraps each per-image `vision_client.analyze_image()` call inside
-  the `PerImageVisionAdapter` (Wave 11B — per-image bounding).
+- Wraps each `text_client.extract` call in
+ `TextEnrichmentModule` / `ClassificationEnrichmentModule` /
+ `TableEnrichmentModule`.
+- Wraps each per-image `vision_client.analyze_image` call inside
+ the `PerImageVisionAdapter` (per-image bounding).
 
 When the limiter is `None` (operator disabled it), adapters call
 the client directly. Tests:
@@ -158,7 +158,7 @@ reason. The runner aggregates skip outcomes onto
 | Adapter's LLM call raises | `EnrichmentModuleOutcome.status = FAILED` + `errors=(str(exc),)` | If `require_enrichment_success=True` → `failed_enrichment_required`. Otherwise → `completed_with_enrichment_warnings`. |
 | Adapter returns no parseable output (e.g. classifier without `category`) | `EnrichmentModuleOutcome.status = PARTIAL` + warning | Bumps `warnings[]`; doesn't fail. |
 | Single image vision call raises | Per-image entry carries `metadata.error`; batch continues | Image module remains RUN (other images succeeded) or PARTIAL. |
-| Runner-level exception inside `module.run()` | `EnrichmentModuleOutcome.status = FAILED` (runner's defensive catch) + error message | Same `require_enrichment_success` semantics. |
+| Runner-level exception inside `module.run` | `EnrichmentModuleOutcome.status = FAILED` (runner's defensive catch) + error message | Same `require_enrichment_success` semantics. |
 
 ## Final-report integration
 
@@ -169,11 +169,11 @@ projects the run-level summary off of:
 - `module_outcomes[]` → `enrichment_summary.module_outcomes`
 - `EnrichmentResult.status` → `enrichment_summary.enrichment_status`
 - `EnrichmentResult.skipped_reason` (or older `reason`) →
-  `enrichment_summary.skipped_reason`
+ `enrichment_summary.skipped_reason`
 - `document_metadata` field count + `terminology[]` length →
-  `enrichment_summary.what_enrichment_added`
+ `enrichment_summary.what_enrichment_added`
 - `module_outcomes[].output_artifact_refs` →
-  `enrichment_summary.artifact_refs`
+ `enrichment_summary.artifact_refs`
 
 ## Related pages
 

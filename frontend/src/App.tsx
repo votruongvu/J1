@@ -2,12 +2,12 @@
  * Top-level app shell.
  *
  * Owns:
- *   - persisted user preferences (tenant / project / auth / theme)
- *   - the active `IngestionClient`, shared via context
- *   - the route state machine (`list` | `upload` | `run`)
- *   - the toast queue
+ * - persisted user preferences (tenant / project / auth / theme)
+ * - the active `IngestionClient`, shared via context
+ * - the route state machine (`list` | `upload` | `run`)
+ * - the toast queue
  *
- * Page components consume the client via `useClient()` so routing
+ * Page components consume the client via `useClient` so routing
  * doesn't leak into them.
  */
 

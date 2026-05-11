@@ -26,13 +26,13 @@ def _filter_by_scope(
     records: list[ArtifactRecord], request: QueryRequest,
 ) -> list[ArtifactRecord]:
     """Apply `RunScope` to a list of artifacts loaded straight from
-    the registry (graph / consistency / report providers don't go
-    through the FTS index, so they need their own filter).
+ the registry (graph / consistency / report providers don't go
+ through the FTS index, so they need their own filter).
 
-    Default `WorkspaceScope` is the no-op — returns the list
-    unchanged. `RunScope` keeps only artifacts whose
-    `metadata.run_id` matches.
-    """
+ Default `WorkspaceScope` is the no-op — returns the list
+ unchanged. `RunScope` keeps only artifacts whose
+ `metadata.run_id` matches.
+ """
     if isinstance(request.scope, RunScope):
         run_id = request.scope.run_id
         return [

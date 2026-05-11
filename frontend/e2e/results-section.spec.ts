@@ -2,18 +2,18 @@
  * Results section smoke — exercises the post-terminal review flow
  * end to end against the mock client.
  *
- *   1. Start the warnings scenario, confirm the plan, wait for terminal.
- *   2. Verify the Results section appears and the Overview tab shows
- *      the loaded summary (KPIs + step table + warnings list).
- *   3. Switch to Chunks → row click → drawer with Readable / Raw JSON
- *      toggle.
- *   4. Switch to Assets → at least one section renders with a card.
- *   5. Switch to Graph → entity + relation tables rendered (warnings
- *      scenario produces a populated graph in mock mode).
- *   6. Switch to Quality → confidence scorecard rendered.
- *   7. Switch to Raw artifacts → filter dropdown + at least one row.
- *   8. Verify the Graph tab shows the skipped state in the default
- *      scenario (where graph is policy-skipped).
+ * 1. Start the warnings scenario, confirm the plan, wait for terminal.
+ * 2. Verify the Results section appears and the Overview tab shows
+ * the loaded summary (KPIs + step table + warnings list).
+ * 3. Switch to Chunks → row click → drawer with Readable / Raw JSON
+ * toggle.
+ * 4. Switch to Assets → at least one section renders with a card.
+ * 5. Switch to Graph → entity + relation tables rendered (warnings
+ * scenario produces a populated graph in mock mode).
+ * 6. Switch to Quality → confidence scorecard rendered.
+ * 7. Switch to Raw artifacts → filter dropdown + at least one row.
+ * 8. Verify the Graph tab shows the skipped state in the default
+ * scenario (where graph is policy-skipped).
  */
 
 import { test, expect, type Page } from "@playwright/test";
@@ -174,9 +174,9 @@ test("Results > Graph shows skipped reason in default scenario", async ({
   // above; here we explicitly use the `review` scenario which falls
   // through to the policy-skipped branch in the mock).
   // Actually the mock summary uses a different rule than getRunGraph:
-  //   - summary.availableViews.graph.available is true only on warnings
-  //   - getRunGraph returns populated only on warnings, unavailable
-  //     ("policy") on default + review, "failure" string on failure
+  //  - summary.availableViews.graph.available is true only on warnings
+  //  - getRunGraph returns populated only on warnings, unavailable
+  //  ("policy") on default + review, "failure" string on failure
   // So review → graph tab is DISABLED in the run summary's tabs. We
   // can verify the disabled state instead.
   await startScenarioAndCompleteRun(page, "review");

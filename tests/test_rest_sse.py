@@ -6,17 +6,17 @@ Covers:
 - The same auth + scope rules apply as non-streaming /answer.
 - Unauthenticated streaming → 401; missing kb:answer scope → 403.
 - Expected SSE event order: started → retrieval.* → generation.delta+
-  → citation.added* → completed.
+ → citation.added* → completed.
 - generation.delta events emitted for non-empty answers.
 - citation.added events emitted when sources are present.
 - requestId is included in every SSE payload.
 - answer.failed is emitted (with safe masked payload) when the
-  underlying answer service raises after the stream is open.
+ underlying answer service raises after the stream is open.
 - answer.failed payload does NOT leak raw exception text.
 - Streaming uses the same request-body validation as non-streaming.
 - Tests for the application-level streaming primitives (chunking,
-  citation events, error masking) live alongside the REST tests so the
-  integration boundary is exercised too.
+ citation events, error masking) live alongside the REST tests so the
+ integration boundary is exercised too.
 """
 
 import json
@@ -355,7 +355,7 @@ def test_every_sse_payload_includes_request_id(open_client):
 
 
 class _ExplodingAnswerPort:
-    """Drop-in replacement that raises during answer()."""
+    """Drop-in replacement that raises during answer."""
 
     def answer(self, ctx, request):
         raise RuntimeError("provider returned 503: secret_internal_path=/etc/...")

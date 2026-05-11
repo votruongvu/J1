@@ -1,14 +1,14 @@
 """`TemporalJobControlService` is the integration-layer entry point for
 "start a project workflow". This test pins down the round-2 contract:
 
-  * The default `_default_workflow_id` factory is intentionally
-    non-deterministic (uuid4 suffix) — every bulk-job invocation is a
-    fresh run.
-  * `make_per_document_workflow_id` produces a stable id that
-    callers driving per-document starts can use.
-  * `id_conflict_policy` is forwarded to `client.start_workflow` only
-    when explicitly configured — keeps backward compatibility with
-    deployments that rely on Temporal's default (FAIL) behaviour.
+ * The default `_default_workflow_id` factory is intentionally
+ non-deterministic (uuid4 suffix) — every bulk-job invocation is a
+ fresh run.
+ * `make_per_document_workflow_id` produces a stable id that
+ callers driving per-document starts can use.
+ * `id_conflict_policy` is forwarded to `client.start_workflow` only
+ when explicitly configured — keeps backward compatibility with
+ deployments that rely on Temporal's default (FAIL) behaviour.
 """
 
 import asyncio
@@ -66,7 +66,7 @@ def test_make_per_document_workflow_id_is_deterministic():
 
 def test_service_omits_id_conflict_policy_by_default():
     """Backward compatibility: deployments that don't pass a policy
-    keep getting Temporal's default (FAIL) behaviour."""
+ keep getting Temporal's default (FAIL) behaviour."""
     client = _RecordingClient()
     service = TemporalJobControlService(
         client_provider=lambda: client, task_queue="j1-default",

@@ -76,7 +76,7 @@ def application_facade(
 def _make_client(application_facade, workspace, run_store, reporter,
                  capabilities: ProcessingCapabilities, started: list):
     """Build a TestClient whose `job_starter` captures the full
-    body object so each test can assert the kinds the workflow saw."""
+ body object so each test can assert the kinds the workflow saw."""
     async def starter(_ctx, document_id, body):
         started.append({
             "document_id": document_id,
@@ -117,9 +117,9 @@ def test_omitted_indexer_kind_auto_defaults_when_exactly_one_registered(
     application_facade, workspace, run_store, reporter,
 ):
     """The dev stack registers exactly one indexer (`SqliteSearchIndexer`).
-    The FE upload omits `indexerKind`; the workflow MUST receive
-    `indexer_kind="sqlite_indexer"` so `STEP_INDEX` enters
-    `available_steps` and the planner doesn't drop the index stage."""
+ The FE upload omits `indexerKind`; the workflow MUST receive
+ `indexer_kind="sqlite_indexer"` so `STEP_INDEX` enters
+ `available_steps` and the planner doesn't drop the index stage."""
     started: list[dict] = []
     capabilities = ProcessingCapabilities(
         default_compiler_kind="mock",
@@ -147,8 +147,8 @@ def test_omitted_graph_kind_auto_defaults_for_unique_registered(
     application_facade, workspace, run_store, reporter,
 ):
     """The default dev `J1_DEFAULT_GRAPH_PROVIDER=raganything` stack
-    registers exactly one graph builder; the FE upload should pick
-    it up automatically so the Graph stage runs."""
+ registers exactly one graph builder; the FE upload should pick
+ it up automatically so the Graph stage runs."""
     started: list[dict] = []
     capabilities = ProcessingCapabilities(
         default_compiler_kind="mock",
@@ -175,9 +175,9 @@ def test_omitted_kind_stays_none_when_multiple_registered(
     application_facade, workspace, run_store, reporter,
 ):
     """Two graph builders are wired (e.g. `raganything` + `graphify`).
-    Picking one without operator intent would surprise the deployment;
-    leave None so the planner skips the stage with `source=CALLER` and
-    the operator chooses explicitly."""
+ Picking one without operator intent would surprise the deployment;
+ leave None so the planner skips the stage with `source=CALLER` and
+ the operator chooses explicitly."""
     started: list[dict] = []
     capabilities = ProcessingCapabilities(
         default_compiler_kind="mock",
@@ -205,9 +205,9 @@ def test_omitted_kind_stays_none_when_none_registered(
     application_facade, workspace, run_store, reporter,
 ):
     """No enricher wired → enricher_kind stays None → enrich stage
-    is skipped at the workflow boundary with a clear reason. This
-    matches today's dev-stack reality (worker.py passes no
-    enrichers)."""
+ is skipped at the workflow boundary with a clear reason. This
+ matches today's dev-stack reality (worker.py passes no
+ enrichers)."""
     started: list[dict] = []
     capabilities = ProcessingCapabilities(
         default_compiler_kind="mock",
@@ -235,8 +235,8 @@ def test_caller_supplied_kind_still_validated_against_registered(
     application_facade, workspace, run_store, reporter,
 ):
     """The auto-default semantic must NOT relax the caller-supplied
-    validation path. A typo'd `graphBuilderKind` against a known
-    set should still 400 at the boundary."""
+ validation path. A typo'd `graphBuilderKind` against a known
+ set should still 400 at the boundary."""
     started: list[dict] = []
     capabilities = ProcessingCapabilities(
         default_compiler_kind="mock",
@@ -265,8 +265,8 @@ def test_caller_supplied_kind_passes_through_unchanged(
     application_facade, workspace, run_store, reporter,
 ):
     """When the caller DID pin a kind, the helper passes it through
-    even if a different default would be auto-picked from a single-
-    registered set (caller wins)."""
+ even if a different default would be auto-picked from a single-
+ registered set (caller wins)."""
     started: list[dict] = []
     capabilities = ProcessingCapabilities(
         default_compiler_kind="mock",

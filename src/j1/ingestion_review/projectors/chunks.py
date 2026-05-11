@@ -3,9 +3,9 @@
 Accepts a flexible set of input shapes so producers with different
 preferences can all feed the review surface:
 
-  * Single-chunk JSON   — top-level object, the artifact IS one chunk.
-  * Multi-chunk JSON    — top-level array OR `{"chunks": [...]}`.
-  * NDJSON              — one chunk per line (`.ndjson` / `.jsonl`).
+ * Single-chunk JSON — top-level object, the artifact IS one chunk.
+ * Multi-chunk JSON — top-level array OR `{"chunks": [...]}`.
+ * NDJSON — one chunk per line (`.ndjson` / `.jsonl`).
 
 Field names on each chunk dict are tolerant of snake_case AND
 camelCase (`chunk_id` / `chunkId`, `token_count` / `tokenCount` /
@@ -15,7 +15,7 @@ so chunks remain addressable.
 
 The projector never touches LightRAG / vendor formats — those would
 land here as a separate input branch if and when the bridge starts
-emitting them as `kind="chunk"`. For now Phase 3 only handles the
+emitting them as `kind="chunk"`. For now only handles the
 canonical path.
 """
 
@@ -45,8 +45,8 @@ _NDJSON_SUFFIXES = frozenset({".ndjson", ".jsonl"})
 @dataclass(frozen=True)
 class _ChunkRecord:
     """Internal projection — kept separate from the DTOs so we can
-    sort / page / filter without paying the pydantic-validation cost
-    until we actually return rows."""
+ sort / page / filter without paying the pydantic-validation cost
+ until we actually return rows."""
 
     chunk_id: str
     body: str
@@ -65,10 +65,10 @@ class _ChunkRecord:
 class ChunkProjector:
     """Projects `kind="chunk"` artifacts into neutral chunk records.
 
-    Constructor takes the path-resolver callable (rather than the
-    workspace directly) so the projector can stay agnostic to how
-    paths are produced — keeps it unit-testable without a workspace
-    fixture."""
+ Constructor takes the path-resolver callable (rather than the
+ workspace directly) so the projector can stay agnostic to how
+ paths are produced — keeps it unit-testable without a workspace
+ fixture."""
 
     def __init__(
         self,
@@ -83,8 +83,8 @@ class ChunkProjector:
         self, artifacts: list[ArtifactRecord],
     ) -> list[_ChunkRecord]:
         """Read every chunk artifact and return the flat list of
-        chunks they contain. Order: artifact-creation order, then
-        within-file order, then synthesized fallback."""
+ chunks they contain. Order: artifact-creation order, then
+ within-file order, then synthesized fallback."""
         chunks: list[_ChunkRecord] = []
         for artifact in artifacts:
             if artifact.kind != CHUNK_KIND:
@@ -150,14 +150,14 @@ def _parse_artifact(
 ) -> Iterator[_ChunkRecord]:
     """Yield chunk records from one chunk artifact file.
 
-    Format detection:
-      * `.ndjson` / `.jsonl` extension → NDJSON.
-      * Otherwise JSON. Top-level array, `{"chunks": [...]}`, or
-        single object.
+ Format detection:
+ * `.ndjson` / `.jsonl` extension → NDJSON.
+ * Otherwise JSON. Top-level array, `{"chunks": [...]}`, or
+ single object.
 
-    Tolerates malformed entries: a bad line in NDJSON / a bad entry
-    in an array is logged and skipped — one bad chunk shouldn't
-    blank the whole tab."""
+ Tolerates malformed entries: a bad line in NDJSON / a bad entry
+ in an array is logged and skipped — one bad chunk shouldn't
+ blank the whole tab."""
     suffix = PurePosixPath(path.name).suffix.lower()
 
     if suffix in _NDJSON_SUFFIXES:
@@ -231,8 +231,8 @@ def _coerce_chunk(
 ) -> _ChunkRecord | None:
     """Project one raw entry into a `_ChunkRecord`.
 
-    Tolerates snake_case + camelCase. Drops entries that don't carry
-    a `body`/`content` (a chunk without text isn't useful to review)."""
+ Tolerates snake_case + camelCase. Drops entries that don't carry
+ a `body`/`content` (a chunk without text isn't useful to review)."""
     if not isinstance(entry, dict):
         return None
 
@@ -330,9 +330,9 @@ def _float_field(d: dict, *keys: str) -> float | None:
 def _make_preview(body: str) -> str:
     """Squash whitespace and truncate to PREVIEW_MAX_CHARS.
 
-    The trailing ellipsis ('…') is one char so the visible cap is
-    `PREVIEW_MAX_CHARS` codepoints exactly — keeps row heights
-    predictable on the FE."""
+ The trailing ellipsis ('…') is one char so the visible cap is
+ `PREVIEW_MAX_CHARS` codepoints exactly — keeps row heights
+ predictable on the FE."""
     collapsed = " ".join(body.split())
     if len(collapsed) <= PREVIEW_MAX_CHARS:
         return collapsed

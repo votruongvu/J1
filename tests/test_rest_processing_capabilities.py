@@ -2,12 +2,12 @@
 
 When supplied, the API:
 
-  * Defaults an omitted `compilerKind` request field to
-    `default_compiler_kind`.
-  * Validates `compilerKind` / `graphBuilderKind` / `enricherKind` /
-    `indexerKind` against the registered set, returning 400 with an
-    actionable message instead of letting unknown kinds surface as a
-    workflow `UnknownProcessorError` 5 seconds later.
+ * Defaults an omitted `compilerKind` request field to
+ `default_compiler_kind`.
+ * Validates `compilerKind` / `graphBuilderKind` / `enricherKind` /
+ `indexerKind` against the registered set, returning 400 with an
+ actionable message instead of letting unknown kinds surface as a
+ workflow `UnknownProcessorError` 5 seconds later.
 
 When omitted, the API behaves as before — `compilerKind` is required
 in the request body and no validation is performed.
@@ -294,8 +294,8 @@ def test_no_capabilities_skips_validation_but_still_requires_compiler_kind(
     minimal_facade, job_starter, started_jobs, workspace, registry,
 ):
     """When `processing_capabilities` is omitted (legacy wiring), the
-    API requires `compilerKind` in the body and forwards anything
-    provided without validation against a registered set."""
+ API requires `compilerKind` in the body and forwards anything
+ provided without validation against a registered set."""
     _add_document(registry)
     app = create_rest_api(
         minimal_facade,

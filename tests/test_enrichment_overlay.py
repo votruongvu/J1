@@ -1,18 +1,18 @@
-"""Wave 6 tests — typed enrichment overlay + module skeletons +
+""" tests — typed enrichment overlay + module skeletons +
 composite runner.
 
 Pins the contract surface:
 
-  1. `EnrichmentResult` dataclass + sub-records round-trip.
-  2. Per-module outcomes carry run/skip reasons + provenance.
-  3. `EnrichmentModule` protocol shape — skeletons conform.
-  4. Skeleton modules do NOT call any LLM.
-  5. Runner aggregates outcomes; SKIPPED + RUN → succeeded,
-     PARTIAL → succeeded_with_warnings, FAILED → failed.
-  6. Domain-agnostic: no skeleton branches on `domain_id`.
-  7. Compile result is never mutated by the runner.
-  8. Module execution is configurable (the runner takes a
-     caller-supplied module list).
+ 1. `EnrichmentResult` dataclass + sub-records round-trip.
+ 2. Per-module outcomes carry run/skip reasons + provenance.
+ 3. `EnrichmentModule` protocol shape — skeletons conform.
+ 4. Skeleton modules do NOT call any LLM.
+ 5. Runner aggregates outcomes; SKIPPED + RUN → succeeded,
+ PARTIAL → succeeded_with_warnings, FAILED → failed.
+ 6. Domain-agnostic: no skeleton branches on `domain_id`.
+ 7. Compile result is never mutated by the runner.
+ 8. Module execution is configurable (the runner takes a
+ caller-supplied module list).
 
 The skeletons use cheap signals + domain hints only — no LLM
 imports are allowed.
@@ -232,7 +232,7 @@ def test_enrichment_result_round_trips_with_every_field():
 
 def test_module_outcome_records_run_reason_and_provenance():
     """A RUN outcome MUST carry a non-empty reason + at least one
-    typed provenance link for traceability."""
+ typed provenance link for traceability."""
     outcome = EnrichmentModuleOutcome(
         module_id="metadata_enrichment",
         status=EnrichmentModuleStatus.RUN,
@@ -269,7 +269,7 @@ def test_module_outcome_records_skip_reason():
 )
 def test_skeleton_modules_conform_to_protocol(module_class):
     """Each skeleton must implement `module_id`, `can_run`, `run`
-    — the runner depends on the protocol."""
+ — the runner depends on the protocol."""
     instance = module_class()
     assert isinstance(instance, EnrichmentModule)
     assert hasattr(instance, "module_id")
@@ -279,7 +279,7 @@ def test_skeleton_modules_conform_to_protocol(module_class):
 
 def test_skeleton_module_ids_are_stable_strings():
     """The module ids match the recommended_tasks vocabulary the
-    post-compile analyzer emits — keeps routing on a single name set."""
+ post-compile analyzer emits — keeps routing on a single name set."""
     assert MetadataEnrichmentModule().module_id == "metadata_enrichment"
     assert TerminologyEnrichmentModule().module_id == "terminology_enrichment"
     assert ValidationEnrichmentModule().module_id == "validation"
@@ -289,8 +289,8 @@ def test_skeleton_module_ids_are_stable_strings():
 
 
 def test_enrichment_modules_module_does_not_import_llm_clients():
-    """Wave-6 skeletons are decision + bookkeeping only. AST-check
-    imports to catch a regression."""
+    """ skeletons are decision + bookkeeping only. AST-check
+ imports to catch a regression."""
     mod = sys.modules.get("j1.processing.enrichment_modules")
     assert mod is not None
     tree = ast.parse(inspect.getsource(mod))
@@ -351,7 +351,7 @@ def test_runner_aggregates_status_succeeded_when_all_run_or_skipped():
 
 def test_runner_aggregates_status_succeeded_with_warnings_for_partial():
     """A module returning PARTIAL must lift the overall status to
-    succeeded_with_warnings."""
+ succeeded_with_warnings."""
     class _PartialModule:
         module_id = "test_partial"
         def can_run(self, ctx):
@@ -369,8 +369,8 @@ def test_runner_aggregates_status_succeeded_with_warnings_for_partial():
 
 def test_runner_marks_failed_when_module_raises():
     """Modules are protocol-bound to not raise, but the runner's
-    defensive catch must surface unexpected exceptions as a FAILED
-    outcome AND lift overall status to `failed`."""
+ defensive catch must surface unexpected exceptions as a FAILED
+ outcome AND lift overall status to `failed`."""
     class _BrokenModule:
         module_id = "broken"
         def can_run(self, ctx):
@@ -386,8 +386,8 @@ def test_runner_marks_failed_when_module_raises():
 
 def test_runner_records_can_run_skip_reason():
     """When `can_run` returns (False, reason), the runner must
-    record the reason in the outcome — the FE renders it as the
-    skip explanation."""
+ record the reason in the outcome — the FE renders it as the
+ skip explanation."""
     pack_without_validation_rules = DomainPack(
         id="bare_pack",
         display_name="Bare",
@@ -404,7 +404,7 @@ def test_runner_records_can_run_skip_reason():
 
 def test_runner_module_execution_is_configurable():
     """Runner takes an explicit module list — operators can swap
-    in/out modules without modifying the runner."""
+ in/out modules without modifying the runner."""
     runner = CompositeEnrichmentRunner(modules=[
         TerminologyEnrichmentModule(),  # Only one module
     ])
@@ -434,7 +434,7 @@ def test_runner_aggregates_warnings_from_outcomes():
 
 def test_no_skeleton_branches_on_specific_domain_id():
     """The skeleton module code must not contain any `domain ==
-    "civil"` style branches. Behaviour comes from typed hints."""
+ "civil"` style branches. Behaviour comes from typed hints."""
     mod = sys.modules.get("j1.processing.enrichment_modules")
     src = inspect.getsource(mod)
     # No hardcoded id literal in conditionals / code paths.
@@ -464,7 +464,7 @@ def test_no_skeleton_branches_on_specific_domain_id():
 
 def test_skeleton_modules_run_with_generic_pack():
     """A generic pack with no extraction hints / validation rules
-    must produce well-formed (SKIPPED) outcomes — never errors."""
+ must produce well-formed (SKIPPED) outcomes — never errors."""
     ctx = _build_ctx(domain_pack=build_general_pack())
     result = CompositeEnrichmentRunner(modules=[
         TerminologyEnrichmentModule(),
@@ -572,7 +572,7 @@ def test_validation_skeleton_emits_findings_for_missing_required_metadata():
 
 def test_validation_skeleton_returns_passed_when_only_info_findings():
     """Findings at `info` level (e.g. expected_document_structure)
-    don't block — `passed=True` when no severity-error findings."""
+ don't block — `passed=True` when no severity-error findings."""
     pack = build_civil_engineering_pack()
     # No missing metadata → only structure findings (info severity)
     ctx = _build_ctx(

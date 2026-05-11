@@ -34,14 +34,14 @@ from j1.providers.raganything._bridge import (
 
 def test_coerce_returns_bytes_unchanged():
     """The bytes path is the historical contract — must keep working
-    for the call sites that still pass raw bytes."""
+ for the call sites that still pass raw bytes."""
     payload = b"\x89PNG\r\n\x1a\n"  # PNG header
     assert _coerce_image_bytes(payload) == payload
 
 
 def test_coerce_accepts_bytearray_and_memoryview():
     """LightRAG / mineru sometimes hand off mutable buffers; reject-
-    only-bytes would force callers to convert at the wrong layer."""
+ only-bytes would force callers to convert at the wrong layer."""
     payload = b"\x89PNG\r\n\x1a\n"
     assert _coerce_image_bytes(bytearray(payload)) == payload
     assert _coerce_image_bytes(memoryview(payload)) == payload
@@ -49,7 +49,7 @@ def test_coerce_accepts_bytearray_and_memoryview():
 
 def test_coerce_decodes_plain_base64_string():
     """The dominant RAGAnything path — `_encode_image_to_base64`
-    returns a plain b64 ASCII string with no `data:` prefix."""
+ returns a plain b64 ASCII string with no `data:` prefix."""
     raw = b"\x89PNG\r\n\x1a\n"
     encoded = base64.b64encode(raw).decode("ascii")
     assert _coerce_image_bytes(encoded) == raw
@@ -57,7 +57,7 @@ def test_coerce_decodes_plain_base64_string():
 
 def test_coerce_strips_data_url_prefix():
     """Forward-compat: any RAGAnything path that pre-formats a full
-    data URL must still be decoded correctly."""
+ data URL must still be decoded correctly."""
     raw = b"\x89PNG\r\n\x1a\n"
     encoded = base64.b64encode(raw).decode("ascii")
     data_url = f"data:image/png;base64,{encoded}"
@@ -66,8 +66,8 @@ def test_coerce_strips_data_url_prefix():
 
 def test_coerce_rejects_other_types_with_clear_error():
     """Anything other than bytes/string raises a typed ValueError
-    naming the offending type — the caller wraps this into a vision-
-    layer ValueError tagged with the artifact context."""
+ naming the offending type — the caller wraps this into a vision-
+ layer ValueError tagged with the artifact context."""
     with pytest.raises(ValueError, match="image_data must be bytes or base64 string"):
         _coerce_image_bytes(12345)
     with pytest.raises(ValueError, match="dict"):
@@ -79,7 +79,7 @@ def test_coerce_rejects_other_types_with_clear_error():
 
 class _StubVisionClient:
     """Records every call so tests can assert on what reached the
-    underlying OpenAI-compat client."""
+ underlying OpenAI-compat client."""
 
     def __init__(self, response: str = "OK"):
         self.calls: list[dict] = []
@@ -98,7 +98,7 @@ def _run(coro):
 
 def test_vision_callable_passes_bytes_through(monkeypatch):
     """Bytes path: the underlying client must receive the same bytes
-    we got from RAGAnything — no double-decode."""
+ we got from RAGAnything — no double-decode."""
     client = _StubVisionClient()
     callable_ = _make_vision_callable(client)
     payload = b"\x89PNG\r\n\x1a\n"
@@ -114,8 +114,8 @@ def test_vision_callable_passes_bytes_through(monkeypatch):
 
 def test_vision_callable_decodes_base64_string():
     """Regression: this is the path RAGAnything's modal processors
-    drive at compile time. Before the fix, the string flowed straight
-    into `analyze_image` and blew up at `base64.b64encode("…")`."""
+ drive at compile time. Before the fix, the string flowed straight
+ into `analyze_image` and blew up at `base64.b64encode("…")`."""
     client = _StubVisionClient()
     callable_ = _make_vision_callable(client)
     raw = b"\x89PNG\r\n\x1a\n"
@@ -130,8 +130,8 @@ def test_vision_callable_decodes_base64_string():
 
 def test_vision_callable_decodes_data_url_string():
     """`data:image/png;base64,...` shape is sometimes pre-formatted by
-    integrations layered on top of RAGAnything — handle the prefix so
-    downstream is uniform bytes."""
+ integrations layered on top of RAGAnything — handle the prefix so
+ downstream is uniform bytes."""
     client = _StubVisionClient()
     callable_ = _make_vision_callable(client)
     raw = b"\x89PNG\r\n\x1a\n"
@@ -146,9 +146,9 @@ def test_vision_callable_decodes_data_url_string():
 
 def test_vision_callable_raises_clear_error_on_unsupported_shape():
     """Unsupported types must raise an actionable ValueError. Without
-    this, RAGAnything's `Error generating image description: a
-    bytes-like object is required, not 'str'` was the only log line —
-    no type, no length, nothing for the operator to grep on."""
+ this, RAGAnything's `Error generating image description: a
+ bytes-like object is required, not 'str'` was the only log line —
+ no type, no length, nothing for the operator to grep on."""
     client = _StubVisionClient()
     callable_ = _make_vision_callable(client)
 
@@ -163,8 +163,8 @@ def test_vision_callable_raises_clear_error_on_unsupported_shape():
 
 def test_vision_callable_error_names_string_length():
     """For string inputs that fail base64 decoding, the error message
-    must include the length so operators can correlate with the chunk
-    size in the worker log."""
+ must include the length so operators can correlate with the chunk
+ size in the worker log."""
     client = _StubVisionClient()
     callable_ = _make_vision_callable(client)
 

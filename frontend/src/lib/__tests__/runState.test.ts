@@ -1,10 +1,10 @@
 /**
- * Wave 9B tests — pin the FE state projection in lock-step with the
+ * tests — pin the FE state projection in lock-step with the
  * Python backend's `project_ui_state` / `project_final_status`.
  *
  * Each parametrised case is the FE mirror of a backend test in
  * `tests/test_ui_status_mapping.py` and
- * `tests/test_wave8_workflow_refactor.py::test_projection_*`. A
+ * `tests/test__workflow_refactor.py::test_projection_*`. A
  * rename on either side breaks both — this is the cheapest way to
  * catch silent drift.
  */
@@ -126,7 +126,7 @@ describe("projectFinalStatus", () => {
 // ---- projectUiState — A–F surface ---------------------------------
 
 
-describe("projectUiState — Wave-9A A–F surface", () => {
+describe("projectUiState — A–F surface", () => {
   it("A. completed_without_enrichment → COMPLETED_WITH_WARNINGS UI state", () => {
     const r = makeRun({ status: RUN_STATUS.SUCCEEDED });
     const ui = projectUiState(r, { status: "skipped" });

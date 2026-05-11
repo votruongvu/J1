@@ -3,20 +3,20 @@
 Domain packs are pluggable bundles that extend the generic post-
 compile planner with domain-aware decisions. Each pack supplies:
 
-  * a stable id (`general`, `civil_engineering`, …)
-  * an extended document-type taxonomy
-  * keyword + structural detection rules
-  * per-document-type planning rules
-  * an extraction-target catalogue (planning hints)
-  * a graph ontology (entity + relationship types)
-  * an optional LLM prompt addon
+ * a stable id (`general`, `civil_engineering`, …)
+ * an extended document-type taxonomy
+ * keyword + structural detection rules
+ * per-document-type planning rules
+ * an extraction-target catalogue (planning hints)
+ * a graph ontology (entity + relationship types)
+ * an optional LLM prompt addon
 
 Selection order, applied at planning time:
 
-  1. Per-run override (operator/upload-time override).
-  2. Workspace / project default domain.
-  3. Auto-detection against the document content.
-  4. Generic fallback (`general`).
+ 1. Per-run override (operator/upload-time override).
+ 2. Workspace / project default domain.
+ 3. Auto-detection against the document content.
+ 4. Generic fallback (`general`).
 
 Auto-detection uses a confidence threshold so weak signals can't
 force a domain. Operator-forced selections are honored even when

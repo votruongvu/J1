@@ -80,7 +80,7 @@ export interface ApiPlanRecord {
   /** True when any enabled step needs the vision LLM. */
   requiresVision?: boolean;
   /** Per-image vision triage decisions; empty when the parser
-   * doesn't surface per-image metadata. */
+ * doesn't surface per-image metadata. */
   visionDecisions?: Array<Record<string, unknown>>;
 }
 
@@ -248,7 +248,7 @@ export function planFromApi(api: ApiPlanRecord): ExecutionPlan {
   };
 }
 
-// ---- Review surface (Phase 7+) -------------------------------------
+// ---- Review surface -------------------------------------
 //
 // The backend already returns camelCase + the shapes match the FE
 // types directly. These translators do defensive normalisation
@@ -405,7 +405,7 @@ export function qualityReportFromApi(raw: unknown): ReviewQualityReport {
   };
 }
 
-// ---- Chunks (Phase 8) ---------------------------------------------
+// ---- Chunks ---------------------------------------------
 
 function linkedAssetsFromApi(raw: unknown): ReviewLinkedAsset[] {
   if (!Array.isArray(raw)) return [];
@@ -451,7 +451,7 @@ export function chunkPageFromApi(raw: unknown): ReviewChunkPage {
   };
 }
 
-// ---- Artifacts (Phase 9) ------------------------------------------
+// ---- Artifacts ------------------------------------------
 
 function artifactRecordFromApi(raw: unknown): ReviewArtifactRecord {
   const obj = (raw ?? {}) as Record<string, unknown>;
@@ -491,8 +491,8 @@ export function artifactPageFromApi(raw: unknown): ReviewArtifactPage {
  * Extract the `filename=` value from a `Content-Disposition` header.
  *
  * Handles the common shapes the J1 backend emits:
- *   `attachment; filename="abc.png"`
- *   `attachment; filename=abc.png`
+ * `attachment; filename="abc.png"`
+ * `attachment; filename=abc.png`
  *
  * Does NOT yet handle RFC 5987 `filename*=UTF-8''…` — none of the
  * filenames J1 generates today need it. Returns null when the
@@ -541,7 +541,7 @@ export function chunkDetailFromApi(raw: unknown): ReviewChunkDetail {
   };
 }
 
-// ---- Graph (Phase 10) ---------------------------------------------
+// ---- Graph ---------------------------------------------
 
 function strArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x)) : [];

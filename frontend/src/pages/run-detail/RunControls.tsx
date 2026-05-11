@@ -4,14 +4,14 @@
  * legal (the backend also enforces this and returns 409 if it isn't).
  *
  * UX contract:
- *   - One in-flight action at a time. While a request is pending,
- *     all buttons disable + the active one shows a spinner.
- *   - Cancel uses `window.confirm` because it's irreversible.
- *   - Success/failure surface as a toast.
- *   - After every attempted action the parent refreshes the run via
- *     `onRefresh()` so the run record's new status flows back into
- *     header/panels (the backend flips status synchronously, but the
- *     SSE/polling channels reconverge anyway).
+ * - One in-flight action at a time. While a request is pending,
+ * all buttons disable + the active one shows a spinner.
+ * - Cancel uses `window.confirm` because it's irreversible.
+ * - Success/failure surface as a toast.
+ * - After every attempted action the parent refreshes the run via
+ * `onRefresh` so the run record's new status flows back into
+ * header/panels (the backend flips status synchronously, but the
+ * SSE/polling channels reconverge anyway).
  */
 
 import { useCallback, useState } from "react";
@@ -39,9 +39,9 @@ interface RunControlsProps {
   /** Compact list-row variant — narrower buttons, no labels. */
   compact?: boolean;
   /** Optional: invoked after a successful Re-process / Delete with
-   * the resulting (new run id | null). Lets the parent navigate
-   * away (e.g. to the new reindex run, or back to the list after a
-   * delete). */
+ * the resulting (new run id | null). Lets the parent navigate
+ * away (e.g. to the new reindex run, or back to the list after a
+ * delete). */
   onAfterAction?: (action: ControlAction, newRunId: string | null) => void;
 }
 

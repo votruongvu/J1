@@ -1,5 +1,5 @@
 /**
- * Macro-stage projection for the LiveTimeline (Phase 3).
+ * Macro-stage projection for the LiveTimeline.
  *
  * The backend emits flat `step.*` events tagged with `stage` and
  * `step` fields; today there's no server-emitted macro-stage event
@@ -10,7 +10,7 @@
  *
  * Pure / deterministic: the helpers take an event in and return a
  * label out — they don't subscribe to anything or mutate state.
- * Mirrors the backend's `derive_macro_event_type()` in
+ * Mirrors the backend's `derive_macro_event_type` in
  * `src/j1/runs/reporter.py`.
  */
 
@@ -41,7 +41,7 @@ const ASSESS_ENRICHMENT_STEPS = new Set(["assess_enrichment"]);
 const ENRICH_STEPS = new Set(["enrich_stage"]);
 
 /**
- * Classify a progress event into one of the Phase-3 macro stages.
+ * Classify a progress event into one of the macro stages.
  * Case-insensitive on the `stage` field — legacy lowercase emitters
  * still match. Returns null for events that don't belong to a macro
  * stage (the FE renders them as ungrouped rows).
@@ -79,7 +79,7 @@ function eventDocumentId(event: ProgressEvent): string {
 /**
  * Project a `step.*` event onto its canonical macro event name, or
  * null when the event doesn't sit under a macro stage. Mirrors the
- * backend's `derive_macro_event_type()`.
+ * backend's `derive_macro_event_type`.
  */
 export function deriveMacroEventType(event: ProgressEvent): string | null {
   const macro = classifyMacroStage(event);
@@ -121,9 +121,9 @@ export function deriveMacroEventType(event: ProgressEvent): string | null {
  * below), or a single ungrouped event (PlanGenerated, finalize…).
  *
  * `status` is aggregated from the section's events:
- *   - "running"   — at least one started, none completed/failed
- *   - "completed" — last terminal event was a completion
- *   - "failed"    — last terminal event was a failure
+ * - "running" — at least one started, none completed/failed
+ * - "completed" — last terminal event was a completion
+ * - "failed" — last terminal event was a failure
  *
  * `lastEventAt` is the millisecond timestamp of the most recent
  * event in the section; used for stable ordering when one macro

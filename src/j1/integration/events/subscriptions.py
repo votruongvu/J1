@@ -11,14 +11,14 @@ WILDCARD_EVENT_TYPE = "*"
 class WebhookSubscription:
     """Static webhook configuration record.
 
-    `event_types` may include the literal `"*"` to subscribe to every event.
-    `tenant_id=None` matches all tenants; otherwise the subscription only
-    fires for events tagged with that tenant.
+ `event_types` may include the literal `"*"` to subscribe to every event.
+ `tenant_id=None` matches all tenants; otherwise the subscription only
+ fires for events tagged with that tenant.
 
-    Retry policy fields use the same shape as `RetryPolicySpec` (initial
-    delay, exponential backoff, max attempts) so callers can carry the
-    same numbers through.
-    """
+ Retry policy fields use the same shape as `RetryPolicySpec` (initial
+ delay, exponential backoff, max attempts) so callers can carry the
+ same numbers through.
+ """
 
     id: str
     url: str
@@ -55,10 +55,10 @@ class WebhookSubscriptionRegistry(Protocol):
 class StaticWebhookSubscriptionRegistry:
     """In-memory registry — appropriate for env/file-driven configuration.
 
-    A future API-managed registry would implement the same protocol and
-    persist subscriptions to a registry file or database. The webhook
-    delivery service depends on the protocol, not this implementation.
-    """
+ A future API-managed registry would implement the same protocol and
+ persist subscriptions to a registry file or database. The webhook
+ delivery service depends on the protocol, not this implementation.
+ """
 
     def __init__(self, subscriptions: Iterable[WebhookSubscription]) -> None:
         self._subscriptions: list[WebhookSubscription] = list(subscriptions)

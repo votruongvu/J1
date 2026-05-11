@@ -19,8 +19,8 @@ same shape and the same set of event-type names.
 The contract is documented at:
 
 - [`docs/asyncapi/kb-events.asyncapi.yaml`](asyncapi/kb-events.asyncapi.yaml)
-  — AsyncAPI 3.0 spec covering all 7 logical channels, all 12 event
-  types, common headers, and security/sensitivity policy.
+ — AsyncAPI 3.0 spec covering all 7 logical channels, all 12 event
+ types, common headers, and security/sensitivity policy.
 
 Validate the spec with the AsyncAPI CLI (no runtime dep — opt-in
 tooling):
@@ -43,15 +43,15 @@ names are an infrastructure-config concern; an adapter is free to map
 `kb.documents` to a Kafka topic, an AMQP exchange, an SQS queue URL,
 etc.
 
-| Channel          | What flows here                                       |
+| Channel | What flows here |
 |------------------|--------------------------------------------------------|
-| `kb.documents`   | Document lifecycle — `document.uploaded`               |
-| `kb.ingestion`   | Parse / ingest pipeline events                         |
-| `kb.indexing`    | Search-index + knowledge-graph updates                 |
-| `kb.query`       | Search / retrieve completion events                    |
-| `kb.answer`      | Answer-generation completion events                    |
-| `kb.citation`    | Citation lifecycle events                              |
-| `kb.audit`       | Catch-all — custom / unknown event types route here    |
+| `kb.documents` | Document lifecycle — `document.uploaded` |
+| `kb.ingestion` | Parse / ingest pipeline events |
+| `kb.indexing` | Search-index + knowledge-graph updates |
+| `kb.query` | Search / retrieve completion events |
+| `kb.answer` | Answer-generation completion events |
+| `kb.citation` | Citation lifecycle events |
+| `kb.audit` | Catch-all — custom / unknown event types route here |
 
 The mapping lives in
 [`j1.integration.events.channels`](../src/j1/integration/events/channels.py)
@@ -65,12 +65,12 @@ as `EVENT_TYPE_TO_CHANNEL`. `channel_for("custom.x")` returns
 The 12 event-type names are exactly those in `KB_EVENT_TYPES`:
 
 ```
-document.uploaded            document.parsing_started
-document.parsing_completed   document.ingestion_started
+document.uploaded document.parsing_started
+document.parsing_completed document.ingestion_started
 document.ingestion_completed document.ingestion_failed
-document.indexing_started    document.indexing_completed
-knowledge.updated            query.completed
-answer.generated             citation.validation_failed
+document.indexing_started document.indexing_completed
+knowledge.updated query.completed
+answer.generated citation.validation_failed
 ```
 
 Webhooks and queue adapters both use these names — receivers branch
@@ -82,10 +82,10 @@ on `eventType`, never on transport.
 
 ```python
 class EventPublisher(Protocol):
-    def publish(self, event: ApplicationEvent) -> None: ...
+ def publish(self, event: ApplicationEvent) -> None:...
 ```
 
-`publish()` MUST NOT raise. Publication failure must never break the
+`publish` MUST NOT raise. Publication failure must never break the
 caller's primary work — the framework's own implementations all wrap
 their delegate calls in try/except and log.
 
@@ -98,7 +98,7 @@ their delegate calls in try/except and log.
 | [`BusEventPublisher`](../src/j1/integration/events/publisher.py) | Bridges into the existing `ApplicationEventBus` so the same event flows to webhook subscribers. The canonical way to share one event source between transports. |
 | [`CompositeEventPublisher`](../src/j1/integration/events/publisher.py) | Fans out to multiple delegates. Failure-isolated. |
 
-Each `publish()` constructs a [`PublishedEnvelope`](../src/j1/integration/events/publisher.py)
+Each `publish` constructs a [`PublishedEnvelope`](../src/j1/integration/events/publisher.py)
 with the resolved logical `channel` and standard `headers` — adapters
 should set those headers as broker-native metadata (Kafka headers,
 AMQP properties, SQS message attributes, …).
@@ -143,19 +143,19 @@ matching publisher.
 
 ```python
 from j1 import (
-    InMemoryEventPublisher, NoopEventPublisher, BusEventPublisher,
-    PUBLISHER_TYPE_BUS, PUBLISHER_TYPE_MEMORY, PUBLISHER_TYPE_NOOP,
-    load_event_publisher_settings,
+ InMemoryEventPublisher, NoopEventPublisher, BusEventPublisher,
+ PUBLISHER_TYPE_BUS, PUBLISHER_TYPE_MEMORY, PUBLISHER_TYPE_NOOP,
+ load_event_publisher_settings,
 )
 
-settings = load_event_publisher_settings()
+settings = load_event_publisher_settings
 publisher = {
-    PUBLISHER_TYPE_NOOP:   NoopEventPublisher(),
-    PUBLISHER_TYPE_MEMORY: InMemoryEventPublisher(
-        producer=settings.producer,
-        schema_version=settings.schema_version,
-    ),
-    PUBLISHER_TYPE_BUS:    BusEventPublisher(application_event_bus),
+ PUBLISHER_TYPE_NOOP: NoopEventPublisher,
+ PUBLISHER_TYPE_MEMORY: InMemoryEventPublisher(
+ producer=settings.producer,
+ schema_version=settings.schema_version,
+ ),
+ PUBLISHER_TYPE_BUS: BusEventPublisher(application_event_bus),
 }[settings.publisher_type]
 ```
 
@@ -173,15 +173,15 @@ no external broker required, no sensitive payload expansion**.
 | Source of truth | Same `ApplicationEvent` | Same `ApplicationEvent` |
 | Event-type names | Same | Same |
 | Headers | CloudEvents extension attrs (`kbactor`, …) | Standard message headers (`actor`, `authType`, …) — same semantic meaning |
-| Failure isolation | Bus + executor + delivery service | Publisher + delegate(s) — all `publish()` calls trap |
+| Failure isolation | Bus + executor + delivery service | Publisher + delegate(s) — all `publish` calls trap |
 | Delivery guarantees | At-least-once retries with backoff | Adapter-defined; default contract is **at-least-once, no ordering** |
 
 The recommended deployment pattern when both surfaces are needed:
 
 ```
 domain code → ApplicationEventBus
-                     ├─ WebhookEventSubscriber   (HTTP delivery)
-                     └─ <broker>EventSubscriber  (queue delivery)
+ ├─ WebhookEventSubscriber (HTTP delivery)
+ └─ <broker>EventSubscriber (queue delivery)
 ```
 
 …or equivalently, use `CompositeEventPublisher([
@@ -197,40 +197,40 @@ deployment-side work and never modifies the integration layer. Place
 the adapter in a sibling `j1.adapters.<broker>` package.
 
 ```python
-# j1/adapters/kafka/publisher.py  (deployment-owned package)
+# j1/adapters/kafka/publisher.py (deployment-owned package)
 import json
 from j1 import (
-    ApplicationEvent, EventPublisher, channel_for, to_cloudevent,
+ ApplicationEvent, EventPublisher, channel_for, to_cloudevent,
 )
 
 class KafkaEventPublisher:
-    """Maps logical `kb.*` channels to configured Kafka topics."""
+ """Maps logical `kb.*` channels to configured Kafka topics."""
 
-    def __init__(self, kafka_producer, topic_for_channel: dict[str, str]) -> None:
-        self._producer = kafka_producer
-        self._topic_for_channel = topic_for_channel
+ def __init__(self, kafka_producer, topic_for_channel: dict[str, str]) -> None:
+ self._producer = kafka_producer
+ self._topic_for_channel = topic_for_channel
 
-    def publish(self, event: ApplicationEvent) -> None:
-        try:
-            channel = channel_for(event.type)
-            topic = self._topic_for_channel.get(channel, "kb.audit")
-            payload = json.dumps(to_cloudevent(event)).encode("utf-8")
-            headers = [
-                ("eventId", event.id.encode()),
-                ("eventType", event.type.encode()),
-                # ... rest from the standard header table
-            ]
-            # Recommended ordering key: subject (typically a documentId)
-            self._producer.send(
-                topic, value=payload, headers=headers,
-                key=(event.subject or event.id).encode("utf-8"),
-            )
-        except Exception:
-            # Same contract: publisher.publish must never raise.
-            logging.getLogger(__name__).exception(
-                "Kafka publish failed for event id=%s type=%s",
-                event.id, event.type,
-            )
+ def publish(self, event: ApplicationEvent) -> None:
+ try:
+ channel = channel_for(event.type)
+ topic = self._topic_for_channel.get(channel, "kb.audit")
+ payload = json.dumps(to_cloudevent(event)).encode("utf-8")
+ headers = [
+ ("eventId", event.id.encode),
+ ("eventType", event.type.encode),
+ #... rest from the standard header table
+ ]
+ # Recommended ordering key: subject (typically a documentId)
+ self._producer.send(
+ topic, value=payload, headers=headers,
+ key=(event.subject or event.id).encode("utf-8"),
+ )
+ except Exception:
+ # Same contract: publisher.publish must never raise.
+ logging.getLogger(__name__).exception(
+ "Kafka publish failed for event id=%s type=%s",
+ event.id, event.type,
+ )
 ```
 
 The same skeleton works for RabbitMQ (`channel.basic_publish` with
@@ -243,7 +243,7 @@ What stays in the deployment, **not** in the framework:
 - The broker client library import (e.g. `aiokafka`, `pika`, `boto3`).
 - The physical topic / queue / stream naming policy.
 - Connection-credential handling — typically via the deployment's
-  existing secret manager, never via env vars in code.
+ existing secret manager, never via env vars in code.
 - Per-broker batching / partitioning / DLQ wiring.
 
 ---
@@ -267,16 +267,16 @@ Sensitive-payload policy — **enforced by current publishers and tests**:
 Operational hygiene:
 
 - Event publishing is **opt-in** — defaulting to `noop` means a
-  misconfigured deployment can't accidentally ship events anywhere.
+ misconfigured deployment can't accidentally ship events anywhere.
 - Broker credentials live in the deployment's existing secret
-  system, not in env vars carried alongside event config.
+ system, not in env vars carried alongside event config.
 - Logs include `eventId` / `correlationId` / `tenantId` for triage,
-  but never raw payloads — `NoopEventPublisher` only logs at
-  `DEBUG`.
+ but never raw payloads — `NoopEventPublisher` only logs at
+ `DEBUG`.
 - Tenant isolation: a single `EventPublisher` instance is process-
-  wide, but every event carries `tenantId`. Adapters MUST NOT route
-  events across tenants without the deployment's explicit topic /
-  permission model.
+ wide, but every event carries `tenantId`. Adapters MUST NOT route
+ events across tenants without the deployment's explicit topic /
+ permission model.
 
 ---
 
@@ -286,21 +286,21 @@ The framework makes **no exactly-once claims**. Adapters typically
 provide at-least-once delivery; consumers MUST be idempotent.
 
 - **Idempotency key.** Set on every published envelope as
-  `<eventType>:<subject>`, falling back to `eventId` when there's no
-  subject. Consumers can use this as a dedup key in their own state
-  store. A custom `idempotency_key` callable can be supplied to
-  `InMemoryEventPublisher` for non-default schemes.
+ `<eventType>:<subject>`, falling back to `eventId` when there's no
+ subject. Consumers can use this as a dedup key in their own state
+ store. A custom `idempotency_key` callable can be supplied to
+ `InMemoryEventPublisher` for non-default schemes.
 - **Recommended ordering key.** `event.subject` (typically a
-  `documentId` or `artifactId`) — Kafka / Kinesis-style partitioning
-  on this key gives per-document order without a global serialiser.
+ `documentId` or `artifactId`) — Kafka / Kinesis-style partitioning
+ on this key gives per-document order without a global serialiser.
 - **No global ordering.** Events about different documents may
-  arrive in any order. Events about the *same* document arrive in
-  publish order only when the underlying broker provides per-key
-  ordering and the adapter uses subject as the partition key.
+ arrive in any order. Events about the *same* document arrive in
+ publish order only when the underlying broker provides per-key
+ ordering and the adapter uses subject as the partition key.
 - **Retries.** Delegated to the broker adapter (Kafka producer
-  acks/retries, AMQP publisher confirms, SQS retries via
-  visibility timeout, …). Webhook delivery already has its own
-  exponential backoff — see [webhooks.md](webhooks.md) § 4.
+ acks/retries, AMQP publisher confirms, SQS retries via
+ visibility timeout, …). Webhook delivery already has its own
+ exponential backoff — see [webhooks.md](webhooks.md) § 4.
 
 ---
 
@@ -309,14 +309,14 @@ provide at-least-once delivery; consumers MUST be idempotent.
 Today the framework provides:
 
 - **Webhook delivery**: persistent `WebhookDeliveryStore` (JSONL) of
-  every attempt — succeeded / retrying / failed — see
-  [webhooks.md](webhooks.md). This is the closest thing to a DLQ J1
-  ships natively.
+ every attempt — succeeded / retrying / failed — see
+ [webhooks.md](webhooks.md). This is the closest thing to a DLQ J1
+ ships natively.
 - **Queue adapter**: dead-letter behaviour is the broker adapter's
-  responsibility. Recommended convention: a `kb.deadletter` channel
-  carrying `{"reason": "...", "originalEventId": "...",
-  "originalEventType": "...", "errorCode": "...",
-  "errorMessage": "...", "retryable": false}` payloads.
+ responsibility. Recommended convention: a `kb.deadletter` channel
+ carrying `{"reason": "...", "originalEventId": "...",
+ "originalEventType": "...", "errorCode": "...",
+ "errorMessage": "...", "retryable": false}` payloads.
 
 The integration layer doesn't implement a generic DLQ because it
 would couple to a specific broker — define one in the adapter when
@@ -333,8 +333,7 @@ needed.
 
 Run only the event-integration tests:
 
-```bash
-.venv/bin/pytest tests/test_event_publisher.py tests/test_asyncapi.py
+```bash.venv/bin/pytest tests/test_event_publisher.py tests/test_asyncapi.py
 ```
 
 ---
@@ -342,21 +341,21 @@ Run only the event-integration tests:
 ## 12. Known limitations
 
 - **No bundled broker adapter.** The framework intentionally ships
-  none — see § 7 for the recipe. Future adapter packages
-  (`j1.adapters.kafka`, etc.) implement the same `EventPublisher`
-  Protocol without changing the integration layer.
+ none — see § 7 for the recipe. Future adapter packages
+ (`j1.adapters.kafka`, etc.) implement the same `EventPublisher`
+ Protocol without changing the integration layer.
 - **No automatic publication from REST handlers.** Today the
-  publisher abstraction is exposed and tested but not yet wired
-  into `create_rest_api`. The recommended wiring is to construct a
-  `BusEventPublisher(application_event_bus)` and let the existing
-  webhook bridge in `j1.adapters.rest.events` continue to publish to
-  the bus — the queue adapter automatically picks up the same
-  events. A future PR can also pass `event_publisher=` to
-  `create_rest_api` directly when a deployment wants to skip the
-  bus.
+ publisher abstraction is exposed and tested but not yet wired
+ into `create_rest_api`. The recommended wiring is to construct a
+ `BusEventPublisher(application_event_bus)` and let the existing
+ webhook bridge in `j1.adapters.rest.events` continue to publish to
+ the bus — the queue adapter automatically picks up the same
+ events. A future PR can also pass `event_publisher=` to
+ `create_rest_api` directly when a deployment wants to skip the
+ bus.
 - **No DLQ implementation.** Documented as a per-broker concern.
-- **Synchronous `publish()`.** Built-in publishers are sync.
-  Adapters around async broker libraries should fire-and-forget
-  through their own executor (the same pattern as
-  `WebhookEventSubscriber`'s `ThreadPoolDeliveryExecutor`) so they
-  honour the no-raise contract.
+- **Synchronous `publish`.** Built-in publishers are sync.
+ Adapters around async broker libraries should fire-and-forget
+ through their own executor (the same pattern as
+ `WebhookEventSubscriber`'s `ThreadPoolDeliveryExecutor`) so they
+ honour the no-raise contract.

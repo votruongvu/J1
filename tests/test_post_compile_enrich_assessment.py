@@ -2,12 +2,12 @@
 
 Pins the verdict matrix the workflow consumes downstream:
 
-  * compile failed / final quality failed → SKIP with blocking_issues
-  * empty document (no text/images/tables) → SKIP
-  * tables present → recommends table_enrichment
-  * images present → recommends image_captioning + vision_enrichment
-  * low compile quality → recommends quality_assessment
-  * no rich signals → OPTIONAL (with informational reason)
+ * compile failed / final quality failed → SKIP with blocking_issues
+ * empty document (no text/images/tables) → SKIP
+ * tables present → recommends table_enrichment
+ * images present → recommends image_captioning + vision_enrichment
+ * low compile quality → recommends quality_assessment
+ * no rich signals → OPTIONAL (with informational reason)
 
 The assessor is pure; tests construct `SourceSignals` directly and
 assert on the resulting `PostCompileEnrichPlan` shape. No I/O, no
@@ -72,8 +72,8 @@ def test_final_quality_failed_returns_skip():
 
 def test_affirmative_empty_document_returns_skip():
     """SKIP only with positive evidence of an empty doc:
-    page_count>0 + zero counts everywhere. Catches the
-    'compile parsed a real PDF but found nothing useful' case."""
+ page_count>0 + zero counts everywhere. Catches the
+ 'compile parsed a real PDF but found nothing useful' case."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -90,9 +90,9 @@ def test_affirmative_empty_document_returns_skip():
 
 def test_no_signals_falls_through_to_optional():
     """Defaults (page_count=None, all counts=0) must NOT trip the
-    empty-doc SKIP path — the absence of metrics isn't proof of an
-    empty document. Test fakes + legacy compilers that don't surface
-    content_stats fall through to OPTIONAL."""
+ empty-doc SKIP path — the absence of metrics isn't proof of an
+ empty document. Test fakes + legacy compilers that don't surface
+ content_stats fall through to OPTIONAL."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -103,9 +103,9 @@ def test_no_signals_falls_through_to_optional():
 
 def test_page_count_zero_does_not_trigger_skip():
     """page_count == 0 should NOT trip SKIP. Some sources are
-    legitimately page-less (plaintext / single-stream documents);
-    the SKIP rule reserves itself for `page_count > 0` + zero
-    content as positive evidence."""
+ legitimately page-less (plaintext / single-stream documents);
+ the SKIP rule reserves itself for `page_count > 0` + zero
+ content as positive evidence."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -120,8 +120,8 @@ def test_page_count_zero_does_not_trigger_skip():
 
 def test_page_count_unknown_does_not_trigger_skip_even_with_zero_counts():
     """Even when text/image/table counts are zero, SKIP must NOT
-    fire if page_count is unknown (None) — we don't have positive
-    evidence the document is empty."""
+ fire if page_count is unknown (None) — we don't have positive
+ evidence the document is empty."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -136,9 +136,9 @@ def test_page_count_unknown_does_not_trigger_skip_even_with_zero_counts():
 
 def test_compile_failed_emits_blocking_issue_not_misleading_skip():
     """Compile-failed → SKIP with blocking issue mentioning compile
-    failure (NOT 'no content blocks' which suggests a successful
-    compile that produced nothing). Keeps operator messages
-    diagnostic."""
+ failure (NOT 'no content blocks' which suggests a successful
+ compile that produced nothing). Keeps operator messages
+ diagnostic."""
     plan = assess_post_compile_enrich(SourceSignals(compile_status="failed"))
     assert plan.overall_recommendation == EnrichRecommendation.SKIP
     assert any(
@@ -153,7 +153,7 @@ def test_compile_failed_emits_blocking_issue_not_misleading_skip():
 
 def test_page_count_positive_with_only_text_chars_does_not_skip():
     """Edge case: parser surfaced text content as `total_text_chars`
-    rather than block counts. SKIP must not fire — text exists."""
+ rather than block counts. SKIP must not fire — text exists."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -168,7 +168,7 @@ def test_page_count_positive_with_only_text_chars_does_not_skip():
 
 def test_page_count_positive_only_images_does_not_skip():
     """Image-only document with usable page_count — there's content
-    (images) even though text counts are zero. SKIP must not fire."""
+ (images) even though text counts are zero. SKIP must not fire."""
     plan = assess_post_compile_enrich(SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -213,7 +213,7 @@ def test_low_quality_recommends_quality_assessment():
 
 def test_text_only_document_is_optional():
     """Plain text doc: no tables, no images, normal quality.
-    Verdict = OPTIONAL (operator can still opt in)."""
+ Verdict = OPTIONAL (operator can still opt in)."""
     plan = assess_post_compile_enrich(_ok_signals())
     assert plan.overall_recommendation == EnrichRecommendation.OPTIONAL
     assert plan.recommended_tasks == ()
@@ -267,7 +267,7 @@ def test_to_payload_and_from_payload_round_trip():
 
 def test_payload_handles_missing_fields_defensively():
     """`from_payload` should populate sensible defaults if older
-    artifact versions are read back."""
+ artifact versions are read back."""
     plan = PostCompileEnrichPlan.from_payload({
         "overall_recommendation": "optional",
     })
@@ -282,9 +282,9 @@ def test_payload_handles_missing_fields_defensively():
 
 def test_build_signals_from_compile_metrics_handles_missing_keys():
     """Missing keys → safe defaults (zero counts / False flags / None
-    optionals). This is the workflow's path: it always passes whatever
-    `compile_result.content_stats` and `compile_metrics` carry, which
-    may be empty for legacy compilers."""
+ optionals). This is the workflow's path: it always passes whatever
+ `compile_result.content_stats` and `compile_metrics` carry, which
+ may be empty for legacy compilers."""
     signals = build_signals_from_compile_metrics(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -301,7 +301,7 @@ def test_build_signals_from_compile_metrics_handles_missing_keys():
 
 def test_build_signals_from_compile_metrics_promotes_count_to_flag():
     """Even if `has_images` is unset, a non-zero `image_count` should
-    flip `has_images=True` so downstream rules fire correctly."""
+ flip `has_images=True` so downstream rules fire correctly."""
     signals = build_signals_from_compile_metrics(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -314,8 +314,8 @@ def test_build_signals_from_compile_metrics_promotes_count_to_flag():
 
 def test_build_signals_falls_back_to_compile_metrics_for_text_chars():
     """`total_text_chars` lives on content_stats today but
-    `extracted_text_chars` lives on compile_metrics. The builder
-    accepts either."""
+ `extracted_text_chars` lives on compile_metrics. The builder
+ accepts either."""
     signals = build_signals_from_compile_metrics(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -333,7 +333,7 @@ def test_build_signals_falls_back_to_compile_metrics_for_text_chars():
 
 def test_fast_llm_refinement_upgrades_optional_to_recommended():
     """OPTIONAL → RECOMMENDED is a valid LLM upgrade. The merged plan
-    flips `decision_source` to record that an LLM consult shaped it."""
+ flips `decision_source` to record that an LLM consult shaped it."""
     base = assess_post_compile_enrich(_ok_signals())
     assert base.overall_recommendation == EnrichRecommendation.OPTIONAL
     refined = apply_fast_llm_refinement(base, FastLLMRefinement(
@@ -363,8 +363,8 @@ def test_fast_llm_refinement_can_downgrade_recommended_to_optional():
 
 def test_fast_llm_refinement_never_overrides_skip():
     """SKIP plans carry deterministic blocking conditions; the LLM
-    must NOT be allowed to upgrade them. The decision_source still
-    flips so we record the consult in the audit log."""
+ must NOT be allowed to upgrade them. The decision_source still
+ flips so we record the consult in the audit log."""
     base = assess_post_compile_enrich(SourceSignals(compile_status="failed"))
     assert base.overall_recommendation == EnrichRecommendation.SKIP
     refined = apply_fast_llm_refinement(base, FastLLMRefinement(
@@ -381,8 +381,8 @@ def test_fast_llm_refinement_never_overrides_skip():
 
 def test_fast_llm_refinement_silently_drops_skip_attempted_via_recommendation():
     """An LLM that emits `recommendation=skip` for a non-SKIP plan
-    must NOT be allowed to force a SKIP. SKIP is reserved for
-    deterministic blocking conditions."""
+ must NOT be allowed to force a SKIP. SKIP is reserved for
+ deterministic blocking conditions."""
     base = assess_post_compile_enrich(_ok_signals(has_images=True, image_count=1))
     refined = apply_fast_llm_refinement(base, FastLLMRefinement(
         recommendation=EnrichRecommendation.SKIP,
@@ -407,7 +407,7 @@ def test_fast_llm_refinement_dedupes_recommended_tasks():
 
 def test_fast_llm_refinement_caps_reasons():
     """A chatty LLM that emits 50 reasons mustn't bloat the audit
-    artifact. The merge caps to a small limit."""
+ artifact. The merge caps to a small limit."""
     base = assess_post_compile_enrich(_ok_signals())
     refined = apply_fast_llm_refinement(base, FastLLMRefinement(
         add_reasons=tuple(f"reason {i}" for i in range(50)),

@@ -68,11 +68,11 @@ class ProjectActivities:
     def set_document_status(self, input: SetDocumentStatusInput) -> None:
         """Flip a document's registry status.
 
-        Called by the workflow after each document is processed so a
-        subsequent project-wide job doesn't re-pick it. Best-effort:
-        an unknown status string or missing document is logged-and-
-        ignored rather than raised — telemetry never blocks the
-        workflow."""
+ Called by the workflow after each document is processed so a
+ subsequent project-wide job doesn't re-pick it. Best-effort:
+ an unknown status string or missing document is logged-and-
+ ignored rather than raised — telemetry never blocks the
+ workflow."""
         try:
             status = ProcessingStatus(input.status)
         except ValueError:

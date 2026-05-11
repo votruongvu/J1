@@ -11,9 +11,9 @@ lives in **profiles**; the framework itself ships no industry vocabulary.
 
 ```
 documents → intake → compile → enrich → graph → index → query → answer
-                ▲       (every stage is pluggable; profiles configure prompts/schemas)
-                │
-            audit + cost + review (recorded for every stage)
+ ▲ (every stage is pluggable; profiles configure prompts/schemas)
+ │
+ audit + cost + review (recorded for every stage)
 ```
 
 ---
@@ -52,8 +52,8 @@ documents → intake → compile → enrich → graph → index → query → an
 Python 3.11+ required.
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
+python3.11 -m venv.venv
+source.venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -64,10 +64,7 @@ tests don't require one.
 
 ## Run the tests
 
-```bash
-.venv/bin/pytest               # full suite (~4s)
-.venv/bin/pytest -q            # quiet mode
-.venv/bin/pytest --durations=10
+```bash.venv/bin/pytest # full suite (~4s).venv/bin/pytest -q # quiet mode.venv/bin/pytest --durations=10
 ```
 
 The full suite is hermetic: every test uses `tmp_path`-style
@@ -82,7 +79,7 @@ A self-contained Docker Compose stack — API + worker + Temporal +
 Temporal UI — is in [deploy/dev/](deploy/dev/):
 
 ```bash
-cp .env.example .env
+cp.env.example.env
 docker compose -f deploy/dev/docker-compose.yml up --build
 ```
 
@@ -93,8 +90,8 @@ Trigger a sample workflow:
 
 ```bash
 curl -X POST http://localhost:8000/projects \
-  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
-  -d '{"projectId": "alpha"}'
+ -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+ -d '{"projectId": "alpha"}'
 ```
 
 See [deploy/dev/README.md](deploy/dev/README.md) for the full
@@ -113,8 +110,7 @@ compile/enrich/graph/index/query through `ProcessingService` against
 mock processors, exercise the review gate, verify audit + cost logs.
 ~50 ms.
 
-```bash
-.venv/bin/pytest tests/test_e2e_processing_flow.py -v
+```bash.venv/bin/pytest tests/test_e2e_processing_flow.py -v
 ```
 
 ---
@@ -123,21 +119,21 @@ mock processors, exercise the review gate, verify audit + cost logs.
 
 ```
 src/j1/
-├── intake/        Document registration + dedup
-├── processing/    Protocols + ProcessingService + ArtifactDraft
-├── enrichers.py   Built-in structured enricher scaffolds
-├── connectors/    External-tool wrappers (compiler, graph)
-├── search/        SQLite FTS5 indexer
-├── query/         HybridQueryEngine + intent classifier
-├── artifacts/     Per-project artifact registry
-├── audit/         Append-only audit log (JSONL)
-├── cost/          Cost recording + aggregation + budget gates + model router
-├── review/        Human-review queue + governance helpers
-├── workspace/     Per-project filesystem layout
-├── profiles/      Domain configuration (prompts, schemas, taxonomy, …)
+├── intake/ Document registration + dedup
+├── processing/ Protocols + ProcessingService + ArtifactDraft
+├── enrichers.py Built-in structured enricher scaffolds
+├── connectors/ External-tool wrappers (compiler, graph)
+├── search/ SQLite FTS5 indexer
+├── query/ HybridQueryEngine + intent classifier
+├── artifacts/ Per-project artifact registry
+├── audit/ Append-only audit log (JSONL)
+├── cost/ Cost recording + aggregation + budget gates + model router
+├── review/ Human-review queue + governance helpers
+├── workspace/ Per-project filesystem layout
+├── profiles/ Domain configuration (prompts, schemas, taxonomy, …)
 ├── orchestration/ Temporal workflows + activities
-├── integration/   Ports, DTOs, ApplicationFacade, security, events, bulk
-└── adapters/      Outer transport adapters (REST + webhook)
+├── integration/ Ports, DTOs, ApplicationFacade, security, events, bulk
+└── adapters/ Outer transport adapters (REST + webhook)
 ```
 
 The dependency arrow points one way only — outer layers depend on
@@ -157,14 +153,14 @@ wired in:
 from j1 import ApplicationFacade, create_rest_api
 import uvicorn
 
-facade = ApplicationFacade(...)         # see docs/architecture.md § Integration
+facade = ApplicationFacade(...) # see docs/architecture.md § Integration
 app = create_rest_api(
-    facade,
-    authenticator=...,                   # API-key / JWT — optional
-    bulk_export=..., bulk_import=...,    # optional
-    event_bus=...,                       # webhooks + queue — optional
-    workspace=...,                       # required for /events lookup
-    job_starter=...,                     # required for /documents/{id}/ingest
+ facade,
+ authenticator=..., # API-key / JWT — optional
+ bulk_export=..., bulk_import=..., # optional
+ event_bus=..., # webhooks + queue — optional
+ workspace=..., # required for /events lookup
+ job_starter=..., # required for /documents/{id}/ingest
 )
 
 uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -23,9 +23,9 @@ class ProviderDiagnostics:
 class StartupDiagnostics:
     """Aggregate snapshot the entrypoint logs at startup.
 
-    Every field is opt-in safe — `provider`, `model`, `dimension`,
-    counts, names. NEVER includes API keys / base URLs / config dicts.
-    """
+ Every field is opt-in safe — `provider`, `model`, `dimension`,
+ counts, names. NEVER includes API keys / base URLs / config dicts.
+ """
 
     compiler_providers: tuple[ProviderDiagnostics, ...] = ()
     graph_providers: tuple[ProviderDiagnostics, ...] = ()
@@ -43,10 +43,10 @@ class StartupDiagnostics:
 def render_startup_diagnostics(diagnostics: StartupDiagnostics) -> list[str]:
     """Format the diagnostics as a list of single-line log statements.
 
-    Returned as separate lines so a deployment can iterate and call
-    `logger.info(line)` per line, keeping each line below typical
-    log-aggregator size limits.
-    """
+ Returned as separate lines so a deployment can iterate and call
+ `logger.info(line)` per line, keeping each line below typical
+ log-aggregator size limits.
+ """
     lines: list[str] = ["J1 startup diagnostics:"]
 
     def _registry_line(label: str, providers: tuple[ProviderDiagnostics, ...]) -> str:

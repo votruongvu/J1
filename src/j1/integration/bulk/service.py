@@ -10,7 +10,7 @@ without touching this module.
 Concurrency / sizing note: today's `JsonSourceRegistry` /
 `JsonArtifactRegistry` are flat per-project JSON files (single-writer,
 no locking). Bulk export is a deterministic projection — cheap. Bulk
-import is bounded by the registry's `add()` cost; for very large
+import is bounded by the registry's `add` cost; for very large
 imports run the call from a worker process. The framework's existing
 single-writer assumption is documented in CLAUDE.md.
 """
@@ -61,9 +61,9 @@ def _to_line(payload: dict) -> bytes:
 class BulkExportService:
     """Yields NDJSON byte lines for each supported file type.
 
-    Each method takes a `ProjectContext` so output is tenant/project
-    scoped — the same access discipline as every other read endpoint.
-    """
+ Each method takes a `ProjectContext` so output is tenant/project
+ scoped — the same access discipline as every other read endpoint.
+ """
 
     def __init__(
         self,
@@ -179,12 +179,12 @@ def _artifact_to_export(record) -> ArtifactExportRecord:
 class BulkImportService:
     """Validates NDJSON lines and writes accepted records to the registries.
 
-    All methods are idempotent by default: rows whose identity already
-    exists (document checksum, etc.) are counted as
-    `skipped_idempotent` rather than overwriting. There is no overwrite
-    flag in this revision — explicit replacement should go through the
-    single-record endpoints once they support it.
-    """
+ All methods are idempotent by default: rows whose identity already
+ exists (document checksum, etc.) are counted as
+ `skipped_idempotent` rather than overwriting. There is no overwrite
+ flag in this revision — explicit replacement should go through the
+ single-record endpoints once they support it.
+ """
 
     def __init__(self, sources: SourceRegistry) -> None:
         self._sources = sources
@@ -211,11 +211,11 @@ class BulkImportService:
     ) -> BulkImportResult:
         """Round-trip integrity verifier.
 
-        Each `metadata.ndjson` row must reference a document that exists
-        in the registry, and the provided fields must match the stored
-        values. No state is mutated. Used to validate a backup/restore
-        before promoting the new instance.
-        """
+ Each `metadata.ndjson` row must reference a document that exists
+ in the registry, and the provided fields must match the stored
+ values. No state is mutated. Used to validate a backup/restore
+ before promoting the new instance.
+ """
         succeeded = 0
         failures: list[BulkImportFailureRecord] = []
         for line_no, raw, parsed_or_err in _iter_records(lines, MetadataExportRecord):

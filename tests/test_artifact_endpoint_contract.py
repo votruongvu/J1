@@ -1,11 +1,11 @@
-"""Wave 9A — artifact endpoint contract.
+"""artifact endpoint contract.
 
 The new pipeline exposes three typed-artifact endpoints alongside
 the legacy compile/enrich plan endpoints:
 
-  * `GET /ingestion-runs/{run_id}/initial-execution-plan`
-  * `GET /ingestion-runs/{run_id}/compile-result`
-  * `GET /ingestion-runs/{run_id}/enrichment-result`
+ * `GET /ingestion-runs/{run_id}/initial-execution-plan`
+ * `GET /ingestion-runs/{run_id}/compile-result`
+ * `GET /ingestion-runs/{run_id}/enrichment-result`
 
 The FE consumes all three with one fetch shape. This test file pins
 the cross-endpoint wire contract so a refactor that changes one
@@ -15,13 +15,13 @@ at CI before the FE breaks.
 Each endpoint's response (under the API envelope's `data` field) is
 required to carry the SAME 7 keys:
 
-    runId            — string
-    documentId       — string | None
-    documentName     — string | None
-    status           — "completed" | "unavailable"
-    unavailableReason — string | None
-    artifactId       — string | absent (only when status="completed")
-    plan             — dict | None
+ runId — string
+ documentId — string | None
+ documentName — string | None
+ status — "completed" | "unavailable"
+ unavailableReason — string | None
+ artifactId — string | absent (only when status="completed")
+ plan — dict | None
 
 This is the contract — adding extra fields is allowed; renaming or
 dropping any of the 7 is a coordinated FE change.
@@ -55,7 +55,7 @@ _REQUIRED_KEYS = frozenset({
 @pytest.mark.parametrize("method_name", _CONTRACT_METHODS)
 def test_service_method_exists_and_is_callable(method_name):
     """Each of the three contract methods must be a public attribute
-    on the service. Renames are FE-coordinated."""
+ on the service. Renames are FE-coordinated."""
     assert hasattr(IngestionResultReviewService, method_name), (
         f"{method_name} missing on IngestionResultReviewService — this is "
         f"a wire-breaking rename"
@@ -67,9 +67,9 @@ def test_service_method_exists_and_is_callable(method_name):
 @pytest.mark.parametrize("method_name", _CONTRACT_METHODS)
 def test_service_method_signature_matches_contract(method_name):
     """Every contract method takes exactly `(self, ctx, run_id)` —
-    the FE depends on the (run_id) routing parameter being the only
-    request-shaped input. Optional kwargs are allowed but must default
-    so existing callers don't break."""
+ the FE depends on the (run_id) routing parameter being the only
+ request-shaped input. Optional kwargs are allowed but must default
+ so existing callers don't break."""
     method = getattr(IngestionResultReviewService, method_name)
     sig = inspect.signature(method)
     params = list(sig.parameters.values())
@@ -95,9 +95,9 @@ def test_service_method_signature_matches_contract(method_name):
 
 def _unavailable_payload(reason: str = "no artifact yet") -> dict:
     """A reference unavailable payload matching what the service
-    methods return when no artifact has been persisted yet. This is
-    the wire contract — if a method returns something with different
-    keys, the FE breaks."""
+ methods return when no artifact has been persisted yet. This is
+ the wire contract — if a method returns something with different
+ keys, the FE breaks."""
     return {
         "runId": "run-xyz",
         "documentId": None,
@@ -118,15 +118,15 @@ def test_unavailable_payload_has_all_required_keys():
 
 def test_unavailable_payload_status_is_exactly_the_string_unavailable():
     """The FE branches on exact string equality. Don't accept
-    `"UNAVAILABLE"` or `null` — they break the FE consumer."""
+ `"UNAVAILABLE"` or `null` — they break the FE consumer."""
     payload = _unavailable_payload()
     assert payload["status"] == "unavailable"
 
 
 def test_unavailable_payload_carries_an_operator_readable_reason():
     """The FE renders the `unavailableReason` string directly in the
-    panel. Empty / null reasons leave the operator without context —
-    the contract requires a non-empty string when status=unavailable."""
+ panel. Empty / null reasons leave the operator without context —
+ the contract requires a non-empty string when status=unavailable."""
     payload = _unavailable_payload("the run hasn't reached pre-compile")
     assert payload["unavailableReason"]
     assert isinstance(payload["unavailableReason"], str)
@@ -134,8 +134,8 @@ def test_unavailable_payload_carries_an_operator_readable_reason():
 
 def test_completed_payload_carries_artifact_id_and_plan():
     """When status=completed, the contract MUST surface `artifactId`
-    so the FE can deep-link to the underlying artifact view, plus
-    the typed `plan` payload the FE renders."""
+ so the FE can deep-link to the underlying artifact view, plus
+ the typed `plan` payload the FE renders."""
     completed = {
         "runId": "run-xyz",
         "documentId": "doc-1",
@@ -156,8 +156,8 @@ def test_completed_payload_carries_artifact_id_and_plan():
 @pytest.mark.parametrize("method_name", _CONTRACT_METHODS)
 def test_service_method_documents_unavailable_status(method_name):
     """Each contract method's docstring must reference the
-    `status="unavailable"` sentinel so a future maintainer doesn't
-    silently drop the sentinel from the response."""
+ `status="unavailable"` sentinel so a future maintainer doesn't
+ silently drop the sentinel from the response."""
     method = getattr(IngestionResultReviewService, method_name)
     doc = method.__doc__ or ""
     assert "unavailable" in doc.lower(), (
@@ -171,8 +171,8 @@ def test_service_method_documents_unavailable_status(method_name):
 
 def test_rest_app_exposes_all_three_endpoints():
     """The REST adapter mounts handlers for each contract method.
-    Renaming an endpoint route is a coordinated FE change — this
-    pin catches accidental drift."""
+ Renaming an endpoint route is a coordinated FE change — this
+ pin catches accidental drift."""
     from j1.adapters.rest import app as rest_app
     src = inspect.getsource(rest_app)
     for route in (
@@ -185,9 +185,9 @@ def test_rest_app_exposes_all_three_endpoints():
 
 def test_rest_app_uses_envelope_helper_for_artifact_endpoints():
     """Every artifact endpoint passes its dict through `envelope(...)`
-    so the FE sees the standard `{requestId, data, meta}` shape.
-    Catches accidental raw-dict returns (which the FE consumer can't
-    parse)."""
+ so the FE sees the standard `{requestId, data, meta}` shape.
+ Catches accidental raw-dict returns (which the FE consumer can't
+ parse)."""
     from j1.adapters.rest import app as rest_app
     src = inspect.getsource(rest_app)
     # The three new methods are called from the adapter; their

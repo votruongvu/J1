@@ -162,10 +162,10 @@ class DocumentIngestionService:
 class TemporalJobStatusService:
     """Looks up a workflow's status by querying its `get_status` query.
 
-    `client_provider` is a callable that returns a Temporal client (sync or
-    async) — kept as a callable so the integration layer doesn't import
-    `temporalio.client.Client` directly.
-    """
+ `client_provider` is a callable that returns a Temporal client (sync or
+ async) — kept as a callable so the integration layer doesn't import
+ `temporalio.client.Client` directly.
+ """
 
     def __init__(
         self,
@@ -441,24 +441,24 @@ class ProjectAdminService:
 class TemporalJobControlService:
     """Starts a `ProjectProcessingWorkflow` and signals it for control.
 
-    `client_provider` returns a Temporal client (kept as a callable so the
-    integration layer never imports `temporalio.client.Client` directly).
+ `client_provider` returns a Temporal client (kept as a callable so the
+ integration layer never imports `temporalio.client.Client` directly).
 
-    `workflow_id_factory` lets callers supply deterministic id
-    generation (e.g. `f"j1-{tenant}-{project}-{document_id}"`) so a
-    repeated start for the same logical job collapses onto the same
-    workflow id. The default uses a UUID suffix, which is appropriate
-    for the bulk-job path (each invocation is intentionally a fresh
-    run); deployments that drive per-document starts should pass a
-    deterministic factory.
+ `workflow_id_factory` lets callers supply deterministic id
+ generation (e.g. `f"j1-{tenant}-{project}-{document_id}"`) so a
+ repeated start for the same logical job collapses onto the same
+ workflow id. The default uses a UUID suffix, which is appropriate
+ for the bulk-job path (each invocation is intentionally a fresh
+ run); deployments that drive per-document starts should pass a
+ deterministic factory.
 
-    `id_conflict_policy` controls Temporal's behaviour when a workflow
-    with the requested id is already running. Default `None` keeps
-    SDK behaviour (raise / fail). Pass
-    `WorkflowIDConflictPolicy.USE_EXISTING` for paths where a
-    duplicate trigger should return the in-flight handle instead of
-    spawning a parallel run.
-    """
+ `id_conflict_policy` controls Temporal's behaviour when a workflow
+ with the requested id is already running. Default `None` keeps
+ SDK behaviour (raise / fail). Pass
+ `WorkflowIDConflictPolicy.USE_EXISTING` for paths where a
+ duplicate trigger should return the in-flight handle instead of
+ spawning a parallel run.
+ """
 
     def __init__(
         self,
@@ -533,13 +533,13 @@ class TemporalJobControlService:
 def _default_workflow_id(ctx: ProjectContext) -> str:
     """Generate a fresh non-deterministic workflow id.
 
-    Appropriate for the bulk-job path where each invocation is
-    intentionally a separate run (operator clicks "run pipeline
-    again"). Deployments that drive PER-DOCUMENT starts should pass
-    a deterministic factory like `make_per_document_workflow_id`
-    so a repeated trigger for the same logical document collapses
-    onto the same workflow id.
-    """
+ Appropriate for the bulk-job path where each invocation is
+ intentionally a separate run (operator clicks "run pipeline
+ again"). Deployments that drive PER-DOCUMENT starts should pass
+ a deterministic factory like `make_per_document_workflow_id`
+ so a repeated trigger for the same logical document collapses
+ onto the same workflow id.
+ """
     return f"j1-{ctx.tenant_id}-{ctx.project_id}-{uuid.uuid4().hex[:12]}"
 
 
@@ -548,11 +548,11 @@ def make_per_document_workflow_id(
 ) -> str:
     """Deterministic workflow id for per-document ingest triggers.
 
-    Format: `j1-{tenant_id}-{project_id}-{document_id}`. Combined
-    with `id_conflict_policy=USE_EXISTING` and intake's checksum
-    dedup (which maps re-uploaded bytes back to the same
-    `document_id`), this guarantees a single physical document is
-    never processed by two parallel workflows."""
+ Format: `j1-{tenant_id}-{project_id}-{document_id}`. Combined
+ with `id_conflict_policy=USE_EXISTING` and intake's checksum
+ dedup (which maps re-uploaded bytes back to the same
+ `document_id`), this guarantees a single physical document is
+ never processed by two parallel workflows."""
     return f"j1-{ctx.tenant_id}-{ctx.project_id}-{document_id}"
 
 
@@ -644,15 +644,15 @@ class ReviewService:
 class ApplicationFacade:
     """Bundle of port implementations — the surface adapters depend on.
 
-    Adapters (REST, MCP, Webhook, etc.) take an `ApplicationFacade` and
-    dispatch protocol-specific requests to the relevant port. They never
-    reach into the underlying J1 services directly.
+ Adapters (REST, MCP, Webhook, etc.) take an `ApplicationFacade` and
+ dispatch protocol-specific requests to the relevant port. They never
+ reach into the underlying J1 services directly.
 
-    Optional ports may be `None` if the deployment doesn't configure their
-    backing service (no Temporal client, no FTS5 / profile loader, no review
-    queue wiring). Adapters check for `None` and decline to expose those
-    routes (typically with a 503).
-    """
+ Optional ports may be `None` if the deployment doesn't configure their
+ backing service (no Temporal client, no FTS5 / profile loader, no review
+ queue wiring). Adapters check for `None` and decline to expose those
+ routes (typically with a 503).
+ """
 
     ingestion: DocumentIngestionService
     retrieval: RetrievalService

@@ -3,11 +3,11 @@
 The FAST role reuses the existing OpenAI-compat client class — the
 contract is "add the role, no new adapter". These tests pin that:
 
-  * Settings load FAST from `J1_FAST_LLM_*` env vars.
-  * Bootstrap registers a FAST client when configured.
-  * `LLMProviderRegistry.try_fast()` returns it.
-  * Absence is graceful: no FAST env vars → no FAST client → other
-    roles still work, and `try_fast()` returns None.
+ * Settings load FAST from `J1_FAST_LLM_*` env vars.
+ * Bootstrap registers a FAST client when configured.
+ * `LLMProviderRegistry.try_fast` returns it.
+ * Absence is graceful: no FAST env vars → no FAST client → other
+ roles still work, and `try_fast` returns None.
 """
 
 from __future__ import annotations
@@ -29,14 +29,14 @@ from j1.llm.settings import (
 
 def test_llm_role_fast_constant_is_fast():
     """Stable string — operators filter audit logs / search
-    attributes on this value."""
+ attributes on this value."""
     assert LLM_ROLE_FAST == "fast"
 
 
 def test_known_roles_includes_fast():
     """The closed-set check at the bootstrap layer relies on
-    `KNOWN_ROLES`. Adding FAST without updating the set would let
-    an undefined role slip through validation."""
+ `KNOWN_ROLES`. Adding FAST without updating the set would let
+ an undefined role slip through validation."""
     assert LLM_ROLE_FAST in KNOWN_ROLES
 
 
@@ -66,8 +66,8 @@ def test_load_fast_settings_from_env_when_provided():
 
 def test_load_fast_settings_unconfigured_when_env_absent():
     """No FAST env vars → settings.fast exists but is_configured=False.
-    Bootstrap then silently skips registration — the other roles are
-    unaffected."""
+ Bootstrap then silently skips registration — the other roles are
+ unaffected."""
     settings = load_llm_settings(env={})
     assert settings.fast is not None
     assert settings.fast.is_configured is False
@@ -75,7 +75,7 @@ def test_load_fast_settings_unconfigured_when_env_absent():
 
 def test_fast_settings_default_temperature_is_zero():
     """Defaults reflect the role's purpose: deterministic
-    classification / structured output, not creative generation."""
+ classification / structured output, not creative generation."""
     s = FastLLMSettings(provider="openai_compat")
     assert s.temperature == 0.0
     assert s.max_output_tokens == 512
@@ -86,8 +86,8 @@ def test_fast_settings_default_temperature_is_zero():
 
 def test_bootstrap_registers_fast_when_configured(monkeypatch):
     """When the operator sets `J1_FAST_LLM_*`, bootstrap registers a
-    client under role=`fast`. The same OpenAI-compat client class
-    serves text and fast — no new adapter."""
+ client under role=`fast`. The same OpenAI-compat client class
+ serves text and fast — no new adapter."""
     from j1.compose.bootstrap import _build_llm_registry
 
     settings = load_llm_settings(env={
@@ -115,7 +115,7 @@ def test_bootstrap_registers_fast_when_configured(monkeypatch):
 
 def test_bootstrap_skips_fast_when_unconfigured():
     """No FAST env vars → no fast client registered. The other roles
-    stay configured and the framework remains fully functional."""
+ stay configured and the framework remains fully functional."""
     from j1.compose.bootstrap import _build_llm_registry
 
     settings = load_llm_settings(env={
@@ -136,6 +136,6 @@ def test_bootstrap_skips_fast_when_unconfigured():
 
 def test_try_fast_returns_none_for_empty_registry():
     """`try_fast` must be a no-op-on-absence — the planner depends on
-    this to fall back to deterministic-only operation."""
+ this to fall back to deterministic-only operation."""
     registry = LLMProviderRegistry()
     assert registry.try_fast() is None

@@ -19,12 +19,12 @@ const POLL_INTERVAL_MS = 30_000;
 
 /** Hook returning `[status, refresh]`:
  *
- *   - `status`: the latest cached health snapshot (null until the
- *     first fetch completes). Polled on a 30s interval.
- *   - `refresh`: callable that POSTs `/healthz/llm/refresh` so the
- *     backend re-probes synchronously and updates the cache. Used
- *     by the banner's "Retry now" button so admins don't have to
- *     wait up to 30s after fixing the LLM endpoint to verify.
+ * - `status`: the latest cached health snapshot (null until the
+ * first fetch completes). Polled on a 30s interval.
+ * - `refresh`: callable that POSTs `/healthz/llm/refresh` so the
+ * backend re-probes synchronously and updates the cache. Used
+ * by the banner's "Retry now" button so admins don't have to
+ * wait up to 30s after fixing the LLM endpoint to verify.
  */
 export function useLLMHealth(): [LLMHealthStatus | null, () => Promise<void>] {
   const client = useClient();

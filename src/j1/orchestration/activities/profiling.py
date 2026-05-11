@@ -31,9 +31,9 @@ class ProfileDocumentInput:
 
 class ProfilingActivities:
     """Bundle of profile-time activities. Kept separate from
-    `ProcessingActivities` so a deployment that doesn't enable adaptive
-    planning doesn't have to register the extra dependency on
-    `WorkspaceResolver` for the planning surface."""
+ `ProcessingActivities` so a deployment that doesn't enable adaptive
+ planning doesn't have to register the extra dependency on
+ `WorkspaceResolver` for the planning surface."""
 
     def __init__(
         self,
@@ -53,12 +53,12 @@ class ProfilingActivities:
         self, input: ProfileDocumentInput,
     ) -> DocumentProfile:
         """Resolve the document's on-disk path and hand it to the
-        configured profiler. Returns a `DocumentProfile` that the
-        workflow then feeds to the planner.
+ configured profiler. Returns a `DocumentProfile` that the
+ workflow then feeds to the planner.
 
-        Document-not-found is non-retryable (caller bug). Profiler
-        errors are non-retryable too — pypdf/etc. failures are
-        deterministic with respect to the input bytes."""
+ Document-not-found is non-retryable (caller bug). Profiler
+ errors are non-retryable too — pypdf/etc. failures are
+ deterministic with respect to the input bytes."""
         ctx = input.scope.to_context()
         try:
             record = self._sources.get(ctx, input.document_id)

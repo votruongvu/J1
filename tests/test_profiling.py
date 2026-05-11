@@ -65,9 +65,9 @@ def test_unknown_extension_leaves_modality_signals_unknown(
     tmp_path, profiler,
 ):
     """For non-text, non-PDF inputs the profiler can't cheaply observe
-    modality signals. It MUST leave them `None` so the planner knows
-    to fall back to safe defaults / LLM hints, not pretend the
-    document is empty."""
+ modality signals. It MUST leave them `None` so the planner knows
+ to fall back to safe defaults / LLM hints, not pretend the
+ document is empty."""
     src = tmp_path / "doc.docx"
     src.write_bytes(b"PK\x03\x04 fake docx bytes")
 
@@ -85,8 +85,8 @@ def test_unknown_extension_leaves_modality_signals_unknown(
 
 def test_pdf_page_count_uses_pypdf_when_available(tmp_path, profiler):
     """If `pypdf` is importable (which it is in this repo via
-    raganything's transitive deps), the profiler reads the page
-    count and text extractability without parsing content deeply."""
+ raganything's transitive deps), the profiler reads the page
+ count and text extractability without parsing content deeply."""
     pypdf = pytest.importorskip("pypdf")
     src = tmp_path / "report.pdf"
     # Build a tiny 2-page PDF with pypdf so the test is deterministic.
@@ -110,8 +110,8 @@ def test_pdf_page_count_warning_when_pypdf_missing(
     tmp_path, profiler, monkeypatch,
 ):
     """If `pypdf` isn't installed, the profiler MUST NOT raise — it
-    leaves `page_count=None` and emits a `warnings` entry so the
-    planner can still decide."""
+ leaves `page_count=None` and emits a `warnings` entry so the
+ planner can still decide."""
     src = tmp_path / "anything.pdf"
     src.write_bytes(b"%PDF-1.4 fake")
 
@@ -127,8 +127,8 @@ def test_pdf_page_count_warning_when_pypdf_missing(
 
 def test_pdf_page_count_warning_on_malformed_file(tmp_path, profiler):
     """Malformed PDFs must NOT raise — pypdf throws, we catch, and
-    surface a single warning so the planner falls back to a
-    conservative default."""
+ surface a single warning so the planner falls back to a
+ conservative default."""
     src = tmp_path / "broken.pdf"
     src.write_bytes(b"this is definitely not a pdf")
 
@@ -143,7 +143,7 @@ def test_pdf_page_count_warning_on_malformed_file(tmp_path, profiler):
 
 def test_missing_source_raises_file_not_found(tmp_path, profiler):
     """File-not-found is the one error the profiler is allowed to
-    raise — the planner can't compensate for absent input."""
+ raise — the planner can't compensate for absent input."""
     with pytest.raises(FileNotFoundError):
         profiler.profile("ghost", str(tmp_path / "does-not-exist.pdf"))
 
@@ -153,9 +153,9 @@ def test_missing_source_raises_file_not_found(tmp_path, profiler):
 
 def test_large_file_emits_size_warning(tmp_path, profiler):
     """Files above the 100 MB threshold get a warning so the planner
-    can pick a streaming-friendly mode. Use a sparse file so the
-    test isn't slowed by an actual 250 MB write — `truncate` reserves
-    the size in metadata without writing any data blocks."""
+ can pick a streaming-friendly mode. Use a sparse file so the
+ test isn't slowed by an actual 250 MB write — `truncate` reserves
+ the size in metadata without writing any data blocks."""
     src = tmp_path / "big.docx"
     target_size = 250 * 1024 * 1024
     with src.open("wb") as f:
@@ -172,7 +172,7 @@ def test_large_file_emits_size_warning(tmp_path, profiler):
 
 def test_profiler_does_not_modify_source(tmp_path, profiler):
     """Profiling MUST be read-only — the planner runs the profiler on
-    every document and we don't want side effects on the workspace."""
+ every document and we don't want side effects on the workspace."""
     src = tmp_path / "doc.txt"
     body = b"unchanged"
     src.write_bytes(body)
@@ -197,9 +197,9 @@ def test_profiler_does_not_modify_source(tmp_path, profiler):
 
 def test_profiler_does_not_import_raganything_or_mineru(monkeypatch):
     """A profile call MUST NOT trigger imports of RAGAnything or
-    MinerU. Tripwire: monkeypatch `sys.modules` to None for both,
-    then call profile — if anything in the profiler eagerly imports
-    them, the import will raise and the test fails."""
+ MinerU. Tripwire: monkeypatch `sys.modules` to None for both,
+ then call profile — if anything in the profiler eagerly imports
+ them, the import will raise and the test fails."""
     import sys
     from pathlib import Path
     monkeypatch.setitem(sys.modules, "raganything", None)
@@ -224,10 +224,10 @@ def test_profiler_does_not_import_raganything_or_mineru(monkeypatch):
 
 def test_profiler_extracts_image_count_when_pdf_has_images(tmp_path):
     """The profiler counts `/XObject` entries with `/Subtype /Image`
-    on sampled pages and extrapolates over the full document. A
-    real-PDF count built with pypdf gives a deterministic
-    integer; planner can branch on `has_images` without invoking
-    the parser."""
+ on sampled pages and extrapolates over the full document. A
+ real-PDF count built with pypdf gives a deterministic
+ integer; planner can branch on `has_images` without invoking
+ the parser."""
     pypdf = pytest.importorskip("pypdf")
     src = tmp_path / "with_images.pdf"
     writer = pypdf.PdfWriter()
@@ -266,9 +266,9 @@ def test_profiler_extracts_image_count_when_pdf_has_images(tmp_path):
 
 def test_profiler_image_count_zero_when_pdf_has_no_images(tmp_path):
     """When pypdf successfully reads the PDF and finds no images,
-    `image_count` is 0 (not None) — explicit "we looked, none
-    present." Lets the planner skip the optional path with
-    confidence rather than degrading conservatively."""
+ `image_count` is 0 (not None) — explicit "we looked, none
+ present." Lets the planner skip the optional path with
+ confidence rather than degrading conservatively."""
     pypdf = pytest.importorskip("pypdf")
     src = tmp_path / "blank.pdf"
     writer = pypdf.PdfWriter()
@@ -285,7 +285,7 @@ def test_profiler_image_count_unknown_when_pypdf_missing(
     tmp_path, monkeypatch,
 ):
     """Without pypdf, `image_count` is None — degrades cleanly,
-    same warning surface as page_count / text_extractable_ratio."""
+ same warning surface as page_count / text_extractable_ratio."""
     import sys
     src = tmp_path / "anything.pdf"
     src.write_bytes(b"%PDF-1.4 fake")
@@ -303,7 +303,7 @@ def _write_pdf_with_text_per_page(
     path: Path, *, page_text: str, page_count: int,
 ) -> None:
     """Write a multi-page PDF where every page carries `page_text`
-    as drawable content. Pure pypdf — no MinerU, no rendering."""
+ as drawable content. Pure pypdf — no MinerU, no rendering."""
     import pypdf
     from pypdf.generic import (
         ContentStream, DictionaryObject, NameObject, NumberObject,
@@ -312,7 +312,7 @@ def _write_pdf_with_text_per_page(
     for _ in range(page_count):
         page = writer.add_blank_page(width=600, height=800)
         # Embed a tiny content stream that draws `page_text` so
-        # `extract_text()` actually finds chars. The exact PDF
+        # `extract_text` actually finds chars. The exact PDF
         # operators don't matter — pypdf's text extraction sees the
         # string literal in the content stream.
         operators = [
@@ -351,9 +351,9 @@ def _write_pdf_with_text_per_page(
 
 def test_text_heavy_pdf_produces_high_density_signals(tmp_path):
     """A PDF where every page carries substantial text → profiler
-    populates `total_text_chars` (extrapolated) and a low (0.0)
-    `empty_page_ratio`. Combined with `page_count`, the planner
-    derives `avg_chars_per_page` well above the LOW threshold."""
+ populates `total_text_chars` (extrapolated) and a low (0.0)
+ `empty_page_ratio`. Combined with `page_count`, the planner
+ derives `avg_chars_per_page` well above the LOW threshold."""
     pytest.importorskip("pypdf")
     src = tmp_path / "text_heavy.pdf"
     long_text = "Lorem ipsum dolor sit amet " * 50  # >> 100 chars/page
@@ -371,9 +371,9 @@ def test_text_heavy_pdf_produces_high_density_signals(tmp_path):
 
 def test_blank_pdf_produces_low_density_and_deep_plan(tmp_path):
     """A blank-page PDF (no extractable text) → profiler reports
-    `total_text_chars=0`, `empty_page_ratio=1.0`, and the planner
-    routes the document to DEEP + OCR. Same outcome a real
-    scanned-without-OCR document would produce."""
+ `total_text_chars=0`, `empty_page_ratio=1.0`, and the planner
+ routes the document to DEEP + OCR. Same outcome a real
+ scanned-without-OCR document would produce."""
     pytest.importorskip("pypdf")
     from j1.processing.assessment import (
         Capability, CompileMode, DefaultAssessmentPlanner,
@@ -398,12 +398,12 @@ def test_blank_pdf_produces_low_density_and_deep_plan(tmp_path):
 
 def test_density_low_avg_chars_triggers_deep_plan_via_density(tmp_path):
     """Edge case the binary `text_extractable_ratio` rule misses:
-    a PDF where the OCR layer leaked through (page numbers / running
-    headers) so each page has a TINY amount of text — enough to
-    clear the 20-char binary threshold but not enough to be useful.
-    The density classifier fires LOW (avg_chars_per_page < 100) and
-    routes the document to DEEP + OCR despite the binary rule
-    saying "text present"."""
+ a PDF where the OCR layer leaked through (page numbers / running
+ headers) so each page has a TINY amount of text — enough to
+ clear the 20-char binary threshold but not enough to be useful.
+ The density classifier fires LOW (avg_chars_per_page < 100) and
+ routes the document to DEEP + OCR despite the binary rule
+ saying "text present"."""
     pytest.importorskip("pypdf")
     from j1.processing.assessment import (
         Capability, CompileMode, DefaultAssessmentPlanner,
@@ -437,8 +437,8 @@ def test_density_low_avg_chars_triggers_deep_plan_via_density(tmp_path):
 
 def test_density_high_supports_low_complexity_standard(tmp_path):
     """A text-rich PDF with no other complexity flags → STANDARD
-    mode, but `complexity=LOW` (because density says 'this should
-    be cheap')."""
+ mode, but `complexity=LOW` (because density says 'this should
+ be cheap')."""
     pytest.importorskip("pypdf")
     from j1.processing.assessment import (
         CompileMode, Complexity, DefaultAssessmentPlanner,
@@ -456,7 +456,7 @@ def test_density_high_supports_low_complexity_standard(tmp_path):
 
 def test_density_signals_unknown_when_pypdf_missing(tmp_path, monkeypatch):
     """Without pypdf, the density fields stay None — same degrade-
-    cleanly contract the rest of the lightweight profiler honours."""
+ cleanly contract the rest of the lightweight profiler honours."""
     import sys
     src = tmp_path / "anything.pdf"
     src.write_bytes(b"%PDF-1.4 fake")
@@ -471,9 +471,9 @@ def test_density_signals_extracted_without_invoking_heavy_parser(
     tmp_path, monkeypatch,
 ):
     """The density extraction MUST stay inside the lightweight
-    profiler — same tripwire as `test_profiler_does_not_import_*`,
-    but specific to the density path. Block raganything + mineru
-    imports for the duration of the call."""
+ profiler — same tripwire as `test_profiler_does_not_import_*`,
+ but specific to the density path. Block raganything + mineru
+ imports for the duration of the call."""
     import sys
     pytest.importorskip("pypdf")
     monkeypatch.setitem(sys.modules, "raganything", None)
@@ -491,10 +491,10 @@ def test_density_signals_extracted_without_invoking_heavy_parser(
 
 def test_assessment_planner_consumes_deterministic_profile(tmp_path):
     """End-to-end micro-test: the AssessmentPlanner builds a real
-    `AssessmentPlan` from a `DocumentProfile` produced by the
-    deterministic profiler. Confirms the chain
-    `profile -> AssessmentPlanner -> AssessmentPlan` is wired
-    against the lightweight library, not the heavyweight one."""
+ `AssessmentPlan` from a `DocumentProfile` produced by the
+ deterministic profiler. Confirms the chain
+ `profile -> AssessmentPlanner -> AssessmentPlan` is wired
+ against the lightweight library, not the heavyweight one."""
     from j1.processing.assessment import (
         Capability, CompileMode, DefaultAssessmentPlanner,
     )

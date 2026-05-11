@@ -45,8 +45,8 @@ def test_empty_output_dir_returns_zero_counts(tmp_path):
 
 def test_counts_files_when_no_content_list_present(tmp_path):
     """Bridge should still produce useful counts even when MinerU
-    didn't write a structured content_list.json — the fallback uses
-    filename + size only."""
+ didn't write a structured content_list.json — the fallback uses
+ filename + size only."""
     (tmp_path / "doc.md").write_text("# Title\n\nSome text content here.\n" * 50)
     (tmp_path / "image1.png").write_bytes(b"\x89PNG" + b"x" * 50_000)
     (tmp_path / "logo.png").write_bytes(b"\x89PNG" + b"x" * 500)
@@ -84,7 +84,7 @@ def test_per_image_triage_enriches_likely_diagram_by_filename(tmp_path):
 
 def test_per_image_triage_enriches_large_image_by_size(tmp_path):
     """Large image with a neutral filename — size alone bumps it to
-    enrich."""
+ enrich."""
     (tmp_path / "img_42.png").write_bytes(b"\x89PNG" + b"x" * 50_000)
     manifest = _build_content_manifest(tmp_path)
     entry = manifest["images"][0]
@@ -105,8 +105,8 @@ def test_per_image_triage_falls_to_triage_for_medium_unknown(tmp_path):
 
 def test_uses_content_list_for_page_idx_and_caption(tmp_path):
     """When MinerU surfaces a structured content_list, the bridge
-    should pull page indices, captions, and per-image counts from it
-    rather than relying on filename heuristics alone."""
+ should pull page indices, captions, and per-image counts from it
+ rather than relying on filename heuristics alone."""
     (tmp_path / "img_42.png").write_bytes(b"\x89PNG" + b"x" * 5_000)
     content_list = [
         {
@@ -136,7 +136,7 @@ def test_uses_content_list_for_page_idx_and_caption(tmp_path):
 
 def test_handles_malformed_content_list_gracefully(tmp_path):
     """A truncated / invalid content_list.json must not crash the
-    bridge — manifest still gets the file-based counts."""
+ bridge — manifest still gets the file-based counts."""
     (tmp_path / "img.png").write_bytes(b"\x89PNG" + b"x" * 5_000)
     (tmp_path / "doc_content_list.json").write_text("{ not json")
     manifest = _build_content_manifest(tmp_path)
@@ -208,9 +208,9 @@ def test_classify_image_returns_score_and_reason():
 
 def test_manifest_items_populated_from_content_list(tmp_path):
     """The bridge must surface per-element items so the FE Content
-    Inventory tab can render text blocks, tables, images, headings —
-    not just summary counts. The user-visible bug we're guarding
-    against: tab loaded but the items table is empty."""
+ Inventory tab can render text blocks, tables, images, headings —
+ not just summary counts. The user-visible bug we're guarding
+ against: tab loaded but the items table is empty."""
     content_list = [
         {"type": "title", "text": "Quarterly Report Q1", "text_level": 1, "page_idx": 0},
         {"type": "text", "text": "Revenue grew 12% over the prior period.", "page_idx": 0},
@@ -241,15 +241,15 @@ def test_manifest_items_populated_from_content_list(tmp_path):
 
 def test_manifest_items_empty_when_no_content_list(tmp_path):
     """No content_list.json on disk → empty items list, not a crash.
-    The FE Content Inventory tab handles the empty state via its
-    `status="empty"` projection."""
+ The FE Content Inventory tab handles the empty state via its
+ `status="empty"` projection."""
     manifest = _build_content_manifest(tmp_path)
     assert manifest["items"] == []
 
 
 def test_manifest_items_drop_empty_text_blocks(tmp_path):
     """Empty text-shaped entries are dropped — emitting blank rows
-    in the FE table is worse than omitting them."""
+ in the FE table is worse than omitting them."""
     content_list = [
         {"type": "text", "text": "", "page_idx": 0},
         {"type": "text", "text": "Real content here.", "page_idx": 1},
@@ -263,9 +263,9 @@ def test_manifest_items_drop_empty_text_blocks(tmp_path):
 
 def test_manifest_items_truncate_long_previews(tmp_path):
     """Long text bodies get truncated to keep the manifest artifact
-    bounded — a 100-page PDF with full text would otherwise balloon
-    the artifact JSON beyond what the audit log can comfortably
-    serve."""
+ bounded — a 100-page PDF with full text would otherwise balloon
+ the artifact JSON beyond what the audit log can comfortably
+ serve."""
     long_body = "x" * 5_000
     content_list = [
         {"type": "text", "text": long_body, "page_idx": 0},

@@ -1,15 +1,15 @@
 """Tests for run-scoped search + server-derived chunk_id / run_id.
 
-The validation feature (Phase 1) needs the search index to:
+The validation feature needs the search index to:
 
 1. Carry `run_id` and `chunk_id` columns populated from the indexed
-   artifact's metadata, NOT from any client-supplied or LLM-supplied
-   value (the trust-rule decision in the implementation plan).
+ artifact's metadata, NOT from any client-supplied or LLM-supplied
+ value (the trust-rule decision in the implementation plan).
 2. Honour a `RunScope(run_id=…)` filter that lives in the SQL WHERE
-   clause — BM25 must rank only the rows that survived the filter,
-   not be applied post-topK (which would distort scores).
+ clause — BM25 must rank only the rows that survived the filter,
+ not be applied post-topK (which would distort scores).
 3. Preserve the legacy unscoped behaviour byte-for-byte when the
-   caller passes `WorkspaceScope()`, `None`, or omits the parameter.
+ caller passes `WorkspaceScope`, `None`, or omits the parameter.
 
 These tests are the lock that keeps the run-scoping contract honest
 across future indexer changes.
@@ -48,8 +48,8 @@ def _stage(
     source_document_ids: list[str] | None = None,
 ) -> ArtifactRecord:
     """Write an artifact file + register the record. Keeps tests
-    independent of the production registration path so we exercise the
-    indexer in isolation."""
+ independent of the production registration path so we exercise the
+ indexer in isolation."""
     area = WorkspaceArea.COMPILED
     area_dir = workspace.area(ctx, area)
     area_dir.mkdir(parents=True, exist_ok=True)
@@ -91,8 +91,8 @@ def test_search_hit_carries_run_id_when_metadata_set(
     indexer, workspace, ctx, artifact_registry,
 ):
     """run_id round-trips: the column is populated from
-    `metadata.run_id` at index time and surfaces on every SearchHit
-    that matched the FTS query."""
+ `metadata.run_id` at index time and surfaces on every SearchHit
+ that matched the FTS query."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="a-1", content=b"hello world",
@@ -109,9 +109,9 @@ def test_search_hit_carries_none_when_metadata_absent(
     indexer, workspace, ctx, artifact_registry,
 ):
     """No producer-supplied run_id / chunk_id → the columns are
-    stored empty and the DTO surfaces None. The empty-string-to-None
-    coercion lives in `_row_to_hit`; without it the FE would render
-    a literal empty string in citation labels."""
+ stored empty and the DTO surfaces None. The empty-string-to-None
+ coercion lives in `_row_to_hit`; without it the FE would render
+ a literal empty string in citation labels."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="a-1", content=b"hello", kind="compiled.text",
@@ -127,8 +127,8 @@ def test_chunk_id_independent_of_artifact_id(
     indexer, workspace, ctx, artifact_registry,
 ):
     """The artifact's chunk artifact_id (registry primary key) and the
-    canonical chunk_id (LightRAG-assigned identifier the FE displays)
-    are different things. The indexer must keep them distinct."""
+ canonical chunk_id (LightRAG-assigned identifier the FE displays)
+ are different things. The indexer must keep them distinct."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="art-internal-uuid", content=b"chunk body text",
@@ -148,7 +148,7 @@ def test_run_scope_filters_to_target_run_only(
     indexer, workspace, ctx, artifact_registry,
 ):
     """Two runs index artifacts that share a search term. RunScope
-    must restrict results to the requested run."""
+ must restrict results to the requested run."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="a-run-A", content=b"shared keyword apple",
@@ -177,7 +177,7 @@ def test_run_scope_with_unknown_run_returns_empty(
     indexer, workspace, ctx, artifact_registry,
 ):
     """A scope that points at a run with no indexed artifacts must
-    return an empty list, not silently widen to the project."""
+ return an empty list, not silently widen to the project."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="a-1", content=b"hello world", run_id="run-A",
@@ -191,11 +191,11 @@ def test_run_scope_filters_before_ranking(
     indexer, workspace, ctx, artifact_registry,
 ):
     """Critical: BM25 ranking must see only the run-A rows when
-    scoped to run-A, not be applied post-topK. We verify by indexing
-    a run-B row that would dominate the BM25 score on the global
-    index (it contains the search term with the strongest density),
-    then confirming it never appears in run-A's scoped results even
-    though `max_results=10` is wider than run-A's count."""
+ scoped to run-A, not be applied post-topK. We verify by indexing
+ a run-B row that would dominate the BM25 score on the global
+ index (it contains the search term with the strongest density),
+ then confirming it never appears in run-A's scoped results even
+ though `max_results=10` is wider than run-A's count."""
     # Two run-A rows with low keyword density.
     _stage(
         workspace, ctx, artifact_registry,
@@ -228,10 +228,10 @@ def test_run_scope_filters_before_ranking(
 def test_workspace_scope_unchanged_from_default(
     indexer, workspace, ctx, artifact_registry,
 ):
-    """`WorkspaceScope()`, `default_scope()`, and `scope=None` (the
-    legacy keyword-omitted path) must produce byte-identical result
-    sets. This is the regression lock for every existing /search,
-    /retrieve, /answer caller."""
+    """`WorkspaceScope`, `default_scope`, and `scope=None` (the
+ legacy keyword-omitted path) must produce byte-identical result
+ sets. This is the regression lock for every existing /search,
+ /retrieve, /answer caller."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="a-1", content=b"alpha shared", run_id="run-A",
@@ -256,8 +256,8 @@ def test_run_scope_combines_with_artifact_type_filter(
     indexer, workspace, ctx, artifact_registry,
 ):
     """artifact_types and scope are independent filters; both must
-    AND together. Validation needs this — chunk-only retrieval
-    inside a single run is the typical search pattern."""
+ AND together. Validation needs this — chunk-only retrieval
+ inside a single run is the typical search pattern."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="chunk-A", content=b"shared keyword",
@@ -290,8 +290,8 @@ def test_legacy_callers_omitting_scope_param_unchanged(
     indexer, workspace, ctx, artifact_registry,
 ):
     """Locks the contract for every existing call site (/search,
-    /retrieve, /answer, the test suites). Omitting the keyword
-    keeps the historical behaviour."""
+ /retrieve, /answer, the test suites). Omitting the keyword
+ keeps the historical behaviour."""
     _stage(
         workspace, ctx, artifact_registry,
         artifact_id="a-1", content=b"hello", run_id="run-X",

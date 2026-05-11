@@ -2,16 +2,16 @@
 
 Covers:
 - Export rows for documents / sources / chunks (artifacts) / citations /
-  metadata / feedback are valid NDJSON and round-trip through the
-  Pydantic schemas.
+ metadata / feedback are valid NDJSON and round-trip through the
+ Pydantic schemas.
 - Import accepts valid lines and returns succeeded counts.
 - Import rejects invalid JSON, schema-violating rows, and
-  cross-tenant lines — each shows up in `failures` with the right
-  error code and a 1-based line number.
+ cross-tenant lines — each shows up in `failures` with the right
+ error code and a 1-based line number.
 - Re-importing the same checksum is counted as `skipped_idempotent`,
-  not a duplicate failure.
+ not a duplicate failure.
 - `verify_metadata` returns INTEGRITY_MISMATCH when stored fields don't
-  match the supplied projection.
+ match the supplied projection.
 - `verify_metadata` returns DOCUMENT_NOT_FOUND for unknown documents.
 """
 

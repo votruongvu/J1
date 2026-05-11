@@ -2,14 +2,14 @@
 
 This test demonstrates the acceptance criterion:
 
-  > A mock end-to-end workflow can run using only registered mock
-  > adapters.
+ > A mock end-to-end workflow can run using only registered mock
+ > adapters.
 
 The workflow shape mirrors the generic shape documented in the
 extension guide:
 
-  fetch source → compile → enrich (optional) → build graph (optional)
-    → retrieve evidence → format output → evaluate result → return.
+ fetch source → compile → enrich (optional) → build graph (optional)
+ → retrieve evidence → format output → evaluate result → return.
 
 The orchestration is done in plain Python over the registry — no
 Temporal, no real I/O. The point is to prove the adapter contracts
@@ -98,10 +98,10 @@ def _resolve_role(reg: CapabilityRegistry, role: str):
 def test_mock_end_to_end_workflow_runs_via_registry():
     """Drive a full pipeline by reading adapters from the registry only.
 
-    No imports of concrete mock classes inside the orchestration —
-    everything goes through the registry, demonstrating the
-    extension-driven workflow shape.
-    """
+ No imports of concrete mock classes inside the orchestration —
+ everything goes through the registry, demonstrating the
+ extension-driven workflow shape.
+ """
     ctx = _ctx()
     reg = _build_registry()
 
@@ -178,10 +178,10 @@ def test_mock_end_to_end_workflow_runs_via_registry():
 def test_workflow_resilient_to_missing_optional_steps():
     """Compile + retrieve + format alone is a valid degenerate flow.
 
-    Demonstrates that the workflow shape is composable: skipping
-    enrich / graph / rerank / evaluate is still a coherent pipeline
-    if the deployment hasn't registered those roles.
-    """
+ Demonstrates that the workflow shape is composable: skipping
+ enrich / graph / rerank / evaluate is still a coherent pipeline
+ if the deployment hasn't registered those roles.
+ """
     ctx = _ctx()
     reg = CapabilityRegistry()
 

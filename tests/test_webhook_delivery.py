@@ -47,10 +47,10 @@ from j1.integration.events.event import ApplicationEvent
 class _FakeClient:
     """Programmable HTTP client that records every POST.
 
-    `responses` is a list of `WebhookResponse | Exception`. The Nth call
-    returns / raises the Nth element. If the list is exhausted, the
-    last entry is replayed (handy for "always 200" or "always raises").
-    """
+ `responses` is a list of `WebhookResponse | Exception`. The Nth call
+ returns / raises the Nth element. If the list is exhausted, the
+ last entry is replayed (handy for "always 200" or "always raises").
+ """
 
     def __init__(self, responses: list) -> None:
         self.responses = responses
@@ -356,7 +356,7 @@ def test_subscriber_handle_never_raises_on_delivery_failure():
             raise RuntimeError("delivery exploded")
 
     # DirectExecutor will set the exception on the future, which surfaces
-    # only if someone awaits future.result(). The subscriber must NOT.
+    # only if someone awaits future.result. The subscriber must NOT.
     registry = StaticWebhookSubscriptionRegistry([_sub()])
     sub = WebhookEventSubscriber(
         registry, _BoomService(), executor=DirectExecutor()
@@ -405,7 +405,7 @@ def test_event_bus_to_webhook_end_to_end(store, sleeps):
 
 def test_bus_publish_does_not_raise_when_webhook_dies(store, sleeps):
     """The headline guarantee: a webhook delivery exception cannot break
-    publication. Caller code keeps running."""
+ publication. Caller code keeps running."""
     from j1.integration.events import ApplicationEventBus
 
     class _ExplodingService:

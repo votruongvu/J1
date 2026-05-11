@@ -8,7 +8,7 @@ abstraction routes, so the spec can't drift away from the code.
 
 Validation against the AsyncAPI JSON schema is documented in
 docs/event-integration.md as an opt-in workflow (`npx
-@asyncapi/cli validate ...`); CI can wire it in later without
+@asyncapi/cli validate...`); CI can wire it in later without
 changing this module.
 """
 

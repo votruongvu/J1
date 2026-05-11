@@ -7,8 +7,8 @@ events into a `ProgressReporter`.
 
 Use as a context manager around the raganything call:
 
-    with attach_mineru_progress_handler(reporter, ctx, run_id):
-        await rag.process_document_complete(...)
+ with attach_mineru_progress_handler(reporter, ctx, run_id):
+ await rag.process_document_complete(...)
 
 Side-effect free outside the `with` block — the handler is removed
 on exit, so no stray output gets captured by other code paths."""
@@ -39,12 +39,12 @@ _MINERU_LOGGER_NAMES = ("mineru", "raganything")
 
 class _ProgressLoggingHandler(logging.Handler):
     """logging.Handler that pipes formatted records through the
-    MinerU parser and reports the resulting events.
+ MinerU parser and reports the resulting events.
 
-    Failure modes are deliberately silent: parsing errors / reporter
-    exceptions don't propagate (we don't want telemetry to break
-    ingestion). Throttling lives downstream in
-    `AuditProgressReporter` (5% delta threshold)."""
+ Failure modes are deliberately silent: parsing errors / reporter
+ exceptions don't propagate (we don't want telemetry to break
+ ingestion). Throttling lives downstream in
+ `AuditProgressReporter` (5% delta threshold)."""
 
     def __init__(
         self,
@@ -102,14 +102,14 @@ def attach_mineru_progress_handler(
     run_id: str,
 ) -> Iterator[None]:
     """Attach a MinerU-aware progress handler to the mineru +
-    raganything loggers for the duration of the `with` block.
+ raganything loggers for the duration of the `with` block.
 
-    `reporter=None` (default in tests / dry runs) is a no-op — we
-    don't want the test suite to install a global logging handler.
+ `reporter=None` (default in tests / dry runs) is a no-op — we
+ don't want the test suite to install a global logging handler.
 
-    The handler attaches to the named loggers' `addHandler()` rather
-    than the root logger to avoid capturing unrelated log output in
-    deployments that share the root configuration."""
+ The handler attaches to the named loggers' `addHandler` rather
+ than the root logger to avoid capturing unrelated log output in
+ deployments that share the root configuration."""
     if reporter is None or not run_id:
         # No-op when EITHER the reporter is missing OR the run_id is
         # empty. Both are required to correlate progress events with

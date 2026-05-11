@@ -21,10 +21,10 @@ from j1.workspace.resolver import WorkspaceResolver
 class TestEnvironment:
     """A fully wired-up J1 environment for downstream test suites.
 
-    All registries point at the same `data_root`, all recorders share the
-    same audit/cost sinks. Use this from any test that needs more than one
-    J1 service hooked together.
-    """
+ All registries point at the same `data_root`, all recorders share the
+ same audit/cost sinks. Use this from any test that needs more than one
+ J1 service hooked together.
+ """
 
     # Tell pytest not to collect this dataclass as a test class.
     __test__ = False
@@ -55,10 +55,10 @@ def make_test_environment(
 ) -> TestEnvironment:
     """Build a fresh, isolated `TestEnvironment` rooted at `data_root`.
 
-    `data_root` must be absolute. Any `tmp_path`-style fixture works: just
-    pass `tmp_path.resolve()`. The workspace directories are created by
-    default — set `ensure_workspace=False` to skip.
-    """
+ `data_root` must be absolute. Any `tmp_path`-style fixture works: just
+ pass `tmp_path.resolve`. The workspace directories are created by
+ default — set `ensure_workspace=False` to skip.
+ """
     settings = Settings(data_root=data_root.resolve())
     workspace = WorkspaceResolver(settings)
     ctx = ProjectContext(

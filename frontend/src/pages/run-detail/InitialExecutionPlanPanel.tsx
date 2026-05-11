@@ -1,5 +1,5 @@
 /**
- * Wave 9B — Initial Execution Plan panel.
+ * Initial Execution Plan panel.
  *
  * Renders the pre-compile `InitialExecutionPlan` artifact via
  * `GET /ingestion-runs/{id}/initial-execution-plan`. The plan

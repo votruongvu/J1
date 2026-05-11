@@ -1,14 +1,14 @@
 /**
- * Wave 10 — API client wire-contract test for
+ * API client wire-contract test for
  * `getRunFinalIngestionReport`.
  *
  * Verifies:
- *   (a) the client hits `/ingestion-runs/{id}/final-ingestion-report`,
- *   (b) the envelope is unwrapped so callers see the raw
- *       `FinalIngestionReportResponse` payload,
- *   (c) the `"unavailable"` sentinel is passed through verbatim so
- *       the FE state machine renders the fallback branch (pre-Wave-10
- *       runs, in-flight runs).
+ * (a) the client hits `/ingestion-runs/{id}/final-ingestion-report`,
+ * (b) the envelope is unwrapped so callers see the raw
+ * `FinalIngestionReportResponse` payload,
+ * (c) the `"unavailable"` sentinel is passed through verbatim so
+ * the FE state machine renders the fallback branch (pre-
+ * runs, in-flight runs).
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -107,7 +107,7 @@ describe("getRunFinalIngestionReport", () => {
     expect(resp.report?.compile_summary?.chunks_count).toBe(42);
   });
 
-  it("passes through the unavailable sentinel for pre-Wave-10 runs", async () => {
+  it("passes through the unavailable sentinel for legacy runs", async () => {
     withFetch(() =>
       envelope({
         runId: "run-1",
@@ -115,7 +115,7 @@ describe("getRunFinalIngestionReport", () => {
         documentName: null,
         status: "unavailable",
         unavailableReason:
-          "final_ingestion_report_not_available — this run predates Wave 10",
+          "final_ingestion_report_not_available — this run predates the new aggregate",
         report: null,
       }),
     );

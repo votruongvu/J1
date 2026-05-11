@@ -40,16 +40,16 @@ copy, error messages, audit-log strings):
 | "IngestPlanner" / "old planning mode" | "InitialExecutionPlan" + "post-compile assessor" |
 | "civil_engineering" / "RFI" / "BOQ" in builtin prompts | (move to `DomainPromptPack` per-domain) |
 
-Both backend tests (`test_wave9b_vocabulary`, the per-module
+Both backend tests (`test__vocabulary`, the per-module
 `*_has_no_legacy_vocabulary` tests) and FE tests
-(`wave9b-vocabulary.test.ts`) guard against the retired vocabulary
+(`vocabulary.test.ts`) guard against the retired vocabulary
 appearing in:
 
 - `StatusDisplay` / `EventTypeDisplay` runtime labels
 - Panel source files (`PrimaryStatusPanel`, `EnrichmentResultPanel`,
-  `CompileResultPanel`, `InitialExecutionPlanPanel`)
+ `CompileResultPanel`, `InitialExecutionPlanPanel`)
 - The `final_ingestion_report` payload (end-to-end test in
-  `test_wave11b_pipeline_hardening.py`)
+ `test__pipeline_hardening.py`)
 
 ## Naming the new macro events
 

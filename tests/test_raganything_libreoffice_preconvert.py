@@ -1,18 +1,18 @@
 """Tests for the LibreOffice pre-conversion step in the RAGAnything bridge.
 
 Behaviour under test:
-  * Settings: extension list + binary + timeout parse correctly from env.
-  * Detection: `_needs_pdf_conversion` honours the configured set
-    (case-insensitive; respects empty-list disable).
-  * Conversion: `_convert_to_pdf` shells out to soffice with the
-    correct argv shape (mocked subprocess); returns the output path.
-  * Missing binary → `ProviderUnavailable` with actionable message.
-  * Subprocess non-zero exit / no output / timeout → wrapped in
-    `_LibreOfficeConversionError` (caught at the compile boundary
-    and surfaced as a FAILED result).
-  * End-to-end: when `default_compile` is called against a `.doc`
-    source, the conversion runs first and raganything sees the
-    converted PDF, not the original.
+ * Settings: extension list + binary + timeout parse correctly from env.
+ * Detection: `_needs_pdf_conversion` honours the configured set
+ (case-insensitive; respects empty-list disable).
+ * Conversion: `_convert_to_pdf` shells out to soffice with the
+ correct argv shape (mocked subprocess); returns the output path.
+ * Missing binary → `ProviderUnavailable` with actionable message.
+ * Subprocess non-zero exit / no output / timeout → wrapped in
+ `_LibreOfficeConversionError` (caught at the compile boundary
+ and surfaced as a FAILED result).
+ * End-to-end: when `default_compile` is called against a `.doc`
+ source, the conversion runs first and raganything sees the
+ converted PDF, not the original.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def test_no_extensions_configured_means_no_conversion():
 
 def test_convert_to_pdf_invokes_soffice_with_expected_argv(tmp_path, monkeypatch):
     """The subprocess call shape: --headless --convert-to pdf
-    --outdir <tmp> <source>."""
+ --outdir <tmp> <source>."""
     settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk binary doc")
@@ -205,7 +205,7 @@ def test_convert_to_pdf_provider_unavailable_message_is_actionable(
     tmp_path, monkeypatch,
 ):
     """The error must name (a) install, (b) override-binary path,
-    (c) shrink-extensions option, (d) processor-hook escape."""
+ (c) shrink-extensions option, (d) processor-hook escape."""
     settings = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
     source = tmp_path / "demo.doc"
     source.write_bytes(b"junk")
@@ -303,9 +303,9 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
     tmp_path, monkeypatch,
 ):
     """When the registered raw document is `.doc`, the bridge converts
-    to PDF first, then hands the converted path to raganything's
-    `process_document_complete`. The original `.doc` path is never
-    seen by raganything."""
+ to PDF first, then hands the converted path to raganything's
+ `process_document_complete`. The original `.doc` path is never
+ seen by raganything."""
     import sys
     import types
 
@@ -340,7 +340,7 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
     fake_mod.RAGAnythingConfig = _FakeConfig
     monkeypatch.setitem(sys.modules, "raganything", fake_mod)
 
-    # --- Workspace + a fake .doc on disk ---
+    # --- Workspace + a fake.doc on disk ---
     monkeypatch.setenv("J1_DATA_ROOT", str(tmp_path))
     raw_dir = tmp_path / "tenants" / "acme" / "projects" / "alpha" / "raw"
     raw_dir.mkdir(parents=True)
@@ -390,7 +390,7 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
 
     result = default_compile(request)
 
-    # raganything was handed the CONVERTED PDF, not the original .doc.
+    # raganything was handed the CONVERTED PDF, not the original.doc.
     assert captured["compile_file_path"].endswith(".pdf"), (
         f"expected raganything to receive the converted PDF, got {captured['compile_file_path']}"
     )
@@ -404,8 +404,8 @@ def test_default_compile_passes_through_native_pdf_unchanged(
     tmp_path, monkeypatch,
 ):
     """For natively-supported formats, the bridge MUST NOT invoke
-    LibreOffice — extension isn't on the convert list, so no
-    subprocess call should happen."""
+ LibreOffice — extension isn't on the convert list, so no
+ subprocess call should happen."""
     import sys
     import types
 
@@ -494,11 +494,11 @@ def test_default_compile_surfaces_lightrag_init_failure_as_provider_unavailable(
     tmp_path, monkeypatch,
 ):
     """RAGAnything's `_ensure_lightrag_initialized` returns
-    `{"success": False, "error": ...}` on failure WITHOUT raising,
-    then `process_document_complete` proceeds with `self.lightrag = None`
-    and crashes downstream as `'NoneType' object has no attribute 'ainsert'`.
-    The bridge must intercept the init result and raise a clear
-    `ProviderUnavailable` instead, so operators see the real cause."""
+ `{"success": False, "error":...}` on failure WITHOUT raising,
+ then `process_document_complete` proceeds with `self.lightrag = None`
+ and crashes downstream as `'NoneType' object has no attribute 'ainsert'`.
+ The bridge must intercept the init result and raise a clear
+ `ProviderUnavailable` instead, so operators see the real cause."""
     import sys
     import types
 
@@ -561,10 +561,10 @@ def test_default_compile_surfaces_lightrag_init_failure_as_provider_unavailable(
 
 def test_make_embedding_func_inner_callable_returns_numpy_array():
     """LightRAG's `EmbeddingFunc.__call__` reads `result.size` to
-    validate vector count — a Python `list[list[float]]` raises
-    `AttributeError: 'list' object has no attribute 'size'`. Our
-    wrapper must return an ndarray shaped (n_texts, dim).
-    Regression test for the LightRAG-AttributeError seen in prod."""
+ validate vector count — a Python `list[list[float]]` raises
+ `AttributeError: 'list' object has no attribute 'size'`. Our
+ wrapper must return an ndarray shaped (n_texts, dim).
+ Regression test for the LightRAG-AttributeError seen in prod."""
     import asyncio
 
     import numpy as np
@@ -590,11 +590,11 @@ def test_make_embedding_func_inner_callable_returns_numpy_array():
 
 def test_make_embedding_func_returns_lightrag_embeddingfunc_with_dim_and_max_tokens():
     """LightRAG's `LightRAG.__post_init__` accesses `.embedding_dim`,
-    `.max_token_size`, and `.func` on the `embedding_func` argument.
-    Passing a plain callable causes init to silently fail and the
-    AttributeError-on-None downstream. Verify our wrapper exposes the
-    full `lightrag.utils.EmbeddingFunc` shape and forwards `dimension()` /
-    `max_tokens()` from the J1 client."""
+ `.max_token_size`, and `.func` on the `embedding_func` argument.
+ Passing a plain callable causes init to silently fail and the
+ AttributeError-on-None downstream. Verify our wrapper exposes the
+ full `lightrag.utils.EmbeddingFunc` shape and forwards `dimension` /
+ `max_tokens` from the J1 client."""
     from lightrag.utils import EmbeddingFunc
 
     from j1.providers.raganything._bridge import _make_embedding_func
@@ -618,9 +618,9 @@ def test_default_compile_short_circuits_plain_text_to_lightrag_ainsert(
     tmp_path, monkeypatch,
 ):
     """`.txt` files MUST NOT go through `process_document_complete` —
-    mineru renders text → PDF → runs the full PyTorch model pipeline
-    on the result, which pegs every CPU core even on a 10-byte file.
-    The bridge reads the text and calls `lightrag.ainsert` directly."""
+ mineru renders text → PDF → runs the full PyTorch model pipeline
+ on the result, which pegs every CPU core even on a 10-byte file.
+ The bridge reads the text and calls `lightrag.ainsert` directly."""
     import sys
     import types
 
@@ -705,7 +705,7 @@ def test_default_compile_skips_ainsert_for_empty_text_file(
     tmp_path, monkeypatch,
 ):
     """Empty / whitespace-only files must not produce a no-op LightRAG
-    chunk — mirror raganything's own behaviour and skip the insert."""
+ chunk — mirror raganything's own behaviour and skip the insert."""
     import sys
     import types
 
@@ -773,14 +773,14 @@ def test_default_compile_skips_ainsert_for_empty_text_file(
 
 def test_make_text_callable_returns_async_callable_that_unwraps_usage():
     """LightRAG `await`s the llm_model_func — the wrapper must be async,
-    must invoke `text_client.generate(prompt, system_prompt=...)`, and
-    must drop the usage half of the (text, usage) tuple.
+ must invoke `text_client.generate(prompt, system_prompt=...)`, and
+ must drop the usage half of the (text, usage) tuple.
 
-    The fake matches `TextLLMClient.generate`'s real signature
-    (`prompt` + keyword `system_prompt`) so the wrapper's kwarg-
-    forwarding path is exercised. Accepting `**_` lets the fake
-    tolerate any future kwargs the wrapper learns to forward
-    without needing to update this test."""
+ The fake matches `TextLLMClient.generate`'s real signature
+ (`prompt` + keyword `system_prompt`) so the wrapper's kwarg-
+ forwarding path is exercised. Accepting `**_` lets the fake
+ tolerate any future kwargs the wrapper learns to forward
+ without needing to update this test."""
     import asyncio
 
     from j1.providers.raganything._bridge import _make_text_callable

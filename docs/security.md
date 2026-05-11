@@ -11,37 +11,37 @@ and that is the only thing that flows inward.
 ## 1. Layering
 
 ```
-HTTP request                  Outer adapter (j1.adapters.rest)
-   │  Authorization / X-API-Key
-   ▼
+HTTP request Outer adapter (j1.adapters.rest)
+ │ Authorization / X-API-Key
+ ▼
 extract_credential(request) ──► Credential(scheme, token)
-                                  │
-                                  ▼
-                          Authenticator.authenticate(...)
-                                  │
-                                  ▼
-                          SecurityContext (subject, tenant_id,
-                                            scopes, auth_type, …)
-                                  │
-                                  ▼
-              FastAPI dependency: scope_required("kb:search")
-                                  │            │
-                                  │            └─► AuthorizationError → 403
-                                  ▼
-                          Route handler runs
-                          (security context available)
+ │
+ ▼
+ Authenticator.authenticate(...)
+ │
+ ▼
+ SecurityContext (subject, tenant_id,
+ scopes, auth_type, …)
+ │
+ ▼
+ FastAPI dependency: scope_required("kb:search")
+ │ │
+ │ └─► AuthorizationError → 403
+ ▼
+ Route handler runs
+ (security context available)
 ```
 
 What lives where:
 
-| Module                                      | Purpose |
+| Module | Purpose |
 |---------------------------------------------|---------|
 | [`j1.integration.security.context`](../src/j1/integration/security/context.py) | `SecurityContext`, `ANONYMOUS_CONTEXT`, auth-type constants |
-| [`j1.integration.security.scopes`](../src/j1/integration/security/scopes.py)   | `kb:*` scope constants and `DEFAULT_KB_SCOPES` |
-| [`j1.integration.security.errors`](../src/j1/integration/security/errors.py)   | `AuthenticationError`, `AuthorizationError` |
+| [`j1.integration.security.scopes`](../src/j1/integration/security/scopes.py) | `kb:*` scope constants and `DEFAULT_KB_SCOPES` |
+| [`j1.integration.security.errors`](../src/j1/integration/security/errors.py) | `AuthenticationError`, `AuthorizationError` |
 | [`j1.integration.security.authenticator`](../src/j1/integration/security/authenticator.py) | `Authenticator` Protocol, `Credential`, `ApiKeyAuthenticator`, `JwtAuthenticator`, `CompositeAuthenticator` |
 | [`j1.integration.security.settings`](../src/j1/integration/security/settings.py) | `SecuritySettings`, `load_security_settings(env=...)` |
-| [`j1.adapters.rest.security`](../src/j1/adapters/rest/security.py)             | REST-specific binding: header parsing, FastAPI deps, scope enforcement |
+| [`j1.adapters.rest.security`](../src/j1/adapters/rest/security.py) | REST-specific binding: header parsing, FastAPI deps, scope enforcement |
 
 The integration layer carries no FastAPI / JWT-library imports. New
 adapters (MCP, Webhook, gRPC, …) reuse the integration primitives and
@@ -69,10 +69,10 @@ Tokens are opaque to the framework — they're looked up in an
 
 ```python
 ApiKeyRecord(
-    subject="svc-search-frontend",
-    tenant_id="acme",
-    scopes=frozenset({"kb:read", "kb:search", "kb:answer"}),
-    metadata={"team": "search"},
+ subject="svc-search-frontend",
+ tenant_id="acme",
+ scopes=frozenset({"kb:read", "kb:search", "kb:answer"}),
+ metadata={"team": "search"},
 )
 ```
 
@@ -89,14 +89,14 @@ prefers — plus an optional `claims_mapper` for custom claim shapes:
 
 ```python
 from j1 import JwtAuthenticator, CompositeAuthenticator, ApiKeyAuthenticator
-import jwt  # PyJWT — chosen by the deployment, not by J1
+import jwt # PyJWT — chosen by the deployment, not by J1
 
 def verify(token: str) -> dict:
-    return jwt.decode(token, key=JWKS_KEY, algorithms=["RS256"], audience="kb")
+ return jwt.decode(token, key=JWKS_KEY, algorithms=["RS256"], audience="kb")
 
 auth = CompositeAuthenticator([
-    JwtAuthenticator(verifier=verify),
-    ApiKeyAuthenticator(API_KEYS),
+ JwtAuthenticator(verifier=verify),
+ ApiKeyAuthenticator(API_KEYS),
 ])
 ```
 
@@ -122,12 +122,12 @@ deployments must pass an authenticator.
 ```python
 @dataclass(frozen=True)
 class SecurityContext:
-    subject:    str               # identity within the auth source
-    tenant_id:  str | None
-    scopes:     frozenset[str]
-    auth_type:  str               # "anonymous" | "api_key" | "jwt"
-    request_id: str | None = None
-    metadata:   Mapping[str, str] = ...
+ subject: str # identity within the auth source
+ tenant_id: str | None
+ scopes: frozenset[str]
+ auth_type: str # "anonymous" | "api_key" | "jwt"
+ request_id: str | None = None
+ metadata: Mapping[str, str] =...
 ```
 
 `SecurityContext.is_anonymous` is the cheap predicate adapters and
@@ -137,17 +137,17 @@ helpers branch on. Everything is frozen — passing it inward is safe.
 
 ## 4. Scope catalog
 
-| Scope            | Intent                                                |
+| Scope | Intent |
 |------------------|-------------------------------------------------------|
-| `kb:read`        | Generic read of project state (documents, artifacts, citations, sources, reviews, capabilities) |
-| `kb:search`      | Keyword search (`POST /search`)                       |
-| `kb:retrieve`    | Context-block retrieval (`POST /retrieve`)            |
-| `kb:answer`      | Generated answers (`POST /answer`)                    |
-| `kb:ingest`      | Document upload, ingestion-job start                  |
-| `kb:feedback`    | Submit user feedback                                  |
-| `kb:admin`       | Project provisioning, workflow control, review decisions |
-| `kb:audit.read`  | Audit-log + cost reports                              |
-| `kb:delete`      | Reserved (no endpoints currently bound)               |
+| `kb:read` | Generic read of project state (documents, artifacts, citations, sources, reviews, capabilities) |
+| `kb:search` | Keyword search (`POST /search`) |
+| `kb:retrieve` | Context-block retrieval (`POST /retrieve`) |
+| `kb:answer` | Generated answers (`POST /answer`) |
+| `kb:ingest` | Document upload, ingestion-job start |
+| `kb:feedback` | Submit user feedback |
+| `kb:admin` | Project provisioning, workflow control, review decisions |
+| `kb:audit.read` | Audit-log + cost reports |
+| `kb:delete` | Reserved (no endpoints currently bound) |
 
 The complete set is exported as `DEFAULT_KB_SCOPES`. Custom scope
 strings are allowed in tokens — the framework only checks for
@@ -157,31 +157,31 @@ membership.
 
 ## 5. Endpoint protection map
 
-| Endpoint                                    | Required scope         |
+| Endpoint | Required scope |
 |---------------------------------------------|------------------------|
-| `GET /health`                               | (public)               |
-| `GET /version`                              | (public)               |
-| `GET /capabilities`                         | `kb:read`              |
-| `POST /projects`                            | `kb:admin`             |
-| `POST /documents`                           | `kb:ingest`            |
-| `GET /documents/{id}`                       | `kb:read`              |
-| `POST /documents/{id}/ingest`               | `kb:ingest`            |
-| `GET /documents/{id}/status`                | `kb:read`              |
-| `POST /ingestion-jobs`                      | `kb:ingest`            |
-| `GET /ingestion-jobs/{id}`                  | `kb:read`              |
-| `GET /ingestion-jobs/{id}/events`           | `kb:audit.read`        |
-| `POST /ingestion-jobs/{id}/{pause,resume,cancel}` | `kb:admin`       |
-| `GET /artifacts`                            | `kb:read`              |
-| `GET /artifacts/{id}`                       | `kb:read`              |
-| `POST /search`                              | `kb:search`            |
-| `POST /retrieve`                            | `kb:retrieve`          |
-| `POST /answer`                              | `kb:answer`            |
-| `GET /citations/{id}`                       | `kb:read`              |
-| `GET /sources/{id}`                         | `kb:read`              |
-| `GET /cost`                                 | `kb:audit.read`        |
-| `GET /reviews`                              | `kb:read`              |
-| `POST /reviews/{id}/decision`               | `kb:admin`             |
-| `POST /feedback`                            | `kb:feedback`          |
+| `GET /health` | (public) |
+| `GET /version` | (public) |
+| `GET /capabilities` | `kb:read` |
+| `POST /projects` | `kb:admin` |
+| `POST /documents` | `kb:ingest` |
+| `GET /documents/{id}` | `kb:read` |
+| `POST /documents/{id}/ingest` | `kb:ingest` |
+| `GET /documents/{id}/status` | `kb:read` |
+| `POST /ingestion-jobs` | `kb:ingest` |
+| `GET /ingestion-jobs/{id}` | `kb:read` |
+| `GET /ingestion-jobs/{id}/events` | `kb:audit.read` |
+| `POST /ingestion-jobs/{id}/{pause,resume,cancel}` | `kb:admin` |
+| `GET /artifacts` | `kb:read` |
+| `GET /artifacts/{id}` | `kb:read` |
+| `POST /search` | `kb:search` |
+| `POST /retrieve` | `kb:retrieve` |
+| `POST /answer` | `kb:answer` |
+| `GET /citations/{id}` | `kb:read` |
+| `GET /sources/{id}` | `kb:read` |
+| `GET /cost` | `kb:audit.read` |
+| `GET /reviews` | `kb:read` |
+| `POST /reviews/{id}/decision` | `kb:admin` |
+| `POST /feedback` | `kb:feedback` |
 
 ---
 
@@ -191,24 +191,24 @@ The standard envelope (`{requestId, error: {code, message, details}}`)
 is preserved for every auth failure. The `X-Request-Id` header is
 set even on early-exit responses.
 
-| Code                   | HTTP | When                                          |
+| Code | HTTP | When |
 |------------------------|------|-----------------------------------------------|
-| `UNAUTHENTICATED`      | 401  | Missing or invalid credential                 |
-| `INSUFFICIENT_SCOPE`   | 403  | Authenticated, but missing the required scope (`details.required_scope` is set) |
-| `INVALID_IDENTIFIER`   | 400  | Bad tenant/project identifier (auth-adjacent) |
-| `INVALID_ARGUMENT`     | 400  | `ValueError` (e.g. malformed body)            |
-| `HTTP_500`             | 500  | Unhandled internal error                      |
+| `UNAUTHENTICATED` | 401 | Missing or invalid credential |
+| `INSUFFICIENT_SCOPE` | 403 | Authenticated, but missing the required scope (`details.required_scope` is set) |
+| `INVALID_IDENTIFIER` | 400 | Bad tenant/project identifier (auth-adjacent) |
+| `INVALID_ARGUMENT` | 400 | `ValueError` (e.g. malformed body) |
+| `HTTP_500` | 500 | Unhandled internal error |
 
 Example:
 
 ```json
 {
-  "requestId": "9f1c…",
-  "error": {
-    "code": "INSUFFICIENT_SCOPE",
-    "message": "missing required scope 'kb:ingest'",
-    "details": { "required_scope": "kb:ingest" }
-  }
+ "requestId": "9f1c…",
+ "error": {
+ "code": "INSUFFICIENT_SCOPE",
+ "message": "missing required scope 'kb:ingest'",
+ "details": { "required_scope": "kb:ingest" }
+ }
 }
 ```
 
@@ -219,14 +219,14 @@ Example:
 All knobs are read from the process environment via
 [`load_security_settings`](../src/j1/integration/security/settings.py):
 
-| Variable                    | Default        | Notes |
+| Variable | Default | Notes |
 |-----------------------------|----------------|-------|
-| `J1_AUTH_REQUIRED`          | `false`        | Truthy values: `1`, `true`, `yes`, `on`. Currently advisory — adapters opt in by passing `authenticator=...`. |
-| `J1_AUTH_API_KEYS`          | _(unset)_      | Inline JSON object (`{"<token>": {"subject": "...", "tenant_id": "...", "scopes": [...]}}`). Convenient for local dev; **not** for production secrets. |
-| `J1_AUTH_API_KEYS_FILE`     | _(unset)_      | Path to a JSON file with the same shape. Mount from a secret manager. Mutually exclusive with `J1_AUTH_API_KEYS`. |
-| `J1_AUTH_JWT_ENABLED`       | `false`        | Flag for downstream wiring (the verifier itself is application code). |
-| `J1_AUTH_ANONYMOUS_PATHS`   | `/health,/version` | Comma-separated paths exempt from auth. |
-| `J1_AUTH_DEFAULT_TENANT_ID` | _(unset)_      | Optional fallback tenant for callers without one in their token. |
+| `J1_AUTH_REQUIRED` | `false` | Truthy values: `1`, `true`, `yes`, `on`. Currently advisory — adapters opt in by passing `authenticator=...`. |
+| `J1_AUTH_API_KEYS` | _(unset)_ | Inline JSON object (`{"<token>": {"subject": "...", "tenant_id": "...", "scopes": [...]}}`). Convenient for local dev; **not** for production secrets. |
+| `J1_AUTH_API_KEYS_FILE` | _(unset)_ | Path to a JSON file with the same shape. Mount from a secret manager. Mutually exclusive with `J1_AUTH_API_KEYS`. |
+| `J1_AUTH_JWT_ENABLED` | `false` | Flag for downstream wiring (the verifier itself is application code). |
+| `J1_AUTH_ANONYMOUS_PATHS` | `/health,/version` | Comma-separated paths exempt from auth. |
+| `J1_AUTH_DEFAULT_TENANT_ID` | _(unset)_ | Optional fallback tenant for callers without one in their token. |
 
 Real secrets must not live in the repository. The recommended pattern is
 to mount a JSON file from your secrets store and point
@@ -238,23 +238,23 @@ to mount a JSON file from your secrets store and point
 
 ```python
 from j1 import (
-    ApiKeyAuthenticator, ApiKeyRecord,
-    SCOPE_READ, SCOPE_SEARCH, SCOPE_ANSWER,
-    create_rest_api,
+ ApiKeyAuthenticator, ApiKeyRecord,
+ SCOPE_READ, SCOPE_SEARCH, SCOPE_ANSWER,
+ create_rest_api,
 )
 
 authenticator = ApiKeyAuthenticator({
-    "kb_local_dev_001": ApiKeyRecord(
-        subject="dev-laptop",
-        tenant_id="acme",
-        scopes=frozenset({SCOPE_READ, SCOPE_SEARCH, SCOPE_ANSWER}),
-    ),
+ "kb_local_dev_001": ApiKeyRecord(
+ subject="dev-laptop",
+ tenant_id="acme",
+ scopes=frozenset({SCOPE_READ, SCOPE_SEARCH, SCOPE_ANSWER}),
+ ),
 })
 
 app = create_rest_api(
-    facade,
-    authenticator=authenticator,
-    workspace=workspace,
+ facade,
+ authenticator=authenticator,
+ workspace=workspace,
 )
 ```
 
@@ -263,13 +263,13 @@ Loaded from env instead:
 ```python
 from j1 import load_security_settings, ApiKeyAuthenticator
 
-settings = load_security_settings()  # reads J1_AUTH_*
+settings = load_security_settings # reads J1_AUTH_*
 authenticator = ApiKeyAuthenticator(settings.api_keys) if settings.api_keys else None
 
 app = create_rest_api(
-    facade,
-    authenticator=authenticator,
-    anonymous_paths=settings.anonymous_paths,
+ facade,
+ authenticator=authenticator,
+ anonymous_paths=settings.anonymous_paths,
 )
 ```
 
@@ -280,17 +280,17 @@ app = create_rest_api(
 ```bash
 # Authenticated search via Bearer token
 curl -X POST http://localhost:8000/search \
-  -H "Authorization: Bearer kb_local_dev_001" \
-  -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "schedule"}'
+ -H "Authorization: Bearer kb_local_dev_001" \
+ -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
+ -H "Content-Type: application/json" \
+ -d '{"query": "schedule"}'
 
 # Same, via X-API-Key
 curl -X POST http://localhost:8000/search \
-  -H "X-API-Key: kb_local_dev_001" \
-  -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "schedule"}'
+ -H "X-API-Key: kb_local_dev_001" \
+ -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
+ -H "Content-Type: application/json" \
+ -d '{"query": "schedule"}'
 
 # Public — no auth needed
 curl http://localhost:8000/health
@@ -303,14 +303,14 @@ curl http://localhost:8000/health
 When a deployment is ready to take OIDC, the path is:
 
 1. Pick a JWT library (PyJWT, Authlib, …) — that lives in the
-   deployment's wiring code, never in the framework.
+ deployment's wiring code, never in the framework.
 2. Implement a `verifier(token: str) -> dict` that does signature
-   verification, audience / issuer checks, and JWKS rotation.
+ verification, audience / issuer checks, and JWKS rotation.
 3. Pass it to `JwtAuthenticator(verifier=verify)`.
 4. Optionally wrap with `CompositeAuthenticator([jwt_auth, api_key_auth])`
-   to keep machine-to-machine API keys working in parallel.
+ to keep machine-to-machine API keys working in parallel.
 5. Map your IdP's claims to scopes (default mapper: `scope` claim,
-   space-separated; or supply a custom `claims_mapper`).
+ space-separated; or supply a custom `claims_mapper`).
 
 The route surface, scope catalog, and error envelopes don't change.
 
@@ -343,15 +343,15 @@ HTTP response.
 ## 12. Constraints honoured
 
 - **No domain-specific naming.** Scopes are `kb:*`; nothing in the
-  layer references a customer or vertical.
-- **No phase naming.** No `phase1`, `step2`, `spike`, etc.
+ layer references a customer or vertical.
+- **No phase naming.** No ``, `step2`, `spike`, etc.
 - **No business logic in middleware.** The middleware does
-  authentication and request-state setup only. Authorization decisions
-  are scope membership checks.
+ authentication and request-state setup only. Authorization decisions
+ are scope membership checks.
 - **No hardcoded customer / tenant.** Default tenant is configurable
-  but never assumed.
+ but never assumed.
 - **No auth-library dependency in core.** `j1.integration.security`
-  imports nothing outside the standard library + `j1.errors`. The REST
-  binding imports FastAPI; that's the adapter's concern.
+ imports nothing outside the standard library + `j1.errors`. The REST
+ binding imports FastAPI; that's the adapter's concern.
 - **Secrets stay out of code.** Keys are loaded from env / files at
-  deployment time; the framework ships no credentials.
+ deployment time; the framework ships no credentials.

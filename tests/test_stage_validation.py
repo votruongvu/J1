@@ -4,20 +4,20 @@ The validators are pure (no I/O — they take a `read_back` callable
 that returns bytes), so each test injects a tiny in-memory map
 {artifact_id → bytes} as the read-back. Covers:
 
-  * Empty parse → fails
-  * Empty content_inventory → fails (covered by compile validator's
-    "no parsed_content_manifest" warning + canonical-kinds check)
-  * Zero chunks → fails
-  * Chunks artifact registered but storage empty → fails
-  * Duplicate chunk ids → fails
-  * Tenant/project scope mismatch → fails
-  * graph_required=True but graph missing → fails
-  * graph references missing chunks → fails
-  * enrich_required=True but enrichment missing → fails
-  * Skipped enrich/graph passes only when not required
-  * Stage cannot be marked succeeded before validation passes (the
-    workflow gate enforces this — covered separately in
-    test_project_processing_workflow.py)
+ * Empty parse → fails
+ * Empty content_inventory → fails (covered by compile validator's
+ "no parsed_content_manifest" warning + canonical-kinds check)
+ * Zero chunks → fails
+ * Chunks artifact registered but storage empty → fails
+ * Duplicate chunk ids → fails
+ * Tenant/project scope mismatch → fails
+ * graph_required=True but graph missing → fails
+ * graph references missing chunks → fails
+ * enrich_required=True but enrichment missing → fails
+ * Skipped enrich/graph passes only when not required
+ * Stage cannot be marked succeeded before validation passes (the
+ workflow gate enforces this — covered separately in
+ test_project_processing_workflow.py)
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def _read_from_map(
     contents: dict[str, bytes | None],
 ):
     """Make a `read_back` closure backed by an in-memory dict.
-    `None` value simulates "registered but storage missing"."""
+ `None` value simulates "registered but storage missing"."""
     def _read(artifact: ArtifactRecord) -> bytes | None:
         return contents.get(artifact.artifact_id)
     return _read
@@ -94,8 +94,8 @@ def _read_from_map(
 
 def test_aggregate_status_empty_returns_passed():
     """A stage with no checks is trivially valid (rare in practice
-    — every durable stage has at least an artifact-existence check
-    — but the empty-list path must terminate cleanly)."""
+ — every durable stage has at least an artifact-existence check
+ — but the empty-list path must terminate cleanly)."""
     assert aggregate_status([]) == VALIDATION_STATUS_PASSED
 
 
@@ -117,8 +117,8 @@ def test_aggregate_status_warning_short_circuits_passed():
 
 
 def test_stage_validation_result_passed_includes_warning():
-    """`warning` is non-blocking — `passed()` returns True so the
-    workflow records COMPLETED. Only `failed` blocks."""
+    """`warning` is non-blocking — `passed` returns True so the
+ workflow records COMPLETED. Only `failed` blocks."""
     r_warn = StageValidationResult(
         stage_name="compile", run_id="r1", document_id="d1",
         tenant_id="acme", project_id="alpha", workspace_id=None,
@@ -135,8 +135,8 @@ def test_stage_validation_result_passed_includes_warning():
 
 def test_to_payload_round_trips():
     """The persisted JSON shape must contain every operationally-
-    interesting field. Locking it with a test guards against an
-    accidental rename breaking external consumers (audit dashboards)."""
+ interesting field. Locking it with a test guards against an
+ accidental rename breaking external consumers (audit dashboards)."""
     r = StageValidationResult(
         stage_name="compile", run_id="r1", document_id="d1",
         tenant_id="acme", project_id="alpha", workspace_id="ws1",
@@ -161,7 +161,7 @@ def test_to_payload_round_trips():
 
 def test_compile_zero_artifacts_fails():
     """Compile reported succeeded but produced nothing — workflow
-    must not proceed to downstream stages with empty input."""
+ must not proceed to downstream stages with empty input."""
     checks = validate_compile(
         artifacts=[],
         expected_tenant="acme", expected_project="alpha",
@@ -177,8 +177,8 @@ def test_compile_zero_artifacts_fails():
 
 def test_compile_no_canonical_kinds_fails():
     """Compile produced artifacts but none of the canonical kinds
-    (parsed_source / parsed_content_manifest / chunk) — downstream
-    stages will see no input."""
+ (parsed_source / parsed_content_manifest / chunk) — downstream
+ stages will see no input."""
     a = _artifact(artifact_id="a1", kind="some.weird.kind")
     checks = validate_compile(
         artifacts=[a],
@@ -195,8 +195,8 @@ def test_compile_no_canonical_kinds_fails():
 
 def test_compile_storage_missing_fails():
     """Artifact is registered, but the file on disk doesn't exist
-    (read-back returns None). This catches "registry write succeeded,
-    file write failed" inconsistencies."""
+ (read-back returns None). This catches "registry write succeeded,
+ file write failed" inconsistencies."""
     a = _artifact(artifact_id="a1", kind=ARTIFACT_KIND_CHUNK)
     checks = validate_compile(
         artifacts=[a],
@@ -213,7 +213,7 @@ def test_compile_storage_missing_fails():
 
 def test_compile_zero_byte_file_fails():
     """File exists but is zero bytes — empty artifact slipped
-    through. Distinct from the missing-file failure."""
+ through. Distinct from the missing-file failure."""
     a = _artifact(artifact_id="a1", kind=ARTIFACT_KIND_CHUNK)
     checks = validate_compile(
         artifacts=[a],
@@ -230,7 +230,7 @@ def test_compile_zero_byte_file_fails():
 
 def test_compile_tenant_mismatch_fails():
     """Artifact landed in the wrong tenant — defense against cross-
-    tenant bleed bugs."""
+ tenant bleed bugs."""
     other = ProjectContext(tenant_id="megacorp", project_id="alpha")
     a = _artifact(artifact_id="a1", kind=ARTIFACT_KIND_CHUNK, project=other)
     checks = validate_compile(
@@ -248,7 +248,7 @@ def test_compile_tenant_mismatch_fails():
 
 def test_compile_passes_with_canonical_kinds_and_readable_artifacts():
     """Happy path: parsed_source + parsed_content_manifest + chunk
-    all present, all readable, all scoped correctly."""
+ all present, all readable, all scoped correctly."""
     artifacts = [
         _artifact(artifact_id="ps", kind=ARTIFACT_KIND_PARSED_SOURCE),
         _artifact(artifact_id="m1", kind=ARTIFACT_KIND_PARSED_CONTENT_MANIFEST),
@@ -277,7 +277,7 @@ def test_compile_passes_with_canonical_kinds_and_readable_artifacts():
 
 def test_chunks_zero_chunks_artifact_fails():
     """No chunk-kind artifacts at all — downstream graph + index
-    have nothing to consume."""
+ have nothing to consume."""
     checks = validate_chunks(
         artifacts=[],
         expected_tenant="acme", expected_project="alpha",
@@ -293,7 +293,7 @@ def test_chunks_zero_chunks_artifact_fails():
 
 def test_chunks_artifact_exists_but_storage_empty_fails():
     """Chunk artifact registered, file missing on disk — catches
-    "wrote registry record before persisting bytes" race."""
+ "wrote registry record before persisting bytes" race."""
     a = _artifact(artifact_id="c1", kind=ARTIFACT_KIND_CHUNK)
     checks = validate_chunks(
         artifacts=[a],
@@ -329,7 +329,7 @@ def test_chunks_artifact_parses_to_zero_chunks_fails():
 
 def test_chunks_duplicate_ids_fail():
     """Chunk ids must be unique across the run — duplicates would
-    let downstream stages confuse provenance."""
+ let downstream stages confuse provenance."""
     a = _artifact(artifact_id="c1", kind=ARTIFACT_KIND_CHUNK)
     payload = b'[{"id":"x","body":"a"},{"id":"x","body":"b"}]'
     checks = validate_chunks(
@@ -347,8 +347,8 @@ def test_chunks_duplicate_ids_fail():
 
 def test_chunks_all_empty_bodies_fails():
     """Every chunk has empty body/content — parser regression
-    likely. Distinct from the count > 0 check (count can be > 0
-    while every chunk is empty text)."""
+ likely. Distinct from the count > 0 check (count can be > 0
+ while every chunk is empty text)."""
     a = _artifact(artifact_id="c1", kind=ARTIFACT_KIND_CHUNK)
     payload = b'[{"id":"x","body":""},{"id":"y","body":"   "}]'
     checks = validate_chunks(
@@ -366,7 +366,7 @@ def test_chunks_all_empty_bodies_fails():
 
 def test_chunks_some_empty_bodies_warns():
     """Some chunks empty + some populated → warning, not failure.
-    Stage still succeeds."""
+ Stage still succeeds."""
     a = _artifact(artifact_id="c1", kind=ARTIFACT_KIND_CHUNK)
     payload = b'[{"id":"x","body":"hello"},{"id":"y","body":""}]'
     checks = validate_chunks(
@@ -403,7 +403,7 @@ def test_chunks_happy_path_passes():
 
 def test_enrich_required_but_missing_fails():
     """Operator asked for enrich (planner or caller decision) but
-    no enriched artifacts produced — required-step contract."""
+ no enriched artifacts produced — required-step contract."""
     checks = validate_enrich(
         artifacts=[],
         expected_tenant="acme", expected_project="alpha",
@@ -420,8 +420,8 @@ def test_enrich_required_but_missing_fails():
 
 def test_enrich_skipped_passes_with_no_artifacts():
     """enrich_required=False and no enriched artifacts → passes.
-    The skip path's audit trail is the SKIPPED step record (not
-    this validator's concern)."""
+ The skip path's audit trail is the SKIPPED step record (not
+ this validator's concern)."""
     checks = validate_enrich(
         artifacts=[],
         expected_tenant="acme", expected_project="alpha",
@@ -434,7 +434,7 @@ def test_enrich_skipped_passes_with_no_artifacts():
 
 def test_enrich_artifact_without_upstream_link_fails():
     """Enriched artifact with empty source_artifact_ids — orphaned
-    from the upstream chunk, can't trace lineage."""
+ from the upstream chunk, can't trace lineage."""
     a = _artifact(
         artifact_id="e1", kind="enriched.tables",
         source_artifact_ids=[],  # explicitly empty
@@ -473,7 +473,7 @@ def test_graph_required_but_missing_fails():
 
 def test_graph_zero_nodes_fails():
     """Graph stage said succeeded but graph has 0 nodes — graph
-    isn't grounded in any entities."""
+ isn't grounded in any entities."""
     a = _artifact(artifact_id="g1", kind="graph_json")
     payload = b'{"nodes": [], "edges": []}'
     checks = validate_graph(
@@ -492,8 +492,8 @@ def test_graph_zero_nodes_fails():
 
 def test_graph_dangling_edges_fail():
     """Edges reference node ids that aren't in the nodes list —
-    invalid graph topology. Index would surface dangling references
-    at retrieval time."""
+ invalid graph topology. Index would surface dangling references
+ at retrieval time."""
     a = _artifact(artifact_id="g1", kind="graph_json")
     payload = (
         b'{"nodes": [{"id": "n1"}, {"id": "n2"}], '
@@ -515,7 +515,7 @@ def test_graph_dangling_edges_fail():
 
 def test_graph_grounded_in_chunks_fails_when_source_artifacts_missing():
     """Graph carries source_artifact_ids that don't match this run's
-    chunks — orphan graph from a different run that snuck through."""
+ chunks — orphan graph from a different run that snuck through."""
     a = _artifact(
         artifact_id="g1", kind="graph_json",
         source_artifact_ids=["chunk-from-other-run"],

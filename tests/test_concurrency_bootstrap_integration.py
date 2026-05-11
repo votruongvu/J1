@@ -1,7 +1,7 @@
-"""Wave 7.5 — bootstrap wiring + require_enrichment_success
+"""bootstrap wiring + require_enrichment_success
 precedence tests.
 
-Pins the integration contract that Wave-7's `LLMCallLimiter` +
+Pins the integration contract that 's `LLMCallLimiter` +
 `EnrichmentConcurrencySettings` actually reach the production
 composition path, plus the new `require_enrichment_success`
 fallback resolver.
@@ -107,7 +107,7 @@ def test_bootstrap_limiter_matches_settings():
 
 def test_bootstrap_limiter_disabled_returns_none():
     """Operators who explicitly disable enrichment shouldn't get
-    a limiter — the field is None and downstream code skips wiring."""
+ a limiter — the field is None and downstream code skips wiring."""
     result = _bootstrap({ENV_ENRICHMENT_ENABLED: "false"})
     assert result.llm_call_limiter is None
 
@@ -157,8 +157,8 @@ def test_composite_enricher_helper_threads_limiter_through_every_child():
 
 def test_composite_enricher_helper_works_when_limiter_disabled():
     """When bootstrap says enrichment is disabled, the helper still
-    builds a composite — just without a limiter. Legacy back-compat
-    behaviour kicks in (direct LLM calls)."""
+ builds a composite — just without a limiter. Legacy back-compat
+ behaviour kicks in (direct LLM calls)."""
     result = _bootstrap({ENV_ENRICHMENT_ENABLED: "false"})
     profile = Profile(profile_id="test", metadata={}, prompts={})
     composite = build_composite_enricher_from_bootstrap(
@@ -171,8 +171,8 @@ def test_composite_enricher_helper_works_when_limiter_disabled():
 
 def test_composite_default_factory_still_works_without_limiter():
     """Direct `CompositeEnricher.from_default` (used by tests +
-    legacy callers) keeps working without a limiter — no Wave-7.5
-    regression for code that wasn't wired through bootstrap."""
+ legacy callers) keeps working without a limiter — no 
+ regression for code that wasn't wired through bootstrap."""
     profile = Profile(profile_id="test", metadata={}, prompts={})
     composite = CompositeEnricher.from_default(
         profile, text_client=object(), vision_client=object(),
@@ -192,9 +192,9 @@ def test_composite_default_factory_still_works_without_limiter():
     ],
 )
 def test_skeleton_modules_construct_without_limiter(module_class):
-    """Wave-6 skeletons don't call LLMs — they MUST construct +
-    operate without a limiter being passed in. The bootstrap layer
-    only threads the limiter into LLM-capable enrichers."""
+    """ skeletons don't call LLMs — they MUST construct +
+ operate without a limiter being passed in. The bootstrap layer
+ only threads the limiter into LLM-capable enrichers."""
     instance = module_class()
     assert isinstance(instance, EnrichmentModule)
     # No `_llm_call_limiter` attribute expected — skeletons don't
@@ -222,7 +222,7 @@ def test_require_success_request_override_wins():
 
 def test_require_success_request_override_false_explicit():
     """Explicit `False` from request override still counts as
-    opinion — not the same as `None` which falls through."""
+ opinion — not the same as `None` which falls through."""
     resolved = resolve_require_enrichment_success(
         request_override=False,
         domain_policy=DomainEnrichmentPolicy(require_enrichment_success=True),
@@ -253,8 +253,8 @@ def test_require_success_domain_pack_opinion_wins_over_env():
 
 def test_require_success_domain_pack_with_non_auto_policy_counts_as_opinion():
     """Pack with policy=always but require=False is still
-    expressing an opinion via the policy literal — falls through
-    to its require=False value, not env."""
+ expressing an opinion via the policy literal — falls through
+ to its require=False value, not env."""
     resolved = resolve_require_enrichment_success(
         domain_policy=DomainEnrichmentPolicy(
             policy="always", require_enrichment_success=False,
@@ -267,8 +267,8 @@ def test_require_success_domain_pack_with_non_auto_policy_counts_as_opinion():
 
 def test_require_success_falls_through_to_env_when_pack_is_noop():
     """A pack with default (policy=auto, require=False) has no
-    opinion — env_default takes over so deployments can set a
-    fleet-wide default without modifying every pack."""
+ opinion — env_default takes over so deployments can set a
+ fleet-wide default without modifying every pack."""
     resolved = resolve_require_enrichment_success(
         domain_policy=DomainEnrichmentPolicy(),  # default no-op
         env_default=True,
@@ -296,8 +296,8 @@ def test_require_success_resolved_to_dict_carries_source():
 
 
 def test_bootstrap_module_has_no_split_mode_strings():
-    """Wave 7.5's bootstrap additions must not reintroduce
-    split-mode vocabulary."""
+    """'s bootstrap additions must not reintroduce
+ split-mode vocabulary."""
     import inspect
     from j1.compose import bootstrap
     src = inspect.getsource(bootstrap)
@@ -307,7 +307,7 @@ def test_bootstrap_module_has_no_split_mode_strings():
 
 def test_enrichment_policy_module_has_no_pre_compile_gating():
     """The policy resolver must not reach back into pre-compile
-    graph/index gating vocabulary."""
+ graph/index gating vocabulary."""
     import inspect
     from j1.processing import enrichment_policy
     src = inspect.getsource(enrichment_policy)
@@ -322,8 +322,8 @@ def test_enrichment_policy_module_has_no_pre_compile_gating():
 
 def test_enrichment_settings_docstring_documents_one_shared_semaphore():
     """The module-level docstring explicitly explains why per-tier
-    semaphores are deferred. A regression-check that the comment
-    survives future edits."""
+ semaphores are deferred. A regression-check that the comment
+ survives future edits."""
     from j1.processing import enrichment_settings
     docstring = enrichment_settings.__doc__ or ""
     assert "shared semaphore" in docstring.lower() or "one shared" in docstring.lower()

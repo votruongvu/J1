@@ -1,18 +1,18 @@
-"""Cleanup-patch tests (post-Wave-5).
+"""Cleanup-patch tests (post-).
 
 Covers the five cleanup objectives:
 
 1. Dead-code removal — confirms the deleted modules can't be
-   imported and aren't referenced by active workflow code.
+ imported and aren't referenced by active workflow code.
 2. Typed domain contracts — `DomainExtractionHints`,
-   `DomainValidationRules`, `DomainPromptPack` load from the civil
-   YAML and stay empty for the generic pack.
+ `DomainValidationRules`, `DomainPromptPack` load from the civil
+ YAML and stay empty for the generic pack.
 3. Policy-override resolver — request > project > domain > system
-   precedence.
+ precedence.
 4. CompileResult minimal signals — `metadata_presence` +
-   `ContentRepresentationFlags`.
+ `ContentRepresentationFlags`.
 5. Analyzer consumes `InitialExecutionPlan` candidates + the
-   resolved policy.
+ resolved policy.
 """
 
 from __future__ import annotations
@@ -69,14 +69,14 @@ from j1.processing.enrichment_policy import (
 )
 def test_dead_module_no_longer_importable(module_path):
     """Hard-deletion: importing any of the dead modules must raise.
-    A regression here means someone re-introduced the legacy code."""
+ A regression here means someone re-introduced the legacy code."""
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module(module_path)
 
 
 def test_active_workflow_does_not_reference_dead_modules():
     """Defensive: the workflow source must not import any of the
-    deleted modules. Catches a half-applied revert."""
+ deleted modules. Catches a half-applied revert."""
     import inspect
     from j1.orchestration.workflows import project_processing
     src = inspect.getsource(project_processing)
@@ -134,8 +134,8 @@ def test_civil_pack_carries_typed_prompt_pack():
 
 def test_general_pack_carries_empty_contracts():
     """The generic fallback pack must remain a no-op overlay: all
-    new contracts default to empty so generic runs see no domain
-    influence beyond the fallback context."""
+ new contracts default to empty so generic runs see no domain
+ influence beyond the fallback context."""
     pack = build_general_pack()
     assert pack.extraction_hints == DomainExtractionHints()
     assert pack.validation_rules == DomainValidationRules()
@@ -144,13 +144,13 @@ def test_general_pack_carries_empty_contracts():
 
 def test_domain_contracts_are_generic_no_civil_branches_in_models():
     """The typed contracts on `j1.domains.models` must not contain
-    civil-specific CODE LOGIC. Docstrings may MENTION civil as an
-    example (it's the sample pack), but no field name, conditional,
-    or default value should encode civil vocabulary.
+ civil-specific CODE LOGIC. Docstrings may MENTION civil as an
+ example (it's the sample pack), but no field name, conditional,
+ or default value should encode civil vocabulary.
 
-    Implementation: AST-walk the module, inspect identifiers + bool
-    op operands + string literals OUTSIDE docstrings. Skip module/
-    class/function docstrings entirely."""
+ Implementation: AST-walk the module, inspect identifiers + bool
+ op operands + string literals OUTSIDE docstrings. Skip module/
+ class/function docstrings entirely."""
     import ast
     import inspect
     from j1.domains import models
@@ -224,8 +224,8 @@ def test_resolve_system_default_when_no_other_layer():
 
 def test_resolve_invalid_layers_fall_through():
     """A typo at the request layer should not crash — fall through
-    to the next layer. Keeps deployment-level typos from breaking
-    runs at the policy boundary."""
+ to the next layer. Keeps deployment-level typos from breaking
+ runs at the policy boundary."""
     resolved = resolve_enrichment_policy(
         request_override="aggressive",  # typo
         domain_policy=DomainEnrichmentPolicy(policy="always"),
@@ -236,7 +236,7 @@ def test_resolve_invalid_layers_fall_through():
 
 def test_resolve_rejects_invalid_system_default():
     """The system default is the backstop — an invalid value there
-    is a deployment-time bug, not a runtime fallback."""
+ is a deployment-time bug, not a runtime fallback."""
     with pytest.raises(ValueError, match="not one of"):
         resolve_enrichment_policy(system_default="silent")
 
@@ -263,8 +263,8 @@ def test_compile_result_carries_metadata_presence_when_supplied():
 
 def test_compile_result_flags_tables_present_but_unstructured():
     """Bridge surfaced a table_count > 0 but no per-table
-    descriptors → flag. Wave 6's table enricher will recommend
-    enrichment for these."""
+ descriptors → flag. 's table enricher will recommend
+ enrichment for these."""
     ar = ArtifactActivityResult(
         status="succeeded", artifact_ids=["a"], kinds=("chunk",),
         content_stats={
@@ -344,7 +344,7 @@ def test_compile_result_round_trip_preserves_new_signals():
 
 def test_compile_result_still_preserves_raw_artifact_refs():
     """The cleanup must NOT regress the raw-output preservation
-    contract from Wave 4."""
+ contract from."""
     ar = ArtifactActivityResult(
         status="succeeded",
         artifact_ids=["a-1", "a-2", "a-3"],
@@ -377,7 +377,7 @@ def test_analyzer_adds_initial_plan_candidates_to_recommended():
 
 def test_analyzer_records_candidate_provenance_in_reasons():
     """The FE must be able to render 'candidate from initial
-    execution plan' — the reason string carries that source."""
+ execution plan' — the reason string carries that source."""
     plan = assess_post_compile_enrich(
         _good_signals(),
         initial_plan_candidates=("requirement_extraction",),
@@ -390,7 +390,7 @@ def test_analyzer_records_candidate_provenance_in_reasons():
 
 def test_analyzer_does_not_duplicate_candidates_already_recommended():
     """Civil pack force-recommends requirement_extraction. When the
-    initial plan also carries it, it should appear once."""
+ initial plan also carries it, it should appear once."""
     pack = build_civil_engineering_pack()
     plan = assess_post_compile_enrich(
         _good_signals(),
@@ -403,7 +403,7 @@ def test_analyzer_does_not_duplicate_candidates_already_recommended():
 
 def test_analyzer_promotes_optional_to_recommended_with_candidates():
     """No tables/images → OPTIONAL. With initial-plan candidates
-    landing on recommended, lift the verdict to RECOMMENDED."""
+ landing on recommended, lift the verdict to RECOMMENDED."""
     plan = assess_post_compile_enrich(
         _good_signals(),
         initial_plan_candidates=("requirement_extraction",),
@@ -433,8 +433,8 @@ def test_analyzer_denied_task_overrides_initial_plan_candidate():
 
 def test_analyzer_request_override_never_collapses_civil_always():
     """Per-run `never` override beats domain `always`. Final
-    verdict is SKIP; the resolved-policy block on the plan records
-    the source."""
+ verdict is SKIP; the resolved-policy block on the plan records
+ the source."""
     pack = build_civil_engineering_pack()
     resolved = resolve_enrichment_policy(
         request_override="never",
@@ -452,7 +452,7 @@ def test_analyzer_request_override_never_collapses_civil_always():
 
 def test_analyzer_resolved_policy_block_surfaces_source():
     """Even without a real override (resolved=domain), the plan
-    carries the resolved block so the FE shows the source."""
+ carries the resolved block so the FE shows the source."""
     pack = build_civil_engineering_pack()
     resolved = resolve_enrichment_policy(domain_policy=pack.enrichment_policy)
     plan = assess_post_compile_enrich(
@@ -487,7 +487,7 @@ def test_analyzer_does_not_mutate_normalized_compile_result():
 
 def test_analyzer_does_not_invoke_enrichment_modules():
     """W5 invariant: the analyzer is decision-only. It must not
-    import or call any module from `j1.enrichers`."""
+ import or call any module from `j1.enrichers`."""
     import ast
     import inspect
     from j1.processing import enrich_assessment

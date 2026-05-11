@@ -85,7 +85,7 @@ def _step(assessment, name):
 
 def test_clean_text_doc_picks_fast_profile_with_no_vision_or_graph():
     """A clean text document with clear headings, no tables, no
-    images → fast profile, no vision, no graph, no req/risk."""
+ images → fast profile, no vision, no graph, no req/risk."""
     items = [
         ParsedContentItem(
             item_id="h1", type="heading", page_idx=1,
@@ -215,7 +215,7 @@ def test_clear_headings_select_section_aware_chunking():
 
 def test_no_headings_picks_page_or_semantic_chunking():
     """Without heading items, chunking falls back to page-aware (when
-    multi-page) or semantic (when block density is high)."""
+ multi-page) or semantic (when block density is high)."""
     items = [
         ParsedContentItem(
             item_id=f"p{i}", type="paragraph", page_idx=(i // 5) + 1,

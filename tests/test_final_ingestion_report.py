@@ -1,11 +1,11 @@
-"""Wave 10 — tests for the typed `FinalIngestionReport` builder.
+"""tests for the typed `FinalIngestionReport` builder.
 
 Pins:
-  1. Per-(A–F) projection: each Wave-8 final status produces a
-     report carrying the right stage statuses + summaries.
-  2. Serialization round-trip stability via `to_dict()`.
-  3. Artifact-ref pluck + retry-count + raw-compile-ref surfacing.
-  4. Zero stale vocabulary (split_mode / gating / IngestPlanner).
+ 1. Per-(A–F) projection: each final status produces a
+ report carrying the right stage statuses + summaries.
+ 2. Serialization round-trip stability via `to_dict`.
+ 3. Artifact-ref pluck + retry-count + raw-compile-ref surfacing.
+ 4. Zero stale vocabulary (split_mode / gating / IngestPlanner).
 """
 
 from __future__ import annotations
@@ -415,8 +415,8 @@ def test_top_level_warnings_aggregate_across_stages():
 
 def test_report_payload_has_no_split_mode_vocabulary():
     """The report is the operator/FE wire format — must not
-    reintroduce split-mode / pre-compile gating / IngestPlanner
-    terminology."""
+ reintroduce split-mode / pre-compile gating / IngestPlanner
+ terminology."""
     report = build_final_ingestion_report(_inputs())
     payload = report.to_dict()
     import json
@@ -435,8 +435,8 @@ def test_report_payload_has_no_split_mode_vocabulary():
 
 def test_report_module_source_has_no_split_mode_vocabulary():
     """Static guard — the source file itself must stay free of the
-    legacy vocabulary so docstrings + variable names don't leak it
-    via observability paths."""
+ legacy vocabulary so docstrings + variable names don't leak it
+ via observability paths."""
     from j1.processing import final_ingestion_report
     src = inspect.getsource(final_ingestion_report)
     for forbidden in (
@@ -450,8 +450,8 @@ def test_report_module_source_has_no_split_mode_vocabulary():
 
 
 def test_minimal_inputs_produce_a_valid_report_without_crashing():
-    """Pre-Wave-10 runs (no artifacts persisted yet) should still
-    produce a valid report — every stage stays PENDING / SKIPPED."""
+    """Pre- runs (no artifacts persisted yet) should still
+ produce a valid report — every stage stays PENDING / SKIPPED."""
     report = build_final_ingestion_report(ReportSourceInputs(
         run_id="run-x",
         document_id=None,
@@ -471,8 +471,8 @@ def test_minimal_inputs_produce_a_valid_report_without_crashing():
 
 def test_skipped_enrichment_reason_falls_back_to_plan_reasons_when_missing_overlay():
     """When the enrichment_result artifact is absent (enrichment
-    was filtered out before persistence), the skipped reason can
-    fall back to the enrich plan's `reasons[]`."""
+ was filtered out before persistence), the skipped reason can
+ fall back to the enrich plan's `reasons[]`."""
     report = build_final_ingestion_report(_inputs(
         enrichment_result=None,
         post_compile_enrich_plan=_enrich_plan(
@@ -492,8 +492,8 @@ def test_skipped_enrichment_reason_falls_back_to_plan_reasons_when_missing_overl
 
 def test_stage_status_vocabulary_is_pinned():
     """The FE consumes stage statuses verbatim — pin the closed
-    vocabulary so adding a new stage status is a coordinated
-    change."""
+ vocabulary so adding a new stage status is a coordinated
+ change."""
     pinned = {
         STAGE_STATUS_FAILED, STAGE_STATUS_SKIPPED,
         STAGE_STATUS_SUCCEEDED, STAGE_STATUS_SUCCEEDED_WITH_WARNINGS,

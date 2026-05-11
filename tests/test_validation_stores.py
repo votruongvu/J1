@@ -4,11 +4,11 @@ Both stores follow the `JsonlIngestionRunStore` pattern: append-only
 writes, latest-snapshot-wins reads, JSONL on disk under the
 workspace's `validation` area. The tests lock in:
 
-  * round-tripping a typed DTO through the file (no field drops)
-  * latest-snapshot semantics on repeated upserts
-  * cross-tenant + cross-project isolation
-  * tolerant reads (malformed line skipped, not propagated)
-  * `list_for_run` filters + ordering
+ * round-tripping a typed DTO through the file (no field drops)
+ * latest-snapshot semantics on repeated upserts
+ * cross-tenant + cross-project isolation
+ * tolerant reads (malformed line skipped, not propagated)
+ * `list_for_run` filters + ordering
 """
 
 from __future__ import annotations
@@ -103,9 +103,9 @@ def _make_run(
 
 def test_set_store_round_trips_test_cases(workspace, ctx):
     """Typed DTO → JSONL → typed DTO without losing fields. Test
-    cases are the most field-rich shape in this surface; if any of
-    their lists silently drop, every downstream tool sees stale
-    state."""
+ cases are the most field-rich shape in this surface; if any of
+ their lists silently drop, every downstream tool sees stale
+ state."""
     store = JsonlValidationSetStore(workspace)
     cases = [
         _make_test_case(test_case_id="tc-1", expected_chunks=["c-1", "c-2"]),
@@ -129,8 +129,8 @@ def test_set_store_round_trips_test_cases(workspace, ctx):
 
 def test_set_store_latest_snapshot_wins(workspace, ctx):
     """Re-upserting the same id replaces the previous snapshot
-    semantically. Phase 5 will use this to support editing — the
-    pattern is locked here so the contract is honest from day one."""
+ semantically. will use this to support editing — the
+ pattern is locked here so the contract is honest from day one."""
     store = JsonlValidationSetStore(workspace)
     store.upsert(ctx, _make_set(set_id="vs-1", created_at="2026-01-01T00:00:00Z"))
     store.upsert(ctx, _make_set(set_id="vs-1", created_at="2026-05-07T10:00:00Z"))
@@ -147,8 +147,8 @@ def test_set_store_get_missing_returns_none(workspace, ctx):
 
 def test_set_store_list_for_run_filters_and_orders(workspace, ctx):
     """List should return only sets for the requested run, ordered
-    most-recent-first by created_at — that's how the FE renders
-    the dropdown."""
+ most-recent-first by created_at — that's how the FE renders
+ the dropdown."""
     store = JsonlValidationSetStore(workspace)
     store.upsert(ctx, _make_set(set_id="vs-A1", run_id="run-A", created_at="2026-01-01T00:00:00Z"))
     store.upsert(ctx, _make_set(set_id="vs-A2", run_id="run-A", created_at="2026-05-07T10:00:00Z"))
@@ -165,8 +165,8 @@ def test_set_store_list_for_run_filters_and_orders(workspace, ctx):
 
 def test_set_store_cross_tenant_isolation(workspace, ctx):
     """A set written under (acme, alpha) is invisible from
-    (acme, beta) or (enemy, alpha). This is the core ownership
-    guarantee the REST layer leans on."""
+ (acme, beta) or (enemy, alpha). This is the core ownership
+ guarantee the REST layer leans on."""
     store = JsonlValidationSetStore(workspace)
     store.upsert(ctx, _make_set(set_id="vs-1", run_id="run-1"))
 
@@ -181,7 +181,7 @@ def test_set_store_cross_tenant_isolation(workspace, ctx):
 
 def test_set_store_tolerates_malformed_jsonl_line(workspace, ctx):
     """A truncated tail line (e.g. process killed mid-write) must
-    not poison reads of every other set in the file."""
+ not poison reads of every other set in the file."""
     store = JsonlValidationSetStore(workspace)
     store.upsert(ctx, _make_set(set_id="vs-good"))
 
@@ -198,8 +198,8 @@ def test_set_store_tolerates_malformed_jsonl_line(workspace, ctx):
 
 def test_run_store_round_trips_results_and_summary(workspace, ctx):
     """The validation run carries the most nested DTO graph in this
-    surface. Round-trip locks every layer (chunk refs, citations,
-    checks, summary, coverage) at once."""
+ surface. Round-trip locks every layer (chunk refs, citations,
+ checks, summary, coverage) at once."""
     store = JsonlValidationRunStore(workspace)
     result = ValidationResultDTO(
         result_id="vr-001",
@@ -260,8 +260,8 @@ def test_run_store_round_trips_results_and_summary(workspace, ctx):
 
 def test_run_store_lifecycle_upserts_latest_wins(workspace, ctx):
     """Validation runs upsert at three lifecycle points: pending,
-    running, terminal. The latest snapshot wins so callers always
-    see the current state without having to reduce a journal."""
+ running, terminal. The latest snapshot wins so callers always
+ see the current state without having to reduce a journal."""
     store = JsonlValidationRunStore(workspace)
     store.upsert(ctx, _make_run(execution_status="pending", validation_status="inconclusive"))
     store.upsert(ctx, _make_run(execution_status="running", validation_status="inconclusive"))
@@ -275,8 +275,8 @@ def test_run_store_lifecycle_upserts_latest_wins(workspace, ctx):
 
 def test_run_store_status_split_persists(workspace, ctx):
     """The execution / validation status fields are independent —
-    `completed` + `failed` is a real and supported state. The
-    store must not collapse them on serialise/deserialise."""
+ `completed` + `failed` is a real and supported state. The
+ store must not collapse them on serialise/deserialise."""
     store = JsonlValidationRunStore(workspace)
     store.upsert(
         ctx,

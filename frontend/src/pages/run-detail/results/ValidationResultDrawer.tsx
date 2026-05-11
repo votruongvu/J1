@@ -4,7 +4,7 @@
  * Mirrors the existing `ChunkDrawer` two-view pattern (Readable +
  * Raw JSON) so the FE feels consistent across surfaces.
  *
- * Phase 5: tester verdict UI. The tester can record `pass` /
+ * tester verdict UI. The tester can record `pass` /
  * `warning` / `fail` plus free-form notes. The recorded verdict is
  * a SEPARATE signal from the auto `status` — both are surfaced
  * side-by-side; the deterministic outcome stays unchanged.
@@ -23,7 +23,7 @@ interface ValidationResultDrawerProps {
   /** Validation run id this result belongs to. */
   validationRunId: string | null;
   /** Called after a successful verdict POST so the parent can
-   * refresh its `latestRun` state and re-render the table. */
+ * refresh its `latestRun` state and re-render the table. */
   onVerdictRecorded?: () => void;
   onClose: () => void;
 }

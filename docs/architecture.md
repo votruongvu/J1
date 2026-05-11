@@ -98,13 +98,13 @@ Every project gets a deterministic on-disk layout under
 `{J1_DATA_ROOT}/tenants/{tenant_id}/projects/{project_id}/`:
 
 ```
-raw/         Original ingested files
-compiled/    Compiled artifacts (chunks, parsed manifests, compile.image, …)
-enriched/    Enriched artifacts (Wave-6 typed overlays + legacy enricher outputs)
-graph/       Graph artifacts
-search/      SQLite FTS5 database (rebuildable cache)
-audit/       events.jsonl + costs.jsonl (append-only)
-runtime/     documents.json, artifacts.json, review_items.json, …
+raw/ Original ingested files
+compiled/ Compiled artifacts (chunks, parsed manifests, compile.image, …)
+enriched/ Enriched artifacts ( typed overlays + legacy enricher outputs)
+graph/ Graph artifacts
+search/ SQLite FTS5 database (rebuildable cache)
+audit/ events.jsonl + costs.jsonl (append-only)
+runtime/ documents.json, artifacts.json, review_items.json, …
 ```
 
 Path resolution + traversal protection live in
@@ -136,7 +136,7 @@ defines six protocols every backend implements:
 | `ModelProvider` | `complete(ctx, prompt, *, model=None, …)` | `ModelResponse` |
 
 Each protocol has a `kind: str` for dispatch. The new typed-overlay
-modules (Wave-6+) sit alongside the legacy `EnrichmentProcessor`
+modules sit alongside the legacy `EnrichmentProcessor`
 implementations — see
 [`architecture/enrichment-overlay.md`](architecture/enrichment-overlay.md).
 
@@ -162,7 +162,7 @@ Signals on `ProjectProcessingWorkflow`:
 | `cancel` | Graceful cancellation; finishes current activity then exits as CANCELLED |
 | `approve_budget` / `reject_budget` | Resolves a budget gate |
 | `approve_review` / `reject_review` | Resolves a human-review gate |
-| `trigger_compile` | Releases the two-phase compile gate (Wave 4) |
+| `trigger_compile` | Releases the two-phase compile gate |
 
 For Temporal infrastructure setup (worker boot, search-attribute
 registration, signal CLI) see
@@ -224,7 +224,7 @@ for the contributor workflow.
 
 ## Legacy / compatibility notes
 
-The following docs pre-date the Wave 1–12 ingestion refactor. They
+The following docs pre-date the –12 ingestion refactor. They
 remain in the repo for compatibility / historical reference but
 **do not describe the currently shipping ingestion pipeline**.
 Each carries a deprecation banner at the top pointing to the
@@ -246,25 +246,25 @@ have been removed from the currently shipping system. They appear
 in legacy docs but are NOT present in current code:
 
 - **`IngestPlanner` / `DefaultIngestPlanner` / `IngestPlan` /
-  `IngestPolicy`** — the pre-compile adaptive planner. Replaced by
-  the cheap pre-compile `InitialExecutionPlan` (Wave 8) +
-  post-compile `PostCompileEnrichPlan` (Wave 5). The new pipeline
-  makes enrichment decisions AFTER compile evidence is visible,
-  not before.
+ `IngestPolicy`** — the pre-compile adaptive planner. Replaced by
+ the cheap pre-compile `InitialExecutionPlan` +
+ post-compile `PostCompileEnrichPlan`. The new pipeline
+ makes enrichment decisions AFTER compile evidence is visible,
+ not before.
 - **Split mode / complete mode** — the legacy RAGAnything bridge
-  configuration. The current compile stage uses `process_document`
-  as a single black-box call; the `split_mode` distinction is gone
-  from runtime code (verified by AST tests).
+ configuration. The current compile stage uses `process_document`
+ as a single black-box call; the `split_mode` distinction is gone
+ from runtime code (verified by AST tests).
 - **Pre-compile graph / index gating** — the legacy planner decided
-  graph + index inclusion before compile output existed. The new
-  pipeline gates these via the post-compile assessor's typed
-  `PostCompileEnrichPlan`, with compile evidence in hand.
+ graph + index inclusion before compile output existed. The new
+ pipeline gates these via the post-compile assessor's typed
+ `PostCompileEnrichPlan`, with compile evidence in hand.
 - **`final_summary` as the primary aggregate** — `final_summary`
-  remains as a backward-compatible artifact for older consumers;
-  the **preferred** aggregate is `final_ingestion_report` (Wave 10).
+ remains as a backward-compatible artifact for older consumers;
+ the **preferred** aggregate is `final_ingestion_report`.
 
 If you find code or a doc that re-introduces any of the above,
 the architecture has drifted — file an issue. Tests in
-`test_wave9b_vocabulary.py`, `test_wave11b_pipeline_hardening.py`,
-and `test_wave12_docs_and_cleanup.py` enforce that the active
+`test__vocabulary.py`, `test__pipeline_hardening.py`,
+and `test__docs_and_cleanup.py` enforce that the active
 surface stays clean.

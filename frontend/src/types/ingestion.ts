@@ -17,9 +17,9 @@
  * Run lifecycle status.
  *
  * Two equivalent name pairs exist for historical reasons:
- *   - SUCCEEDED                ↔  COMPLETED
- *   - SUCCEEDED_WITH_WARNINGS  ↔  COMPLETED_WITH_WARNINGS
- *   - REQUIRES_HUMAN_REVIEW    ↔  AWAITING_HUMAN_REVIEW
+ * - SUCCEEDED ↔ COMPLETED
+ * - SUCCEEDED_WITH_WARNINGS ↔ COMPLETED_WITH_WARNINGS
+ * - REQUIRES_HUMAN_REVIEW ↔ AWAITING_HUMAN_REVIEW
  *
  * The J1 API uses the SUCCEEDED-form names. The mock client uses
  * the COMPLETED-form. The display layer (`lib/display.ts`) carries
@@ -138,8 +138,8 @@ export interface ExecutionPlan {
   summary: PlanSummary;
   steps: PlanStep[];
   /** True when any enabled step needs the vision LLM. Drives the
-   * "Vision LLM" indicator on the plan card — vision is OFF by
-   * default; this surfaces the operator-visible exception. */
+ * "Vision LLM" indicator on the plan card — vision is OFF by
+ * default; this surfaces the operator-visible exception. */
   requires_vision?: boolean;
   /** True when any enabled step uses the premium LLM class. */
   requires_premium_llm?: boolean;

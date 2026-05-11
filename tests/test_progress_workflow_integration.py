@@ -1,14 +1,14 @@
 """Integration tests for ProgressReporter wiring through workflow + activities.
 
 Verifies:
-  * Activities emit `step.started` / `step.completed` when a reporter
-    is configured AND the request carries a `correlation_id`.
-  * Activities emit `step.failed` on exception and re-raise (do NOT
-    swallow).
-  * Workflow exit calls `report_run_terminal` activity that produces
-    `run.completed` / `run.failed` events.
-  * Skipped stages emit `step.skipped` events.
-  * Reporter=None (default) → bit-for-bit identical to legacy behaviour.
+ * Activities emit `step.started` / `step.completed` when a reporter
+ is configured AND the request carries a `correlation_id`.
+ * Activities emit `step.failed` on exception and re-raise (do NOT
+ swallow).
+ * Workflow exit calls `report_run_terminal` activity that produces
+ `run.completed` / `run.failed` events.
+ * Skipped stages emit `step.skipped` events.
+ * Reporter=None (default) → bit-for-bit identical to legacy behaviour.
 
 Tests use in-memory `_RecordingReporter` to capture every call.
 """
@@ -93,8 +93,8 @@ def scope() -> ProjectScope:
 
 class _StubProcessing:
     """Drop-in stub for `ProcessingService`. Each method returns the
-    canned result; tests can flip to FAILED / SKIPPED to exercise
-    different paths."""
+ canned result; tests can flip to FAILED / SKIPPED to exercise
+ different paths."""
 
     def __init__(self):
         self.compile_result = ArtifactProcessingResult(status=ResultStatus.SUCCEEDED)
@@ -163,7 +163,7 @@ def test_compile_emits_step_started_then_step_completed(scope, reporter):
 
 def test_compile_without_reporter_emits_no_events(scope):
     """Backwards-compat regression guard: reporter=None → zero
-    progress calls. Default deployment behaviour is unchanged."""
+ progress calls. Default deployment behaviour is unchanged."""
     activities = _activities(None)
     activities.compile(CompileActivityInput(
         scope=scope, document_id="doc-1", processor_kind="mock",
@@ -176,8 +176,8 @@ def test_compile_without_reporter_emits_no_events(scope):
 
 def test_compile_without_correlation_id_emits_no_events(scope, reporter):
     """An activity invocation without correlation_id (== run_id)
-    has nothing to attach progress events to. The activity must
-    skip emission rather than write events with empty run_id."""
+ has nothing to attach progress events to. The activity must
+ skip emission rather than write events with empty run_id."""
     activities = _activities(reporter)
     activities.compile(CompileActivityInput(
         scope=scope, document_id="doc-1", processor_kind="mock",
@@ -188,9 +188,9 @@ def test_compile_without_correlation_id_emits_no_events(scope, reporter):
 
 def test_compile_emits_step_failed_on_service_exception_and_reraises(scope, reporter):
     """Critical: the reporter MUST NOT swallow exceptions. The
-    service raises, the reporter records `step.failed`, then the
-    activity re-raises so the workflow's failure-propagation
-    contract still fires."""
+ service raises, the reporter records `step.failed`, then the
+ activity re-raises so the workflow's failure-propagation
+ contract still fires."""
     proc = _StubProcessing()
     proc.compile_raises = RuntimeError("vendor exploded")
     activities = ProcessingActivities(
@@ -214,8 +214,8 @@ def test_compile_emits_step_failed_on_service_exception_and_reraises(scope, repo
 
 def test_compile_failed_status_emits_step_failed(scope, reporter):
     """Service-level failure (status=FAILED) ALSO emits step.failed —
-    the workflow's `_BusinessRejection` then converts it into a
-    workflow-level ApplicationError."""
+ the workflow's `_BusinessRejection` then converts it into a
+ workflow-level ApplicationError."""
     activities = _activities(reporter)
     activities._processing.compile_result = ArtifactProcessingResult(
         status=ResultStatus.FAILED, error="parser error",
@@ -282,10 +282,10 @@ def test_compile_flips_run_record_from_assessing_to_running(
     scope, reporter, ctx, workspace,
 ):
     """Regression for the 'UI stuck on Building execution plan' bug.
-    The PrimaryStatusPanel renders that label while `IngestionRun.status`
-    is ASSESSING / CREATED. Without a mid-flight update the run sits at
-    ASSESSING until terminal — now the first step.started flips it to
-    RUNNING and updates current_stage / progress_percent."""
+ The PrimaryStatusPanel renders that label while `IngestionRun.status`
+ is ASSESSING / CREATED. Without a mid-flight update the run sits at
+ ASSESSING until terminal — now the first step.started flips it to
+ RUNNING and updates current_stage / progress_percent."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -320,9 +320,9 @@ def test_full_pipeline_updates_run_record_through_each_stage(
     scope, reporter, ctx, workspace,
 ):
     """Walk the activities in pipeline order and assert the run record
-    ends up at the highest progress tick (INDEX end) and the last
-    stage sticks. Each stage transition pushes progress forward but
-    never regresses it."""
+ ends up at the highest progress tick (INDEX end) and the last
+ stage sticks. Each stage transition pushes progress forward but
+ never regresses it."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -366,8 +366,8 @@ def test_full_pipeline_updates_run_record_through_each_stage(
 
 def test_compile_without_run_store_does_not_crash(scope, reporter):
     """Backwards-compat regression guard: deployments that don't wire
-    a `run_store` keep working — the activity must NOT raise just
-    because the IngestionRun update path is unavailable."""
+ a `run_store` keep working — the activity must NOT raise just
+ because the IngestionRun update path is unavailable."""
     activities = ProcessingActivities(
         processing=_StubProcessing(),
         sources=_StubSourceRegistry(),
@@ -388,10 +388,10 @@ def test_compile_surfaces_content_stats_from_processor_metadata(
     scope, reporter,
 ):
     """The post-compile planner reads `content_stats` off the activity
-    result to override the deterministic profile (so a 1-page PDF
-    that contains only a diagram gets `has_images=True`). Compile
-    processors signal this via `ArtifactProcessingResult.metadata`;
-    `_artifact_result` re-projects only the planner-recognised keys."""
+ result to override the deterministic profile (so a 1-page PDF
+ that contains only a diagram gets `has_images=True`). Compile
+ processors signal this via `ArtifactProcessingResult.metadata`;
+ `_artifact_result` re-projects only the planner-recognised keys."""
     activities = _activities(reporter)
     activities._processing.compile_result = ArtifactProcessingResult(
         status=ResultStatus.SUCCEEDED,
@@ -417,8 +417,8 @@ def test_compile_without_processor_metadata_leaves_content_stats_none(
     scope, reporter,
 ):
     """Processors that don't surface content signals leave
-    `content_stats=None` so the planner falls back to the deterministic
-    profile (legacy behaviour)."""
+ `content_stats=None` so the planner falls back to the deterministic
+ profile (legacy behaviour)."""
     activities = _activities(reporter)
     result = activities.compile(CompileActivityInput(
         scope=scope, document_id="doc-1", processor_kind="mock",
@@ -454,8 +454,8 @@ def test_run_terminal_activity_failed_calls_run_failed(scope, reporter):
 
 def test_run_terminal_activity_warnings_uses_warning_count(scope, reporter):
     """Open-question default: step.warning increments warning_count.
-    The terminal activity reads it back and emits run.completed
-    with `final_status='succeeded_with_warnings'` when count > 0."""
+ The terminal activity reads it back and emits run.completed
+ with `final_status='succeeded_with_warnings'` when count > 0."""
     runs = RunsActivities(progress_reporter=reporter)
     runs.report_run_terminal(ReportRunTerminalInput(
         scope=scope, run_id="run-1",
@@ -468,10 +468,10 @@ def test_run_terminal_activity_warnings_uses_warning_count(scope, reporter):
 
 def test_run_terminal_activity_cancelled_calls_run_cancelled(scope, reporter):
     """Cancellation is its own terminal event so the SSE stream
-    closes cleanly via `run.cancelled` (the FE doesn't have to
-    misread a cancelled run as failed). The reason field carries
-    over from the workflow's failure_message slot — workflows fan
-    that into the activity input as the human-readable cause."""
+ closes cleanly via `run.cancelled` (the FE doesn't have to
+ misread a cancelled run as failed). The reason field carries
+ over from the workflow's failure_message slot — workflows fan
+ that into the activity input as the human-readable cause."""
     runs = RunsActivities(progress_reporter=reporter)
     runs.report_run_terminal(ReportRunTerminalInput(
         scope=scope, run_id="run-1",
@@ -485,7 +485,7 @@ def test_run_terminal_activity_cancelled_calls_run_cancelled(scope, reporter):
 
 def test_run_terminal_activity_timed_out_calls_run_failed(scope, reporter):
     """`timed_out` is treated like a failure — the SSE stream closes
-    via `run.failed` and the FE renders the failed panel."""
+ via `run.failed` and the FE renders the failed panel."""
     runs = RunsActivities(progress_reporter=reporter)
     runs.report_run_terminal(ReportRunTerminalInput(
         scope=scope, run_id="run-1",
@@ -511,7 +511,7 @@ def test_step_skipped_activity_emits_step_skipped(scope, reporter):
 
 def test_runs_activities_no_reporter_is_silent_no_op(scope):
     """When the deployment hasn't wired a reporter, the activities
-    must silently no-op rather than crash."""
+ must silently no-op rather than crash."""
     runs = RunsActivities(progress_reporter=None)
     # Should not raise.
     runs.report_run_terminal(ReportRunTerminalInput(
@@ -530,11 +530,11 @@ def test_run_terminal_activity_flips_run_record_to_failed(
     scope, reporter, ctx, workspace,
 ):
     """When the workflow fails, the run record's `status` field MUST
-    flip to FAILED. Without this, the FE's `GET /ingestion-runs/{id}`
-    response keeps reporting `running` and the run-detail page sits
-    on the "Running" panel even though the timeline shows the
-    failure. Operators see "UI doesn't reflect anything" while
-    worker logs scream."""
+ flip to FAILED. Without this, the FE's `GET /ingestion-runs/{id}`
+ response keeps reporting `running` and the run-detail page sits
+ on the "Running" panel even though the timeline shows the
+ failure. Operators see "UI doesn't reflect anything" while
+ worker logs scream."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -598,8 +598,8 @@ def test_run_terminal_activity_uses_succeeded_with_warnings_when_warnings(
     scope, reporter, ctx, workspace,
 ):
     """Successful runs that accumulated warnings must surface as
-    SUCCEEDED_WITH_WARNINGS so the FE's primary status panel renders
-    the warning variant rather than the clean-success variant."""
+ SUCCEEDED_WITH_WARNINGS so the FE's primary status panel renders
+ the warning variant rather than the clean-success variant."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -654,7 +654,7 @@ def test_run_terminal_activity_flips_run_record_to_cancelled(
 
 def test_run_terminal_activity_no_store_silent_no_op(scope, reporter, ctx):
     """No `run_store` wired → the run-record update is skipped, but
-    the audit-event emission still fires (legacy behaviour)."""
+ the audit-event emission still fires (legacy behaviour)."""
     runs = RunsActivities(progress_reporter=reporter, run_store=None)
     runs.report_run_terminal(ReportRunTerminalInput(
         scope=scope, run_id="run-1", final_status="succeeded",
@@ -665,8 +665,8 @@ def test_run_terminal_activity_no_store_silent_no_op(scope, reporter, ctx):
 
 def test_run_terminal_activity_missing_run_is_no_op(scope, reporter, workspace):
     """A terminal call for a run that's not in the store must NOT
-    crash — the deterministic workflow_id pattern means a stale
-    Temporal workflow can fire after the run record was deleted."""
+ crash — the deterministic workflow_id pattern means a stale
+ Temporal workflow can fire after the run record was deleted."""
     from j1.runs import JsonlIngestionRunStore
 
     store = JsonlIngestionRunStore(workspace)
@@ -677,16 +677,16 @@ def test_run_terminal_activity_missing_run_is_no_op(scope, reporter, workspace):
     ))
 
 
-# ---- Phase 4: step_results persistence into run.metadata --------
+# ---- step_results persistence into run.metadata --------
 
 
 def test_run_terminal_persists_step_summary_into_run_metadata(
     scope, reporter, ctx, workspace,
 ):
     """The activity writes the workflow's step summary into the run
-    record's `metadata["step_results"]` so the review surface
-    (`GET /ingestion-runs/{id}/summary`) can render the per-stage
-    recap without scraping the audit log."""
+ record's `metadata["step_results"]` so the review surface
+ (`GET /ingestion-runs/{id}/summary`) can render the per-stage
+ recap without scraping the audit log."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -734,9 +734,9 @@ def test_run_terminal_persists_step_summary_into_run_metadata(
 def test_run_terminal_with_empty_step_summary_keeps_existing_metadata(
     scope, reporter, ctx, workspace,
 ):
-    """Phase 4 contract: an empty step_summary must NOT overwrite
-    previously-persisted step_results. A re-run of the activity
-    after a crash should not blank good data."""
+    """ contract: an empty step_summary must NOT overwrite
+ previously-persisted step_results. A re-run of the activity
+ after a crash should not blank good data."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -770,9 +770,9 @@ def test_run_terminal_partial_completed_with_warnings_flips_to_succeeded_with_wa
     scope, reporter, ctx, workspace,
 ):
     """A workflow that returns FinalStatus.PARTIAL_COMPLETED + warnings
-    must surface as RunStatus.SUCCEEDED_WITH_WARNINGS so the FE shows
-    the warning header. Mirrors the Phase 4 _compute_final_status
-    extension."""
+ must surface as RunStatus.SUCCEEDED_WITH_WARNINGS so the FE shows
+ the warning header. Mirrors the _compute_final_status
+ extension."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -803,7 +803,7 @@ def test_run_terminal_partial_completed_no_warnings_flips_to_succeeded(
     scope, reporter, ctx, workspace,
 ):
     """`partial_completed` with no warnings still maps cleanly to
-    SUCCEEDED — the FE doesn't need a third state."""
+ SUCCEEDED — the FE doesn't need a third state."""
     from datetime import datetime, timezone
 
     from j1.runs import IngestionRun, JsonlIngestionRunStore, RunStatus
@@ -834,8 +834,8 @@ def test_run_terminal_partial_completed_no_warnings_flips_to_succeeded(
 
 def test_step_summary_carries_per_step_status_and_required_flag(scope, reporter):
     """Open-question default: run.completed embeds a step_summary so
-    the frontend recap doesn't need a second fetch. The summary
-    carries enough fields to render per-step badges."""
+ the frontend recap doesn't need a second fetch. The summary
+ carries enough fields to render per-step badges."""
     summary = (
         StepSummaryEntry(
             step="compile", status="completed", required=True,
@@ -874,8 +874,8 @@ class _RecordingSink(AuditSink):
 
 def test_audit_backed_reporter_persists_step_started_via_activity(scope):
     """End-to-end through the real `AuditProgressReporter`: an
-    activity call lands a `j1.progress.step.started` audit event
-    with `correlation_id == run_id`."""
+ activity call lands a `j1.progress.step.started` audit event
+ with `correlation_id == run_id`."""
     sink = _RecordingSink()
     reporter = AuditProgressReporter(DefaultAuditRecorder(sink))
     activities = _activities(reporter)

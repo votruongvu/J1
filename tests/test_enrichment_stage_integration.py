@@ -1,16 +1,16 @@
-"""Wave 6.5 integration tests — workflow wiring + activity behavior +
+""" integration tests — workflow wiring + activity behavior +
 require_enrichment_success enforcement.
 
 Pins the contract surface:
 
 1. Workflow dispatches `run_enrichment_stage` activity AFTER
-   `_run_post_compile_enrich_assessment` and BEFORE `finalize`.
+ `_run_post_compile_enrich_assessment` and BEFORE `finalize`.
 2. Skipped enrichment (should_enrich=False) produces a typed
-   `status="skipped"` overlay record.
+ `status="skipped"` overlay record.
 3. `require_enrichment_success=True` + `failed` enrichment →
-   `_BusinessRejection` with `FAILURE_CODE_ENRICHMENT_REQUIRED`.
+ `_BusinessRejection` with `FAILURE_CODE_ENRICHMENT_REQUIRED`.
 4. `require_enrichment_success=False` + `failed` enrichment →
-   run continues; final status surfaces warnings.
+ run continues; final status surfaces warnings.
 5. Optional module failure doesn't destroy compile artifacts.
 6. Raw compile result preserved.
 7. Provenance preserved.
@@ -98,8 +98,8 @@ def _build_handler(
     enrichment_result: RunEnrichmentStageResult | None = None,
 ):
     """Build a handler that supplies all the activities a planner-
-    enabled run touches. `enrichment_result` lets each test inject
-    the specific outcome it wants from `run_enrichment_stage`."""
+ enabled run touches. `enrichment_result` lets each test inject
+ the specific outcome it wants from `run_enrichment_stage`."""
 
     def handler(method, payload, kwargs):
         name = _activity_name(method)
@@ -224,8 +224,8 @@ def test_workflow_records_enrich_stage_skipped_when_activity_reports_skipped(
     monkeypatch,
 ):
     """The activity decides to skip (e.g. post-compile says SKIP).
-    The workflow surfaces `enrich_stage` as SKIPPED + the run
-    completes cleanly without warnings."""
+ The workflow surfaces `enrich_stage` as SKIPPED + the run
+ completes cleanly without warnings."""
     skipped = build_skipped_enrichment_result(
         document_id="doc-1",
         reason="compile failed; nothing to enrich",
@@ -248,7 +248,7 @@ def test_skipped_enrichment_does_not_lift_final_status_to_warnings(
     monkeypatch,
 ):
     """Skipped enrichment is not a warning condition — the run
-    should land at COMPLETED, not PARTIAL_COMPLETED."""
+ should land at COMPLETED, not PARTIAL_COMPLETED."""
     skipped = build_skipped_enrichment_result(
         document_id="doc-1", reason="domain policy=never",
     )
@@ -273,10 +273,10 @@ def test_required_enrichment_failure_fails_run_with_enrichment_required_code(
     monkeypatch,
 ):
     """The workflow raises when enrichment fails and the policy
-    requires success. The failure code is recorded on the
-    enrich_stage step's metadata (read via `get_status`) — the
-    outer ApplicationError's message wraps the rejection's text,
-    but the step metadata carries the structured code."""
+ requires success. The failure code is recorded on the
+ enrich_stage step's metadata (read via `get_status`) — the
+ outer ApplicationError's message wraps the rejection's text,
+ but the step metadata carries the structured code."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_build_handler(enrichment_result=RunEnrichmentStageResult(
@@ -308,7 +308,7 @@ def test_required_enrichment_failure_records_failed_required_step(
     monkeypatch,
 ):
     """The enrich_stage step record carries the failure-code so the
-    final-summary artifact + audit log surface it."""
+ final-summary artifact + audit log surface it."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_build_handler(enrichment_result=RunEnrichmentStageResult(
@@ -338,7 +338,7 @@ def test_required_enrichment_failure_records_failed_required_step(
 
 def test_optional_enrichment_failure_keeps_run_completed(monkeypatch):
     """Optional enrichment failure → run continues. Compile output
-    + index complete; final status surfaces warnings."""
+ + index complete; final status surfaces warnings."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_build_handler(enrichment_result=RunEnrichmentStageResult(
@@ -362,7 +362,7 @@ def test_optional_enrichment_failure_keeps_run_completed(monkeypatch):
 
 def test_optional_enrichment_warnings_lift_final_status(monkeypatch):
     """succeeded_with_warnings from enrichment lifts the run to
-    PARTIAL_COMPLETED (which the FE renders as SUCCEEDED_WITH_WARNINGS)."""
+ PARTIAL_COMPLETED (which the FE renders as SUCCEEDED_WITH_WARNINGS)."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_build_handler(enrichment_result=RunEnrichmentStageResult(
@@ -382,9 +382,9 @@ def test_optional_enrichment_warnings_lift_final_status(monkeypatch):
 
 def test_activity_raise_records_optional_failed_step(monkeypatch):
     """If `run_enrichment_stage` activity raises (worker crash,
-    sandbox issue, etc.) AND the in-memory enrich plan doesn't
-    require success, the workflow records the failure as an
-    optional FAILED step but completes the run with warnings."""
+ sandbox issue, etc.) AND the in-memory enrich plan doesn't
+ require success, the workflow records the failure as an
+ optional FAILED step but completes the run with warnings."""
 
     def handler(method, payload, kwargs):
         name = _activity_name(method)
@@ -396,7 +396,7 @@ def test_activity_raise_records_optional_failed_step(monkeypatch):
     wf = ProjectProcessingWorkflow()
     result = asyncio.run(wf.run(_request()))
     # Optional failure → run completes with warnings (lifts to
-    # PARTIAL_COMPLETED via `_warning_count()`).
+    # PARTIAL_COMPLETED via `_warning_count`).
     assert result.final_status == FinalStatus.PARTIAL_COMPLETED
     enrich_steps = [
         r for r in result.step_results if r.step == "enrich_stage"
@@ -412,8 +412,8 @@ def test_activity_raise_records_optional_failed_step(monkeypatch):
 
 def test_compile_artifacts_preserved_when_enrichment_runs(monkeypatch):
     """The enrich_stage runs AFTER compile and validate_stage. The
-    compile step record + compile artifacts must remain unchanged
-    regardless of enrichment outcome."""
+ compile step record + compile artifacts must remain unchanged
+ regardless of enrichment outcome."""
     _patch_workflow_runtime(
         monkeypatch, exec_handler=_build_handler(),
     )
@@ -492,7 +492,7 @@ def test_prompt_resolver_falls_through_for_unknown_field():
 
 def test_workflow_does_not_call_legacy_planner(monkeypatch):
     """Regression: the workflow must NOT dispatch any of the
-    deleted legacy planner activities."""
+ deleted legacy planner activities."""
     captured = _patch_workflow_runtime(
         monkeypatch, exec_handler=_build_handler(),
     )
@@ -513,7 +513,7 @@ def test_workflow_does_not_call_legacy_planner(monkeypatch):
 
 def test_enrichment_overlay_does_not_carry_split_mode_vocabulary():
     """The serialized EnrichmentResult must not carry any
-    split-mode vocabulary on the wire."""
+ split-mode vocabulary on the wire."""
     from j1.processing.enrichment_modules import (
         build_skipped_enrichment_result,
     )

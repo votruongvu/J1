@@ -11,13 +11,13 @@ read-back function) so they're easy to unit-test without standing
 up a workspace. The activity is the I/O boundary.
 
 Adding a new stage validator:
-  1. Add the per-stage check function here (e.g. `validate_index`).
-  2. Wire it into `validate_stage` activity's stage dispatch.
-  3. Add the workflow gate that calls `validate_stage` for that
-     step + records COMPLETED only on `result.passed()`.
-  4. Add unit tests in `tests/test_stage_validators.py`.
-  5. Update `docs/ingestion-stage-validation.md` with the new
-     stage's required-output / quality-check rows.
+ 1. Add the per-stage check function here (e.g. `validate_index`).
+ 2. Wire it into `validate_stage` activity's stage dispatch.
+ 3. Add the workflow gate that calls `validate_stage` for that
+ step + records COMPLETED only on `result.passed`.
+ 4. Add unit tests in `tests/test_stage_validators.py`.
+ 5. Update `docs/ingestion-stage-validation.md` with the new
+ stage's required-output / quality-check rows.
 """
 
 from __future__ import annotations
@@ -73,11 +73,11 @@ def _check_scope(
     expected_document_id: str | None,
 ) -> list[StageValidationCheck]:
     """Common scope check applied to every artifact: tenant, project,
-    run_id (via metadata), document_id (via source_document_ids).
-    Catches "artifact landed in the wrong project" bugs that would
-    otherwise bleed across tenants — same defense the artifact
-    registry's reads enforce, but at validation time so the gate
-    fires before the stage is marked COMPLETED."""
+ run_id (via metadata), document_id (via source_document_ids).
+ Catches "artifact landed in the wrong project" bugs that would
+ otherwise bleed across tenants — same defense the artifact
+ registry's reads enforce, but at validation time so the gate
+ fires before the stage is marked COMPLETED."""
     out: list[StageValidationCheck] = []
     if artifact.project.tenant_id != expected_tenant:
         out.append(_failed(
@@ -125,7 +125,7 @@ def _check_readable(
     artifact: ArtifactRecord, read_back: ReadBack,
 ) -> tuple[bytes | None, StageValidationCheck]:
     """Read-back gate. Returns (content, check) — content is None on
-    failure so downstream content checks can short-circuit."""
+ failure so downstream content checks can short-circuit."""
     try:
         content = read_back(artifact)
     except Exception as exc:  # noqa: BLE001 — defensive
@@ -161,17 +161,17 @@ def validate_compile(
     read_back: ReadBack,
 ) -> list[StageValidationCheck]:
     """Compile produces parsed_content_manifest / chunk artifacts
-    (RAGAnything's `process_document_complete` returns parse + chunk
-    output together). Required:
-      * at least one artifact registered.
-      * each artifact's file readable + non-empty.
-      * scope (tenant, project, run_id, document_id) matches.
-      * at least one of {parsed_source, parsed_content_manifest, chunk}
-        kinds present — empty compile is a contract violation.
+ (RAGAnything's `process_document_complete` returns parse + chunk
+ output together). Required:
+ * at least one artifact registered.
+ * each artifact's file readable + non-empty.
+ * scope (tenant, project, run_id, document_id) matches.
+ * at least one of {parsed_source, parsed_content_manifest, chunk}
+ kinds present — empty compile is a contract violation.
 
-    Quality checks: warn when no `parsed_content_manifest` is present
-    (Content Inventory tab will be unavailable) but at least one
-    chunk is."""
+ Quality checks: warn when no `parsed_content_manifest` is present
+ (Content Inventory tab will be unavailable) but at least one
+ chunk is."""
     checks: list[StageValidationCheck] = []
     if not artifacts:
         checks.append(_failed(
@@ -218,9 +218,9 @@ def validate_compile(
 
 def _decode_chunks(content: bytes) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Tolerant chunk decoder. Mirrors `_parse_artifact` in the
-    chunks projector but flat — returns the list of chunk dicts +
-    an optional error message. Used by the chunks validator to
-    enforce count / id-uniqueness / scope checks."""
+ chunks projector but flat — returns the list of chunk dicts +
+ an optional error message. Used by the chunks validator to
+ enforce count / id-uniqueness / scope checks."""
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -262,20 +262,20 @@ def validate_chunks(
     read_back: ReadBack,
 ) -> list[StageValidationCheck]:
     """Generate-chunks produces one or more `chunk` artifacts.
-    Required:
-      * at least one chunk artifact registered.
-      * each chunk file readable, non-empty, parses as JSON / NDJSON.
-      * total chunk count > 0 across all artifacts.
-      * every chunk has an id (or is at a position the projector can
-        synthesise an id for).
-      * chunk ids are unique across the run.
-      * scope matches.
+ Required:
+ * at least one chunk artifact registered.
+ * each chunk file readable, non-empty, parses as JSON / NDJSON.
+ * total chunk count > 0 across all artifacts.
+ * every chunk has an id (or is at a position the projector can
+ synthesise an id for).
+ * chunk ids are unique across the run.
+ * scope matches.
 
-    Quality warnings:
-      * `chunk_text_present` — chunks where every entry has empty
-        `body`/`content` are flagged (might be a parser regression).
-      * `chunk_count_distribution` — one giant chunk vs. many tiny
-        chunks. Both signal a chunking misconfiguration."""
+ Quality warnings:
+ * `chunk_text_present` — chunks where every entry has empty
+ `body`/`content` are flagged (might be a parser regression).
+ * `chunk_count_distribution` — one giant chunk vs. many tiny
+ chunks. Both signal a chunking misconfiguration."""
     checks: list[StageValidationCheck] = []
     chunk_artifacts = [
         a for a in artifacts if a.kind == ARTIFACT_KIND_CHUNK
@@ -412,14 +412,14 @@ def validate_enrich(
     read_back: ReadBack,
 ) -> list[StageValidationCheck]:
     """Enrich produces enriched.* artifacts (e.g. enriched.tables,
-    enriched.images). Validation depends on whether enrich was
-    required:
+ enriched.images). Validation depends on whether enrich was
+ required:
 
-      * `enrich_required=True`: at least one enriched artifact must
-        be present, readable, scoped correctly, and reference an
-        upstream chunk/page/table id (via `source_artifact_ids`).
-      * `enrich_required=False`: stage was skipped — no checks
-        beyond "no orphan enriched artifacts" (defensive)."""
+ * `enrich_required=True`: at least one enriched artifact must
+ be present, readable, scoped correctly, and reference an
+ upstream chunk/page/table id (via `source_artifact_ids`).
+ * `enrich_required=False`: stage was skipped — no checks
+ beyond "no orphan enriched artifacts" (defensive)."""
     checks: list[StageValidationCheck] = []
     enriched = [
         a for a in artifacts if a.kind.startswith("enriched.")
@@ -483,15 +483,15 @@ def validate_graph(
     read_back: ReadBack,
 ) -> list[StageValidationCheck]:
     """Graph produces a single `graph_json` artifact carrying nodes
-    + edges. Validation:
+ + edges. Validation:
 
-      * `graph_required=True`: graph_json artifact present, readable,
-        non-empty; node count > 0; every edge references valid nodes;
-        every node referencing chunks references one of the run's
-        chunk_artifact_ids (i.e. graph is grounded in the run, not
-        free-floating).
-      * `graph_required=False`: skipped path — confirm no orphan
-        graph artifacts."""
+ * `graph_required=True`: graph_json artifact present, readable,
+ non-empty; node count > 0; every edge references valid nodes;
+ every node referencing chunks references one of the run's
+ chunk_artifact_ids (i.e. graph is grounded in the run, not
+ free-floating).
+ * `graph_required=False`: skipped path — confirm no orphan
+ graph artifacts."""
     checks: list[StageValidationCheck] = []
     graph_artifacts = [a for a in artifacts if a.kind == "graph_json"]
     if not graph_required:
@@ -621,19 +621,19 @@ def verify_compile_output_health(
     require_index_manifest: bool = False,
 ) -> tuple[bool, str | None, str, int]:
     """Inspect the kinds of artifacts produced by compile (and index)
-    and decide whether the run passes the post-compile verification
-    gate.
+ and decide whether the run passes the post-compile verification
+ gate.
 
-    Returns `(passed, reason_code, message, chunk_count)`. `reason_code`
-    is None on pass; otherwise one of the `FAILURE_CODE_*` strings
-    defined in `j1.runs.models`. The reason-code vocabulary is the
-    user-visible failure category — keep it stable.
+ Returns `(passed, reason_code, message, chunk_count)`. `reason_code`
+ is None on pass; otherwise one of the `FAILURE_CODE_*` strings
+ defined in `j1.runs.models`. The reason-code vocabulary is the
+ user-visible failure category — keep it stable.
 
-    The check is intentionally narrow: no artifact reads, no schema
-    validation. The full per-stage validators (`validate_compile`,
-    `validate_chunks`, etc.) handle deep integrity checks; this gate
-    catches the cheap cases that should never reach terminal SUCCEEDED.
-    """
+ The check is intentionally narrow: no artifact reads, no schema
+ validation. The full per-stage validators (`validate_compile`,
+ `validate_chunks`, etc.) handle deep integrity checks; this gate
+ catches the cheap cases that should never reach terminal SUCCEEDED.
+ """
     from j1.runs.models import (
         FAILURE_CODE_CHUNK_FAILED,
         FAILURE_CODE_INDEX_FAILED,

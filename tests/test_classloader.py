@@ -1,13 +1,13 @@
 """Tests for the safe class-loader.
 
 Covers:
-  * Catalog aliases resolve to the right import path
-  * Fully-qualified `module:Class` and `module.Class` both work
-  * Allowlist rejects untrusted modules with an actionable error
-  * Wildcard prefix (`langchain_`) accepts every `langchain_*` package
-  * Missing module raises `LLMProviderUnavailable` with pip hint
-  * Missing attribute raises `LLMConfigError`
-  * `register_trusted_prefix` extends the allowlist (idempotent)
+ * Catalog aliases resolve to the right import path
+ * Fully-qualified `module:Class` and `module.Class` both work
+ * Allowlist rejects untrusted modules with an actionable error
+ * Wildcard prefix (`langchain_`) accepts every `langchain_*` package
+ * Missing module raises `LLMProviderUnavailable` with pip hint
+ * Missing attribute raises `LLMConfigError`
+ * `register_trusted_prefix` extends the allowlist (idempotent)
 """
 
 import sys

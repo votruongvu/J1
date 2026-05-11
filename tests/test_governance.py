@@ -435,7 +435,7 @@ def test_apply_decision_supports_changes_requested(
 
 def test_workflow_review_state_transitions_remain_supported():
     """Workflow signals + state already exercised elsewhere; this test
-    sanity-checks the public surface that governance flows depend on."""
+ sanity-checks the public surface that governance flows depend on."""
     from j1.orchestration.workflows.project_processing import (
         GATE_AFTER_COMPILE,
         ProjectProcessingWorkflow,

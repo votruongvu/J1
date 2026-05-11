@@ -31,13 +31,13 @@ _TRUNCATION_MARKER = " …[truncated]"
 class StepError:
     """Compact error summary attached to a failed `StepResult`.
 
-    `type` is the exception class name (`exc.__class__.__name__`), not
-    a fully-qualified import path — operators don't need the module.
-    `message` is the human-readable string from the exception, capped
-    at 1 KB. `retryable` mirrors Temporal's `non_retryable` flag (a
-    `True` here means "the framework considers this transient and
-    expects retry to help"); used by status reporting and tests, not
-    consulted by the SDK."""
+ `type` is the exception class name (`exc.__class__.__name__`), not
+ a fully-qualified import path — operators don't need the module.
+ `message` is the human-readable string from the exception, capped
+ at 1 KB. `retryable` mirrors Temporal's `non_retryable` flag (a
+ `True` here means "the framework considers this transient and
+ expects retry to help"); used by status reporting and tests, not
+ consulted by the SDK."""
 
     type: str
     message: str
@@ -62,23 +62,23 @@ class StepError:
 class StepResult:
     """Workflow's record of a single planned stage's outcome.
 
-    Aggregated into the per-document and per-job final summary so
-    operators / status endpoints / audit logs can answer:
+ Aggregated into the per-document and per-job final summary so
+ operators / status endpoints / audit logs can answer:
 
-      * Which stages ran?
-      * Which were skipped, and why?
-      * Which failed, with what error?
-      * How long did each take?
-      * Was the stage required by plan / caller / policy?
+ * Which stages ran?
+ * Which were skipped, and why?
+ * Which failed, with what error?
+ * How long did each take?
+ * Was the stage required by plan / caller / policy?
 
-    The `started_at`/`completed_at` pair is for stage timing only;
-    individual activity attempts (with retries) are tracked by
-    Temporal itself.
+ The `started_at`/`completed_at` pair is for stage timing only;
+ individual activity attempts (with retries) are tracked by
+ Temporal itself.
 
-    `metadata` is intentionally a small free-form dict for adapter-
-    supplied operational hints (e.g. `parser_method`, `model_role`,
-    `artifact_count`). Do NOT put document text, prompts, or LLM
-    responses here — this struct is logged and stored verbatim."""
+ `metadata` is intentionally a small free-form dict for adapter-
+ supplied operational hints (e.g. `parser_method`, `model_role`,
+ `artifact_count`). Do NOT put document text, prompts, or LLM
+ responses here — this struct is logged and stored verbatim."""
 
     step: str
     status: StepStatus

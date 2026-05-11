@@ -1,18 +1,18 @@
 /**
- * Wave 10 — FE tests for the final-ingestion-report integration.
+ * FE tests for the final-ingestion-report integration.
  *
  * Pins:
- *   1. `projectUiStateFromReport` prefers the report's `final_status`
- *      over the per-artifact projection.
- *   2. When the report is null, the projector falls back to the
- *      Wave-9B per-artifact derivation cleanly.
- *   3. Each (A–F) underlying-final-status literal projects to the
- *      same UiRunState as the report-less path (so the panel renders
- *      identical badges whether or not the report is present).
- *   4. The report's `final_status_reason` overrides the headline so
- *      operator-readable backend copy wins over FE defaults.
- *   5. The report's "no enrichment artefacts" path still renders the
- *      skipped-reason — never invents data when modules are empty.
+ * 1. `projectUiStateFromReport` prefers the report's `final_status`
+ * over the per-artifact projection.
+ * 2. When the report is null, the projector falls back to the
+ * per-artifact derivation cleanly.
+ * 3. Each (A–F) underlying-final-status literal projects to the
+ * same UiRunState as the report-less path (so the panel renders
+ * identical badges whether or not the report is present).
+ * 4. The report's `final_status_reason` overrides the headline so
+ * operator-readable backend copy wins over FE defaults.
+ * 5. The report's "no enrichment artefacts" path still renders the
+ * skipped-reason — never invents data when modules are empty.
  */
 
 import { describe, expect, it } from "vitest";
@@ -102,7 +102,7 @@ describe("projectUiStateFromReport — report wins", () => {
 // ---- 2. Fallback when the report is null --------------------------
 
 
-describe("projectUiStateFromReport — fallback for pre-Wave-10 runs", () => {
+describe("projectUiStateFromReport — fallback for legacy runs", () => {
   it("falls back to projectUiState when report is null", () => {
     const run = makeRun({ status: RUN_STATUS.SUCCEEDED });
     const ui = projectUiStateFromReport(run, null, { status: "succeeded" });
@@ -125,7 +125,7 @@ describe("projectUiStateFromReport — fallback for pre-Wave-10 runs", () => {
 });
 
 
-// ---- 3. Per-(A–F) parity with the Wave-9B projection --------------
+// ---- 3. Per-(A–F) parity with the projection --------------
 
 
 const _A_F_CASES: Array<[string, string]> = [
@@ -139,7 +139,7 @@ const _A_F_CASES: Array<[string, string]> = [
 
 
 describe.each(_A_F_CASES)(
-  "Wave-9B parity — %s",
+  "parity — %s",
   (finalStatus, expectedUiState) => {
     it("projects to the expected UI state", () => {
       const run = makeRun({ status: RUN_STATUS.SUCCEEDED });

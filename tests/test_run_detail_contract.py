@@ -1,16 +1,16 @@
-"""Wave 9A — run-detail page panel-selection contract.
+"""run-detail page panel-selection contract.
 
 Pins the (UI state → primary panel + highlighted + hidden) mapping
 in `run_detail_contract.py`. The FE branches on this, so renames or
 removals are coordinated changes.
 
 Tests cover:
-  1. Every UI state has a deterministic selection.
-  2. Every primary panel + highlighted panel is a valid panel id.
-  3. The 6 UI states each have distinct primary panels (no two
-     states should land an operator on the SAME panel — that
-     defeats the UI-state distinction).
-  4. The selection's `to_dict` carries stable wire-format keys.
+ 1. Every UI state has a deterministic selection.
+ 2. Every primary panel + highlighted panel is a valid panel id.
+ 3. The 6 UI states each have distinct primary panels (no two
+ states should land an operator on the SAME panel — that
+ defeats the UI-state distinction).
+ 4. The selection's `to_dict` carries stable wire-format keys.
 """
 
 from __future__ import annotations
@@ -69,12 +69,12 @@ def test_panel_ids_are_in_inventory(ui_state):
 @pytest.mark.parametrize("ui_state", ALL_UI_STATES)
 def test_primary_panel_is_not_also_hidden(ui_state):
     """A panel cannot be both the operator's pre-selected target AND
-    hidden — that's a contradiction the FE can't render."""
+ hidden — that's a contradiction the FE can't render."""
     selection = select_run_detail_panels(ui_state)
     assert selection.primary_panel not in selection.hidden_panels
 
 
-# ---- 3. Per-state pinned primary panels (Wave 9A spec A–F) ----------
+# ---- 3. Per-state pinned primary panels ( spec A–F) ----------
 
 
 _EXPECTED_PRIMARY: dict[str, str] = {
@@ -90,17 +90,17 @@ _EXPECTED_PRIMARY: dict[str, str] = {
 @pytest.mark.parametrize("ui_state,expected_primary", list(_EXPECTED_PRIMARY.items()))
 def test_pinned_primary_panel_per_ui_state(ui_state, expected_primary):
     """The (UI state → primary panel) mapping is part of the
-    backend↔FE contract. Renaming or re-routing requires
-    coordination — this test forces the conversation."""
+ backend↔FE contract. Renaming or re-routing requires
+ coordination — this test forces the conversation."""
     selection = select_run_detail_panels(ui_state)
     assert selection.primary_panel == expected_primary
 
 
 def test_running_and_cancelled_share_live_timeline_but_differ_elsewhere():
     """RUNNING + CANCELLED both pre-select the live timeline (operator
-    wants to see when/how things ended). They differ in what's hidden:
-    RUNNING hides error_report (nothing failed); CANCELLED hides
-    run_results (no outputs produced)."""
+ wants to see when/how things ended). They differ in what's hidden:
+ RUNNING hides error_report (nothing failed); CANCELLED hides
+ run_results (no outputs produced)."""
     running = select_run_detail_panels(UI_STATE_RUNNING)
     cancelled = select_run_detail_panels(UI_STATE_CANCELLED)
     assert running.primary_panel == cancelled.primary_panel
@@ -112,8 +112,8 @@ def test_running_and_cancelled_share_live_timeline_but_differ_elsewhere():
 
 
 def test_to_dict_has_stable_keys():
-    """The FE consumes `.to_dict()` over HTTP. Renaming the keys is
-    a coordinated wire change."""
+    """The FE consumes `.to_dict` over HTTP. Renaming the keys is
+ a coordinated wire change."""
     selection = select_run_detail_panels(UI_STATE_COMPLETED)
     d = selection.to_dict()
     assert set(d.keys()) == {
@@ -128,7 +128,7 @@ def test_to_dict_has_stable_keys():
 
 def test_unknown_ui_state_returns_safe_default():
     """An unknown UI literal (FE drift, future state) must not crash —
-    the projector returns a `run_header` primary so the FE renders
-    *something* at the top of the page."""
+ the projector returns a `run_header` primary so the FE renders
+ *something* at the top of the page."""
     selection = select_run_detail_panels("future_state_not_yet_defined")
     assert selection.primary_panel == PANEL_RUN_HEADER

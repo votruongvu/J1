@@ -2,11 +2,11 @@
 
 Every adapter here is:
 
-  * Deterministic — same input → same output, no clocks, no
-    random, no network.
-  * Domain-neutral — uses only the canonical primitives.
-  * Cheap — no I/O beyond what's required to participate in a
-    workflow.
+ * Deterministic — same input → same output, no clocks, no
+ random, no network.
+ * Domain-neutral — uses only the canonical primitives.
+ * Cheap — no I/O beyond what's required to participate in a
+ workflow.
 
 These mocks are intended for tests / docs ONLY. They are exported
 from `j1.extension` for reuse in downstream test suites.
@@ -52,7 +52,7 @@ from j1.extension.primitives import (
 
 def _stable_score(text: str) -> float:
     """Deterministic 0..1 score derived from the text — useful for
-    evidence ranking in mocks without introducing nondeterminism."""
+ evidence ranking in mocks without introducing nondeterminism."""
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     # Use first byte as 0..1 fraction.
     return digest[0] / 255.0
@@ -65,8 +65,8 @@ def _stable_score(text: str) -> float:
 class MockSourceConnector(SourceConnector):
     """Returns a fixed in-memory list of sources.
 
-    `kind` defaults to `"mock"` to match `MANIFEST.name`.
-    """
+ `kind` defaults to `"mock"` to match `MANIFEST.name`.
+ """
 
     sources: list[Source] = field(default_factory=list)
     kind: str = "mock"
@@ -102,7 +102,7 @@ class MockSourceConnector(SourceConnector):
 
 @dataclass
 class MockCompilerAdapter(CompilerAdapter):
-    """Emits exactly one `compiled.text` draft per `compile()` call."""
+    """Emits exactly one `compiled.text` draft per `compile` call."""
 
     kind: str = "mock"
 
@@ -182,7 +182,7 @@ class MockEnrichmentAdapter(EnrichmentAdapter):
 @dataclass
 class MockGraphAdapter(GraphAdapter):
     """Builds a tiny `graph_json` draft listing the input artifact ids
-    as nodes."""
+ as nodes."""
 
     kind: str = "mock"
 
@@ -224,12 +224,12 @@ class MockGraphAdapter(GraphAdapter):
 @dataclass
 class MockRetrievalAdapter(RetrievalAdapter):
     """Returns one `Evidence` per registered `corpus` entry whose
-    content overlaps the question word-by-word.
+ content overlaps the question word-by-word.
 
-    Deterministic ranking: scores are derived from a stable hash of
-    each evidence's content (no actual relevance — exists to exercise
-    the contract end-to-end).
-    """
+ Deterministic ranking: scores are derived from a stable hash of
+ each evidence's content (no actual relevance — exists to exercise
+ the contract end-to-end).
+ """
 
     corpus: list[Evidence] = field(default_factory=list)
     kind: str = "mock"

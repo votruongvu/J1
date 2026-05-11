@@ -1,18 +1,18 @@
-"""Wave 10.5 — tests for the legacy-enricher wrapper modules.
+"""tests for the legacy-enricher wrapper modules.
 
 Pins:
-  1. Each wrapper conforms to the `EnrichmentModule` protocol.
-  2. Wrappers consume `DomainPromptPack` prompt overrides + apply
-     `prompt_addon` consistently.
-  3. Wrappers route LLM calls through the shared `LLMCallLimiter`.
-  4. Skip semantics: no LLM client → skip; no detected tables /
-     images → skip; no extracted text → skip.
-  5. Failure semantics: LLM raise → FAILED outcome with error.
-  6. Typed outputs include `ProvenanceLink` records.
-  7. `NormalizedCompileResult` is not mutated.
-  8. `EnrichmentResult` serialisation includes ClassificationResult /
-     TableSummary / ImageSummary / retrieval_hints / confidence_notes.
-  9. No split_mode / pre-compile gating language anywhere.
+ 1. Each wrapper conforms to the `EnrichmentModule` protocol.
+ 2. Wrappers consume `DomainPromptPack` prompt overrides + apply
+ `prompt_addon` consistently.
+ 3. Wrappers route LLM calls through the shared `LLMCallLimiter`.
+ 4. Skip semantics: no LLM client → skip; no detected tables /
+ images → skip; no extracted text → skip.
+ 5. Failure semantics: LLM raise → FAILED outcome with error.
+ 6. Typed outputs include `ProvenanceLink` records.
+ 7. `NormalizedCompileResult` is not mutated.
+ 8. `EnrichmentResult` serialisation includes ClassificationResult /
+ TableSummary / ImageSummary / retrieval_hints / confidence_notes.
+ 9. No split_mode / pre-compile gating language anywhere.
  10. No hardcoded civil engineering vocabulary in the wrappers.
 """
 
@@ -86,7 +86,7 @@ class _FakeUsage:
 
 class _FakeTextClient:
     """Fake text LLM client matching the legacy `_text_client.extract`
-    signature (prompt, schema, metadata) → (parsed, usage)."""
+ signature (prompt, schema, metadata) → (parsed, usage)."""
 
     def __init__(self, response: dict[str, Any] | None = None,
                  raise_exc: Exception | None = None) -> None:
@@ -104,8 +104,8 @@ class _FakeTextClient:
 
 class _FakeVisionClient:
     """Fake vision LLM client matching `analyze_image(prompt, schema,
-    metadata)` → (parsed, usage). Wave-10.5 wrappers call the same
-    arity as the text client."""
+ metadata)` → (parsed, usage). wrappers call the same
+ arity as the text client."""
 
     def __init__(self, response: dict[str, Any] | None = None,
                  raise_exc: Exception | None = None) -> None:
@@ -123,8 +123,8 @@ class _FakeVisionClient:
 
 class _FakeLimiter:
     """Fake LLMCallLimiter — records every call so tests can assert
-    the wrapper routes through the limiter, not directly to the
-    client."""
+ the wrapper routes through the limiter, not directly to the
+ client."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -354,14 +354,14 @@ def test_text_wrapper_routes_through_limiter():
 
 
 def test_image_wrapper_delegates_limiter_to_adapter():
-    """Wave 11B — the image module no longer wraps the adapter's
-    outer `analyze` call with the module-side limiter. Instead the
-    adapter owns per-image limiter acquisition. The image module's
-    own `llm_call_limiter` kwarg is therefore inert for the image
-    path; tests that need per-image acquisition checks should
-    drive the adapter directly with its own limiter (see the Wave-
-    11B adapter test in test_per_image_limiter_acquires_once_per_image).
-    """
+    """the image module no longer wraps the adapter's
+ outer `analyze` call with the module-side limiter. Instead the
+ adapter owns per-image limiter acquisition. The image module's
+ own `llm_call_limiter` kwarg is therefore inert for the image
+ path; tests that need per-image acquisition checks should
+ drive the adapter directly with its own limiter (see the Wave-
+ 11B adapter test in test_per_image_limiter_acquires_once_per_image).
+ """
     fake = _FakeVisionClient(response={"images": [{"image_id": "i-0"}]})
     limiter = _FakeLimiter()
     mod = ImageEnrichmentModule(
@@ -371,14 +371,14 @@ def test_image_wrapper_delegates_limiter_to_adapter():
     # Module-side limiter is not invoked because the image path
     # uses the adapter directly. The adapter (constructed by the
     # activity) is the entity that holds + acquires the limiter
-    # per image — see the Wave-11B per-image limiter tests.
+    # per image — see the per-image limiter tests.
     assert limiter.calls == []
 
 
 def test_factory_threads_shared_limiter_into_every_wrapper():
     """`build_legacy_enricher_modules` must pass the same limiter
-    instance to all 4 wrappers — critical for global concurrency
-    bounds."""
+ instance to all 4 wrappers — critical for global concurrency
+ bounds."""
     limiter = _FakeLimiter()
     text = _FakeTextClient(response={})
     vision = _FakeVisionClient(response={})
@@ -392,8 +392,8 @@ def test_factory_threads_shared_limiter_into_every_wrapper():
 
 def test_factory_handles_missing_clients_without_crashing():
     """Worker without LLM credentials (dev / test) — factory builds
-    wrappers cleanly; `can_run` returns False with the documented
-    reason."""
+ wrappers cleanly; `can_run` returns False with the documented
+ reason."""
     modules = build_legacy_enricher_modules()
     assert len(modules) == 4
     for m in modules:
@@ -580,8 +580,8 @@ def test_runner_merges_typed_outputs_from_wrappers():
 
 def test_runner_skips_wrapper_modules_with_clear_reasons():
     """Worker without LLM clients still produces a clean
-    EnrichmentResult; each wrapper is SKIPPED with documented
-    reason."""
+ EnrichmentResult; each wrapper is SKIPPED with documented
+ reason."""
     runner = CompositeEnrichmentRunner(modules=[
         TextEnrichmentModule(),  # no client → skip
         TableEnrichmentModule(),
@@ -663,8 +663,8 @@ def test_enrichment_result_round_trip_preserves_typed_outputs():
 
 def test_wrapper_module_has_no_legacy_vocabulary():
     """The wrapper module is operator-visible (its prompts ship to
-    LLMs + its source is read by maintainers). Must stay free of
-    split-mode / pre-compile-gating / IngestPlanner terminology."""
+ LLMs + its source is read by maintainers). Must stay free of
+ split-mode / pre-compile-gating / IngestPlanner terminology."""
     from j1.processing import legacy_enricher_modules
     src = inspect.getsource(legacy_enricher_modules)
     for forbidden in (
@@ -680,9 +680,9 @@ def test_wrapper_module_has_no_legacy_vocabulary():
 
 
 def test_wrappers_have_no_hardcoded_civil_engineering_terms():
-    """Wave 10.5 explicitly forbids hardcoding civil-engineering
-    prompts in the wrappers — domain specialisation goes through
-    `DomainPromptPack`. The defaults must stay generic."""
+    """ explicitly forbids hardcoding civil-engineering
+ prompts in the wrappers — domain specialisation goes through
+ `DomainPromptPack`. The defaults must stay generic."""
     civil_specific = (
         "RFI", "BOQ", "method statement",
         "civil_engineering", "structural drawing",
@@ -703,8 +703,8 @@ def test_wrappers_have_no_hardcoded_civil_engineering_terms():
 
 def test_default_prompts_lead_with_documented_verbs():
     """Operator readability check — every default prompt opens
-    with the documented action verb so legacy operators recognise
-    the parity with the old enricher prompts."""
+ with the documented action verb so legacy operators recognise
+ the parity with the old enricher prompts."""
     assert DEFAULT_TEXT_ENRICHMENT_PROMPT.startswith("Extract")
     assert DEFAULT_CLASSIFICATION_PROMPT.startswith("Classify")
     assert DEFAULT_TABLE_ENRICHMENT_PROMPT.startswith("Summarise")

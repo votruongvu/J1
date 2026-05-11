@@ -163,9 +163,9 @@ export function ResultsSection({
     reason?: string | null;
   }> = [
     // Tab order mirrors the user-facing processing journey:
-    //   Overview → Knowledge Chunks → Enrichment → Knowledge Graph →
-    //   Quality → Raw → Validation. Operators read top-to-bottom in
-    //   the same sequence the run produces them.
+    //  Overview → Knowledge Chunks → Enrichment → Knowledge Graph →
+    //  Quality → Raw → Validation. Operators read top-to-bottom in
+    //  the same sequence the run produces them.
     { key: "overview", label: "Overview", available: true },
     // Use safe optional chaining (?. on EVERY field) so a partially-
     // missing `views` object — older API response, in-flight network

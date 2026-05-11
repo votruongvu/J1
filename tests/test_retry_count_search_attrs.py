@@ -1,13 +1,13 @@
-"""Wave 9A — retry-count search attributes.
+"""retry-count search attributes.
 
 Pins two new int-typed search attributes the workflow writes so ops
 dashboards can aggregate runs by retry cost:
 
-  * `J1CompileRetryCount` — attempts beyond the first compile try
-    (0 == single-attempt success, N == N retries after the first).
-  * `J1EnrichmentRetryCount` — sum of per-module retry attempts the
-    runner reported. Reserved for future limiter-driven accounting;
-    current modules emit 0.
+ * `J1CompileRetryCount` — attempts beyond the first compile try
+ (0 == single-attempt success, N == N retries after the first).
+ * `J1EnrichmentRetryCount` — sum of per-module retry attempts the
+ runner reported. Reserved for future limiter-driven accounting;
+ current modules emit 0.
 
 Both are gated by `request.search_attributes_enabled` like every other
 upsert in the workflow.
@@ -76,8 +76,8 @@ def _patch_workflow_runtime(monkeypatch, *, exec_handler):
 
 def _capture_search_attributes(monkeypatch) -> list[dict]:
     """Capture every `upsert_search_attributes` call. The typed-update
-    objects carry the search-attribute name + value; flatten them to
-    plain dicts the tests can assert on."""
+ objects carry the search-attribute name + value; flatten them to
+ plain dicts the tests can assert on."""
     captured: list[dict] = []
 
     def _upsert(updates):
@@ -167,8 +167,8 @@ def _request(**overrides) -> ProjectProcessingRequest:
 
 def test_compile_retry_count_is_zero_for_single_attempt_success(monkeypatch):
     """A clean single-attempt compile must upsert
-    `J1CompileRetryCount=0` so the FE renders "0 retries" instead of
-    "unknown"."""
+ `J1CompileRetryCount=0` so the FE renders "0 retries" instead of
+ "unknown"."""
     captured = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(monkeypatch, exec_handler=_handler())
     wf = ProjectProcessingWorkflow()
@@ -191,7 +191,7 @@ def test_compile_retry_count_is_zero_for_single_attempt_success(monkeypatch):
 
 def test_enrichment_retry_count_passes_through_from_activity(monkeypatch):
     """The activity reports the retry count on its result; the workflow
-    must forward it to the search attribute unchanged."""
+ must forward it to the search attribute unchanged."""
     captured = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(
         monkeypatch, exec_handler=_handler(enrichment_retry_count=3),
@@ -216,7 +216,7 @@ def test_enrichment_retry_count_passes_through_from_activity(monkeypatch):
 
 def test_enrichment_retry_count_defaults_to_zero(monkeypatch):
     """When the activity result omits `retry_count` (legacy worker),
-    the workflow must default to 0 — never crash on missing attr."""
+ the workflow must default to 0 — never crash on missing attr."""
     captured = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(monkeypatch, exec_handler=_handler())
     wf = ProjectProcessingWorkflow()
@@ -236,9 +236,9 @@ def test_enrichment_retry_count_defaults_to_zero(monkeypatch):
 
 def test_retry_count_search_attributes_skipped_when_disabled(monkeypatch):
     """`search_attributes_enabled=False` (default) means NO upsert
-    happens — neither retry-count attribute nor any other. Critical
-    regression: the dev cluster registers the attrs, but staging /
-    prod may not have rolled out the registration yet."""
+ happens — neither retry-count attribute nor any other. Critical
+ regression: the dev cluster registers the attrs, but staging /
+ prod may not have rolled out the registration yet."""
     captured = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(monkeypatch, exec_handler=_handler())
     wf = ProjectProcessingWorkflow()
@@ -262,9 +262,9 @@ def test_retry_count_search_attributes_skipped_when_disabled(monkeypatch):
 
 def test_compile_retry_count_uses_int_typed_search_attribute(monkeypatch):
     """`J1CompileRetryCount` is registered as Int in the dev cluster;
-    upserting a string-typed key with the same name would be rejected
-    by Temporal at activation-completion. Verify the workflow uses the
-    int-typed `SearchAttributeKey.for_int` path."""
+ upserting a string-typed key with the same name would be rejected
+ by Temporal at activation-completion. Verify the workflow uses the
+ int-typed `SearchAttributeKey.for_int` path."""
     seen_for_int: list[str] = []
     seen_for_keyword: list[str] = []
 

@@ -2,15 +2,15 @@
 
 Three implementations ship with the framework:
 
-  * `NoopEventPublisher` — the safe default. Accepts events but emits
-    nothing. Production deployments that haven't opted into a broker
-    integration get this.
-  * `InMemoryEventPublisher` — stores published events in a list for
-    tests, local development, and deterministic verification.
-  * `BusEventPublisher` — bridges into the existing
-    `ApplicationEventBus` so the same events flow to webhook
-    subscribers. This is how the queue/event surface and the existing
-    webhook surface share *one* application event model.
+ * `NoopEventPublisher` — the safe default. Accepts events but emits
+ nothing. Production deployments that haven't opted into a broker
+ integration get this.
+ * `InMemoryEventPublisher` — stores published events in a list for
+ tests, local development, and deterministic verification.
+ * `BusEventPublisher` — bridges into the existing
+ `ApplicationEventBus` so the same events flow to webhook
+ subscribers. This is how the queue/event surface and the existing
+ webhook surface share *one* application event model.
 
 Real broker adapters (Kafka / RabbitMQ / SQS / NATS / Redis Streams)
 should live in `j1.adapters.<broker>/` packages and implement this
@@ -34,13 +34,13 @@ _log = logging.getLogger(__name__)
 class PublishedEnvelope:
     """In-memory record of one publication.
 
-    Carries the resolved logical `channel` alongside the event so
-    consumers can assert routing without having to recompute it.
-    `headers` mirrors what a real broker adapter would set on the
-    transport (e.g. Kafka headers, AMQP properties): `eventId`,
-    `eventType`, `correlationId`, `tenantId`, `producer`,
-    `schemaVersion`, optional `idempotencyKey`.
-    """
+ Carries the resolved logical `channel` alongside the event so
+ consumers can assert routing without having to recompute it.
+ `headers` mirrors what a real broker adapter would set on the
+ transport (e.g. Kafka headers, AMQP properties): `eventId`,
+ `eventType`, `correlationId`, `tenantId`, `producer`,
+ `schemaVersion`, optional `idempotencyKey`.
+ """
 
     event: ApplicationEvent
     channel: str
@@ -50,12 +50,12 @@ class PublishedEnvelope:
 class EventPublisher(Protocol):
     """Publish an `ApplicationEvent` to a broker-neutral logical channel.
 
-    Implementations must not raise — publication failure should never
-    break the caller's primary work. `publish` returns nothing; durable
-    delivery / retry semantics are the adapter's responsibility (and
-    are documented per-adapter; the framework makes no exactly-once
-    claims).
-    """
+ Implementations must not raise — publication failure should never
+ break the caller's primary work. `publish` returns nothing; durable
+ delivery / retry semantics are the adapter's responsibility (and
+ are documented per-adapter; the framework makes no exactly-once
+ claims).
+ """
 
     def publish(self, event: ApplicationEvent) -> None: ...
 
@@ -66,11 +66,11 @@ class EventPublisher(Protocol):
 class NoopEventPublisher:
     """Accepts every event, emits nothing.
 
-    Production-safe — chosen by `select_publisher` when event
-    publication is disabled or no transport is wired. A debug-level log
-    line is emitted so operators can confirm wiring while leaving INFO
-    quiet.
-    """
+ Production-safe — chosen by `select_publisher` when event
+ publication is disabled or no transport is wired. A debug-level log
+ line is emitted so operators can confirm wiring while leaving INFO
+ quiet.
+ """
 
     def publish(self, event: ApplicationEvent) -> None:
         _log.debug(
@@ -85,10 +85,10 @@ class NoopEventPublisher:
 class InMemoryEventPublisher:
     """Records every published event for assertion-driven tests.
 
-    Not suitable for production use — events live in process memory and
-    are lost on restart. Provides `published`, `by_channel`, and
-    `by_event_type` accessors so tests can assert routing + ordering.
-    """
+ Not suitable for production use — events live in process memory and
+ are lost on restart. Provides `published`, `by_channel`, and
+ `by_event_type` accessors so tests can assert routing + ordering.
+ """
 
     def __init__(
         self,
@@ -134,17 +134,17 @@ class InMemoryEventPublisher:
 class BusEventPublisher:
     """Publishes through an existing `ApplicationEventBus`.
 
-    The bus' subscriber list — typically including
-    `WebhookEventSubscriber` — receives every event without code
-    changes. This is the canonical way for a deployment to make the
-    queue/event surface and the webhook surface deliver from the same
-    source of truth.
+ The bus' subscriber list — typically including
+ `WebhookEventSubscriber` — receives every event without code
+ changes. This is the canonical way for a deployment to make the
+ queue/event surface and the webhook surface deliver from the same
+ source of truth.
 
-    Failure handling is delegated to the bus (which already swallows
-    subscriber exceptions and logs them). Belt-and-suspenders: this
-    publisher itself wraps the call so a misbehaving bus cannot
-    surface to the caller.
-    """
+ Failure handling is delegated to the bus (which already swallows
+ subscriber exceptions and logs them). Belt-and-suspenders: this
+ publisher itself wraps the call so a misbehaving bus cannot
+ surface to the caller.
+ """
 
     def __init__(self, bus: ApplicationEventBus) -> None:
         self._bus = bus
@@ -165,10 +165,10 @@ class BusEventPublisher:
 class CompositeEventPublisher:
     """Calls every delegate publisher; never raises on a delegate failure.
 
-    Useful for "publish to my in-memory recorder for tests AND to the
-    bus for webhook delivery" or "publish to two brokers in parallel
-    during a migration".
-    """
+ Useful for "publish to my in-memory recorder for tests AND to the
+ bus for webhook delivery" or "publish to two brokers in parallel
+ during a migration".
+ """
 
     def __init__(self, delegates: Iterable[EventPublisher]) -> None:
         self._delegates = list(delegates)
@@ -196,11 +196,11 @@ def _build_headers(
 ) -> dict[str, str]:
     """Common message headers a transport adapter should set.
 
-    Aligned with the CloudEvents extension attributes already used by
-    the webhook layer (`kbtenantid`, `kbcorrelationid`, `kbactor`,
-    `kbauthtype`) so consumers can read either transport without
-    branching.
-    """
+ Aligned with the CloudEvents extension attributes already used by
+ the webhook layer (`kbtenantid`, `kbcorrelationid`, `kbactor`,
+ `kbauthtype`) so consumers can read either transport without
+ branching.
+ """
     headers: dict[str, str] = {
         "eventId": event.id,
         "eventType": event.type,

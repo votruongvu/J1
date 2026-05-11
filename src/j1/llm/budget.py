@@ -5,7 +5,7 @@ one estimator, one budget arithmetic, and one packing helper. No
 external tokenizer (`tiktoken` / `transformers` are intentionally
 not added — for early-stage J1 the conservative fallback is good
 enough and the dep churn isn't worth it). The interface is shaped
-so a real tokenizer can drop in behind `estimate_tokens()` later
+so a real tokenizer can drop in behind `estimate_tokens` later
 without touching call sites.
 
 The boundary in `OpenAICompatTextLLMClient` calls `enforce_budget`
@@ -33,8 +33,8 @@ _log = logging.getLogger("j1.llm.budget")
 #
 # Two-signal conservative estimator:
 #
-#   * char_ratio = len(text) / 4   — typical English ~4 chars/token
-#   * word_ratio = words / 0.75   — typical English ~0.75 words/token
+#  * char_ratio = len(text) / 4 — typical English ~4 chars/token
+#  * word_ratio = words / 0.75 — typical English ~0.75 words/token
 #
 # We take `max(char_ratio, word_ratio)` so neither pure-CJK text
 # (which has very few "words" but many chars) nor pure-English
@@ -68,10 +68,10 @@ _MESSAGE_OVERHEAD_TOKENS = 4
 def estimate_tokens(text: str) -> int:
     """Conservative upper-bound estimate of `text`'s token count.
 
-    Returns 0 for empty / whitespace-only input. Always returns
-    at least 1 for non-empty input so a single short token doesn't
-    round to zero.
-    """
+ Returns 0 for empty / whitespace-only input. Always returns
+ at least 1 for non-empty input so a single short token doesn't
+ round to zero.
+ """
     if not text:
         return 0
     char_estimate = len(text) / _CHARS_PER_TOKEN
@@ -86,16 +86,16 @@ def estimate_messages_tokens(
 ) -> int:
     """Estimate tokens for an OpenAI-style `messages[]` array.
 
-    Sums per-message content tokens plus a fixed per-message
-    overhead for the role/structural framing. `content` may be a
-    string or a list of content parts (vision API shape) — we
-    walk the list and pick out string `text` / `image_url`
-    components.
+ Sums per-message content tokens plus a fixed per-message
+ overhead for the role/structural framing. `content` may be a
+ string or a list of content parts (vision API shape) — we
+ walk the list and pick out string `text` / `image_url`
+ components.
 
-    Image content is approximated at a fixed cost (~1024 tokens
-    per image) — high enough to defend against most-common cases
-    without needing the model's actual image-token math.
-    """
+ Image content is approximated at a fixed cost (~1024 tokens
+ per image) — high enough to defend against most-common cases
+ without needing the model's actual image-token math.
+ """
     total = 0
     for msg in messages:
         content = msg.get("content")
@@ -125,16 +125,16 @@ def estimate_messages_tokens(
 class TokenBudget:
     """Budget arithmetic for one LLM call.
 
-    Built from the role's settings (`context_window_tokens`,
-    `max_output_tokens`, `safety_margin_tokens`). Callers compute
-    `available_input_tokens` once and use it both for pack-time
-    decisions (caller-side) and for the boundary safety net (the
-    OpenAI-compat client's pre-flight check).
+ Built from the role's settings (`context_window_tokens`,
+ `max_output_tokens`, `safety_margin_tokens`). Callers compute
+ `available_input_tokens` once and use it both for pack-time
+ decisions (caller-side) and for the boundary safety net (the
+ OpenAI-compat client's pre-flight check).
 
-    `context_window_tokens=None` means "unbounded / unknown" and
-    `available_input_tokens` returns None — the boundary then
-    no-ops (legacy backward compat).
-    """
+ `context_window_tokens=None` means "unbounded / unknown" and
+ `available_input_tokens` returns None — the boundary then
+ no-ops (legacy backward compat).
+ """
 
     context_window_tokens: int | None
     reserved_output_tokens: int
@@ -144,9 +144,9 @@ class TokenBudget:
     def available_input_tokens(self) -> int | None:
         """Tokens the caller may spend on system + user content.
 
-        `None` when no `context_window_tokens` is configured —
-        boundary check is then disabled.
-        """
+ `None` when no `context_window_tokens` is configured —
+ boundary check is then disabled.
+ """
         if self.context_window_tokens is None:
             return None
         budget = (
@@ -177,7 +177,7 @@ class TokenBudget:
 @dataclass(frozen=True)
 class PackResult:
     """Outcome of `pack_context_items`. Surfaces what was kept and
-    what was dropped so callers can log + report the trim decision."""
+ what was dropped so callers can log + report the trim decision."""
 
     kept: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
@@ -197,17 +197,17 @@ def pack_text_for_budget(
 ) -> str:
     """Truncate `text` so its estimated tokens fit `max_tokens`.
 
-    Truncation is from the END (we keep the head — usually the
-    instruction/question) and a marker is appended so a downstream
-    LLM can see the cut explicitly. When `text` already fits, it's
-    returned unchanged. When the budget is too small to even
-    accommodate the marker, returns just the marker (last-resort
-    behaviour — caller should treat this as overflow).
+ Truncation is from the END (we keep the head — usually the
+ instruction/question) and a marker is appended so a downstream
+ LLM can see the cut explicitly. When `text` already fits, it's
+ returned unchanged. When the budget is too small to even
+ accommodate the marker, returns just the marker (last-resort
+ behaviour — caller should treat this as overflow).
 
-    Estimator is the upper-bound `estimate_tokens` so the resulting
-    text is guaranteed-under-budget by the same metric the boundary
-    uses.
-    """
+ Estimator is the upper-bound `estimate_tokens` so the resulting
+ text is guaranteed-under-budget by the same metric the boundary
+ uses.
+ """
     if max_tokens <= 0:
         return ""
     if estimate_tokens(text) <= max_tokens:
@@ -241,16 +241,16 @@ def pack_context_items(
 ) -> PackResult:
     """Pack ranked items into `max_tokens`, highest-priority first.
 
-    Items are consumed in the order given; the first item that
-    would push past `max_tokens` (and every item after it) is
-    dropped. This is the right behaviour when items arrive
-    pre-sorted by score — keep the top-k that fit, never re-rank.
+ Items are consumed in the order given; the first item that
+ would push past `max_tokens` (and every item after it) is
+ dropped. This is the right behaviour when items arrive
+ pre-sorted by score — keep the top-k that fit, never re-rank.
 
-    For the J1 retrieval surface, callers pass `[chunk_body for
-    chunk in retrieved_chunks_sorted_by_score]`; the result's
-    `kept` is the prompt-ready context, and `dropped` lets the
-    caller log "n chunks excluded due to token budget."
-    """
+ For the J1 retrieval surface, callers pass `[chunk_body for
+ chunk in retrieved_chunks_sorted_by_score]`; the result's
+ `kept` is the prompt-ready context, and `dropped` lets the
+ caller log "n chunks excluded due to token budget."
+ """
     kept: list[str] = []
     dropped: list[str] = []
     used = 0
@@ -272,17 +272,17 @@ def enforce_budget(
 ) -> dict:
     """Raise on overflow; return diagnostics on success.
 
-    The OpenAI-compat client calls this once, immediately before
-    `httpx.post`. It returns a dict the client can log at DEBUG
-    after a successful call (`estimatedInputTokens`, etc.) so
-    operators see the budget arithmetic without having to enable
-    verbose logging on the LLM library itself.
+ The OpenAI-compat client calls this once, immediately before
+ `httpx.post`. It returns a dict the client can log at DEBUG
+ after a successful call (`estimatedInputTokens`, etc.) so
+ operators see the budget arithmetic without having to enable
+ verbose logging on the LLM library itself.
 
-    When `budget.available_input_tokens` is None, the function is
-    a no-op (returns the diagnostic dict; raises nothing). That's
-    the legacy-compat path: deployments that haven't set
-    `J1_*_LLM_CONTEXT_WINDOW_TOKENS` keep working unchanged.
-    """
+ When `budget.available_input_tokens` is None, the function is
+ a no-op (returns the diagnostic dict; raises nothing). That's
+ the legacy-compat path: deployments that haven't set
+ `J1_*_LLM_CONTEXT_WINDOW_TOKENS` keep working unchanged.
+ """
     available = budget.available_input_tokens
     estimated = estimate_messages_tokens(messages)
     info = {

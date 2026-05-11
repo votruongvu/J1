@@ -8,16 +8,16 @@ them as a `PlanningResultDTO` projection.
 Two responsibilities live here:
 
 1. **Schema + (de)serialisation.** A frozen dataclass that round-
-   trips through JSON without losing fields. Backwards-compatible —
-   unknown fields are tolerated so older runs keep loading after
-   producers add new keys.
+ trips through JSON without losing fields. Backwards-compatible —
+ unknown fields are tolerated so older runs keep loading after
+ producers add new keys.
 
-2. **Validation.** `validate_planning_result_dict()` checks a parsed
-   JSON object (typically: an LLM response) against the wire shape
-   *before* the workflow trusts it. Catches the LLM cases the
-   spec calls out: invalid profile/type strings, missing reasons on
-   enabled/disabled steps, out-of-range confidence, page numbers
-   outside the document, full-content leaks.
+2. **Validation.** `validate_planning_result_dict` checks a parsed
+ JSON object (typically: an LLM response) against the wire shape
+ *before* the workflow trusts it. Catches the LLM cases the
+ spec calls out: invalid profile/type strings, missing reasons on
+ enabled/disabled steps, out-of-range confidence, page numbers
+ outside the document, full-content leaks.
 """
 
 from __future__ import annotations
@@ -77,9 +77,9 @@ _MAX_PAYLOAD_STRING_CHARS = 4_000
 class PlanningValidationError(ValueError):
     """Raised when a planning-result payload fails validation.
 
-    The workflow catches this, logs the reason, and either falls
-    back to rule-based plan (`fail_open=True`) or fails the planning
-    step (`fail_open=False`)."""
+ The workflow catches this, logs the reason, and either falls
+ back to rule-based plan (`fail_open=True`) or fails the planning
+ step (`fail_open=False`)."""
 
 
 # ---- Persistent shape -------------------------------------------------
@@ -89,20 +89,20 @@ class PlanningValidationError(ValueError):
 class PlanningResult:
     """The persistent shape — what the artifact stores.
 
-    Round-trips through `to_dict()` / `from_dict()`. Keys mirror the
-    wire schema verbatim (snake_case) so producers and consumers
-    don't have to translate.
+ Round-trips through `to_dict` / `from_dict`. Keys mirror the
+ wire schema verbatim (snake_case) so producers and consumers
+ don't have to translate.
 
-    `assessment` carries the rule-based output verbatim (so the FE
-    Planning Report can compare LLM vs. rule decisions), while the
-    top-level `recommended_profile` / `execution_plan` reflect the
-    final winning decision (LLM if accepted, rule-based otherwise).
+ `assessment` carries the rule-based output verbatim (so the FE
+ Planning Report can compare LLM vs. rule decisions), while the
+ top-level `recommended_profile` / `execution_plan` reflect the
+ final winning decision (LLM if accepted, rule-based otherwise).
 
-    `domain_context` is always populated — at minimum with the
-    generic-fallback shape so consumers don't have to special-case
-    its absence. The pack id + selection source explain how the
-    plan got produced.
-    """
+ `domain_context` is always populated — at minimum with the
+ generic-fallback shape so consumers don't have to special-case
+ its absence. The pack id + selection source explain how the
+ plan got produced.
+ """
 
     run_id: str
     document_id: str
@@ -124,11 +124,11 @@ class PlanningResult:
     domain_context: dict[str, Any] = field(default_factory=dict)
     # Operator-facing planner mode. Mirrors the spec's
     # `plannerMode` wire field. One of:
-    #   * `rule_based`           — deterministic only
-    #   * `llm`                  — LLM ran and its output was accepted
-    #   * `hybrid`               — both ran; rule-based + LLM merge
-    #   * `rule_based_fallback`  — LLM ran but failed/invalid, kept
-    #                              rule-based output
+    #  * `rule_based` — deterministic only
+    #  * `llm` — LLM ran and its output was accepted
+    #  * `hybrid` — both ran; rule-based + LLM merge
+    #  * `rule_based_fallback` — LLM ran but failed/invalid, kept
+    #  rule-based output
     planner_mode: str = "rule_based"
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,8 +143,8 @@ class PlanningResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PlanningResult":
         """Reconstruct from a stored JSON document. Tolerant to
-        missing keys — older runs that pre-date a field default to
-        empty values rather than raise."""
+ missing keys — older runs that pre-date a field default to
+ empty values rather than raise."""
         return cls(
             run_id=str(data.get("run_id", "")),
             document_id=str(data.get("document_id", "")),
@@ -206,10 +206,10 @@ def assessment_to_planning_result(
     next_actions: list[str] | None = None,
 ) -> PlanningResult:
     """Project the rule-based `PostCompileAssessment` into the
-    persistent `PlanningResult` shape.
+ persistent `PlanningResult` shape.
 
-    Used both as the rule-based path's final output and as the
-    fall-back payload when the LLM-assisted planner fails."""
+ Used both as the rule-based path's final output and as the
+ fall-back payload when the LLM-assisted planner fails."""
     rule_based_dict = _assessment_to_dict(assessment)
     if source == PLANNING_SOURCE_LLM:
         # The LLM path replaces this from its own validated dict;
@@ -272,22 +272,22 @@ def validate_planning_result_dict(
 ) -> None:
     """Validate a parsed planning-result payload.
 
-    Raises `PlanningValidationError` on any violation. Used by the
-    LLM-assist activity to gate untrusted model output before
-    persisting; rule-based outputs go through `assessment_to_planning_result`
-    directly and don't need this check.
+ Raises `PlanningValidationError` on any violation. Used by the
+ LLM-assist activity to gate untrusted model output before
+ persisting; rule-based outputs go through `assessment_to_planning_result`
+ directly and don't need this check.
 
-    `page_count` (when provided) is the run's known page count —
-    enabled per-page lists must be subsets of `range(1, page_count+1)`.
-    Pass None when the page count is unknown; the page-bound check
-    is skipped in that case.
+ `page_count` (when provided) is the run's known page count —
+ enabled per-page lists must be subsets of `range(1, page_count+1)`.
+ Pass None when the page count is unknown; the page-bound check
+ is skipped in that case.
 
-    `extended_document_types` widens the allowed taxonomy with any
-    types contributed by registered domain packs. Pass the union
-    from `DomainRegistry.extended_document_types()` so a domain-
-    pack-specific document_type validates without mutating the core
-    enum. Defaults to None → only generic types are accepted.
-    """
+ `extended_document_types` widens the allowed taxonomy with any
+ types contributed by registered domain packs. Pass the union
+ from `DomainRegistry.extended_document_types` so a domain-
+ pack-specific document_type validates without mutating the core
+ enum. Defaults to None → only generic types are accepted.
+ """
     if not isinstance(data, dict):
         raise PlanningValidationError("planning result must be a JSON object")
 
@@ -413,10 +413,10 @@ def validate_planning_result_dict(
 def _check_no_raw_content(value: object, *, max_chars: int) -> None:
     """Walk the value and raise when any string field exceeds the cap.
 
-    Cheap defence against an LLM echoing the full document into the
-    `summary` / `overall_assessment` / `text_preview` fields. The cap
-    is generous (4000 chars) so legitimate operator-readable text
-    stays valid; real document blocks will blow past it."""
+ Cheap defence against an LLM echoing the full document into the
+ `summary` / `overall_assessment` / `text_preview` fields. The cap
+ is generous (4000 chars) so legitimate operator-readable text
+ stays valid; real document blocks will blow past it."""
     if isinstance(value, str):
         if len(value) > max_chars:
             raise PlanningValidationError(
@@ -440,7 +440,7 @@ def _check_no_raw_content(value: object, *, max_chars: int) -> None:
 
 def _understanding_to_dict(u) -> dict[str, Any]:
     """Render a `DocumentUnderstanding` into the wire schema's
-    `document_understanding` shape."""
+ `document_understanding` shape."""
     return {
         "title_source": u.title_source,
         "detected_title": u.detected_title,
@@ -537,7 +537,7 @@ def _quality_report_to_dict(q) -> dict[str, Any]:
 
 def _assessment_to_dict(a: PostCompileAssessment) -> dict[str, Any]:
     """Render the full rule-based assessment as a dict for the
-    `rule_based_assessment` slot in the artifact."""
+ `rule_based_assessment` slot in the artifact."""
     return {
         "recommended_profile": a.recommended_profile,
         "confidence": a.confidence,

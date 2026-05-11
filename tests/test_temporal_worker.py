@@ -72,7 +72,7 @@ def test_run_worker_awaits_run():
 
 def test_build_worker_forwards_activity_executor():
     """Sync activities require an executor — the framework MUST allow
-    deployments to plug one in without subclassing the worker."""
+ deployments to plug one in without subclassing the worker."""
     from concurrent.futures import ThreadPoolExecutor
 
     spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
@@ -92,7 +92,7 @@ def test_build_worker_forwards_activity_executor():
 
 def test_build_worker_omits_optional_kwargs_by_default():
     """Back-compat: existing callers that don't pass an executor must
-    still get a Worker constructed (no `activity_executor=None` leak)."""
+ still get a Worker constructed (no `activity_executor=None` leak)."""
     spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
     settings = TemporalSettings()
 
@@ -109,9 +109,9 @@ def test_build_worker_omits_optional_kwargs_by_default():
 
 def test_build_worker_supplies_default_workflow_runner():
     """The sandbox runner is always wired so heavy transitive deps
-    (FastAPI/anyio/sniffio/openai/raganything/...) don't crash
-    workflow validation. See `default_workflow_runner` for the
-    passthrough list."""
+ (FastAPI/anyio/sniffio/openai/raganything/...) don't crash
+ workflow validation. See `default_workflow_runner` for the
+ passthrough list."""
     from j1.orchestration.temporal.worker import (
         default_workflow_runner,
     )
@@ -128,7 +128,7 @@ def test_build_worker_supplies_default_workflow_runner():
 
 def test_build_worker_accepts_custom_workflow_runner():
     """Deployments can override the runner — e.g. UnsandboxedWorkflowRunner
-    when they explicitly opt out of sandboxing."""
+ when they explicitly opt out of sandboxing."""
     from temporalio.worker import UnsandboxedWorkflowRunner
 
     spec = WorkerSpec(workflows=[_SampleWorkflow], activities=[_sample_activity])
@@ -145,19 +145,19 @@ def test_build_worker_accepts_custom_workflow_runner():
 
 def test_default_runner_validates_shipped_workflows():
     """Regression: J1's bundled workflows must pass sandbox validation
-    against the default runner.
+ against the default runner.
 
-    The failure mode this guards against: when `[all-providers]` is
-    installed, `j1/__init__.py` transitively imports FastAPI/anyio/
-    sniffio/openai/raganything/etc. The sandbox refuses to proxy
-    `sniffio._impl._ThreadLocal(threading.local)` and other low-level
-    tricks at module load. The `default_workflow_runner` passthroughs
-    those modules so the bundled workflows validate cleanly. If this
-    test ever fails, either:
-      * a new transitive dep needs adding to
-        `_DEFAULT_PASSTHROUGH_MODULES` in `worker.py`, or
-      * the workflow itself imports something it shouldn't.
-    """
+ The failure mode this guards against: when `[all-providers]` is
+ installed, `j1/__init__.py` transitively imports FastAPI/anyio/
+ sniffio/openai/raganything/etc. The sandbox refuses to proxy
+ `sniffio._impl._ThreadLocal(threading.local)` and other low-level
+ tricks at module load. The `default_workflow_runner` passthroughs
+ those modules so the bundled workflows validate cleanly. If this
+ test ever fails, either:
+ * a new transitive dep needs adding to
+ `_DEFAULT_PASSTHROUGH_MODULES` in `worker.py`, or
+ * the workflow itself imports something it shouldn't.
+ """
     import asyncio
 
     from j1 import (

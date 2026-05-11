@@ -34,10 +34,10 @@ _RESERVED_LOGRECORD_KEYS = frozenset({
 class JsonFormatter(logging.Formatter):
     """Formats log records as one JSON object per line.
 
-    Standard fields: `ts`, `level`, `logger`, `msg`. Extra fields passed via
-    `logger.info("...", extra={"key": value})` are merged in if JSON-encodable;
-    others are coerced to strings.
-    """
+ Standard fields: `ts`, `level`, `logger`, `msg`. Extra fields passed via
+ `logger.info("...", extra={"key": value})` are merged in if JSON-encodable;
+ others are coerced to strings.
+ """
 
     def format(self, record: logging.LogRecord) -> str:
         out: dict = {

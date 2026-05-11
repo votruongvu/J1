@@ -1,6 +1,6 @@
 """Tests for `IngestionValidationService.run_manual_test_query`.
 
-Phase 1 contract: stateless (no validation store), uses the existing
+ contract: stateless (no validation store), uses the existing
 `HybridQueryEngine` with `RunScope` to filter retrieval, returns a
 deterministic check report with split execution / validation status.
 
@@ -56,10 +56,10 @@ def indexer(workspace, artifact_registry, registry) -> SqliteSearchIndexer:
 def query_engine(workspace, artifact_registry, registry, indexer):
     """Real engine wired against the in-memory test workspace.
 
-    `default_profile` would be a Profile fixture; ReportGenerator
-    needs one but we're not driving the report mode here so a stub
-    Profile suffices.
-    """
+ `default_profile` would be a Profile fixture; ReportGenerator
+ needs one but we're not driving the report mode here so a stub
+ Profile suffices.
+ """
     from types import SimpleNamespace
     profile_stub = SimpleNamespace(report_templates={})
     return HybridQueryEngine(
@@ -114,8 +114,8 @@ def _index_chunk(
     *, artifact_id: str, content: bytes, run_id: str, chunk_id: str,
 ) -> ArtifactRecord:
     """Stage a chunk-kind artifact + index it in one shot. Mirrors
-    what the production compile pipeline produces (one chunk = one
-    `ArtifactRecord` with `metadata.run_id` + `metadata.chunk_id`)."""
+ what the production compile pipeline produces (one chunk = one
+ `ArtifactRecord` with `metadata.run_id` + `metadata.chunk_id`)."""
     area = WorkspaceArea.COMPILED
     area_dir = workspace.area(ctx, area)
     area_dir.mkdir(parents=True, exist_ok=True)
@@ -150,8 +150,8 @@ def test_manual_test_query_returns_run_scoped_results(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """End-to-end: a question against run-A gets only run-A's chunks
-    in retrievedChunks + citations, and the deterministic checks
-    aggregate to `passed`."""
+ in retrievedChunks + citations, and the deterministic checks
+ aggregate to `passed`."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     run_store.upsert(ctx, _make_run(run_id="run-B"))
     _index_chunk(
@@ -180,7 +180,7 @@ def test_manual_test_query_returns_run_scoped_results(
     # Engine actually produced an answer, all required checks pass.
     assert response.answer
     assert response.validation_status == "passed"
-    # Every check we ship in Phase 1 must be present (modulo the
+    # Every check we ship must be present (modulo the
     # conditional citation_present which is skipped when not required).
     names = {c.name for c in response.checks}
     assert "answer_non_empty" in names
@@ -196,7 +196,7 @@ def test_manual_test_query_request_id_round_trips_to_audit(
     audit_sink,
 ):
     """The `requestId` returned to the FE is the same id that lands
-    in the audit log, so operators can correlate post-hoc."""
+ in the audit log, so operators can correlate post-hoc."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     _index_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -221,8 +221,8 @@ def test_manual_test_query_unknown_run_raises_review_not_found(
     service, ctx,
 ):
     """Run that doesn't exist → ReviewNotFound (REST will map to 404).
-    Identical message regardless of whether the run is missing or
-    belongs to another tenant — existence must not be probeable."""
+ Identical message regardless of whether the run is missing or
+ belongs to another tenant — existence must not be probeable."""
     with pytest.raises(ReviewNotFound):
         service.run_manual_test_query(
             ctx, "run-does-not-exist",
@@ -234,8 +234,8 @@ def test_manual_test_query_cross_project_run_raises_review_not_found(
     service, run_store, ctx,
 ):
     """A run that exists in `(acme, alpha)` is invisible from
-    `(acme, beta)` — cross-project access raises the same
-    `ReviewNotFound` as a missing run."""
+ `(acme, beta)` — cross-project access raises the same
+ `ReviewNotFound` as a missing run."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     other_ctx = ProjectContext(tenant_id=ctx.tenant_id, project_id="some-other-project")
 
@@ -267,9 +267,9 @@ def test_manual_test_query_no_results_yields_failed_status(
     service, run_store, ctx,
 ):
     """A run with NO indexed artifacts → engine returns no sources →
-    `retrieved_chunks_present` fails → validationStatus = failed.
-    HTTP execution is still 200 (the engine ran successfully).
-    This is the canonical 'split status' demonstration."""
+ `retrieved_chunks_present` fails → validationStatus = failed.
+ HTTP execution is still 200 (the engine ran successfully).
+ This is the canonical 'split status' demonstration."""
     run_store.upsert(ctx, _make_run(run_id="run-empty"))
 
     response = service.run_manual_test_query(
@@ -288,9 +288,9 @@ def test_manual_test_query_citation_required_drives_check(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """When `citationRequired=true`, the citation_present check is
-    added to the suite. With chunks indexed it should pass; we test
-    the inclusion+pass shape here. The fail-shape is in the unit
-    suite for the check."""
+ added to the suite. With chunks indexed it should pass; we test
+ the inclusion+pass shape here. The fail-shape is in the unit
+ suite for the check."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     _index_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -317,8 +317,8 @@ def test_manual_test_query_include_raw_attaches_debug_payload(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """`includeRaw=true` populates `rawResponse` with a JSON-friendly
-    projection of the engine output. Off by default — raw payloads
-    can be verbose and most testers only need the rendered view."""
+ projection of the engine output. Off by default — raw payloads
+ can be verbose and most testers only need the rendered view."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     _index_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -348,9 +348,9 @@ def test_manual_test_query_clamps_top_k(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Hard cap defends against a tester accidentally requesting
-    10k chunks. We can't directly assert on the internal QueryRequest,
-    but we can verify the response's chunk count is bounded by the
-    cap (≤50 in Phase 1)."""
+ 10k chunks. We can't directly assert on the internal QueryRequest,
+ but we can verify the response's chunk count is bounded by the
+ cap (≤50 )."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
     # Stage many chunks so the indexer would happily return more if
     # asked. Each gets its own artifact + chunk_id.
@@ -373,8 +373,8 @@ def test_manual_test_query_inconclusive_on_engine_failure(
     service, run_store, ctx, monkeypatch,
 ):
     """Engine raising mid-flight produces an `inconclusive`
-    response, not a 500. The FE renders 'couldn't determine' so
-    operators don't read it as a real validation fail."""
+ response, not a 500. The FE renders 'couldn't determine' so
+ operators don't read it as a real validation fail."""
     run_store.upsert(ctx, _make_run(run_id="run-A"))
 
     def _boom(self, ctx, request):

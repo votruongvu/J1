@@ -7,19 +7,19 @@ already has; nothing in the pipeline reaches outside its inputs to
 fetch context.
 
 ```
-┌────────────────┐   ┌────────────────┐   ┌────────────────────┐
-│ 1. Assessment  │ → │ 2. Compile     │ → │ 3. Post-compile    │
-│ (cheap, no     │   │ (RAGAnything   │   │    analysis        │
-│ LLM / OCR /    │   │ as black-box;  │   │ (rule-based; opt-  │
-│ MinerU)        │   │ raw output     │   │ ional fast LLM)    │
-└────────────────┘   │ preserved)     │   └─────────┬──────────┘
-                     └────────────────┘             │
-                                                    ▼
-┌────────────────┐   ┌────────────────────────────────────────┐
-│ 5. Finalize    │ ← │ 4. Enrichment (post-compile overlay)   │
-│ + final report │   │ metadata · terminology · validation ·  │
-│                │   │ text · classification · table · image  │
-└────────────────┘   └────────────────────────────────────────┘
+┌────────────────┐ ┌────────────────┐ ┌────────────────────┐
+│ 1. Assessment │ → │ 2. Compile │ → │ 3. Post-compile │
+│ (cheap, no │ │ (RAGAnything │ │ analysis │
+│ LLM / OCR / │ │ as black-box; │ │ (rule-based; opt- │
+│ MinerU) │ │ raw output │ │ ional fast LLM) │
+└────────────────┘ │ preserved) │ └─────────┬──────────┘
+ └────────────────┘ │
+ ▼
+┌────────────────┐ ┌────────────────────────────────────────┐
+│ 5. Finalize │ ← │ 4. Enrichment (post-compile overlay) │
+│ + final report │ │ metadata · terminology · validation · │
+│ │ │ text · classification · table · image │
+└────────────────┘ └────────────────────────────────────────┘
 ```
 
 ## Stage 1 — Assessment
@@ -31,10 +31,10 @@ spent.
 The plan carries:
 
 - `domain_profile_id` — resolved from `domain_override` → workspace
-  default → `general` fallback (no auto-detection at this stage).
+ default → `general` fallback (no auto-detection at this stage).
 - `enrichment_policy` (`auto` / `always` / `never`) and
-  `require_enrichment_success` — surfaced from the resolved
-  `DomainEnrichmentPolicy`.
+ `require_enrichment_success` — surfaced from the resolved
+ `DomainEnrichmentPolicy`.
 - Cheap signals (page count, extension, document name).
 - Candidate enrichment modules — what *could* run, not what *will*.
 
@@ -82,10 +82,10 @@ modules to attempt. This is the only stage that gets to say "no".
 The post-compile assessor consumes:
 
 - The typed `NormalizedCompileResult` (chunks, detected tables/
-  images, quality verdict, warnings).
+ images, quality verdict, warnings).
 - The active `DomainPack` (enrichment policy + force-recommended /
-  optional / denied task lists).
-- The Wave-5 closure signals (text sufficiency, layout complexity).
+ optional / denied task lists).
+- The closure signals (text sufficiency, layout complexity).
 
 It produces a `PostCompileEnrichPlan` carrying:
 
@@ -93,10 +93,10 @@ It produces a `PostCompileEnrichPlan` carrying:
 - `should_enrich: bool` (derived: True for OPTIONAL+).
 - `recommended_tasks[]` / `skipped_tasks[]` / `blocking_issues[]`
 - `require_enrichment_success: bool` — resolved from the domain
-  policy + per-run override.
+ policy + per-run override.
 
 When the recommendation is SKIP, the workflow short-circuits the
-enrichment stage with `build_skipped_enrichment_result()` so an
+enrichment stage with `build_skipped_enrichment_result` so an
 explicit "enrichment skipped" record reaches the final report —
 silence here would be ambiguous with persistence failure.
 
@@ -124,13 +124,12 @@ the prompt + JSON-schema contracts the legacy `j1.enrichers`
 implementations used. They consume:
 
 - A `DomainPromptPack` for per-module prompt overrides (with the
-  pack's `prompt_addon` prepended consistently).
+ pack's `prompt_addon` prepended consistently).
 - A shared `LLMCallLimiter` — bounds concurrent LLM calls across the
-  whole worker. Per-image vision calls are individually bounded
-  (Wave 11B).
+ whole worker. Per-image vision calls are individually bounded.
 - Typed analysis-client protocols (`TextAnalysisClient`,
-  `VisionAnalysisClient`) — the bootstrap adapts production LLM
-  clients onto these contracts.
+ `VisionAnalysisClient`) — the bootstrap adapts production LLM
+ clients onto these contracts.
 
 The runner aggregates per-module `EnrichmentModuleOutcome` records
 + the typed overlay payloads into a single `EnrichmentResult`. The
@@ -203,16 +202,16 @@ full state table.
 ## Cross-cutting principles
 
 1. **Raw output is sacred.** No stage mutates the compile result or
-   the raw vendor files. Overlays carry provenance; consumers
-   resolve overlay → compile id when they need to read back.
+ the raw vendor files. Overlays carry provenance; consumers
+ resolve overlay → compile id when they need to read back.
 2. **Domain logic lives in data.** `DomainPack` + `DomainPromptPack`
-   + `DomainEnrichmentPolicy` carry every per-domain decision.
-   Workflow / activity / module code is domain-neutral — no
-   `if domain == "civil"` branches.
+ + `DomainEnrichmentPolicy` carry every per-domain decision.
+ Workflow / activity / module code is domain-neutral — no
+ `if domain == "civil"` branches.
 3. **Decisions live with the evidence.** Pre-compile gating is gone;
-   the post-compile assessor sees the actual compile output before
-   recommending enrichment.
+ the post-compile assessor sees the actual compile output before
+ recommending enrichment.
 4. **Observability is loud.** Skipped modules emit explicit SKIPPED
-   outcomes with operator-readable reasons; missing LLM clients,
-   missing image bytes, and unreachable artifacts all surface in
-   the final report.
+ outcomes with operator-readable reasons; missing LLM clients,
+ missing image bytes, and unreachable artifacts all surface in
+ the final report.

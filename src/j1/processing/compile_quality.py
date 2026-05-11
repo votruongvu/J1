@@ -3,9 +3,9 @@
 A `CompileQualityEvaluator` looks at an `ArtifactProcessingResult`
 that compile already returned and answers two questions:
 
-  1. **Quality bucket** — is the output `good`, `low`, or `failed`?
-  2. **Retry-eligible?** — should the workflow rerun compile with a
-     higher `CompileMode`?
+ 1. **Quality bucket** — is the output `good`, `low`, or `failed`?
+ 2. **Retry-eligible?** — should the workflow rerun compile with a
+ higher `CompileMode`?
 
 It MUST be deterministic, cheap, and pure — no I/O, no LLM calls,
 no MinerU/RAGAnything reinvocation. The whole point of this module
@@ -15,18 +15,18 @@ in the result.
 Retry rules (the bar must be CLEAR — the prompt is explicit:
 "do not retry just because a better result might be possible"):
 
-  * `chunks_count == 0` — compile returned no chunks. Almost
-    certainly bad output; retry with a deeper mode.
-  * `extracted_text_chars` below `min_text_chars` — the result
-    has too little text to be useful. Likely a parser regression
-    or a parse_method mismatch (e.g. `txt` mode on a scanned PDF).
-  * Compile activity returned `status=failed` with a message that
-    looks recoverable (parser empty, OCR-needed signal, transient
-    layout error). Hard parser crashes (file-not-found, license
-    violation) don't retry.
-  * Plan required OCR but compile resolved to `parse_method != ocr`
-    AND the result is empty or chars-below-threshold. Triggers a
-    deeper retry that will lock OCR on.
+ * `chunks_count == 0` — compile returned no chunks. Almost
+ certainly bad output; retry with a deeper mode.
+ * `extracted_text_chars` below `min_text_chars` — the result
+ has too little text to be useful. Likely a parser regression
+ or a parse_method mismatch (e.g. `txt` mode on a scanned PDF).
+ * Compile activity returned `status=failed` with a message that
+ looks recoverable (parser empty, OCR-needed signal, transient
+ layout error). Hard parser crashes (file-not-found, license
+ violation) don't retry.
+ * Plan required OCR but compile resolved to `parse_method != ocr`
+ AND the result is empty or chars-below-threshold. Triggers a
+ deeper retry that will lock OCR on.
 
 The evaluator does NOT retry on ambiguous signals (e.g. low
 confidence, unhandled capabilities) — those become warnings on
@@ -65,10 +65,10 @@ DEFAULT_MIN_CHUNKS = 1
 @dataclass(frozen=True)
 class QualityVerdict:
     """The evaluator's output. `quality` always populated;
-    `retry_reason` non-None iff the workflow should burn another
-    compile attempt. `signals` is the operator-readable counts the
-    evaluator looked at (chunk_count, extracted_text_chars) so
-    audit logs / UI render concrete numbers, not just buckets."""
+ `retry_reason` non-None iff the workflow should burn another
+ compile attempt. `signals` is the operator-readable counts the
+ evaluator looked at (chunk_count, extracted_text_chars) so
+ audit logs / UI render concrete numbers, not just buckets."""
 
     quality: str  # QUALITY_GOOD | QUALITY_LOW | QUALITY_FAILED
     retry_reason: str | None
@@ -104,26 +104,26 @@ def evaluate_compile_quality(
 ) -> QualityVerdict:
     """Bucket the compile result and decide whether to retry.
 
-    Args:
-      `result`: the just-returned compile output.
-      `min_text_chars`: threshold below which the chars-extracted
-        signal counts as `low_text_chars` retry-trigger. Defaults
-        sized for "a single short page or two of useful text" —
-        operators with tighter / looser quality bars override via
-        `CompileRetrySettings`.
-      `min_chunks`: threshold below which the chunk-count signal
-        counts as `zero_chunks` retry-trigger. The default = 1
-        means "at least one chunk must exist"; operators in
-        chunk-skeptical environments can set higher.
-      `plan_required_ocr`: True when the AssessmentPlan required
-        OCR. Combined with a non-OCR `parse_method_used` and a
-        thin result, triggers `ocr_likely_needed` retry.
-      `parse_method_used`: the parse_method that produced
-        `result`. Used only for the OCR-mismatch detection above.
+ Args:
+ `result`: the just-returned compile output.
+ `min_text_chars`: threshold below which the chars-extracted
+ signal counts as `low_text_chars` retry-trigger. Defaults
+ sized for "a single short page or two of useful text" —
+ operators with tighter / looser quality bars override via
+ `CompileRetrySettings`.
+ `min_chunks`: threshold below which the chunk-count signal
+ counts as `zero_chunks` retry-trigger. The default = 1
+ means "at least one chunk must exist"; operators in
+ chunk-skeptical environments can set higher.
+ `plan_required_ocr`: True when the AssessmentPlan required
+ OCR. Combined with a non-OCR `parse_method_used` and a
+ thin result, triggers `ocr_likely_needed` retry.
+ `parse_method_used`: the parse_method that produced
+ `result`. Used only for the OCR-mismatch detection above.
 
-    Returns a `QualityVerdict` — the workflow inspects
-    `should_retry()` and `quality` to decide what to do next.
-    """
+ Returns a `QualityVerdict` — the workflow inspects
+ `should_retry` and `quality` to decide what to do next.
+ """
     chunks_count = _chunks_count(result)
     extracted_text_chars = _extracted_text_chars(result)
     notes: list[str] = []
@@ -215,10 +215,10 @@ def evaluate_compile_quality(
 
 def _chunks_count(result: ArtifactProcessingResult) -> int:
     """Count chunk artifacts by walking `result.drafts` for
-    `kind == "chunk"`. Falls back to `metadata["chunks_count"]` /
-    `metadata["text_block_count"]` when the producer surfaced an
-    explicit count instead of individual drafts (some adapters
-    emit one composite chunk artifact + a count in metadata)."""
+ `kind == "chunk"`. Falls back to `metadata["chunks_count"]` /
+ `metadata["text_block_count"]` when the producer surfaced an
+ explicit count instead of individual drafts (some adapters
+ emit one composite chunk artifact + a count in metadata)."""
     from j1.processing.results import ARTIFACT_KIND_CHUNK
     drafts = getattr(result, "drafts", None) or ()
     chunk_drafts = [
@@ -239,10 +239,10 @@ def _extracted_text_chars(
     result: ArtifactProcessingResult,
 ) -> int | None:
     """Read total text chars from the compile result's metadata
-    (`total_text_chars` is what the bridge's manifest builder
-    surfaces). Returns None when the producer didn't emit the
-    signal — the evaluator treats None as "unknown" and skips the
-    chars-below-threshold rule rather than retrying defensively."""
+ (`total_text_chars` is what the bridge's manifest builder
+ surfaces). Returns None when the producer didn't emit the
+ signal — the evaluator treats None as "unknown" and skips the
+ chars-below-threshold rule rather than retrying defensively."""
     metadata = getattr(result, "metadata", None) or {}
     for key in ("total_text_chars", "extracted_text_chars"):
         v = metadata.get(key)

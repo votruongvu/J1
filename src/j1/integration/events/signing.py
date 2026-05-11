@@ -8,9 +8,9 @@ SIGNATURE_PREFIX = "sha256="
 def sign_payload(secret: str, payload: bytes) -> str:
     """HMAC-SHA256 of the payload, prefixed with `sha256=`.
 
-    Empty `secret` returns an empty string — callers should treat that as
-    "unsigned" and decide whether to send the header at all.
-    """
+ Empty `secret` returns an empty string — callers should treat that as
+ "unsigned" and decide whether to send the header at all.
+ """
     if not secret:
         return ""
     digest = hmac.new(

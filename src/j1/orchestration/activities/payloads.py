@@ -85,9 +85,9 @@ class QueryActivityInput:
 @dataclass(frozen=True)
 class PersistValidationReportInput:
     """Workflow → activity payload for the `validation_report`
-    artifact. Persisted before the COMPLETED transition (or by the
-    failure handler when validation itself triggered the failure)
-    so operators can see WHICH rules ran and which ones tripped."""
+ artifact. Persisted before the COMPLETED transition (or by the
+ failure handler when validation itself triggered the failure)
+ so operators can see WHICH rules ran and which ones tripped."""
 
     scope: ProjectScope
     run_id: str
@@ -101,7 +101,7 @@ class PersistValidationReportInput:
 @dataclass(frozen=True)
 class PersistFinalSummaryInput:
     """Workflow → activity payload for the `final_summary` artifact.
-    Carries the at-a-glance run outcome at terminal state."""
+ Carries the at-a-glance run outcome at terminal state."""
 
     scope: ProjectScope
     run_id: str
@@ -118,10 +118,10 @@ class PersistFinalSummaryInput:
 @dataclass(frozen=True)
 class PersistCompileStrategyReportInput:
     """Workflow → activity payload for the
-    `compile_strategy_report` artifact. Carries the AssessmentPlan
-    + per-attempt audit + final-quality verdict in plain-dict form;
-    the activity passes it straight to
-    `ProcessingService.persist_compile_strategy_report`."""
+ `compile_strategy_report` artifact. Carries the AssessmentPlan
+ + per-attempt audit + final-quality verdict in plain-dict form;
+ the activity passes it straight to
+ `ProcessingService.persist_compile_strategy_report`."""
 
     scope: ProjectScope
     run_id: str
@@ -133,9 +133,9 @@ class PersistCompileStrategyReportInput:
 @dataclass(frozen=True)
 class PersistPostCompileEnrichPlanInput:
     """Workflow → activity payload for the
-    `post_compile_enrich_plan` artifact. Carries the rule-based
-    enrich assessment verdict (recommendation + recommended/skipped
-    tasks + source signals + decision_source) as a plain dict."""
+ `post_compile_enrich_plan` artifact. Carries the rule-based
+ enrich assessment verdict (recommendation + recommended/skipped
+ tasks + source signals + decision_source) as a plain dict."""
 
     scope: ProjectScope
     run_id: str
@@ -147,9 +147,9 @@ class PersistPostCompileEnrichPlanInput:
 @dataclass(frozen=True)
 class PersistCompileResultSummaryInput:
     """Workflow → activity payload for the
-    `compile_result_summary` artifact. Carries the typed
-    `NormalizedCompileResult.to_payload()` dict — same transport
-    shape as the other persist payloads."""
+ `compile_result_summary` artifact. Carries the typed
+ `NormalizedCompileResult.to_payload` dict — same transport
+ shape as the other persist payloads."""
 
     scope: ProjectScope
     run_id: str
@@ -161,8 +161,8 @@ class PersistCompileResultSummaryInput:
 @dataclass(frozen=True)
 class PersistEnrichmentResultInput:
     """Workflow → activity payload for the `enrichment_result`
-    artifact. Carries the typed `EnrichmentResult.to_payload()`
-    dict."""
+ artifact. Carries the typed `EnrichmentResult.to_payload`
+ dict."""
 
     scope: ProjectScope
     run_id: str
@@ -173,27 +173,27 @@ class PersistEnrichmentResultInput:
 
 @dataclass(frozen=True)
 class PersistFinalIngestionReportInput:
-    """Wave 10 — workflow → activity payload for the
-    `final_ingestion_report` artifact.
+    """workflow → activity payload for the
+ `final_ingestion_report` artifact.
 
-    The activity has TWO responsibilities (kept in one activity to
-    minimise round-trips at terminal time):
+ The activity has TWO responsibilities (kept in one activity to
+ minimise round-trips at terminal time):
 
-      1. Resolve the persisted Wave-8 artifact payloads
-         (`initial_execution_plan`, `compile_result_summary`,
-         `post_compile_enrich_plan`, `enrichment_result`,
-         `final_summary`) from the artifact registry.
-      2. Run `build_final_ingestion_report()` to project them onto
-         the typed report.
-      3. Persist the result as a `final_ingestion_report` artifact.
+ 1. Resolve the persisted artifact payloads
+ (`initial_execution_plan`, `compile_result_summary`,
+ `post_compile_enrich_plan`, `enrichment_result`,
+ `final_summary`) from the artifact registry.
+ 2. Run `build_final_ingestion_report` to project them onto
+ the typed report.
+ 3. Persist the result as a `final_ingestion_report` artifact.
 
-    The workflow doesn't read artifact payloads itself (Temporal
-    sandbox forbids file I/O), so the activity owns the full
-    fetch + build + persist transaction.
+ The workflow doesn't read artifact payloads itself (Temporal
+ sandbox forbids file I/O), so the activity owns the full
+ fetch + build + persist transaction.
 
-    Best-effort: write failures don't propagate to the workflow's
-    terminal status — they're reported on the activity result and
-    logged. The report is observability, not correctness."""
+ Best-effort: write failures don't propagate to the workflow's
+ terminal status — they're reported on the activity result and
+ logged. The report is observability, not correctness."""
 
     scope: ProjectScope
     run_id: str
@@ -216,17 +216,17 @@ class PersistFinalIngestionReportInput:
 class RunEnrichmentStageInput:
     """Workflow → activity payload for `run_enrichment_stage`.
 
-    The activity resolves the domain pack from the registry,
-    rebuilds the `NormalizedCompileResult` + `PostCompileEnrichPlan`
-    from their persisted payloads, builds an `EnrichmentContext`,
-    runs `CompositeEnrichmentRunner`, and persists the resulting
-    `EnrichmentResult` as an `enrichment_result` artifact. Caller
-    consumes the returned payload to gate the workflow-level
-    `require_enrichment_success` check.
+ The activity resolves the domain pack from the registry,
+ rebuilds the `NormalizedCompileResult` + `PostCompileEnrichPlan`
+ from their persisted payloads, builds an `EnrichmentContext`,
+ runs `CompositeEnrichmentRunner`, and persists the resulting
+ `EnrichmentResult` as an `enrichment_result` artifact. Caller
+ consumes the returned payload to gate the workflow-level
+ `require_enrichment_success` check.
 
-    Pack resolution lives in the activity (not workflow) because
-    the registry is module-state — touching it from workflow code
-    would cause replay non-determinism."""
+ Pack resolution lives in the activity (not workflow) because
+ the registry is module-state — touching it from workflow code
+ would cause replay non-determinism."""
 
     scope: ProjectScope
     run_id: str
@@ -248,9 +248,9 @@ class RunEnrichmentStageInput:
 class RunEnrichmentStageResult:
     """Activity → workflow return for `run_enrichment_stage`.
 
-    Carries the persisted enrichment payload + artifact id + the
-    decision flags the workflow needs to gate
-    `require_enrichment_success` enforcement."""
+ Carries the persisted enrichment payload + artifact id + the
+ decision flags the workflow needs to gate
+ `require_enrichment_success` enforcement."""
 
     status: str  # succeeded / succeeded_with_warnings / failed / skipped
     plan_payload: dict[str, Any] = field(default_factory=dict)
@@ -260,7 +260,7 @@ class RunEnrichmentStageResult:
     # re-parse the plan to enforce the policy.
     require_enrichment_success: bool = False
     persist_error: str | None = None
-    # Wave 9A — count of per-module retry attempts inside the
+    # count of per-module retry attempts inside the
     # runner (sum of `attempts - 1` across module outcomes). The
     # workflow upserts this into `J1EnrichmentRetryCount` so ops
     # dashboards can aggregate by enrichment cost. Always >= 0;
@@ -271,10 +271,10 @@ class RunEnrichmentStageResult:
 @dataclass(frozen=True)
 class PersistInitialExecutionPlanInput:
     """Workflow → activity payload for the
-    `initial_execution_plan` artifact. Carries the cheap pre-compile
-    plan (selected domain, enrichment_policy, candidate modules,
-    cheap_signals, wrapped compile plan) as a plain dict — same
-    transport shape as `PersistPostCompileEnrichPlanInput`."""
+ `initial_execution_plan` artifact. Carries the cheap pre-compile
+ plan (selected domain, enrichment_policy, candidate modules,
+ cheap_signals, wrapped compile plan) as a plain dict — same
+ transport shape as `PersistPostCompileEnrichPlanInput`."""
 
     scope: ProjectScope
     run_id: str
@@ -287,16 +287,16 @@ class PersistInitialExecutionPlanInput:
 class BuildInitialExecutionPlanInput:
     """Workflow → activity payload for `build_initial_execution_plan`.
 
-    The activity owns the full work unit: resolve the domain pack
-    (override → workspace default → fallback to general), build the
-    `InitialExecutionPlan` from the cheap profile + resolved pack,
-    persist as an `initial_execution_plan` artifact, and return the
-    payload to the workflow.
+ The activity owns the full work unit: resolve the domain pack
+ (override → workspace default → fallback to general), build the
+ `InitialExecutionPlan` from the cheap profile + resolved pack,
+ persist as an `initial_execution_plan` artifact, and return the
+ payload to the workflow.
 
-    Pack resolution is the activity's job because the registry is a
-    module-state singleton — touching it from workflow code would
-    cause replay non-determinism. The plan-build helper itself is
-    pure but takes the resolved pack as input."""
+ Pack resolution is the activity's job because the registry is a
+ module-state singleton — touching it from workflow code would
+ cause replay non-determinism. The plan-build helper itself is
+ pure but takes the resolved pack as input."""
 
     scope: ProjectScope
     run_id: str
@@ -304,7 +304,7 @@ class BuildInitialExecutionPlanInput:
     # The DocumentProfile dataclass — same shape the
     # `profile_document` activity already returns. Temporal's data
     # converter handles the frozen dataclass round-trip directly;
-    # we don't keep a separate `to_payload()` form.
+    # we don't keep a separate `to_payload` form.
     profile: "Any"
     # Operator-supplied override (e.g. `civil_engineering`). None ⇒
     # the activity walks the workspace default → fallback chain.
@@ -321,10 +321,10 @@ class BuildInitialExecutionPlanInput:
 class BuildInitialExecutionPlanResult:
     """Activity → workflow return for `build_initial_execution_plan`.
 
-    Carries the built plan payload so the workflow can route it
-    downstream + the artifact_id for the persisted JSON. `status` is
-    `"succeeded"` / `"failed"` mirroring the rest of the activity
-    payloads."""
+ Carries the built plan payload so the workflow can route it
+ downstream + the artifact_id for the persisted JSON. `status` is
+ `"succeeded"` / `"failed"` mirroring the rest of the activity
+ payloads."""
 
     status: str
     plan_payload: dict[str, Any] = field(default_factory=dict)
@@ -340,10 +340,10 @@ class BuildInitialExecutionPlanResult:
 class FastLLMConsultEnrichInput:
     """Workflow → activity payload for the optional fast-LLM consult.
 
-    Carries ONLY compact signals + the rule-based provisional plan.
-    NEVER document content. The activity is no-op when the consult
-    is disabled; it MUST never raise (any internal failure is
-    swallowed and reported as `consulted=False`)."""
+ Carries ONLY compact signals + the rule-based provisional plan.
+ NEVER document content. The activity is no-op when the consult
+ is disabled; it MUST never raise (any internal failure is
+ swallowed and reported as `consulted=False`)."""
 
     scope: ProjectScope
     run_id: str
@@ -360,7 +360,7 @@ class FastLLMConsultEnrichInput:
 @dataclass(frozen=True)
 class FastLLMConsultEnrichResult:
     """Activity → workflow return. `consulted=False` always means
-    'fall back to rule-based plan' (whatever the reason)."""
+ 'fall back to rule-based plan' (whatever the reason)."""
 
     consulted: bool
     fallback_reason: str | None = None
@@ -375,12 +375,12 @@ class FastLLMConsultEnrichResult:
 @dataclass(frozen=True)
 class ValidateStageInput:
     """Workflow → activity payload for `validate_stage`. Carries the
-    stage name + the artifacts the stage produced + the scope keys
-    the validator uses for cross-checks. The activity reads the
-    artifact files back from disk, runs the per-stage validator,
-    persists a `stage_validation_report` artifact, and returns the
-    result so the workflow can decide between `_record_step(COMPLETED)`
-    and `_record_step(FAILED)`."""
+ stage name + the artifacts the stage produced + the scope keys
+ the validator uses for cross-checks. The activity reads the
+ artifact files back from disk, runs the per-stage validator,
+ persists a `stage_validation_report` artifact, and returns the
+ result so the workflow can decide between `_record_step(COMPLETED)`
+ and `_record_step(FAILED)`."""
 
     scope: ProjectScope
     run_id: str
@@ -402,10 +402,10 @@ class ValidateStageInput:
 @dataclass(frozen=True)
 class StageValidationActivityResult:
     """Workflow → activity return for `validate_stage`. Mirrors the
-    `StageValidationResult` shape but as a Temporal-data-converter
-    friendly dataclass. The workflow inspects `passed` to gate the
-    COMPLETED transition; full payload is also persisted as the
-    `stage_validation_report` artifact."""
+ `StageValidationResult` shape but as a Temporal-data-converter
+ friendly dataclass. The workflow inspects `passed` to gate the
+ COMPLETED transition; full payload is also persisted as the
+ `stage_validation_report` artifact."""
 
     stage_name: str
     validation_status: str
@@ -421,11 +421,11 @@ class StageValidationActivityResult:
 class VerifyCompileInput:
     """Workflow → activity payload for `verify_compile_output`.
 
-    Verification is the post-compile health gate: it counts chunks
-    produced by the compile activity, optionally checks the index
-    is reachable, and returns a structured pass/fail with a stable
-    `reason_code` the workflow lifts into `IngestionRun.failure_code`
-    on rejection. See `FAILURE_CODE_*` in `j1.runs.models`."""
+ Verification is the post-compile health gate: it counts chunks
+ produced by the compile activity, optionally checks the index
+ is reachable, and returns a structured pass/fail with a stable
+ `reason_code` the workflow lifts into `IngestionRun.failure_code`
+ on rejection. See `FAILURE_CODE_*` in `j1.runs.models`."""
 
     scope: ProjectScope
     run_id: str
@@ -456,11 +456,11 @@ class VerifyCompileInput:
 class VerifyCompileActivityResult:
     """Workflow → activity return for `verify_compile_output`.
 
-    `passed=False` means the workflow should fail the run with
-    `failure_code=reason_code`. `reason_code` is one of the
-    `FAILURE_CODE_*` strings from `j1.runs.models` (e.g.
-    `CHUNK_FAILED`, `INDEX_FAILED`, `VERIFICATION_FAILED`). When
-    `passed=True`, `reason_code` is None and the workflow proceeds."""
+ `passed=False` means the workflow should fail the run with
+ `failure_code=reason_code`. `reason_code` is one of the
+ `FAILURE_CODE_*` strings from `j1.runs.models` (e.g.
+ `CHUNK_FAILED`, `INDEX_FAILED`, `VERIFICATION_FAILED`). When
+ `passed=True`, `reason_code` is None and the workflow proceeds."""
 
     passed: bool
     reason_code: str | None = None
@@ -473,10 +473,10 @@ class VerifyCompileActivityResult:
 @dataclass(frozen=True)
 class PersistErrorReportInput:
     """Workflow → activity payload for the failure-path
-    `error_report` artifact. The workflow calls this from its
-    FAILED_FINAL handler so operators can inspect why a run failed
-    via the same artifact-listing path that surfaces successful
-    artifacts."""
+ `error_report` artifact. The workflow calls this from its
+ FAILED_FINAL handler so operators can inspect why a run failed
+ via the same artifact-listing path that surfaces successful
+ artifacts."""
 
     scope: ProjectScope
     run_id: str
@@ -551,12 +551,12 @@ class ValidateContextResult:
 class SetDocumentStatusInput:
     """Workflow → activity payload for `j1.project.set_document_status`.
 
-    Used to flip a document's status off `PENDING` once the workflow
-    has finished processing it. `status` must be the wire value of a
-    `ProcessingStatus` enum member (e.g. `"succeeded"` / `"failed"` /
-    `"cancelled"`). Best-effort: if the document is missing the
-    activity logs and returns rather than raising — telemetry never
-    blocks workflow progress."""
+ Used to flip a document's status off `PENDING` once the workflow
+ has finished processing it. `status` must be the wire value of a
+ `ProcessingStatus` enum member (e.g. `"succeeded"` / `"failed"` /
+ `"cancelled"`). Best-effort: if the document is missing the
+ activity logs and returns rather than raising — telemetry never
+ blocks workflow progress."""
 
     scope: ProjectScope
     document_id: str

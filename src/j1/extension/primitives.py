@@ -3,12 +3,12 @@
 These are the value objects that flow across J1's extension contracts
 (`j1.extension.contracts`). They are deliberately:
 
-  * **Domain-neutral** — no industry / customer / vendor vocabulary.
-  * **Frozen dataclasses** — easy to serialise (Temporal payloads,
-    JSON snapshots, debug logs).
-  * **Re-exports of existing core types where they map cleanly** —
-    so the extension layer stays consistent with the rest of J1
-    instead of duplicating shapes.
+ * **Domain-neutral** — no industry / customer / vendor vocabulary.
+ * **Frozen dataclasses** — easy to serialise (Temporal payloads,
+ JSON snapshots, debug logs).
+ * **Re-exports of existing core types where they map cleanly** —
+ so the extension layer stays consistent with the rest of J1
+ instead of duplicating shapes.
 
 Adding a new primitive here is allowed iff it is generic and
 appears in at least one extension contract method signature.
@@ -46,11 +46,11 @@ from j1.query.models import (  # noqa: F401
 class SourceMetadata:
     """Transport-neutral description of where a document came from.
 
-    Connectors fill this in when they fetch a `Source`. The framework
-    treats `extra` as opaque — connectors stash whatever they need
-    (etags, http response headers, S3 versionId, …) and J1 stores it
-    on `DocumentRecord.metadata`.
-    """
+ Connectors fill this in when they fetch a `Source`. The framework
+ treats `extra` as opaque — connectors stash whatever they need
+ (etags, http response headers, S3 versionId, …) and J1 stores it
+ on `DocumentRecord.metadata`.
+ """
 
     uri: str
     content_type: str | None = None
@@ -65,10 +65,10 @@ class SourceMetadata:
 class Source:
     """A document plus its bytes, as returned by a `SourceConnector`.
 
-    `content` is the raw payload. `metadata` carries the transport
-    description. The framework registers the source via
-    `DocumentIntakeService` and obtains a `DocumentRecord` in return.
-    """
+ `content` is the raw payload. `metadata` carries the transport
+ description. The framework registers the source via
+ `DocumentIntakeService` and obtains a `DocumentRecord` in return.
+ """
 
     content: bytes
     metadata: SourceMetadata
@@ -91,14 +91,14 @@ Artifact = ArtifactRecord
 class Chunk:
     """An ordered, citation-addressable slice of a `Document`.
 
-    Compilers / chunkers emit `Chunk`s. Indexers and retrieval
-    adapters consume them.
+ Compilers / chunkers emit `Chunk`s. Indexers and retrieval
+ adapters consume them.
 
-    `chunk_id` is content-stable when the inputs are stable
-    (recommended: `sha256:<hex>` of `content + position`).
-    `position` lets a client reconstruct order without needing
-    monotonic id numbers.
-    """
+ `chunk_id` is content-stable when the inputs are stable
+ (recommended: `sha256:<hex>` of `content + position`).
+ `position` lets a client reconstruct order without needing
+ monotonic id numbers.
+ """
 
     chunk_id: str
     document_id: str
@@ -112,10 +112,10 @@ class Chunk:
 class Collection:
     """A named, project-scoped grouping of documents.
 
-    Connectors and retrieval adapters can scope work to a collection
-    (e.g. "fetch into `release-notes`", "retrieve only from `policies`").
-    The framework treats collection names as opaque labels.
-    """
+ Connectors and retrieval adapters can scope work to a collection
+ (e.g. "fetch into `release-notes`", "retrieve only from `policies`").
+ The framework treats collection names as opaque labels.
+ """
 
     name: str
     description: str | None = None
@@ -129,11 +129,11 @@ class Collection:
 class Citation:
     """A pointer back to the supporting source for a piece of evidence.
 
-    `locator` is whatever the source provider hands back as a
-    "you can find this here" reference: a chunk id, a page number,
-    a URL fragment, a byte range, etc. The framework does not
-    interpret it.
-    """
+ `locator` is whatever the source provider hands back as a
+ "you can find this here" reference: a chunk id, a page number,
+ a URL fragment, a byte range, etc. The framework does not
+ interpret it.
+ """
 
     document_id: str
     locator: str | None = None
@@ -145,10 +145,10 @@ class Citation:
 class Evidence:
     """A retrieved unit that carries one or more citations.
 
-    Retrieval adapters return `Evidence` items inside a
-    `RetrievalResult`. Higher layers (output formatters, evaluators)
-    consume them.
-    """
+ Retrieval adapters return `Evidence` items inside a
+ `RetrievalResult`. Higher layers (output formatters, evaluators)
+ consume them.
+ """
 
     content: str
     score: float
@@ -160,11 +160,11 @@ class Evidence:
 class RetrievalResult:
     """The canonical retrieval-adapter output.
 
-    Strictly richer than `QueryResult` (which is the legacy
-    answer-shape used by the existing `QueryProvider` Protocol):
-    `RetrievalResult` returns evidence; the formatter / synthesizer
-    builds the final answer.
-    """
+ Strictly richer than `QueryResult` (which is the legacy
+ answer-shape used by the existing `QueryProvider` Protocol):
+ `RetrievalResult` returns evidence; the formatter / synthesizer
+ builds the final answer.
+ """
 
     status: ResultStatus
     evidences: list[Evidence] = field(default_factory=list)
@@ -201,13 +201,13 @@ class GraphEdge:
 class WorkflowState:
     """Lightweight workflow state snapshot for orchestration callers.
 
-    The Temporal-side `WorkflowStatus` is richer; this is the generic,
-    transport-neutral shape adapters and evaluators consume.
+ The Temporal-side `WorkflowStatus` is richer; this is the generic,
+ transport-neutral shape adapters and evaluators consume.
 
-    `phase` is the *role label* (e.g. "compile", "retrieve") — NOT a
-    "phase 1 / phase 2" milestone. The string set is open; document
-    your conventions in your own deployment.
-    """
+ `phase` is the *role label* (e.g. "compile", "retrieve") — NOT a
+ " / " milestone. The string set is open; document
+ your conventions in your own deployment.
+ """
 
     workflow_id: str
     role: str
@@ -219,10 +219,10 @@ class WorkflowState:
 class ProviderConfig:
     """Generic provider config carried by a manifest or registry entry.
 
-    `name` and `type` identify the adapter; `options` is the
-    plain-dict configuration (no secrets — secrets live in
-    `secrets_ref` and resolution is the deployment's job).
-    """
+ `name` and `type` identify the adapter; `options` is the
+ plain-dict configuration (no secrets — secrets live in
+ `secrets_ref` and resolution is the deployment's job).
+ """
 
     name: str
     type: str
@@ -238,11 +238,11 @@ class ProviderConfig:
 class EvaluationResult:
     """Canonical output of an `EvaluationAdapter`.
 
-    `score` is a 0..1 normalised score; `passed` is the boolean
-    verdict the adapter assigns; `findings` is a free-form list the
-    adapter populates with whatever it wants to surface (anomalies,
-    rule failures, …).
-    """
+ `score` is a 0..1 normalised score; `passed` is the boolean
+ verdict the adapter assigns; `findings` is a free-form list the
+ adapter populates with whatever it wants to surface (anomalies,
+ rule failures, …).
+ """
 
     status: ResultStatus
     score: float | None = None

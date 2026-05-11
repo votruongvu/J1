@@ -59,7 +59,7 @@ def _meta(filename: str | None = None, **kw) -> DocumentMetadata:
 
 def test_clear_architecture_title_picks_software_architecture():
     """A clear architecture title plus a matching first heading
-    classifies as software_architecture."""
+ classifies as software_architecture."""
     items = [ParsedContentItem(
         item_id="t1", type="heading", page_idx=1,
         text_preview="Software Architecture Design for J1 Ingestion Pipeline",
@@ -88,7 +88,7 @@ def test_clear_srs_title_picks_system_requirement_specification():
 
 def test_generic_title_falls_back_to_first_page_digest():
     """Title 'Final Report' is generic; we should drop to first-page
-    inspection. With status-report content on page 1, expect REPORT."""
+ inspection. With status-report content on page 1, expect REPORT."""
     items = [
         ParsedContentItem(
             item_id="t1", type="heading", page_idx=1,
@@ -114,7 +114,7 @@ def test_generic_title_falls_back_to_first_page_digest():
 
 def test_filename_only_scan_marks_title_unclear():
     """A filename-only `scan_2026_05_01.pdf` produces an unclear
-    title and warnings about the fallback path."""
+ title and warnings about the fallback path."""
     u = assess_document_understanding(
         metadata=_meta("scan_2026_05_01.pdf"),
         manifest=_manifest(items=[]),
@@ -150,8 +150,8 @@ def test_meeting_minutes_title_picks_meeting_minutes():
 
 def test_unknown_document_keeps_low_confidence_and_conservative_bias():
     """A document without title or recognisable keywords stays
-    UNKNOWN with low confidence. The bias must not enable expensive
-    extractions for unknown docs."""
+ UNKNOWN with low confidence. The bias must not enable expensive
+ extractions for unknown docs."""
     u = assess_document_understanding(
         metadata=_meta(None),
         manifest=_manifest(items=[]),
@@ -166,7 +166,7 @@ def test_unknown_document_keeps_low_confidence_and_conservative_bias():
 
 def test_warnings_when_parse_quality_low():
     """A low parse-quality score emits a manual-review warning so
-    the rule-based assessor can see it."""
+ the rule-based assessor can see it."""
     u = assess_document_understanding(
         metadata=_meta("doc.pdf", metadata_title="Quarterly Report 2026"),
         manifest=_manifest(parse_quality=0.4),
@@ -197,7 +197,7 @@ def test_metadata_title_wins_over_filename_when_clear():
 ])
 def test_title_quality_grading(title, expected_quality):
     """Coarse title-quality table. Pinning the cases keeps the
-    heuristic auditable."""
+ heuristic auditable."""
     u = assess_document_understanding(
         metadata=_meta("file.pdf", metadata_title=title or None),
         manifest=_manifest(items=[]),

@@ -262,14 +262,14 @@ class DocumentIntakeService:
     ) -> None:
         """Reject files whose magic bytes don't match their extension.
 
-        Looks up the suffix in `_BINARY_MAGIC_SIGNATURES`; absent →
-        no-op (text formats and rare binaries fall through). Reads
-        the first 16 bytes and matches against any of the expected
-        prefixes — Office Open XML is a ZIP, OLE2 has its own header,
-        PDF starts with `%PDF-`. On mismatch raises the same typed
-        error the extension allow-list uses, so the REST adapter
-        surfaces it as 415 with a consistent shape.
-        """
+ Looks up the suffix in `_BINARY_MAGIC_SIGNATURES`; absent →
+ no-op (text formats and rare binaries fall through). Reads
+ the first 16 bytes and matches against any of the expected
+ prefixes — Office Open XML is a ZIP, OLE2 has its own header,
+ PDF starts with `%PDF-`. On mismatch raises the same typed
+ error the extension allow-list uses, so the REST adapter
+ surfaces it as 415 with a consistent shape.
+ """
         suffix = Path(original_filename).suffix.lower()
         signatures = _BINARY_MAGIC_SIGNATURES.get(suffix)
         if signatures is None:
@@ -293,12 +293,12 @@ class DocumentIntakeService:
     def _enforce_extension(self, original_filename: str) -> None:
         """Reject filenames whose extension isn't in the allow-list.
 
-        Empty allow-list disables the boundary entirely (operator
-        opt-out). Otherwise compares case-insensitively. Raised
-        before the streaming copy starts so an oversize-of-the-wrong-
-        type upload doesn't waste bytes — the typed error surfaces as
-        a 415 at the REST adapter.
-        """
+ Empty allow-list disables the boundary entirely (operator
+ opt-out). Otherwise compares case-insensitively. Raised
+ before the streaming copy starts so an oversize-of-the-wrong-
+ type upload doesn't waste bytes — the typed error surfaces as
+ a 415 at the REST adapter.
+ """
         if not self._allowed_extensions:
             return
         suffix = Path(original_filename).suffix.lower()
@@ -374,12 +374,12 @@ def _copy_and_hash(
 ) -> tuple[str, int]:
     """Stream-copy `src` into `dest` while computing the SHA-256.
 
-    Raises `UploadTooLargeError` as soon as the cumulative byte count
-    exceeds `max_bytes`. The boundary check happens during the copy
-    rather than after, so an oversize stream stops writing immediately
-    instead of filling the disk first. The temp file is left for the
-    caller's outer try/except to unlink.
-    """
+ Raises `UploadTooLargeError` as soon as the cumulative byte count
+ exceeds `max_bytes`. The boundary check happens during the copy
+ rather than after, so an oversize stream stops writing immediately
+ instead of filling the disk first. The temp file is left for the
+ caller's outer try/except to unlink.
+ """
     hasher = hashlib.sha256()
     size = 0
     while True:

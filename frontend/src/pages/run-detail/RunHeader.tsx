@@ -23,7 +23,7 @@ interface RunHeaderProps {
   onRefresh: () => void;
   pushToast: (toast: Omit<Toast, "id">) => void;
   /** Forwarded to RunControls so the page can navigate after
-   * Re-process (→ new run) / Delete (→ list). */
+ * Re-process (→ new run) / Delete (→ list). */
   onAfterAction?: (
     action:
       | "pause" | "resume" | "cancel"

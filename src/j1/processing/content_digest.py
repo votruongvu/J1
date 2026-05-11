@@ -79,7 +79,7 @@ class DigestImageSample:
 @dataclass(frozen=True)
 class DigestPageSummary:
     """One entry in `early_page_digest`. Keeps the per-page structural
-    fingerprint the LLM uses to attribute decisions to pages."""
+ fingerprint the LLM uses to attribute decisions to pages."""
 
     page: int
     headings: tuple[str, ...]
@@ -91,13 +91,13 @@ class DigestPageSummary:
 @dataclass(frozen=True)
 class ContentDigest:
     """Compact projection of the manifest fed to the rule-based
-    assessor and (optionally) the LLM planner.
+ assessor and (optionally) the LLM planner.
 
-    Caps applied:
-      * `max_sample_blocks` — across `sample_text_blocks`.
-      * `max_preview_chars` — per individual preview string.
-      * `max_early_pages` — bound on `early_page_digest`.
-    """
+ Caps applied:
+ * `max_sample_blocks` — across `sample_text_blocks`.
+ * `max_preview_chars` — per individual preview string.
+ * `max_early_pages` — bound on `early_page_digest`.
+ """
 
     summary: str
     title_candidates: tuple[TitleCandidate, ...]
@@ -123,13 +123,13 @@ def build_content_digest(
 ) -> ContentDigest:
     """Build the digest from the manifest.
 
-    The digest is deterministic — same inputs → same output. Pure
-    function. No I/O.
+ The digest is deterministic — same inputs → same output. Pure
+ function. No I/O.
 
-    `understanding` is optional; when present its
-    `title_candidates` are passed through verbatim so the digest
-    carries the same provenance the FE Planning Report renders.
-    """
+ `understanding` is optional; when present its
+ `title_candidates` are passed through verbatim so the digest
+ carries the same provenance the FE Planning Report renders.
+ """
     if manifest is None:
         return ContentDigest(
             summary="",
@@ -194,9 +194,9 @@ def _build_heading_outline(
     items: Iterable[ParsedContentItem], *, max_chars: int,
 ) -> tuple[tuple[int, str, int | None], ...]:
     """Walk the manifest items and produce a (level, text, page)
-    tuple per heading. Level inference is approximate — `h1`/`h2`/
-    `h3` strings carry the level explicitly; `heading`/`title`
-    default to level 1."""
+ tuple per heading. Level inference is approximate — `h1`/`h2`/
+ `h3` strings carry the level explicitly; `heading`/`title`
+ default to level 1."""
     out: list[tuple[int, str, int | None]] = []
     for item in items:
         if not item.type or item.type.lower() not in _HEADING_ITEM_TYPES:
@@ -232,9 +232,9 @@ def _build_early_pages(
     max_preview_chars: int,
 ) -> tuple[DigestPageSummary, ...]:
     """Bucket items by page; return per-page summaries up to
-    `max_early_pages`. Pages without explicit indices fall under
-    page=0 and are dropped — only items with a real page get
-    surfaced (LLM provenance depends on it)."""
+ `max_early_pages`. Pages without explicit indices fall under
+ page=0 and are dropped — only items with a real page get
+ surfaced (LLM provenance depends on it)."""
     by_page: dict[int, list[ParsedContentItem]] = {}
     for item in items:
         if item.page_idx is None:
@@ -287,9 +287,9 @@ def _sample_text_blocks(
     max_chars: int,
 ) -> tuple[DigestTextBlock, ...]:
     """Sample up to `max_blocks` text-typed items, prioritising:
-       1. Page-1 paragraphs (highest topical signal).
-       2. Items adjacent to headings.
-       3. Otherwise, walk in document order."""
+ 1. Page-1 paragraphs (highest topical signal).
+ 2. Items adjacent to headings.
+ 3. Otherwise, walk in document order."""
     if max_blocks <= 0:
         return ()
     candidates: list[ParsedContentItem] = []
@@ -374,9 +374,9 @@ def _sample_images(
     max_samples: int = 12,
 ) -> tuple[DigestImageSample, ...]:
     """One sample per image item, up to `max_samples`. We rely on the
-    parser's per-image triage metadata (`role` / `detected_type`) to
-    flag decorative content; the LLM planner can use this to
-    deprioritise vision enrichment for logos/icons."""
+ parser's per-image triage metadata (`role` / `detected_type`) to
+ flag decorative content; the LLM planner can use this to
+ deprioritise vision enrichment for logos/icons."""
     out: list[DigestImageSample] = []
     for item in items:
         if not item.type or item.type.lower() not in _IMAGE_ITEM_TYPES:
@@ -407,8 +407,8 @@ def _summary_string(
     early_pages: tuple[DigestPageSummary, ...],
 ) -> str:
     """Operator-readable one-line summary used as the `summary` field
-    in the digest. No raw document content beyond what's already in
-    the heading outline."""
+ in the digest. No raw document content beyond what's already in
+ the heading outline."""
     pieces: list[str] = []
     if understanding and understanding.detected_title:
         pieces.append(understanding.detected_title)

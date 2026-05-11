@@ -10,16 +10,16 @@ honour that across each provider type.
 > **Two surfaces.** J1 exposes both:
 >
 > - The **legacy core protocols** in
->   [`src/j1/processing/contracts.py`](../../src/j1/processing/contracts.py)
->   and [`src/j1/llm/clients.py`](../../src/j1/llm/clients.py), which
->   are wired into the bundled workflows + bootstrap. Use these when
->   integrating with the existing pipeline.
+> [`src/j1/processing/contracts.py`](../../src/j1/processing/contracts.py)
+> and [`src/j1/llm/clients.py`](../../src/j1/llm/clients.py), which
+> are wired into the bundled workflows + bootstrap. Use these when
+> integrating with the existing pipeline.
 > - The **uniform extension contracts** in
->   [`j1.extension.contracts`](../../src/j1/extension/contracts.py),
->   which are `@runtime_checkable` Protocols that adapt to a
->   manifest + capability-registry style of registration. Use these
->   when you want isinstance-checkable contracts, conformance
->   harnesses, or to publish your adapter for downstream reuse.
+> [`j1.extension.contracts`](../../src/j1/extension/contracts.py),
+> which are `@runtime_checkable` Protocols that adapt to a
+> manifest + capability-registry style of registration. Use these
+> when you want isinstance-checkable contracts, conformance
+> harnesses, or to publish your adapter for downstream reuse.
 >
 > Implementations satisfying one surface satisfy the other when the
 > shapes match (`KnowledgeCompiler` ↔ `CompilerAdapter`,
@@ -51,25 +51,25 @@ honour that across each provider type.
 shapes are current:
 
 - **Role clients** (`TextLLMClient` / `VisionLLMClient` /
-  `EmbeddingClient` from [`src/j1/llm/clients.py`](../../src/j1/llm/clients.py))
-  carry role-specific signatures (`generate(prompt, …)`,
-  `analyze_image(bytes, …)`, `embed_batch(texts) → vectors`). Use these
-  whenever you're plugging an LLM behind one of the three named
-  roles — they integrate with `LLMProviderRegistry`, the bootstrap
-  validation, and the OpenAI-compat / LangChain bridges.
+ `EmbeddingClient` from [`src/j1/llm/clients.py`](../../src/j1/llm/clients.py))
+ carry role-specific signatures (`generate(prompt, …)`,
+ `analyze_image(bytes, …)`, `embed_batch(texts) → vectors`). Use these
+ whenever you're plugging an LLM behind one of the three named
+ roles — they integrate with `LLMProviderRegistry`, the bootstrap
+ validation, and the OpenAI-compat / LangChain bridges.
 - **`ModelProvider`** ([`src/j1/processing/contracts.py`](../../src/j1/processing/contracts.py))
-  is the generic, single-method `complete(ctx, prompt, *, model=None, …)
-  → ModelResponse` Protocol used by:
-  - [`_StructuredEnricher`](../../src/j1/enrichers.py) — its optional
-    `model: ModelProvider | None` parameter,
-  - [`ModelRouter`](../../src/j1/cost/router.py) — its
-    `Mapping[str, ModelProvider]` registry keyed by `TaskCategory`,
-  - and as a forward-looking integration point flagged in
-    [`adapters/rest/app.py`](../../src/j1/adapters/rest/app.py) and
-    [`integration/streaming/service.py`](../../src/j1/integration/streaming/service.py).
-  Use `ModelProvider` when you're wiring a router-style abstraction
-  over multiple LLMs (cost-aware routing per task category) or when
-  the consumer is the enricher's optional model slot.
+ is the generic, single-method `complete(ctx, prompt, *, model=None, …)
+ → ModelResponse` Protocol used by:
+ - [`_StructuredEnricher`](../../src/j1/enrichers.py) — its optional
+ `model: ModelProvider | None` parameter,
+ - [`ModelRouter`](../../src/j1/cost/router.py) — its
+ `Mapping[str, ModelProvider]` registry keyed by `TaskCategory`,
+ - and as a forward-looking integration point flagged in
+ [`adapters/rest/app.py`](../../src/j1/adapters/rest/app.py) and
+ [`integration/streaming/service.py`](../../src/j1/integration/streaming/service.py).
+ Use `ModelProvider` when you're wiring a router-style abstraction
+ over multiple LLMs (cost-aware routing per task category) or when
+ the consumer is the enricher's optional model slot.
 
 A deployment is free to wrap a single LLM behind both surfaces (a
 `TextLLMClient` for the bootstrap + a thin `ModelProvider` shim for
@@ -87,29 +87,29 @@ For the protocols themselves, read
 ## 2. Layering rules every provider MUST honour
 
 1. **Lazy-import vendor packages.** Top-level `import vendor_sdk`
-   means the framework can't be installed without the optional
-   dependency. Do the import inside the function that needs it, and
-   raise `ProviderUnavailable` with a pip-install hint when missing.
+ means the framework can't be installed without the optional
+ dependency. Do the import inside the function that needs it, and
+ raise `ProviderUnavailable` with a pip-install hint when missing.
 2. **Never leak vendor types past the provider boundary.** The
-   provider returns canonical J1 types only — `ArtifactDraft`,
-   `ArtifactProcessingResult`, `QueryResult`, `(text, usage)` tuples,
-   etc. Vendor objects (LangChain runnables, OpenAI response
-   objects, RAGAnything instances, …) stay inside the provider
-   module.
+ provider returns canonical J1 types only — `ArtifactDraft`,
+ `ArtifactProcessingResult`, `QueryResult`, `(text, usage)` tuples,
+ etc. Vendor objects (LangChain runnables, OpenAI response
+ objects, RAGAnything instances, …) stay inside the provider
+ module.
 3. **Translate exceptions at the boundary.** Vendor-side errors
-   become either `ProviderUnavailable` (for actionable infra
-   failures) or `ArtifactProcessingResult(status=FAILED, …)` (for
-   per-call failures). Never let a vendor exception escape into
-   `ProcessingService` or a workflow activity.
+ become either `ProviderUnavailable` (for actionable infra
+ failures) or `ArtifactProcessingResult(status=FAILED, …)` (for
+ per-call failures). Never let a vendor exception escape into
+ `ProcessingService` or a workflow activity.
 4. **Take config as a typed settings object.** Provider settings
-   live next to the provider (`src/j1/providers/<name>/settings.py`)
-   and are loaded by a `load_<name>_settings(env=...)` helper. The
-   provider constructor takes the settings object — never the env
-   directly.
+ live next to the provider (`src/j1/providers/<name>/settings.py`)
+ and are loaded by a `load_<name>_settings(env=...)` helper. The
+ provider constructor takes the settings object — never the env
+ directly.
 5. **Provide a test seam.** The provider class accepts an injectable
-   callable in its constructor (`compile_callable=`,
-   `graph_callable=`, `query_callable=`). Tests pass fakes; the
-   default factory (`from_default(...)`) wires the real bridge.
+ callable in its constructor (`compile_callable=`,
+ `graph_callable=`, `query_callable=`). Tests pass fakes; the
+ default factory (`from_default(...)`) wires the real bridge.
 
 ---
 
@@ -121,28 +121,25 @@ A compiler turns a raw document into one or more compiled artifacts.
 
 ```python
 class MyCompiler:
-    kind: str = "mycompiler"
+ kind: str = "mycompiler"
 
-    def __init__(
-        self, *,
-        llm_registry: LLMProviderRegistry,
-        settings: MyCompilerSettings,
-        compile_callable: Callable[[MyCompileRequest], ArtifactProcessingResult],
-    ) -> None:
-        ...
+ def __init__(
+ self, *,
+ llm_registry: LLMProviderRegistry,
+ settings: MyCompilerSettings,
+ compile_callable: Callable[[MyCompileRequest], ArtifactProcessingResult],
+ ) -> None:...
 
-    @classmethod
-    def from_default(
-        cls, *, llm_registry: LLMProviderRegistry, settings: MyCompilerSettings,
-    ) -> "MyCompiler":
-        # Lazy-import vendor; resolve override seam (env-driven processor)
-        # → wire `compile_callable` accordingly.
-        ...
+ @classmethod
+ def from_default(
+ cls, *, llm_registry: LLMProviderRegistry, settings: MyCompilerSettings,
+ ) -> "MyCompiler":
+ # Lazy-import vendor; resolve override seam (env-driven processor)
+ # → wire `compile_callable` accordingly....
 
-    def compile(
-        self, ctx: ProjectContext, document_id: str,
-    ) -> ArtifactProcessingResult:
-        ...
+ def compile(
+ self, ctx: ProjectContext, document_id: str,
+ ) -> ArtifactProcessingResult:...
 ```
 
 ### 3.2 Returning artifacts
@@ -152,11 +149,11 @@ content hashes, and creates `ArtifactRecord` entries:
 
 ```python
 ArtifactDraft(
-    kind="compiled.text",
-    content=b"...",
-    suggested_extension=".md",
-    source_document_ids=[document_id],
-    metadata={"provider": MyCompiler.kind, "stage": "compile"},
+ kind="compiled.text",
+ content=b"...",
+ suggested_extension=".md",
+ source_document_ids=[document_id],
+ metadata={"provider": MyCompiler.kind, "stage": "compile"},
 )
 ```
 
@@ -164,9 +161,9 @@ Wrap them in:
 
 ```python
 ArtifactProcessingResult(
-    status=ResultStatus.SUCCEEDED,
-    drafts=[draft, ...],
-    metadata={"provider": MyCompiler.kind},
+ status=ResultStatus.SUCCEEDED,
+ drafts=[draft,...],
+ metadata={"provider": MyCompiler.kind},
 )
 ```
 
@@ -178,7 +175,7 @@ ArtifactProcessingResult(
 | Per-document failure (corrupt input, vendor-side 500, etc.) | `ArtifactProcessingResult(status=FAILED, error=str(exc), message=type(exc).__name__, drafts=[], metadata={"provider": MyCompiler.kind})` |
 | Async loop conflict (you're inside an event loop) | `raise ProviderUnavailable("…wire your own compile_callable that awaits on the existing loop")` |
 
-The `compile()` wrapper in your provider class should catch
+The `compile` wrapper in your provider class should catch
 `Exception` and convert to FAILED — but re-raise `ProviderUnavailable`
 unchanged so operators see actionable infra errors.
 
@@ -191,10 +188,10 @@ Compose your worker / API with the provider registered under its
 from j1.compose import Bootstrap
 
 result = Bootstrap(
-    compilers={MyCompiler.kind: MyCompiler.from_default(
-        llm_registry=registry, settings=load_mycompiler_settings(),
-    )},
-).build()
+ compilers={MyCompiler.kind: MyCompiler.from_default(
+ llm_registry=registry, settings=load_mycompiler_settings,
+ )},
+).build
 ```
 
 The framework's bootstrap then routes `J1_DEFAULT_COMPILER=mycompiler`
@@ -205,17 +202,17 @@ through the new provider.
 Three tests at minimum:
 
 1. **Injected-callable test** — pass a fake `compile_callable`; assert
-   the request value object carries the right document ID + LLM
-   clients.
+ the request value object carries the right document ID + LLM
+ clients.
 2. **Negative default-path test** — call `from_default(...).compile(...)`
-   with the vendor module absent; assert `ProviderUnavailable` is
-   raised with a `pip install` substring.
+ with the vendor module absent; assert `ProviderUnavailable` is
+ raised with a `pip install` substring.
 3. **Positive boundary test** — inject a fake at the *vendor* seam
-   (`monkeypatch.setitem(sys.modules, "vendor", fake)` or
-   `monkeypatch.setattr(subprocess, "run", fake_run)`), call
-   `from_default(...).compile(...)`, assert the vendor entry point
-   was actually invoked. Mocking the whole adapter callable in this
-   test defeats the purpose.
+ (`monkeypatch.setitem(sys.modules, "vendor", fake)` or
+ `monkeypatch.setattr(subprocess, "run", fake_run)`), call
+ `from_default(...).compile(...)`, assert the vendor entry point
+ was actually invoked. Mocking the whole adapter callable in this
+ test defeats the purpose.
 
 [`tests/test_providers.py`](../../tests/test_providers.py) is the
 reference for all three patterns.
@@ -228,20 +225,20 @@ Same pattern as the compiler. Surface:
 
 ```python
 class MyGraphBuilder:
-    kind: str = "mygraph"
+ kind: str = "mygraph"
 
-    def __init__(
-        self, *,
-        settings: MyGraphSettings,
-        graph_callable: Callable[[MyGraphRequest], ArtifactProcessingResult],
-    ) -> None: ...
+ def __init__(
+ self, *,
+ settings: MyGraphSettings,
+ graph_callable: Callable[[MyGraphRequest], ArtifactProcessingResult],
+ ) -> None:...
 
-    @classmethod
-    def from_default(cls, *, settings: MyGraphSettings) -> "MyGraphBuilder": ...
+ @classmethod
+ def from_default(cls, *, settings: MyGraphSettings) -> "MyGraphBuilder":...
 
-    def build(
-        self, ctx: ProjectContext, artifact_ids: list[str],
-    ) -> ArtifactProcessingResult: ...
+ def build(
+ self, ctx: ProjectContext, artifact_ids: list[str],
+ ) -> ArtifactProcessingResult:...
 ```
 
 Output: one `graph_json` `ArtifactDraft` (or several, one per graph
@@ -261,21 +258,21 @@ Implement `QueryProvider`:
 
 ```python
 class MyQueryProvider:
-    kind: str = "myquery"
+ kind: str = "myquery"
 
-    def query(
-        self, ctx: ProjectContext, question: str, *, max_results: int | None = None,
-    ) -> QueryResult: ...
+ def query(
+ self, ctx: ProjectContext, question: str, *, max_results: int | None = None,
+ ) -> QueryResult:...
 ```
 
 Return:
 
 ```python
 QueryResult(
-    status=ResultStatus.SUCCEEDED,
-    answer="...",
-    sources=[SourceReference(...), ...],   # optional but encouraged
-    metadata={"provider": MyQueryProvider.kind, "mode": "..."},
+ status=ResultStatus.SUCCEEDED,
+ answer="...",
+ sources=[SourceReference(...),...], # optional but encouraged
+ metadata={"provider": MyQueryProvider.kind, "mode": "..."},
 )
 ```
 
@@ -297,7 +294,7 @@ are deliberately minimal so any vendor SDK can be wrapped:
 | Text | `generate(prompt, *, system=None, **opts) -> tuple[str, TokenUsage]` | Generated text + usage |
 | Vision | `analyze_image(image_bytes, *, prompt=None, **opts) -> tuple[str, TokenUsage]` | Description + usage |
 | Embedding | `embed_batch(texts) -> tuple[list[list[float]], TokenUsage]` | Vectors + usage |
-| Embedding (cont.) | `dimension() -> int` | Vector dimension |
+| Embedding (cont.) | `dimension -> int` | Vector dimension |
 
 ### 6.1 OpenAI-compatible vendors
 
@@ -334,12 +331,11 @@ Implement the role protocol directly:
 
 ```python
 class MyTextClient:
-    provider = "myvendor"
-    model = "..."
+ provider = "myvendor"
+ model = "..."
 
-    def generate(self, prompt: str, *, system: str | None = None, **opts):
-        # vendor SDK call, return (text, TokenUsage(...))
-        ...
+ def generate(self, prompt: str, *, system: str | None = None, **opts):
+ # vendor SDK call, return (text, TokenUsage(...))...
 ```
 
 Wire it into the `LLMProviderRegistry` at composition time:
@@ -347,7 +343,7 @@ Wire it into the `LLMProviderRegistry` at composition time:
 ```python
 from j1 import LLMProviderRegistry, LLM_ROLE_TEXT
 
-registry = LLMProviderRegistry()
+registry = LLMProviderRegistry
 registry.register(LLM_ROLE_TEXT, MyTextClient(...))
 ```
 
@@ -371,16 +367,15 @@ ENV_MYVENDOR_X = "J1_MYVENDOR_X"
 
 @dataclass(frozen=True)
 class MyVendorSettings:
-    x: str | None = None
-    workdir: str = "./data/myvendor"
-    processor: str | None = None      # override seam (J1_MYVENDOR_PROCESSOR)
+ x: str | None = None
+ workdir: str = "./data/myvendor"
+ processor: str | None = None # override seam (J1_MYVENDOR_PROCESSOR)
 
 def load_myvendor_settings(env: Mapping[str, str] | None = None) -> MyVendorSettings:
-    source = env if env is not None else os.environ
-    return MyVendorSettings(
-        x=source.get(ENV_MYVENDOR_X),
-        ...
-    )
+ source = env if env is not None else os.environ
+ return MyVendorSettings(
+ x=source.get(ENV_MYVENDOR_X),...
+ )
 ```
 
 Document each new env var in
@@ -409,70 +404,70 @@ PROVIDER_NAME = "myvendor"
 
 @dataclass(frozen=True)
 class MyCompileRequest:
-    ctx: ProjectContext
-    document_id: str
-    settings: MyVendorSettings
-    text_client: Any
-    embedding_client: Any | None
+ ctx: ProjectContext
+ document_id: str
+ settings: MyVendorSettings
+ text_client: Any
+ embedding_client: Any | None
 
 
 CompileCallable = Callable[[MyCompileRequest], ArtifactProcessingResult]
 
 
 class MyCompiler:
-    kind: str = PROVIDER_NAME
+ kind: str = PROVIDER_NAME
 
-    def __init__(
-        self, *,
-        llm_registry: LLMProviderRegistry,
-        settings: MyVendorSettings,
-        compile_callable: CompileCallable,
-    ) -> None:
-        self._llm_registry = llm_registry
-        self._settings = settings
-        self._compile_callable = compile_callable
+ def __init__(
+ self, *,
+ llm_registry: LLMProviderRegistry,
+ settings: MyVendorSettings,
+ compile_callable: CompileCallable,
+ ) -> None:
+ self._llm_registry = llm_registry
+ self._settings = settings
+ self._compile_callable = compile_callable
 
-    @classmethod
-    def from_default(
-        cls, *, llm_registry: LLMProviderRegistry, settings: MyVendorSettings,
-    ) -> "MyCompiler":
-        if settings.processor:
-            from j1.llm.classloader import resolve_callable
-            compile_callable = resolve_callable(settings.processor)
-        else:
-            compile_callable = _default_callable()
-        return cls(
-            llm_registry=llm_registry, settings=settings,
-            compile_callable=compile_callable,
-        )
+ @classmethod
+ def from_default(
+ cls, *, llm_registry: LLMProviderRegistry, settings: MyVendorSettings,
+ ) -> "MyCompiler":
+ if settings.processor:
+ from j1.llm.classloader import resolve_callable
+ compile_callable = resolve_callable(settings.processor)
+ else:
+ compile_callable = _default_callable
+ return cls(
+ llm_registry=llm_registry, settings=settings,
+ compile_callable=compile_callable,
+ )
 
-    def compile(
-        self, ctx: ProjectContext, document_id: str,
-    ) -> ArtifactProcessingResult:
-        request = MyCompileRequest(
-            ctx=ctx, document_id=document_id, settings=self._settings,
-            text_client=self._llm_registry.text(),
-            embedding_client=self._llm_registry.try_embedding(),
-        )
-        try:
-            return self._compile_callable(request)
-        except ProviderUnavailable:
-            raise
-        except Exception as exc:
-            return ArtifactProcessingResult(
-                status=ResultStatus.FAILED,
-                error=str(exc),
-                message=type(exc).__name__,
-                drafts=[],
-                metadata={"provider": PROVIDER_NAME},
-            )
+ def compile(
+ self, ctx: ProjectContext, document_id: str,
+ ) -> ArtifactProcessingResult:
+ request = MyCompileRequest(
+ ctx=ctx, document_id=document_id, settings=self._settings,
+ text_client=self._llm_registry.text,
+ embedding_client=self._llm_registry.try_embedding,
+ )
+ try:
+ return self._compile_callable(request)
+ except ProviderUnavailable:
+ raise
+ except Exception as exc:
+ return ArtifactProcessingResult(
+ status=ResultStatus.FAILED,
+ error=str(exc),
+ message=type(exc).__name__,
+ drafts=[],
+ metadata={"provider": PROVIDER_NAME},
+ )
 
 
-def _default_callable() -> CompileCallable:
-    def _delegate(request: MyCompileRequest) -> ArtifactProcessingResult:
-        from j1.providers.myvendor._bridge import default_compile
-        return default_compile(request)
-    return _delegate
+def _default_callable -> CompileCallable:
+ def _delegate(request: MyCompileRequest) -> ArtifactProcessingResult:
+ from j1.providers.myvendor._bridge import default_compile
+ return default_compile(request)
+ return _delegate
 ```
 
 Plus a `_bridge.py` next to it that does the actual vendor work
@@ -485,14 +480,14 @@ Plus a `_bridge.py` next to it that does the actual vendor work
 A new provider is incomplete without:
 
 - **Unit tests** covering: injected-callable success, exception
-  normalisation, `ProviderUnavailable` propagation, the `kind`
-  attribute, the settings loader.
+ normalisation, `ProviderUnavailable` propagation, the `kind`
+ attribute, the settings loader.
 - **Negative default-path tests** covering: vendor-package missing,
-  binary-not-on-`PATH` (CLI mode), unknown-mode error.
+ binary-not-on-`PATH` (CLI mode), unknown-mode error.
 - **Positive boundary tests** covering: vendor entry point actually
-  invoked (mocking ONLY at the vendor seam — `sys.modules`,
-  `subprocess.run`, `shutil.which`, etc., never at the provider
-  callable).
+ invoked (mocking ONLY at the vendor seam — `sys.modules`,
+ `subprocess.run`, `shutil.which`, etc., never at the provider
+ callable).
 
 The reference is [`tests/test_providers.py`](../../tests/test_providers.py)
 — follow the same patterns for new providers.
@@ -510,10 +505,10 @@ something belongs elsewhere:
 | Vendor objects in `ArtifactDraft.metadata` | Pickling / Temporal serialisation breaks | Convert to plain `str` / `int` / `dict` at the provider boundary |
 | `from j1 import RAGAnythingCompiler` inside `j1.processing.service` | Core depends on a specific provider | Inject providers via `kind`-keyed mapping at composition time |
 | Reading env vars inside a provider class | Provider becomes hard to test + tightly coupled to env layout | Take a typed settings object in the constructor; load env in the loader |
-| `try: ... except Exception: pass` around vendor calls | Silent failures hide bugs | Catch `Exception` at the *adapter wrapper* and convert to FAILED `ArtifactProcessingResult`; never swallow inside the bridge |
+| `try:... except Exception: pass` around vendor calls | Silent failures hide bugs | Catch `Exception` at the *adapter wrapper* and convert to FAILED `ArtifactProcessingResult`; never swallow inside the bridge |
 | `subprocess.run("graphify " + user_input, shell=True)` | Command injection | Compose `argv` as a list; never use `shell=True`; validate inputs |
 | Defining new "kind" strings as module-level magic | Drift across the codebase | Define a `PROVIDER_NAME` constant in the provider's `__init__.py` and use it everywhere |
-| Provider-specific config in `j1.compose.bootstrap.Bootstrap.build()` | Pollutes the composition root | Put provider config in the provider's settings module; `Bootstrap` only resolves the selection |
+| Provider-specific config in `j1.compose.bootstrap.Bootstrap.build` | Pollutes the composition root | Put provider config in the provider's settings module; `Bootstrap` only resolves the selection |
 | Skipping the test-seam constructor and only providing `from_default` | Hermetic tests can't run | Always offer `__init__(*, callable=...)` for tests AND `from_default(...)` for production |
 
 ---

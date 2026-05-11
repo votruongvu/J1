@@ -32,9 +32,9 @@ event-integration, …) for production hardening.
 
 - Docker (20.10+)
 - Docker Compose (v2 — invoked as `docker compose`, not
-  `docker-compose`)
+ `docker-compose`)
 - Free local ports: **8000** (API), **8081** (Frontend),
-  **7233** (Temporal gRPC), **8080** (Temporal UI)
+ **7233** (Temporal gRPC), **8080** (Temporal UI)
 
 That's it. No Python install, no Postgres, no Redis, no S3, no
 Node toolchain on the host (the frontend image builds its own).
@@ -45,7 +45,7 @@ Node toolchain on the host (the frontend image builds its own).
 
 ```bash
 # 1. Copy the env template
-cp .env.example .env
+cp.env.example.env
 
 # 2. Start everything
 docker compose -f deploy/dev/docker-compose.yml up --build
@@ -58,7 +58,7 @@ work cached:
 | Layer | Re-runs when… | First-build cost | Cached cost |
 |---|---|---|---|
 | `apt-get install …` (LibreOffice, OpenCV libs) | Dockerfile system-deps change | ~60s | ~5s |
-| `pip install -e .[all-providers]` (torch, transformers, mineru, langchain-*) | `pyproject.toml` changes | ~3min | ~30–60s |
+| `pip install -e.[all-providers]` (torch, transformers, mineru, langchain-*) | `pyproject.toml` changes | ~3min | ~30–60s |
 | `COPY src/`, `COPY deploy/` | Source edits | ~1s | ~1s |
 
 Both heavy layers use **BuildKit cache mounts** (`--mount=type=cache`)
@@ -77,21 +77,21 @@ on every build.
 Common causes and fixes:
 
 1. **Build context is huge** — run
-   `du -sh .venv frontend/node_modules .git` and confirm
-   `.dockerignore` actually excludes them. Then re-check Docker
-   Desktop's "Resources → File sharing" → only `/Users/<you>` should
-   be shared, not whole-disk.
+ `du -sh.venv frontend/node_modules.git` and confirm
+ `.dockerignore` actually excludes them. Then re-check Docker
+ Desktop's "Resources → File sharing" → only `/Users/<you>` should
+ be shared, not whole-disk.
 2. **BuildKit isn't enabled** — Docker Desktop ≥4.0 enables it by
-   default; older setups need `DOCKER_BUILDKIT=1` in the env. Check
-   for the `# syntax=docker/dockerfile:1.6` directive in build
-   output: if BuildKit is off you'll see a parsing warning.
+ default; older setups need `DOCKER_BUILDKIT=1` in the env. Check
+ for the `# syntax=docker/dockerfile:1.6` directive in build
+ output: if BuildKit is off you'll see a parsing warning.
 3. **Cache was wiped** — `docker builder prune` or `docker system
-   prune -a` clears the BuildKit cache. Next build will re-download.
+ prune -a` clears the BuildKit cache. Next build will re-download.
 4. **Apple Silicon emulation** — verify your image platform matches
-   the host: `docker version` should show your arch (arm64 on M-series).
-   Building an `amd64` image on M-series triggers QEMU emulation,
-   which is **5–10× slower**. Add `platform: linux/arm64` to the
-   service if the base image supports it (`python:3.13-slim` does).
+ the host: `docker version` should show your arch (arm64 on M-series).
+ Building an `amd64` image on M-series triggers QEMU emulation,
+ which is **5–10× slower**. Add `platform: linux/arm64` to the
+ service if the base image supports it (`python:3.13-slim` does).
 
 ### Editing Python code
 
@@ -139,15 +139,15 @@ in-flight workflows). A rebuild is only needed when you change
 
 Services that come up:
 
-| Service        | URL / Port                            | What it is |
+| Service | URL / Port | What it is |
 |----------------|---------------------------------------|------------|
-| `api`          | http://localhost:8000                 | J1 REST API (`python -m deploy.dev.api`) |
-| `worker`       | (no port — connects to Temporal)      | J1 Temporal worker (`python -m deploy.dev.worker`) |
-| `frontend`     | http://localhost:8081                 | J1 Execution Console SPA (nginx + Vite-built bundle, proxies `/api/*` to the api service) |
-| `temporal`     | localhost:7233 (gRPC)                 | Temporal server (`temporalio/auto-setup`) |
-| `temporal-init`| (one-shot — exits after first run)    | Registers `J1IngestStage` / `J1IngestMode` search attributes; `api` and `worker` block on this completing |
-| `temporal-ui`  | http://localhost:8080                 | Temporal web UI |
-| `postgresql`   | (no exposed port; Temporal-internal)  | Temporal's storage — **not** used by J1 |
+| `api` | http://localhost:8000 | J1 REST API (`python -m deploy.dev.api`) |
+| `worker` | (no port — connects to Temporal) | J1 Temporal worker (`python -m deploy.dev.worker`) |
+| `frontend` | http://localhost:8081 | J1 Execution Console SPA (nginx + Vite-built bundle, proxies `/api/*` to the api service) |
+| `temporal` | localhost:7233 (gRPC) | Temporal server (`temporalio/auto-setup`) |
+| `temporal-init`| (one-shot — exits after first run) | Registers `J1IngestStage` / `J1IngestMode` search attributes; `api` and `worker` block on this completing |
+| `temporal-ui` | http://localhost:8080 | Temporal web UI |
+| `postgresql` | (no exposed port; Temporal-internal) | Temporal's storage — **not** used by J1 |
 
 ### Editing frontend code
 
@@ -163,8 +163,8 @@ keep the container stack for the backend services:
 
 ```bash
 cd frontend
-npm install      # first time only
-npm run dev      # http://localhost:5173 with HMR
+npm install # first time only
+npm run dev # http://localhost:5173 with HMR
 ```
 
 The host-side dev server hits the api container on its published
@@ -210,18 +210,18 @@ inside the named volume. State persists across `docker compose up
 Recommended settings to keep parse times low on Apple Silicon:
 
 - Run **LM Studio natively on macOS** (not in Docker) and reach it
-  via `http://host.docker.internal:1234`. The VLM/text-LLM workload
-  benefits from native Metal acceleration; running it inside the
-  Linux VM forfeits GPU offload.
+ via `http://host.docker.internal:1234`. The VLM/text-LLM workload
+ benefits from native Metal acceleration; running it inside the
+ Linux VM forfeits GPU offload.
 - Use **`J1_RAGANYTHING_BACKEND=pipeline`** for simple text-layer
-  documents (the default fast path); only use
-  `vlm-http-client` / `hybrid-http-client` when MinerU's vision
-  passes are required (scanned PDFs, complex diagrams).
+ documents (the default fast path); only use
+ `vlm-http-client` / `hybrid-http-client` when MinerU's vision
+ passes are required (scanned PDFs, complex diagrams).
 - Keep **`MAX_ASYNC=1`** when LM Studio is a single inference
-  process — concurrent requests just queue at the same model.
+ process — concurrent requests just queue at the same model.
 - Ingest one or two documents through the dev stack, then check
-  `time` — anything over a minute per page strongly indicates the
-  vision LLM is the bottleneck, not Docker volumes.
+ `time` — anything over a minute per page strongly indicates the
+ vision LLM is the bottleneck, not Docker volumes.
 
 ### Inspecting / cleaning volumes
 
@@ -248,16 +248,16 @@ If you suspect Docker is the bottleneck, compare like-for-like:
 ```bash
 # Inside Docker (uses tmpfs /tmp + named-volume workspace)
 time docker compose -f deploy/dev/docker-compose.yml exec worker \
-    mineru -p /var/lib/j1/tenants/<tenant>/projects/<project>/raw/<doc>.pdf \
-           -o /tmp/j1-mineru/benchmark-output \
-           -b vlm-http-client \
-           -u http://host.docker.internal:1234
+ mineru -p /var/lib/j1/tenants/<tenant>/projects/<project>/raw/<doc>.pdf \
+ -o /tmp/j1-mineru/benchmark-output \
+ -b vlm-http-client \
+ -u http://host.docker.internal:1234
 
 # Native macOS (requires `pip install raganything` host-side)
-time mineru -p ./test.pdf \
-            -o ./benchmark-output \
-            -b vlm-http-client \
-            -u http://127.0.0.1:1234
+time mineru -p./test.pdf \
+ -o./benchmark-output \
+ -b vlm-http-client \
+ -u http://127.0.0.1:1234
 ```
 
 Compare the wall-clock numbers. Docker should be within ~5–10 % of
@@ -283,9 +283,9 @@ If you point the framework at a Temporal cluster you manage yourself
 
 ```bash
 temporal operator search-attribute create \
-  --namespace default --name J1IngestStage --type Keyword
+ --namespace default --name J1IngestStage --type Keyword
 temporal operator search-attribute create \
-  --namespace default --name J1IngestMode --type Keyword
+ --namespace default --name J1IngestMode --type Keyword
 ```
 
 …or leave `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=false` until you do.
@@ -325,28 +325,28 @@ workflows list — that's expected.
 ```bash
 # 1. Create a project
 curl -X POST http://localhost:8000/projects \
-  -H "X-Tenant-Id: acme" \
-  -H "Content-Type: application/json" \
-  -d '{"projectId": "alpha"}'
+ -H "X-Tenant-Id: acme" \
+ -H "Content-Type: application/json" \
+ -d '{"projectId": "alpha"}'
 
 # 2. Upload a sample document
 echo "hello from local development" > /tmp/sample.txt
 curl -X POST http://localhost:8000/documents \
-  -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
-  -F "file=@/tmp/sample.txt"
+ -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
+ -F "file=@/tmp/sample.txt"
 
 # 3. Start a project-wide ingestion workflow
-#    Note: `compilerKind` is OPTIONAL — when omitted, the API
-#    falls back to the bootstrap's `J1_DEFAULT_COMPILER` selection
-#    (which is `mock` per .env.example). Sending an unregistered
-#    `compilerKind` value is rejected at the API boundary with 400.
+# Note: `compilerKind` is OPTIONAL — when omitted, the API
+# falls back to the bootstrap's `J1_DEFAULT_COMPILER` selection
+# (which is `mock` per.env.example). Sending an unregistered
+# `compilerKind` value is rejected at the API boundary with 400.
 curl -X POST http://localhost:8000/ingestion-jobs \
-  -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "actor": "local-dev",
-    "correlationId": "demo-1"
-  }'
+ -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha" \
+ -H "Content-Type: application/json" \
+ -d '{
+ "actor": "local-dev",
+ "correlationId": "demo-1"
+ }'
 ```
 
 Response:
@@ -358,19 +358,19 @@ Response:
 ### What you should see
 
 1. **Temporal UI** (http://localhost:8080) — a new workflow execution
-   under the `default` namespace, showing the workflow lifecycle.
+ under the `default` namespace, showing the workflow lifecycle.
 2. **Worker logs** (`docker compose -f deploy/dev/docker-compose.yml logs -f worker`)
-   — activity dispatch lines.
+ — activity dispatch lines.
 3. **API response** — the `jobId` printed above is the Temporal
-   workflow id; you can query its status:
+ workflow id; you can query its status:
 
-   ```bash
-   curl http://localhost:8000/ingestion-jobs/<jobId> \
-     -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha"
-   ```
+ ```bash
+ curl http://localhost:8000/ingestion-jobs/<jobId> \
+ -H "X-Tenant-Id: acme" -H "X-Project-Id: alpha"
+ ```
 
 With the bundled `.env.example` defaults, the dev worker runs
-`bootstrap_from_env()` and wires the framework's bundled mock
+`bootstrap_from_env` and wires the framework's bundled mock
 adapters under `kind="mock"` for compiler / graph / retrieval. The
 `POST /ingestion-jobs` call above produces a deterministic
 end-to-end success: API → Temporal → worker → activities → mock
@@ -381,20 +381,20 @@ artifacts. Inspect the resulting `compiled.text` artifact with
 To run real processing instead of mocks:
 
 1. The bundled image ([`Dockerfile`](Dockerfile)) already installs
-   `j1[raganything]` so the vendor adapter is present out of the
-   box. (If you trimmed that extra to slim the image, install it
-   into the running container or rebuild after restoring the
-   `[dev,raganything]` extras spec.)
+ `j1[raganything]` so the vendor adapter is present out of the
+ box. (If you trimmed that extra to slim the image, install it
+ into the running container or rebuild after restoring the
+ `[dev,raganything]` extras spec.)
 2. In `.env`, set `J1_DEFAULT_COMPILER=raganything` (and the same
-   for `_GRAPH_PROVIDER` / `_RETRIEVAL_PROVIDER`).
+ for `_GRAPH_PROVIDER` / `_RETRIEVAL_PROVIDER`).
 3. Configure LLM credentials: `J1_TEXT_LLM_*` and `J1_EMBEDDING_*`
-   (and `J1_VISION_LLM_*` if visual enrichment is on).
+ (and `J1_VISION_LLM_*` if visual enrichment is on).
 4. Restart the stack:
 
-   ```bash
-   docker compose -f deploy/dev/docker-compose.yml down
-   docker compose -f deploy/dev/docker-compose.yml up --build
-   ```
+ ```bash
+ docker compose -f deploy/dev/docker-compose.yml down
+ docker compose -f deploy/dev/docker-compose.yml up --build
+ ```
 
 > **Important — LLM roles are independent and have different model
 > requirements.** Pointing every role at the same chat model is the
@@ -417,7 +417,7 @@ To run real processing instead of mocks:
 > want, set `J1_RAGANYTHING_BACKEND=pipeline` instead — MinerU's
 > traditional CV detectors handle parsing without any VLM.
 
-The same `worker.py` / `bootstrap_from_env()` path serves both
+The same `worker.py` / `bootstrap_from_env` path serves both
 modes — no fork required for the common case. The image carries
 the optional adapter so a deployment can flip the env var and
 restart without a rebuild.
@@ -481,19 +481,19 @@ Per-area context lives in:
 ## 8. Forking this for production
 
 1. **Switch Temporal off `auto-setup`.** Use `temporalio/server` with
-   a real Cassandra / Postgres + Elasticsearch backing.
+ a real Cassandra / Postgres + Elasticsearch backing.
 2. **Mount `J1_DATA_ROOT` on shared durable storage** (NFS / EFS /
-   Azure Files) — the JSON registries are single-writer, so multiple
-   API replicas writing to the same project are not supported.
+ Azure Files) — the JSON registries are single-writer, so multiple
+ API replicas writing to the same project are not supported.
 3. **Wire authentication.** Set `J1_AUTH_API_KEYS_FILE` to a path
-   mounted from your secret manager. See [docs/security.md](../../docs/security.md).
+ mounted from your secret manager. See [docs/security.md](../../docs/security.md).
 4. **Plug in real processors.** Fork [`worker.py`](worker.py) and
-   register your own `KnowledgeCompiler` / `EnrichmentProcessor` /
-   `GraphBuilder` / `ModelProvider` implementations.
+ register your own `KnowledgeCompiler` / `EnrichmentProcessor` /
+ `GraphBuilder` / `ModelProvider` implementations.
 5. **Deployment platform.** This compose file is laptop-grade. For
-   Kubernetes, the same image (`Dockerfile`) works as a base — split
-   the API and worker into separate Deployments / StatefulSets and
-   run the worker with N replicas to scale activity throughput.
+ Kubernetes, the same image (`Dockerfile`) works as a base — split
+ the API and worker into separate Deployments / StatefulSets and
+ run the worker with N replicas to scale activity throughput.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Wave 9A — run-detail page data-model contract.
+"""run-detail page data-model contract.
 
 The FE run-detail page renders a fixed set of panels in a fixed
 order. Which panels are *highlighted* vs *secondary* depends on the
@@ -10,40 +10,40 @@ gets the operator's attention for each status.
 
 The full panel inventory the run-detail page CAN render:
 
-  * `run_header`              — RunHeader.tsx (status badge,
-                                run id, started/ended timestamps).
-  * `primary_status`          — PrimaryStatusPanel.tsx (headline +
-                                recommended action).
-  * `assessment_plan`         — AssessmentPlanPanel.tsx (the
-                                pre-compile cheap profile).
-  * `initial_execution_plan`  — InitialExecutionPlan artifact
-                                (domain pack + enrichment policy
-                                + candidate modules).
-  * `compile_strategy`        — CompileStrategyPanel.tsx (mode +
-                                retry attempts + quality).
-  * `compile_result`          — typed NormalizedCompileResult
-                                (chunks_count, detected_tables, …).
-  * `enrich_plan`             — EnrichPlanPanel.tsx (post-compile
-                                rule-based + fast-LLM recommendation).
-  * `enrichment_result`       — typed EnrichmentResult overlay
-                                (per-module outcomes + provenance).
-  * `live_timeline`           — LiveTimeline.tsx (SSE-driven event
-                                stream + macro-stage grouping).
-  * `run_results`             — RunResults tab cluster (Overview /
-                                Quality / Validation / Assets / Raw).
-  * `error_report`            — error_report artifact.
-  * `tech_drawer`             — TechDrawer.tsx (advanced
-                                operator-only view).
+ * `run_header` — RunHeader.tsx (status badge,
+ run id, started/ended timestamps).
+ * `primary_status` — PrimaryStatusPanel.tsx (headline +
+ recommended action).
+ * `assessment_plan` — AssessmentPlanPanel.tsx (the
+ pre-compile cheap profile).
+ * `initial_execution_plan` — InitialExecutionPlan artifact
+ (domain pack + enrichment policy
+ + candidate modules).
+ * `compile_strategy` — CompileStrategyPanel.tsx (mode +
+ retry attempts + quality).
+ * `compile_result` — typed NormalizedCompileResult
+ (chunks_count, detected_tables, …).
+ * `enrich_plan` — EnrichPlanPanel.tsx (post-compile
+ rule-based + fast-LLM recommendation).
+ * `enrichment_result` — typed EnrichmentResult overlay
+ (per-module outcomes + provenance).
+ * `live_timeline` — LiveTimeline.tsx (SSE-driven event
+ stream + macro-stage grouping).
+ * `run_results` — RunResults tab cluster (Overview /
+ Quality / Validation / Assets / Raw).
+ * `error_report` — error_report artifact.
+ * `tech_drawer` — TechDrawer.tsx (advanced
+ operator-only view).
 
 For each UI state we return:
 
-  * `primary_panel`           — the one panel the FE pre-selects /
-                                pre-scrolls to (operator's
-                                attention sink).
-  * `highlighted_panels`      — panels the FE marks "important"
-                                (badge / chevron / colored border).
-  * `hidden_panels`           — panels the FE collapses or hides
-                                because they'd carry stale info.
+ * `primary_panel` — the one panel the FE pre-selects /
+ pre-scrolls to (operator's
+ attention sink).
+ * `highlighted_panels` — panels the FE marks "important"
+ (badge / chevron / colored border).
+ * `hidden_panels` — panels the FE collapses or hides
+ because they'd carry stale info.
 
 Pure / deterministic. No I/O. Same UI state → same panel selection.
 """
@@ -117,11 +117,11 @@ ALL_PANELS: tuple[str, ...] = (
 class RunDetailPanelSelection:
     """Typed FE-facing panel selection for one run state.
 
-    `primary_panel` is the panel the FE pre-selects when the page
-    loads. `highlighted_panels` carry a marker the FE renders as a
-    badge / coloured border. `hidden_panels` are collapsed in the
-    accordion (still accessible by click — never load-bearing for
-    audit). Pure data."""
+ `primary_panel` is the panel the FE pre-selects when the page
+ loads. `highlighted_panels` carry a marker the FE renders as a
+ badge / coloured border. `hidden_panels` are collapsed in the
+ accordion (still accessible by click — never load-bearing for
+ audit). Pure data."""
 
     ui_state: str
     primary_panel: str
@@ -139,25 +139,25 @@ class RunDetailPanelSelection:
 
 def select_run_detail_panels(ui_state: str) -> RunDetailPanelSelection:
     """Project a `UI_STATE_*` literal onto the run-detail page's
-    panel selection. The FE consumes this to decide which panel to
-    pre-scroll to + which to dim.
+ panel selection. The FE consumes this to decide which panel to
+ pre-scroll to + which to dim.
 
-    Behaviour per UI state (Wave 9A spec, A–F):
+ Behaviour per UI state ( spec, A–F):
 
-      A. PENDING                  — primary: assessment_plan
-         (operator wants to confirm the run scope while waiting).
-      B. RUNNING                  — primary: live_timeline
-         (operator wants live progress).
-      C. COMPLETED                — primary: run_results
-         (operator wants to inspect outputs).
-      D. COMPLETED_WITH_WARNINGS  — primary: enrichment_result
-         (operator wants to see which modules warned).
-      E. FAILED                   — primary: error_report
-         (operator wants to triage the failure).
-      F. CANCELLED                — primary: live_timeline
-         (operator wants to see when/why the cancel landed).
+ A. PENDING — primary: assessment_plan
+ (operator wants to confirm the run scope while waiting).
+ B. RUNNING — primary: live_timeline
+ (operator wants live progress).
+ C. COMPLETED — primary: run_results
+ (operator wants to inspect outputs).
+ D. COMPLETED_WITH_WARNINGS — primary: enrichment_result
+ (operator wants to see which modules warned).
+ E. FAILED — primary: error_report
+ (operator wants to triage the failure).
+ F. CANCELLED — primary: live_timeline
+ (operator wants to see when/why the cancel landed).
 
-    Unknown states fall back to RUN_HEADER as a non-crashing default."""
+ Unknown states fall back to RUN_HEADER as a non-crashing default."""
 
     if ui_state == UI_STATE_PENDING:
         return RunDetailPanelSelection(

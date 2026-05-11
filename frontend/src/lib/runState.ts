@@ -1,9 +1,9 @@
 /**
- * Wave 9B — frontend port of the Wave-9A backend status projection.
+ * frontend port of the backend status projection.
  *
  * Mirrors:
- *   - `src/j1/processing/final_status.py::project_final_status`
- *   - `src/j1/processing/ui_status_mapping.py::project_ui_state`
+ * - `src/j1/processing/final_status.py::project_final_status`
+ * - `src/j1/processing/ui_status_mapping.py::project_ui_state`
  *
  * Lets the run-detail page compute the FE state machine (PENDING /
  * RUNNING / COMPLETED / COMPLETED_WITH_WARNINGS / FAILED / CANCELLED)
@@ -28,7 +28,7 @@ import type { IngestionRun, RunFinal } from "@/types/ingestion";
 import type { FinalIngestionReportPayload } from "@/types/review";
 
 
-// ---- Wave-8 final-status vocabulary (mirrors final_status.py) -----
+// ---- final-status vocabulary (mirrors final_status.py) -----
 
 export const INGESTION_STATUS = {
   COMPLETED_WITHOUT_ENRICHMENT: "completed_without_enrichment",
@@ -416,16 +416,16 @@ export function isTerminalStatus(status: RunStatus): boolean {
 }
 
 
-// ---- Wave 10 — report-preferred projection ----------------------
+// ---- report-preferred projection ----------------------
 
 /**
- * Wave 10 — project a `UiRunState` directly from the typed
+ * project a `UiRunState` directly from the typed
  * `FinalIngestionReport`. The report carries the backend's
  * authoritative `final_status` literal so the FE doesn't have to
  * re-derive it from `run.status + run.final + enrichment_result`.
  *
  * Falls back to `projectUiState(run, enrichmentSignals)` when the
- * report is null (pre-Wave-10 runs, in-flight runs).
+ * report is null (pre- runs, in-flight runs).
  */
 export function projectUiStateFromReport(
   run: Pick<IngestionRun, "status" | "final"> | null,

@@ -21,16 +21,16 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 class GraphifySettings:
     """Whether-and-how config for the optional Graphify provider.
 
-    `enabled=False` means the composition root does NOT register the
-    Graphify graph builder; selecting it via `J1_DEFAULT_GRAPH_PROVIDER`
-    while disabled is the user error case (composition root raises a
-    clear message).
+ `enabled=False` means the composition root does NOT register the
+ Graphify graph builder; selecting it via `J1_DEFAULT_GRAPH_PROVIDER`
+ while disabled is the user error case (composition root raises a
+ clear message).
 
-    `graph_processor` is an importable callable spec (e.g.
-    ``"mypkg.processors:graphify_build"``); when set, the adapter
-    delegates to it via the safe class-loader. Otherwise the built-in
-    stub raises `ProviderUnavailable`.
-    """
+ `graph_processor` is an importable callable spec (e.g.
+ ``"mypkg.processors:graphify_build"``); when set, the adapter
+ delegates to it via the safe class-loader. Otherwise the built-in
+ stub raises `ProviderUnavailable`.
+ """
 
     enabled: bool = False
     mode: str = DEFAULT_MODE

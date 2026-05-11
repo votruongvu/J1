@@ -1,6 +1,6 @@
 """Unit tests for IngestionResultReviewService.
 
-Covers Phase 1 (summary) and Phase 2 (run-scoped artifact list +
+Covers (summary) and (run-scoped artifact list +
 content + path-traversal guard)."""
 
 from __future__ import annotations
@@ -110,9 +110,9 @@ def test_summarize_run_does_not_leak_cross_tenant_runs(
     service, run_store, ctx, other_ctx,
 ):
     """A run that exists in one project must not be visible from
-    another. The service uses the same `ctx`-scoped store reads as
-    every other surface; cross-project access should look identical
-    to 'missing'."""
+ another. The service uses the same `ctx`-scoped store reads as
+ every other surface; cross-project access should look identical
+ to 'missing'."""
     run_store.upsert(ctx, _make_run(run_id="leak-test"))
     with pytest.raises(ReviewNotFound):
         service.summarize_run(other_ctx, "leak-test")
@@ -143,8 +143,8 @@ def test_summarize_run_counts_artifacts_by_kind_via_lineage(
     service, run_store, artifact_registry, ctx,
 ):
     """No `metadata.run_id` tag → fall back to lineage join on
-    `source_document_ids`. This is the path legacy artifacts (from
-    before Phase 4) take, and it must keep working."""
+ `source_document_ids`. This is the path legacy artifacts (from
+ ) take, and it must keep working."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
 
     artifact_registry.add(
@@ -183,10 +183,10 @@ def test_summarize_run_lineage_walks_source_artifact_ids(
     service, run_store, artifact_registry, ctx,
 ):
     """Regression: graph_json + enrichment artifacts carry only
-    `source_artifact_ids` (pointing at compile artifacts), NOT
-    `source_document_ids`. The lineage fallback MUST walk the chain
-    transitively or the Graph / Assets tabs silently disable for
-    legacy untagged runs even though the artifacts exist on disk."""
+ `source_artifact_ids` (pointing at compile artifacts), NOT
+ `source_document_ids`. The lineage fallback MUST walk the chain
+ transitively or the Graph / Assets tabs silently disable for
+ legacy untagged runs even though the artifacts exist on disk."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
 
     # Compile artifact — has source_document_ids only.
@@ -234,7 +234,7 @@ def test_summarize_run_lineage_walk_handles_two_hop_chains(
     service, run_store, artifact_registry, ctx,
 ):
     """Two-hop chain: compile → graph_json → graph-derived summary.
-    Iterative fixed-point pulls in every step."""
+ Iterative fixed-point pulls in every step."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
 
     artifact_registry.add(_make_artifact(
@@ -266,7 +266,7 @@ def test_summarize_run_prefers_metadata_run_id_tag_over_lineage(
     service, run_store, artifact_registry, ctx,
 ):
     """When artifacts carry `metadata.run_id`, they are authoritative —
-    the lineage fallback is bypassed and only tagged artifacts count."""
+ the lineage fallback is bypassed and only tagged artifacts count."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
 
     # Tagged for THIS run.
@@ -340,7 +340,7 @@ def test_summarize_run_graph_unavailable_reports_skipped_by_policy(
     service, run_store, ctx,
 ):
     """When step_results record GRAPH as skipped by policy, the
-    availability reason must reflect that — not the generic fallback."""
+ availability reason must reflect that — not the generic fallback."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "GRAPH", "status": "skipped", "source": "policy",
@@ -390,9 +390,9 @@ def test_summarize_run_planning_always_available_regardless_of_artifact(
     service, run_store, artifact_registry, ctx,
 ):
     """Planning Report tab is always available — independent of
-    whether `planning_result` artifact exists or `plan.revised`
-    audit event was written. The tab content endpoint owns the
-    empty-state messaging when no plan data is available."""
+ whether `planning_result` artifact exists or `plan.revised`
+ audit event was written. The tab content endpoint owns the
+ empty-state messaging when no plan data is available."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     # No planning_result artifact, no audit event — tab still
     # available.
@@ -416,10 +416,10 @@ def test_summarize_run_quality_available_for_skipped_step_results(
     service, run_store, ctx,
 ):
     """Quality projector emits `skippedSteps[]` /
-    `failedOptionalSteps[]` from step_results regardless of whether
-    enrichment artifacts or warnings landed. The gate must unlock
-    accordingly so reviewers can see those rows; otherwise a clean
-    optional-skip leaves the data invisible."""
+ `failedOptionalSteps[]` from step_results regardless of whether
+ enrichment artifacts or warnings landed. The gate must unlock
+ accordingly so reviewers can see those rows; otherwise a clean
+ optional-skip leaves the data invisible."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "ENRICH", "status": "skipped", "source": "planner",
@@ -436,8 +436,8 @@ def test_summarize_run_quality_available_for_failed_optional_step(
     service, run_store, ctx,
 ):
     """Failed-but-optional step result alone unlocks the Quality tab
-    so reviewers see it under `failedOptionalSteps[]` even when no
-    artifact or warning was emitted."""
+ so reviewers see it under `failedOptionalSteps[]` even when no
+ artifact or warning was emitted."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "GRAPH", "status": "failed", "source": "planner",
@@ -455,9 +455,9 @@ def test_summarize_run_quality_stays_unavailable_when_only_required_failure(
     service, run_store, ctx,
 ):
     """A required-step failure is not actionable in the Quality tab
-    (the run has FAILED status; the failure surfaces on Overview).
-    Don't unlock Quality on it alone — without artifacts/warnings/
-    skipped/optional-failed, there's nothing to render."""
+ (the run has FAILED status; the failure surfaces on Overview).
+ Don't unlock Quality on it alone — without artifacts/warnings/
+ skipped/optional-failed, there's nothing to render."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "COMPILE", "status": "failed", "source": "default",
@@ -475,14 +475,14 @@ def test_summarize_run_unlocks_content_inventory_and_planning_for_full_split_run
     service, run_store, artifact_registry, ctx,
 ):
     """End-to-end gate test mirroring the actual user scenario:
-    a successful split-mode run produces three artifacts (parsed_source,
-    parsed_content_manifest, planning_result) all tagged with the
-    run's `run_id`. Both Content Inventory + Execution Plan tabs
-    must unlock. The Knowledge Chunks tab stays gated on chunk
-    artifacts (separate path).
+ a successful split-mode run produces three artifacts (parsed_source,
+ parsed_content_manifest, planning_result) all tagged with the
+ run's `run_id`. Both Content Inventory + Execution Plan tabs
+ must unlock. The Knowledge Chunks tab stays gated on chunk
+ artifacts (separate path).
 
-    Pins the gating contract so a future regression that breaks
-    either tab gets caught at PR time, not in production."""
+ Pins the gating contract so a future regression that breaks
+ either tab gets caught at PR time, not in production."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
 
     for art_id, kind in [
@@ -559,7 +559,7 @@ def test_summarize_run_drops_malformed_step_entries(
     service, run_store, ctx,
 ):
     """Defensive: a partial write or schema drift in one entry must
-    not blow up the whole summary."""
+ not blow up the whole summary."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "COMPILE", "status": "completed", "required": True,
@@ -614,7 +614,7 @@ def test_summarize_run_warnings_isolate_by_run_id(
     service, run_store, reporter, ctx,
 ):
     """Audit log is shared across runs in one project — the warning
-    filter must reject events for other run_ids."""
+ filter must reject events for other run_ids."""
     run_store.upsert(ctx, _make_run(run_id="target"))
     reporter.report_step_warning(
         ctx, run_id="other-run", stage="ENRICH", step="x",
@@ -658,7 +658,7 @@ def test_summarize_run_includes_quality_summary_when_warnings_present(
 
 
 # =====================================================================
-# Phase 2 — list_run_artifacts + read_run_artifact_content
+# list_run_artifacts + read_run_artifact_content
 # =====================================================================
 
 
@@ -667,8 +667,8 @@ def _write_artifact_file(
     *, area: WorkspaceArea, location: str, body: bytes,
 ) -> None:
     """Mimic ProcessingService._register_draft's on-disk write —
-    place the actual bytes at `<area>/<filename>` so the content
-    endpoint has something to read."""
+ place the actual bytes at `<area>/<filename>` so the content
+ endpoint has something to read."""
     full_path = workspace.area(ctx, area) / location.split("/", 1)[1]
     full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_bytes(body)
@@ -742,7 +742,7 @@ def test_list_run_artifacts_clamps_page_size_to_max(
     service, run_store, artifact_registry, ctx,
 ):
     """The service trusts what it receives but caps page_size at
-    MAX_PAGE_SIZE so a buggy caller can't blow up memory."""
+ MAX_PAGE_SIZE so a buggy caller can't blow up memory."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="a1", kind="chunk", source_document_ids=["doc-A"],
@@ -842,8 +842,8 @@ def test_read_run_artifact_content_404_when_artifact_belongs_to_another_run(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """An artifact tagged for a DIFFERENT run must not be readable
-    via this run's content endpoint — even if the caller knows the
-    artifact_id."""
+ via this run's content endpoint — even if the caller knows the
+ artifact_id."""
     run_store.upsert(ctx, _make_run(run_id="run-mine", document_id="doc-A"))
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="other", kind="chunk",
@@ -859,8 +859,8 @@ def test_read_run_artifact_content_404_when_bytes_missing_on_disk(
     service, run_store, artifact_registry, ctx,
 ):
     """Registry has the record but the file is gone — surface as
-    not-found rather than 500. Same shape as a missing artifact, no
-    filesystem state leak."""
+ not-found rather than 500. Same shape as a missing artifact, no
+ filesystem state leak."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="ghost", kind="chunk",
@@ -879,9 +879,9 @@ def test_read_run_artifact_content_rejects_path_traversal_in_location(
     service, run_store, artifact_registry, ctx,
 ):
     """A tampered registry — `location` contains `..` — must be
-    rejected before any read happens. PathTraversalError is the
-    typed signal; the REST layer will map it to 404 so callers
-    can't probe for traversal-rejected paths."""
+ rejected before any read happens. PathTraversalError is the
+ typed signal; the REST layer will map it to 404 so callers
+ can't probe for traversal-rejected paths."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     bad_record = ArtifactRecord(
         artifact_id="evil",
@@ -907,7 +907,7 @@ def test_read_run_artifact_content_rejects_unknown_workspace_area(
     service, run_store, artifact_registry, ctx,
 ):
     """`location` first segment must name a known WorkspaceArea —
-    `etc/passwd` is not one."""
+ `etc/passwd` is not one."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     bad_record = ArtifactRecord(
         artifact_id="badarea",
@@ -930,7 +930,7 @@ def test_read_run_artifact_content_rejects_unknown_workspace_area(
 
 
 # =====================================================================
-# Phase 3 — list_run_chunks + get_run_chunk + iter_run_chunks_ndjson
+# list_run_chunks + get_run_chunk + iter_run_chunks_ndjson
 # =====================================================================
 
 import json as _json
@@ -945,8 +945,8 @@ def _write_chunks_artifact(
 ):
     """Write a chunk artifact's bytes under COMPILED.
 
-    Returns the location string so the caller can register the
-    matching `ArtifactRecord`."""
+ Returns the location string so the caller can register the
+ matching `ArtifactRecord`."""
     location = f"compiled/{artifact_id}{extension}"
     full = workspace.area(ctx, WorkspaceArea.COMPILED) / f"{artifact_id}{extension}"
     full.parent.mkdir(parents=True, exist_ok=True)
@@ -993,7 +993,7 @@ def _make_chunks_run(
     run_id: str = "run-1",
 ):
     """Convenience: stand up a run + a single chunk artifact bundling
-    the given list of chunk dicts."""
+ the given list of chunk dicts."""
     run_store.upsert(ctx, _make_run(run_id=run_id, document_id="doc-A"))
     location = _write_chunks_artifact(
         workspace, ctx,
@@ -1132,7 +1132,7 @@ def test_get_run_chunk_does_not_leak_chunks_from_other_runs(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """A chunk that exists in a different run must not be readable
-    via this run's detail endpoint, even if the caller knows the id."""
+ via this run's detail endpoint, even if the caller knows the id."""
     # Run A — chunks tagged for it.
     _make_chunks_run(
         run_store, artifact_registry, workspace, ctx,
@@ -1175,8 +1175,8 @@ def test_iter_run_chunks_ndjson_yields_one_line_per_chunk(
 
 def test_iter_run_chunks_ndjson_validates_eagerly(service, ctx):
     """The 404 must propagate at call time — not when the consumer
-    starts iterating. Required so REST returns a clean 404 before
-    StreamingResponse commits a 200."""
+ starts iterating. Required so REST returns a clean 404 before
+ StreamingResponse commits a 200."""
     with pytest.raises(ReviewNotFound):
         service.iter_run_chunks_ndjson(ctx, "missing")
 
@@ -1201,7 +1201,7 @@ def test_iter_run_chunks_ndjson_isolates_runs(
 
 
 # =====================================================================
-# Phase 5 — get_run_quality_report
+# get_run_quality_report
 # =====================================================================
 
 
@@ -1214,7 +1214,7 @@ def _write_quality_artifact(
     extension: str = ".json",
 ) -> str:
     """Write a quality-report artifact under ENRICHED. Returns the
-    location string for registration."""
+ location string for registration."""
     from j1.workspace.layout import WorkspaceArea  # local re-use
 
     location = f"enriched/{artifact_id}{extension}"
@@ -1254,8 +1254,8 @@ def test_get_quality_report_returns_empty_when_run_has_no_quality_data(
     service, run_store, ctx,
 ):
     """Run exists but no enrichment artifacts, no warnings, no
-    step_results — report fields are all empty / None, but the
-    endpoint must still succeed."""
+ step_results — report fields are all empty / None, but the
+ endpoint must still succeed."""
     run_store.upsert(ctx, _make_run())
 
     report = service.get_run_quality_report(ctx, "run-1")
@@ -1286,8 +1286,8 @@ def test_get_quality_report_composes_all_sources(
     service, run_store, artifact_registry, workspace, reporter, ctx,
 ):
     """End-to-end inside the service: confidence + consistency
-    artifacts + audit warnings + persisted step_results all flow
-    into one DTO."""
+ artifacts + audit warnings + persisted step_results all flow
+ into one DTO."""
     run_store.upsert(ctx, _make_run(
         document_id="doc-A",
         metadata={
@@ -1380,7 +1380,7 @@ def test_get_quality_report_include_raw_exposes_payload(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """`include_raw=True` must surface the unprojected source JSON
-    under `rawDebug` — for debugging only, never the default."""
+ under `rawDebug` — for debugging only, never the default."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     payload = {"default_confidence": 0.7, "assessments": []}
     location = _write_quality_artifact(
@@ -1407,7 +1407,7 @@ def test_get_quality_report_isolates_runs_via_artifact_resolution(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """A confidence artifact tagged for run-A must NOT appear in
-    run-B's quality report (Phase 4 tag wins over lineage)."""
+ run-B's quality report ( tag wins over lineage)."""
     # Run A — has the confidence artifact tagged.
     run_store.upsert(ctx, _make_run(run_id="run-a", document_id="doc-A"))
     location_a = _write_quality_artifact(
@@ -1433,7 +1433,7 @@ def test_get_quality_report_isolates_runs_via_artifact_resolution(
 
 
 # =====================================================================
-# Phase 6 — get_run_graph
+# get_run_graph
 # =====================================================================
 
 
@@ -1494,8 +1494,8 @@ def test_get_run_graph_returns_unavailable_with_default_reason(
     service, run_store, ctx,
 ):
     """No graph artifacts AND no step_results → generic fallback
-    reason. Same copy as the run summary's
-    `availableViews.graph.reason` field."""
+ reason. Same copy as the run summary's
+ `availableViews.graph.reason` field."""
     run_store.upsert(ctx, _make_run())
     snapshot = service.get_run_graph(ctx, "run-1")
     assert snapshot.unavailable is not None
@@ -1508,8 +1508,8 @@ def test_get_run_graph_unavailable_reports_skipped_by_policy(
     service, run_store, ctx,
 ):
     """When step_results record GRAPH skipped by policy, the graph
-    snapshot's unavailable.reason matches the availability resolver's
-    copy. Single source of truth proven end-to-end."""
+ snapshot's unavailable.reason matches the availability resolver's
+ copy. Single source of truth proven end-to-end."""
     run_store.upsert(ctx, _make_run(metadata={
         "step_results": [
             {"step": "graph", "status": "skipped", "source": "policy",
@@ -1592,7 +1592,7 @@ def test_get_run_graph_isolates_runs_via_artifact_tagging(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """A graph artifact tagged for run-A must NOT appear in run-B's
-    graph snapshot — Phase 4 tag wins over lineage."""
+ graph snapshot — tag wins over lineage."""
     run_store.upsert(ctx, _make_run(run_id="run-a", document_id="doc-A"))
     location_a = _write_graph_artifact(
         workspace, ctx, artifact_id="ge-a",
@@ -1625,7 +1625,7 @@ def _write_parsed_content_manifest(
     payload: dict,
 ) -> str:
     """Write a parsed_content_manifest artifact under COMPILED.
-    Returns the location string for registry registration."""
+ Returns the location string for registry registration."""
     filename = f"{artifact_id}.parsed_content_manifest.json"
     location = f"compiled/{filename}"
     full = workspace.area(ctx, WorkspaceArea.COMPILED) / filename
@@ -1713,7 +1713,7 @@ def test_get_run_content_inventory_unavailable_when_no_manifest(
     service, run_store, ctx,
 ):
     """Legacy run / mid-compile run / failed run → unavailable status
-    with the operator-readable reason from the availability resolver."""
+ with the operator-readable reason from the availability resolver."""
     run_store.upsert(ctx, _make_run())
     inventory = service.get_run_content_inventory(ctx, "run-1")
     assert inventory.status == "unavailable"
@@ -1739,7 +1739,7 @@ def test_get_run_content_inventory_returns_completed_with_summary(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Manifest exists with non-zero items → status=completed,
-    summary populated, source identifies the parser."""
+ summary populated, source identifies the parser."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     location = _write_parsed_content_manifest(
         workspace, ctx,
@@ -1772,8 +1772,8 @@ def test_get_run_content_inventory_marks_empty_when_zero_items(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Manifest exists but parser produced nothing → status=empty
-    (distinct from unavailable). FE can render a different empty
-    state for this case."""
+ (distinct from unavailable). FE can render a different empty
+ state for this case."""
     run_store.upsert(ctx, _make_run(document_id="doc-empty"))
     location = _write_parsed_content_manifest(
         workspace, ctx,
@@ -1798,8 +1798,8 @@ def test_get_run_content_inventory_aggregates_across_documents(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Multi-document run → counts are summed across manifests.
-    The run's `target_document_ids` metadata declares which docs the
-    run covered; the resolver scopes artifact lookup to that set."""
+ The run's `target_document_ids` metadata declares which docs the
+ run covered; the resolver scopes artifact lookup to that set."""
     run_store.upsert(ctx, _make_run(
         document_id="doc-A",
         metadata={"target_document_ids": ["doc-A", "doc-B"]},
@@ -1830,10 +1830,10 @@ def test_available_views_includes_parsed_content_when_manifest_present(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """The summary endpoint's `availableViews.parsedContent.available`
-    flips to True the moment the compile bridge emits a manifest
-    artifact. This is the contract the Content Inventory tab
-    depends on for progressive visibility — tab unlocks while
-    enrich/graph/index are still running."""
+ flips to True the moment the compile bridge emits a manifest
+ artifact. This is the contract the Content Inventory tab
+ depends on for progressive visibility — tab unlocks while
+ enrich/graph/index are still running."""
     run_store.upsert(ctx, _make_run(
         document_id="doc-A",
         status=RunStatus.RUNNING,  # mid-flight, NOT terminal
@@ -1857,11 +1857,11 @@ def test_available_views_parsed_content_always_available(
     service, run_store, ctx,
 ):
     """Content Inventory tab is always-available now: the tab content
-    endpoint owns the empty-state messaging, the resolver no longer
-    gates the tab button. This was the only way to stop the gating
-    bug class (run_id mismatch / lineage fallback / split-source
-    audit-vs-artifact disagreements) from intermittently disabling
-    the tab when the data actually existed."""
+ endpoint owns the empty-state messaging, the resolver no longer
+ gates the tab button. This was the only way to stop the gating
+ bug class (run_id mismatch / lineage fallback / split-source
+ audit-vs-artifact disagreements) from intermittently disabling
+ the tab when the data actually existed."""
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     summary = service.summarize_run(ctx, "run-1")
     assert summary.available_views.parsed_content.available is True
@@ -1873,13 +1873,13 @@ def test_available_views_parsed_content_always_available(
 
 def _emit_plan_generated(reporter, ctx, *, run_id: str, plan_payload: dict):
     """Test-only helper: write a `plan.generated` audit entry the
-    Planning Report projector picks up."""
+ Planning Report projector picks up."""
     reporter.report_plan_generated(ctx, run_id=run_id, plan_payload=plan_payload)
 
 
 def _basic_plan_payload(*, fast_llm_used: bool = False) -> dict:
     """Minimum-shape plan payload mirroring what
-    `_emit_plan_generated` writes in the workflow."""
+ `_emit_plan_generated` writes in the workflow."""
     return {
         "document_id": "doc-1",
         "mode": "text_only",
@@ -1928,7 +1928,7 @@ def test_get_run_planning_unavailable_for_run_without_plan_event(
     service, run_store, ctx,
 ):
     """Run exists but planner never emitted → status=unavailable
-    with the operator-readable reason from the availability resolver."""
+ with the operator-readable reason from the availability resolver."""
     run_store.upsert(ctx, _make_run())
     report = service.get_run_planning(ctx, "run-1")
     assert report.status == "unavailable"
@@ -1954,8 +1954,8 @@ def test_get_run_planning_projects_assessment_and_decisions(
     service, run_store, reporter, ctx,
 ):
     """When a `plan.generated` event exists, the projector returns
-    `status=completed` and projects every PlannedStep into a
-    PlanningStepDecisionDTO."""
+ `status=completed` and projects every PlannedStep into a
+ PlanningStepDecisionDTO."""
     run_store.upsert(ctx, _make_run())
     _emit_plan_generated(
         reporter, ctx,
@@ -1984,7 +1984,7 @@ def test_get_run_planning_marks_revised_when_replan_event_seen(
     service, run_store, reporter, ctx,
 ):
     """A subsequent `plan.revised` overrides `plan.generated` and
-    flips the `revised` flag so the FE can badge the report."""
+ flips the `revised` flag so the FE can badge the report."""
     run_store.upsert(ctx, _make_run())
     payload = _basic_plan_payload()
     _emit_plan_generated(reporter, ctx, run_id="run-1", plan_payload=payload)
@@ -2006,8 +2006,8 @@ def test_get_run_planning_includes_content_digest_when_manifest_exists(
     service, run_store, reporter, artifact_registry, workspace, ctx,
 ):
     """The digest panel pulls counts from the parsed-content manifest
-    (when present) and records the deployment's privacy caps so
-    reviewers can audit what an LLM planner would see."""
+ (when present) and records the deployment's privacy caps so
+ reviewers can audit what an LLM planner would see."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     location = _write_parsed_content_manifest(
         workspace, ctx,
@@ -2038,7 +2038,7 @@ def test_get_run_planning_llm_recommendation_disabled_by_default(
     service, run_store, reporter, ctx,
 ):
     """Default settings → llm_planning_enabled=False → status=disabled
-    so the FE renders the rule-based-only copy."""
+ so the FE renders the rule-based-only copy."""
     run_store.upsert(ctx, _make_run())
     _emit_plan_generated(
         reporter, ctx,
@@ -2053,8 +2053,8 @@ def test_get_run_planning_llm_recommendation_advisory_when_enabled(
     run_store, artifact_registry, workspace, reporter, ctx,
 ):
     """Feature-flagged: when J1_LLM_PLANNING_ENABLED=true, the
-    projector surfaces an advisory recommendation block. Phase 2
-    will replace the placeholder copy with a real LLM call."""
+ projector surfaces an advisory recommendation block. 
+ will replace the placeholder copy with a real LLM call."""
     from j1.ingestion_review import IngestionResultReviewService
     from j1.processing.planning_settings import PlanningSettings
 
@@ -2079,11 +2079,11 @@ def test_summary_available_views_planning_always_available(
     service, run_store, reporter, ctx,
 ):
     """Execution Plan tab is always-available now: same rationale as
-    Content Inventory — the gating logic was the source of multiple
-    bug classes, and the tab content endpoint already returns an
-    `unavailable` payload with an operator-readable reason when no
-    plan exists. We drop the gate entirely; the FE shows whatever
-    `get_run_planning` returns."""
+ Content Inventory — the gating logic was the source of multiple
+ bug classes, and the tab content endpoint already returns an
+ `unavailable` payload with an operator-readable reason when no
+ plan exists. We drop the gate entirely; the FE shows whatever
+ `get_run_planning` returns."""
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     summary_before = service.summarize_run(ctx, "run-1")
     assert summary_before.available_views.planning.available is True
@@ -2223,7 +2223,7 @@ def test_get_run_planning_prefers_artifact_over_audit_log(
     service, run_store, reporter, artifact_registry, workspace, ctx,
 ):
     """Both an artifact AND a `plan.generated` event exist — the
-    artifact wins and the FE sees the post-compile fields."""
+ artifact wins and the FE sees the post-compile fields."""
     run_store.upsert(ctx, _make_run(document_id="doc-1"))
     _emit_plan_generated(
         reporter, ctx, run_id="run-1",
@@ -2252,7 +2252,7 @@ def test_get_run_planning_audit_log_fallback_marks_source(
     service, run_store, reporter, ctx,
 ):
     """Without an artifact, the audit-log path produces a DTO with
-    `source="audit_log"` so the FE can label its provenance."""
+ `source="audit_log"` so the FE can label its provenance."""
     run_store.upsert(ctx, _make_run())
     _emit_plan_generated(
         reporter, ctx, run_id="run-1",
@@ -2274,9 +2274,9 @@ def test_delete_run_tombstones_run_and_artifacts(
     service, run_store, artifact_registry, ctx,
 ):
     """`delete_run` flips the run to status=DELETED and tombstones
-    every artifact tagged with the run_id (sets `metadata.deleted_at`).
-    Subsequent `summarize_run` returns an empty kinds list because
-    `_resolve_run_artifacts` excludes tombstoned records."""
+ every artifact tagged with the run_id (sets `metadata.deleted_at`).
+ Subsequent `summarize_run` returns an empty kinds list because
+ `_resolve_run_artifacts` excludes tombstoned records."""
     from j1.runs.models import RunStatus
 
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
@@ -2315,7 +2315,7 @@ def test_delete_run_is_idempotent(
     service, run_store, artifact_registry, ctx,
 ):
     """Calling `delete_run` twice produces `was_already_deleted=True`
-    on the second call and tombstones zero new artifacts."""
+ on the second call and tombstones zero new artifacts."""
     run_store.upsert(ctx, _make_run(document_id="doc-A"))
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="a-1", kind="chunk",
@@ -2334,8 +2334,8 @@ def test_delete_run_is_idempotent(
 
 def test_delete_run_rejects_active_run(service, run_store, ctx):
     """A RUNNING run can't be deleted — the workflow could still be
-    writing artifacts. The service raises `RunStillActive`; the REST
-    layer maps this to 409."""
+ writing artifacts. The service raises `RunStillActive`; the REST
+ layer maps this to 409."""
     from j1.ingestion_review.exceptions import RunStillActive
     from j1.runs.models import RunStatus
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
@@ -2360,7 +2360,7 @@ def _resume_snapshot_metadata(
     artifact_kinds: list[str] | None = None,
 ) -> dict:
     """Helper: build the `metadata["resume_snapshot"]` shape that the
-    workflow's `_emit_run_terminal` would persist."""
+ workflow's `_emit_run_terminal` would persist."""
     from j1.runs.resume import compute_settings_hash
     snap_settings = settings or {
         "compiler_kind": "raganything",
@@ -2392,8 +2392,8 @@ def test_resume_from_checkpoint_returns_carry_forward_plan(
     service, run_store, ctx,
 ):
     """Happy path: terminal run with a snapshot whose settings match
-    the candidate. Service returns `resumable_steps` intersected with
-    the policy-allowed set + the carry-forward artifact lists."""
+ the candidate. Service returns `resumable_steps` intersected with
+ the policy-allowed set + the carry-forward artifact lists."""
     metadata = _resume_snapshot_metadata(
         completed_steps=["compile", "enrich", "graph"],
         artifact_ids=["a-compile", "a-enrich", "a-graph"],
@@ -2428,7 +2428,7 @@ def test_resume_from_checkpoint_404s_for_unknown_run(service, ctx):
 
 def test_resume_from_checkpoint_rejects_active_run(service, run_store, ctx):
     """RUNNING / PAUSED / CANCELLING / ASSESSING all map to
-    RunStillActive — operators must cancel before resuming."""
+ RunStillActive — operators must cancel before resuming."""
     from j1.ingestion_review.exceptions import RunStillActive
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     with pytest.raises(RunStillActive):
@@ -2451,8 +2451,8 @@ def test_resume_from_checkpoint_rejects_run_without_snapshot(
     service, run_store, ctx,
 ):
     """A FAILED run that has no `resume_snapshot` metadata (terminated
-    before snapshot machinery landed, or via a path that doesn't
-    snapshot) raises ResumeNotPossible — operators must full-reindex."""
+ before snapshot machinery landed, or via a path that doesn't
+ snapshot) raises ResumeNotPossible — operators must full-reindex."""
     from j1.ingestion_review.exceptions import ResumeNotPossible
     run_store.upsert(ctx, _make_run(status=RunStatus.FAILED, metadata={}))
     with pytest.raises(ResumeNotPossible):
@@ -2465,8 +2465,8 @@ def test_resume_from_checkpoint_rejects_drifted_settings(
     service, run_store, ctx,
 ):
     """When the candidate settings differ from the snapshot's
-    settings_snapshot, raise ResumeIncompatible with a structured
-    diff so the FE can surface what changed."""
+ settings_snapshot, raise ResumeIncompatible with a structured
+ diff so the FE can surface what changed."""
     from j1.ingestion_review.exceptions import ResumeIncompatible
     metadata = _resume_snapshot_metadata(
         completed_steps=["compile", "enrich"],
@@ -2505,9 +2505,9 @@ def test_resume_from_checkpoint_excludes_non_resumable_steps(
     service, run_store, ctx,
 ):
     """Even if the snapshot says compile + chunks completed, the
-    resumable_steps list filters to enrich + graph only — compile and
-    chunk-generation always re-run because their outputs are the
-    structural backbone every downstream stage reads."""
+ resumable_steps list filters to enrich + graph only — compile and
+ chunk-generation always re-run because their outputs are the
+ structural backbone every downstream stage reads."""
     metadata = _resume_snapshot_metadata(
         completed_steps=["compile", "generate_knowledge_chunks", "enrich"],
         artifact_ids=["a-compile", "a-enrich"],
@@ -2530,8 +2530,8 @@ def test_rebuild_index_only_returns_chunk_artifact_ids(
     service, run_store, ctx,
 ):
     """Happy path: terminal run with chunk artifacts in the snapshot.
-    Service returns the chunk-only carry-forward + the prior indexer
-    kind so the new run repeats with the same recipe."""
+ Service returns the chunk-only carry-forward + the prior indexer
+ kind so the new run repeats with the same recipe."""
     metadata = _resume_snapshot_metadata(
         completed_steps=["compile", "enrich"],
         artifact_ids=["chunk-1", "chunk-2", "enrich-1", "graph-1"],
@@ -2573,7 +2573,7 @@ def test_rebuild_index_only_rejects_run_without_snapshot(
     service, run_store, ctx,
 ):
     """Snapshot is the only carry-forward source; missing snapshot
-    means we can't safely identify which artifacts to re-index."""
+ means we can't safely identify which artifacts to re-index."""
     from j1.ingestion_review.exceptions import ResumeNotPossible
     run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED, metadata={}))
     with pytest.raises(ResumeNotPossible):
@@ -2584,9 +2584,9 @@ def test_rebuild_index_only_rejects_run_without_chunks(
     service, run_store, ctx,
 ):
     """A run that only produced graph artifacts (no chunks) has
-    nothing for the index activity to consume — full-reindex
-    instead. Guards against an indexer trying to re-process empty
-    input."""
+ nothing for the index activity to consume — full-reindex
+ instead. Guards against an indexer trying to re-process empty
+ input."""
     from j1.ingestion_review.exceptions import ResumeNotPossible
     metadata = _resume_snapshot_metadata(
         completed_steps=["compile", "enrich"],
@@ -2607,8 +2607,8 @@ def test_purge_run_physically_removes_artifacts_and_run_record(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Happy path: a soft-deleted run gets its artifact files
-    unlinked, registry records removed, and run snapshots deleted
-    from the JSONL store. Audit log untouched."""
+ unlinked, registry records removed, and run snapshots deleted
+ from the JSONL store. Audit log untouched."""
     # Seed a soft-deleted run with two artifacts whose files exist
     # on disk. Use the workspace area resolver so the test paths
     # match what the service's _resolve_artifact_path computes.
@@ -2656,8 +2656,8 @@ def test_purge_run_requires_soft_delete_first_by_default(
     service, run_store, ctx,
 ):
     """Two-step delete ritual: a SUCCEEDED run can't be purged
-    without first soft-deleting it. Reduces the blast radius of an
-    accidental click."""
+ without first soft-deleting it. Reduces the blast radius of an
+ accidental click."""
     from j1.ingestion_review.exceptions import RunNotTerminal
     run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED))
     with pytest.raises(RunNotTerminal):
@@ -2668,7 +2668,7 @@ def test_purge_run_force_bypasses_soft_delete_gate(
     service, run_store, artifact_registry, ctx,
 ):
     """Admin tooling can pass `require_already_deleted=False` to
-    skip the soft-delete gate."""
+ skip the soft-delete gate."""
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="art-X", kind="chunk",
         source_document_ids=["doc-1"],
@@ -2684,7 +2684,7 @@ def test_purge_run_force_bypasses_soft_delete_gate(
 
 def test_purge_run_rejects_active_run(service, run_store, ctx):
     """An in-flight run can't be purged — workflow could still be
-    writing artifacts. RunStillActive → 409 at REST."""
+ writing artifacts. RunStillActive → 409 at REST."""
     from j1.ingestion_review.exceptions import RunStillActive
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     with pytest.raises(RunStillActive):
@@ -2701,8 +2701,8 @@ def test_purge_run_idempotent_on_second_call(
     service, run_store, artifact_registry, workspace, ctx,
 ):
     """Calling purge_run twice is safe: the second call sees no
-    artifacts and no run record, returns zero counts. Operators can
-    retry on transient errors without compounding side effects."""
+ artifacts and no run record, returns zero counts. Operators can
+ retry on transient errors without compounding side effects."""
     from j1.workspace.layout import WorkspaceArea
     compiled_dir = workspace.area(ctx, WorkspaceArea.COMPILED)
     compiled_dir.mkdir(parents=True, exist_ok=True)

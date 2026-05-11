@@ -20,9 +20,9 @@ from pydantic.alias_generators import to_camel
 class CamelModel(BaseModel):
     """Local copy of the standard envelope's `CamelModel`.
 
-    Lives here because `j1.ingestion_review` is a core module and is
-    forbidden from importing `j1.adapters`. Same shape so the wire
-    format is identical to every other endpoint."""
+ Lives here because `j1.ingestion_review` is a core module and is
+ forbidden from importing `j1.adapters`. Same shape so the wire
+ format is identical to every other endpoint."""
 
     model_config = ConfigDict(
         alias_generator=to_camel,
@@ -43,8 +43,8 @@ class StepErrorDTO(CamelModel):
 
 class StepResultDTO(CamelModel):
     """Per-stage outcome. Mirrors `StepResult` with workflow-only
-    fields surfaced so the UI can answer 'why did this stage run / not
-    run / fail?' without consulting raw audit events."""
+ fields surfaced so the UI can answer 'why did this stage run / not
+ run / fail?' without consulting raw audit events."""
 
     step: str
     status: str
@@ -62,13 +62,13 @@ class StepResultDTO(CamelModel):
 class WarningDTO(CamelModel):
     """One warning surfaced from the run.
 
-    `severity` is one of `"info"`, `"warning"`, `"error"` (lower-cased
-    relative to the audit-log severity strings — keeps the UI palette
-    keys stable).
+ `severity` is one of `"info"`, `"warning"`, `"error"` (lower-cased
+ relative to the audit-log severity strings — keeps the UI palette
+ keys stable).
 
-    Source-traceability fields are populated whenever the originating
-    progress event / step result carried them. Projection MUST NOT
-    drop these fields when they are available."""
+ Source-traceability fields are populated whenever the originating
+ progress event / step result carried them. Projection MUST NOT
+ drop these fields when they are available."""
 
     code: str
     message: str
@@ -86,9 +86,9 @@ class WarningDTO(CamelModel):
 class AvailabilityDTO(CamelModel):
     """Per-view availability flag plus an optional reason.
 
-    `reason` is populated only when `available=False`. The reason
-    strings are authored in `availability.py` so copy stays consistent
-    across tabs."""
+ `reason` is populated only when `available=False`. The reason
+ strings are authored in `availability.py` so copy stays consistent
+ across tabs."""
 
     available: bool
     reason: str | None = None
@@ -104,7 +104,7 @@ class AvailableViewsDTO(CamelModel):
     raw_artifacts: AvailabilityDTO
     # Validation tab is enabled for terminal-success runs that
     # produced at least one chunk artifact (otherwise there's nothing
-    # to query). Manual test query is the Phase 1 entry point.
+    # to query). Manual test query is the entry point.
     validation: AvailabilityDTO
     # Content Inventory tab — visible as soon as the compile activity
     # has emitted a `parsed_content_manifest` artifact, even while
@@ -135,8 +135,8 @@ class AvailableViewsDTO(CamelModel):
 class QualitySummaryDTO(CamelModel):
     """Compact quality projection embedded in the run summary.
 
-    The full quality report lives behind `/quality-report` (Phase 5);
-    this is just enough for the Overview tab's scorecard."""
+ The full quality report lives behind `/quality-report`;
+ this is just enough for the Overview tab's scorecard."""
 
     overall_confidence: float | None = None
     warning_count: int = 0
@@ -149,9 +149,9 @@ class QualitySummaryDTO(CamelModel):
 class ArtifactRecordDTO(CamelModel):
     """One artifact, projected to a UI-safe shape.
 
-    Mirrors `j1.artifacts.models.ArtifactRecord` minus the runtime-
-    only fields (`project`, raw enum types) — the FE never reads
-    those, and we'd rather not re-camelize them per request."""
+ Mirrors `j1.artifacts.models.ArtifactRecord` minus the runtime-
+ only fields (`project`, raw enum types) — the FE never reads
+ those, and we'd rather not re-camelize them per request."""
 
     artifact_id: str
     kind: str
@@ -171,9 +171,9 @@ class ArtifactRecordDTO(CamelModel):
 class LinkedAssetDTO(CamelModel):
     """Reference from a chunk to a downstream asset (image, table, etc.).
 
-    Producers may emit this so the FE can show "this chunk has a
-    table on page 5" without a separate lookup. `artifact_id` lets
-    the FE link straight to the artifact-content endpoint."""
+ Producers may emit this so the FE can show "this chunk has a
+ table on page 5" without a separate lookup. `artifact_id` lets
+ the FE link straight to the artifact-content endpoint."""
 
     artifact_id: str
     kind: str | None = None
@@ -182,9 +182,9 @@ class LinkedAssetDTO(CamelModel):
 class ChunkPreviewDTO(CamelModel):
     """One chunk in list view — preview only, no full body.
 
-    Returned by `GET /ingestion-runs/{run_id}/chunks`. The `preview`
-    is a short excerpt (≤240 chars) suitable for a list row; the FE
-    fetches the detail endpoint when the user opens the drawer."""
+ Returned by `GET /ingestion-runs/{run_id}/chunks`. The `preview`
+ is a short excerpt (≤240 chars) suitable for a list row; the FE
+ fetches the detail endpoint when the user opens the drawer."""
 
     chunk_id: str
     preview: str
@@ -202,7 +202,7 @@ class ChunkPreviewDTO(CamelModel):
 class ChunkDetailDTO(CamelModel):
     """One chunk in detail view — full body + lineage.
 
-    Returned by `GET /ingestion-runs/{run_id}/chunks/{chunk_id}`."""
+ Returned by `GET /ingestion-runs/{run_id}/chunks/{chunk_id}`."""
 
     chunk_id: str
     body: str
@@ -220,7 +220,7 @@ class ChunkDetailDTO(CamelModel):
 
 class ChunkPageDTO(CamelModel):
     """Paginated chunk list returned by
-    `GET /ingestion-runs/{run_id}/chunks`."""
+ `GET /ingestion-runs/{run_id}/chunks`."""
 
     items: list[ChunkPreviewDTO] = Field(default_factory=list)
     page: int
@@ -230,8 +230,8 @@ class ChunkPageDTO(CamelModel):
 
 class ModalityConfidenceDTO(CamelModel):
     """Per-modality confidence breakdown surfaced inside the quality
-    report. `modality` is a free-form producer-supplied label (e.g.
-    "tables", "images", "ocr") — neutral for the FE to render."""
+ report. `modality` is a free-form producer-supplied label (e.g.
+ "tables", "images", "ocr") — neutral for the FE to render."""
 
     modality: str
     confidence: float
@@ -240,8 +240,8 @@ class ModalityConfidenceDTO(CamelModel):
 
 class SkippedStepDTO(CamelModel):
     """One stage that the workflow / planner / policy decided not to
-    run. `policy` (when set) names the decision driver — `policy`,
-    `planner`, `caller`, `default`, `config`."""
+ run. `policy` (when set) names the decision driver — `policy`,
+ `planner`, `caller`, `default`, `config`."""
 
     step: str
     reason: str | None = None
@@ -250,8 +250,8 @@ class SkippedStepDTO(CamelModel):
 
 class FailedOptionalStepDTO(CamelModel):
     """One optional stage that was attempted and failed. The run
-    didn't downgrade to FAILED because the stage was non-required,
-    but the FE surfaces these so reviewers see what happened."""
+ didn't downgrade to FAILED because the stage was non-required,
+ but the FE surfaces these so reviewers see what happened."""
 
     step: str
     reason: str | None = None
@@ -260,8 +260,8 @@ class FailedOptionalStepDTO(CamelModel):
 
 class LowConfidenceFindingDTO(CamelModel):
     """One specific low-confidence region/finding. Source-traceability
-    fields are populated whenever the underlying finding carried them
-    — projection MUST NOT drop these when available."""
+ fields are populated whenever the underlying finding carried them
+ — projection MUST NOT drop these when available."""
 
     score: float
     category: str
@@ -273,13 +273,13 @@ class LowConfidenceFindingDTO(CamelModel):
 
 class QualityReportDTO(CamelModel):
     """Neutral quality report returned by
-    `GET /ingestion-runs/{run_id}/quality-report`.
+ `GET /ingestion-runs/{run_id}/quality-report`.
 
-    Composed from `enriched.confidence_assessment`,
-    `enriched.consistency_findings`, audit-log warnings, and persisted
-    step results — never exposes vendor-specific JSON shapes. The
-    optional `raw_debug` field carries the unprojected source JSON
-    when callers explicitly opt in via `?includeRaw=true`."""
+ Composed from `enriched.confidence_assessment`,
+ `enriched.consistency_findings`, audit-log warnings, and persisted
+ step results — never exposes vendor-specific JSON shapes. The
+ optional `raw_debug` field carries the unprojected source JSON
+ when callers explicitly opt in via `?includeRaw=true`."""
 
     overall_confidence: float | None = None
     modality_confidences: list[ModalityConfidenceDTO] = Field(default_factory=list)
@@ -292,8 +292,8 @@ class QualityReportDTO(CamelModel):
 
 class GraphEntityDTO(CamelModel):
     """One node in the graph snapshot. Producer-vendor field names
-    (`__id__`, `__entity_type__`, `__source_id__`, etc.) are mapped
-    to these neutral fields by the projector — never exposed."""
+ (`__id__`, `__entity_type__`, `__source_id__`, etc.) are mapped
+ to these neutral fields by the projector — never exposed."""
 
     id: str
     label: str
@@ -321,9 +321,9 @@ class GraphRelationDTO(CamelModel):
 
 class GraphStatsDTO(CamelModel):
     """Aggregate counts for the graph snapshot. `entityCount` and
-    `relationCount` are the FULL counts before truncation — the FE
-    can compare against `truncated.limits` to know if a re-fetch
-    with a higher cap is worthwhile."""
+ `relationCount` are the FULL counts before truncation — the FE
+ can compare against `truncated.limits` to know if a re-fetch
+ with a higher cap is worthwhile."""
 
     entity_count: int = 0
     relation_count: int = 0
@@ -339,7 +339,7 @@ class GraphTruncationLimitsDTO(CamelModel):
 
 class GraphTruncatedDTO(CamelModel):
     """Per-list truncation flags. The FE shows the table fallback +
-    "graph too large" banner when either flag is set."""
+ "graph too large" banner when either flag is set."""
 
     entities: bool = False
     relations: bool = False
@@ -348,20 +348,20 @@ class GraphTruncatedDTO(CamelModel):
 
 class GraphUnavailableDTO(CamelModel):
     """Why the graph view isn't available. Single source of truth
-    for the reason string — matches the `availableViews.graph.reason`
-    shown in the run summary."""
+ for the reason string — matches the `availableViews.graph.reason`
+ shown in the run summary."""
 
     reason: str
 
 
 class GraphSnapshotDTO(CamelModel):
     """Neutral graph snapshot returned by
-    `GET /ingestion-runs/{run_id}/graph`.
+ `GET /ingestion-runs/{run_id}/graph`.
 
-    When the run produced no graph artifacts (skipped by policy /
-    planner / failed), the projector returns a DTO with empty
-    entities/relations and `unavailable` populated — the FE renders
-    the empty state with the reason."""
+ When the run produced no graph artifacts (skipped by policy /
+ planner / failed), the projector returns a DTO with empty
+ entities/relations and `unavailable` populated — the FE renders
+ the empty state with the reason."""
 
     stats: GraphStatsDTO
     entities: list[GraphEntityDTO] = Field(default_factory=list)
@@ -372,10 +372,10 @@ class GraphSnapshotDTO(CamelModel):
 
 class ArtifactPageDTO(CamelModel):
     """Paginated artifact list returned by
-    `GET /ingestion-runs/{run_id}/artifacts`.
+ `GET /ingestion-runs/{run_id}/artifacts`.
 
-    `total` reflects the filtered set BEFORE pagination — same
-    convention the existing `IngestionRunListRecord` uses."""
+ `total` reflects the filtered set BEFORE pagination — same
+ convention the existing `IngestionRunListRecord` uses."""
 
     items: list[ArtifactRecordDTO] = Field(default_factory=list)
     page: int
@@ -386,9 +386,9 @@ class ArtifactPageDTO(CamelModel):
 class RunSummaryDTO(CamelModel):
     """Top-level review summary for one run.
 
-    Returned by `GET /ingestion-runs/{run_id}/summary`. Drives the
-    Results > Overview tab and gates the other tabs via
-    `available_views`."""
+ Returned by `GET /ingestion-runs/{run_id}/summary`. Drives the
+ Results > Overview tab and gates the other tabs via
+ `available_views`."""
 
     run_id: str
     status: str
@@ -407,8 +407,8 @@ class RunSummaryDTO(CamelModel):
 
 class ContentInventorySourceDTO(CamelModel):
     """Provenance for the parsed content — which compiler / parser
-    produced the manifest. The FE shows this in the Content
-    Inventory tab's metadata strip."""
+ produced the manifest. The FE shows this in the Content
+ Inventory tab's metadata strip."""
 
     compiler: str | None = None
     parser: str | None = None
@@ -419,11 +419,11 @@ class ContentInventorySourceDTO(CamelModel):
 
 class ContentInventorySummaryDTO(CamelModel):
     """Aggregate counts the parser surfaced. Each field is optional
-    so older runs without a particular signal don't crash the FE.
+ so older runs without a particular signal don't crash the FE.
 
-    Mirrors the shape of `ParsedContentStats` in
-    `j1.processing.manifest`, but renamed for FE clarity (and
-    camelCase on the wire)."""
+ Mirrors the shape of `ParsedContentStats` in
+ `j1.processing.manifest`, but renamed for FE clarity (and
+ camelCase on the wire)."""
 
     page_count: int | None = None
     text_block_count: int = 0
@@ -437,10 +437,10 @@ class ContentInventorySummaryDTO(CamelModel):
 
 class ContentInventoryItemDTO(CamelModel):
     """One per-element entry. Producers (the compile bridge) may
-    populate `items[]` selectively — typically only the first N
-    images and tables for triage UI. Items present here are NOT a
-    contract that all parser output is enumerable; the
-    `summary` counts are the authoritative aggregates."""
+ populate `items[]` selectively — typically only the first N
+ images and tables for triage UI. Items present here are NOT a
+ contract that all parser output is enumerable; the
+ `summary` counts are the authoritative aggregates."""
 
     item_id: str
     type: str  # "text" | "table" | "image" | "formula" | "heading" | "other"
@@ -456,16 +456,16 @@ class ContentInventoryItemDTO(CamelModel):
 
 class ContentInventoryDTO(CamelModel):
     """Normalized view of the run's `parsed_content_manifest`
-    artifact. The FE's Content Inventory tab consumes this directly.
+ artifact. The FE's Content Inventory tab consumes this directly.
 
-    `status` semantics:
-      * `"completed"` — manifest exists, parser produced something.
-      * `"empty"` — manifest exists but every count is 0 (parser
-        ran but found nothing extractable; shouldn't happen with
-        non-trivial input).
-      * `"unavailable"` — no manifest artifact for this run. The
-        FE renders the empty state with the corresponding reason.
-    """
+ `status` semantics:
+ * `"completed"` — manifest exists, parser produced something.
+ * `"empty"` — manifest exists but every count is 0 (parser
+ ran but found nothing extractable; shouldn't happen with
+ non-trivial input).
+ * `"unavailable"` — no manifest artifact for this run. The
+ FE renders the empty state with the corresponding reason.
+ """
 
     run_id: str
     document_id: str | None = None
@@ -484,9 +484,9 @@ class ContentInventoryDTO(CamelModel):
 class PlanningStepDecisionDTO(CamelModel):
     """One per-stage decision in the Planning Report.
 
-    Mirrors the workflow-gate fields of `PlannedStep` but in the
-    camelCase DTO shape and with the projector-friendly names the FE
-    Planning Report tab expects."""
+ Mirrors the workflow-gate fields of `PlannedStep` but in the
+ camelCase DTO shape and with the projector-friendly names the FE
+ Planning Report tab expects."""
 
     step_id: str
     stage: str
@@ -507,14 +507,14 @@ class PlanningStepDecisionDTO(CamelModel):
 
 class PlanningContentDigestDTO(CamelModel):
     """Lightweight digest of the parsed-content manifest, used both as
-    the "evidence" the rule-based assessment cites AND, when LLM-
-    assisted planning is enabled, as the bounded sample fed to the
-    planner LLM.
+ the "evidence" the rule-based assessment cites AND, when LLM-
+ assisted planning is enabled, as the bounded sample fed to the
+ planner LLM.
 
-    Privacy: the digest is sampled — it never includes the full raw
-    document. The two cap fields (`sampled_block_count`,
-    `max_preview_chars`) record the boundary the projector enforced
-    so reviewers can audit what was sent."""
+ Privacy: the digest is sampled — it never includes the full raw
+ document. The two cap fields (`sampled_block_count`,
+ `max_preview_chars`) record the boundary the projector enforced
+ so reviewers can audit what was sent."""
 
     page_count: int | None = None
     text_block_count: int = 0
@@ -530,11 +530,11 @@ class PlanningContentDigestDTO(CamelModel):
 class PlanningAssessmentDTO(CamelModel):
     """The rule-based assessment that backed the plan.
 
-    `mode` and `policy` come from the planner; `confidence` is the
-    planner's own confidence in the decision; `reasons` is a short
-    list of operator-readable strings explaining the decision (one
-    per major signal — extension, scanned-pages, table-extension,
-    high-risk content, …)."""
+ `mode` and `policy` come from the planner; `confidence` is the
+ planner's own confidence in the decision; `reasons` is a short
+ list of operator-readable strings explaining the decision (one
+ per major signal — extension, scanned-pages, table-extension,
+ high-risk content, …)."""
 
     mode: str
     policy: str
@@ -550,18 +550,18 @@ class PlanningAssessmentDTO(CamelModel):
 class PlanningLLMRecommendationDTO(CamelModel):
     """Optional LLM-assisted planning recommendation.
 
-    Populated only when `J1_LLM_PLANNING_ENABLED=true` AND the LLM
-    pass actually ran. The FE renders this beside the rule-based
-    assessment so reviewers can compare.
+ Populated only when `J1_LLM_PLANNING_ENABLED=true` AND the LLM
+ pass actually ran. The FE renders this beside the rule-based
+ assessment so reviewers can compare.
 
-    `status` semantics:
-      * `"applied"` — LLM ran and the planner accepted its hint.
-      * `"advisory"` — LLM ran but the planner kept its own decision
-        (rule-based wins on disagreement; the LLM hint is shown for
-        transparency).
-      * `"failed"` — LLM call failed and `fail_open=true` kept the
-        rule-based decision in place.
-      * `"disabled"` — feature flag is off (default)."""
+ `status` semantics:
+ * `"applied"` — LLM ran and the planner accepted its hint.
+ * `"advisory"` — LLM ran but the planner kept its own decision
+ (rule-based wins on disagreement; the LLM hint is shown for
+ transparency).
+ * `"failed"` — LLM call failed and `fail_open=true` kept the
+ rule-based decision in place.
+ * `"disabled"` — feature flag is off (default)."""
 
     status: str  # "disabled" | "applied" | "advisory" | "failed"
     model_profile: str | None = None
@@ -572,25 +572,25 @@ class PlanningLLMRecommendationDTO(CamelModel):
 class PlanningResultDTO(CamelModel):
     """Top-level Planning Report payload.
 
-    Returned by `GET /ingestion-runs/{run_id}/planning`. Composed from
-    the `planning_result` artifact (preferred) or the
-    `plan.generated` audit entry as a fallback.
+ Returned by `GET /ingestion-runs/{run_id}/planning`. Composed from
+ the `planning_result` artifact (preferred) or the
+ `plan.generated` audit entry as a fallback.
 
-    `status` semantics:
-      * `"completed"` — a plan was generated and the report is
-        populated.
-      * `"unavailable"` — no plan exists for this run (planner
-        disabled, run hasn't reached the assessment stage yet, or
-        this is a legacy run).
+ `status` semantics:
+ * `"completed"` — a plan was generated and the report is
+ populated.
+ * `"unavailable"` — no plan exists for this run (planner
+ disabled, run hasn't reached the assessment stage yet, or
+ this is a legacy run).
 
-    `source` reflects how the plan was produced:
-      * `"rule_based"` — deterministic post-compile assessment.
-      * `"llm"` — LLM-assisted plan accepted.
-      * `"rule_based_fallback"` — LLM ran but failed validation;
-        rule-based output was kept.
-      * `"audit_log"` — projection from the legacy `plan.generated`
-        event (no post-compile artifact for this run).
-    """
+ `source` reflects how the plan was produced:
+ * `"rule_based"` — deterministic post-compile assessment.
+ * `"llm"` — LLM-assisted plan accepted.
+ * `"rule_based_fallback"` — LLM ran but failed validation;
+ rule-based output was kept.
+ * `"audit_log"` — projection from the legacy `plan.generated`
+ event (no post-compile artifact for this run).
+ """
 
     run_id: str
     document_id: str | None = None
@@ -626,6 +626,6 @@ class PlanningResultDTO(CamelModel):
     # domain packs.
     domain_context: dict[str, Any] | None = None
     # Operator-facing planner mode. Mirrors the spec:
-    #   `rule_based` / `llm` / `hybrid` / `rule_based_fallback`.
+    #  `rule_based` / `llm` / `hybrid` / `rule_based_fallback`.
     # None on legacy / audit-log responses that pre-date the field.
     planner_mode: str | None = None

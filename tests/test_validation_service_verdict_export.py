@@ -1,7 +1,7 @@
-"""Phase 5 service tests: tester verdict + report export.
+""" service tests: tester verdict + report export.
 
 Service-level semantics. REST envelope tests live in
-`test_rest_validation_phase5.py`. Frontend tests cover the UI.
+`test_rest_validation_.py`. Frontend tests cover the UI.
 """
 
 from __future__ import annotations
@@ -144,8 +144,8 @@ def _seed_completed_run(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Helper: stage a run, generate a set, run validation. Returns
-    the terminal vrun (used as starting state for verdict / report
-    tests)."""
+ the terminal vrun (used as starting state for verdict / report
+ tests)."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -164,8 +164,8 @@ def test_verdict_persists_to_store(
     vrun_store,
 ):
     """Happy path: verdict + notes get written through the run
-    store. Latest-snapshot semantics mean a re-fetch sees the
-    updated record."""
+ store. Latest-snapshot semantics mean a re-fetch sees the
+ updated record."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -194,8 +194,8 @@ def test_verdict_does_not_alter_automated_status(
     vrun_store,
 ):
     """Critical: tester verdict is INDEPENDENT of automated
-    `status`. A failed result with `tester_verdict=pass` keeps
-    `status=failed` — operators see both signals side-by-side."""
+ `status`. A failed result with `tester_verdict=pass` keeps
+ `status=failed` — operators see both signals side-by-side."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -220,7 +220,7 @@ def test_verdict_preserves_other_results(
     vrun_store,
 ):
     """Verdict on result A must not touch result B. Locks the
-    field-by-field copy contract in `_replace_run_results`."""
+ field-by-field copy contract in `_replace_run_results`."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -246,7 +246,7 @@ def test_verdict_can_be_revised(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """A second verdict overwrites the first. JSONL latest-wins
-    means appending a revised snapshot becomes the visible state."""
+ means appending a revised snapshot becomes the visible state."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -299,7 +299,7 @@ def test_verdict_cross_tenant_raises_review_not_found(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Cross-tenant access must 404 — same uniform shape as the
-    rest of the validation surface."""
+ rest of the validation surface."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -336,8 +336,8 @@ def test_report_markdown_contains_split_status(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Wire-shape regression: the Markdown report MUST surface
-    both `executionStatus` and `validationStatus`. Operators rely
-    on the split being unambiguous in shareable artifacts."""
+ both `executionStatus` and `validationStatus`. Operators rely
+ on the split being unambiguous in shareable artifacts."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -359,8 +359,8 @@ def test_report_markdown_renders_failed_results_first(
     vrun_store,
 ):
     """Operator-readability: failed results come first in the
-    per-case section. Locked here so a reordering refactor
-    doesn't accidentally bury the things testers need to act on."""
+ per-case section. Locked here so a reordering refactor
+ doesn't accidentally bury the things testers need to act on."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -410,9 +410,9 @@ def test_report_markdown_shows_tester_override_when_disagrees(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """When `tester_verdict` disagrees with `status`, the report
-    surfaces both. The contract: operators must see the override
-    explicitly so the human signal isn't hidden under the auto
-    badge."""
+ surfaces both. The contract: operators must see the override
+ explicitly so the human signal isn't hidden under the auto
+ badge."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -436,8 +436,8 @@ def test_report_json_format_is_valid_json(
     service, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """JSON format must round-trip through `json.loads` — caller
-    should be able to feed it to downstream tooling without
-    further manipulation."""
+ should be able to feed it to downstream tooling without
+ further manipulation."""
     vrun = _seed_completed_run(
         service, run_store, ctx, workspace, artifact_registry, indexer,
     )

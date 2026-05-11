@@ -35,10 +35,10 @@ class WebhookDeliveryRecord:
 class WebhookDeliveryStore(Protocol):
     """Append-only sink for delivery attempts.
 
-    Implementations must be safe for sequential writes from the delivery
-    service. Concurrent writers are out of scope (mirrors the existing
-    JSONL audit / cost sinks).
-    """
+ Implementations must be safe for sequential writes from the delivery
+ service. Concurrent writers are out of scope (mirrors the existing
+ JSONL audit / cost sinks).
+ """
 
     def append(self, record: WebhookDeliveryRecord) -> None: ...
 
@@ -48,10 +48,10 @@ class WebhookDeliveryStore(Protocol):
 class JsonlWebhookDeliveryStore:
     """Writes one JSON line per delivery attempt under `path`.
 
-    `path` should be a stable filesystem location — typically inside the
-    workspace's `runtime/` area. The file is created lazily on first
-    write.
-    """
+ `path` should be a stable filesystem location — typically inside the
+ workspace's `runtime/` area. The file is created lazily on first
+ write.
+ """
 
     def __init__(self, path: Path) -> None:
         self._path = path

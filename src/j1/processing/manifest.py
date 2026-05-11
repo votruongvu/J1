@@ -7,18 +7,18 @@ walking the storage_dir or coupling to a specific vendor's output).
 
 The manifest is intentionally:
 
-  * **Stats-first**, not items-first. A full per-element list is
-    expensive to persist (a 1000-page PDF can have tens of thousands
-    of items) and most consumers only need aggregate counts. Items
-    are an optional list, capped by the producer.
-  * **Vendor-neutral**. Field names match the planner's signal
-    vocabulary (`has_images`, `has_tables`, `text_extractable_ratio`)
-    rather than vendor names (MinerU's `*_content_list.json` shape,
-    LightRAG's storage layout). Producers translate.
-  * **Forward-compatible**. New top-level keys are additive; readers
-    must tolerate missing keys with explicit None semantics. The
-    `parser_version` and `manifest_schema_version` fields let
-    consumers detect format drift.
+ * **Stats-first**, not items-first. A full per-element list is
+ expensive to persist (a 1000-page PDF can have tens of thousands
+ of items) and most consumers only need aggregate counts. Items
+ are an optional list, capped by the producer.
+ * **Vendor-neutral**. Field names match the planner's signal
+ vocabulary (`has_images`, `has_tables`, `text_extractable_ratio`)
+ rather than vendor names (MinerU's `*_content_list.json` shape,
+ LightRAG's storage layout). Producers translate.
+ * **Forward-compatible**. New top-level keys are additive; readers
+ must tolerate missing keys with explicit None semantics. The
+ `parser_version` and `manifest_schema_version` fields let
+ consumers detect format drift.
 
 Persisted as `kind=ARTIFACT_KIND_PARSED_CONTENT_MANIFEST` artifacts.
 The compile activity emits exactly one per document; readers locate
@@ -41,9 +41,9 @@ MANIFEST_SCHEMA_VERSION = "1"
 @dataclass(frozen=True)
 class ParsedContentItem:
     """Optional per-element entry. Producers may omit (manifest stays
-    stats-only) or include a small subset (e.g. images for triage).
-    Item-level data is the heaviest field; consumers must tolerate an
-    empty list."""
+ stats-only) or include a small subset (e.g. images for triage).
+ Item-level data is the heaviest field; consumers must tolerate an
+ empty list."""
 
     item_id: str
     type: str
@@ -57,20 +57,20 @@ class ParsedContentItem:
 @dataclass(frozen=True)
 class ParsedContentStats:
     """Aggregate counts the planner reads for replan decisions and the
-    quality projector reads for the Quality tab.
+ quality projector reads for the Quality tab.
 
-    Field semantics:
-      * `text_blocks` / `images` / `tables` / `equations` are direct
-        counts from the parser's structured output.
-      * `scanned_pages` and `decorative_images` may be None when the
-        parser doesn't classify (today: MinerU doesn't differentiate).
-      * `total_items` is the sum across all categories (informational;
-        `len(items)` may be smaller when the producer dropped
-        per-element entries).
-      * `text_chars`, `text_extractable_ratio`, and quality scores
-        match the same fields on `DocumentProfile` so post-compile
-        replan can overlay them with `_merge_compile_signals`.
-    """
+ Field semantics:
+ * `text_blocks` / `images` / `tables` / `equations` are direct
+ counts from the parser's structured output.
+ * `scanned_pages` and `decorative_images` may be None when the
+ parser doesn't classify (today: MinerU doesn't differentiate).
+ * `total_items` is the sum across all categories (informational;
+ `len(items)` may be smaller when the producer dropped
+ per-element entries).
+ * `text_chars`, `text_extractable_ratio`, and quality scores
+ match the same fields on `DocumentProfile` so post-compile
+ replan can overlay them with `_merge_compile_signals`.
+ """
 
     text_blocks: int = 0
     images: int = 0
@@ -93,11 +93,11 @@ class ParsedContentStats:
 class ParsedContentManifest:
     """One document's parser-output manifest.
 
-    Persisted as a JSON `ArtifactDraft` of kind
-    `ARTIFACT_KIND_PARSED_CONTENT_MANIFEST`. The producer is the
-    compile activity; readers are the post-compile replan call site
-    and the quality / review API surfaces.
-    """
+ Persisted as a JSON `ArtifactDraft` of kind
+ `ARTIFACT_KIND_PARSED_CONTENT_MANIFEST`. The producer is the
+ compile activity; readers are the post-compile replan call site
+ and the quality / review API surfaces.
+ """
 
     document_id: str
     document_hash: str
@@ -119,9 +119,9 @@ class ParsedContentManifest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ParsedContentManifest":
         """Reconstruct from a stored JSON document. Tolerant to
-        missing keys (forward-compat): unknown top-level fields are
-        silently ignored, missing nested fields fall back to defaults.
-        """
+ missing keys (forward-compat): unknown top-level fields are
+ silently ignored, missing nested fields fall back to defaults.
+ """
         stats_raw = data.get("stats") or {}
         items_raw = data.get("items") or []
         return cls(
@@ -191,19 +191,19 @@ def manifest_from_compile_stats(
     compile_stats: dict[str, Any] | None,
 ) -> ParsedContentManifest:
     """Build a manifest from the compile activity's existing
-    `content_stats` dict. Bridges the legacy stats shape (already
-    consumed by the planner via `_merge_compile_signals`) into the
-    canonical manifest format without changing the producer's
-    intermediate representation.
+ `content_stats` dict. Bridges the legacy stats shape (already
+ consumed by the planner via `_merge_compile_signals`) into the
+ canonical manifest format without changing the producer's
+ intermediate representation.
 
-    `compile_stats` is whatever the bridge's `_build_content_manifest`
-    surfaced — empty dict / None when the parser produced nothing.
+ `compile_stats` is whatever the bridge's `_build_content_manifest`
+ surfaced — empty dict / None when the parser produced nothing.
 
-    `compile_stats["items"]`, when populated, is the per-element
-    list (text blocks, tables, images, formulas) the parser found.
-    Producers that surface this list make the FE Content Inventory
-    tab non-empty — without it the tab can only show summary counts.
-    """
+ `compile_stats["items"]`, when populated, is the per-element
+ list (text blocks, tables, images, formulas) the parser found.
+ Producers that surface this list make the FE Content Inventory
+ tab non-empty — without it the tab can only show summary counts.
+ """
     raw = compile_stats or {}
     items_raw = raw.get("items") if isinstance(raw.get("items"), list) else []
     items: list[ParsedContentItem] = []

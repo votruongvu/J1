@@ -6,12 +6,12 @@ ProjectProcessingWorkflow, etc.) keeps working unchanged.
 
 Two construction paths:
 
-  * `RAGAnythingCompiler.from_default(llm_registry, settings)` —
-    lazy-imports `raganything`, raises `ProviderUnavailable` with
-    pip-install hint if missing.
-  * `RAGAnythingCompiler(llm_registry, settings, compile_callable=...)`
-    — tests inject a fake callable directly. No vendor library
-    needed.
+ * `RAGAnythingCompiler.from_default(llm_registry, settings)` —
+ lazy-imports `raganything`, raises `ProviderUnavailable` with
+ pip-install hint if missing.
+ * `RAGAnythingCompiler(llm_registry, settings, compile_callable=...)`
+ — tests inject a fake callable directly. No vendor library
+ needed.
 """
 
 import hashlib
@@ -48,26 +48,26 @@ _ADAPTER_SCHEMA_VERSION = "2"
 class RAGAnythingCompileRequest:
     """What the compile callable receives.
 
-    Fully canonical — no provider-native types in or out. The callable
-    returns an `ArtifactProcessingResult` whose drafts the framework
-    materialises into the project workspace.
+ Fully canonical — no provider-native types in or out. The callable
+ returns an `ArtifactProcessingResult` whose drafts the framework
+ materialises into the project workspace.
 
-    `progress_reporter` and `run_id` are optional plumbing for the
-    user-facing progress surface: when both are present the bridge
-    attaches the MinerU log handler so vendor progress lines turn
-    into structured `step.progress` events. When absent (default for
-    callers that don't use the runs surface) the bridge runs
-    unchanged.
+ `progress_reporter` and `run_id` are optional plumbing for the
+ user-facing progress surface: when both are present the bridge
+ attaches the MinerU log handler so vendor progress lines turn
+ into structured `step.progress` events. When absent (default for
+ callers that don't use the runs surface) the bridge runs
+ unchanged.
 
-    `assessment_plan` is the per-document compile plan
-    ([j1.processing.assessment](../../processing/assessment.py)). When
-    set, the bridge derives `parse_method` (and any future per-
-    capability toggles) via
-    [`map_assessment_to_raganything_config`](./plan_mapper.py)
-    instead of using `settings.parse_method`. When None (legacy
-    callers + tests), the bridge falls back to the static settings
-    field — preserves backward compatibility.
-    """
+ `assessment_plan` is the per-document compile plan
+ ([j1.processing.assessment](../../processing/assessment.py)). When
+ set, the bridge derives `parse_method` (and any future per-
+ capability toggles) via
+ [`map_assessment_to_raganything_config`](./plan_mapper.py)
+ instead of using `settings.parse_method`. When None (legacy
+ callers + tests), the bridge falls back to the static settings
+ field — preserves backward compatibility.
+ """
 
     ctx: ProjectContext
     document_id: str
@@ -103,28 +103,28 @@ class RAGAnythingCompiler:
     def version(self) -> str:
         """Cache-partitioning version string.
 
-        Composed of the adapter-side schema version plus a stable
-        hash of the settings fields that change parser output:
-        `parse_method`, `backend`, and the VLM-HTTP-client wiring.
-        The vendor `raganything` package version is captured at
-        runtime when importable; otherwise omitted (the adapter
-        schema version is sufficient to invalidate cache on J1-side
-        upgrades).
+ Composed of the adapter-side schema version plus a stable
+ hash of the settings fields that change parser output:
+ `parse_method`, `backend`, and the VLM-HTTP-client wiring.
+ The vendor `raganything` package version is captured at
+ runtime when importable; otherwise omitted (the adapter
+ schema version is sufficient to invalidate cache on J1-side
+ upgrades).
 
-        Two compiles with the same `(document_hash, processor_kind,
-        version, mode)` are guaranteed to produce equivalent
-        artifacts. Changing any of: `parse_method`, `backend`,
-        `vlm_http_*` settings, or the `raganything` package version
-        — forces a fresh parse instead of reusing stale rows.
-        """
+ Two compiles with the same `(document_hash, processor_kind,
+ version, mode)` are guaranteed to produce equivalent
+ artifacts. Changing any of: `parse_method`, `backend`,
+ `vlm_http_*` settings, or the `raganything` package version
+ — forces a fresh parse instead of reusing stale rows.
+ """
         return _build_compiler_version(self._settings)
 
     @property
     def mode(self) -> str:
         """Parser mode (e.g. `auto`, `vlm-http-client`). The cache
-        key includes this so a `parse_method` change forces a fresh
-        parse instead of reusing artifacts produced by a different
-        backend."""
+ key includes this so a `parse_method` change forces a fresh
+ parse instead of reusing artifacts produced by a different
+ backend."""
         return str(getattr(self._settings, "parse_method", "") or "")
 
     @classmethod
@@ -136,12 +136,12 @@ class RAGAnythingCompiler:
     ) -> "RAGAnythingCompiler":
         """Construct the production adapter.
 
-        If `settings.compiler_processor` is set (e.g. via
-        `J1_RAGANYTHING_COMPILER_PROCESSOR=mypkg.processors:compile_doc`),
-        the named callable is loaded via the safe class-loader. Otherwise
-        falls back to a built-in stub that raises `ProviderUnavailable`
-        with a clear "wire your own processor" message.
-        """
+ If `settings.compiler_processor` is set (e.g. via
+ `J1_RAGANYTHING_COMPILER_PROCESSOR=mypkg.processors:compile_doc`),
+ the named callable is loaded via the safe class-loader. Otherwise
+ falls back to a built-in stub that raises `ProviderUnavailable`
+ with a clear "wire your own processor" message.
+ """
         compile_callable: CompileCallable
         if settings.compiler_processor:
             from j1.llm.classloader import resolve_callable
@@ -165,19 +165,19 @@ class RAGAnythingCompiler:
     ) -> ArtifactProcessingResult:
         """Run the wrapped vendor compile.
 
-        `progress_reporter` and `run_id` are optional. When both are
-        supplied, the bridge attaches the MinerU log handler so
-        vendor progress lines become structured `step.progress`
-        events. The `KnowledgeCompiler` Protocol's compile method
-        only requires `(ctx, document_id)` — these kwargs are
-        additive and existing callers stay working.
+ `progress_reporter` and `run_id` are optional. When both are
+ supplied, the bridge attaches the MinerU log handler so
+ vendor progress lines become structured `step.progress`
+ events. The `KnowledgeCompiler` Protocol's compile method
+ only requires `(ctx, document_id)` — these kwargs are
+ additive and existing callers stay working.
 
-        `assessment_plan` is the per-document compile plan
-        ([j1.processing.assessment.AssessmentPlan](../../processing/assessment.py)).
-        When set, the bridge derives `parse_method` (and any future
-        per-capability toggles) from the plan via the mapper. None
-        falls back to `settings.parse_method` — preserves backward
-        compatibility for callers that don't yet build a plan."""
+ `assessment_plan` is the per-document compile plan
+ ([j1.processing.assessment.AssessmentPlan](../../processing/assessment.py)).
+ When set, the bridge derives `parse_method` (and any future
+ per-capability toggles) from the plan via the mapper. None
+ falls back to `settings.parse_method` — preserves backward
+ compatibility for callers that don't yet build a plan."""
         request = RAGAnythingCompileRequest(
             ctx=ctx,
             document_id=document_id,
@@ -204,13 +204,13 @@ class RAGAnythingCompiler:
 
 def _vendor_version() -> str:
     """Return the installed `raganything` package version, or empty
-    string when the package isn't importable at this moment.
+ string when the package isn't importable at this moment.
 
-    Read once via `importlib.metadata` — no I/O on the import path.
-    Failures are silent: the cache key falls back to the adapter
-    schema version alone, which is the same partition behaviour as
-    before the version field existed.
-    """
+ Read once via `importlib.metadata` — no I/O on the import path.
+ Failures are silent: the cache key falls back to the adapter
+ schema version alone, which is the same partition behaviour as
+ before the version field existed.
+ """
     try:
         from importlib.metadata import PackageNotFoundError, version
 
@@ -225,11 +225,11 @@ def _vendor_version() -> str:
 def _build_compiler_version(settings: RAGAnythingSettings) -> str:
     """Compose the cache-partitioning version string.
 
-    Format: `{adapter_schema}|{vendor_version}|{settings_hash}` —
-    short, stable, deterministic across runs. The settings hash
-    intentionally excludes paths (workdir/storage_dir/cache_dir) and
-    LibreOffice plumbing — those don't change parser output.
-    """
+ Format: `{adapter_schema}|{vendor_version}|{settings_hash}` —
+ short, stable, deterministic across runs. The settings hash
+ intentionally excludes paths (workdir/storage_dir/cache_dir) and
+ LibreOffice plumbing — those don't change parser output.
+ """
     parts = "|".join((
         getattr(settings, "parse_method", "") or "",
         getattr(settings, "backend", "") or "",
@@ -243,20 +243,20 @@ def _build_compiler_version(settings: RAGAnythingSettings) -> str:
 def _build_default_compile_callable() -> CompileCallable:
     """Real default boundary to the `raganything` library.
 
-    Delegates to `j1.providers.raganything._bridge.default_compile`,
-    which lazy-imports the vendor package + drives its public
-    `RAGAnything.process_document_complete()` API + normalises the
-    output directory into J1 `ArtifactDraft`s.
+ Delegates to `j1.providers.raganything._bridge.default_compile`,
+ which lazy-imports the vendor package + drives its public
+ `RAGAnything.process_document_complete` API + normalises the
+ output directory into J1 `ArtifactDraft`s.
 
-    Raises `ProviderUnavailable` only when:
-      * the `raganything` package isn't installed (actionable: pip install)
-      * the vendor API shape doesn't match (actionable: names the
-        missing symbol + points at the J1_RAGANYTHING_*_PROCESSOR
-        override seam)
-      * the document's source file isn't found in the workspace
-      * a runtime constraint prevents the call (e.g. running event
-        loop conflict)
-    """
+ Raises `ProviderUnavailable` only when:
+ * the `raganything` package isn't installed (actionable: pip install)
+ * the vendor API shape doesn't match (actionable: names the
+ missing symbol + points at the J1_RAGANYTHING_*_PROCESSOR
+ override seam)
+ * the document's source file isn't found in the workspace
+ * a runtime constraint prevents the call (e.g. running event
+ loop conflict)
+ """
 
     def _delegate(request: RAGAnythingCompileRequest) -> ArtifactProcessingResult:
         from j1.providers.raganything._bridge import default_compile

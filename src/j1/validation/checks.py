@@ -1,20 +1,20 @@
 """Deterministic check engine for the validation feature.
 
-Phase 1: six required deterministic checks (server-derived metadata
+six required deterministic checks (server-derived metadata
 only, no LLM judging).
-Phase 3 adds two new check families:
+two new check families:
 
-  * **Negative test deterministic check** —
-    `negative_answer_abstains` (required) — for case type=`negative`,
-    the answer must match a regex pattern of "I don't know" /
-    "insufficient information" / similar OR be empty.
-  * **Optional semantic checks** (judge-driven, severity=optional):
-    - `answer_covers_expected_points` — when `expected_answer_points`
-      is non-empty AND a judge is configured.
-    - `answer_grounded_in_citations` — when there's an answer and a
-      judge is configured.
-    - `negative_no_fabrication` — for negative cases, when a judge
-      is configured.
+ * **Negative test deterministic check** —
+ `negative_answer_abstains` (required) — for case type=`negative`,
+ the answer must match a regex pattern of "I don't know" /
+ "insufficient information" / similar OR be empty.
+ * **Optional semantic checks** (judge-driven, severity=optional):
+ - `answer_covers_expected_points` — when `expected_answer_points`
+ is non-empty AND a judge is configured.
+ - `answer_grounded_in_citations` — when there's an answer and a
+ judge is configured.
+ - `negative_no_fabrication` — for negative cases, when a judge
+ is configured.
 
 Optional checks are EVER warning-severity. A judge that flips its
 mind between runs would create flapping outcomes — required failures
@@ -51,10 +51,10 @@ from j1.validation.judge import (
 class _CheckContext:
     """Bundle every input the deterministic checks need.
 
-    Kept in one struct so `run_checks` doesn't grow a 10-arg
-    signature, and so unit tests can construct a context directly
-    without going through the full service.
-    """
+ Kept in one struct so `run_checks` doesn't grow a 10-arg
+ signature, and so unit tests can construct a context directly
+ without going through the full service.
+ """
 
     ctx: ProjectContext
     run_id: str
@@ -65,7 +65,7 @@ class _CheckContext:
     artifact_registry: ArtifactRegistry
 
 
-# ---- Phase 3 abstain regex ---------------------------------------------
+# ---- abstain regex ---------------------------------------------
 #
 # Matches phrase-level signals that the answer admits it doesn't know /
 # can't answer / has insufficient information. Case-insensitive across
@@ -101,9 +101,9 @@ _ABSTAIN_PATTERNS: tuple[re.Pattern, ...] = tuple(
 def _is_abstain_response(answer: str) -> bool:
     """True when the answer reads as a refusal / abstention.
 
-    Empty / whitespace-only answers also count as abstaining — a
-    blank response from a knowledge-grounded engine on an out-of-
-    scope question is the right behaviour."""
+ Empty / whitespace-only answers also count as abstaining — a
+ blank response from a knowledge-grounded engine on an out-of-
+ scope question is the right behaviour."""
     body = (answer or "").strip()
     if not body:
         return True
@@ -142,12 +142,12 @@ def _check_retrieved_chunks_present(ctx_: _CheckContext) -> ValidationCheckDTO:
 def _check_citation_present(ctx_: _CheckContext) -> ValidationCheckDTO | None:
     """Conditional check.
 
-    Returns None (skipped — not added to `checks[]`) when the caller
-    didn't request citation enforcement. Returning the check from
-    `run_checks` only when the request demands it keeps the
-    `passed_with_warnings`/`failed` aggregation honest: a check that
-    isn't in the list can't fail.
-    """
+ Returns None (skipped — not added to `checks[]`) when the caller
+ didn't request citation enforcement. Returning the check from
+ `run_checks` only when the request demands it keeps the
+ `passed_with_warnings`/`failed` aggregation honest: a check that
+ isn't in the list can't fail.
+ """
     if not ctx_.citation_required:
         return None
     count = len(ctx_.citations)
@@ -166,14 +166,14 @@ def _check_retrieved_chunks_belong_to_run(
     ctx_: _CheckContext,
 ) -> ValidationCheckDTO:
     """Server-derived `run_id` on every retrieved chunk must match
-    the request's run scope. Anything else means the FTS scope
-    filter leaked, the indexer mis-tagged a row, or the producer
-    forgot to set `metadata.run_id` on the artifact.
+ the request's run scope. Anything else means the FTS scope
+ filter leaked, the indexer mis-tagged a row, or the producer
+ forgot to set `metadata.run_id` on the artifact.
 
-    Skipped (passed=True with detail) when there are no retrieved
-    chunks — there's nothing to check, and `retrieved_chunks_present`
-    will already have failed in that case so we don't double-count.
-    """
+ Skipped (passed=True with detail) when there are no retrieved
+ chunks — there's nothing to check, and `retrieved_chunks_present`
+ will already have failed in that case so we don't double-count.
+ """
     if not ctx_.retrieved_chunks:
         return ValidationCheckDTO(
             name="retrieved_chunks_belong_to_run",
@@ -207,8 +207,8 @@ def _check_citations_belong_to_run(
     ctx_: _CheckContext,
 ) -> ValidationCheckDTO:
     """Same shape as the chunks check, applied to citations. A
-    citation with `run_id is None` counts as a fail — every citation
-    that survived the FTS run-scope filter MUST carry the run id."""
+ citation with `run_id is None` counts as a fail — every citation
+ that survived the FTS run-scope filter MUST carry the run id."""
     if not ctx_.citations:
         return ValidationCheckDTO(
             name="citations_belong_to_run",
@@ -242,16 +242,16 @@ def _check_no_cross_tenant_or_cross_project_leak(
     ctx_: _CheckContext,
 ) -> ValidationCheckDTO:
     """Defense in depth: every cited artifact must resolve in the
-    caller's `(tenant, project)` via the registry. The `run_id`
-    filter alone protects against same-project cross-run leaks; this
-    check covers the (would-be-bug) case where the indexer somehow
-    surfaced an artifact whose registry ownership is elsewhere.
+ caller's `(tenant, project)` via the registry. The `run_id`
+ filter alone protects against same-project cross-run leaks; this
+ check covers the (would-be-bug) case where the indexer somehow
+ surfaced an artifact whose registry ownership is elsewhere.
 
-    `ArtifactNotFoundError` from the registry is treated as a fail
-    — if a citation references an artifact we can't load under this
-    project, something is wrong even if the run_id matches by
-    coincidence.
-    """
+ `ArtifactNotFoundError` from the registry is treated as a fail
+ — if a citation references an artifact we can't load under this
+ project, something is wrong even if the run_id matches by
+ coincidence.
+ """
     offenders: list[str] = []
     for citation in ctx_.citations:
         try:
@@ -277,13 +277,13 @@ def _check_no_cross_tenant_or_cross_project_leak(
     )
 
 
-# ---- Phase 3 negative-test deterministic check -------------------------
+# ---- negative-test deterministic check -------------------------
 
 
 def _check_negative_answer_abstains(ctx_: _CheckContext) -> ValidationCheckDTO:
     """Required for `case_type=negative`: the answer must read as a
-    refusal / "I don't know" / similar. Empty answers also count.
-    Honest abstention is the entire point of a negative case."""
+ refusal / "I don't know" / similar. Empty answers also count.
+ Honest abstention is the entire point of a negative case."""
     abstained = _is_abstain_response(ctx_.answer)
     return ValidationCheckDTO(
         name="negative_answer_abstains",
@@ -301,7 +301,7 @@ def _check_negative_answer_abstains(ctx_: _CheckContext) -> ValidationCheckDTO:
     )
 
 
-# ---- Phase 3 optional judge-driven checks -----------------------------
+# ---- optional judge-driven checks -----------------------------
 
 
 def _check_answer_covers_expected_points(
@@ -312,13 +312,13 @@ def _check_answer_covers_expected_points(
     expected_points: list[str],
 ) -> ValidationCheckDTO | None:
     """Optional: the answer must semantically cover ≥80% of the
-    expected answer points. Below the threshold is a warning, NOT a
-    failure (the judge is fallible — required failures must stay
-    deterministic).
+ expected answer points. Below the threshold is a warning, NOT a
+ failure (the judge is fallible — required failures must stay
+ deterministic).
 
-    Returns None when the judge couldn't render an opinion (LLM
-    unavailable, malformed response, etc.) — we omit the check
-    rather than count silence as a pass."""
+ Returns None when the judge couldn't render an opinion (LLM
+ unavailable, malformed response, etc.) — we omit the check
+ rather than count silence as a pass."""
     judgement = judge.judge_answer_covers_points(
         question=question, answer=ctx_.answer,
         expected_points=list(expected_points),
@@ -360,11 +360,11 @@ def _check_answer_grounded_in_citations(
     question: str,
 ) -> ValidationCheckDTO | None:
     """Optional: the answer must rely on the citations. The judge
-    flags any unsupported claims; severity≥moderate counts as a fail.
-    Low-severity flags (filler, hedging) are tolerated.
+ flags any unsupported claims; severity≥moderate counts as a fail.
+ Low-severity flags (filler, hedging) are tolerated.
 
-    Skipped when the answer is empty (nothing to ground) — for the
-    abstain case `negative_answer_abstains` already covers it."""
+ Skipped when the answer is empty (nothing to ground) — for the
+ abstain case `negative_answer_abstains` already covers it."""
     if not (ctx_.answer or "").strip():
         return None
     judgement = judge.judge_answer_grounded(
@@ -402,13 +402,13 @@ def _check_negative_no_fabrication(
     question: str,
 ) -> ValidationCheckDTO | None:
     """Optional: for negative cases, even an abstaining answer
-    shouldn't fabricate facts. The judge looks at the answer + any
-    citations and flags concrete fabrications.
+ shouldn't fabricate facts. The judge looks at the answer + any
+ citations and flags concrete fabrications.
 
-    Distinct from `answer_grounded_in_citations` because the
-    fabrication check accepts an empty citation list (the question
-    is OUT of scope; honest abstention with no citations is the
-    target). Severity threshold matches the grounding check."""
+ Distinct from `answer_grounded_in_citations` because the
+ fabrication check accepts an empty citation list (the question
+ is OUT of scope; honest abstention with no citations is the
+ target). Severity threshold matches the grounding check."""
     judgement = judge.judge_negative_abstain(
         question=question,
         answer=ctx_.answer,
@@ -439,7 +439,7 @@ def _check_negative_no_fabrication(
 
 def _citation_to_dict(c: ValidationCitationDTO) -> dict:
     """Compact dict for the judge prompt. Mirrors the wire shape so
-    the judge sees the same fields the FE renders."""
+ the judge sees the same fields the FE renders."""
     return {
         "artifact_id": c.artifact_id,
         "artifact_type": c.artifact_type,
@@ -471,25 +471,25 @@ def run_checks(
 ) -> list[ValidationCheckDTO]:
     """Run the deterministic check suite + optional judge checks.
 
-    Order matters for operator readability — answer presence first,
-    retrieval next, then run-scope checks, then ownership defense,
-    then negative/judge optional checks at the tail.
+ Order matters for operator readability — answer presence first,
+ retrieval next, then run-scope checks, then ownership defense,
+ then negative/judge optional checks at the tail.
 
-    Per-case-type branching:
-      * `case_type="negative"` swaps the answer-non-empty +
-        retrieved-chunks-present required checks for
-        `negative_answer_abstains` (required) +
-        `negative_no_fabrication` (optional, judge-driven).
-      * Any other case (or `case_type=None` for the manual query
-        path) runs the Phase 1 / Phase 2 positive-case suite.
+ Per-case-type branching:
+ * `case_type="negative"` swaps the answer-non-empty +
+ retrieved-chunks-present required checks for
+ `negative_answer_abstains` (required) +
+ `negative_no_fabrication` (optional, judge-driven).
+ * Any other case (or `case_type=None` for the manual query
+ path) runs the / positive-case suite.
 
-    Optional judge checks are appended ONLY when a judge is
-    supplied AND its preconditions hold (e.g. `expected_answer_points`
-    non-empty for the coverage check). Conditional checks are
-    OMITTED rather than included-and-passing — that keeps the
-    `_aggregate_status` rule honest: a check that wasn't run can't
-    flip the validation status by accident.
-    """
+ Optional judge checks are appended ONLY when a judge is
+ supplied AND its preconditions hold (e.g. `expected_answer_points`
+ non-empty for the coverage check). Conditional checks are
+ OMITTED rather than included-and-passing — that keeps the
+ `_aggregate_status` rule honest: a check that wasn't run can't
+ flip the validation status by accident.
+ """
     check_ctx = _CheckContext(
         ctx=ctx,
         run_id=run_id,
@@ -549,15 +549,15 @@ def run_checks(
 
 def aggregate_status(checks: list[ValidationCheckDTO]) -> ValidationStatus:
     """Roll up per-check outcomes into the single `validationStatus`
-    field on the response.
+ field on the response.
 
-    Phase 1 ships only `required` checks, so the aggregation reduces
-    to "any required failed → failed; else passed". The
-    `passed_with_warnings` branch exists for forward-compat with
-    Phase 3's optional / judge checks. `inconclusive` is reserved
-    for catastrophic engine failures (the service layer sets it
-    directly when an exception bubbles out of the query call).
-    """
+ ships only `required` checks, so the aggregation reduces
+ to "any required failed → failed; else passed". The
+ `passed_with_warnings` branch exists for forward-compat with
+ 's optional / judge checks. `inconclusive` is reserved
+ for catastrophic engine failures (the service layer sets it
+ directly when an exception bubbles out of the query call).
+ """
     has_required_fail = any(
         not c.passed and c.severity == "required" for c in checks
     )

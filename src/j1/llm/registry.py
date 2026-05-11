@@ -22,15 +22,15 @@ LLM_ROLE_EMBEDDING = "embedding"
 # light metadata, heading normalisation). Implementations are free
 # to point this at the same provider/base_url as `text` with just a
 # different model. `LLM_ROLE_FAST` is OPTIONAL — deterministic
-# planning works without it; consumers must call `try_fast()` rather
-# than `fast()` so missing config is a no-op rather than a startup
+# planning works without it; consumers must call `try_fast` rather
+# than `fast` so missing config is a no-op rather than a startup
 # failure.
 LLM_ROLE_FAST = "fast"
 # High-accuracy role for runs whose `IngestPlan.requires_premium_llm`
 # is True (today: documents the planner picked under
 # `force_full` / `high_accuracy` policy where extraction quality
 # matters more than cost). `LLM_ROLE_PREMIUM` is OPTIONAL — the
-# `try_premium_or_text()` helper below falls back to the standard
+# `try_premium_or_text` helper below falls back to the standard
 # text role when no premium client is registered, so deployments
 # without a separate premium provider keep working.
 LLM_ROLE_PREMIUM = "premium"
@@ -43,10 +43,10 @@ KNOWN_ROLES: frozenset[str] = frozenset(
 class LLMProviderRegistry:
     """Maps role names → LLM clients.
 
-    Construct empty, then `register(role, client)` for each role the
-    deployment configures. `try_resolve` returns None for missing
-    roles (callers that *need* the role use `resolve`, which raises).
-    """
+ Construct empty, then `register(role, client)` for each role the
+ deployment configures. `try_resolve` returns None for missing
+ roles (callers that *need* the role use `resolve`, which raises).
+ """
 
     def __init__(
         self,
@@ -82,9 +82,9 @@ class LLMProviderRegistry:
     def validate_required(self, required_roles: Iterable[str]) -> None:
         """Raise `LLMRoleNotRegistered` if any required role is missing.
 
-        Used by the composition root to fail startup early when a
-        selected provider needs a role nothing satisfies.
-        """
+ Used by the composition root to fail startup early when a
+ selected provider needs a role nothing satisfies.
+ """
         missing = [r for r in required_roles if not self.has(r)]
         if missing:
             registered = self.list()
@@ -94,10 +94,10 @@ class LLMProviderRegistry:
     def diagnostics(self) -> dict[str, dict]:
         """Per-role provider + model summary, secrets-safe.
 
-        Adapters publish `provider` + `model` properties; we only
-        expose those plus the type-name. API keys / base URLs / config
-        dicts are NEVER included (callers log this dict at startup).
-        """
+ Adapters publish `provider` + `model` properties; we only
+ expose those plus the type-name. API keys / base URLs / config
+ dicts are NEVER included (callers log this dict at startup).
+ """
         out: dict[str, dict] = {}
         for role, client in self._clients.items():
             out[role] = {
@@ -129,27 +129,27 @@ class LLMProviderRegistry:
 
     def try_fast(self) -> TextLLMClient | None:
         """Optional FAST role. Falls back to text when not configured;
-        consumers (typically the planner's LLM-fallback path) handle
-        the absence themselves."""
+ consumers (typically the planner's LLM-fallback path) handle
+ the absence themselves."""
         return self.try_resolve(LLM_ROLE_FAST)  # type: ignore[return-value]
 
     def try_premium(self) -> TextLLMClient | None:
         """Optional PREMIUM role. Returns None when no premium client
-        is registered — callers should usually use
-        `try_premium_or_text()` instead so a missing premium config
-        falls back to TEXT rather than disabling the call."""
+ is registered — callers should usually use
+ `try_premium_or_text` instead so a missing premium config
+ falls back to TEXT rather than disabling the call."""
         return self.try_resolve(LLM_ROLE_PREMIUM)  # type: ignore[return-value]
 
     def try_premium_or_text(self) -> TextLLMClient | None:
         """Resolve PREMIUM if configured, otherwise TEXT.
 
-        The runtime contract for `IngestPlan.requires_premium_llm`:
-        when the planner flags premium accuracy as required, callers
-        prefer the premium client; when no premium client is wired,
-        TEXT is the documented fallback (operator-facing copy in
-        docs/INGESTION_PROFILES.md § Known limitations covers the
-        UX implication). Either way, the call still happens — the
-        flag never silently disables work."""
+ The runtime contract for `IngestPlan.requires_premium_llm`:
+ when the planner flags premium accuracy as required, callers
+ prefer the premium client; when no premium client is wired,
+ TEXT is the documented fallback (operator-facing copy in
+ docs/INGESTION_PROFILES.md § Known limitations covers the
+ UX implication). Either way, the call still happens — the
+ flag never silently disables work."""
         client = self.try_resolve(LLM_ROLE_PREMIUM)
         if client is not None:
             return client  # type: ignore[return-value]

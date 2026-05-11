@@ -367,12 +367,12 @@ def test_post_ingest_without_starter_returns_503(application_facade, ctx, regist
 
 def test_post_ingest_validates_required_field(client):
     """Without `processing_capabilities` AND no `compilerKind` in the
-    body, the request is rejected with 400 INVALID_ARGUMENT.
+ body, the request is rejected with 400 INVALID_ARGUMENT.
 
-    The schema treats `compilerKind` as optional now; the handler
-    enforces presence (or default-resolution) so the error message
-    can name the field clearly.
-    """
+ The schema treats `compilerKind` as optional now; the handler
+ enforces presence (or default-resolution) so the error message
+ can name the field clearly.
+ """
     response = client.post(
         "/documents/doc-x/ingest",
         json={},  # missing compilerKind, no default registered
@@ -506,7 +506,7 @@ def test_retrieve_is_distinct_from_search_response_shape(
     client, ctx, artifact_registry, search_indexer, workspace
 ):
     """/search and /retrieve must not collapse into the same payload — one
-    returns ranked hits, the other returns context blocks."""
+ returns ranked hits, the other returns context blocks."""
     _stage_artifact(
         workspace, ctx, artifact_registry,
         artifact_id="a-1", content=b"text content",
@@ -643,10 +643,10 @@ def test_get_health(client):
 
 def test_get_health_llm_returns_cached_probe_status(client):
     """`/healthz/llm` reads the process-local probe cache. When the
-    cache is empty (no probe has run in this test process), the
-    endpoint reports `healthy=true` with empty results — matches
-    the conservative 'assume working until proven otherwise'
-    contract. The FE banner stays quiet on this response."""
+ cache is empty (no probe has run in this test process), the
+ endpoint reports `healthy=true` with empty results — matches
+ the conservative 'assume working until proven otherwise'
+ contract. The FE banner stays quiet on this response."""
     from j1.llm.probe import cache_probe_results
     cache_probe_results([])  # ensure clean state
     response = client.get("/healthz/llm")
@@ -658,8 +658,8 @@ def test_get_health_llm_returns_cached_probe_status(client):
 
 def test_get_health_llm_surfaces_failed_role(client):
     """When the cache holds a failed probe result, the endpoint
-    reports `healthy=false` and includes per-role detail so the FE
-    banner can render the operator-readable error."""
+ reports `healthy=false` and includes per-role detail so the FE
+ banner can render the operator-readable error."""
     from j1.llm.probe import ProbeResult, cache_probe_results
     cache_probe_results([
         ProbeResult(
@@ -685,10 +685,10 @@ def test_post_health_llm_refresh_returns_cached_state_when_no_registry(
     client,
 ):
     """When `create_rest_api` was called WITHOUT an `llm_registry`
-    (the test fixture's case), the refresh endpoint falls back to
-    returning the cached snapshot — same shape as GET. This keeps
-    the FE 'Retry now' button working in mock / minimal deployments
-    instead of 503-ing."""
+ (the test fixture's case), the refresh endpoint falls back to
+ returning the cached snapshot — same shape as GET. This keeps
+ the FE 'Retry now' button working in mock / minimal deployments
+ instead of 503-ing."""
     from j1.llm.probe import cache_probe_results
     cache_probe_results([])
     response = client.post("/healthz/llm/refresh")
@@ -890,7 +890,7 @@ def test_post_ingestion_job_starts_workflow(client, mock_temporal):
 
 def test_post_ingestion_job_validates_required_field(client):
     """Same as `test_post_ingest_validates_required_field` for the
-    project-wide endpoint."""
+ project-wide endpoint."""
     response = client.post(
         "/ingestion-jobs", json={}, headers=_headers()
     )
@@ -1122,9 +1122,9 @@ def test_answer_response_includes_graph_paths_field(
 
 def test_openapi_documents_x_tenant_id_header_per_endpoint(client):
     """`X-Tenant-Id` was previously read from `request.headers` only,
-    so Swagger UI had no input field for it and operators couldn't
-    test the API. Header-typed dependency parameters now expose it
-    on every operation that uses `get_ctx` / `get_tenant`."""
+ so Swagger UI had no input field for it and operators couldn't
+ test the API. Header-typed dependency parameters now expose it
+ on every operation that uses `get_ctx` / `get_tenant`."""
     spec = client.get("/openapi.json").json()
     # Pick an endpoint that uses get_ctx.
     op = spec["paths"]["/documents"]["post"]
@@ -1155,8 +1155,8 @@ def test_openapi_documents_x_project_id_header_per_endpoint(client):
 
 def test_openapi_does_not_advertise_security_when_auth_disabled(client):
     """Auth disabled (default fixture) → no Authorize button in
-    Swagger. Avoids confusing operators with a credential prompt
-    they don't need."""
+ Swagger. Avoids confusing operators with a credential prompt
+ they don't need."""
     spec = client.get("/openapi.json").json()
     components = spec.get("components", {})
     # Either no securitySchemes at all, or empty.

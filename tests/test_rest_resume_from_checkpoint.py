@@ -1,12 +1,12 @@
 """End-to-end tests for the POST /ingestion-runs/{id}/resume-from-checkpoint
 endpoint. Verifies:
 
-  * 200 happy path: terminal run with snapshot → new run dispatched,
-    response carries the resume metadata + reused step list.
-  * 404 for unknown run.
-  * 409 when the original is still active.
-  * 412 with structured diff when settings drifted.
-  * 412 (no diff) when snapshot is absent (legacy run / cancelled).
+ * 200 happy path: terminal run with snapshot → new run dispatched,
+ response carries the resume metadata + reused step list.
+ * 404 for unknown run.
+ * 409 when the original is still active.
+ * 412 with structured diff when settings drifted.
+ * 412 (no diff) when snapshot is absent (legacy run / cancelled).
 
 The starter is a stub that records the body it receives so we can
 assert the workflow request carries the right resume context.
@@ -105,7 +105,7 @@ def application_facade(
 @pytest.fixture
 def starter_calls():
     """Captures every body the starter receives so tests can assert
-    the resume context was threaded into the workflow request."""
+ the resume context was threaded into the workflow request."""
     return []
 
 
@@ -165,8 +165,8 @@ def _seed_terminal_run(
     snapshot_present: bool = True,
 ):
     """Drop a terminal run with (optionally) a resume snapshot into
-    the JSONL store. Mirrors what the workflow's `_emit_run_terminal`
-    + `_persist_run_terminal` would write."""
+ the JSONL store. Mirrors what the workflow's `_emit_run_terminal`
+ + `_persist_run_terminal` would write."""
     snap_settings = settings or _PRIOR_SETTINGS
     metadata: dict = {
         "policy": "auto",
@@ -225,7 +225,7 @@ def test_resume_endpoint_dispatches_new_run_with_carry_forward(
     client, run_store, registry, starter_calls,
 ):
     """Happy path: terminal run with snapshot + matching settings →
-    201/200 + new run id + carry-forward state on the workflow request."""
+ 201/200 + new run id + carry-forward state on the workflow request."""
     _seed_terminal_run(run_store, completed_steps=["compile", "enrich"])
     _seed_document(registry)
     resp = client.post(
@@ -276,7 +276,7 @@ def test_resume_endpoint_409_when_run_still_active(client, run_store, registry):
 
 def test_resume_endpoint_412_when_snapshot_missing(client, run_store, registry):
     """A FAILED run with no resume_snapshot (legacy / cancelled) →
-    operator must full-reindex instead. Surfaces as 412."""
+ operator must full-reindex instead. Surfaces as 412."""
     _seed_terminal_run(run_store, snapshot_present=False)
     _seed_document(registry)
     resp = client.post(
@@ -290,10 +290,10 @@ def test_resume_endpoint_412_with_diff_when_settings_drifted(
     client, run_store, registry,
 ):
     """Endpoint resolves candidate settings from the deployment's
-    `processing_capabilities` (current registered kinds). When the
-    prior snapshot claims a kind the current deployment no longer
-    registers, settings_diff fires and the response carries a
-    structured diff so the FE can render exactly what changed."""
+ `processing_capabilities` (current registered kinds). When the
+ prior snapshot claims a kind the current deployment no longer
+ registers, settings_diff fires and the response carries a
+ structured diff so the FE can render exactly what changed."""
     # Snapshot claims `enricher_kind="ancient_enricher"` but the test
     # client's capabilities only register `composite_enricher` — the
     # candidate resolution can't fall back to the snapshot's value
@@ -320,8 +320,8 @@ def test_resume_endpoint_412_with_diff_when_settings_drifted(
 
 def _seed_terminal_run_with_chunks(run_store, *, run_id="run-prior"):
     """Seed a SUCCEEDED run whose snapshot includes chunk artifacts —
-    the rebuild-index endpoint reads `produced_artifact_ids` filtered
-    by `chunk` kind."""
+ the rebuild-index endpoint reads `produced_artifact_ids` filtered
+ by `chunk` kind."""
     snap = {
         "settings_hash": compute_settings_hash(_PRIOR_SETTINGS),
         "settings_snapshot": _PRIOR_SETTINGS,
@@ -359,8 +359,8 @@ def test_rebuild_index_endpoint_dispatches_index_only_run(
     client, run_store, registry, starter_calls,
 ):
     """Happy path: terminal run with chunks → 200 + new run +
-    `rebuild_index_only=True` on the workflow request +
-    chunk-only carry forward."""
+ `rebuild_index_only=True` on the workflow request +
+ chunk-only carry forward."""
     _seed_terminal_run_with_chunks(run_store)
     _seed_document(registry)
     resp = client.post(
@@ -406,8 +406,8 @@ def test_rebuild_index_endpoint_409_when_run_active(client, run_store, registry)
 
 def test_rebuild_index_endpoint_412_when_no_chunks(client, run_store, registry):
     """A run that produced no chunks (snapshot has only graph
-    artifacts) — nothing to re-index. 412 + actionable message
-    pointing at full-reindex."""
+ artifacts) — nothing to re-index. 412 + actionable message
+ pointing at full-reindex."""
     snap = {
         "settings_hash": compute_settings_hash(_PRIOR_SETTINGS),
         "settings_snapshot": _PRIOR_SETTINGS,

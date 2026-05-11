@@ -3,16 +3,16 @@
 These tests are AST + filesystem checks. They run on every PR and
 fail fast if:
 
-  * The extension layer accidentally imports a project-specific or
-    domain-specific module (e.g. anything under a hypothetical
-    `j1.domain.*` namespace).
-  * Core modules import the extension layer (the dependency arrow
-    must point outward — extension depends on core, never the
-    reverse).
-  * Workflow code reaches into a concrete provider implementation
-    instead of going through a Protocol / registry.
-  * Domain names ("civil", "training-phase", "openkb", etc.) appear
-    inside any J1 source file.
+ * The extension layer accidentally imports a project-specific or
+ domain-specific module (e.g. anything under a hypothetical
+ `j1.domain.*` namespace).
+ * Core modules import the extension layer (the dependency arrow
+ must point outward — extension depends on core, never the
+ reverse).
+ * Workflow code reaches into a concrete provider implementation
+ instead of going through a Protocol / registry.
+ * Domain names ("civil", "training-phase", "openkb", etc.) appear
+ inside any J1 source file.
 """
 
 from __future__ import annotations
@@ -89,20 +89,20 @@ def test_no_domain_terms_in_extension_layer():
 
 def test_no_domain_terms_in_j1_core():
     """Core (everything outside `profiles/` and `domains/`) must not
-    reference domain terms.
+ reference domain terms.
 
-    Two exemptions:
+ Two exemptions:
 
-    1. `profiles/` — the bundled `default` profile is intentionally
-       generic; the directory is the documented place for
-       deployments to inject domain content WITHOUT touching core.
-    2. `domains/` — domain packs (e.g. Civil Engineering) live
-       here. Pack code is allowed to reference its own domain
-       vocabulary; the abstraction in `domains/models.py` and
-       `domains/registry.py` may name specific packs in
-       documentation. The wider core (everything outside
-       `domains/`) still must stay domain-neutral.
-    """
+ 1. `profiles/` — the bundled `default` profile is intentionally
+ generic; the directory is the documented place for
+ deployments to inject domain content WITHOUT touching core.
+ 2. `domains/` — domain packs (e.g. Civil Engineering) live
+ here. Pack code is allowed to reference its own domain
+ vocabulary; the abstraction in `domains/models.py` and
+ `domains/registry.py` may name specific packs in
+ documentation. The wider core (everything outside
+ `domains/`) still must stay domain-neutral.
+ """
     offenders: list[tuple[Path, str]] = []
     for path in _python_files(SRC_ROOT):
         if "profiles" in path.parts or "domains" in path.parts:
@@ -122,19 +122,19 @@ def test_no_domain_terms_in_j1_core():
 def test_core_does_not_import_extension():
     """Dependency direction — extension depends on core, NOT the reverse.
 
-    Any core module importing `j1.extension.*` would create a
-    coupling that defeats the whole point of the extension layer.
+ Any core module importing `j1.extension.*` would create a
+ coupling that defeats the whole point of the extension layer.
 
-    One **explicit, single-purpose** exception: the composition root
-    (`j1.compose.bootstrap`) is allowed to import the bundled mock
-    adapters from `j1.extension.mocks` so deployments can select
-    `J1_DEFAULT_*=mock` to bring up a deterministic smoke pipeline
-    with zero vendor dependencies. The composition root is the one
-    place in core where wiring extension-layer reference adapters as
-    runnable defaults is legitimate. No other core module may do
-    this; no other path under `j1.extension.*` may be imported from
-    core.
-    """
+ One **explicit, single-purpose** exception: the composition root
+ (`j1.compose.bootstrap`) is allowed to import the bundled mock
+ adapters from `j1.extension.mocks` so deployments can select
+ `J1_DEFAULT_*=mock` to bring up a deterministic smoke pipeline
+ with zero vendor dependencies. The composition root is the one
+ place in core where wiring extension-layer reference adapters as
+ runnable defaults is legitimate. No other core module may do
+ this; no other path under `j1.extension.*` may be imported from
+ core.
+ """
     # (importing module, imported module) pairs that the rule allows.
     ALLOWED = {
         ("compose/bootstrap.py", "j1.extension.mocks"),
@@ -162,13 +162,13 @@ def test_core_does_not_import_extension():
 
 def test_extension_contracts_only_imports_primitives_and_legacy_protocols():
     """`j1.extension.contracts` must not pull in concrete provider /
-    adapter implementations or domain-side modules.
+ adapter implementations or domain-side modules.
 
-    Allowed imports:
-      * `typing` / standard library
-      * `j1.extension.primitives`
-      * `j1.processing.contracts` (legacy Protocol aliases)
-    """
+ Allowed imports:
+ * `typing` / standard library
+ * `j1.extension.primitives`
+ * `j1.processing.contracts` (legacy Protocol aliases)
+ """
     contracts_path = EXTENSION_ROOT / "contracts.py"
     assert contracts_path.exists()
     allowed = {
@@ -223,11 +223,11 @@ def test_workflows_do_not_import_concrete_providers():
 
 def test_mocks_only_in_extension_mocks_module():
     """Mock adapters (`Mock*Adapter` / `Mock*Connector`) should live
-    in `j1.extension.mocks` only — anywhere else suggests a test
-    fixture leaked into core.
+ in `j1.extension.mocks` only — anywhere else suggests a test
+ fixture leaked into core.
 
-    Test fixtures in `tests/` are exempt by living outside `src/`.
-    """
+ Test fixtures in `tests/` are exempt by living outside `src/`.
+ """
     offenders: list[tuple[Path, str]] = []
     pattern = re.compile(r"^class\s+Mock(?:[A-Z]\w*Adapter|SourceConnector)\b",
                          re.MULTILINE)

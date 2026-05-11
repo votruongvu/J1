@@ -1,6 +1,6 @@
-"""Phase 5 REST tests — verdict endpoint + report export.
+""" REST tests — verdict endpoint + report export.
 
-Service-level semantics live in `test_validation_service_phase5.py`;
+Service-level semantics live in `test_validation_service_.py`;
 these tests verify the REST envelope shape, headers/scope plumbing,
 input validation, 404 cross-tenant uniformity, and the response
 content-types for the report download.
@@ -180,7 +180,7 @@ def _stage_chunk(
 
 def _seed_run(client, run_store, ctx, workspace, artifact_registry, indexer):
     """Create + index a chunk + generate set + execute validation.
-    Returns (vrun_dict, first_result_id) — both the FE would need."""
+ Returns (vrun_dict, first_result_id) — both the FE would need."""
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
@@ -226,7 +226,7 @@ def test_post_verdict_keeps_auto_status_unchanged(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """The auto `status` is the deterministic verdict — must stay
-    untouched when a tester verdict is recorded."""
+ untouched when a tester verdict is recorded."""
     vrun, result_id = _seed_run(
         client, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -248,7 +248,7 @@ def test_post_verdict_rejects_invalid_verdict_value(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Pydantic Literal at the boundary: arbitrary verdict strings
-    fail validation with 422 before reaching the service."""
+ fail validation with 422 before reaching the service."""
     vrun, result_id = _seed_run(
         client, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -293,7 +293,7 @@ def test_post_verdict_caps_notes_length(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Pydantic max_length=4096 protects audit-log lines from huge
-    pasted text. 4097-char notes must be rejected with 422."""
+ pasted text. 4097-char notes must be rejected with 422."""
     vrun, result_id = _seed_run(
         client, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -312,7 +312,7 @@ def test_get_report_default_returns_markdown(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """Default format is Markdown with the right Content-Type and
-    a downloadable Content-Disposition."""
+ a downloadable Content-Disposition."""
     vrun, _ = _seed_run(
         client, run_store, ctx, workspace, artifact_registry, indexer,
     )
@@ -335,7 +335,7 @@ def test_get_report_json_format(
     client, run_store, ctx, workspace, artifact_registry, indexer,
 ):
     """`?format=json` returns a JSON payload with the right MIME +
-    a `.json` extension on the suggested filename."""
+ a `.json` extension on the suggested filename."""
     vrun, _ = _seed_run(
         client, run_store, ctx, workspace, artifact_registry, indexer,
     )

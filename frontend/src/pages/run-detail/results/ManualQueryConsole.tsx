@@ -1,5 +1,5 @@
 /**
- * Manual test query console — Phase 1 of the Validation tab.
+ * Manual test query console — of the Validation tab.
  *
  * Lets a tester ask a single question against an ingested run and
  * see the answer + retrieved chunks + citations + deterministic

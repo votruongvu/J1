@@ -100,9 +100,9 @@ def test_step_results_record_completed_compile_and_index(monkeypatch):
 
 def test_step_results_include_skipped_entries_for_caller_disabled_stages(monkeypatch):
     """When the caller doesn't supply enricher_kind / graph_builder_kind /
-    indexer_kind, the workflow records SKIPPED entries with
-    source=CALLER and a reason. Operators reading the audit shouldn't
-    have to infer the skip from absence."""
+ indexer_kind, the workflow records SKIPPED entries with
+ source=CALLER and a reason. Operators reading the audit shouldn't
+ have to infer the skip from absence."""
     _patch_workflow_runtime(monkeypatch, exec_handler=_full_pipeline_handler())
     wf = ProjectProcessingWorkflow()
     request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
@@ -126,9 +126,9 @@ def test_step_results_include_skipped_entries_for_caller_disabled_stages(monkeyp
 
 def test_step_results_capture_compile_failure_with_error_metadata(monkeypatch):
     """A failed required step must have a StepResult with FAILED
-    status, the error message, and required=True. The workflow then
-    raises — but the recorded state is still readable via
-    `wf.get_status()` (used by Temporal queries / status endpoints)."""
+ status, the error message, and required=True. The workflow then
+ raises — but the recorded state is still readable via
+ `wf.get_status` (used by Temporal queries / status endpoints)."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(compile_status="failed"),
@@ -151,9 +151,9 @@ def test_step_results_capture_compile_failure_with_error_metadata(monkeypatch):
 
 def test_get_status_exposes_final_status_only_after_terminal_exit(monkeypatch):
     """`final_status` is None while the workflow is in flight, and is
-    populated only on terminal state transitions. Tests / status
-    endpoints can check `final_status is None` to detect "in
-    progress" without reading the lower-level `state` field."""
+ populated only on terminal state transitions. Tests / status
+ endpoints can check `final_status is None` to detect "in
+ progress" without reading the lower-level `state` field."""
     _patch_workflow_runtime(monkeypatch, exec_handler=_full_pipeline_handler())
     wf = ProjectProcessingWorkflow()
     # Before run, state is RUNNING; final_status MUST be None.
@@ -189,8 +189,8 @@ def _validator_request(*, indexer_kind: str | None) -> ProjectProcessingRequest:
 
 def test_validate_completion_flags_index_skipped_when_indexer_requested():
     """C8 regression: indexer_kind set + artifacts produced + no
-    index StepResult ⇒ false-success. The validator catches it so
-    the workflow lands in FAILED instead of SUCCEEDED."""
+ index StepResult ⇒ false-success. The validator catches it so
+ the workflow lands in FAILED instead of SUCCEEDED."""
     wf = ProjectProcessingWorkflow()
     wf._produced_artifact_ids = ["art-1"]
     # Compile recorded; index never ran.
@@ -202,7 +202,7 @@ def test_validate_completion_flags_index_skipped_when_indexer_requested():
 
 def test_validate_completion_passes_when_index_completed():
     """Sibling positive path: indexer_kind set + artifacts produced +
-    an index StepResult of COMPLETED ⇒ no validation error."""
+ an index StepResult of COMPLETED ⇒ no validation error."""
     from j1.processing.step_result import StepResult
     wf = ProjectProcessingWorkflow()
     wf._produced_artifact_ids = ["art-1"]
@@ -221,7 +221,7 @@ def test_validate_completion_passes_when_index_completed():
 
 def test_validate_completion_skips_index_check_when_indexer_not_requested():
     """When the caller doesn't set indexer_kind, no index step is
-    expected. The validator must not synthesise a false error."""
+ expected. The validator must not synthesise a false error."""
     wf = ProjectProcessingWorkflow()
     wf._produced_artifact_ids = ["art-1"]
     wf._step_results = []
@@ -235,9 +235,9 @@ def test_validate_completion_skips_index_check_when_indexer_not_requested():
 
 def test_step_results_in_status_after_failed_workflow_raise(monkeypatch):
     """When the workflow raises, callers reading the in-process result
-    don't get one — but the `get_status` query still works on the
-    workflow instance. Step results recorded before the raise
-    must be visible."""
+ don't get one — but the `get_status` query still works on the
+ workflow instance. Step results recorded before the raise
+ must be visible."""
     _patch_workflow_runtime(
         monkeypatch,
         exec_handler=_full_pipeline_handler(compile_status="failed"),

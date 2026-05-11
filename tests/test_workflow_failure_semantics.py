@@ -7,14 +7,14 @@ Each test exercises a specific failure path through
 `ProjectProcessingWorkflow` / `DocumentProcessingWorkflow` and asserts
 that:
 
-  * The workflow raises `ApplicationError` (Temporal UI shows Failed).
-  * The error carries a stable `type` so dashboards / search queries
-    can filter ingestion failures without parsing message strings.
-  * The error message includes the originating step's reason so
-    operators can diagnose without re-reading the activity history.
-  * The recorded `WorkflowState` (visible via the `get_status` query)
-    still reflects the terminal-business vs. unexpected-exception
-    distinction.
+ * The workflow raises `ApplicationError` (Temporal UI shows Failed).
+ * The error carries a stable `type` so dashboards / search queries
+ can filter ingestion failures without parsing message strings.
+ * The error message includes the originating step's reason so
+ operators can diagnose without re-reading the activity history.
+ * The recorded `WorkflowState` (visible via the `get_status` query)
+ still reflects the terminal-business vs. unexpected-exception
+ distinction.
 
 These tests prevent the false-COMPLETED bug from regressing — a
 returned result must NEVER be the only signal of failure.
@@ -86,7 +86,7 @@ def _patch_workflow_runtime(
 
 def test_project_compile_failure_raises_application_error(monkeypatch):
     """Required step (compile) reports FAILED → workflow MUST raise
-    `ApplicationError(type=J1_INGEST_REQUIRED_STEP_FAILED)`."""
+ `ApplicationError(type=J1_INGEST_REQUIRED_STEP_FAILED)`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -115,7 +115,7 @@ def test_project_compile_failure_raises_application_error(monkeypatch):
 
 def test_project_index_failure_raises_application_error(monkeypatch):
     """`indexer_kind` is set → index is treated as required → its
-    failure must raise the workflow, not return Completed."""
+ failure must raise the workflow, not return Completed."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -149,10 +149,10 @@ def test_project_index_failure_raises_application_error(monkeypatch):
 
 def test_project_unexpected_exception_wrapped_as_application_error(monkeypatch):
     """Generic exceptions raised mid-workflow get wrapped in a typed
-    `ApplicationError(type=J1_INGEST_UNEXPECTED_ERROR, non_retryable=False)`
-    — type allows filtering, `non_retryable=False` preserves the
-    "transient infrastructure" classification so a parent workflow
-    could retry it."""
+ `ApplicationError(type=J1_INGEST_UNEXPECTED_ERROR, non_retryable=False)`
+ — type allows filtering, `non_retryable=False` preserves the
+ "transient infrastructure" classification so a parent workflow
+ could retry it."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -183,8 +183,8 @@ def test_project_unexpected_exception_wrapped_as_application_error(monkeypatch):
 
 def test_project_success_returns_final_status_completed(monkeypatch):
     """Sanity check: when nothing fails, the workflow returns a result
-    whose `final_status` is COMPLETED. Tests that assert correctness
-    should look at `final_status`, not just `state`."""
+ whose `final_status` is COMPLETED. Tests that assert correctness
+ should look at `final_status`, not just `state`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -214,10 +214,10 @@ def test_project_success_returns_final_status_completed(monkeypatch):
 
 
 def test_project_completed_with_optional_failure_returns_partial_completed():
-    """Phase 4: when the workflow reaches COMPLETED but recorded a
-    FAILED step result for an OPTIONAL stage (not required), the
-    operator-facing `final_status` must be PARTIAL_COMPLETED — which
-    the terminal activity then maps to RunStatus.SUCCEEDED_WITH_WARNINGS."""
+    """when the workflow reaches COMPLETED but recorded a
+ FAILED step result for an OPTIONAL stage (not required), the
+ operator-facing `final_status` must be PARTIAL_COMPLETED — which
+ the terminal activity then maps to RunStatus.SUCCEEDED_WITH_WARNINGS."""
     from datetime import datetime, timezone
 
     from j1.processing.status import StepSource, StepStatus
@@ -243,7 +243,7 @@ def test_project_completed_with_optional_failure_returns_partial_completed():
 
 def test_project_completed_with_no_optional_failures_stays_completed():
     """Counter-test: a clean success with NO optional failures must
-    still return COMPLETED, not get accidentally downgraded."""
+ still return COMPLETED, not get accidentally downgraded."""
     from datetime import datetime, timezone
 
     from j1.processing.status import StepSource, StepStatus
@@ -269,7 +269,7 @@ def test_project_completed_with_no_optional_failures_stays_completed():
 
 def test_project_cancellation_returns_final_status_cancelled(monkeypatch):
     """Cancelled workflows are not failures — their `final_status`
-    is `CANCELLED`, distinct from `FAILED`."""
+ is `CANCELLED`, distinct from `FAILED`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -296,8 +296,8 @@ def test_project_cancellation_returns_final_status_cancelled(monkeypatch):
 
 def test_document_workflow_compile_failure_raises_application_error(monkeypatch):
     """`DocumentProcessingWorkflow` has the same failure-propagation
-    contract as the project-level workflow — a failed compile must
-    raise, not return a result with `status="failed"`."""
+ contract as the project-level workflow — a failed compile must
+ raise, not return a result with `status="failed"`."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("compile"):
@@ -321,10 +321,10 @@ def test_document_workflow_compile_failure_raises_application_error(monkeypatch)
 
 def test_document_workflow_caller_specified_enrich_failure_raises(monkeypatch):
     """If the caller explicitly supplied `enricher_kind`, enrichment
-    is treated as required — its failure must surface as a workflow
-    failure. (A future planner-driven mode may emit `required=False`
-    for planner-enabled enrich so `continue_optional` policy can let
-    it fail; today every enabled step is required.)"""
+ is treated as required — its failure must surface as a workflow
+ failure. (A future planner-driven mode may emit `required=False`
+ for planner-enabled enrich so `continue_optional` policy can let
+ it fail; today every enabled step is required.)"""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("compile"):

@@ -4,23 +4,23 @@ The headline contract: the wrapper MUST forward `system_prompt`
 and `history_messages` to the underlying client. Dropping them
 caused two real-world failures:
 
-  1. LightRAG's entity-extraction prompt (carried in
-     `system_prompt`) never reached the model, producing
-     degenerate outputs.
-  2. Our token-budget pre-flight check at the OpenAI-compat
-     boundary saw only the small `prompt` argument (not the
-     bulky system+history) — underestimated → let the request
-     through → LM Studio's HTTP-400 'Context size has been
-     exceeded' fired downstream.
+ 1. LightRAG's entity-extraction prompt (carried in
+ `system_prompt`) never reached the model, producing
+ degenerate outputs.
+ 2. Our token-budget pre-flight check at the OpenAI-compat
+ boundary saw only the small `prompt` argument (not the
+ bulky system+history) — underestimated → let the request
+ through → LM Studio's HTTP-400 'Context size has been
+ exceeded' fired downstream.
 
 This file locks both contracts:
 
-  * `system_prompt` and folded-`history_messages` content
-    reach `text_client.generate`.
-  * The token-budget check at the OpenAI-compat boundary sees
-    the full payload (system + history + user) and raises
-    `LLMContextOverflowError` BEFORE the HTTP request when
-    the assembled content overflows.
+ * `system_prompt` and folded-`history_messages` content
+ reach `text_client.generate`.
+ * The token-budget check at the OpenAI-compat boundary sees
+ the full payload (system + history + user) and raises
+ `LLMContextOverflowError` BEFORE the HTTP request when
+ the assembled content overflows.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from j1.providers.raganything._bridge import _make_text_callable
 
 def _run(coro):
     """Run an awaitable from sync test code without creating
-    cross-test loops. Each call gets its own loop."""
+ cross-test loops. Each call gets its own loop."""
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
@@ -49,9 +49,9 @@ def _run(coro):
 
 class _RecordingClient:
     """Stub client that records every kwarg. Mirrors the
-    `TextLLMClient.generate(prompt, *, system_prompt, ...)`
-    contract so the wrapper's forward path is exercised
-    end-to-end without any HTTP."""
+ `TextLLMClient.generate(prompt, *, system_prompt,...)`
+ contract so the wrapper's forward path is exercised
+ end-to-end without any HTTP."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -68,12 +68,12 @@ class _RecordingClient:
 
 def test_wrapper_forwards_system_prompt():
     """LightRAG passes the entity-extraction template via
-    `system_prompt=`. Wrapper MUST forward it; before the fix
-    it dropped the kwarg.
+ `system_prompt=`. Wrapper MUST forward it; before the fix
+ it dropped the kwarg.
 
-    Wrapper also injects `/no_think` into both system + user
-    prompts to suppress qwen3 reasoning mode. Original content
-    must still reach the model unmodified."""
+ Wrapper also injects `/no_think` into both system + user
+ prompts to suppress qwen3 reasoning mode. Original content
+ must still reach the model unmodified."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
@@ -93,10 +93,10 @@ def test_wrapper_forwards_system_prompt():
 
 def test_wrapper_folds_history_into_prompt():
     """LightRAG's gleaning pass also passes `history_messages=`
-    with the prior turns. Wrapper folds them into the user
-    prompt as a labelled block so (a) the model still sees
-    every turn and (b) the budget check at the boundary
-    estimates the FULL payload."""
+ with the prior turns. Wrapper folds them into the user
+ prompt as a labelled block so (a) the model still sees
+ every turn and (b) the budget check at the boundary
+ estimates the FULL payload."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
@@ -124,9 +124,9 @@ def test_wrapper_folds_history_into_prompt():
 
 def test_wrapper_skips_empty_history():
     """`history_messages=[]` or None → wrapper passes prompt
-    through without folding history (no 'USER:' label). The
-    `/no_think` prefix is unconditional; the user's original
-    content must still be present and unaltered."""
+ through without folding history (no 'USER:' label). The
+ `/no_think` prefix is unconditional; the user's original
+ content must still be present and unaltered."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
@@ -138,8 +138,8 @@ def test_wrapper_skips_empty_history():
 
 def test_wrapper_drops_malformed_history_entries():
     """Defensive: history_messages with non-dict entries or
-    missing content must not crash the wrapper. LightRAG variants
-    have shipped malformed history before."""
+ missing content must not crash the wrapper. LightRAG variants
+ have shipped malformed history before."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
@@ -162,9 +162,9 @@ def test_wrapper_drops_malformed_history_entries():
 
 def test_wrapper_ignores_unknown_kwargs():
     """LightRAG passes extra kwargs (`_priority`, `cache_type`,
-    etc.) we don't care about. Wrapper must not propagate them
-    into `text_client.generate` — that would TypeError on
-    unknown args."""
+ etc.) we don't care about. Wrapper must not propagate them
+ into `text_client.generate` — that would TypeError on
+ unknown args."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 
@@ -182,12 +182,12 @@ def test_wrapper_ignores_unknown_kwargs():
 
 def test_oversize_lightrag_prompt_now_caught_by_budget():
     """End-to-end regression: an oversize LightRAG-style call
-    (small `prompt` + big `system_prompt`) must raise
-    `LLMContextOverflowError` BEFORE any HTTP request. Before
-    the fix, the wrapper dropped `system_prompt`, the budget
-    check saw only the small user message, the HTTP request
-    went through, and LM Studio rejected it with
-    `'Context size has been exceeded'` HTTP 400."""
+ (small `prompt` + big `system_prompt`) must raise
+ `LLMContextOverflowError` BEFORE any HTTP request. Before
+ the fix, the wrapper dropped `system_prompt`, the budget
+ check saw only the small user message, the HTTP request
+ went through, and LM Studio rejected it with
+ `'Context size has been exceeded'` HTTP 400."""
     # Real client (no HTTP stub needed — we never reach `_post`'s
     # httpx call because the boundary check raises first).
     client = OpenAICompatTextLLMClient(TextLLMSettings(
@@ -220,8 +220,8 @@ def test_oversize_lightrag_prompt_now_caught_by_budget():
 
 def test_history_visible_to_budget_check():
     """Same shape as the system_prompt regression but for
-    history. Big history → budget check sees the folded
-    content → raises before HTTP."""
+ history. Big history → budget check sees the folded
+ content → raises before HTTP."""
     client = OpenAICompatTextLLMClient(TextLLMSettings(
         provider="openai_compat",
         base_url="https://x", api_key="k", model="tiny",
@@ -245,8 +245,8 @@ def test_history_visible_to_budget_check():
 
 def test_normal_sized_call_still_works():
     """Sanity check: well-sized prompts pass through. Locks the
-    contract that the budget tightening doesn't accidentally
-    block reasonable calls."""
+ contract that the budget tightening doesn't accidentally
+ block reasonable calls."""
     client = _RecordingClient()
     callable_ = _make_text_callable(client)
 

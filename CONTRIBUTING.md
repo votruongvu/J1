@@ -18,12 +18,12 @@ points strictly outward → inward (outer layers depend on inner;
 never the reverse):
 
 ```
-adapters (REST, webhook, …)        ← outer, transport-specific
-  ↓
+adapters (REST, webhook, …) ← outer, transport-specific
+ ↓
 integration (ports, DTOs, services, security, events, bulk)
-  ↓
+ ↓
 core (intake, processing, query, search, artifacts, audit, cost,
-      review, connectors, enrichers, orchestration, llm, providers)
+ review, connectors, enrichers, orchestration, llm, providers)
 ```
 
 Tests in [`tests/test_integration_layer.py`](tests/test_integration_layer.py)
@@ -41,13 +41,13 @@ J1 must remain reusable across any document-intelligence workload.
 Therefore:
 
 - **No industry vocabulary** anywhere in `src/j1/` outside
-  `src/j1/profiles/`. No civil / legal / medical / clinical /
-  financial / training / customer-name strings, identifiers, or
-  comments.
-- **No phase-based names** (`phase1`, `phrase2`, `step3`, "training
-  phase", etc.) used as core concepts.
+ `src/j1/profiles/`. No civil / legal / medical / clinical /
+ financial / training / customer-name strings, identifiers, or
+ comments.
+- **No phase-based names** (``, `phrase2`, `step3`, "training
+ phase", etc.) used as core concepts.
 - **No customer-tenant assumptions** — the `default` tenant is
-  configurable, but never hardcoded.
+ configurable, but never hardcoded.
 
 Domain-specific work belongs in your own package — see
 [`docs/extension/domain-module-isolation.md`](docs/extension/domain-module-isolation.md)
@@ -60,20 +60,20 @@ for the recommended layout.
 Vendor SDKs and external tools live behind providers. They must:
 
 - **Be lazy-imported.** Top-level `import vendor_sdk` is forbidden in
-  any module that imports cleanly without the optional dependency.
+ any module that imports cleanly without the optional dependency.
 - **Be isolated to `src/j1/providers/<name>/`, `src/j1/llm/<vendor>.py`,
-  or `src/j1/adapters/<name>/`.** Core processing modules must not
-  import vendor SDKs.
+ or `src/j1/adapters/<name>/`.** Core processing modules must not
+ import vendor SDKs.
 - **Never leak vendor objects past their boundary.** Provider
-  functions return canonical J1 types
-  (`ArtifactDraft`, `ArtifactProcessingResult`, `QueryResult`,
-  `(text, TokenUsage)`, etc.). Vendor classes stay inside the
-  provider module.
+ functions return canonical J1 types
+ (`ArtifactDraft`, `ArtifactProcessingResult`, `QueryResult`,
+ `(text, TokenUsage)`, etc.). Vendor classes stay inside the
+ provider module.
 - **Translate exceptions at the boundary.** `ProviderUnavailable` for
-  actionable infra failures; `ArtifactProcessingResult(status=FAILED)`
-  for per-call failures.
+ actionable infra failures; `ArtifactProcessingResult(status=FAILED)`
+ for per-call failures.
 - **Provide a test seam.** Constructors take an injectable callable;
-  tests use it; `from_default(...)` wires the production bridge.
+ tests use it; `from_default(...)` wires the production bridge.
 
 For the full recipe see
 [`docs/extension/add-a-provider.md`](docs/extension/add-a-provider.md).
@@ -95,14 +95,14 @@ External communication surfaces (REST, webhook, MCP, future
 brokers) live in `src/j1/adapters/<name>/`. They MUST:
 
 - Map transport-specific requests → existing port calls on
-  `ApplicationFacade`.
+ `ApplicationFacade`.
 - Use `SecurityContext` from the inbound auth layer; never invent a
-  parallel one.
+ parallel one.
 - Use the shared `ApplicationEvent` model and the shared
-  `EventPublisher` Protocol for any events emitted.
+ `EventPublisher` Protocol for any events emitted.
 - Honour the no-raise contract on any publication / delivery call
-  (publishers must NOT raise; webhook deliveries return failures
-  rather than propagate).
+ (publishers must NOT raise; webhook deliveries return failures
+ rather than propagate).
 - Never import inward of `j1.integration.*`.
 
 The integration layer must never import a transport adapter (no
@@ -127,41 +127,41 @@ vendor-free.
 ## 6. Configuration and secrets rules
 
 - **All env vars use the `J1_` prefix.** Add them to
-  [`.env.example`](.env.example) (with a descriptive comment, no
-  real secrets) AND to
-  [`docs/configuration/environment.md`](docs/configuration/environment.md).
+ [`.env.example`](.env.example) (with a descriptive comment, no
+ real secrets) AND to
+ [`docs/configuration/environment.md`](docs/configuration/environment.md).
 - **Settings are loaded by typed loaders** (`load_<name>_settings(env=...)`).
-  Provider classes take settings objects, never raw env mappings.
+ Provider classes take settings objects, never raw env mappings.
 - **Secrets never live in committed files.** Use `_FILE` variants
-  for secret-manager mounts.
+ for secret-manager mounts.
 - **Provider-specific config does not pollute core services** —
-  `ProcessingService`, the workflow code, and the activity classes
-  must remain provider-agnostic.
+ `ProcessingService`, the workflow code, and the activity classes
+ must remain provider-agnostic.
 
 ---
 
 ## 7. Testing expectations
 
 - **Hermetic tests.** Use `tmp_path` for filesystem isolation. No
-  external services, no network, no live Temporal, no real LLMs.
+ external services, no network, no live Temporal, no real LLMs.
 - **Run before opening a PR:** `.venv/bin/pytest`.
 - **Add tests with new behaviour.** A bug fix without a regression
-  test is incomplete.
+ test is incomplete.
 - **For new providers** — three test patterns are required:
-  - Injected-callable success / exception normalisation
-  - Negative default-path (vendor missing → `ProviderUnavailable`
-    with pip-install hint)
-  - Positive boundary (mock at the *vendor* seam, not the adapter
-    callable, and verify the real boundary was reached)
+ - Injected-callable success / exception normalisation
+ - Negative default-path (vendor missing → `ProviderUnavailable`
+ with pip-install hint)
+ - Positive boundary (mock at the *vendor* seam, not the adapter
+ callable, and verify the real boundary was reached)
 
-  Reference: [`tests/test_providers.py`](tests/test_providers.py).
+ Reference: [`tests/test_providers.py`](tests/test_providers.py).
 - **Reuse fixtures.** [`tests/conftest.py`](tests/conftest.py) +
-  `make_test_environment(tmp_path)` provide wired `WorkspaceResolver`,
-  `ProjectContext`, registries, recorders, services, activity
-  classes. Don't re-wire from scratch.
+ `make_test_environment(tmp_path)` provide wired `WorkspaceResolver`,
+ `ProjectContext`, registries, recorders, services, activity
+ classes. Don't re-wire from scratch.
 - **Cross-layer consistency tests** auto-detect drift across REST +
-  integration + events + bulk + AsyncAPI. Don't disable them; if
-  they fail, fix the underlying drift.
+ integration + events + bulk + AsyncAPI. Don't disable them; if
+ they fail, fix the underlying drift.
 
 ---
 
@@ -170,27 +170,27 @@ vendor-free.
 If your change touches behaviour visible to operators or developers:
 
 - **New env var?** Update [`.env.example`](.env.example) AND
-  [`docs/configuration/environment.md`](docs/configuration/environment.md).
+ [`docs/configuration/environment.md`](docs/configuration/environment.md).
 - **New REST endpoint?** Update [`docs/rest-api.md`](docs/rest-api.md)
-  AND ensure the error-codes table in
-  [`docs/external-integration-architecture.md`](docs/external-integration-architecture.md)
-  is still accurate.
+ AND ensure the error-codes table in
+ [`docs/external-integration-architecture.md`](docs/external-integration-architecture.md)
+ is still accurate.
 - **New event type?** Update both
-  [`docs/event-integration.md`](docs/event-integration.md)
-  AND [`docs/asyncapi/kb-events.asyncapi.yaml`](docs/asyncapi/kb-events.asyncapi.yaml)
-  — the consistency test fails until both happen.
+ [`docs/event-integration.md`](docs/event-integration.md)
+ AND [`docs/asyncapi/kb-events.asyncapi.yaml`](docs/asyncapi/kb-events.asyncapi.yaml)
+ — the consistency test fails until both happen.
 - **New webhook header / signature behaviour?** Update
-  [`docs/webhooks.md`](docs/webhooks.md).
+ [`docs/webhooks.md`](docs/webhooks.md).
 - **New provider?** Update
-  [`docs/providers.md`](docs/providers.md) and follow the recipe in
-  [`docs/extension/add-a-provider.md`](docs/extension/add-a-provider.md).
+ [`docs/providers.md`](docs/providers.md) and follow the recipe in
+ [`docs/extension/add-a-provider.md`](docs/extension/add-a-provider.md).
 - **Architectural change?** Update the relevant section of
-  [`docs/architecture.md`](docs/architecture.md).
+ [`docs/architecture.md`](docs/architecture.md).
 - **Operational change?** Update
-  [`docs/operations/temporal.md`](docs/operations/temporal.md) if
-  Temporal-related, or
-  [`docs/troubleshooting.md`](docs/troubleshooting.md) if it's a
-  failure-mode you've now diagnosed.
+ [`docs/operations/temporal.md`](docs/operations/temporal.md) if
+ Temporal-related, or
+ [`docs/troubleshooting.md`](docs/troubleshooting.md) if it's a
+ failure-mode you've now diagnosed.
 
 Avoid pinning exact test counts in long-lived docs — the suite
 grows; the count rots.
@@ -202,26 +202,26 @@ grows; the count rots.
 Before requesting review:
 
 - [ ] Read the relevant docs and code; understand the seam you're
-      modifying.
+ modifying.
 - [ ] Single-concern change. No drive-by refactors of unrelated code.
 - [ ] No domain vocabulary in `src/j1/` (outside `src/j1/profiles/`).
 - [ ] No vendor SDK imports outside the allowed locations
-      (`src/j1/llm/<vendor>.py`, `src/j1/providers/<vendor>/`,
-      `src/j1/adapters/<vendor>/`).
+ (`src/j1/llm/<vendor>.py`, `src/j1/providers/<vendor>/`,
+ `src/j1/adapters/<vendor>/`).
 - [ ] No new env vars without documentation in BOTH
-      [`.env.example`](.env.example) AND
-      [`docs/configuration/environment.md`](docs/configuration/environment.md).
+ [`.env.example`](.env.example) AND
+ [`docs/configuration/environment.md`](docs/configuration/environment.md).
 - [ ] All public symbols you added are exported in
-      [`src/j1/__init__.py`](src/j1/__init__.py) iff they're meant
-      to be public.
+ [`src/j1/__init__.py`](src/j1/__init__.py) iff they're meant
+ to be public.
 - [ ] Tests pass: `.venv/bin/pytest`.
 - [ ] New behaviour has at least one test that fails without your
-      change.
+ change.
 - [ ] No `# TODO` markers without a referenced issue or a clear
-      rationale.
-- [ ] No `print()` debugging left behind.
+ rationale.
+- [ ] No `print` debugging left behind.
 - [ ] Commit messages describe intent ("why"), not just diff
-      surface ("what").
+ surface ("what").
 
 ---
 
@@ -234,21 +234,21 @@ When opening an issue, include:
 - Observed vs expected behaviour.
 - Relevant logs (with secrets redacted).
 - Whether the issue is in core, an adapter, or a provider — your
-  best guess is fine; we'll re-route if needed.
+ best guess is fine; we'll re-route if needed.
 
 ---
 
 ## 11. Cross-references
 
 - [`docs/development/onboarding.md`](docs/development/onboarding.md)
-  — first-time setup
+ — first-time setup
 - [`docs/architecture.md`](docs/architecture.md) — what the framework
-  is and how it's shaped
+ is and how it's shaped
 - [`docs/external-integration-architecture.md`](docs/external-integration-architecture.md)
-  — layer rules + transport boundary
+ — layer rules + transport boundary
 - [`docs/extension/add-a-provider.md`](docs/extension/add-a-provider.md)
-  — provider recipe
+ — provider recipe
 - [`docs/extension/domain-module-isolation.md`](docs/extension/domain-module-isolation.md)
-  — what belongs outside core
+ — what belongs outside core
 - [`docs/configuration/environment.md`](docs/configuration/environment.md)
-  — every `J1_*` env var
+ — every `J1_*` env var

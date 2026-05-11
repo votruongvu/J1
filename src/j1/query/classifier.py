@@ -28,10 +28,10 @@ _RULES: tuple[tuple[QueryMode, tuple[str, ...]], ...] = (
 class QueryIntentClassifier:
     """Maps a natural-language question to a `QueryMode`.
 
-    Falls back to `KNOWLEDGE_FIRST` when no keyword matches; the engine
-    additionally tries `GRAPH_FIRST` as a follow-up when knowledge yields
-    no sources.
-    """
+ Falls back to `KNOWLEDGE_FIRST` when no keyword matches; the engine
+ additionally tries `GRAPH_FIRST` as a follow-up when knowledge yields
+ no sources.
+ """
 
     def classify(self, question: str) -> QueryMode:
         lowered = question.lower()

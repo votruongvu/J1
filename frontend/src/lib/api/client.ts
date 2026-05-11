@@ -59,7 +59,7 @@ export type UploadFile = File | { name?: string };
 /**
  * Response shape for control actions (`pauseRun` / `resumeRun` / `cancelRun`).
  * Mirrors the backend's `IngestionRunControlRecord` so callers can update
- * their local cache without a follow-up `getRun()`.
+ * their local cache without a follow-up `getRun`.
  */
 export interface RunControlResult {
   runId: string;
@@ -102,7 +102,7 @@ export interface IngestionClient {
   /** Open the SSE stream and call back on each event. */
   openStream(runId: string, handlers: StreamHandlers): StreamHandle;
 
-  // ---- Result review (Phase 7) ------------------------------------
+  // ---- Result review ------------------------------------
   // Read-only review surface for completed runs. Each method returns
   // a neutral DTO mirroring `j1.ingestion_review.dtos`.
 
@@ -131,105 +131,105 @@ export interface IngestionClient {
   ): Promise<ReviewArtifactPage>;
 
   /**
-   * GET the bytes for one artifact (run-scoped).
-   *
-   * Returns a `Blob` — caller decides whether to render inline (image
-   * via `URL.createObjectURL`, JSON via `blob.text()` + parse, etc.)
-   * or trigger a download. Component code MUST `URL.revokeObjectURL`
-   * any object URLs it creates.
-   */
+ * GET the bytes for one artifact (run-scoped).
+ *
+ * Returns a `Blob` — caller decides whether to render inline (image
+ * via `URL.createObjectURL`, JSON via `blob.text` + parse, etc.)
+ * or trigger a download. Component code MUST `URL.revokeObjectURL`
+ * any object URLs it creates.
+ */
   getRunArtifactContent(
     runId: string,
     artifactId: string,
   ): Promise<ReviewArtifactContent>;
 
   /**
-   * GET the neutral graph snapshot for the run. When the run produced
-   * no graph data, the snapshot's `unavailable.reason` is populated
-   * and entities/relations are empty.
-   */
+ * GET the neutral graph snapshot for the run. When the run produced
+ * no graph data, the snapshot's `unavailable.reason` is populated
+ * and entities/relations are empty.
+ */
   getRunGraph(
     runId: string,
     opts?: ReviewGraphQuery,
   ): Promise<ReviewGraphSnapshot>;
 
   /**
-   * GET the parsed-content manifest projection. Returns
-   * `status="unavailable"` with a reason when no manifest exists
-   * (legacy / mid-compile / failed-compile runs). Currently only
-   * surfaced via the Compile Strategy panel — the standalone tab
-   * was removed in the compile-first refactor.
-   */
+ * GET the parsed-content manifest projection. Returns
+ * `status="unavailable"` with a reason when no manifest exists
+ * (legacy / mid-compile / failed-compile runs). Currently only
+ * surfaced via the Compile Strategy panel — the standalone tab
+ * was removed in the compile-first refactor.
+ */
   getRunContentInventory(runId: string): Promise<ContentInventory>;
 
   /**
-   * GET the post-compile rule-based enrich plan (Enrich Plan card).
-   * Returns `status="unavailable"` with a reason when the run hasn't
-   * reached post-compile yet or the artifact wasn't persisted.
-   */
+ * GET the post-compile rule-based enrich plan (Enrich Plan card).
+ * Returns `status="unavailable"` with a reason when the run hasn't
+ * reached post-compile yet or the artifact wasn't persisted.
+ */
   getRunEnrichPlan(runId: string): Promise<RunEnrichPlanResponse>;
 
   /**
-   * GET the pre-compile initial execution plan (Wave 8). Returns the
-   * resolved domain pack, enrichment policy, candidate modules + cheap
-   * signals. Status is `"unavailable"` when the artifact wasn't
-   * persisted yet (legacy / pre-compile / persist failure).
-   */
+ * GET the pre-compile initial execution plan. Returns the
+ * resolved domain pack, enrichment policy, candidate modules + cheap
+ * signals. Status is `"unavailable"` when the artifact wasn't
+ * persisted yet (legacy / pre-compile / persist failure).
+ */
   getRunInitialExecutionPlan(
     runId: string,
   ): Promise<RunInitialExecutionPlanResponse>;
 
   /**
-   * GET the typed NormalizedCompileResult (Wave 8). Returns chunks +
-   * detected tables/images + retry history + quality signals + raw
-   * artifact refs. Status `"unavailable"` when the run didn't reach
-   * the post-compile normalize step.
-   */
+ * GET the typed NormalizedCompileResult. Returns chunks +
+ * detected tables/images + retry history + quality signals + raw
+ * artifact refs. Status `"unavailable"` when the run didn't reach
+ * the post-compile normalize step.
+ */
   getRunCompileResult(runId: string): Promise<RunCompileResultResponse>;
 
   /**
-   * GET the typed EnrichmentResult overlay (Wave 6/8). Returns
-   * per-module outcomes + document-metadata + terminology + validation
-   * + warnings/errors. Status `"unavailable"` when enrichment hasn't
-   * run yet (or was skipped before the artifact wrote).
-   */
+ * GET the typed EnrichmentResult overlay (/8). Returns
+ * per-module outcomes + document-metadata + terminology + validation
+ * + warnings/errors. Status `"unavailable"` when enrichment hasn't
+ * run yet (or was skipped before the artifact wrote).
+ */
   getRunEnrichmentResult(runId: string): Promise<RunEnrichmentResultResponse>;
 
   /**
-   * Wave 10 — GET the aggregated final ingestion report. This is
-   * the single source of truth the run-detail page prefers when
-   * present; the FE falls back to per-artifact endpoints when the
-   * envelope returns `status="unavailable"` (pre-Wave-10 runs,
-   * in-flight runs, persistence failures).
-   */
+ * GET the aggregated final ingestion report. This is
+ * the single source of truth the run-detail page prefers when
+ * present; the FE falls back to per-artifact endpoints when the
+ * envelope returns `status="unavailable"` (pre- runs,
+ * in-flight runs, persistence failures).
+ */
   getRunFinalIngestionReport(
     runId: string,
   ): Promise<FinalIngestionReportResponse>;
 
-  // ---- Validation (Phase 1) ---------------------------------------
+  // ---- Validation ---------------------------------------
 
   /**
-   * POST a single manual test query against an ingested run.
-   *
-   * Synchronous: blocks until the answer engine has run + the
-   * deterministic checks have aggregated. Throws `ApiError` on
-   * transport errors. The returned body's `validationStatus` is
-   * INDEPENDENT of the HTTP outcome — a 200 with
-   * `validationStatus="failed"` is the canonical 'job ran but the
-   * answer didn't pass' case.
-   */
+ * POST a single manual test query against an ingested run.
+ *
+ * Synchronous: blocks until the answer engine has run + the
+ * deterministic checks have aggregated. Throws `ApiError` on
+ * transport errors. The returned body's `validationStatus` is
+ * INDEPENDENT of the HTTP outcome — a 200 with
+ * `validationStatus="failed"` is the canonical 'job ran but the
+ * answer didn't pass' case.
+ */
   runManualTestQuery(
     runId: string,
     request: ManualTestQueryRequest,
   ): Promise<ManualTestQueryResponse>;
 
-  // ---- Validation sets + runs (Phase 2) --------------------------
+  // ---- Validation sets + runs --------------------------
 
   /**
-   * Generate a validation set from this run's chunks. Idempotent on
-   * `(runId, hash)` — repeated calls with the same chunks return
-   * the same set unless `force` is set.
-   */
+ * Generate a validation set from this run's chunks. Idempotent on
+ * `(runId, hash)` — repeated calls with the same chunks return
+ * the same set unless `force` is set.
+ */
   generateValidationSet(
     runId: string,
     request?: GenerateValidationSetRequest,
@@ -242,11 +242,11 @@ export interface IngestionClient {
   getValidationSet(runId: string, validationSetId: string): Promise<ValidationSet>;
 
   /**
-   * POST to execute a validation set against this run. Synchronous
-   * in v1. Returns the terminal snapshot — `executionStatus`
-   * (`completed`/`failed`) and `validationStatus` (the answer
-   * outcome) are independent fields.
-   */
+ * POST to execute a validation set against this run. Synchronous
+ * in v1. Returns the terminal snapshot — `executionStatus`
+ * (`completed`/`failed`) and `validationStatus` (the answer
+ * outcome) are independent fields.
+ */
   runValidation(
     runId: string,
     request: StartValidationRunRequest,
@@ -261,15 +261,15 @@ export interface IngestionClient {
     validationRunId: string,
   ): Promise<ValidationRun>;
 
-  // ---- Phase 5: tester verdict + report --------------------------
+  // ---- tester verdict + report --------------------------
 
   /**
-   * Record a human override on a single validation result. The
-   * automated `status` is unchanged — verdict is a separate
-   * signal recorded on the result. Returns the full updated
-   * validation run snapshot so the caller can refresh local
-   * state without an extra GET.
-   */
+ * Record a human override on a single validation result. The
+ * automated `status` is unchanged — verdict is a separate
+ * signal recorded on the result. Returns the full updated
+ * validation run snapshot so the caller can refresh local
+ * state without an extra GET.
+ */
   recordTesterVerdict(
     runId: string,
     validationRunId: string,
@@ -278,11 +278,11 @@ export interface IngestionClient {
   ): Promise<ValidationRun>;
 
   /**
-   * Download a validation run report. Returns the raw text body
-   * (Markdown or JSON depending on `format`) plus the suggested
-   * filename from the backend's Content-Disposition header. The
-   * caller decides whether to render inline or trigger a download.
-   */
+ * Download a validation run report. Returns the raw text body
+ * (Markdown or JSON depending on `format`) plus the suggested
+ * filename from the backend's Content-Disposition header. The
+ * caller decides whether to render inline or trigger a download.
+ */
   downloadValidationReport(
     runId: string,
     validationRunId: string,
@@ -290,89 +290,89 @@ export interface IngestionClient {
   ): Promise<{ content: string; mediaType: string; filename: string }>;
 
   /**
-   * GET cached LLM connectivity status from the API. Drives the
-   * top-of-screen "LLM unreachable" banner + disables the upload
-   * button when any required role is down — so users don't kick
-   * off uploads that are guaranteed to fail mid-pipeline.
-   *
-   * Backend reads from a process-local cache populated at startup
-   * (no upstream LLM call per request), safe to poll on a short
-   * interval.
-   */
+ * GET cached LLM connectivity status from the API. Drives the
+ * top-of-screen "LLM unreachable" banner + disables the upload
+ * button when any required role is down — so users don't kick
+ * off uploads that are guaranteed to fail mid-pipeline.
+ *
+ * Backend reads from a process-local cache populated at startup
+ * (no upstream LLM call per request), safe to poll on a short
+ * interval.
+ */
   getLLMHealth(): Promise<LLMHealthStatus>;
 
   /**
-   * POST a synchronous re-probe and return the fresh snapshot. Used
-   * by the banner's "Retry now" button so admins can verify the LLM
-   * is back immediately after restarting it, instead of waiting up
-   * to 30s for the next background poll.
-   */
+ * POST a synchronous re-probe and return the fresh snapshot. Used
+ * by the banner's "Retry now" button so admins can verify the LLM
+ * is back immediately after restarting it, instead of waiting up
+ * to 30s for the next background poll.
+ */
   refreshLLMHealth(): Promise<LLMHealthStatus>;
 
   // ---- Operational actions ---------------------------------------
 
   /**
-   * DELETE an ingestion run (soft tombstone). Backend marks the
-   * run + its artifacts deleted; subsequent reads exclude them.
-   * Idempotent — `wasAlreadyDeleted=true` on the second call.
-   * Throws ApiError(409) when the run is still active.
-   */
+ * DELETE an ingestion run (soft tombstone). Backend marks the
+ * run + its artifacts deleted; subsequent reads exclude them.
+ * Idempotent — `wasAlreadyDeleted=true` on the second call.
+ * Throws ApiError(409) when the run is still active.
+ */
   deleteRun(runId: string): Promise<DeleteRunResult>;
 
   /**
-   * POST purge — physically remove a soft-deleted run, its
-   * artifacts (files + registry records), and any validation
-   * sets/runs that referenced it. Audit log stays intact.
-   *
-   * By default the backend requires the run to already be
-   * soft-deleted (DELETE first). Pass `force=true` to bypass that
-   * gate for admin tooling.
-   *
-   * Throws `ApiError(409)` when the run is still active OR when
-   * the operator hasn't soft-deleted it first (and `force` is
-   * false).
-   */
+ * POST purge — physically remove a soft-deleted run, its
+ * artifacts (files + registry records), and any validation
+ * sets/runs that referenced it. Audit log stays intact.
+ *
+ * By default the backend requires the run to already be
+ * soft-deleted (DELETE first). Pass `force=true` to bypass that
+ * gate for admin tooling.
+ *
+ * Throws `ApiError(409)` when the run is still active OR when
+ * the operator hasn't soft-deleted it first (and `force` is
+ * false).
+ */
   purgeRun(runId: string, opts?: { force?: boolean }): Promise<PurgeRunResult>;
 
   /**
-   * POST full re-index — start a NEW run for the same document_id
-   * as the referenced run. Returns the new `reindexRunId`.
-   * Throws ApiError(409) when the original run is still active.
-   */
+ * POST full re-index — start a NEW run for the same document_id
+ * as the referenced run. Returns the new `reindexRunId`.
+ * Throws ApiError(409) when the original run is still active.
+ */
   fullReindexRun(runId: string): Promise<FullReindexResult>;
 
   /**
-   * POST resume-from-checkpoint — start a NEW run for the same
-   * document_id, skipping LLM-cost stages that already completed
-   * in the prior run (currently enrich + graph). Compile and
-   * chunk-generation always re-run.
-   *
-   * Throws `ApiError(409)` when the original run is still active,
-   * `ApiError(412)` when the prior run has no resume snapshot
-   * (legacy run / cancelled), and `ApiError(412)` with
-   * `RESUME_INCOMPATIBLE` code + `details.diff` when settings
-   * drifted since the prior run finished.
-   */
+ * POST resume-from-checkpoint — start a NEW run for the same
+ * document_id, skipping LLM-cost stages that already completed
+ * in the prior run (currently enrich + graph). Compile and
+ * chunk-generation always re-run.
+ *
+ * Throws `ApiError(409)` when the original run is still active,
+ * `ApiError(412)` when the prior run has no resume snapshot
+ * (legacy run / cancelled), and `ApiError(412)` with
+ * `RESUME_INCOMPATIBLE` code + `details.diff` when settings
+ * drifted since the prior run finished.
+ */
   resumeFromCheckpoint(runId: string): Promise<ResumeFromCheckpointResult>;
 
   /**
-   * POST rebuild-index — start a NEW run that ONLY runs the index
-   * activity against the prior run's chunk artifacts. Use when the
-   * vector store was cleared, the embedding model upgraded, or the
-   * index got corrupted while chunks themselves are still valid.
-   *
-   * Throws `ApiError(409)` when the original run is still active,
-   * `ApiError(412)` when the prior run has no resume snapshot or
-   * never produced chunk artifacts (use full-reindex instead).
-   */
+ * POST rebuild-index — start a NEW run that ONLY runs the index
+ * activity against the prior run's chunk artifacts. Use when the
+ * vector store was cleared, the embedding model upgraded, or the
+ * index got corrupted while chunks themselves are still valid.
+ *
+ * Throws `ApiError(409)` when the original run is still active,
+ * `ApiError(412)` when the prior run has no resume snapshot or
+ * never produced chunk artifacts (use full-reindex instead).
+ */
   rebuildIndex(runId: string): Promise<RebuildIndexResult>;
 
   /**
-   * POST a multi-upload batch. Backend registers each file as a
-   * child ingestion run, returns the batch_run_id + child run_ids.
-   * Max files is enforced server-side (default 5 via
-   * `J1_INGESTION_BATCH_MAX_FILES`).
-   */
+ * POST a multi-upload batch. Backend registers each file as a
+ * child ingestion run, returns the batch_run_id + child run_ids.
+ * Max files is enforced server-side (default 5 via
+ * `J1_INGESTION_BATCH_MAX_FILES`).
+ */
   uploadBatch(
     files: File[],
     ctx: ProjectContext,

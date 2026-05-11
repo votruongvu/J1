@@ -3,14 +3,14 @@ the compile activity, the ProcessingService, and the RAGAnything
 compiler/bridge.
 
 Covers the user-spec scenarios for the wiring step:
-  1. Workflow builds AssessmentPlan before compile.
-  2. RAGAnythingCompileRequest receives assessment_plan.
-  3. Existing fallback path still works when assessment_plan is missing.
-  4. Fast/standard/deep plans reach the adapter mapper (i.e. mapper
-     produces the right parse_method).
-  5. Unsupported capabilities surface as warnings (default policy).
-  6. Settings flags are loaded from env (supports_image/table/equation,
-     allowed_parse_methods).
+ 1. Workflow builds AssessmentPlan before compile.
+ 2. RAGAnythingCompileRequest receives assessment_plan.
+ 3. Existing fallback path still works when assessment_plan is missing.
+ 4. Fast/standard/deep plans reach the adapter mapper (i.e. mapper
+ produces the right parse_method).
+ 5. Unsupported capabilities surface as warnings (default policy).
+ 6. Settings flags are loaded from env (supports_image/table/equation,
+ allowed_parse_methods).
 """
 
 from __future__ import annotations
@@ -91,9 +91,9 @@ def test_workflow_threads_assessment_plan_payload_into_compile_activity(
     monkeypatch,
 ):
     """End-to-end: workflow profiles → builds AssessmentPlan →
-    serialises to dict → compile activity receives it. Asserts on
-    the `CompileActivityInput.assessment_plan_payload` field at the
-    activity boundary."""
+ serialises to dict → compile activity receives it. Asserts on
+ the `CompileActivityInput.assessment_plan_payload` field at the
+ activity boundary."""
     captured: dict = {}
 
     def handler(method, payload, kwargs):
@@ -162,8 +162,8 @@ def test_workflow_threads_assessment_plan_payload_into_compile_activity(
 
 def test_workflow_skips_assessment_when_planner_disabled(monkeypatch):
     """Legacy bulk-job path: planner_enabled=False → no profile, no
-    AssessmentPlan, payload field stays None. The bridge falls back
-    to settings.parse_method — backward-compatible."""
+ AssessmentPlan, payload field stays None. The bridge falls back
+ to settings.parse_method — backward-compatible."""
     captured: dict = {}
 
     def handler(method, payload, kwargs):
@@ -203,8 +203,8 @@ def test_workflow_skips_assessment_when_planner_disabled(monkeypatch):
 
 def test_raganything_compiler_compile_signature_accepts_assessment_plan():
     """The compiler's `compile` signature must include
-    `assessment_plan` so `ProcessingService.compile`'s introspection
-    threads it through. Locks the integration contract."""
+ `assessment_plan` so `ProcessingService.compile`'s introspection
+ threads it through. Locks the integration contract."""
     from j1.providers.raganything.compiler import RAGAnythingCompiler
     sig = inspect.signature(RAGAnythingCompiler.compile)
     assert "assessment_plan" in sig.parameters
@@ -214,9 +214,9 @@ def test_processing_service_compile_threads_assessment_plan_to_compiler(
     artifact_registry, audit_recorder, cost_recorder, ctx, workspace,
 ):
     """When `assessment_plan` is supplied, ProcessingService.compile
-    forwards it to compilers that accept the kwarg. Mock compilers
-    that don't accept it (legacy interface) stay working — the
-    introspection guard skips the kwarg silently."""
+ forwards it to compilers that accept the kwarg. Mock compilers
+ that don't accept it (legacy interface) stay working — the
+ introspection guard skips the kwarg silently."""
     from j1.documents.models import DocumentRecord
     from j1.jobs.status import ProcessingStatus
     from j1.processing.results import ArtifactProcessingResult, ResultStatus
@@ -299,9 +299,9 @@ def test_each_mode_resolves_to_expected_parse_method(mode, expected_parse_method
 
 def test_unsupported_capability_in_settings_records_warning():
     """When `supports_image=False` is loaded from env (real settings
-    field, not a monkey patch), and the plan requires
-    IMAGE_EXTRACTION, the mapper records a warning under the default
-    `degrade_with_warning` policy."""
+ field, not a monkey patch), and the plan requires
+ IMAGE_EXTRACTION, the mapper records a warning under the default
+ `degrade_with_warning` policy."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -348,8 +348,8 @@ def test_supports_flags_can_be_disabled_via_env():
 
 def test_allowed_parse_methods_from_env_constrains_mapper():
     """Operator restricts the deployment to {auto, txt} via env;
-    the mapper degrades a plan-requested 'ocr' to the deployment
-    default 'auto' with a warning."""
+ the mapper degrades a plan-requested 'ocr' to the deployment
+ default 'auto' with a warning."""
     s = load_raganything_settings(env={
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://x:1/v1",
         "J1_RAGANYTHING_ALLOWED_PARSE_METHODS": "auto,txt",
@@ -381,8 +381,8 @@ def test_allowed_parse_methods_default_is_unrestricted():
 
 def test_assessment_plan_payload_round_trip_is_lossless():
     """Workflow → activity passes the plan as a dict via Temporal's
-    data converter. Round-trip via `to_payload` / `from_payload`
-    must preserve every operationally-meaningful field."""
+ data converter. Round-trip via `to_payload` / `from_payload`
+ must preserve every operationally-meaningful field."""
     profile = DocumentProfile(
         document_id="doc-1", extension=".pdf",
         text_extractable_ratio=0.0, has_scanned_pages=True,

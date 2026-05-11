@@ -6,16 +6,16 @@
  * for the operator-facing Run Detail page. This module owns the
  * single mapping from internal names → user-facing labels:
  *
- *   profile / assessment / assess_compile_strategy
- *                                → "Assess Compile Strategy"  (pre-compile)
- *   compile / parse / parser     → "Parse Source Content"
- *   parsed_content_manifest      → "Build Content Inventory"  (synthetic)
- *   post_compile_assess /
- *     enrich_assessment          → "Assess Enrichment"        (post-compile)
- *   chunking / chunks            → "Generate Knowledge Chunks" (synthetic)
- *   enrich / enrichment          → "Enrich Extracted Content"
- *   graph / build_graph          → "Build Knowledge Graph"
- *   index / finalize / complete  → "Finalize Ingestion"
+ * profile / assessment / assess_compile_strategy
+ * → "Assess Compile Strategy" (pre-compile)
+ * compile / parse / parser → "Parse Source Content"
+ * parsed_content_manifest → "Build Content Inventory" (synthetic)
+ * post_compile_assess /
+ * enrich_assessment → "Assess Enrichment" (post-compile)
+ * chunking / chunks → "Generate Knowledge Chunks" (synthetic)
+ * enrich / enrichment → "Enrich Extracted Content"
+ * graph / build_graph → "Build Knowledge Graph"
+ * index / finalize / complete → "Finalize Ingestion"
  *
  * Use the helper functions everywhere a step name reaches the user
  * — Timeline, PrimaryStatusPanel, tab labels — so a backend rename
@@ -237,12 +237,12 @@ export function userFacingStepLabel(raw: string | null | undefined): string {
 /**
  * Derived per-step status used across the run-detail surfaces.
  *
- * `pending`   — the run hasn't reached this step yet
- * `running`   — the most recent event for this step is `step.started`
+ * `pending` — the run hasn't reached this step yet
+ * `running` — the most recent event for this step is `step.started`
  * `completed` — the most recent event for this step is `step.completed`,
- *                 OR the matching artifact is present in the summary
- * `skipped`   — `step.skipped` event OR the run summary records skipped
- * `failed`    — `step.failed` event
+ * OR the matching artifact is present in the summary
+ * `skipped` — `step.skipped` event OR the run summary records skipped
+ * `failed` — `step.failed` event
  *
  * Centralised here so the timeline, status badges, and the
  * Execution Plan tab all classify status the same way.

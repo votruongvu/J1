@@ -18,11 +18,11 @@ EXTENSION_AUTH_TYPE = "kbauthtype"
 def to_cloudevent(event: ApplicationEvent) -> dict[str, Any]:
     """Format an `ApplicationEvent` as a CloudEvents 1.0 JSON envelope.
 
-    Returns a plain dict — no JSON encoding here, leaving that to the
-    transport adapter so it can choose its own serialiser/encoding.
-    Optional fields with no value are omitted (per the spec, optional
-    attributes SHOULD NOT be present when empty).
-    """
+ Returns a plain dict — no JSON encoding here, leaving that to the
+ transport adapter so it can choose its own serialiser/encoding.
+ Optional fields with no value are omitted (per the spec, optional
+ attributes SHOULD NOT be present when empty).
+ """
     envelope: dict[str, Any] = {
         "specversion": CLOUDEVENTS_SPEC_VERSION,
         "type": event.type,

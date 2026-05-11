@@ -11,15 +11,15 @@ as every other client.
 
 Two construction paths:
 
-  * `LangChain*Client(model_object, settings=...)` — deployment
-    instantiates the LangChain model directly and injects it. Use
-    when the model needs constructor logic the env can't capture.
-  * `LangChain*Client.from_settings(settings)` — env-driven. The
-    adapter reads `settings.provider_config["class"]` (a short alias
-    like `"ChatOpenAI"` or fully-qualified `"langchain_openai:ChatOpenAI"`),
-    resolves it via the safe class-loader, and instantiates with the
-    rest of `provider_config` as kwargs. Use this when the env
-    config IS sufficient (most cases).
+ * `LangChain*Client(model_object, settings=...)` — deployment
+ instantiates the LangChain model directly and injects it. Use
+ when the model needs constructor logic the env can't capture.
+ * `LangChain*Client.from_settings(settings)` — env-driven. The
+ adapter reads `settings.provider_config["class"]` (a short alias
+ like `"ChatOpenAI"` or fully-qualified `"langchain_openai:ChatOpenAI"`),
+ resolves it via the safe class-loader, and instantiates with the
+ rest of `provider_config` as kwargs. Use this when the env
+ config IS sufficient (most cases).
 """
 
 from __future__ import annotations
@@ -49,11 +49,11 @@ def _extract_class_and_kwargs(
 ) -> tuple[str, dict[str, Any]]:
     """Pull the `class` field out of provider_config; rest are kwargs.
 
-    `role` is used only for the error message ("text", "vision",
-    "embedding"). The class spec MUST be present and non-empty —
-    deployments that want a fully-pre-built model use the constructor
-    overload that takes a model object directly.
-    """
+ `role` is used only for the error message ("text", "vision",
+ "embedding"). The class spec MUST be present and non-empty —
+ deployments that want a fully-pre-built model use the constructor
+ overload that takes a model object directly.
+ """
     if not provider_config:
         raise LLMConfigError(
             f"LangChain {role} provider requires a provider_config — set "
@@ -90,13 +90,13 @@ def _require_langchain() -> None:
 class LangChainTextLLMClient:
     """Wraps a LangChain `BaseChatModel` instance.
 
-    Two construction paths:
-      * `LangChainTextLLMClient(chat_model, settings=...)` — inject a
-        pre-built model.
-      * `LangChainTextLLMClient.from_settings(settings)` — auto-
-        instantiate from `settings.provider_config["class"]` via the
-        safe class-loader. Use when the env config is sufficient.
-    """
+ Two construction paths:
+ * `LangChainTextLLMClient(chat_model, settings=...)` — inject a
+ pre-built model.
+ * `LangChainTextLLMClient.from_settings(settings)` — auto-
+ instantiate from `settings.provider_config["class"]` via the
+ safe class-loader. Use when the env config is sufficient.
+ """
 
     def __init__(
         self,
@@ -122,10 +122,10 @@ class LangChainTextLLMClient:
     def from_settings(cls, settings: TextLLMSettings) -> "LangChainTextLLMClient":
         """Auto-instantiate the LangChain chat model from env config.
 
-        Looks up `settings.provider_config["class"]` in
-        `CHAT_MODEL_CATALOG` (or accepts a fully-qualified path) and
-        passes the rest of `provider_config` as kwargs.
-        """
+ Looks up `settings.provider_config["class"]` in
+ `CHAT_MODEL_CATALOG` (or accepts a fully-qualified path) and
+ passes the rest of `provider_config` as kwargs.
+ """
         _require_langchain()
         class_spec, kwargs = _extract_class_and_kwargs(
             settings.provider_config, role="text",
@@ -239,10 +239,10 @@ class LangChainVisionLLMClient:
     def from_settings(cls, settings: VisionLLMSettings) -> "LangChainVisionLLMClient":
         """Same env-driven auto-instantiation as `LangChainTextLLMClient`.
 
-        The vision LLM uses LangChain's chat-model API too — multimodal
-        content goes in the message body, not a separate class — so the
-        catalog and kwargs treatment are identical.
-        """
+ The vision LLM uses LangChain's chat-model API too — multimodal
+ content goes in the message body, not a separate class — so the
+ catalog and kwargs treatment are identical.
+ """
         _require_langchain()
         class_spec, kwargs = _extract_class_and_kwargs(
             settings.provider_config, role="vision",
@@ -355,9 +355,9 @@ class LangChainEmbeddingClient(EmbeddingClient):
     def from_settings(cls, settings: EmbeddingSettings) -> "LangChainEmbeddingClient":
         """Auto-instantiate from `settings.provider_config["class"]`.
 
-        Looks up the class in `EMBEDDING_CATALOG` (or accepts a fully-
-        qualified path).
-        """
+ Looks up the class in `EMBEDDING_CATALOG` (or accepts a fully-
+ qualified path).
+ """
         _require_langchain()
         class_spec, kwargs = _extract_class_and_kwargs(
             settings.provider_config, role="embedding",

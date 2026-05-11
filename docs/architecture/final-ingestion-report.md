@@ -20,7 +20,7 @@ AND on every failure path:
 This is best-effort: a failed report write is recorded in the
 activity's `ArtifactActivityResult.error` but never blocks the
 workflow's terminal exit. The FE falls back to per-artifact endpoints
-when the report is unavailable (pre-Wave-10 runs, in-flight runs,
+when the report is unavailable (pre- runs, in-flight runs,
 persist failures).
 
 ## Endpoint contract
@@ -29,101 +29,101 @@ persist failures).
 
 ```jsonc
 {
-  "runId": "run-1",
-  "documentId": "doc-1",
-  "documentName": "spec.pdf",
-  "status": "completed",                    // or "unavailable"
-  "unavailableReason": null,                // operator-readable when status="unavailable"
-  "artifactId": "art-fir-1",                // present when status="completed"
-  "report": { ... typed FinalIngestionReport ... }
+ "runId": "run-1",
+ "documentId": "doc-1",
+ "documentName": "spec.pdf",
+ "status": "completed", // or "unavailable"
+ "unavailableReason": null, // operator-readable when status="unavailable"
+ "artifactId": "art-fir-1", // present when status="completed"
+ "report": {... typed FinalIngestionReport... }
 }
 ```
 
 `status="unavailable"` cases:
 
-- `"final_ingestion_report_not_available — this run predates Wave 10 or hasn't reached terminal yet"` — legacy / in-flight runs
+- `"final_ingestion_report_not_available — this run predates or hasn't reached terminal yet"` — legacy / in-flight runs
 - `"final_ingestion_report artifact has an unexpected shape"` — malformed payload
 - `"final_ingestion_report artifact exists but could not be read"` — file IO / permissions failure
 
 ## Payload shape
 
 The `report` payload is the typed
-`FinalIngestionReport.to_dict()` shape ([`src/j1/processing/final_ingestion_report.py`](../../src/j1/processing/final_ingestion_report.py)):
+`FinalIngestionReport.to_dict` shape ([`src/j1/processing/final_ingestion_report.py`](../../src/j1/processing/final_ingestion_report.py)):
 
 ```jsonc
 {
-  "schema_version": "1.0",
-  "run_id": "run-1",
-  "document_id": "doc-1",
-  "document_name": "spec.pdf",
-  "tenant_id": "acme",
-  "project_id": "alpha",
-  "domain_profile_id": "civil_engineering",
-  "started_at": "2026-05-11T12:00:00+00:00",
-  "completed_at": "2026-05-11T12:01:00+00:00",
-  "duration_ms": 60000,
-  "final_status": "completed_with_enrichment",   // INGESTION_STATUS_* literal
-  "final_status_reason": "enrichment overlay produced",
+ "schema_version": "1.0",
+ "run_id": "run-1",
+ "document_id": "doc-1",
+ "document_name": "spec.pdf",
+ "tenant_id": "acme",
+ "project_id": "alpha",
+ "domain_profile_id": "civil_engineering",
+ "started_at": "2026-05-11T12:00:00+00:00",
+ "completed_at": "2026-05-11T12:01:00+00:00",
+ "duration_ms": 60000,
+ "final_status": "completed_with_enrichment", // INGESTION_STATUS_* literal
+ "final_status_reason": "enrichment overlay produced",
 
-  "stages": [
-    { "stage_id": "assessment",                     "label": "Preparing document",        "status": "succeeded" },
-    { "stage_id": "compile",                        "label": "Base compile",              "status": "succeeded" },
-    { "stage_id": "compile_result_normalization",   "label": "Compile result summary",    "status": "succeeded" },
-    { "stage_id": "post_compile_analysis",          "label": "Compile quality analysis",  "status": "succeeded" },
-    { "stage_id": "enrichment",                     "label": "Domain enrichment",         "status": "succeeded" },
-    { "stage_id": "finalization",                   "label": "Finalize",                  "status": "succeeded" }
-  ],
+ "stages": [
+ { "stage_id": "assessment", "label": "Preparing document", "status": "succeeded" },
+ { "stage_id": "compile", "label": "Base compile", "status": "succeeded" },
+ { "stage_id": "compile_result_normalization", "label": "Compile result summary", "status": "succeeded" },
+ { "stage_id": "post_compile_analysis", "label": "Compile quality analysis", "status": "succeeded" },
+ { "stage_id": "enrichment", "label": "Domain enrichment", "status": "succeeded" },
+ { "stage_id": "finalization", "label": "Finalize", "status": "succeeded" }
+ ],
 
-  "compile_summary": {
-    "compile_engine": "raganything",
-    "compile_status": "succeeded",
-    "chunks_count": 42,
-    "page_count": 10,
-    "extracted_text_chars": 15000,
-    "detected_tables_count": 2,
-    "detected_images_count": 1,
-    "quality_verdict": "good",
-    "retry_count": 0,
-    "warnings": [],
-    "errors": [],
-    "artifact_refs": ["raw-1"]                      // raw compile output preserved
-  },
+ "compile_summary": {
+ "compile_engine": "raganything",
+ "compile_status": "succeeded",
+ "chunks_count": 42,
+ "page_count": 10,
+ "extracted_text_chars": 15000,
+ "detected_tables_count": 2,
+ "detected_images_count": 1,
+ "quality_verdict": "good",
+ "retry_count": 0,
+ "warnings": [],
+ "errors": [],
+ "artifact_refs": ["raw-1"] // raw compile output preserved
+ },
 
-  "enrichment_summary": {
-    "should_enrich": true,
-    "enrichment_status": "succeeded",
-    "policy": "auto",
-    "require_enrichment_success": false,
-    "selected_modules": ["metadata_enrichment", ...],
-    "skipped_modules": [],
-    "module_outcomes": [ /* one per module run */ ],
-    "what_enrichment_added": ["Document metadata: 3 fields", "Terminology entries: 12"],
-    "warnings": [],
-    "errors": [],
-    "retry_count": 0,
-    "skipped_reason": null,
-    "artifact_refs": []
-  },
+ "enrichment_summary": {
+ "should_enrich": true,
+ "enrichment_status": "succeeded",
+ "policy": "auto",
+ "require_enrichment_success": false,
+ "selected_modules": ["metadata_enrichment",...],
+ "skipped_modules": [],
+ "module_outcomes": [ /* one per module run */ ],
+ "what_enrichment_added": ["Document metadata: 3 fields", "Terminology entries: 12"],
+ "warnings": [],
+ "errors": [],
+ "retry_count": 0,
+ "skipped_reason": null,
+ "artifact_refs": []
+ },
 
-  "artifact_refs": {
-    "initial_execution_plan":     "art-init-1",
-    "compile_result_summary":     "art-cmp-1",
-    "post_compile_enrich_plan":   "art-pcp-1",
-    "enrichment_result":          "art-enr-1",
-    "final_summary":              "art-fs-1",
-    "raw_compile_artifact_refs":  "raw-1, raw-2"
-  },
+ "artifact_refs": {
+ "initial_execution_plan": "art-init-1",
+ "compile_result_summary": "art-cmp-1",
+ "post_compile_enrich_plan": "art-pcp-1",
+ "enrichment_result": "art-enr-1",
+ "final_summary": "art-fs-1",
+ "raw_compile_artifact_refs": "raw-1, raw-2"
+ },
 
-  "warnings": [],
-  "errors": [],
-  "retry_counts": { "compile": 0, "enrichment": 0 },
-  "operator_notes": []
+ "warnings": [],
+ "errors": [],
+ "retry_counts": { "compile": 0, "enrichment": 0 },
+ "operator_notes": []
 }
 ```
 
 ## Final status vocabulary (A–F)
 
-`final_status` is the Wave-8 `INGESTION_STATUS_*` literal — eight
+`final_status` is the `INGESTION_STATUS_*` literal — eight
 values cover every terminal:
 
 | `final_status` | What happened | Compile output? | Enrichment result? | Raw compile usable? | FE shows | Operator should inspect |
@@ -141,29 +141,29 @@ The mapping is pinned in
 [`final_status.py::project_final_status`](../../src/j1/processing/final_status.py)
 and the FE state machine mirror in
 [`runState.ts::projectUiState`](../../frontend/src/lib/runState.ts).
-The Wave-9A test suite enforces parity.
+The test suite enforces parity.
 
 ## Retry semantics
 
 The report carries two retry counts:
 
 - `retry_counts.compile` — attempts beyond the first compile try
-  (0 = single-attempt success).
+ (0 = single-attempt success).
 - `retry_counts.enrichment` — reserved for future limiter-driven
-  module-retry accounting; currently always 0.
+ module-retry accounting; currently always 0.
 
-Key invariants (Wave 11B):
+Key invariants:
 
 - Compile retry is **separate** from enrichment retry. A compile
-  retry never triggers an enrichment retry.
+ retry never triggers an enrichment retry.
 - Enrichment failure **never** re-runs compile.
 - Optional enrichment failure **never** destroys the compile result
-  (it's a typed overlay — see [Enrichment overlay](./enrichment-overlay.md)).
+ (it's a typed overlay — see [Enrichment overlay](./enrichment-overlay.md)).
 - Required enrichment failure → run lands at
-  `failed_enrichment_required`. Compile output remains preserved
-  and traceable via `compile_summary.artifact_refs`.
+ `failed_enrichment_required`. Compile output remains preserved
+ and traceable via `compile_summary.artifact_refs`.
 - Raw compile artifacts are **never** overwritten on retry —
-  pinned by `test_raw_compile_artifacts_are_not_overwritten_on_enrichment_retry`.
+ pinned by `test_raw_compile_artifacts_are_not_overwritten_on_enrichment_retry`.
 
 ## FE consumption
 
@@ -177,11 +177,11 @@ projectUiStateFromReport(run, finalReport, enrichmentSignals)
 ```
 
 1. **Report available** → use `report.final_status` +
-   `report.final_status_reason` directly.
-2. **Report null** (pre-Wave-10 / in-flight runs) → fall back to the
-   Wave-9B per-artifact projection (`projectUiState(run,
-   enrichmentSignals)` derives from `run.status` + `run.final` +
-   `enrichment_result`).
+ `report.final_status_reason` directly.
+2. **Report null** (pre- / in-flight runs) → fall back to the
+ per-artifact projection (`projectUiState(run,
+ enrichmentSignals)` derives from `run.status` + `run.final` +
+ `enrichment_result`).
 3. **Both null** → run status enum alone.
 
 The per-artifact panels (`InitialExecutionPlanPanel`,
@@ -191,9 +191,9 @@ replacement.
 
 ## Why `final_summary` still exists
 
-`final_summary` is the older summary artifact (Wave 8). It carries
+`final_summary` is the older summary artifact. It carries
 the executed-step table + artifact-kind counts + the failure-code
-trio. The Wave-10 `final_ingestion_report` is the **preferred
+trio. The `final_ingestion_report` is the **preferred
 aggregate**; `final_summary` remains for backward compatibility with
 older runs and for the legacy `_persist_final_summary` activity.
 Both are written at terminal; consumers should prefer

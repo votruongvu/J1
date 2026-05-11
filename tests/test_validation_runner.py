@@ -3,13 +3,13 @@
 Drives a real `HybridQueryEngine` (against an in-memory SQLite FTS
 index populated through the same code path the production worker
 uses) so the run-scope filter, the chunk_id round-trip, and the
-Phase 2 case-specific checks (`expected_chunk_in_topk`,
+ case-specific checks (`expected_chunk_in_topk`,
 `expected_page_in_citations`) are all exercised end-to-end.
 
 What's NOT covered:
-  * Persistence — the runner's store-side wiring is the service's
-    job, tested in test_validation_service_phase2.py.
-  * REST envelope shape — covered in test_rest_validation_runs.py.
+ * Persistence — the runner's store-side wiring is the service's
+ job, tested in test_validation_service_.py.
+ * REST envelope shape — covered in test_rest_validation_runs.py.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def _stage_chunk(
     page: str | None = None,
 ) -> ArtifactRecord:
     """Stage a chunk-kind artifact + index it. Mirrors what the
-    production compile pipeline produces."""
+ production compile pipeline produces."""
     area = WorkspaceArea.COMPILED
     area_dir = workspace.area(ctx, area)
     area_dir.mkdir(parents=True, exist_ok=True)
@@ -156,9 +156,9 @@ def _case(
 def test_runner_passes_when_expected_chunk_retrieved(
     runner, ctx, workspace, artifact_registry, indexer,
 ):
-    """Expected-chunk-in-topK is the headline Phase 2 check.
-    When the chunk is retrievable, the case passes and the run
-    aggregates to passed."""
+    """Expected-chunk-in-topK is the headline check.
+ When the chunk is retrievable, the case passes and the run
+ aggregates to passed."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-1", content=b"hello world",
@@ -182,10 +182,10 @@ def test_runner_fails_when_expected_chunk_not_retrieved(
     runner, ctx, workspace, artifact_registry, indexer,
 ):
     """The case names a chunk-id that doesn't appear in the index.
-    The runner runs the query (returns nothing because the FTS
-    query won't match), the expected_chunk_in_topk check fails,
-    the case is marked failed, and the run validation_status is
-    failed even though execution_status is completed."""
+ The runner runs the query (returns nothing because the FTS
+ query won't match), the expected_chunk_in_topk check fails,
+ the case is marked failed, and the run validation_status is
+ failed even though execution_status is completed."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-other", content=b"unrelated",
@@ -208,9 +208,9 @@ def test_runner_fails_when_expected_chunk_not_retrieved(
 def test_runner_aggregates_to_passed_with_warnings(
     runner, ctx,
 ):
-    """Phase 2 doesn't ship optional checks yet, but the aggregator
-    rule is locked here so Phase 3 doesn't have to refactor: any
-    optional fail downgrades the run, but a required fail dominates."""
+    """ doesn't ship optional checks yet, but the aggregator
+ rule is locked here so doesn't have to refactor: any
+ optional fail downgrades the run, but a required fail dominates."""
     case = _case(question="anything", expected_chunks=[])
     vrun = runner.run(ctx, _make_set(test_cases=[case]))
     # No retrieved chunks (empty index) → retrieved_chunks_present
@@ -223,8 +223,8 @@ def test_runner_priority_orders_smoke_first(
     runner, ctx, workspace, artifact_registry, indexer,
 ):
     """Smoke-priority cases must run before normal — testers want
-    the "is the index alive?" signal first. Order is asserted via
-    the result list, which preserves execution order."""
+ the "is the index alive?" signal first. Order is asserted via
+ the result list, which preserves execution order."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-1", content=b"hello world",
@@ -255,9 +255,9 @@ def test_runner_checks_expected_page_in_citations(
     runner, ctx, workspace, artifact_registry, indexer,
 ):
     """expected_pages drives the citation page-overlap check. The
-    indexer surfaces the producer's `source_location` verbatim;
-    we accept any string that contains the expected page number
-    (producers don't share a single page format yet)."""
+ indexer surfaces the producer's `source_location` verbatim;
+ we accept any string that contains the expected page number
+ (producers don't share a single page format yet)."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-1", content=b"page three content",
@@ -307,9 +307,9 @@ def test_runner_run_scope_isolates_to_requested_run(
     runner, ctx, workspace, artifact_registry, indexer,
 ):
     """Trust regression: same chunk text indexed under run-A and
-    run-B. The runner targets run-A; the run-B chunk must not
-    surface in retrieval, and the per-result run_id checks must
-    reflect that."""
+ run-B. The runner targets run-A; the run-B chunk must not
+ surface in retrieval, and the per-result run_id checks must
+ reflect that."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-A", content=b"shared keyword",
@@ -341,8 +341,8 @@ def test_runner_emits_three_lifecycle_snapshots(
     query_engine, artifact_registry, ctx,
 ):
     """The runner fires the lifecycle callback three times:
-    pending → running → completed. Persistence layer relies on
-    this contract to upsert each transition."""
+ pending → running → completed. Persistence layer relies on
+ this contract to upsert each transition."""
     snapshots = []
     runner = DefaultValidationRunner(
         query_engine=query_engine,
@@ -361,8 +361,8 @@ def test_runner_lifecycle_failure_does_not_break_run(
     query_engine, artifact_registry, ctx,
 ):
     """If the persistence callback throws, the runner must still
-    return the terminal snapshot. Persistence is best-effort —
-    losing a snapshot can't fail the user-facing call."""
+ return the terminal snapshot. Persistence is best-effort —
+ losing a snapshot can't fail the user-facing call."""
     runner = DefaultValidationRunner(
         query_engine=query_engine,
         artifact_registry=artifact_registry,
@@ -379,9 +379,9 @@ def test_runner_engine_failure_marks_run_failed(
     artifact_registry, ctx,
 ):
     """If the query engine itself raises (e.g. corrupt index), the
-    run reports execution_status=failed with the error message,
-    and validation_status=inconclusive (we don't know if the
-    document would have passed)."""
+ run reports execution_status=failed with the error message,
+ and validation_status=inconclusive (we don't know if the
+ document would have passed)."""
 
     class _BoomEngine:
         def query(self, ctx, request):
@@ -409,8 +409,8 @@ def test_runner_empty_set_produces_inconclusive_summary(
     runner, ctx,
 ):
     """A set with zero cases gives nothing to evaluate. Run is
-    `completed` (the runner finished) but `validation_status` is
-    `inconclusive` (no cases were ever evaluated)."""
+ `completed` (the runner finished) but `validation_status` is
+ `inconclusive` (no cases were ever evaluated)."""
     vrun = runner.run(ctx, _make_set(test_cases=[]))
 
     assert vrun.execution_status == "completed"
@@ -422,8 +422,8 @@ def test_runner_empty_set_produces_inconclusive_summary(
 def test_runner_summary_carries_coverage_breakdown(
     runner, ctx, workspace, artifact_registry, indexer,
 ):
-    """Coverage is the readiness card's main visualisation. Phase 2
-    populates by_type and by_priority; by_section ships in Phase 4."""
+    """Coverage is the readiness card's main visualisation. 
+ populates by_type and by_priority; by_section ships."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-1", content=b"content one",
@@ -443,11 +443,11 @@ def test_runner_summary_carries_coverage_breakdown(
 def test_runner_with_judge_emits_optional_checks(
     query_engine, artifact_registry, ctx, workspace, indexer,
 ):
-    """Phase 3 integration: a runner constructed with a judge
-    appends optional semantic checks to every result. Wiring
-    smoke test — judge stub returns a clean coverage + grounding
-    judgement, so the optional checks pass and don't downgrade
-    the run."""
+    """ integration: a runner constructed with a judge
+ appends optional semantic checks to every result. Wiring
+ smoke test — judge stub returns a clean coverage + grounding
+ judgement, so the optional checks pass and don't downgrade
+ the run."""
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
         artifact_id="a-1", content=b"alpha keyword",
@@ -511,10 +511,10 @@ def test_runner_with_judge_emits_optional_checks(
 def test_runner_handles_negative_test_case(
     runner, ctx,
 ):
-    """Phase 3 integration: a negative case asks an off-topic
-    question. The engine returns no retrieval (out-of-scope), the
-    deterministic abstain check passes if the answer's empty, and
-    the run aggregates accordingly."""
+    """ integration: a negative case asks an off-topic
+ question. The engine returns no retrieval (out-of-scope), the
+ deterministic abstain check passes if the answer's empty, and
+ the run aggregates accordingly."""
     case = ValidationTestCaseDTO(
         test_case_id="tc-neg",
         question="What is the price of Bitcoin?",
@@ -552,7 +552,7 @@ def test_runner_summary_main_issues_caps_at_three(
     runner, ctx,
 ):
     """When many cases fail, surface only the first three reasons
-    on the readiness card subtitle. Full list is in `results[]`."""
+ on the readiness card subtitle. Full list is in `results[]`."""
     cases = [
         _case(
             case_id=f"t-{i}",

@@ -131,16 +131,16 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write a structured `error_report.json` artifact describing
-        why a run failed.
+ why a run failed.
 
-        Persisted via the same `_register_draft` path successful
-        artifacts use, so the FE's existing artifact-listing surface
-        picks it up automatically. Tagged with `metadata.run_id` so
-        `_resolve_run_artifacts` returns it under the failed run.
-        Best-effort: any persistence failure is logged + raised back
-        to the caller (typically the workflow's failure handler) so
-        it can decide whether to swallow the error (we don't want a
-        broken error-report path to mask the original failure)."""
+ Persisted via the same `_register_draft` path successful
+ artifacts use, so the FE's existing artifact-listing surface
+ picks it up automatically. Tagged with `metadata.run_id` so
+ `_resolve_run_artifacts` returns it under the failed run.
+ Best-effort: any persistence failure is logged + raised back
+ to the caller (typically the workflow's failure handler) so
+ it can decide whether to swallow the error (we don't want a
+ broken error-report path to mask the original failure)."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_ERROR_REPORT,
@@ -211,12 +211,12 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write a `validation_report.json` artifact summarising the
-        outcome of `_validate_completion`.
+ outcome of `_validate_completion`.
 
-        Persisted on every terminal transition (success OR failure),
-        so operators can see WHICH rules ran and WHICH ones tripped
-        without re-running validation. Backs the `validation_report`
-        kind in the artifact contract."""
+ Persisted on every terminal transition (success OR failure),
+ so operators can see WHICH rules ran and WHICH ones tripped
+ without re-running validation. Backs the `validation_report`
+ kind in the artifact contract."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_VALIDATION_REPORT,
@@ -277,14 +277,14 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write a `compile_strategy_report` artifact summarising the
-        AssessmentPlan + CompileConfig + per-attempt timeline + final
-        quality verdict for one document's compile stage. Mirrors
-        `persist_validation_report`'s shape so the FE artifact-listing
-        surface picks it up uniformly.
+ AssessmentPlan + CompileConfig + per-attempt timeline + final
+ quality verdict for one document's compile stage. Mirrors
+ `persist_validation_report`'s shape so the FE artifact-listing
+ surface picks it up uniformly.
 
-        `payload` is the JSON-serialisable dict the workflow builds
-        — the service doesn't import the assessment / retry
-        dataclasses to keep the dependency tree thin."""
+ `payload` is the JSON-serialisable dict the workflow builds
+ — the service doesn't import the assessment / retry
+ dataclasses to keep the dependency tree thin."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_COMPILE_STRATEGY_REPORT,
@@ -344,12 +344,12 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write a `post_compile_enrich_plan` artifact carrying the
-        rule-based enrich-assessment verdict. Mirrors
-        `persist_compile_strategy_report`'s shape so the FE artifact
-        listing picks it up uniformly. `payload` is the
-        `PostCompileEnrichPlan.to_payload()` dict — the service layer
-        doesn't import `enrich_assessment` to keep the dependency
-        graph thin."""
+ rule-based enrich-assessment verdict. Mirrors
+ `persist_compile_strategy_report`'s shape so the FE artifact
+ listing picks it up uniformly. `payload` is the
+ `PostCompileEnrichPlan.to_payload` dict — the service layer
+ doesn't import `enrich_assessment` to keep the dependency
+ graph thin."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN,
@@ -405,13 +405,13 @@ class ProcessingService:
         payload: dict,
         actor: str = "system",
     ) -> ArtifactRecord:
-        """Write the typed Wave-6 enrichment overlay as an
-        `enrichment_result` artifact. Same persistence shape as
-        the other JSON-overlay artifacts.
+        """Write the typed enrichment overlay as an
+ `enrichment_result` artifact. Same persistence shape as
+ the other JSON-overlay artifacts.
 
-        `payload` is the `EnrichmentResult.to_payload()` dict — the
-        service layer doesn't import `enrichment_overlay` to keep
-        the dependency graph thin."""
+ `payload` is the `EnrichmentResult.to_payload` dict — the
+ service layer doesn't import `enrichment_overlay` to keep
+ the dependency graph thin."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_ENRICHMENT_RESULT,
@@ -473,14 +473,14 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write a `compile_result_summary` artifact carrying the
-        typed normalized compile result (chunks_count,
-        detected_tables / detected_images, quality_signals, retry
-        history, etc.). Mirrors `persist_initial_execution_plan`'s
-        shape so FE artifact listings surface it uniformly.
+ typed normalized compile result (chunks_count,
+ detected_tables / detected_images, quality_signals, retry
+ history, etc.). Mirrors `persist_initial_execution_plan`'s
+ shape so FE artifact listings surface it uniformly.
 
-        `payload` is the `NormalizedCompileResult.to_payload()`
-        dict — the service layer doesn't import `compile_result`
-        to keep the dependency graph thin."""
+ `payload` is the `NormalizedCompileResult.to_payload`
+ dict — the service layer doesn't import `compile_result`
+ to keep the dependency graph thin."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_COMPILE_RESULT_SUMMARY,
@@ -537,14 +537,14 @@ class ProcessingService:
         payload: dict,
         actor: str = "system",
     ) -> ArtifactRecord:
-        """Write a `final_ingestion_report` artifact (Wave 10) — the
-        end-to-end run summary aggregating compile + enrichment +
-        finalize state. Operator + FE single source of truth at
-        terminal.
+        """Write a `final_ingestion_report` artifact — the
+ end-to-end run summary aggregating compile + enrichment +
+ finalize state. Operator + FE single source of truth at
+ terminal.
 
-        `payload` is the `FinalIngestionReport.to_payload()` dict —
-        the service layer doesn't import the report module to keep
-        the dependency graph thin."""
+ `payload` is the `FinalIngestionReport.to_payload` dict —
+ the service layer doesn't import the report module to keep
+ the dependency graph thin."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_FINAL_INGESTION_REPORT,
@@ -600,14 +600,14 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write an `initial_execution_plan` artifact carrying the
-        pre-compile run plan (selected domain, enrichment_policy,
-        candidate modules, cheap signals, wrapped compile plan).
+ pre-compile run plan (selected domain, enrichment_policy,
+ candidate modules, cheap signals, wrapped compile plan).
 
-        Mirrors `persist_post_compile_enrich_plan` so the FE artifact
-        listing surfaces it uniformly. `payload` is the
-        `InitialExecutionPlan.to_payload()` dict — the service layer
-        doesn't import `initial_execution_plan` to keep the
-        dependency graph thin."""
+ Mirrors `persist_post_compile_enrich_plan` so the FE artifact
+ listing surfaces it uniformly. `payload` is the
+ `InitialExecutionPlan.to_payload` dict — the service layer
+ doesn't import `initial_execution_plan` to keep the
+ dependency graph thin."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_INITIAL_EXECUTION_PLAN,
@@ -669,18 +669,18 @@ class ProcessingService:
         actor: str = "system",
     ) -> ArtifactRecord:
         """Write a `stage_validation_report` artifact for a single
-        ingestion stage. Mirrors `persist_validation_report` but
-        scoped to one stage (vs. the whole-run summary).
+ ingestion stage. Mirrors `persist_validation_report` but
+ scoped to one stage (vs. the whole-run summary).
 
-        `payload` is the JSON-serialisable shape returned by
-        `StageValidationResult.to_payload()` — the service layer
-        doesn't import the dataclass to keep the module dependency
-        tree minimal; the activity caller serialises before
-        invoking. Filename includes the stage name and attempt so
-        re-validation (e.g. on resume) doesn't overwrite the prior
-        attempt's report. The artifact is registered under the same
-        run_id correlation as everything else the run produces, so
-        `_resolve_run_artifacts` finds it without lineage walks."""
+ `payload` is the JSON-serialisable shape returned by
+ `StageValidationResult.to_payload` — the service layer
+ doesn't import the dataclass to keep the module dependency
+ tree minimal; the activity caller serialises before
+ invoking. Filename includes the stage name and attempt so
+ re-validation (e.g. on resume) doesn't overwrite the prior
+ attempt's report. The artifact is registered under the same
+ run_id correlation as everything else the run produces, so
+ `_resolve_run_artifacts` finds it without lineage walks."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_STAGE_VALIDATION_REPORT,
@@ -748,11 +748,11 @@ class ProcessingService:
     ) -> ArtifactRecord:
         """Write a `final_summary.json` artifact at terminal state.
 
-        Carries the at-a-glance outcome (status + planner-derived
-        executed-stage tally + artifact-kind counts + warning count
-        + failure detail when applicable). Persisted at SUCCESS or
-        FAILURE transitions so the FE / operators have a single
-        canonical artifact summarising the run."""
+ Carries the at-a-glance outcome (status + planner-derived
+ executed-stage tally + artifact-kind counts + warning count
+ + failure detail when applicable). Persisted at SUCCESS or
+ FAILURE transitions so the FE / operators have a single
+ canonical artifact summarising the run."""
         import json as _json
         from j1.processing.results import (
             ARTIFACT_KIND_FINAL_SUMMARY,

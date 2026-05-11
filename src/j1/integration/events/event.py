@@ -49,14 +49,14 @@ _EMPTY_DATA: Mapping[str, Any] = MappingProxyType({})
 class ApplicationEvent:
     """Transport-neutral event emitted from inside the framework.
 
-    Carries no HTTP / CloudEvents / webhook concerns. Adapters map this to
-    their wire format (REST, MCP, Webhook, etc.). Frozen + value-typed so
-    it's safe to hand to multiple subscribers concurrently.
+ Carries no HTTP / CloudEvents / webhook concerns. Adapters map this to
+ their wire format (REST, MCP, Webhook, etc.). Frozen + value-typed so
+ it's safe to hand to multiple subscribers concurrently.
 
-    `actor` and `auth_type` are populated from the inbound `SecurityContext`
-    when the event is triggered by an authenticated request. Events emitted
-    by background workers / Temporal activities leave them None.
-    """
+ `actor` and `auth_type` are populated from the inbound `SecurityContext`
+ when the event is triggered by an authenticated request. Events emitted
+ by background workers / Temporal activities leave them None.
+ """
 
     id: str
     type: str

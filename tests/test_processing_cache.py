@@ -4,13 +4,13 @@ The cache exists so Temporal activity retries don't re-run expensive
 deterministic processors when a previous attempt already produced
 the artifact. These tests pin the contract callers depend on:
 
-  * `make_cache_key` is deterministic across (document_hash,
-    processor_kind, processor_version, mode) — change ANY input,
-    get a different key.
-  * Lookup returns the latest snapshot per cache_key, so two
-    racing activity attempts (failed → completed) leave the
-    completed entry as the visible state.
-  * The store survives re-instantiation (file-backed).
+ * `make_cache_key` is deterministic across (document_hash,
+ processor_kind, processor_version, mode) — change ANY input,
+ get a different key.
+ * Lookup returns the latest snapshot per cache_key, so two
+ racing activity attempts (failed → completed) leave the
+ completed entry as the visible state.
+ * The store survives re-instantiation (file-backed).
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def test_make_cache_key_changes_with_each_input():
 
 def test_lookup_returns_latest_snapshot_per_key(workspace, ctx):
     """Two activity attempts: first fails, second succeeds. Latest-
-    snapshot semantics mean the visible state is `completed`."""
+ snapshot semantics mean the visible state is `completed`."""
     cache = JsonlProcessingResultCache(workspace)
     key = make_cache_key(document_hash="sha256:doc", processor_kind="mock")
 
@@ -110,8 +110,8 @@ def test_lookup_returns_none_for_missing_key(workspace, ctx):
 
 def test_cache_isolates_processor_kinds(workspace, ctx):
     """Two compilers writing for the same document must NOT collide
-    — a `completed` entry for one processor kind doesn't satisfy a
-    lookup for a different processor kind."""
+ — a `completed` entry for one processor kind doesn't satisfy a
+ lookup for a different processor kind."""
     cache = JsonlProcessingResultCache(workspace)
     key_a = make_cache_key(document_hash="sha256:doc", processor_kind="parser-a")
     cache.upsert(ctx, _entry(
@@ -131,7 +131,7 @@ def test_cache_isolates_processor_kinds(workspace, ctx):
 
 def test_cache_persists_across_instances(workspace, ctx):
     """Surviving worker restarts is the WHOLE point — verify that a
-    new instance reads what an earlier instance wrote."""
+ new instance reads what an earlier instance wrote."""
     key = make_cache_key(document_hash="sha256:doc", processor_kind="mock")
     JsonlProcessingResultCache(workspace).upsert(ctx, _entry(
         cache_key=key, status=CACHE_STATUS_COMPLETED, artifact_ids=("a",),
@@ -148,8 +148,8 @@ def test_cache_persists_across_instances(workspace, ctx):
 
 def test_processing_status_in_progress_returns_processing(workspace, ctx):
     """If a prior attempt is still in flight (no completed entry),
-    the cache reports `processing` — callers can decide whether to
-    wait, fail-fast, or proceed (current activity does the latter)."""
+ the cache reports `processing` — callers can decide whether to
+ wait, fail-fast, or proceed (current activity does the latter)."""
     cache = JsonlProcessingResultCache(workspace)
     key = make_cache_key(document_hash="sha256:doc", processor_kind="mock")
     cache.upsert(ctx, _entry(

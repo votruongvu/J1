@@ -1,16 +1,16 @@
 """Observability hardening for AssessmentPlan integration:
 
-  1. Plan/config warnings persist on `ArtifactProcessingResult.metadata
-     ["plan_warnings"]` (visible beyond the log line).
-  2. `metadata["unhandled_capabilities"]` lists the required
-     capabilities the parser couldn't honour at the per-switch level.
-  3. `J1_ASSESSMENT_FAILURE_POLICY=fail_open` (default) lets the
-     ingest continue when planner construction itself fails.
-  4. `J1_ASSESSMENT_FAILURE_POLICY=fail_closed` blocks ingest with a
-     clear error when planner construction fails.
-  5. Existing ingest behaviour stays backward-compatible — no plan,
-     no plan_warnings key surprises (we always set the key, but
-     legacy callers who don't pass a plan see empty values).
+ 1. Plan/config warnings persist on `ArtifactProcessingResult.metadata
+ ["plan_warnings"]` (visible beyond the log line).
+ 2. `metadata["unhandled_capabilities"]` lists the required
+ capabilities the parser couldn't honour at the per-switch level.
+ 3. `J1_ASSESSMENT_FAILURE_POLICY=fail_open` (default) lets the
+ ingest continue when planner construction itself fails.
+ 4. `J1_ASSESSMENT_FAILURE_POLICY=fail_closed` blocks ingest with a
+ clear error when planner construction fails.
+ 5. Existing ingest behaviour stays backward-compatible — no plan,
+ no plan_warnings key surprises (we always set the key, but
+ legacy callers who don't pass a plan see empty values).
 """
 
 from __future__ import annotations
@@ -65,10 +65,10 @@ def test_compile_result_metadata_surfaces_warnings_for_disabled_capability(
     monkeypatch, tmp_path,
 ):
     """End-to-end: deployment marks `supports_equation=False`, plan
-    requires FORMULA_EXTRACTION, default fallback policy. Expect
-    `result.metadata["plan_warnings"]` carries the mapper's
-    deployment-disabled-equation string AND
-    `unhandled_capabilities` lists `formula_extraction`."""
+ requires FORMULA_EXTRACTION, default fallback policy. Expect
+ `result.metadata["plan_warnings"]` carries the mapper's
+ deployment-disabled-equation string AND
+ `unhandled_capabilities` lists `formula_extraction`."""
     import sys
     import types
     from j1.providers.raganything._bridge import default_compile
@@ -161,8 +161,8 @@ def test_compile_result_metadata_has_empty_keys_when_no_plan(
     monkeypatch, tmp_path,
 ):
     """Backward compat: legacy caller (no assessment_plan) still gets
-    `plan_warnings` and `unhandled_capabilities` keys but with empty
-    lists. Downstream consumers can rely on the keys existing."""
+ `plan_warnings` and `unhandled_capabilities` keys but with empty
+ lists. Downstream consumers can rely on the keys existing."""
     import sys
     import types
     from j1.providers.raganything._bridge import default_compile
@@ -223,9 +223,9 @@ def test_compile_result_metadata_has_empty_keys_when_no_plan(
 
 def test_mapper_unhandled_capabilities_empty_when_deployment_supports_all():
     """Mapper unit: when settings advertise every capability as
-    supported, `unhandled_capabilities` is empty. Image / table /
-    formula now flow through `RAGAnythingConfig` via
-    `to_config_overrides()` instead of being treated as drop-throughs."""
+ supported, `unhandled_capabilities` is empty. Image / table /
+ formula now flow through `RAGAnythingConfig` via
+ `to_config_overrides` instead of being treated as drop-throughs."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -252,9 +252,9 @@ def test_mapper_unhandled_capabilities_empty_when_deployment_supports_all():
 
 def test_mapper_unhandled_capabilities_lists_explicitly_disabled_caps():
     """When the deployment advertises a capability as unsupported
-    (`supports_equation=False`), and the plan requires it, the
-    mapper records BOTH a warning string AND the capability name
-    in `unhandled_capabilities`."""
+ (`supports_equation=False`), and the plan requires it, the
+ mapper records BOTH a warning string AND the capability name
+ in `unhandled_capabilities`."""
     plan = AssessmentPlan(
         document_id="d", mode=CompileMode.STANDARD,
         document_type="pdf", complexity=Complexity.MEDIUM,
@@ -291,8 +291,8 @@ def test_load_assessment_failure_policy_accepts_fail_closed():
 
 def test_load_assessment_failure_policy_unknown_value_falls_back():
     """A typo or future-policy-name in the env quietly downgrades to
-    fail_open. The assessment plan exists for cost optimisation,
-    not as a correctness gate — a typo shouldn't kill ingest."""
+ fail_open. The assessment plan exists for cost optimisation,
+ not as a correctness gate — a typo shouldn't kill ingest."""
     assert load_assessment_failure_policy(env={
         ENV_ASSESSMENT_FAILURE_POLICY: "fail-closed-typo",
     }) == ASSESSMENT_FAILURE_POLICY_FAIL_OPEN
@@ -323,8 +323,8 @@ def _patch_workflow_runtime(monkeypatch, *, exec_handler: Callable):
 
 def _broken_profile() -> DocumentProfile:
     """A profile shape that survives Temporal serialisation but trips
-    `DefaultAssessmentPlanner` if we monkeypatch the planner to raise.
-    Used by the policy tests below."""
+ `DefaultAssessmentPlanner` if we monkeypatch the planner to raise.
+ Used by the policy tests below."""
     return DocumentProfile(
         document_id="doc-broken",
         extension=".pdf", page_count=1,
@@ -336,8 +336,8 @@ def test_fail_open_lets_workflow_complete_when_assessment_planner_raises(
     monkeypatch,
 ):
     """Default `fail_open`: planner failure logs + sets
-    `assessment_plan_payload=None`. Bridge falls back to
-    `settings.parse_method`. Run completes."""
+ `assessment_plan_payload=None`. Bridge falls back to
+ `settings.parse_method`. Run completes."""
     # Force the planner to raise.
     def _raise(*a, **k):
         raise RuntimeError("planner exploded")
@@ -400,8 +400,8 @@ def test_fail_closed_marks_compile_failed_when_assessment_planner_raises(
     monkeypatch,
 ):
     """`fail_closed`: planner failure → workflow records compile
-    FAILED + raises. Operator gets a clear error about the missing
-    plan rather than a silent fallback."""
+ FAILED + raises. Operator gets a clear error about the missing
+ plan rather than a silent fallback."""
     def _raise(*a, **k):
         raise RuntimeError("planner exploded under fail_closed")
     monkeypatch.setattr(
@@ -468,8 +468,8 @@ def test_fail_closed_marks_compile_failed_when_assessment_planner_raises(
 
 def test_request_assessment_failure_policy_defaults_to_fail_open():
     """Existing callers that build `ProjectProcessingRequest` without
-    the new field get `fail_open` automatically. No production
-    behaviour change for legacy code paths."""
+ the new field get `fail_open` automatically. No production
+ behaviour change for legacy code paths."""
     req = ProjectProcessingRequest(
         scope=_scope(), compiler_kind="c",
     )

@@ -1,17 +1,17 @@
-"""Wave 7 tests — enrichment LLM + concurrency controls.
+""" tests — enrichment LLM + concurrency controls.
 
 Covers four contract surfaces:
 
 1. `EnrichmentConcurrencySettings` — defaults, env-var parsing,
-   dev-mode cap behaviour.
+ dev-mode cap behaviour.
 2. `LLMCallLimiter` — concurrency ceiling enforced, bounded retry,
-   timeout raises `LLMCallTimeout`, `NonRetryableError`
-   short-circuits the retry loop.
+ timeout raises `LLMCallTimeout`, `NonRetryableError`
+ short-circuits the retry loop.
 3. `select_model_tier` — precedence chain, vision gating, vision
-   request on text input falls back to premium.
+ request on text input falls back to premium.
 4. Integration: `_LLMBackedEnricher._produce` and
-   `VisualContentDescriber._produce` route LLM calls through the
-   limiter when one is configured.
+ `VisualContentDescriber._produce` route LLM calls through the
+ limiter when one is configured.
 """
 
 from __future__ import annotations
@@ -98,8 +98,8 @@ def test_load_reads_each_env_var():
 
 def test_load_dev_mode_caps_concurrency_at_safe_ceiling():
     """Even when operator sets a high value, dev mode (default ON)
-    caps the value at the safe ceiling — prevents accidental
-    overload of dev/CI machines."""
+ caps the value at the safe ceiling — prevents accidental
+ overload of dev/CI machines."""
     s = load_enrichment_settings({
         ENV_ENRICHMENT_MAX_CONCURRENT_LLM_CALLS: "100",
         ENV_ENRICHMENT_TIMEOUT_SECONDS: "9999",
@@ -148,7 +148,7 @@ def test_limiter_run_returns_callable_result():
 
 def test_limiter_enforces_max_concurrency():
     """A second concurrent call must wait for the first to release.
-    Verify by serialising two threads through a limiter of 1."""
+ Verify by serialising two threads through a limiter of 1."""
     limiter = LLMCallLimiter(
         max_concurrency=1, timeout_seconds=2.0, retry_limit=0,
     )
@@ -182,7 +182,7 @@ def test_limiter_enforces_max_concurrency():
 
 def test_limiter_retries_on_transient_failure_up_to_limit():
     """Retry budget is `retry_limit` extra attempts beyond the
-    first call."""
+ first call."""
     attempts = []
 
     def flaky() -> str:
@@ -202,7 +202,7 @@ def test_limiter_retries_on_transient_failure_up_to_limit():
 
 def test_limiter_exhausts_retries_then_raises():
     """When the retry budget is exhausted, the limiter re-raises
-    the underlying exception."""
+ the underlying exception."""
     def always_fail() -> None:
         raise RuntimeError("permanent failure")
 
@@ -216,7 +216,7 @@ def test_limiter_exhausts_retries_then_raises():
 
 def test_limiter_non_retryable_short_circuits_retry_loop():
     """`NonRetryableError` wrapper tells the limiter to surface
-    the underlying cause immediately without retrying."""
+ the underlying cause immediately without retrying."""
     attempts = []
 
     def fail_with_non_retryable() -> None:
@@ -355,8 +355,8 @@ def test_vision_module_runs_when_images_present():
 
 def test_vision_module_runs_when_detected_content_includes_images():
     """Image content detected via `detected_content_types` (the
-    list-based signal) should also unlock the vision tier even
-    when `detected_images` is empty."""
+ list-based signal) should also unlock the vision tier even
+ when `detected_images` is empty."""
     cr = NormalizedCompileResult(
         document_id="d",
         detected_content_types=("text", "images"),
@@ -371,8 +371,8 @@ def test_vision_module_runs_when_detected_content_includes_images():
 
 def test_text_module_requesting_vision_falls_back_to_premium():
     """A text module that's been handed a `vision` plan request
-    should fall back to premium — vision is for image-input
-    modules only."""
+ should fall back to premium — vision is for image-input
+ modules only."""
     cr = NormalizedCompileResult(
         document_id="d",
         detected_images=(DetectedImage(image_id="img-1"),),
@@ -389,7 +389,7 @@ def test_text_module_requesting_vision_falls_back_to_premium():
 
 def test_tier_falls_through_invalid_strings_to_default():
     """Garbage tier strings at every precedence layer fall through
-    to system default (then FAST as ultimate backstop)."""
+ to system default (then FAST as ultimate backstop)."""
     decision = select_model_tier(
         settings=_settings(MODEL_TIER_PREMIUM),
         module_requirement=MODULE_REQUIREMENT_TEXT,
@@ -407,8 +407,8 @@ def _profile() -> Profile:
 
 
 class _StubTextClient:
-    """Mimics the text-client `.extract()` contract enough for the
-    test to assert the call site routes through the limiter."""
+    """Mimics the text-client `.extract` contract enough for the
+ test to assert the call site routes through the limiter."""
 
     model = "stub-text"
 
@@ -422,8 +422,8 @@ class _StubTextClient:
 
 def test_text_enricher_routes_call_through_limiter():
     """When a limiter is wired, the enricher calls it via
-    `limiter.run` instead of directly. Verify by wrapping the
-    client + counting limiter invocations."""
+ `limiter.run` instead of directly. Verify by wrapping the
+ client + counting limiter invocations."""
     client = _StubTextClient()
     profile = _profile()
 
@@ -453,8 +453,8 @@ def test_text_enricher_routes_call_through_limiter():
 
 def test_text_enricher_falls_back_to_direct_call_when_no_limiter():
     """Backward-compat: an enricher without a wired limiter calls
-    the client directly. Pre-Wave-7 deployments don't have to
-    wire a limiter to keep working."""
+ the client directly. Pre- deployments don't have to
+ wire a limiter to keep working."""
     client = _StubTextClient()
     profile = _profile()
     enricher = DocumentClassifier(
@@ -504,9 +504,9 @@ def test_visual_enricher_routes_call_through_limiter():
 
 def test_limiter_timeout_is_caught_as_soft_skip_by_enricher():
     """When the limiter raises `LLMCallTimeout` from a slow vendor
-    call, the enricher's outer try/except converts it into a
-    soft-skip response (the existing failure handling). Run
-    succeeds without the timeout escaping."""
+ call, the enricher's outer try/except converts it into a
+ soft-skip response (the existing failure handling). Run
+ succeeds without the timeout escaping."""
     class _SlowTextClient:
         model = "slow"
         def extract(self, prompt, schema, metadata=None):
@@ -535,12 +535,12 @@ def test_limiter_timeout_is_caught_as_soft_skip_by_enricher():
 
 def test_enrichment_retry_setting_is_independent_of_compile_retry():
     """Compile retry knobs live on `ProjectProcessingRequest.compile_*`
-    fields; enrichment retry lives on `EnrichmentConcurrencySettings.
-    retry_limit`. Setting one must NOT affect the other.
+ fields; enrichment retry lives on `EnrichmentConcurrencySettings.
+ retry_limit`. Setting one must NOT affect the other.
 
-    The test is a contract / shape check: the two settings live in
-    different modules with different env-var prefixes, and the
-    enrichment-settings module never reads `J1_COMPILE_*`."""
+ The test is a contract / shape check: the two settings live in
+ different modules with different env-var prefixes, and the
+ enrichment-settings module never reads `J1_COMPILE_*`."""
     import ast
     import inspect
     from j1.processing import enrichment_settings as mod

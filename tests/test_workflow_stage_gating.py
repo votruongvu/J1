@@ -25,7 +25,7 @@ from j1.processing.status import StepSource
 
 def _wf() -> ProjectProcessingWorkflow:
     """Workflow instance for `_stage_enabled` testing. The constructor
-    runs without a Temporal runtime; we never invoke `run`."""
+ runs without a Temporal runtime; we never invoke `run`."""
     return ProjectProcessingWorkflow()
 
 
@@ -53,7 +53,7 @@ def _failed_compile() -> ArtifactActivityResult:
 
 def test_enrich_plan_skip_overrides_caller_intent():
     """SKIP is authoritative: even with `enricher_kind` set, the gate
-    returns disabled with the blocking reason."""
+ returns disabled with the blocking reason."""
     plan = PostCompileEnrichPlan(
         overall_recommendation=EnrichRecommendation.SKIP,
         blocking_issues=("compile failed; nothing to enrich",),
@@ -98,7 +98,7 @@ def test_enrich_plan_required_runs_with_planner_source():
 
 def test_enrich_plan_optional_defers_to_caller():
     """OPTIONAL: enrich plan doesn't force a decision; the caller's
-    `enricher_kind` runs the stage with CALLER source."""
+ `enricher_kind` runs the stage with CALLER source."""
     plan = PostCompileEnrichPlan(
         overall_recommendation=EnrichRecommendation.OPTIONAL,
     )
@@ -113,7 +113,7 @@ def test_enrich_plan_optional_defers_to_caller():
 
 def test_no_enricher_kind_is_unrunnable_regardless_of_plan():
     """Caller didn't choose an enricher → unrunnable, regardless of
-    what the enrich plan recommends. Caller intent gates first."""
+ what the enrich plan recommends. Caller intent gates first."""
     plan = PostCompileEnrichPlan(
         overall_recommendation=EnrichRecommendation.RECOMMENDED,
     )
@@ -129,7 +129,7 @@ def test_no_enricher_kind_is_unrunnable_regardless_of_plan():
 
 def test_no_enrich_plan_runs_with_caller_source():
     """Without an enrich_plan: caller intent + a successful compile
-    is enough; runs with CALLER source."""
+ is enough; runs with CALLER source."""
     enabled, reason, source = _wf()._stage_enabled(
         "enrich", "composite_enricher",
         compile_result=_ok_compile(),
@@ -181,7 +181,7 @@ def test_graph_skips_when_zero_chunks():
 
 def test_graph_skips_on_low_compile_quality():
     """Low parse quality → conservative skip. Graph extraction would
-    amplify a degraded parse."""
+ amplify a degraded parse."""
     enabled, reason, source = _wf()._stage_enabled(
         "graph", "lightrag_graph",
         compile_result=_ok_compile(),
@@ -282,9 +282,9 @@ def test_index_skipped_when_no_indexer_kind():
 
 def test_stage_enabled_signature_does_not_accept_ingest_plan():
     """Regression guard: ensure we don't reintroduce an `IngestPlan`
-    parameter on `_stage_enabled` by accident. The new signature
-    is `(stage, request_kind, *, compile_result, final_compile_quality,
-    enrich_plan)` — no `plan` positional."""
+ parameter on `_stage_enabled` by accident. The new signature
+ is `(stage, request_kind, *, compile_result, final_compile_quality,
+ enrich_plan)` — no `plan` positional."""
     import inspect
     sig = inspect.signature(_wf()._stage_enabled)
     params = list(sig.parameters.keys())

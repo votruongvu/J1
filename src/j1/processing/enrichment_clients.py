@@ -1,4 +1,4 @@
-"""Wave 10.6 — analysis-client contracts for the post-compile
+"""analysis-client contracts for the post-compile
 enrichment modules + adapters that bridge production LLM clients
 to the module-facing protocol.
 
@@ -6,8 +6,8 @@ The new `EnrichmentModule` adapters in `legacy_enricher_modules.py`
 call into a typed `TextAnalysisClient` / `VisionAnalysisClient`
 contract:
 
-  * `TextAnalysisClient.extract(prompt, schema, metadata) -> (dict, usage)`
-  * `VisionAnalysisClient.analyze(prompt, schema, metadata) -> (dict, usage)`
+ * `TextAnalysisClient.extract(prompt, schema, metadata) -> (dict, usage)`
+ * `VisionAnalysisClient.analyze(prompt, schema, metadata) -> (dict, usage)`
 
 Production LLM clients (`j1.llm.clients.TextLLMClient` /
 `VisionLLMClient`) match the text contract already (same `extract`
@@ -51,17 +51,17 @@ __all__ = [
 @runtime_checkable
 class TextAnalysisClient(Protocol):
     """The text-analysis contract every text-shaped enrichment
-    module consumes.
+ module consumes.
 
-    Production: `j1.llm.clients.TextLLMClient` matches this
-    structurally — the wire signature is `(input_text, schema, *,
-    metadata)`. The wrapper passes its prompt as the first
-    positional argument, which the production client interprets as
-    `input_text`. Same return shape: `(parsed_dict, usage)`.
+ Production: `j1.llm.clients.TextLLMClient` matches this
+ structurally — the wire signature is `(input_text, schema, *,
+ metadata)`. The wrapper passes its prompt as the first
+ positional argument, which the production client interprets as
+ `input_text`. Same return shape: `(parsed_dict, usage)`.
 
-    Tests: substitute any object with a callable `.extract`
-    matching this Protocol.
-    """
+ Tests: substitute any object with a callable `.extract`
+ matching this Protocol.
+ """
 
     def extract(
         self,
@@ -75,14 +75,14 @@ class TextAnalysisClient(Protocol):
 @runtime_checkable
 class VisionAnalysisClient(Protocol):
     """The vision-analysis contract the image enrichment module
-    consumes.
+ consumes.
 
-    Production: NOT matched by `j1.llm.clients.VisionLLMClient`
-    directly — see `PerImageVisionAdapter` below for the bridge.
+ Production: NOT matched by `j1.llm.clients.VisionLLMClient`
+ directly — see `PerImageVisionAdapter` below for the bridge.
 
-    Returns a JSON-shaped dict carrying `images: [{image_id, caption,
-    role, confidence}, …]` — the wrapper iterates this list.
-    """
+ Returns a JSON-shaped dict carrying `images: [{image_id, caption,
+ role, confidence}, …]` — the wrapper iterates this list.
+ """
 
     def analyze(
         self,
@@ -99,25 +99,25 @@ class VisionAnalysisClient(Protocol):
 @dataclass(frozen=True)
 class VisionImagePayload:
     """One image + its identity + content-type hint, as supplied
-    to the `PerImageVisionAdapter`.
+ to the `PerImageVisionAdapter`.
 
-    Public class — image-bytes-providers constructed by the
-    bootstrap reference this type directly.
+ Public class — image-bytes-providers constructed by the
+ bootstrap reference this type directly.
 
-    `image_id` is the operator-visible identifier the FE renders;
-    it can equal `source_artifact_id` (typical when the provider
-    sources bytes from the artifact registry) or it can be the
-    parser's internal id when a producer correlates them. The
-    `image_summary.image_id` on the typed overlay mirrors this
-    field verbatim.
+ `image_id` is the operator-visible identifier the FE renders;
+ it can equal `source_artifact_id` (typical when the provider
+ sources bytes from the artifact registry) or it can be the
+ parser's internal id when a producer correlates them. The
+ `image_summary.image_id` on the typed overlay mirrors this
+ field verbatim.
 
-    `source_artifact_id` is the artifact-registry id the bytes
-    came from (Wave 11A) — surfaced so the FE can deep-link to the
-    raw artifact endpoint. `None` when the provider sourced bytes
-    from a non-registry source (rare; in-memory tests). `metadata`
-    is free-form, optional, and not serialised through the
-    enrichment-result wire payload — providers attach diagnostic
-    info here that surfaces in adapter logs."""
+ `source_artifact_id` is the artifact-registry id the bytes
+ came from — surfaced so the FE can deep-link to the
+ raw artifact endpoint. `None` when the provider sourced bytes
+ from a non-registry source (rare; in-memory tests). `metadata`
+ is free-form, optional, and not serialised through the
+ enrichment-result wire payload — providers attach diagnostic
+ info here that surfaces in adapter logs."""
 
     image_id: str
     image_bytes: bytes
@@ -137,43 +137,43 @@ time so the adapter stays stateless wrt. compile artifacts."""
 
 class PerImageVisionAdapter:
     """Bridges the production `VisionLLMClient` (per-image bytes →
-    text response) onto the `VisionAnalysisClient` Protocol (batch
-    prompt + schema → JSON dict).
+ text response) onto the `VisionAnalysisClient` Protocol (batch
+ prompt + schema → JSON dict).
 
-    For each image in the provider, the adapter:
-      1. Acquires the shared `LLMCallLimiter` (Wave 11B) when one
-         was supplied — so each external vision call gets its own
-         semaphore slot, mirroring how the text path treats each
-         `text_client.extract` invocation.
-      2. Calls `vision_client.analyze_image(image=..., prompt=...,
-         media_type=...)` exactly once for that image.
-      3. Attempts `json.loads` on the text response; falls back to
-         treating the whole response as a plain caption.
-      4. Builds an `{image_id, caption, …}` entry per image.
-      5. Returns `({"images": [entries...]}, usage)` shaped per the
-         `VisionAnalysisClient` Protocol.
+ For each image in the provider, the adapter:
+ 1. Acquires the shared `LLMCallLimiter` when one
+ was supplied — so each external vision call gets its own
+ semaphore slot, mirroring how the text path treats each
+ `text_client.extract` invocation.
+ 2. Calls `vision_client.analyze_image(image=..., prompt=...,
+ media_type=...)` exactly once for that image.
+ 3. Attempts `json.loads` on the text response; falls back to
+ treating the whole response as a plain caption.
+ 4. Builds an `{image_id, caption, …}` entry per image.
+ 5. Returns `({"images": [entries...]}, usage)` shaped per the
+ `VisionAnalysisClient` Protocol.
 
-    Usage aggregation: input/output token counts are summed across
-    the per-image calls; provider + model are inherited from the
-    last call (the wrapper records aggregate usage on the outcome).
+ Usage aggregation: input/output token counts are summed across
+ the per-image calls; provider + model are inherited from the
+ last call (the wrapper records aggregate usage on the outcome).
 
-    Limiter ownership: the adapter holds an optional reference to
-    the shared limiter so EACH per-image LLM call gets its own
-    acquisition. The wrapping image-enrichment module no longer
-    needs to limit the adapter's outer `analyze()` call — that's
-    the caller's choice. When the limiter is None, calls bypass
-    the gate.
+ Limiter ownership: the adapter holds an optional reference to
+ the shared limiter so EACH per-image LLM call gets its own
+ acquisition. The wrapping image-enrichment module no longer
+ needs to limit the adapter's outer `analyze` call — that's
+ the caller's choice. When the limiter is None, calls bypass
+ the gate.
 
-    Failure handling: an individual per-image LLM call may raise
-    (network blip, vendor 429). The adapter swallows the exception
-    for that image, records a fallback caption-only entry with a
-    short error reason in `metadata`, and continues to the next
-    image. The aggregate `analyze()` call never raises — the
-    operator sees the per-image misses through the entry's
-    `metadata.error` field. This keeps the limiter acquisition /
-    release symmetry tight (every acquire has a corresponding
-    release in the limiter's `run()` even on raise).
-    """
+ Failure handling: an individual per-image LLM call may raise
+ (network blip, vendor 429). The adapter swallows the exception
+ for that image, records a fallback caption-only entry with a
+ short error reason in `metadata`, and continues to the next
+ image. The aggregate `analyze` call never raises — the
+ operator sees the per-image misses through the entry's
+ `metadata.error` field. This keeps the limiter acquisition /
+ release symmetry tight (every acquire has a corresponding
+ release in the limiter's `run` even on raise).
+ """
 
     def __init__(
         self,
@@ -257,13 +257,13 @@ class PerImageVisionAdapter:
         metadata: Mapping[str, Any],
     ) -> tuple[str, Any]:
         """Acquire the limiter (when wired) + call the underlying
-        vision client for exactly one image. Returns `(text, usage)`
-        from the client; raises if the client raises.
+ vision client for exactly one image. Returns `(text, usage)`
+ from the client; raises if the client raises.
 
-        Limiter semantics: the limiter's `run(callable, *args,
-        metadata=...)` acquires the semaphore + invokes the
-        callable + releases on return OR raise. So one image →
-        one acquisition either way."""
+ Limiter semantics: the limiter's `run(callable, *args,
+ metadata=...)` acquires the semaphore + invokes the
+ callable + releases on return OR raise. So one image →
+ one acquisition either way."""
         def _call() -> tuple[str, Any]:
             return self._vision.analyze_image(
                 image.image_bytes,
@@ -280,10 +280,10 @@ class PerImageVisionAdapter:
 @dataclass(frozen=True)
 class _AggregateVisionUsage:
     """Tiny usage record the adapter emits so the wrapper sees a
-    `model_usage`-shaped object. Field names match
-    `_model_usage_from`'s reader in
-    `legacy_enricher_modules.py` (provider / model / input_tokens
-    / output_tokens / duration_ms)."""
+ `model_usage`-shaped object. Field names match
+ `_model_usage_from`'s reader in
+ `legacy_enricher_modules.py` (provider / model / input_tokens
+ / output_tokens / duration_ms)."""
     provider: str | None = None
     model: str | None = None
     input_tokens: int = 0
@@ -294,14 +294,14 @@ class _AggregateVisionUsage:
 def _try_parse_image_response(text: str) -> dict[str, Any] | None:
     """Best-effort JSON extraction from a vision-LLM text response.
 
-    Most production vision models return either:
-      * a fenced ```json``` code block, or
-      * raw JSON (when prompted), or
-      * prose (the most common fallback)
+ Most production vision models return either:
+ * a fenced ```json``` code block, or
+ * raw JSON (when prompted), or
+ * prose (the most common fallback)
 
-    Returns the parsed dict on success; None when the response is
-    unstructured. The adapter then falls back to a caption-only
-    entry."""
+ Returns the parsed dict on success; None when the response is
+ unstructured. The adapter then falls back to a caption-only
+ entry."""
     if not text:
         return None
     stripped = text.strip()
@@ -328,14 +328,14 @@ def _try_parse_image_response(text: str) -> dict[str, Any] | None:
 
 class TextLLMClientAdapter:
     """Thin wrapper around a production `TextLLMClient` so callers
-    that want to be explicit about the `TextAnalysisClient` Protocol
-    can construct one. The adapter adds nothing functional — the
-    production client already matches the Protocol structurally —
-    but having an explicit adapter at the bootstrap boundary makes
-    the dependency arrow visible in the code.
+ that want to be explicit about the `TextAnalysisClient` Protocol
+ can construct one. The adapter adds nothing functional — the
+ production client already matches the Protocol structurally —
+ but having an explicit adapter at the bootstrap boundary makes
+ the dependency arrow visible in the code.
 
-    Deployments that prefer to pass the raw client straight through
-    can do that; the wrappers don't care."""
+ Deployments that prefer to pass the raw client straight through
+ can do that; the wrappers don't care."""
 
     def __init__(self, text_client: Any) -> None:
         self._client = text_client
@@ -350,23 +350,23 @@ class TextLLMClientAdapter:
         return self._client.extract(prompt, schema, metadata=metadata)
 
 
-# ---- Wave 11A — workspace-aware image-bytes provider ------------
+# ---- workspace-aware image-bytes provider ------------
 
 
 @dataclass(frozen=True)
 class ImageProviderResult:
     """Return type for `WorkspaceImageBytesProvider`. Carries the
-    loaded payloads PLUS structured warnings explaining any
-    missing-bytes outcomes.
+ loaded payloads PLUS structured warnings explaining any
+ missing-bytes outcomes.
 
-    `payloads` is the input to the `PerImageVisionAdapter` — empty
-    when no image artifacts could be loaded.
+ `payloads` is the input to the `PerImageVisionAdapter` — empty
+ when no image artifacts could be loaded.
 
-    `warnings` is operator-readable strings describing per-image
-    misses (e.g. "artifact art-1: bytes not loadable; check
-    workspace permissions"). The activity surfaces these on the
-    image module's `EnrichmentModuleOutcome.warnings` so they reach
-    the final report."""
+ `warnings` is operator-readable strings describing per-image
+ misses (e.g. "artifact art-1: bytes not loadable; check
+ workspace permissions"). The activity surfaces these on the
+ image module's `EnrichmentModuleOutcome.warnings` so they reach
+ the final report."""
 
     payloads: tuple["VisionImagePayload", ...]
     warnings: tuple[str, ...] = ()
@@ -374,29 +374,29 @@ class ImageProviderResult:
 
 class WorkspaceImageBytesProvider:
     """Resolves the current run's detected compile-image artifacts
-    into `VisionImagePayload` records the
-    `PerImageVisionAdapter` consumes.
+ into `VisionImagePayload` records the
+ `PerImageVisionAdapter` consumes.
 
-    Construction: per-run inside the enrichment activity. Closes
-    over the artifact registry + workspace + project context +
-    document id. Workspace-side path resolution mirrors
-    `IngestionResultReviewService._resolve_artifact_path` — full
-    path-traversal guard so a tampered registry entry can never
-    read outside the project workspace.
+ Construction: per-run inside the enrichment activity. Closes
+ over the artifact registry + workspace + project context +
+ document id. Workspace-side path resolution mirrors
+ `IngestionResultReviewService._resolve_artifact_path` — full
+ path-traversal guard so a tampered registry entry can never
+ read outside the project workspace.
 
-    Skip semantics: a registry without `compile.image` artifacts
-    for the document yields `payloads=()` so the
-    `ImageEnrichmentModule.can_run` check still skips with
-    "compile detected no images" (the image module's check looks
-    at `compile_result.detected_images` first; if THAT is empty
-    the provider is never invoked anyway). When images WERE
-    detected but their bytes can't be loaded (file missing /
-    permissions denied / decoded mismatch), the provider returns
-    `payloads=()` plus a populated `warnings` list — the activity
-    forwards the warnings to the operator-facing module outcome.
+ Skip semantics: a registry without `compile.image` artifacts
+ for the document yields `payloads=` so the
+ `ImageEnrichmentModule.can_run` check still skips with
+ "compile detected no images" (the image module's check looks
+ at `compile_result.detected_images` first; if THAT is empty
+ the provider is never invoked anyway). When images WERE
+ detected but their bytes can't be loaded (file missing /
+ permissions denied / decoded mismatch), the provider returns
+ `payloads=` plus a populated `warnings` list — the activity
+ forwards the warnings to the operator-facing module outcome.
 
-    Pure I/O — no LLM calls. Same workspace+registry inputs →
-    same payloads."""
+ Pure I/O — no LLM calls. Same workspace+registry inputs →
+ same payloads."""
 
     # Artifact kinds the provider considers "image-bearing".
     # Mirrors `_is_image_kind` in `j1/enrichers.py` minus the
@@ -440,21 +440,21 @@ class WorkspaceImageBytesProvider:
 
     def __call__(self) -> Iterable[VisionImagePayload]:
         """Adapter-facing entrypoint. Returns the payload iterable
-        directly so the `ImageBytesProvider` callable type
-        contract is preserved. Warnings are accessible via
-        `last_result()` after the call."""
+ directly so the `ImageBytesProvider` callable type
+ contract is preserved. Warnings are accessible via
+ `last_result` after the call."""
         result = self.load_all()
         return result.payloads
 
     def last_result(self) -> ImageProviderResult | None:
         """Return the most-recent `ImageProviderResult` so the
-        caller (the activity) can read structured warnings to
-        attach to the module outcome."""
+ caller (the activity) can read structured warnings to
+ attach to the module outcome."""
         return self._cached
 
     def load_all(self) -> ImageProviderResult:
         """Walk the artifact registry + workspace, build the
-        payload list, accumulate warnings, cache + return."""
+ payload list, accumulate warnings, cache + return."""
         if self._cached is not None:
             return self._cached
         try:
@@ -493,11 +493,11 @@ class WorkspaceImageBytesProvider:
 
     def _belongs_to_document(self, record: Any) -> bool:
         """A registry record is associated with this document when
-        either:
-          * `record.source_document_ids` lists the document_id, OR
-          * `record.metadata["document_id"]` matches.
-        Either signal is enough — producers populate one or the
-        other depending on the writer."""
+ either:
+ * `record.source_document_ids` lists the document_id, OR
+ * `record.metadata["document_id"]` matches.
+ Either signal is enough — producers populate one or the
+ other depending on the writer."""
         if not self._document_id:
             return True
         sources = getattr(record, "source_document_ids", None) or []
@@ -511,8 +511,8 @@ class WorkspaceImageBytesProvider:
     ) -> tuple[VisionImagePayload | None, str | None]:
         """Build the typed payload for one image-bearing artifact.
 
-        Returns (None, warning) when the bytes couldn't be loaded.
-        Returns (payload, None) on success."""
+ Returns (None, warning) when the bytes couldn't be loaded.
+ Returns (payload, None) on success."""
         from pathlib import PurePosixPath
 
         artifact_id = getattr(record, "artifact_id", None) or "<unknown>"

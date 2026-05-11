@@ -70,11 +70,11 @@ TASK_QUALITY_ASSESSMENT = "quality_assessment"
 class SourceSignals:
     """Compact compile-time signals consumed by the assessor.
 
-    Built by the activity from `ArtifactActivityResult.content_stats`
-    + `ArtifactActivityResult.compile_metrics` + the
-    `compile_strategy_report` final-quality verdict. Never carries
-    document content — only counts and flags so the assessment is
-    deterministic + easy to log."""
+ Built by the activity from `ArtifactActivityResult.content_stats`
+ + `ArtifactActivityResult.compile_metrics` + the
+ `compile_strategy_report` final-quality verdict. Never carries
+ document content — only counts and flags so the assessment is
+ deterministic + easy to log."""
     compile_status: str  # "succeeded" / "failed"
     final_compile_quality: str = "good"  # good / low / failed
     page_count: int | None = None
@@ -86,13 +86,13 @@ class SourceSignals:
     table_count: int = 0
     text_block_count: int = 0
     total_text_chars: int = 0
-    # Wave 5 closure: compile-stage warnings the parser surfaced
+    #  closure: compile-stage warnings the parser surfaced
     # (e.g. "low-density page 3", "no language detected"). Used by
     # the assessor to bias OPTIONAL → RECOMMENDED when degraded
     # extraction is detected. Empty when the parser surfaced no
     # warnings or the workflow didn't thread them in.
     compile_warnings: tuple[str, ...] = ()
-    # Wave 5 closure: typed quality scores the parser surfaced
+    #  closure: typed quality scores the parser surfaced
     # (0..1 each). The assessor consults these directly so the
     # low-quality bias doesn't depend on the discrete
     # `final_compile_quality` verdict alone.
@@ -104,22 +104,22 @@ class SourceSignals:
 @dataclass(frozen=True)
 class PostCompileEnrichPlan:
     """Structured assessment surfaced as a `post_compile_enrich_plan`
-    artifact + returned to the workflow for downstream gating.
+ artifact + returned to the workflow for downstream gating.
 
-    Fields:
-      * `overall_recommendation` — high-level verdict the FE renders
-        as a banner (SKIP / OPTIONAL / RECOMMENDED / REQUIRED).
-      * `reasons` — operator-readable strings explaining the verdict.
-      * `recommended_tasks` / `skipped_tasks` — explicit per-task
-        decisions; intentionally surfaced even when a task is skipped
-        so the FE can render "we considered X and decided no" vs
-        silently omitting.
-      * `blocking_issues` — populated only when the verdict is SKIP
-        for a reason the operator should fix (e.g. compile failed).
-      * `source_signals` — frozen snapshot of the inputs the assessor
-        saw, for audit / debugging.
-      * `decision_source` — `rule_based` today; future fast-LLM
-        consults set `rule_based_with_fast_llm`."""
+ Fields:
+ * `overall_recommendation` — high-level verdict the FE renders
+ as a banner (SKIP / OPTIONAL / RECOMMENDED / REQUIRED).
+ * `reasons` — operator-readable strings explaining the verdict.
+ * `recommended_tasks` / `skipped_tasks` — explicit per-task
+ decisions; intentionally surfaced even when a task is skipped
+ so the FE can render "we considered X and decided no" vs
+ silently omitting.
+ * `blocking_issues` — populated only when the verdict is SKIP
+ for a reason the operator should fix (e.g. compile failed).
+ * `source_signals` — frozen snapshot of the inputs the assessor
+ saw, for audit / debugging.
+ * `decision_source` — `rule_based` today; future fast-LLM
+ consults set `rule_based_with_fast_llm`."""
 
     overall_recommendation: EnrichRecommendation
     schema_version: str = SCHEMA_VERSION
@@ -137,7 +137,7 @@ class PostCompileEnrichPlan:
     # Snapshot of the applied policy. Empty dict when no policy was
     # consulted. Serialised as-is into the persisted plan.
     domain_enrichment_policy: dict[str, Any] = field(default_factory=dict)
-    # ---- Wave 5 closure fields ---------------------------------
+    # ---- closure fields ---------------------------------
     # Operator-readable confidence (0..1) in the verdict. Heuristic:
     # 1.0 for blocking SKIPs, 0.85 when a policy=always / =never
     # drove the call, 0.7 when compile signals clearly support the
@@ -171,11 +171,11 @@ class PostCompileEnrichPlan:
     def should_enrich(self) -> bool:
         """Boolean projection of `overall_recommendation`.
 
-        True for OPTIONAL / RECOMMENDED / REQUIRED — any case where
-        the assessor didn't actively reject enrichment. False for
-        SKIP. The boolean is what most downstream consumers branch
-        on; the enum stays available for callers that need the
-        finer-grained verdict."""
+ True for OPTIONAL / RECOMMENDED / REQUIRED — any case where
+ the assessor didn't actively reject enrichment. False for
+ SKIP. The boolean is what most downstream consumers branch
+ on; the enum stays available for callers that need the
+ finer-grained verdict."""
         return self.overall_recommendation != EnrichRecommendation.SKIP
 
     def to_payload(self) -> dict[str, Any]:
@@ -254,9 +254,9 @@ def _expected_outputs_for_tasks(
     tasks: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Project the recommended-task list onto the artifact kinds
-    those tasks will produce. Deduplicates while preserving order
-    so a (table_enrichment, image_captioning, vision_enrichment)
-    tuple yields ("enriched.tables", "enriched.visuals")."""
+ those tasks will produce. Deduplicates while preserving order
+ so a (table_enrichment, image_captioning, vision_enrichment)
+ tuple yields ("enriched.tables", "enriched.visuals")."""
     seen: set[str] = set()
     out: list[str] = []
     for task in tasks:
@@ -271,8 +271,8 @@ def _expected_outputs_for_tasks(
 def _build_warnings(signals: SourceSignals) -> tuple[str, ...]:
     """Compose a non-blocking warning list from the compile signals.
 
-    Mirrors the spec's "caveat surface" — distinct from `reasons`
-    (verdict explanation) and `blocking_issues` (terminal SKIP)."""
+ Mirrors the spec's "caveat surface" — distinct from `reasons`
+ (verdict explanation) and `blocking_issues` (terminal SKIP)."""
     warnings: list[str] = []
     if signals.compile_warnings:
         warnings.extend(signals.compile_warnings)
@@ -305,9 +305,9 @@ def _derive_confidence(
 ) -> float:
     """Operator-readable verdict confidence.
 
-    Heuristic — not a probabilistic score. Used by the FE to render
-    a confidence pill alongside the recommendation; not consumed by
-    other decision logic."""
+ Heuristic — not a probabilistic score. Used by the FE to render
+ a confidence pill alongside the recommendation; not consumed by
+ other decision logic."""
     if recommendation == EnrichRecommendation.SKIP:
         # Blocking SKIPs are deterministic, hence high confidence.
         return 1.0
@@ -331,23 +331,23 @@ def assess_post_compile_enrich(
 ) -> PostCompileEnrichPlan:
     """Rule-based assessor. Pure function — no I/O, no LLM.
 
-    When `domain_pack` is provided AND carries a non-default
-    `enrichment_policy`, the verdict + per-task lists are adjusted
-    via `_apply_domain_policy` AFTER the rule-based decision. Blocking
-    conditions (compile failure, empty document) remain authoritative —
-    a domain policy can't override SKIP for those.
+ When `domain_pack` is provided AND carries a non-default
+ `enrichment_policy`, the verdict + per-task lists are adjusted
+ via `_apply_domain_policy` AFTER the rule-based decision. Blocking
+ conditions (compile failure, empty document) remain authoritative —
+ a domain policy can't override SKIP for those.
 
-    `initial_plan_candidates` (Wave-3 → Wave-5 bridge): the
-    `InitialExecutionPlan.candidate_enrichment_modules` list. Tasks
-    appearing here that the rule-based path didn't already
-    recommend are added to `recommended_tasks` as domain-suggested
-    optional candidates. Each addition records its provenance via a
-    `reasons` entry "candidate from initial execution plan: <task>".
+ `initial_plan_candidates` ( → bridge): the
+ `InitialExecutionPlan.candidate_enrichment_modules` list. Tasks
+ appearing here that the rule-based path didn't already
+ recommend are added to `recommended_tasks` as domain-suggested
+ optional candidates. Each addition records its provenance via a
+ `reasons` entry "candidate from initial execution plan: <task>".
 
-    `resolved_policy` (Wave-cleanup): the layered policy resolution
-    (request > project > domain > system). When provided, overrides
-    the domain pack's policy field. Lets per-run operator overrides
-    drive the verdict without modifying the pack."""
+ `resolved_policy`: the layered policy resolution
+ (request > project > domain > system). When provided, overrides
+ the domain pack's policy field. Lets per-run operator overrides
+ drive the verdict without modifying the pack."""
     if signals.compile_status == "failed":
         block = "compile failed; nothing to enrich"
         return _finalize_plan(
@@ -428,7 +428,7 @@ def assess_post_compile_enrich(
         skipped.append(TASK_IMAGE_CAPTIONING)
         skipped.append(TASK_VISION_ENRICHMENT)
 
-    # Quality + degraded-extraction signals (Wave 5 closure).
+    # Quality + degraded-extraction signals ( closure).
     low_quality_signal = signals.final_compile_quality == "low"
     low_parse_score = (
         signals.parse_quality_score is not None
@@ -465,7 +465,7 @@ def assess_post_compile_enrich(
     if recommended:
         overall = EnrichRecommendation.RECOMMENDED
     elif degraded_extraction:
-        # Wave 5 closure: degraded-extraction bias. Even when no
+        #  closure: degraded-extraction bias. Even when no
         # tables/images are present, low quality / compile warnings
         # justify lifting OPTIONAL → RECOMMENDED so the enrichment
         # stage can add retrieval hints / quality notes.
@@ -480,7 +480,7 @@ def assess_post_compile_enrich(
             "no rich content signals (images/tables); enrichment optional"
         )
 
-    # Wave-cleanup: merge initial-plan candidates as optional
+    #  merge initial-plan candidates as optional
     # additions BEFORE the policy overlay runs. This makes the
     # initial-plan's suggestion explicit on the recommended list
     # so the FE can render "candidate from initial execution plan".
@@ -536,12 +536,12 @@ def _effective_policy_for_overlay(
 ) -> DomainEnrichmentPolicy | None:
     """Pick the policy snapshot used by `_apply_domain_policy`.
 
-    `resolved_policy` carries the operator/project/system precedence
-    chain. When present and its `policy` differs from the domain
-    pack's, we synthesise a new `DomainEnrichmentPolicy` carrying
-    the resolved policy literal but the domain pack's task lists +
-    reasoning. This lets a per-run `never` override collapse the
-    verdict to SKIP while the FE still sees the domain context."""
+ `resolved_policy` carries the operator/project/system precedence
+ chain. When present and its `policy` differs from the domain
+ pack's, we synthesise a new `DomainEnrichmentPolicy` carrying
+ the resolved policy literal but the domain pack's task lists +
+ reasoning. This lets a per-run `never` override collapse the
+ verdict to SKIP while the FE still sees the domain context."""
     if resolved_policy is None:
         return domain_pack.enrichment_policy if domain_pack else None
     base = (
@@ -572,18 +572,18 @@ def _finalize_plan(
     domain_pack: DomainPack | None,
     resolved_policy: ResolvedEnrichmentPolicy | None = None,
 ) -> PostCompileEnrichPlan:
-    """Populate Wave 5 closure fields on a plan that's otherwise
-    complete.
+    """Populate closure fields on a plan that's otherwise
+ complete.
 
-    Computes `expected_outputs`, `confidence`, `require_enrichment_success`,
-    `model_tier_selection`, and `concurrency_hints` from the plan's
-    recommended tasks + the active domain policy. Pure / no I/O —
-    safe to call from rule-based + LLM-refined paths.
+ Computes `expected_outputs`, `confidence`, `require_enrichment_success`,
+ `model_tier_selection`, and `concurrency_hints` from the plan's
+ recommended tasks + the active domain policy. Pure / no I/O —
+ safe to call from rule-based + LLM-refined paths.
 
-    When `resolved_policy` is provided, the plan's
-    `domain_enrichment_policy` dict carries an extra `resolved`
-    block recording the (policy, source) pair so the FE can render
-    "Policy: never (from request)" alongside the verdict."""
+ When `resolved_policy` is provided, the plan's
+ `domain_enrichment_policy` dict carries an extra `resolved`
+ block recording the (policy, source) pair so the FE can render
+ "Policy: never (from request)" alongside the verdict."""
     policy = (
         domain_pack.enrichment_policy if domain_pack is not None else None
     )
@@ -638,15 +638,15 @@ def _apply_domain_policy(
 ) -> PostCompileEnrichPlan:
     """Overlay the domain enrichment policy onto a rule-based plan.
 
-    Rules:
-      * `policy=never` → collapse to SKIP unless already blocked.
-      * `policy=always` → upgrade OPTIONAL → RECOMMENDED.
-      * Force-recommended tasks are added (deduped) and removed from
-        `skipped_tasks`.
-      * Denied tasks are removed from `recommended_tasks` and added
-        to `skipped_tasks`.
-      * `policy.reasoning` is appended to `reasons` so the operator
-        sees the domain influence trail."""
+ Rules:
+ * `policy=never` → collapse to SKIP unless already blocked.
+ * `policy=always` → upgrade OPTIONAL → RECOMMENDED.
+ * Force-recommended tasks are added (deduped) and removed from
+ `skipped_tasks`.
+ * Denied tasks are removed from `recommended_tasks` and added
+ to `skipped_tasks`.
+ * `policy.reasoning` is appended to `reasons` so the operator
+ sees the domain influence trail."""
     # SKIP from a blocking condition wins regardless of policy. The
     # rule-based path sets `blocking_issues` on those skips; we only
     # honour the policy on non-blocking SKIPs (which the current
@@ -725,7 +725,7 @@ def _apply_domain_policy(
         decision_source=plan.decision_source,
         domain_id=plan.domain_id,
         domain_enrichment_policy=plan.domain_enrichment_policy,
-        # Wave 5 closure fields — preserved through the overlay so a
+        #  closure fields — preserved through the overlay so a
         # downstream `_finalize_plan` call doesn't have to rederive
         # them. `_finalize_plan` runs AFTER this overlay and will
         # recompute expected_outputs / confidence anyway, but we
@@ -738,21 +738,21 @@ def _apply_domain_policy(
 @dataclass(frozen=True)
 class FastLLMRefinement:
     """A single refinement an optional fast-LLM consult emits to
-    upgrade/downgrade a rule-based plan. Pure-data; the actual LLM
-    call lives in a separate boundary (an activity / a wired
-    consultant) so the rule-based assessor stays I/O-free.
+ upgrade/downgrade a rule-based plan. Pure-data; the actual LLM
+ call lives in a separate boundary (an activity / a wired
+ consultant) so the rule-based assessor stays I/O-free.
 
-    Honour-rules:
-      * `recommendation` may upgrade OPTIONAL → RECOMMENDED/REQUIRED
-        when the LLM justifies it, or downgrade RECOMMENDED →
-        OPTIONAL when the LLM judges the doc isn't worth enriching.
-        It must NEVER override SKIP — blocking conditions are
-        deterministic.
-      * `add_reasons` are appended to the existing reasons (capped
-        to keep audit logs lean).
-      * `add_recommended_tasks` extend the recommended list (no dups);
-        anything new also drops out of `skipped_tasks`.
-    """
+ Honour-rules:
+ * `recommendation` may upgrade OPTIONAL → RECOMMENDED/REQUIRED
+ when the LLM justifies it, or downgrade RECOMMENDED →
+ OPTIONAL when the LLM judges the doc isn't worth enriching.
+ It must NEVER override SKIP — blocking conditions are
+ deterministic.
+ * `add_reasons` are appended to the existing reasons (capped
+ to keep audit logs lean).
+ * `add_recommended_tasks` extend the recommended list (no dups);
+ anything new also drops out of `skipped_tasks`.
+ """
 
     recommendation: EnrichRecommendation | None = None
     add_reasons: tuple[str, ...] = ()
@@ -771,14 +771,14 @@ def apply_fast_llm_refinement(
     refinement: FastLLMRefinement,
 ) -> PostCompileEnrichPlan:
     """Merge a fast-LLM refinement with a rule-based plan and return a
-    new `PostCompileEnrichPlan` with `decision_source` flipped to
-    `rule_based_with_fast_llm`. SKIP plans are NEVER refined — the
-    blocking conditions that drove SKIP are deterministic and must
-    win over LLM judgement.
+ new `PostCompileEnrichPlan` with `decision_source` flipped to
+ `rule_based_with_fast_llm`. SKIP plans are NEVER refined — the
+ blocking conditions that drove SKIP are deterministic and must
+ win over LLM judgement.
 
-    Pure function — no I/O, no LLM call. Test fixtures construct
-    a `FastLLMRefinement` directly; production wiring uses an
-    activity that calls the LLM and constructs the same dataclass."""
+ Pure function — no I/O, no LLM call. Test fixtures construct
+ a `FastLLMRefinement` directly; production wiring uses an
+ activity that calls the LLM and constructs the same dataclass."""
     if plan.overall_recommendation == EnrichRecommendation.SKIP:
         # Refinement on a SKIP plan is rejected silently — the
         # rule-based blockers are authoritative. We still flip the
@@ -810,7 +810,7 @@ def apply_fast_llm_refinement(
     # Cap reasons so a chatty LLM doesn't bloat the artifact.
     reasons = reasons[:_REFINEMENT_REASON_CAP]
     # Preserve closure fields (warnings, domain_id, policy snapshot,
-    # confidence, expected_outputs, ...) so an LLM refinement doesn't
+    # confidence, expected_outputs,...) so an LLM refinement doesn't
     # wipe the rule-based assessor's earlier work. The expected_outputs
     # tuple is recomputed below from the new recommended_tasks; other
     # closure fields carry over unchanged.
@@ -831,10 +831,10 @@ def apply_fast_llm_refinement(
 class FastLLMConsultPrompt:
     """Compact context the optional fast-LLM consult sees.
 
-    Carries ONLY signals + the rule-based provisional decision. NEVER
-    document content. Operators reading the consult's prompt logs see
-    structured fields (counts, flags, recommendation). This bounds
-    token cost and prevents accidental PII leakage."""
+ Carries ONLY signals + the rule-based provisional decision. NEVER
+ document content. Operators reading the consult's prompt logs see
+ structured fields (counts, flags, recommendation). This bounds
+ token cost and prevents accidental PII leakage."""
 
     compile_status: str
     final_compile_quality: str
@@ -893,16 +893,16 @@ def parse_fast_llm_refinement(
     payload: Any,
 ) -> FastLLMRefinement | None:
     """Parse a fast-LLM response (dict or JSON-string) into a
-    `FastLLMRefinement`. Returns None when the payload is not a
-    dict or has no usable fields. Hard rules:
+ `FastLLMRefinement`. Returns None when the payload is not a
+ dict or has no usable fields. Hard rules:
 
-      * `recommendation == "skip"` is silently dropped — SKIP is
-        reserved for deterministic blocking conditions.
-      * Unknown task ids in `add_recommended_tasks` are silently
-        dropped (not raised) so a chatty model can't break ingestion.
-      * Reasons are coerced to strings + capped downstream by
-        `apply_fast_llm_refinement`.
-    """
+ * `recommendation == "skip"` is silently dropped — SKIP is
+ reserved for deterministic blocking conditions.
+ * Unknown task ids in `add_recommended_tasks` are silently
+ dropped (not raised) so a chatty model can't break ingestion.
+ * Reasons are coerced to strings + capped downstream by
+ `apply_fast_llm_refinement`.
+ """
     import json as _json
 
     if isinstance(payload, str):
@@ -957,9 +957,9 @@ def parse_fast_llm_refinement(
 
 def is_consult_warranted(plan: PostCompileEnrichPlan) -> bool:
     """True iff the rule-based plan is ambiguous enough to be worth
-    consulting a fast LLM. Today: only `OPTIONAL` plans qualify —
-    SKIP is deterministic, RECOMMENDED/REQUIRED already carry
-    confident rule-based reasons."""
+ consulting a fast LLM. Today: only `OPTIONAL` plans qualify —
+ SKIP is deterministic, RECOMMENDED/REQUIRED already carry
+ confident rule-based reasons."""
     return plan.overall_recommendation == EnrichRecommendation.OPTIONAL
 
 
@@ -971,9 +971,9 @@ def build_signals_from_compile_metrics(
     compile_metrics: dict[str, Any] | None,
 ) -> SourceSignals:
     """Construct `SourceSignals` from the workflow's
-    `ArtifactActivityResult` shape. Defensive against missing keys —
-    every field falls back to a safe default (zero counts / False
-    flags / None for optionals)."""
+ `ArtifactActivityResult` shape. Defensive against missing keys —
+ every field falls back to a safe default (zero counts / False
+ flags / None for optionals)."""
     cs = content_stats or {}
     cm = compile_metrics or {}
 
@@ -1026,13 +1026,13 @@ def build_signals_from_compile_metrics(
 def build_signals_from_normalized_compile_result(
     normalized: Any,  # NormalizedCompileResult (lazy ref to avoid circular import)
 ) -> SourceSignals:
-    """Project a Wave-4 `NormalizedCompileResult` onto the
-    rule-based assessor's `SourceSignals` shape.
+    """Project a `NormalizedCompileResult` onto the
+ rule-based assessor's `SourceSignals` shape.
 
-    Bridges Wave 4 → Wave 5 — callers that have the typed
-    `NormalizedCompileResult` (post-compile + summary persisted)
-    can feed the assessor directly without re-deriving from the
-    raw `ArtifactActivityResult` dicts. Pure / no I/O."""
+ Bridges → callers that have the typed
+ `NormalizedCompileResult` (post-compile + summary persisted)
+ can feed the assessor directly without re-deriving from the
+ raw `ArtifactActivityResult` dicts. Pure / no I/O."""
     quality = normalized.quality_signals
     return SourceSignals(
         compile_status=normalized.status or "succeeded",

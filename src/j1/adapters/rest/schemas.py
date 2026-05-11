@@ -108,11 +108,11 @@ class JobEventsRecord(CamelModel):
 class IngestionRunRecord(CamelModel):
     """One ingestion-run summary, as the frontend consumes it.
 
-    `status` is one of `RunStatus` (see `j1.runs.models.RunStatus`).
-    `progressPercent` is the most recently reported overall progress.
-    `currentStage` / `currentStep` track the in-flight stage and
-    step. Terminal runs carry `completedAt`, `failureCode`, and
-    `failureMessage`."""
+ `status` is one of `RunStatus` (see `j1.runs.models.RunStatus`).
+ `progressPercent` is the most recently reported overall progress.
+ `currentStage` / `currentStep` track the in-flight stage and
+ step. Terminal runs carry `completedAt`, `failureCode`, and
+ `failureMessage`."""
 
     run_id: str
     document_id: str
@@ -165,7 +165,7 @@ class ExecutionPlanStep(CamelModel):
 
 class ExecutionPlanRecord(CamelModel):
     """Full execution-plan view: profile + per-step decisions +
-    operator-tunable knobs (mode, policy, FAST-LLM usage)."""
+ operator-tunable knobs (mode, policy, FAST-LLM usage)."""
 
     run_id: str
     document_id: str
@@ -188,11 +188,11 @@ class ExecutionPlanRecord(CamelModel):
 class ProgressEventRecord(CamelModel):
     """Frontend representation of a single progress event.
 
-    Compatible with the `event_type` taxonomy from
-    `j1.runs.reporter` (action constants stripped of the
-    `j1.progress.` prefix). Field names mirror what the SSE stream
-    emits — clients can use the same parser for both `GET …/events`
-    and `GET …/events/stream`."""
+ Compatible with the `event_type` taxonomy from
+ `j1.runs.reporter` (action constants stripped of the
+ `j1.progress.` prefix). Field names mirror what the SSE stream
+ emits — clients can use the same parser for both `GET …/events`
+ and `GET …/events/stream`."""
 
     event_id: str
     run_id: str
@@ -224,9 +224,9 @@ class IngestionRunConfirmRecord(CamelModel):
 class IngestionRunCompileRecord(CamelModel):
     """Response to `POST /ingestion-runs/{run_id}/compile`.
 
-    Returned shape mirrors `IngestionRunConfirmRecord` — `status` is
-    the post-trigger run status (`running` on first trigger, the
-    current status on a no-op repeat trigger)."""
+ Returned shape mirrors `IngestionRunConfirmRecord` — `status` is
+ the post-trigger run status (`running` on first trigger, the
+ current status on a no-op repeat trigger)."""
 
     run_id: str
     status: str
@@ -235,10 +235,10 @@ class IngestionRunCompileRecord(CamelModel):
 class IngestionRunControlRecord(CamelModel):
     """Response to `POST /ingestion-runs/{run_id}/{pause|resume|cancel}`.
 
-    Carries the post-action status so the FE can update its cache
-    without a follow-up GET, plus a short human-readable message
-    suitable for a toast and the new `updated_at` timestamp the FE
-    can render in its "last updated" line."""
+ Carries the post-action status so the FE can update its cache
+ without a follow-up GET, plus a short human-readable message
+ suitable for a toast and the new `updated_at` timestamp the FE
+ can render in its "last updated" line."""
 
     run_id: str
     action: str
@@ -250,9 +250,9 @@ class IngestionRunControlRecord(CamelModel):
 
 class IngestionRunCreatedRecord(CamelModel):
     """Response to `POST /ingestion-runs` — minimal handshake the
-    frontend uses to navigate to the run-detail page and open the
-    SSE stream. The run-record is already persisted server-side; the
-    client should `GET /ingestion-runs/{runId}` for the full snapshot."""
+ frontend uses to navigate to the run-detail page and open the
+ SSE stream. The run-record is already persisted server-side; the
+ client should `GET /ingestion-runs/{runId}` for the full snapshot."""
 
     run_id: str
     document_id: str
@@ -264,12 +264,12 @@ class IngestionRunCreatedRecord(CamelModel):
 class IngestionRunListItem(CamelModel):
     """Compact projection of an `IngestionRun` for the All Runs view.
 
-    Stays a strict subset of `IngestionRunRecord` so the list view
-    can render the same status badge / progress bar / failure
-    summary as the detail page without an extra round-trip. `mode`
-    and `policy` are sourced from the run's metadata bag (populated
-    by the upload handler) so the list rows show the same values
-    the run-detail page does."""
+ Stays a strict subset of `IngestionRunRecord` so the list view
+ can render the same status badge / progress bar / failure
+ summary as the detail page without an extra round-trip. `mode`
+ and `policy` are sourced from the run's metadata bag (populated
+ by the upload handler) so the list rows show the same values
+ the run-detail page does."""
 
     run_id: str
     document_id: str
@@ -291,11 +291,11 @@ class IngestionRunListItem(CamelModel):
 class IngestionRunListRecord(CamelModel):
     """Paginated list response for `GET /ingestion-runs`.
 
-    `total` counts items AFTER status filtering but BEFORE
-    pagination, so the client can render a paging widget without a
-    second round-trip. Listing reads through
-    `IngestionRunStore.list()` — currently a JSONL scan, swappable
-    to a SQL implementation per the store Protocol."""
+ `total` counts items AFTER status filtering but BEFORE
+ pagination, so the client can render a paging widget without a
+ second round-trip. Listing reads through
+ `IngestionRunStore.list` — currently a JSONL scan, swappable
+ to a SQL implementation per the store Protocol."""
 
     items: list[IngestionRunListItem]
     page: int = 1
@@ -394,13 +394,13 @@ class AnswerRecord(CamelModel):
 class ManualTestQueryRequestRecord(CamelModel):
     """Body for POST /ingestion-runs/{run_id}/test-query.
 
-    `mode` is forwarded verbatim to the underlying answer engine
-    (accepts `auto`, `knowledge_first`, `graph_first`, etc.).
-    `topK` is hard-capped to 50 server-side; FastAPI clamps to the
-    same cap to fail fast on out-of-range input. `citationRequired`
-    flips the conditional `citation_present` deterministic check
-    on/off.
-    """
+ `mode` is forwarded verbatim to the underlying answer engine
+ (accepts `auto`, `knowledge_first`, `graph_first`, etc.).
+ `topK` is hard-capped to 50 server-side; FastAPI clamps to the
+ same cap to fail fast on out-of-range input. `citationRequired`
+ flips the conditional `citation_present` deterministic check
+ on/off.
+ """
 
     question: str = Field(min_length=1)
     top_k: int = Field(default=10, ge=1, le=50)
@@ -412,11 +412,11 @@ class ManualTestQueryRequestRecord(CamelModel):
 class ValidationCheckRecord(CamelModel):
     """One deterministic check outcome on the validation response.
 
-    `severity=required` failures flip the response's
-    `validationStatus` to `failed`. `severity=optional` failures
-    flip it to `passed_with_warnings` (Phase 3+). `severity` and
-    `passed` together are the canonical badge inputs.
-    """
+ `severity=required` failures flip the response's
+ `validationStatus` to `failed`. `severity=optional` failures
+ flip it to `passed_with_warnings`. `severity` and
+ `passed` together are the canonical badge inputs.
+ """
 
     name: str
     severity: str
@@ -429,10 +429,10 @@ class ValidationCheckRecord(CamelModel):
 class RetrievedChunkRefRecord(CamelModel):
     """Compact server-side projection of one retrieved chunk.
 
-    `artifact_kind` (Phase 4) lets the FE branch on modality —
-    e.g. show a table icon for `enriched.tables`, etc. Optional
-    so older runs (Phase 1/2) without the field still serialise
-    correctly."""
+ `artifact_kind` lets the FE branch on modality —
+ e.g. show a table icon for `enriched.tables`, etc. Optional
+ so older runs (/2) without the field still serialise
+ correctly."""
 
     artifact_id: str
     chunk_id: str | None = None
@@ -447,11 +447,11 @@ class RetrievedChunkRefRecord(CamelModel):
 class EvidenceFlagsRecord(CamelModel):
     """Hints to the FE for which evidence rails to render.
 
-    Phase 1 only populates `graphUsed` honestly — table/image
-    detection lands in Phase 4 with the artifact-registry probe.
-    The other flags are present in the schema today so the FE can
-    bind them once and not need a contract change later.
-    """
+ only populates `graphUsed` honestly — table/image
+ detection lands with the artifact-registry probe.
+ The other flags are present in the schema today so the FE can
+ bind them once and not need a contract change later.
+ """
 
     graph_used: bool = False
     tables_used: bool = False
@@ -461,12 +461,12 @@ class EvidenceFlagsRecord(CamelModel):
 class ManualTestQueryResponseRecord(CamelModel):
     """Body of the 200 response.
 
-    HTTP status = execution outcome (200 = the query ran).
-    `validationStatus` field = the answer's outcome, aggregated from
-    `checks[]`. Callers MUST not collapse the two — a 200 with
-    `validationStatus="failed"` is the canonical 'job ran but the
-    answer didn't pass' case.
-    """
+ HTTP status = execution outcome (200 = the query ran).
+ `validationStatus` field = the answer's outcome, aggregated from
+ `checks[]`. Callers MUST not collapse the two — a 200 with
+ `validationStatus="failed"` is the canonical 'job ran but the
+ answer didn't pass' case.
+ """
 
     request_id: str
     run_id: str
@@ -481,13 +481,13 @@ class ManualTestQueryResponseRecord(CamelModel):
     raw_response: dict[str, Any] | None = None
 
 
-# ---- Validation sets / runs (Phase 2) -------------------------------
+# ---- Validation sets / runs -------------------------------
 
 
 class ValidationTestCaseRecord(CamelModel):
     """One generated/imported test case. Wire shape mirrors
-    `ValidationTestCaseDTO` field-for-field.
-    """
+ `ValidationTestCaseDTO` field-for-field.
+ """
 
     test_case_id: str
     question: str
@@ -522,9 +522,9 @@ class ValidationSetRecord(CamelModel):
 class GenerateValidationSetRequestRecord(CamelModel):
     """POST /ingestion-runs/{id}/validation-sets/generate body.
 
-    `force` bypasses the (run, hash) idempotency cache.
-    `maxCases` is server-clamped to MAX_CASES_PER_RUN (50).
-    """
+ `force` bypasses the (run, hash) idempotency cache.
+ `maxCases` is server-clamped to MAX_CASES_PER_RUN (50).
+ """
 
     max_cases: int = Field(default=25, ge=1, le=50)
     citation_required: bool = False
@@ -533,8 +533,8 @@ class GenerateValidationSetRequestRecord(CamelModel):
 
 class ValidationSetListItem(CamelModel):
     """Lightweight projection for the list endpoint — drops the full
-    test_cases array so a project with many sets doesn't pay the
-    full payload on each list call."""
+ test_cases array so a project with many sets doesn't pay the
+ full payload on each list call."""
 
     validation_set_id: str
     run_id: str
@@ -568,9 +568,9 @@ class ValidationSummaryRecord(CamelModel):
 
 class ValidationCitationRecord(CamelModel):
     """Citation projection on validation results. Same wire shape
-    as the manual-query CitationRecord but lives here to keep the
-    Phase 2 REST schemas internally consistent (no cross-references
-    to other regions of the schema file)."""
+ as the manual-query CitationRecord but lives here to keep the
+ REST schemas internally consistent (no cross-references
+ to other regions of the schema file)."""
 
     artifact_id: str
     artifact_type: str
@@ -598,9 +598,9 @@ class ValidationResultRecord(CamelModel):
 class ValidationRunRecord(CamelModel):
     """Body of GET /ingestion-runs/{id}/validation-runs/{vrunId}.
 
-    Carries every per-case result inline. For runs with many cases
-    this can be large; the FE caches per-`vrunId` since validation
-    runs are immutable once terminal."""
+ Carries every per-case result inline. For runs with many cases
+ this can be large; the FE caches per-`vrunId` since validation
+ runs are immutable once terminal."""
 
     validation_run_id: str
     validation_set_id: str
@@ -640,9 +640,9 @@ class StartValidationRunRequestRecord(CamelModel):
 class TesterVerdictRequestRecord(CamelModel):
     """Body for POST /validation-results/{id}/verdict.
 
-    `verdict` is constrained at the boundary so a typo fails fast.
-    `notes` is free-form, capped at a sensible 4 KB so a tester
-    pasting a wall of text can't blow up audit-log lines."""
+ `verdict` is constrained at the boundary so a typo fails fast.
+ `notes` is free-form, capped at a sensible 4 KB so a tester
+ pasting a wall of text can't blow up audit-log lines."""
 
     verdict: Literal["pass", "warning", "fail"]
     notes: str | None = Field(default=None, max_length=4096)

@@ -47,7 +47,7 @@ def _make_run(
 
 def test_upsert_then_get_round_trips_full_record(store, ctx):
     """A run written with all fields must be readable byte-for-byte
-    (status enum + datetimes round-trip through JSONL)."""
+ (status enum + datetimes round-trip through JSONL)."""
     run = _make_run()
     run.workspace_id = "ws-1"
     run.current_stage = "COMPILE"
@@ -72,8 +72,8 @@ def test_upsert_then_get_round_trips_full_record(store, ctx):
 
 def test_upsert_appends_latest_snapshot_wins(store, ctx):
     """The store appends every update; the latest snapshot per
-    `run_id` is what `get()` returns. This makes the JSONL doubles
-    as a state-transition audit trail."""
+ `run_id` is what `get` returns. This makes the JSONL doubles
+ as a state-transition audit trail."""
     run = _make_run()
     store.upsert(ctx, run)
 
@@ -142,8 +142,8 @@ def test_list_respects_limit(store, ctx):
 
 def test_get_tolerates_malformed_jsonl_line(store, ctx, tmp_path):
     """A truncated tail line must NOT make the entire file
-    unreadable — JSONL append-only logs occasionally end mid-line on
-    crash."""
+ unreadable — JSONL append-only logs occasionally end mid-line on
+ crash."""
     run = _make_run()
     store.upsert(ctx, run)
 

@@ -254,8 +254,8 @@ def test_report_templates_loaded(tmp_path):
 
 def test_processor_can_use_profile_settings():
     """A processor can be constructed with a Profile and access its data —
-    proving profile data is reachable from processor code without core changes.
-    """
+ proving profile data is reachable from processor code without core changes.
+ """
     profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
 
     class _ProfileAwareProcessor:
@@ -274,8 +274,8 @@ def test_processor_can_use_profile_settings():
 def test_project_context_carries_profile_id():
     """ProjectContext.profile already exists; ProfileLoader uses that value.
 
-    Sanity-check that the existing field works as the carrier for profile selection.
-    """
+ Sanity-check that the existing field works as the carrier for profile selection.
+ """
     from j1.projects.context import ProjectContext
 
     ctx = ProjectContext(tenant_id="acme", project_id="alpha", profile=DEFAULT_PROFILE_ID)

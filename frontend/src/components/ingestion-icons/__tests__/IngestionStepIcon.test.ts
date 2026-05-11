@@ -55,7 +55,7 @@ describe("<IngestionStepIcon /> rendering", () => {
     expect(html).toContain("pix-ic-inv");
     expect(html).toContain("state-completed");
     expect(html).toContain("pix-state-badge");
-    // Completed badge does NOT carry the .warn class.
+    // Completed badge does NOT carry the.warn class.
     expect(html).not.toContain("pix-state-badge warn");
   });
 

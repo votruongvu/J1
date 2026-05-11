@@ -28,7 +28,7 @@ attribute (used as the registry key) plus one or more methods.
 | Retrieve | [`RetrievalAdapter`](#retrievaladapter) | `retrieve(ctx, question, *, max_results, filters) → RetrievalResult` | Returns evidence (richer than the legacy `QueryProvider`). |
 | Rerank | [`RerankerAdapter`](#rerankeradapter) | `rerank(ctx, question, evidences, *, max_results) → list[Evidence]` | MUST NOT mutate inputs. |
 | LLM | [`LLMProviderAdapter`](#llmprovideradapter) | `generate(ctx, prompt, *, system, max_tokens, metadata) → dict` | Generic single-method LLM. |
-| Embed | [`EmbeddingProviderAdapter`](#embeddingprovideradapter) | `embed(ctx, texts) → list[list[float]]`, `dimension() → int` | |
+| Embed | [`EmbeddingProviderAdapter`](#embeddingprovideradapter) | `embed(ctx, texts) → list[list[float]]`, `dimension → int` | |
 | Vision | [`VisionProviderAdapter`](#visionprovideradapter) | `analyze(ctx, image_bytes, *, prompt, metadata) → dict` | |
 | Format | [`OutputFormatter`](#outputformatter) | `format(ctx, question, evidences, *, citations, metadata) → dict` | Output-shape is the formatter's choice. |
 | Evaluate | [`EvaluationAdapter`](#evaluationadapter) | `evaluate(ctx, question, evidences, *, expected, metadata) → EvaluationResult` | MUST be deterministic for a given input. |
@@ -41,9 +41,9 @@ attribute (used as the registry key) plus one or more methods.
 ```python
 @runtime_checkable
 class SourceConnector(Protocol):
-    kind: str
-    def list(self, ctx: ProjectContext, *, query=None) -> list[SourceMetadata]: ...
-    def fetch(self, ctx: ProjectContext, metadata: SourceMetadata) -> Source: ...
+ kind: str
+ def list(self, ctx: ProjectContext, *, query=None) -> list[SourceMetadata]:...
+ def fetch(self, ctx: ProjectContext, metadata: SourceMetadata) -> Source:...
 ```
 
 Connectors materialise bytes + metadata. They DO NOT call
@@ -68,10 +68,10 @@ Returns the canonical `RetrievalResult`:
 ```python
 @dataclass(frozen=True)
 class RetrievalResult:
-    status: ResultStatus
-    evidences: list[Evidence] = []
-    error: str | None = None
-    metadata: dict = {}
+ status: ResultStatus
+ evidences: list[Evidence] = []
+ error: str | None = None
+ metadata: dict = {}
 ```
 
 Strictly richer than the legacy `QueryResult` (which carries a
@@ -91,7 +91,7 @@ mutates the input list or the contained `Evidence` instances.
 
 ```python
 def generate(self, ctx, prompt, *, system=None, max_tokens=None,
-             metadata=None) -> dict[str, Any]:
+ metadata=None) -> dict[str, Any]:
 ```
 
 Returns a plain dict with at minimum a `text: str` key. Distinct
@@ -102,25 +102,25 @@ the other when both surfaces are needed.
 ### EmbeddingProviderAdapter
 
 ```python
-def embed(self, ctx, texts: list[str]) -> list[list[float]]: ...
-def dimension(self) -> int: ...
+def embed(self, ctx, texts: list[str]) -> list[list[float]]:...
+def dimension(self) -> int:...
 ```
 
-Returns vectors in input order, all of length `dimension()`. Empty
+Returns vectors in input order, all of length `dimension`. Empty
 input → empty list (no exception).
 
 ### VisionProviderAdapter
 
 ```python
 def analyze(self, ctx, image_bytes: bytes, *, prompt=None,
-            metadata=None) -> dict[str, Any]:
+ metadata=None) -> dict[str, Any]:
 ```
 
 ### OutputFormatter
 
 ```python
 def format(self, ctx, question, evidences, *, citations=None,
-           metadata=None) -> dict[str, Any]:
+ metadata=None) -> dict[str, Any]:
 ```
 
 The output dict's schema is the formatter's choice — a chat-UI
@@ -131,7 +131,7 @@ another. The framework does not constrain it.
 
 ```python
 def evaluate(self, ctx, question, evidences, *, expected=None,
-             metadata=None) -> EvaluationResult:
+ metadata=None) -> EvaluationResult:
 ```
 
 `EvaluationResult` carries an optional `score` (0..1 if set), an
@@ -147,11 +147,11 @@ harness fails if the same input yields different scores.
 
 ```python
 class DomainPolicy(Protocol):
-    kind: str
-    def should_index(self, ctx, artifact_id, metadata=None) -> bool: ...
-    def requires_review(self, ctx, target_kind, target_id,
-                        metadata=None) -> bool: ...
-    def redact(self, ctx, evidences: list[Evidence]) -> list[Evidence]: ...
+ kind: str
+ def should_index(self, ctx, artifact_id, metadata=None) -> bool:...
+ def requires_review(self, ctx, target_kind, target_id,
+ metadata=None) -> bool:...
+ def redact(self, ctx, evidences: list[Evidence]) -> list[Evidence]:...
 ```
 
 The pluggable hook for domain-side decisions. Three methods cover
@@ -160,7 +160,7 @@ the common cases:
 - `should_index` — per-artifact indexing filter.
 - `requires_review` — per-artifact / per-result human-review gate.
 - `redact` — masks / drops content before output formatting. MUST
-  return a new list; never mutate inputs.
+ return a new list; never mutate inputs.
 
 A deployment registers a single `DomainPolicy` and the framework
 calls it from workflow steps that have policy hooks. The core never
@@ -212,13 +212,13 @@ Imported from `j1.extension`:
 ## 4. Cross-references
 
 - [`docs/extension/manifest-and-registry.md`](manifest-and-registry.md)
-  — manifest schema + capability registry usage
+ — manifest schema + capability registry usage
 - [`docs/extension/conformance-tests.md`](conformance-tests.md) —
-  shared test harnesses and how to run them against your adapters
+ shared test harnesses and how to run them against your adapters
 - [`docs/extension/add-a-provider.md`](add-a-provider.md) — recipe
-  for plugging a real provider in (uses the contracts here)
+ for plugging a real provider in (uses the contracts here)
 - [`docs/extension/domain-module-isolation.md`](domain-module-isolation.md)
-  — what belongs outside core
+ — what belongs outside core
 - [`src/j1/extension/`](../../src/j1/extension/) — the source
 - [`src/j1/extension/mocks.py`](../../src/j1/extension/mocks.py) —
-  reference implementations of every contract
+ reference implementations of every contract

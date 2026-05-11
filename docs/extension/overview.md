@@ -13,32 +13,32 @@ seam to use.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Domain modules (your package, e.g. `acme_domain`)              │
-│    Profiles, prompts, report templates, vertical enrichers,     │
-│    DomainPolicy implementation                                  │
+│ Domain modules (your package, e.g. `acme_domain`) │
+│ Profiles, prompts, report templates, vertical enrichers, │
+│ DomainPolicy implementation │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │ depends on
+ │ depends on
 ┌─────────────────────────▼───────────────────────────────────────┐
-│  Adapters / connectors / providers                              │
-│    Implement the 12 contracts in `j1.extension.contracts`       │
-│    (CompilerAdapter, RetrievalAdapter, LLMProviderAdapter, …)   │
+│ Adapters / connectors / providers │
+│ Implement the 12 contracts in `j1.extension.contracts` │
+│ (CompilerAdapter, RetrievalAdapter, LLMProviderAdapter, …) │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │ depends on
+ │ depends on
 ┌─────────────────────────▼───────────────────────────────────────┐
-│  J1 extension surface (`j1.extension`)                          │
-│    Contracts + canonical primitives + AdapterManifest +         │
-│    CapabilityRegistry + conformance harness                     │
+│ J1 extension surface (`j1.extension`) │
+│ Contracts + canonical primitives + AdapterManifest + │
+│ CapabilityRegistry + conformance harness │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │ depends on
+ │ depends on
 ┌─────────────────────────▼───────────────────────────────────────┐
-│  J1 core (`j1.processing`, `j1.intake`, `j1.orchestration`, …)  │
-│    Workflow shape, persistence, audit / cost, security,         │
-│    workspace, registries — domain-neutral by construction       │
+│ J1 core (`j1.processing`, `j1.intake`, `j1.orchestration`, …) │
+│ Workflow shape, persistence, audit / cost, security, │
+│ workspace, registries — domain-neutral by construction │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │ uses
+ │ uses
 ┌─────────────────────────▼───────────────────────────────────────┐
-│  J1 outer transport adapters (`j1.adapters.rest`, …)            │
-│    REST + SSE + webhooks; map transport requests to ports       │
+│ J1 outer transport adapters (`j1.adapters.rest`, …) │
+│ REST + SSE + webhooks; map transport requests to ports │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,47 +93,47 @@ A workflow built on the extension surface follows this sequence;
 registered:
 
 ```
-                ┌──────────────────────────┐
-                │ SourceConnector.fetch    │   (optional — many
-                └────────────┬─────────────┘    deployments ingest
-                             │                  via DocumentIntakeService
-                             ▼                  directly instead)
-                ┌──────────────────────────┐
-                │ CompilerAdapter.compile  │
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                ┌──────────────────────────┐
-                │ EnrichmentAdapter.enrich │   (optional)
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                ┌──────────────────────────┐
-                │ GraphAdapter.build       │   (optional, configured)
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                ┌──────────────────────────┐
-                │ RetrievalAdapter.retrieve│
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                ┌──────────────────────────┐
-                │ RerankerAdapter.rerank   │   (optional)
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                ┌──────────────────────────┐
-                │ OutputFormatter.format   │
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                ┌──────────────────────────┐
-                │ EvaluationAdapter.evaluate│   (optional)
-                └────────────┬─────────────┘
-                             │
-                             ▼
-                       structured output
+ ┌──────────────────────────┐
+ │ SourceConnector.fetch │ (optional — many
+ └────────────┬─────────────┘ deployments ingest
+ │ via DocumentIntakeService
+ ▼ directly instead)
+ ┌──────────────────────────┐
+ │ CompilerAdapter.compile │
+ └────────────┬─────────────┘
+ │
+ ▼
+ ┌──────────────────────────┐
+ │ EnrichmentAdapter.enrich │ (optional)
+ └────────────┬─────────────┘
+ │
+ ▼
+ ┌──────────────────────────┐
+ │ GraphAdapter.build │ (optional, configured)
+ └────────────┬─────────────┘
+ │
+ ▼
+ ┌──────────────────────────┐
+ │ RetrievalAdapter.retrieve│
+ └────────────┬─────────────┘
+ │
+ ▼
+ ┌──────────────────────────┐
+ │ RerankerAdapter.rerank │ (optional)
+ └────────────┬─────────────┘
+ │
+ ▼
+ ┌──────────────────────────┐
+ │ OutputFormatter.format │
+ └────────────┬─────────────┘
+ │
+ ▼
+ ┌──────────────────────────┐
+ │ EvaluationAdapter.evaluate│ (optional)
+ └────────────┬─────────────┘
+ │
+ ▼
+ structured output
 ```
 
 A complete worked example over registered mock adapters lives in

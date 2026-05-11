@@ -42,9 +42,9 @@ required scope. The required scope is in the response body under
 [`SCOPE_*` table](security.md#4-scope-catalog). Common confusions:
 
 - `kb:answer` is required for both `POST /answer` AND `POST /answer?stream=true`.
-  The streaming branch shares the same dependency.
+ The streaming branch shares the same dependency.
 - `kb:audit.read` (NOT `kb:read`) is required for `GET /cost` and
-  `GET /ingestion-jobs/{id}/events`.
+ `GET /ingestion-jobs/{id}/events`.
 - `kb:admin` is required for project provisioning and workflow control.
 
 ### `400 HTTP_400` "X-Tenant-Id header required"
@@ -66,7 +66,7 @@ capability → 503" so misconfiguration silently disables a surface
 rather than silently enabling it. Check `GET /capabilities`:
 
 ```bash
-curl ... /capabilities | jq '.data.capabilities[] | select(.available == false)'
+curl... /capabilities | jq '.data.capabilities[] | select(.available == false)'
 ```
 
 Then revisit the constructor params on `create_rest_api(...)` (e.g.
@@ -79,11 +79,11 @@ The id you supplied doesn't exist in the registry **for the resolved
 tenant / project**. Common causes:
 
 - Typo in the path (`/documents/doc-1` ≠ `/documents/Doc-1` —
-  identifiers are case-sensitive).
+ identifiers are case-sensitive).
 - Wrong `X-Tenant-Id` / `X-Project-Id` (you're looking at the
-  document under another tenant).
+ document under another tenant).
 - The document was registered into a different J1 instance and
-  you're querying the wrong one.
+ you're querying the wrong one.
 
 ### `INVALID_IDENTIFIER` 400
 
@@ -111,8 +111,8 @@ messages cannot leak. See [rest-api.md § 8](rest-api.md).
 ### Stream stops after a few events with no `answer.completed` or `answer.failed`
 
 The client disconnected. The server detects this via
-`request.is_disconnected()` between events and stops emitting. The
-in-progress `AnswerService.answer()` call already finished
+`request.is_disconnected` between events and stops emitting. The
+in-progress `AnswerService.answer` call already finished
 synchronously, so no work was wasted — but if you're behind a proxy
 that closes idle connections, set `proxy_read_timeout` (or
 equivalent) higher than your longest-expected answer duration.
@@ -133,14 +133,14 @@ Read [`<workspace>/runtime/webhook_deliveries.jsonl`](webhooks.md):
 
 ```bash
 jq -c 'select(.subscription_id == "billing-sink")' \
-  < <workspace>/runtime/webhook_deliveries.jsonl
+ < <workspace>/runtime/webhook_deliveries.jsonl
 ```
 
 The `error` field on each attempt distinguishes:
 
 - `"http <status>"` — the receiver returned a non-2xx.
 - Free text starting with `"timeout"` / `"transport error"` /
-  `"dns fail"` — connectivity problem.
+ `"dns fail"` — connectivity problem.
 
 Retries follow exponential backoff clamped to `retry_max_delay_seconds`.
 If you see `attempt: 5, status: "failed"` the subscription has
@@ -213,9 +213,9 @@ The bulk services weren't passed to `create_rest_api`. Wire:
 
 ```python
 app = create_rest_api(
-    facade,
-    bulk_export=BulkExportService(source_registry, artifact_registry, feedback_store),
-    bulk_import=BulkImportService(source_registry),
+ facade,
+ bulk_export=BulkExportService(source_registry, artifact_registry, feedback_store),
+ bulk_import=BulkImportService(source_registry),
 )
 ```
 
@@ -228,13 +228,13 @@ app = create_rest_api(
 Run through the chain in order:
 
 1. `J1_EVENT_PUBLISHER_TYPE` — defaults to `noop`. Set to `bus`
-   (or your custom adapter type) to enable.
+ (or your custom adapter type) to enable.
 2. The publisher itself — `select_publisher`/your wiring code must
-   construct the right one based on settings.
+ construct the right one based on settings.
 3. Subscribers — for `bus`, did you actually attach a webhook
-   subscriber and/or a broker subscriber to the `ApplicationEventBus`?
+ subscriber and/or a broker subscriber to the `ApplicationEventBus`?
 4. The `event_bus=` param on `create_rest_api` — without it, REST
-   handlers don't publish anything.
+ handlers don't publish anything.
 
 ### `unsupported J1_EVENT_PUBLISHER_TYPE 'kafka'`
 
@@ -263,8 +263,7 @@ The framework's own structural test
 the build if the spec drifts from the publisher's channel/event
 registry. Run the cross-layer guard:
 
-```bash
-.venv/bin/pytest tests/test_external_integration_consistency.py
+```bash.venv/bin/pytest tests/test_external_integration_consistency.py
 ```
 
 ---
@@ -338,33 +337,30 @@ Add a row to the appropriate error-code table.
 
 ### How do I run only the external-integration tests?
 
-```bash
-.venv/bin/pytest \
-  tests/test_rest_adapter.py \
-  tests/test_rest_security.py \
-  tests/test_rest_events.py \
-  tests/test_rest_sse.py \
-  tests/test_rest_bulk.py \
-  tests/test_security.py \
-  tests/test_events.py \
-  tests/test_event_publisher.py \
-  tests/test_webhook_delivery.py \
-  tests/test_asyncapi.py \
-  tests/test_bulk.py \
-  tests/test_integration_layer.py \
-  tests/test_external_integration_consistency.py
+```bash.venv/bin/pytest \
+ tests/test_rest_adapter.py \
+ tests/test_rest_security.py \
+ tests/test_rest_events.py \
+ tests/test_rest_sse.py \
+ tests/test_rest_bulk.py \
+ tests/test_security.py \
+ tests/test_events.py \
+ tests/test_event_publisher.py \
+ tests/test_webhook_delivery.py \
+ tests/test_asyncapi.py \
+ tests/test_bulk.py \
+ tests/test_integration_layer.py \
+ tests/test_external_integration_consistency.py
 ```
 
 ### How do I run a single test?
 
-```bash
-.venv/bin/pytest tests/test_rest_security.py::test_streaming_requires_kb_answer_scope
+```bash.venv/bin/pytest tests/test_rest_security.py::test_streaming_requires_kb_answer_scope
 ```
 
 ### How do I see which tests are slow?
 
-```bash
-.venv/bin/pytest --durations=10
+```bash.venv/bin/pytest --durations=10
 ```
 
 The full suite runs in ~4s on a laptop; nothing should be slow
@@ -378,47 +374,47 @@ If you see the same document being parsed by MinerU repeatedly while
 the workflow is still in-flight, walk through these knobs in order:
 
 1. **Heartbeat ticker.**
-   `src/j1/orchestration/activities/processing.py` runs a daemon
-   thread (`_heartbeating`) that emits `activity.heartbeat()` every
-   30s while compile is running. Paired with
-   `HEARTBEAT_TIMEOUT=5min` on the activity call, this prevents
-   Temporal from declaring the worker dead and re-dispatching the
-   activity to another slot. If you've disabled the ticker or set
-   `HEARTBEAT_TIMEOUT` shorter than the ticker interval, expect
-   re-dispatch.
+ `src/j1/orchestration/activities/processing.py` runs a daemon
+ thread (`_heartbeating`) that emits `activity.heartbeat` every
+ 30s while compile is running. Paired with
+ `HEARTBEAT_TIMEOUT=5min` on the activity call, this prevents
+ Temporal from declaring the worker dead and re-dispatching the
+ activity to another slot. If you've disabled the ticker or set
+ `HEARTBEAT_TIMEOUT` shorter than the ticker interval, expect
+ re-dispatch.
 
 2. **Compile retry policy.**
-   `COMPILE_RETRY` (`src/j1/orchestration/temporal/retries.py`)
-   bounds compile to **2 attempts** — not the global default of 5.
-   `DocumentProcessingWorkflow` and `ProjectProcessingWorkflow`
-   both apply this policy explicitly. Anything that hides the
-   policy will fall back to `DEFAULT_RETRY` (5×) and look like
-   "MinerU keeps running".
+ `COMPILE_RETRY` (`src/j1/orchestration/temporal/retries.py`)
+ bounds compile to **2 attempts** — not the global default of 5.
+ `DocumentProcessingWorkflow` and `ProjectProcessingWorkflow`
+ both apply this policy explicitly. Anything that hides the
+ policy will fall back to `DEFAULT_RETRY` (5×) and look like
+ "MinerU keeps running".
 
 3. **Result cache.**
-   `JsonlProcessingResultCache` keys on
-   `(document_hash, processor_kind, processor_version, mode)`. A
-   second activity attempt for the same logical document hits the
-   cache and returns the prior result instead of re-parsing.
-   Verify the cache file under
-   `<workspace>/cache/processing/` is being written.
+ `JsonlProcessingResultCache` keys on
+ `(document_hash, processor_kind, processor_version, mode)`. A
+ second activity attempt for the same logical document hits the
+ cache and returns the prior result instead of re-parsing.
+ Verify the cache file under
+ `<workspace>/cache/processing/` is being written.
 
 4. **Workflow id collisions.**
-   The dev API uses `make_per_document_starter` which generates a
-   deterministic id `j1-{tenant}-{project}-{document_id}` and
-   passes `id_conflict_policy=USE_EXISTING`. A re-upload of the
-   same physical bytes (same checksum → same `document_id`) gets
-   the existing handle back instead of a parallel run.
-   Custom integrations that build their own starter MUST match
-   this contract; see
-   `j1.integration.services.make_per_document_workflow_id`.
+ The dev API uses `make_per_document_starter` which generates a
+ deterministic id `j1-{tenant}-{project}-{document_id}` and
+ passes `id_conflict_policy=USE_EXISTING`. A re-upload of the
+ same physical bytes (same checksum → same `document_id`) gets
+ the existing handle back instead of a parallel run.
+ Custom integrations that build their own starter MUST match
+ this contract; see
+ `j1.integration.services.make_per_document_workflow_id`.
 
 5. **Audit log.**
-   `_read_progress_events` (and the SSE stream) shows every
-   `step.*` event with timestamps. If you see two
-   `step.started/COMPILE` entries for the same run, the workflow
-   itself is re-entering compile — that points at a workflow-side
-   loop, not a Temporal redispatch.
+ `_read_progress_events` (and the SSE stream) shows every
+ `step.*` event with timestamps. If you see two
+ `step.started/COMPILE` entries for the same run, the workflow
+ itself is re-entering compile — that points at a workflow-side
+ loop, not a Temporal redispatch.
 
 See `docs/operations/temporal.md` for the full activity-timeout /
 retry / heartbeat contract.

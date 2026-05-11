@@ -35,11 +35,11 @@ CheckSeverity = Literal["required", "optional"]
 class ValidationCheckDTO:
     """Outcome of a single deterministic check.
 
-    Phase 1 ships only `required`-severity checks (a failure of any
-    of them flips `validationStatus` to `failed`). `optional` is
-    reserved so future judge / heuristic checks can downgrade to
-    `warning` instead of failing the whole result.
-    """
+ ships only `required`-severity checks (a failure of any
+ of them flips `validationStatus` to `failed`). `optional` is
+ reserved so future judge / heuristic checks can downgrade to
+ `warning` instead of failing the whole result.
+ """
 
     name: str
     severity: CheckSeverity
@@ -53,12 +53,12 @@ class ValidationCheckDTO:
 class ValidationCitationDTO:
     """Server-side citation projection used by the deterministic checks.
 
-    Mirrors the wire shape (`CitationRecord` / `CitationDTO`) but
-    lives inside the validation module so checks/service can reason
-    about citations without importing from `j1.integration`. The
-    REST layer translates this to its Pydantic record on the way
-    out — see `_citation_to_dict` in `service.py`.
-    """
+ Mirrors the wire shape (`CitationRecord` / `CitationDTO`) but
+ lives inside the validation module so checks/service can reason
+ about citations without importing from `j1.integration`. The
+ REST layer translates this to its Pydantic record on the way
+ out — see `_citation_to_dict` in `service.py`.
+ """
 
     artifact_id: str
     artifact_type: str
@@ -72,17 +72,17 @@ class ValidationCitationDTO:
 class RetrievedChunkRefDTO:
     """Compact reference to one retrieved chunk in the response.
 
-    `chunk_id` is `None` for non-chunk artifacts (e.g. graph_json
-    hits surfaced through the same retrieval pipeline). `run_id`
-    is the server-derived value the indexer wrote at index time —
-    consumers can trust it for ownership checks.
+ `chunk_id` is `None` for non-chunk artifacts (e.g. graph_json
+ hits surfaced through the same retrieval pipeline). `run_id`
+ is the server-derived value the indexer wrote at index time —
+ consumers can trust it for ownership checks.
 
-    `artifact_kind` (Phase 4) carries the matched artifact's `kind`
-    string verbatim from the FTS row. Used by the modality-aware
-    checks (e.g. `evidence_flags.tables_used` ⇔ at least one
-    retrieved item has kind `enriched.tables`) and by future
-    UI surfaces that need to colour-by-modality.
-    """
+ `artifact_kind` carries the matched artifact's `kind`
+ string verbatim from the FTS row. Used by the modality-aware
+ checks (e.g. `evidence_flags.tables_used` ⇔ at least one
+ retrieved item has kind `enriched.tables`) and by future
+ UI surfaces that need to colour-by-modality.
+ """
 
     artifact_id: str
     chunk_id: str | None
@@ -98,11 +98,11 @@ class RetrievedChunkRefDTO:
 class ManualTestQueryRequest:
     """Inbound shape for `POST /ingestion-runs/{run_id}/test-query`.
 
-    `mode` is forwarded to the underlying `HybridQueryEngine` verbatim.
-    `citation_required` toggles the conditional `citation_present`
-    check — when False, the check is skipped (not run, not in
-    `checks[]`), so it can't fail the validation.
-    """
+ `mode` is forwarded to the underlying `HybridQueryEngine` verbatim.
+ `citation_required` toggles the conditional `citation_present`
+ check — when False, the check is skipped (not run, not in
+ `checks[]`), so it can't fail the validation.
+ """
 
     question: str
     top_k: int = 10
@@ -115,11 +115,11 @@ class ManualTestQueryRequest:
 class ManualTestQueryResponseDTO:
     """Outbound shape. Body of the 200 response.
 
-    `validation_status` aggregates `checks[]` per the rules in
-    `j1.validation.checks._aggregate_status`. It is NOT the HTTP
-    outcome — a 200 with `validation_status="failed"` is the
-    canonical "the job ran but the answer didn't pass" case.
-    """
+ `validation_status` aggregates `checks[]` per the rules in
+ `j1.validation.checks._aggregate_status`. It is NOT the HTTP
+ outcome — a 200 with `validation_status="failed"` is the
+ canonical "the job ran but the answer didn't pass" case.
+ """
 
     request_id: str
     run_id: str
@@ -134,13 +134,13 @@ class ManualTestQueryResponseDTO:
     raw_response: dict[str, Any] | None = None
 
 
-# ---- Phase 2: validation sets, runs, summaries ---------------------
+# ---- validation sets, runs, summaries ---------------------
 
 
 # Source of a validation set. `generated` means the LLM produced it
 # (treat as smoke/regression material, NOT gold truth). `manual`
-# means a human authored it (Phase 5+). `imported` means it came
-# from a CSV/JSON upload (Phase 5+). For Phase 2 only `generated`
+# means a human authored it. `imported` means it came
+# from a CSV/JSON upload. For only `generated`
 # ships, but the field exists now so the wire shape doesn't churn.
 ValidationSetSource = Literal["generated", "manual", "imported"]
 
@@ -148,14 +148,14 @@ ValidationSetSource = Literal["generated", "manual", "imported"]
 # Lifecycle of a validation set. `draft` means generation just
 # finished and a tester hasn't reviewed it yet; `ready` means it's
 # considered approved-for-use (currently a no-op flag — editing /
-# approval workflows arrive in Phase 5). `archived` is a tombstone.
+# approval workflows arrive ). `archived` is a tombstone.
 ValidationSetStatus = Literal["draft", "ready", "archived"]
 
 
 # Type of test case. Used by both the generator (which kinds to
-# emit) and the runner (which checks to apply). Phase 2 actively
-# emits `retrieval` and `answer`. `negative` ships in Phase 3,
-# `table` / `image` / `graph` in Phase 4. `citation` is reserved.
+# emit) and the runner (which checks to apply). actively
+# emits `retrieval` and `answer`. `negative` ships,
+# `table` / `image` / `graph`. `citation` is reserved.
 ValidationTestType = Literal[
     "retrieval", "answer", "citation",
     "negative", "table", "image", "graph",
@@ -192,16 +192,16 @@ ExecutionStatus = Literal[
 class ValidationTestCaseDTO:
     """One test case inside a validation set.
 
-    Carries everything the runner needs to execute the case + judge
-    the result. Phase 2 emits cases of type `retrieval` (does the
-    expected chunk show up in topK?) and `answer` (does the engine
-    produce a non-empty answer with valid citations?). Other types
-    are reserved for later phases.
+ Carries everything the runner needs to execute the case + judge
+ the result. emits cases of type `retrieval` (does the
+ expected chunk show up in topK?) and `answer` (does the engine
+ produce a non-empty answer with valid citations?). Other types
+ are reserved for later phases.
 
-    `expected_*` fields are advisory — the deterministic check
-    engine uses them to compute pass/fail. Empty lists mean "no
-    check on this dimension," not "must be empty."
-    """
+ `expected_*` fields are advisory — the deterministic check
+ engine uses them to compute pass/fail. Empty lists mean "no
+ check on this dimension," not "must be empty."
+ """
 
     test_case_id: str
     question: str
@@ -226,12 +226,12 @@ class ValidationTestCaseDTO:
 class ValidationSetDTO:
     """A bundle of test cases produced for one ingestion run.
 
-    Phase 2 generates these synchronously when the tester clicks
-    "Generate test set." Idempotent on `(run_id, generator_version,
-    artifacts_content_hash)` — same run + same artifacts returns
-    the existing set unless `force=true`. The hash composition is
-    decided by the generator; the store treats it as opaque.
-    """
+ generates these synchronously when the tester clicks
+ "Generate test set." Idempotent on `(run_id, generator_version,
+ artifacts_content_hash)` — same run + same artifacts returns
+ the existing set unless `force=true`. The hash composition is
+ decided by the generator; the store treats it as opaque.
+ """
 
     validation_set_id: str
     run_id: str
@@ -250,12 +250,12 @@ class ValidationSetDTO:
 class ValidationCoverageDTO:
     """Coverage breakdown shown on the run summary.
 
-    `by_type` and `by_priority` are simple counters. `by_section`
-    is reserved for Phase 4 — the generator will surface a
-    `section` hint per case once it reads structured chunk
-    metadata. For Phase 2 it stays empty rather than fabricating
-    false-precision counts.
-    """
+ `by_type` and `by_priority` are simple counters. `by_section`
+ is reserved for the generator will surface a
+ `section` hint per case once it reads structured chunk
+ metadata. For it stays empty rather than fabricating
+ false-precision counts.
+ """
 
     by_type: dict[str, int] = field(default_factory=dict)
     by_priority: dict[str, int] = field(default_factory=dict)
@@ -266,11 +266,11 @@ class ValidationCoverageDTO:
 class ValidationSummaryDTO:
     """Roll-up shown on the Knowledge Readiness card.
 
-    Counters are mutually-exclusive — every result lands in exactly
-    one of `passed/warning/failed/skipped` so totals always reconcile
-    with `total`. `recommended_action` is a human-readable string
-    derived from the counts (FE renders it as the card subtitle).
-    """
+ Counters are mutually-exclusive — every result lands in exactly
+ one of `passed/warning/failed/skipped` so totals always reconcile
+ with `total`. `recommended_action` is a human-readable string
+ derived from the counts (FE renders it as the card subtitle).
+ """
 
     total: int = 0
     passed: int = 0
@@ -286,11 +286,11 @@ class ValidationSummaryDTO:
 class ValidationResultDTO:
     """Outcome of one test case execution.
 
-    `status` is the per-case roll-up — same vocabulary as the
-    summary counters. Distinct from `executionStatus` on the parent
-    `ValidationRun`. `tester_verdict` / `tester_notes` are
-    placeholders for Phase 5 (human override workflow).
-    """
+ `status` is the per-case roll-up — same vocabulary as the
+ summary counters. Distinct from `executionStatus` on the parent
+ `ValidationRun`. `tester_verdict` / `tester_notes` are
+ placeholders for (human override workflow).
+ """
 
     result_id: str
     test_case_id: str
@@ -310,12 +310,12 @@ class ValidationResultDTO:
 class ValidationRunDTO:
     """A single execution of a validation set against an ingestion run.
 
-    Note the split: `execution_status` reports whether the runner
-    job completed; `validation_status` reports the aggregate of
-    test-case outcomes. `execution_status="completed"` +
-    `validation_status="failed"` is the canonical "the job ran
-    successfully but the document didn't pass" case.
-    """
+ Note the split: `execution_status` reports whether the runner
+ job completed; `validation_status` reports the aggregate of
+ test-case outcomes. `execution_status="completed"` +
+ `validation_status="failed"` is the canonical "the job ran
+ successfully but the document didn't pass" case.
+ """
 
     validation_run_id: str
     validation_set_id: str

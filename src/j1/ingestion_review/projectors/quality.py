@@ -2,14 +2,14 @@
 
 Combines four input streams into one UI-friendly DTO:
 
-  * `enriched.confidence_assessment` artifacts → overall confidence,
-    per-modality breakdown, low-confidence findings.
-  * `enriched.consistency_findings` artifacts → low-confidence
-    findings (consistency-checker side).
-  * Audit-log warnings already collected by the service →
-    `warnings[]`.
-  * `IngestionRun.metadata["step_results"]` → `skippedSteps[]` and
-    `failedOptionalSteps[]`.
+ * `enriched.confidence_assessment` artifacts → overall confidence,
+ per-modality breakdown, low-confidence findings.
+ * `enriched.consistency_findings` artifacts → low-confidence
+ findings (consistency-checker side).
+ * Audit-log warnings already collected by the service →
+ `warnings[]`.
+ * `IngestionRun.metadata["step_results"]` → `skippedSteps[]` and
+ `failedOptionalSteps[]`.
 
 Vendor-neutral: producers may emit JSON in many shapes; the projector
 tolerates snake_case AND camelCase field names and degrades gracefully
@@ -46,9 +46,9 @@ KIND_CONSISTENCY_FINDINGS = "enriched.consistency_findings"
 class QualityReportProjector:
     """Build a `QualityReportDTO` for one run.
 
-    Constructor takes the path-resolver callable (same pattern as
-    `ChunkProjector`) so the projector stays workspace-agnostic and
-    inherits the path-traversal guard from the caller's context."""
+ Constructor takes the path-resolver callable (same pattern as
+ `ChunkProjector`) so the projector stays workspace-agnostic and
+ inherits the path-traversal guard from the caller's context."""
 
     def __init__(self, *, path_resolver) -> None:
         self._path_resolver = path_resolver
@@ -158,8 +158,8 @@ class QualityReportProjector:
 
 class _ArtifactPayload:
     """One quality artifact's parsed JSON plus the lineage we need
-    for traceability fields. Plain class (not a frozen dataclass) so
-    `payload` can stay a mutable dict for downstream readers."""
+ for traceability fields. Plain class (not a frozen dataclass) so
+ `payload` can stay a mutable dict for downstream readers."""
 
     def __init__(
         self,
@@ -185,11 +185,11 @@ def _project_modality_confidences(
     artifacts: list[ArtifactRecord],  # noqa: ARG001 — reserved for future weighting
 ) -> list[ModalityConfidenceDTO]:
     """Group `assessments[]` entries by modality, average the confidence,
-    and surface the count.
+ and surface the count.
 
-    Producer schema (tolerated):
-        assessments: [{ modality, confidence, sample_count? }, ...]
-    Both snake_case and camelCase field names are accepted."""
+ Producer schema (tolerated):
+ assessments: [{ modality, confidence, sample_count? },...]
+ Both snake_case and camelCase field names are accepted."""
     grouped: dict[str, list[float]] = {}
     counts: dict[str, int] = {}
     for entry in _iter_assessments(confidence_payloads):
@@ -220,15 +220,15 @@ def _project_overall_confidence(
 ) -> float | None:
     """Pick the overall confidence value, in priority order:
 
-      1. `overall_confidence` / `overallConfidence` field on any
-         payload (most explicit).
-      2. Mean of modality confidences if the projector produced any.
-      3. `default_confidence` field on any payload (the stub
-         enricher's contract today).
-      4. `metadata["confidence"]` on the artifact record (set by the
-         _StructuredEnricher base class).
+ 1. `overall_confidence` / `overallConfidence` field on any
+ payload (most explicit).
+ 2. Mean of modality confidences if the projector produced any.
+ 3. `default_confidence` field on any payload (the stub
+ enricher's contract today).
+ 4. `metadata["confidence"]` on the artifact record (set by the
+ _StructuredEnricher base class).
 
-    Returns None when none of the above are available."""
+ Returns None when none of the above are available."""
     for payload in confidence_payloads:
         explicit = _float_field(
             payload.payload, "overall_confidence", "overallConfidence",
@@ -262,15 +262,15 @@ def _project_confidence_assessment_failures(
     confidence_payloads: list[_ArtifactPayload],
 ) -> list[WarningDTO]:
     """Synthesise a warning per confidence-assessment artifact whose
-    payload carries an `error` field (LLM call failed).
+ payload carries an `error` field (LLM call failed).
 
-    Producers (the `ConfidenceAssessor` enricher) record `error` when
-    the structured-output extraction raised. The projector previously
-    consumed only the happy path — readers couldn't tell whether a
-    missing `overall_confidence` meant "LLM said so" or "LLM didn't
-    run". Surfacing as a warning keeps the Quality tab honest without
-    pretending the assessment was healthy.
-    """
+ Producers (the `ConfidenceAssessor` enricher) record `error` when
+ the structured-output extraction raised. The projector previously
+ consumed only the happy path — readers couldn't tell whether a
+ missing `overall_confidence` meant "LLM said so" or "LLM didn't
+ run". Surfacing as a warning keeps the Quality tab honest without
+ pretending the assessment was healthy.
+ """
     out: list[WarningDTO] = []
     for payload in confidence_payloads:
         error = payload.payload.get("error")
@@ -295,16 +295,16 @@ def _project_low_confidence_findings(
 ) -> list[LowConfidenceFindingDTO]:
     """Compose the list of low-confidence regions.
 
-    Sources:
-      * `assessments[]` entries with a `confidence < 0.7` floor get
-        surfaced as `LowConfidenceFindingDTO` so the UI can highlight
-        them on the page/chunk they came from.
-      * `findings[]` entries on consistency-checker output (the kind
-        is dedicated to this).
+ Sources:
+ * `assessments[]` entries with a `confidence < 0.7` floor get
+ surfaced as `LowConfidenceFindingDTO` so the UI can highlight
+ them on the page/chunk they came from.
+ * `findings[]` entries on consistency-checker output (the kind
+ is dedicated to this).
 
-    Source-traceability (page / chunk / artifact) is preserved
-    when the producer emitted those fields. The artifact_id falls
-    back to the producing artifact's id when missing."""
+ Source-traceability (page / chunk / artifact) is preserved
+ when the producer emitted those fields. The artifact_id falls
+ back to the producing artifact's id when missing."""
     out: list[LowConfidenceFindingDTO] = []
 
     for payload in confidence_payloads:
@@ -343,10 +343,10 @@ def _project_step_outcomes(
 ) -> tuple[list[SkippedStepDTO], list[FailedOptionalStepDTO]]:
     """Split persisted step_results into the two FE-facing buckets.
 
-    Skipped steps: always surfaced regardless of `required`.
-    Failed-optional steps: only entries with `status=failed` AND
-    `required=false`. Required failures already drove the run to
-    FAILED at the workflow level — we don't double-surface them."""
+ Skipped steps: always surfaced regardless of `required`.
+ Failed-optional steps: only entries with `status=failed` AND
+ `required=false`. Required failures already drove the run to
+ FAILED at the workflow level — we don't double-surface them."""
     skipped: list[SkippedStepDTO] = []
     failed_optional: list[FailedOptionalStepDTO] = []
     for entry in step_results:
@@ -382,7 +382,7 @@ def _finding_from_entry(
     fallback_artifact_id: str,
 ) -> LowConfidenceFindingDTO:
     """Build a `LowConfidenceFindingDTO` from a producer-supplied
-    entry, preserving any source-traceability fields it carries."""
+ entry, preserving any source-traceability fields it carries."""
     return LowConfidenceFindingDTO(
         score=default_score,
         category=_str_field(entry, "category", "type") or default_category,
@@ -400,8 +400,8 @@ def _iter_assessments(
 ) -> Iterable[dict[str, Any]]:
     """Yield each assessment entry inside the confidence payloads.
 
-    Tolerates the producer placing entries under either `assessments`
-    (current stub) or `findings` (a richer producer schema)."""
+ Tolerates the producer placing entries under either `assessments`
+ (current stub) or `findings` (a richer producer schema)."""
     for payload in payloads:
         for key in ("assessments", "findings"):
             entries = payload.payload.get(key)

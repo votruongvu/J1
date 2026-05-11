@@ -118,10 +118,10 @@ DEFAULT_TASK_TO_MODEL: dict[TaskCategory, ModelSelection] = {
 class ModelRouter:
     """Maps a `TaskCategory` to a `ModelSelection` and resolves the provider.
 
-    Both the task→model mapping and the provider registry are constructor-
-    injected. No vendor is hardcoded — `provider_kind` is just a string key
-    that callers wire to whatever `ModelProvider` they configure.
-    """
+ Both the task→model mapping and the provider registry are constructor-
+ injected. No vendor is hardcoded — `provider_kind` is just a string key
+ that callers wire to whatever `ModelProvider` they configure.
+ """
 
     def __init__(
         self,

@@ -3,21 +3,21 @@
 A manifest is a small JSON-friendly description of one extension
 implementation. It is used by:
 
-  * the capability registry, which indexes adapters by `type` /
-    `name` / `capability` / `role`;
-  * deployment-side validation that all required configuration +
-    secret keys are wired before the adapter is instantiated;
-  * documentation generation (the manifest IS the contract a
-    deployment commits to).
+ * the capability registry, which indexes adapters by `type` /
+ `name` / `capability` / `role`;
+ * deployment-side validation that all required configuration +
+ secret keys are wired before the adapter is instantiated;
+ * documentation generation (the manifest IS the contract a
+ deployment commits to).
 
 Manifests are deliberately:
 
-  * **Plain dataclasses** — no JSON Schema dep, no Pydantic in core.
-    Validation is in-Python and surfaces actionable error messages.
-  * **Domain-neutral** — `name`, `type`, `capabilities` are opaque
-    strings to the framework.
-  * **Secret-safe** — `required_secret_keys` lists *names* of secrets
-    the adapter expects, never the secrets themselves.
+ * **Plain dataclasses** — no JSON Schema dep, no Pydantic in core.
+ Validation is in-Python and surfaces actionable error messages.
+ * **Domain-neutral** — `name`, `type`, `capabilities` are opaque
+ strings to the framework.
+ * **Secret-safe** — `required_secret_keys` lists *names* of secrets
+ the adapter expects, never the secrets themselves.
 """
 
 from __future__ import annotations
@@ -55,37 +55,37 @@ _VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+){0,2}([-+][a-z0-9._-]+)?$")
 class ManifestError(ValueError):
     """Raised when a manifest is structurally invalid.
 
-    Inherits `ValueError` so existing code that catches `ValueError`
-    around configuration parsing keeps working.
-    """
+ Inherits `ValueError` so existing code that catches `ValueError`
+ around configuration parsing keeps working.
+ """
 
 
 @dataclass(frozen=True)
 class AdapterManifest:
     """Metadata describing one adapter / connector / provider.
 
-    Required:
-      * `name` — unique within the registry; vendors MUST namespace
-        (e.g. `acme.compiler`).
-      * `type` — one of `KNOWN_ADAPTER_TYPES` or `unknown:<…>`.
-      * `version` — `MAJOR[.MINOR[.PATCH]][-prerelease]` shape.
+ Required:
+ * `name` — unique within the registry; vendors MUST namespace
+ (e.g. `acme.compiler`).
+ * `type` — one of `KNOWN_ADAPTER_TYPES` or `unknown:<…>`.
+ * `version` — `MAJOR[.MINOR[.PATCH]][-prerelease]` shape.
 
-    Optional:
-      * `capabilities` — free-form labels the registry indexes
-        (e.g. `streaming`, `batch`, `multilingual`). Used by
-        capability-based lookups.
-      * `supported_input_types` / `output_types` — content-type
-        labels; the framework does not match on them automatically,
-        but they are documented and queryable.
-      * `required_config_keys` / `optional_config_keys` — names of
-        plaintext config the adapter expects on construction.
-      * `required_secret_keys` — names of *secret* config the
-        adapter expects (the manifest does NOT carry the secrets).
-      * `health_check` — `True` if the adapter implements a
-        `health_check(ctx) -> dict` method the registry can call.
-      * `description` — human-readable summary.
-      * `metadata` — free-form bag for vendor extensions.
-    """
+ Optional:
+ * `capabilities` — free-form labels the registry indexes
+ (e.g. `streaming`, `batch`, `multilingual`). Used by
+ capability-based lookups.
+ * `supported_input_types` / `output_types` — content-type
+ labels; the framework does not match on them automatically,
+ but they are documented and queryable.
+ * `required_config_keys` / `optional_config_keys` — names of
+ plaintext config the adapter expects on construction.
+ * `required_secret_keys` — names of *secret* config the
+ adapter expects (the manifest does NOT carry the secrets).
+ * `health_check` — `True` if the adapter implements a
+ `health_check(ctx) -> dict` method the registry can call.
+ * `description` — human-readable summary.
+ * `metadata` — free-form bag for vendor extensions.
+ """
 
     name: str
     type: str
@@ -151,9 +151,9 @@ class AdapterManifest:
     def from_dict(cls, data: dict[str, Any]) -> "AdapterManifest":
         """Build a manifest from a plain dict (e.g. parsed YAML / JSON).
 
-        Tolerates missing optional keys; validates everything via
-        `__post_init__`.
-        """
+ Tolerates missing optional keys; validates everything via
+ `__post_init__`.
+ """
         if not isinstance(data, dict):
             raise ManifestError(
                 f"manifest must be an object, got {type(data).__name__}"

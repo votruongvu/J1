@@ -1,4 +1,4 @@
-"""Normalized compile result (Wave 4).
+"""Normalized compile result.
 
 Typed projection of what the compile activity returned. Adapter
 over `ArtifactActivityResult` — preserves the raw vendor output
@@ -7,18 +7,18 @@ shape downstream consumers (post-compile assessor, FE panels,
 final report) can branch on without inspecting nested dicts.
 
 Design rules:
-  * Adapter only. Does NOT mutate the activity result, does NOT
-    re-parse vendor files. Inputs are the activity result + the
-    workflow's retry-history list; outputs are immutable dataclasses.
-  * RAGAnything stays a black box. We project its `content_stats` /
-    `compile_metrics` dicts onto typed fields and stop there. New
-    vendors plug in by populating the same activity-side dicts.
-  * Raw artifact refs are preserved by id only — the actual files
-    stay in the workspace and are accessible via the existing
-    artifact registry. The normalized result is a SUMMARY, not a
-    re-encoding of the raw output.
-  * Pure. Same activity result + retry history → same normalized
-    result, every time. Required for Temporal replay determinism.
+ * Adapter only. Does NOT mutate the activity result, does NOT
+ re-parse vendor files. Inputs are the activity result + the
+ workflow's retry-history list; outputs are immutable dataclasses.
+ * RAGAnything stays a black box. We project its `content_stats` /
+ `compile_metrics` dicts onto typed fields and stop there. New
+ vendors plug in by populating the same activity-side dicts.
+ * Raw artifact refs are preserved by id only — the actual files
+ stay in the workspace and are accessible via the existing
+ artifact registry. The normalized result is a SUMMARY, not a
+ re-encoding of the raw output.
+ * Pure. Same activity result + retry history → same normalized
+ result, every time. Required for Temporal replay determinism.
 """
 
 from __future__ import annotations
@@ -57,10 +57,10 @@ _SCHEMA_VERSION = "1"
 class DetectedImage:
     """One image the parser surfaced, with its triage decision.
 
-    Sourced from `ArtifactActivityResult.content_stats["images"]` —
-    the per-image dict the bridge writes. Only the operational
-    fields are typed; vendor-specific metadata stays in the raw
-    artifact for deeper consumers."""
+ Sourced from `ArtifactActivityResult.content_stats["images"]` —
+ the per-image dict the bridge writes. Only the operational
+ fields are typed; vendor-specific metadata stays in the raw
+ artifact for deeper consumers."""
 
     image_id: str
     page: int | None = None
@@ -84,11 +84,11 @@ class DetectedImage:
 class DetectedTable:
     """One table the parser surfaced.
 
-    Today the bridge doesn't expose per-table metadata beyond a
-    count + page hints — the dataclass is forward-compatible so a
-    future parser surfacing structured table descriptors can
-    populate `caption` / `row_count` / `column_count` without a
-    schema change."""
+ Today the bridge doesn't expose per-table metadata beyond a
+ count + page hints — the dataclass is forward-compatible so a
+ future parser surfacing structured table descriptors can
+ populate `caption` / `row_count` / `column_count` without a
+ schema change."""
 
     table_id: str
     page: int | None = None
@@ -109,23 +109,23 @@ class DetectedTable:
 @dataclass(frozen=True)
 class MetadataPresence:
     """Metadata-coverage signal the post-compile analyzer reads to
-    recommend metadata enrichment.
+ recommend metadata enrichment.
 
-    Pure data — the analyzer / validation enricher decide how to
-    act on a missing field. The post-compile flow populates this
-    from `DomainValidationRules.required_metadata_fields` ∩ the
-    metadata keys observed in the parsed-content manifest:
+ Pure data — the analyzer / validation enricher decide how to
+ act on a missing field. The post-compile flow populates this
+ from `DomainValidationRules.required_metadata_fields` ∩ the
+ metadata keys observed in the parsed-content manifest:
 
-      * `required_fields` — the domain's required metadata list
-        (copied from the active pack at evaluation time).
-      * `present_fields` — keys actually observed in the parsed
-        metadata. Empty when the parser surfaced no metadata.
-      * `missing_fields` — `required_fields − present_fields`.
-        The analyzer uses non-empty `missing_fields` as a
-        recommend-enrichment trigger.
+ * `required_fields` — the domain's required metadata list
+ (copied from the active pack at evaluation time).
+ * `present_fields` — keys actually observed in the parsed
+ metadata. Empty when the parser surfaced no metadata.
+ * `missing_fields` — `required_fields − present_fields`.
+ The analyzer uses non-empty `missing_fields` as a
+ recommend-enrichment trigger.
 
-    Defaults are empty so packs without `required_metadata_fields`
-    contribute a no-op presence record."""
+ Defaults are empty so packs without `required_metadata_fields`
+ contribute a no-op presence record."""
 
     required_fields: tuple[str, ...] = ()
     present_fields: tuple[str, ...] = ()
@@ -142,19 +142,19 @@ class MetadataPresence:
 @dataclass(frozen=True)
 class ContentRepresentationFlags:
     """Coarse "is this content well represented?" flags the post-
-    compile analyzer reads to recommend table/image enrichment.
+ compile analyzer reads to recommend table/image enrichment.
 
-    Pure data; no heuristic logic on the dataclass. Builder code
-    (`normalize_compile_result` + callers) populates these from
-    compile signals — e.g. `tables_present_but_unstructured=True`
-    when `has_tables=True` but `detected_tables` is empty (parser
-    only surfaced a count). The analyzer reads them as additional
-    recommend triggers.
+ Pure data; no heuristic logic on the dataclass. Builder code
+ (`normalize_compile_result` + callers) populates these from
+ compile signals — e.g. `tables_present_but_unstructured=True`
+ when `has_tables=True` but `detected_tables` is empty (parser
+ only surfaced a count). The analyzer reads them as additional
+ recommend triggers.
 
-    Each flag is three-state (True / False / None=unknown) so a
-    pack/parser that doesn't surface the signal can leave it `None`
-    and the analyzer treats it as "no signal" rather than "no
-    problem"."""
+ Each flag is three-state (True / False / None=unknown) so a
+ pack/parser that doesn't surface the signal can leave it `None`
+ and the analyzer treats it as "no signal" rather than "no
+ problem"."""
 
     tables_present_but_unstructured: bool | None = None
     images_present_but_undescribed: bool | None = None
@@ -172,9 +172,9 @@ class ContentRepresentationFlags:
 class CompileQualitySignals:
     """Typed projection of the parser's quality scores.
 
-    Every field 0..1 or None when the parser didn't surface it.
-    Consumers (post-compile assessor, final report) branch on
-    these to decide enrichment + flag low-quality compiles."""
+ Every field 0..1 or None when the parser didn't surface it.
+ Consumers (post-compile assessor, final report) branch on
+ these to decide enrichment + flag low-quality compiles."""
 
     parse_quality_score: float | None = None
     text_sufficiency_score: float | None = None
@@ -196,12 +196,12 @@ class CompileQualitySignals:
 class CompileAttemptRecord:
     """One entry in the compile retry history.
 
-    The workflow builds these in its compile retry loop and threads
-    them into `NormalizedCompileResult.retry_history`. Distinct
-    from the `j1.processing.compile_retry.CompileAttemptRecord`
-    dataclass (which is the retry-evaluator-internal record) — this
-    one is the operator-facing audit shape, serialised into the
-    persisted compile-result-summary artifact."""
+ The workflow builds these in its compile retry loop and threads
+ them into `NormalizedCompileResult.retry_history`. Distinct
+ from the `j1.processing.compile_retry.CompileAttemptRecord`
+ dataclass (which is the retry-evaluator-internal record) — this
+ one is the operator-facing audit shape, serialised into the
+ persisted compile-result-summary artifact."""
 
     attempt_number: int
     status: str
@@ -240,11 +240,11 @@ class CompileAttemptRecord:
 class NormalizedCompileResult:
     """Typed normalized projection of one document's compile output.
 
-    Adapter over `ArtifactActivityResult`. Surfaces stable named
-    fields downstream consumers (post-compile assessor, FE panels,
-    final report) can branch on without re-parsing nested dicts.
-    Raw vendor output is preserved by id only — see
-    `raw_artifact_refs`."""
+ Adapter over `ArtifactActivityResult`. Surfaces stable named
+ fields downstream consumers (post-compile assessor, FE panels,
+ final report) can branch on without re-parsing nested dicts.
+ Raw vendor output is preserved by id only — see
+ `raw_artifact_refs`."""
 
     document_id: str
     compile_engine: str = COMPILE_ENGINE_RAGANYTHING
@@ -431,14 +431,14 @@ def normalize_compile_result(
 ) -> NormalizedCompileResult:
     """Build a `NormalizedCompileResult` from the activity result.
 
-    Pure adapter — reads `content_stats` + `compile_metrics` + the
-    artifact_id list off the activity result and projects them onto
-    typed fields. Does NOT call any LLM, OCR, vision, or vendor API.
+ Pure adapter — reads `content_stats` + `compile_metrics` + the
+ artifact_id list off the activity result and projects them onto
+ typed fields. Does NOT call any LLM, OCR, vision, or vendor API.
 
-    `retry_attempts` is the workflow's per-attempt audit list (same
-    shape used today by `compile_strategy_report`). When None, the
-    `retry_history` field is empty — useful for callers that don't
-    track retries (single-attempt paths)."""
+ `retry_attempts` is the workflow's per-attempt audit list (same
+ shape used today by `compile_strategy_report`). When None, the
+ `retry_history` field is empty — useful for callers that don't
+ track retries (single-attempt paths)."""
     content_stats: dict[str, Any] = dict(
         getattr(activity_result, "content_stats", None) or {}
     )
@@ -551,22 +551,22 @@ def _derive_representation_flags(
     page_count: int | None,
 ) -> ContentRepresentationFlags:
     """Compute the coarse "well-represented?" flags from compile
-    signals. Pure / deterministic.
+ signals. Pure / deterministic.
 
-    Rules:
-      * tables_present_but_unstructured = True when the bridge
-        surfaced a table_count > 0 but the descriptor list is empty
-        (placeholder fallback used). Means: tables exist but we
-        only know the count, so structured-table enrichment would
-        add value.
-      * images_present_but_undescribed = True when images exist
-        but none carry a `caption` field. The image enricher can
-        add captions to make these retrievable.
-      * text_only_but_low_density = True when no tables/images and
-        the page-averaged text density looks thin (<400 chars/page).
-        Flags long scanned-text-heavy docs that may need additional
-        retrieval metadata.
-    """
+ Rules:
+ * tables_present_but_unstructured = True when the bridge
+ surfaced a table_count > 0 but the descriptor list is empty
+ (placeholder fallback used). Means: tables exist but we
+ only know the count, so structured-table enrichment would
+ add value.
+ * images_present_but_undescribed = True when images exist
+ but none carry a `caption` field. The image enricher can
+ add captions to make these retrievable.
+ * text_only_but_low_density = True when no tables/images and
+ the page-averaged text density looks thin (<400 chars/page).
+ Flags long scanned-text-heavy docs that may need additional
+ retrieval metadata.
+ """
     table_count = content_stats.get("table_count")
     image_count = content_stats.get("image_count")
 
@@ -608,9 +608,9 @@ def build_compile_attempt_records(
     attempts: list[dict[str, Any]],
 ) -> tuple[CompileAttemptRecord, ...]:
     """Project the workflow's per-attempt audit dicts into typed
-    `CompileAttemptRecord` instances. Tolerant of unknown keys —
-    unrecognised fields are dropped; missing fields fall back to
-    the dataclass defaults."""
+ `CompileAttemptRecord` instances. Tolerant of unknown keys —
+ unrecognised fields are dropped; missing fields fall back to
+ the dataclass defaults."""
     records: list[CompileAttemptRecord] = []
     for entry in attempts:
         if not isinstance(entry, dict):
@@ -693,12 +693,12 @@ def _build_detected_tables(
 ) -> tuple[DetectedTable, ...]:
     """Project tables from `content_stats`.
 
-    The bridge today surfaces only a `table_count` — no per-table
-    descriptors. We emit one placeholder `DetectedTable` per count
-    so the FE can render a 'N tables detected' tile without
-    fabricating page/caption info. Future parsers populating
-    `content_stats["tables"]` with descriptor dicts get full typed
-    records via the same path."""
+ The bridge today surfaces only a `table_count` — no per-table
+ descriptors. We emit one placeholder `DetectedTable` per count
+ so the FE can render a 'N tables detected' tile without
+ fabricating page/caption info. Future parsers populating
+ `content_stats["tables"]` with descriptor dicts get full typed
+ records via the same path."""
     raw = content_stats.get("tables")
     if isinstance(raw, (list, tuple)):
         out: list[DetectedTable] = []
@@ -731,9 +731,9 @@ def _build_detected_content_types(
     content_stats: dict[str, Any],
 ) -> tuple[str, ...]:
     """Sorted vocabulary list of content types the parser saw.
-    Mirrors `_build_extraction_evidence`'s detected list so the FE
-    can branch on the same strings whether reading the new
-    normalized result or the legacy strategy report."""
+ Mirrors `_build_extraction_evidence`'s detected list so the FE
+ can branch on the same strings whether reading the new
+ normalized result or the legacy strategy report."""
     detected: list[str] = []
     text_chars = _coerce_optional_int(content_stats.get("total_text_chars"))
     text_blocks = _coerce_optional_int(content_stats.get("text_block_count"))

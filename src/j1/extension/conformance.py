@@ -4,21 +4,20 @@ Each function in this module takes one adapter instance + the
 minimum context it needs and asserts the contract holds. The same
 harness is used by:
 
-  * J1's own test suite (against the bundled mock adapters)
-  * Vendor / domain test suites (against their own adapters)
+ * J1's own test suite (against the bundled mock adapters)
+ * Vendor / domain test suites (against their own adapters)
 
 Usage in a vendor's test file::
 
-    from j1.extension.conformance import (
-        assert_source_connector_conformance,
-        assert_compiler_adapter_conformance,
-        ...,
-    )
-    from my_pkg.connectors import MyHttpConnector
+ from j1.extension.conformance import (
+ assert_source_connector_conformance,
+ assert_compiler_adapter_conformance,...,
+ )
+ from my_pkg.connectors import MyHttpConnector
 
-    def test_my_http_connector_is_conformant(tmp_path):
-        ctx = ProjectContext(tenant_id="t", project_id="p")
-        assert_source_connector_conformance(MyHttpConnector(...), ctx)
+ def test_my_http_connector_is_conformant(tmp_path):
+ ctx = ProjectContext(tenant_id="t", project_id="p")
+ assert_source_connector_conformance(MyHttpConnector(...), ctx)
 
 The harnesses raise `AssertionError` on contract violations — they
 are intended to be called from `pytest` tests. They DO NOT call any
@@ -69,10 +68,10 @@ def _assert_string_attr(adapter: object, name: str) -> None:
 
 def _assert_no_secret_leakage(snapshot: object) -> None:
     """Heuristic — guards against an adapter accidentally surfacing
-    raw API keys / tokens in its output / metadata.
+ raw API keys / tokens in its output / metadata.
 
-    Not a security boundary; a deterministic last-line-of-defence.
-    """
+ Not a security boundary; a deterministic last-line-of-defence.
+ """
     text = repr(snapshot)
     for needle in ("sk-test-", "ghp_test_", "xoxb-test-", "AKIATEST"):
         assert needle not in text, (
@@ -83,9 +82,9 @@ def _assert_no_secret_leakage(snapshot: object) -> None:
 def _bench(callable_: Callable[[], Any], *, deadline_seconds: float = 5.0) -> Any:
     """Run `callable_` and assert it returns within `deadline_seconds`.
 
-    The harness imposes a generous deadline only to catch hung mocks
-    in CI — production timeouts are a deployment concern.
-    """
+ The harness imposes a generous deadline only to catch hung mocks
+ in CI — production timeouts are a deployment concern.
+ """
     started = time.monotonic()
     result = callable_()
     elapsed = time.monotonic() - started
@@ -106,16 +105,16 @@ def assert_source_connector_conformance(
 ) -> None:
     """Verify a `SourceConnector` honours the contract.
 
-    Checks:
-      * `kind` attribute present + non-empty.
-      * `list(ctx)` returns a list (possibly empty) of `SourceMetadata`.
-      * `fetch(ctx, metadata)` returns a `Source` whose
-        `metadata.uri` matches the input.
-      * Empty `query` produces a deterministic (≥0) listing — the
-        adapter does not raise on missing optional input.
-      * No secret prefix leaks into the listing or fetched payload's
-        metadata.
-    """
+ Checks:
+ * `kind` attribute present + non-empty.
+ * `list(ctx)` returns a list (possibly empty) of `SourceMetadata`.
+ * `fetch(ctx, metadata)` returns a `Source` whose
+ `metadata.uri` matches the input.
+ * Empty `query` produces a deterministic (≥0) listing — the
+ adapter does not raise on missing optional input.
+ * No secret prefix leaks into the listing or fetched payload's
+ metadata.
+ """
     _assert_string_attr(adapter, "kind")
 
     listing = _bench(lambda: adapter.list(ctx))
@@ -155,15 +154,15 @@ def assert_compiler_adapter_conformance(
 ) -> None:
     """Verify a `CompilerAdapter` honours the contract.
 
-    Checks:
-      * `kind` non-empty.
-      * `compile()` returns an `ArtifactProcessingResult`.
-      * Status is one of the canonical `ResultStatus` values.
-      * For empty / unknown `document_id`, the adapter returns a
-        `FAILED` result (or raises `ProviderUnavailable`) — it does
-        NOT raise an unstructured exception.
-      * No secret leakage in `error` / `metadata`.
-    """
+ Checks:
+ * `kind` non-empty.
+ * `compile` returns an `ArtifactProcessingResult`.
+ * Status is one of the canonical `ResultStatus` values.
+ * For empty / unknown `document_id`, the adapter returns a
+ `FAILED` result (or raises `ProviderUnavailable`) — it does
+ NOT raise an unstructured exception.
+ * No secret leakage in `error` / `metadata`.
+ """
     _assert_string_attr(adapter, "kind")
     result = _bench(lambda: adapter.compile(ctx, document_id))
     assert hasattr(result, "status") and isinstance(result.status, ResultStatus), (

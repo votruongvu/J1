@@ -25,9 +25,9 @@ export const EVENT_TYPES = {
   RUN_FAILED: "run.failed",
   RUN_CANCELLED: "run.cancelled",
   HUMAN_REVIEW_REQUIRED: "human_review.required",
-  // Canonical macro-stage events (Phase 3). Currently derived
+  // Canonical macro-stage events. Currently derived
   // client-side from existing `step.*` events via
-  // `deriveMacroEventType()` — the constants exist so the FE can
+  // `deriveMacroEventType` — the constants exist so the FE can
   // render macro-stage section headers and so a future
   // emit-from-server change has a stable target.
   COMPILE_STARTED: "compile.started",
@@ -36,7 +36,7 @@ export const EVENT_TYPES = {
   VERIFICATION_STARTED: "verification.started",
   VERIFICATION_COMPLETED: "verification.completed",
   VERIFICATION_FAILED: "verification.failed",
-  // Wave 9A — post-compile assessment + enrichment macro events.
+  // post-compile assessment + enrichment macro events.
   // Mirrors `PROGRESS_EVENT_ASSESS_ENRICHMENT_*` /
   // `PROGRESS_EVENT_ENRICH_*` in `j1/runs/reporter.py`. Derived
   // client-side from the workflow's `step.*` events emitted under

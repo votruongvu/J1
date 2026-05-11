@@ -68,8 +68,8 @@ DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
 # output. Each role uses the cheapest possible API call to confirm
 # connectivity + auth + model availability.
 #
-# The TEXT and FAST roles share a generate() probe with a 1-token
-# response cap. EMBEDDING uses a 1-character embed_text() call.
+# The TEXT and FAST roles share a generate probe with a 1-token
+# response cap. EMBEDDING uses a 1-character embed_text call.
 # VISION + PREMIUM are intentionally NOT probed — vision needs a real
 # image payload (no idempotent zero-cost shape) and PREMIUM is
 # expensive per call. Both fail loudly at use-time if misconfigured;
@@ -93,13 +93,13 @@ class ProbeResult:
 @dataclass(frozen=True)
 class LLMHealthSnapshot:
     """Snapshot of the cached probe results, surfaced by the API's
-    `/healthz/llm` endpoint and consumed by the FE banner.
+ `/healthz/llm` endpoint and consumed by the FE banner.
 
-    `healthy` is True iff every probed role last reported `ok=True`.
-    `checked_at` is the wall-clock time of the most recent probe;
-    the FE shows it in the banner so operators know how stale the
-    status is.
-    """
+ `healthy` is True iff every probed role last reported `ok=True`.
+ `checked_at` is the wall-clock time of the most recent probe;
+ the FE shows it in the banner so operators know how stale the
+ status is.
+ """
 
     healthy: bool
     checked_at: str | None
@@ -120,9 +120,9 @@ _cached_checked_at: str | None = None
 
 
 def cache_probe_results(results: list[ProbeResult] | tuple[ProbeResult, ...]) -> None:
-    """Store the latest probe results so `current_health()` can read
-    them. Called by the worker + API startup hooks; safe to call
-    multiple times (latest call wins)."""
+    """Store the latest probe results so `current_health` can read
+ them. Called by the worker + API startup hooks; safe to call
+ multiple times (latest call wins)."""
     global _cached_results, _cached_checked_at
     with _cache_lock:
         _cached_results = tuple(results)
@@ -132,10 +132,10 @@ def cache_probe_results(results: list[ProbeResult] | tuple[ProbeResult, ...]) ->
 def current_health() -> LLMHealthSnapshot:
     """Return the most recently cached probe results.
 
-    When no probe has run yet (e.g. probe disabled, or this process
-    skipped the startup hook), returns `healthy=True` with empty
-    results — matches the conservative "assume working until proven
-    otherwise" behaviour of every other health check in the stack."""
+ When no probe has run yet (e.g. probe disabled, or this process
+ skipped the startup hook), returns `healthy=True` with empty
+ results — matches the conservative "assume working until proven
+ otherwise" behaviour of every other health check in the stack."""
     with _cache_lock:
         results = _cached_results
         checked_at = _cached_checked_at
@@ -153,17 +153,17 @@ def current_health() -> LLMHealthSnapshot:
 class LLMStartupProbeError(RuntimeError):
     """Raised when one or more required LLM roles are unreachable.
 
-    Caller catches this and aborts startup with the error's message
-    rendered to stderr. The message is operator-facing — names the
-    role, provider, model, base URL when available, and the wrapped
-    error string."""
+ Caller catches this and aborts startup with the error's message
+ rendered to stderr. The message is operator-facing — names the
+ role, provider, model, base URL when available, and the wrapped
+ error string."""
 
 
 def llm_probe_enabled(env: dict | None = None) -> bool:
     """Returns True when the startup probe should run.
 
-    Defaults to True. Set `J1_LLM_STARTUP_PROBE=false` to opt out
-    (tests and mock-only deployments)."""
+ Defaults to True. Set `J1_LLM_STARTUP_PROBE=false` to opt out
+ (tests and mock-only deployments)."""
     source = env if env is not None else os.environ
     raw = str(source.get(ENV_LLM_STARTUP_PROBE, "true")).strip().lower()
     return raw not in {"false", "0", "no", "off"}
@@ -187,8 +187,8 @@ def llm_probe_timeout(env: dict | None = None) -> float:
 def llm_health_monitor_interval(env: dict | None = None) -> float:
     """Re-probe interval for the background health monitor.
 
-    Set to 0 (or any non-positive value) to disable the monitor;
-    only the startup probe runs in that case."""
+ Set to 0 (or any non-positive value) to disable the monitor;
+ only the startup probe runs in that case."""
     source = env if env is not None else os.environ
     raw = source.get(ENV_LLM_HEALTH_MONITOR_INTERVAL)
     if not raw:
@@ -208,23 +208,23 @@ def probe_registry(
 ) -> list[ProbeResult]:
     """Exercise each configured role with a minimal request.
 
-    Returns a `ProbeResult` per probed role. Roles that aren't
-    registered are skipped silently — the operator opted not to
-    configure them. Roles that ARE registered but fail the probe
-    return `ok=False` with the error string.
+ Returns a `ProbeResult` per probed role. Roles that aren't
+ registered are skipped silently — the operator opted not to
+ configure them. Roles that ARE registered but fail the probe
+ return `ok=False` with the error string.
 
-    Each probe call is wrapped in a hard deadline (default 5s,
-    overridable via `J1_LLM_PROBE_TIMEOUT_SECONDS`). The underlying
-    client's configured timeout is sized for real generation and is
-    far too long to use for a startup reachability check — without
-    this wrapping deadline, a down LLM would block worker / API
-    startup for minutes per role and operators would see "container
-    running but server unreachable" with no obvious cause.
+ Each probe call is wrapped in a hard deadline (default 5s,
+ overridable via `J1_LLM_PROBE_TIMEOUT_SECONDS`). The underlying
+ client's configured timeout is sized for real generation and is
+ far too long to use for a startup reachability check — without
+ this wrapping deadline, a down LLM would block worker / API
+ startup for minutes per role and operators would see "container
+ running but server unreachable" with no obvious cause.
 
-    Caller decides how to handle failures (abort startup, log + warn,
-    etc.). This function never raises for a probe failure — it
-    returns the result so the caller controls the policy.
-    """
+ Caller decides how to handle failures (abort startup, log + warn,
+ etc.). This function never raises for a probe failure — it
+ returns the result so the caller controls the policy.
+ """
     targets = roles if roles is not None else _PROBED_ROLES
     deadline = timeout_seconds if timeout_seconds is not None else llm_probe_timeout()
     results: list[ProbeResult] = []
@@ -257,17 +257,17 @@ def probe_registry(
 
 def _run_with_deadline(role: str, client: object, deadline: float) -> None:
     """Run `_exercise_role(role, client)` on a worker thread, raising
-    `TimeoutError` when it doesn't finish within `deadline` seconds.
+ `TimeoutError` when it doesn't finish within `deadline` seconds.
 
-    Critical: we DON'T use the executor as a context manager.
-    `ThreadPoolExecutor.__exit__` blocks until pending threads finish
-    — which would defeat the entire point of the deadline against a
-    hanging socket read. Instead, on timeout we call `shutdown(wait=
-    False, cancel_futures=True)`. The hanging thread continues
-    running in the background (it's a daemon thread, so it dies with
-    the process) but the probe returns immediately with the timeout
-    error, and the caller's startup hook proceeds.
-    """
+ Critical: we DON'T use the executor as a context manager.
+ `ThreadPoolExecutor.__exit__` blocks until pending threads finish
+ — which would defeat the entire point of the deadline against a
+ hanging socket read. Instead, on timeout we call `shutdown(wait=
+ False, cancel_futures=True)`. The hanging thread continues
+ running in the background (it's a daemon thread, so it dies with
+ the process) but the probe returns immediately with the timeout
+ error, and the caller's startup hook proceeds.
+ """
     pool = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix=f"j1-llm-probe-{role}",
     )
@@ -298,9 +298,9 @@ def assert_required_llm_reachable(
 ) -> None:
     """Run the probe; raise `LLMStartupProbeError` on any failure.
 
-    Convenience wrapper for the common case: 'fail startup if any
-    configured-and-required role can't be reached.' Logs each result
-    at INFO so the startup banner shows the LLM diagnostic state."""
+ Convenience wrapper for the common case: 'fail startup if any
+ configured-and-required role can't be reached.' Logs each result
+ at INFO so the startup banner shows the LLM diagnostic state."""
     results = probe_registry(registry, roles=roles)
     if not results:
         _log.info(
@@ -348,12 +348,12 @@ def assert_required_llm_reachable(
 def _exercise_role(role: str, client: object) -> None:
     """One-shot, idempotent probe for the given role.
 
-    Each probe is the cheapest-possible call that confirms
-    (a) network reachability, (b) auth, (c) model availability.
-    On success, returns None. On any failure (timeout, HTTP error,
-    auth error, model-not-loaded), raises so the caller's
-    `try/except` collects the failure.
-    """
+ Each probe is the cheapest-possible call that confirms
+ (a) network reachability, (b) auth, (c) model availability.
+ On success, returns None. On any failure (timeout, HTTP error,
+ auth error, model-not-loaded), raises so the caller's
+ `try/except` collects the failure.
+ """
     if role == LLM_ROLE_EMBEDDING:
         embed = getattr(client, "embed_text", None)
         if embed is None:
@@ -413,14 +413,14 @@ def start_health_monitor(
 ) -> bool:
     """Start a daemon thread that re-probes the registry on a loop.
 
-    Returns True when a new monitor was started, False when one was
-    already running (idempotent — safe to call from API + worker
-    bootstrap without coordination).
+ Returns True when a new monitor was started, False when one was
+ already running (idempotent — safe to call from API + worker
+ bootstrap without coordination).
 
-    The thread is a daemon, so it dies with the process. The monitor
-    exits cleanly on `stop_health_monitor()`; tests use that for
-    determinism. Production code never needs to stop it explicitly.
-    """
+ The thread is a daemon, so it dies with the process. The monitor
+ exits cleanly on `stop_health_monitor`; tests use that for
+ determinism. Production code never needs to stop it explicitly.
+ """
     interval = (
         interval_seconds if interval_seconds is not None
         else llm_health_monitor_interval()
@@ -456,9 +456,9 @@ def start_health_monitor(
 def stop_health_monitor(timeout: float = 1.0) -> None:
     """Signal the monitor to exit and wait briefly for it to die.
 
-    Production rarely calls this — the daemon thread dies with the
-    process. Tests call it for determinism so the next test starts
-    from a clean slate."""
+ Production rarely calls this — the daemon thread dies with the
+ process. Tests call it for determinism so the next test starts
+ from a clean slate."""
     global _monitor_thread, _monitor_stop
     with _monitor_lock:
         thread = _monitor_thread
@@ -478,12 +478,12 @@ def _monitor_loop(
     stop: threading.Event,
 ) -> None:
     """The daemon's main loop. Re-probes, caches, sleeps. The stop
-    event is checked between sleeps so a test can shut it down
-    promptly without waiting a full interval.
+ event is checked between sleeps so a test can shut it down
+ promptly without waiting a full interval.
 
-    Exceptions from `probe_registry` are caught + logged but never
-    crash the loop — the monitor must outlive transient errors so it
-    keeps refreshing the cached state."""
+ Exceptions from `probe_registry` are caught + logged but never
+ crash the loop — the monitor must outlive transient errors so it
+ keeps refreshing the cached state."""
     while not stop.is_set():
         try:
             results = probe_registry(registry, roles=roles)
@@ -507,7 +507,7 @@ def _monitor_loop(
                 )
         except Exception as exc:  # noqa: BLE001 — monitor must never die
             _log.warning("LLM health monitor tick raised: %s", exc)
-        # Use Event.wait so an external stop() can break the sleep
+        # Use Event.wait so an external stop can break the sleep
         # immediately instead of waiting up to `interval` seconds.
         if stop.wait(interval):
             break

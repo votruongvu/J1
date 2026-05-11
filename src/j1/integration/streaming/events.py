@@ -34,15 +34,15 @@ _EMPTY_DATA: Mapping[str, Any] = MappingProxyType({})
 class AnswerStreamEvent:
     """One step in a per-request answer stream.
 
-    Transport-neutral: contains no HTTP / SSE concerns. The REST adapter
-    formats this into `text/event-stream`; future MCP / WebSocket
-    adapters could format it into their own framing without touching
-    this class.
+ Transport-neutral: contains no HTTP / SSE concerns. The REST adapter
+ formats this into `text/event-stream`; future MCP / WebSocket
+ adapters could format it into their own framing without touching
+ this class.
 
-    The `event` value is one of `STREAM_EVENT_*` constants for the
-    framework's built-in lifecycle events; custom event types are
-    permitted for extensions.
-    """
+ The `event` value is one of `STREAM_EVENT_*` constants for the
+ framework's built-in lifecycle events; custom event types are
+ permitted for extensions.
+ """
 
     request_id: str
     event: str

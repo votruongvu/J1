@@ -75,17 +75,17 @@ TARGET_PROJECT = "project"
 class BudgetGuard:
     """Pre-flight guard that decides whether an expensive activity may run.
 
-    Inputs:
-      * `current_spend`: per-level spend (typically computed by `CostAggregator`)
-      * `estimated`: pre-flight cost estimate (typically from `CostEstimator`)
+ Inputs:
+ * `current_spend`: per-level spend (typically computed by `CostAggregator`)
+ * `estimated`: pre-flight cost estimate (typically from `CostEstimator`)
 
-    Output: a `BudgetCheck` whose `decision` is one of:
-      * `ALLOW` — under all configured limits
-      * `WARN` — projected spend crosses `warn_threshold` on at least one
-        configured level (caller may continue, but the warning is audited)
-      * `BLOCK` — projected spend exceeds at least one configured limit
-        (caller should pause / wait for approval / abort)
-    """
+ Output: a `BudgetCheck` whose `decision` is one of:
+ * `ALLOW` — under all configured limits
+ * `WARN` — projected spend crosses `warn_threshold` on at least one
+ configured level (caller may continue, but the warning is audited)
+ * `BLOCK` — projected spend exceeds at least one configured limit
+ (caller should pause / wait for approval / abort)
+ """
 
     def __init__(
         self,

@@ -10,11 +10,11 @@ _log = logging.getLogger(__name__)
 class EventSubscriber(Protocol):
     """Receives an `ApplicationEvent`. Implementations must not raise.
 
-    Subscribers are called synchronously from `ApplicationEventBus.publish`,
-    but the bus traps exceptions and logs them so a failing subscriber never
-    breaks publication. Long-running work (network I/O, retries) belongs in
-    a thread pool / worker behind the subscriber, not in `handle` itself.
-    """
+ Subscribers are called synchronously from `ApplicationEventBus.publish`,
+ but the bus traps exceptions and logs them so a failing subscriber never
+ breaks publication. Long-running work (network I/O, retries) belongs in
+ a thread pool / worker behind the subscriber, not in `handle` itself.
+ """
 
     def handle(self, event: ApplicationEvent) -> None: ...
 
@@ -22,10 +22,10 @@ class EventSubscriber(Protocol):
 class ApplicationEventBus:
     """In-process pub/sub for `ApplicationEvent`.
 
-    Trivially fan-out: every registered subscriber sees every event. Type
-    filtering is the subscriber's job (so subscriptions can be matched by
-    tenant + secret + retry policy in one place — see WebhookSubscription).
-    """
+ Trivially fan-out: every registered subscriber sees every event. Type
+ filtering is the subscriber's job (so subscriptions can be matched by
+ tenant + secret + retry policy in one place — see WebhookSubscription).
+ """
 
     def __init__(self, subscribers: Iterable[EventSubscriber] | None = None) -> None:
         self._subscribers: list[EventSubscriber] = list(subscribers or ())

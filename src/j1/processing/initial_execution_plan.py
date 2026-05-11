@@ -1,29 +1,29 @@
-"""Pre-compile initial execution plan (Wave 3).
+"""Pre-compile initial execution plan.
 
 `InitialExecutionPlan` is the cheap, deterministic, pre-compile
 plan the workflow produces BEFORE dispatching the compile activity.
 It carries:
 
-  * the compile-engine intent (default RAGAnything),
-  * the selected `domain_profile_id` and its `enrichment_policy`,
-  * the candidate enrichment modules the domain pack suggests,
-  * the cheap signals the planner inspected (extension, size,
-    page count, basic text-extractability) so reviewers can audit
-    the decision,
-  * resource hints (concurrency / model tier suggestions) from the
-    domain pack + deployment settings,
-  * reasons + warnings the planner accumulated.
+ * the compile-engine intent (default RAGAnything),
+ * the selected `domain_profile_id` and its `enrichment_policy`,
+ * the candidate enrichment modules the domain pack suggests,
+ * the cheap signals the planner inspected (extension, size,
+ page count, basic text-extractability) so reviewers can audit
+ the decision,
+ * resource hints (concurrency / model tier suggestions) from the
+ domain pack + deployment settings,
+ * reasons + warnings the planner accumulated.
 
 What the plan deliberately is NOT:
-  * a final enrichment decision — that's `assess_post_compile_enrich`
-    in `j1.processing.enrich_assessment`, which runs AFTER compile
-    and sees the actual extraction signals.
-  * a graph / index gate — graph and index activities are gated by
-    request `enricher_kind` / `graph_builder_kind` / `indexer_kind`
-    + post-compile signals, not by this plan.
-  * a compile-config (mode / capabilities / parse_method) — those
-    live on the wrapped `AssessmentPlan.compile_plan` and are
-    consumed by the RAGAnything adapter.
+ * a final enrichment decision — that's `assess_post_compile_enrich`
+ in `j1.processing.enrich_assessment`, which runs AFTER compile
+ and sees the actual extraction signals.
+ * a graph / index gate — graph and index activities are gated by
+ request `enricher_kind` / `graph_builder_kind` / `indexer_kind`
+ + post-compile signals, not by this plan.
+ * a compile-config (mode / capabilities / parse_method) — those
+ live on the wrapped `AssessmentPlan.compile_plan` and are
+ consumed by the RAGAnything adapter.
 
 The plan is PURE — no LLM, no OCR, no vision, no MinerU. Same
 deterministic inputs across replay must produce the same plan."""
@@ -68,10 +68,10 @@ _SCHEMA_VERSION = "1"
 class InitialExecutionPlan:
     """The pre-compile initial execution plan for one document.
 
-    See module docstring for the design contract. JSON-friendly via
-    `to_payload` / `from_payload` so the Temporal data converter can
-    transit the plan across activity boundaries without bespoke
-    codecs."""
+ See module docstring for the design contract. JSON-friendly via
+ `to_payload` / `from_payload` so the Temporal data converter can
+ transit the plan across activity boundaries without bespoke
+ codecs."""
 
     document_id: str
     # Compile intent. Set to False only when a cheap signal proves
@@ -184,24 +184,24 @@ def build_initial_execution_plan(
 ) -> InitialExecutionPlan:
     """Build an `InitialExecutionPlan` from cheap inputs only.
 
-    The builder reads:
-      * `profile` — the cheap deterministic `DocumentProfile`
-        (extension, size, page count, basic text-extractability).
-        Must NOT carry LLM-derived signals.
-      * `domain_pack` — the resolved pack (registry's `select_domain`
-        output). None when no domain is active; the plan still
-        works with `enrichment_policy=auto` and no candidates.
-      * `compile_engine` — defaults to RAGAnything; surfaced so a
-        future engine swap is a one-line addition.
-      * `planner` — defaults to `DefaultAssessmentPlanner` for the
-        compile-stage detail. Pass a stub in unit tests.
-      * `document_type` — optional hint that the wrapped planner
-        respects (filename-based pre-classification).
-      * `resource_hints` — additional deployment-level hints
-        (e.g. `vlm_concurrency`) the caller has already resolved.
+ The builder reads:
+ * `profile` — the cheap deterministic `DocumentProfile`
+ (extension, size, page count, basic text-extractability).
+ Must NOT carry LLM-derived signals.
+ * `domain_pack` — the resolved pack (registry's `select_domain`
+ output). None when no domain is active; the plan still
+ works with `enrichment_policy=auto` and no candidates.
+ * `compile_engine` — defaults to RAGAnything; surfaced so a
+ future engine swap is a one-line addition.
+ * `planner` — defaults to `DefaultAssessmentPlanner` for the
+ compile-stage detail. Pass a stub in unit tests.
+ * `document_type` — optional hint that the wrapped planner
+ respects (filename-based pre-classification).
+ * `resource_hints` — additional deployment-level hints
+ (e.g. `vlm_concurrency`) the caller has already resolved.
 
-    The builder is PURE: no I/O, no LLM. Same inputs → same plan.
-    """
+ The builder is PURE: no I/O, no LLM. Same inputs → same plan.
+ """
     chosen_planner = planner or DefaultAssessmentPlanner()
     compile_plan = chosen_planner.assess(profile, document_type=document_type)
 
@@ -238,8 +238,8 @@ def build_initial_execution_plan(
 
 def _candidate_modules(policy) -> tuple[str, ...]:
     """Union of force-recommended and optional task ids. Order
-    preserved (force first, then optional) so the FE renders them
-    in a sensible priority. Empty when no policy is supplied."""
+ preserved (force first, then optional) so the FE renders them
+ in a sensible priority. Empty when no policy is supplied."""
     if policy is None:
         return ()
     seen: set[str] = set()
@@ -257,10 +257,10 @@ def _cheap_signals_from_profile(
 ) -> dict[str, Any]:
     """Snapshot the deterministic profile fields the plan exposes.
 
-    Whitelisted to operational metadata only — no document content,
-    no parser-quality scores that vary on the same input (those are
-    parser-call derived, which means the profiler may run them but
-    they're inherently parser-side). Keys mirror DocumentProfile."""
+ Whitelisted to operational metadata only — no document content,
+ no parser-quality scores that vary on the same input (those are
+ parser-call derived, which means the profiler may run them but
+ they're inherently parser-side). Keys mirror DocumentProfile."""
     return {
         "extension": profile.extension,
         "mime_type": profile.mime_type,
@@ -282,9 +282,9 @@ def _build_resource_hints(
 ) -> dict[str, Any]:
     """Merge domain-policy hints with caller-provided hints.
 
-    Caller hints win — they're typically the deployment's already-
-    resolved values (e.g. `vlm_concurrency` from settings). Policy
-    fills the gaps."""
+ Caller hints win — they're typically the deployment's already-
+ resolved values (e.g. `vlm_concurrency` from settings). Policy
+ fills the gaps."""
     hints: dict[str, Any] = {}
     if policy is not None and policy.default_model_tier:
         hints["default_model_tier"] = policy.default_model_tier
@@ -303,9 +303,9 @@ def _build_reasons_and_warnings(
 ) -> tuple[list[str], list[str]]:
     """Render operator-readable rationale for the plan.
 
-    Reasons trail: domain selection (when set) → policy reasoning →
-    compile-mode rationale. Warnings: low-confidence domain pick,
-    profile signals that hint at parse difficulty."""
+ Reasons trail: domain selection (when set) → policy reasoning →
+ compile-mode rationale. Warnings: low-confidence domain pick,
+ profile signals that hint at parse difficulty."""
     reasons: list[str] = []
     warnings: list[str] = []
 

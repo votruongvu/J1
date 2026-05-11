@@ -10,17 +10,17 @@ history or audit JSONL directly.
 
 Public surface:
 
-  * `IngestionRun` / `RunStatus` — the persistent run-record
-  * `IngestionRunStore` / `JsonlIngestionRunStore` — store interface
-    + JSONL-backed implementation (mirrors `JsonlAuditSink`)
-  * `ProgressReporter` — Protocol the workflow / activities call
-  * `AuditProgressReporter` — writes through the existing
-    `AuditRecorder` so events are visible in the audit log + via the
-    existing `GET /ingestion-jobs/{id}/events` endpoint
-  * `TemporalHeartbeatReporter` — pumps compact progress into Temporal
-    activity heartbeats so the operator UI can see liveness
-  * `CompositeProgressReporter` — fan-out to multiple targets
-  * `NoopProgressReporter` — for unit tests
+ * `IngestionRun` / `RunStatus` — the persistent run-record
+ * `IngestionRunStore` / `JsonlIngestionRunStore` — store interface
+ + JSONL-backed implementation (mirrors `JsonlAuditSink`)
+ * `ProgressReporter` — Protocol the workflow / activities call
+ * `AuditProgressReporter` — writes through the existing
+ `AuditRecorder` so events are visible in the audit log + via the
+ existing `GET /ingestion-jobs/{id}/events` endpoint
+ * `TemporalHeartbeatReporter` — pumps compact progress into Temporal
+ activity heartbeats so the operator UI can see liveness
+ * `CompositeProgressReporter` — fan-out to multiple targets
+ * `NoopProgressReporter` — for unit tests
 """
 
 from j1.runs.models import (
@@ -94,19 +94,19 @@ from j1.runs.store import IngestionRunStore, JsonlIngestionRunStore
 def build_default_progress_reporter(audit_recorder) -> "ProgressReporter":
     """Standard composite reporter for production deployments.
 
-    Fans out to:
-      * `AuditProgressReporter` — writes through the deployment's
-        `AuditRecorder`, persisting events into the workspace audit
-        log (where the `/ingestion-runs/{id}/events` endpoint reads
-        them).
-      * `TemporalHeartbeatReporter` — pumps compact summaries into
-        Temporal activity heartbeats so operator UIs (Temporal Web,
-        worker logs) see liveness on long-running activities.
+ Fans out to:
+ * `AuditProgressReporter` — writes through the deployment's
+ `AuditRecorder`, persisting events into the workspace audit
+ log (where the `/ingestion-runs/{id}/events` endpoint reads
+ them).
+ * `TemporalHeartbeatReporter` — pumps compact summaries into
+ Temporal activity heartbeats so operator UIs (Temporal Web,
+ worker logs) see liveness on long-running activities.
 
-    Importing this from a deployment entrypoint avoids each
-    deployment re-discovering the right composition. Tests can pass
-    `NoopProgressReporter()` directly instead.
-    """
+ Importing this from a deployment entrypoint avoids each
+ deployment re-discovering the right composition. Tests can pass
+ `NoopProgressReporter` directly instead.
+ """
     return CompositeProgressReporter(
         AuditProgressReporter(audit_recorder),
         TemporalHeartbeatReporter(),

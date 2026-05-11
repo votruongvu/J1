@@ -65,7 +65,7 @@ export interface AssessmentPlanPayload {
   fallback_policy?: string;
   reason?: string;
   /** Added in the API/UI-shape refactor. Older reports omit it;
-   * the panel falls back to deriving from `mode` when missing. */
+ * the panel falls back to deriving from `mode` when missing. */
   recommended_path?: RecommendedProcessingPath;
 }
 
@@ -85,8 +85,8 @@ export interface ExtractionEvidence {
   detected_content_types?: string[];
   page_count?: number | null;
   /** "pending_verification" — chunk count is NEVER claimed here.
-   * The FE renders this status with a "verified during compile/
-   * index" hint instead of a number. */
+ * The FE renders this status with a "verified during compile/
+ * index" hint instead of a number. */
   chunking_status?: string;
 }
 
@@ -125,12 +125,12 @@ export const LOW_CONFIDENCE_THRESHOLD = 0.7;
  * Compute the ordered list of banners for a compile strategy report.
  *
  * Banners surface, in priority order:
- *   1. No AssessmentPlan attached
- *   2. Low-confidence plan (when plan exists)
- *   3. Unhandled capabilities present
- *   4. Compile safety retry triggered
- *   5. Final quality LOW
- *   6. Final quality FAILED
+ * 1. No AssessmentPlan attached
+ * 2. Low-confidence plan (when plan exists)
+ * 3. Unhandled capabilities present
+ * 4. Compile safety retry triggered
+ * 5. Final quality LOW
+ * 6. Final quality FAILED
  */
 export function bannersForReport(
   report: CompileStrategyReport,
@@ -289,10 +289,10 @@ export function resolvedCompileConfig(
  * artifacts may carry `fast_text_compile` / `multimodal_compile`
  * / `ocr_parse` and the UI must not show those raw strings.
  *
- *   fast_text_compile  → standard_compile
- *   multimodal_compile → standard_compile
- *   ocr_parse          → deep_compile
- *   (anything else)    → passes through
+ * fast_text_compile → standard_compile
+ * multimodal_compile → standard_compile
+ * ocr_parse → deep_compile
+ * (anything else) → passes through
  */
 export function canonicalRecommendedPath(
   path: RecommendedProcessingPath | undefined,

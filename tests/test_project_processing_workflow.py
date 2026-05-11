@@ -227,10 +227,10 @@ def test_run_completes_happy_path(monkeypatch):
 
 def test_target_document_ids_skips_list_pending_and_processes_only_named(monkeypatch):
     """`target_document_ids` lets the user-facing flow scope each
-    upload to the just-uploaded document. The workflow must NOT call
-    `list_pending_documents` in that case — otherwise every upload
-    re-processes every PENDING document in the project (the bug we
-    saw with one upload triggering many MinerU starts)."""
+ upload to the just-uploaded document. The workflow must NOT call
+ `list_pending_documents` in that case — otherwise every upload
+ re-processes every PENDING document in the project (the bug we
+ saw with one upload triggering many MinerU starts)."""
     calls: list[str] = []
     statuses: list[str] = []
 
@@ -271,9 +271,9 @@ def test_target_document_ids_skips_list_pending_and_processes_only_named(monkeyp
 
 def test_failed_compile_marks_document_failed(monkeypatch):
     """When the per-document pipeline raises, the workflow must
-    still flip the doc's registry status (to FAILED). Without this,
-    a doc that fails once stays PENDING and gets retried by every
-    subsequent bulk job indefinitely."""
+ still flip the doc's registry status (to FAILED). Without this,
+ a doc that fails once stays PENDING and gets retried by every
+ subsequent bulk job indefinitely."""
     statuses: list[str] = []
 
     def handler(method, payload, kwargs):
@@ -309,10 +309,10 @@ def test_rebuild_index_only_skips_documents_loop_and_runs_only_index(
     monkeypatch,
 ):
     """`rebuild_index_only=True` must skip every per-document stage
-    (compile / chunks / enrich / graph) and run ONLY the index
-    activity against the carry-forward artifact ids. The skipped
-    stages must surface as SKIPPED step records with a clear reason
-    so the FE timeline still shows the full pipeline shape."""
+ (compile / chunks / enrich / graph) and run ONLY the index
+ activity against the carry-forward artifact ids. The skipped
+ stages must surface as SKIPPED step records with a clear reason
+ so the FE timeline still shows the full pipeline shape."""
     dispatched: list[str] = []
 
     def handler(method, payload, kwargs):
@@ -372,8 +372,8 @@ def test_rebuild_index_only_skips_documents_loop_and_runs_only_index(
 
 def test_rebuild_index_only_rejects_when_no_indexer_kind(monkeypatch):
     """Rebuild mode requires `indexer_kind` — without one, there's
-    no activity to dispatch. Workflow rejects at startup so the
-    operator gets a clear failure instead of a silently-empty run."""
+ no activity to dispatch. Workflow rejects at startup so the
+ operator gets a clear failure instead of a silently-empty run."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -402,13 +402,13 @@ def test_stage_validation_failure_blocks_completed_status(monkeypatch):
     from j1.processing.status import StepStatus
 
     """When `validate_stage` returns `passed=False`, the workflow MUST
-    NOT mark the stage COMPLETED. Instead it records FAILED + raises
-    ApplicationError so Temporal sees the workflow as Failed.
+ NOT mark the stage COMPLETED. Instead it records FAILED + raises
+ ApplicationError so Temporal sees the workflow as Failed.
 
-    This is the core "never mark succeeded just because a function
-    returned" rule. The compile activity returns succeeded; the
-    validator (mocked here) says output is invalid; the workflow
-    must block the COMPLETED transition."""
+ This is the core "never mark succeeded just because a function
+ returned" rule. The compile activity returns succeeded; the
+ validator (mocked here) says output is invalid; the workflow
+ must block the COMPLETED transition."""
     from j1.orchestration.activities.payloads import (
         StageValidationActivityResult,
     )
@@ -490,13 +490,13 @@ def test_stage_validation_failure_blocks_completed_status(monkeypatch):
 
 def test_aggregator_blocks_succeeded_when_durable_stage_skips_validation(monkeypatch):
     """The `_validate_completion` aggregator must reject SUCCEEDED
-    when a durable stage was recorded COMPLETED but no
-    `stage_validation_report` was persisted. Defense against a
-    future code path bypassing the per-stage gate.
+ when a durable stage was recorded COMPLETED but no
+ `stage_validation_report` was persisted. Defense against a
+ future code path bypassing the per-stage gate.
 
-    Setup: the test handler returns successful compile + skips the
-    `validate_stage` activity entirely (returns None) — simulating
-    a bug where the gate is missing from the workflow."""
+ Setup: the test handler returns successful compile + skips the
+ `validate_stage` activity entirely (returns None) — simulating
+ a bug where the gate is missing from the workflow."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -552,12 +552,12 @@ def test_aggregator_blocks_succeeded_when_durable_stage_skips_validation(monkeyp
 
 def test_resume_skips_enrich_and_graph_when_listed_in_resume_context(monkeypatch):
     """When `resume_completed_steps` lists enrich + graph, the workflow
-    must NOT dispatch the corresponding activities — it should record
-    SKIPPED step results citing the resume source and carry the
-    prior-run artifacts forward through `_produced_artifact_ids`.
+ must NOT dispatch the corresponding activities — it should record
+ SKIPPED step results citing the resume source and carry the
+ prior-run artifacts forward through `_produced_artifact_ids`.
 
-    This is the contract the resume endpoint relies on: skip exactly
-    the LLM-cost stages that already ran, run everything else."""
+ This is the contract the resume endpoint relies on: skip exactly
+ the LLM-cost stages that already ran, run everything else."""
     dispatched: list[str] = []
 
     def handler(method, payload, kwargs):
@@ -694,10 +694,10 @@ def test_run_completes_full_pipeline(monkeypatch):
 
 def test_validate_failure_raises_application_error_and_marks_failed_final(monkeypatch):
     """Validation failure must surface as Temporal `ApplicationError`
-    (workflow Failed in UI), not a returned result with
-    `state="failed_final"` (workflow Completed in UI). Regression
-    against the false-success bug where the workflow swallowed
-    failures and returned them encoded in a status field."""
+ (workflow Failed in UI), not a returned result with
+ `state="failed_final"` (workflow Completed in UI). Regression
+ against the false-success bug where the workflow swallowed
+ failures and returned them encoded in a status field."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -720,8 +720,8 @@ def test_validate_failure_raises_application_error_and_marks_failed_final(monkey
 
 def test_compile_failure_raises_application_error_and_marks_failed_final(monkeypatch):
     """Compile FAILED must propagate as a Temporal workflow failure,
-    not a returned result the caller might miss. Regression against
-    the false-success bug."""
+ not a returned result the caller might miss. Regression against
+ the false-success bug."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -748,10 +748,10 @@ def test_compile_failure_raises_application_error_and_marks_failed_final(monkeyp
 
 def test_unexpected_exception_raises_application_error_and_marks_failed_recoverable(monkeypatch):
     """Unexpected exceptions are wrapped in a typed `ApplicationError`
-    so Temporal UI shows a clean failure type — but `non_retryable`
-    stays False to preserve the "transient infrastructure"
-    classification (parent workflows / operators may legitimately
-    retry these)."""
+ so Temporal UI shows a clean failure type — but `non_retryable`
+ stays False to preserve the "transient infrastructure"
+ classification (parent workflows / operators may legitimately
+ retry these)."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -1177,10 +1177,10 @@ def test_budget_check_runs_before_compile(monkeypatch):
 
 def test_failure_reason_in_status(monkeypatch):
     """`get_status` query must remain readable even after the workflow
-    raises — Temporal serves queries against the workflow's recorded
-    state independently of whether `run()` exited cleanly. The
-    workflow records state THEN raises, so this query still works
-    after a failure."""
+ raises — Temporal serves queries against the workflow's recorded
+ state independently of whether `run` exited cleanly. The
+ workflow records state THEN raises, so this query still works
+ after a failure."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -1242,11 +1242,11 @@ def test_get_status_reflects_state_during_run(monkeypatch):
 class _ContinueAsNewSentinel(BaseException):
     """Stand-in for `temporalio.workflow.ContinueAsNewError` in tests.
 
-    The real `ContinueAsNewError` refuses direct construction outside the
-    workflow runtime, so tests substitute this BaseException-derived
-    sentinel — same semantics for our purposes (bypasses the workflow's
-    `except Exception` clauses, propagates to the test).
-    """
+ The real `ContinueAsNewError` refuses direct construction outside the
+ workflow runtime, so tests substitute this BaseException-derived
+ sentinel — same semantics for our purposes (bypasses the workflow's
+ `except Exception` clauses, propagates to the test).
+ """
 
 
 def _multi_doc_handler(documents: list[str]):
@@ -1431,7 +1431,7 @@ def test_continuation_skips_validation(monkeypatch):
 
 def test_status_after_continuation_reflects_carried_state():
     wf = ProjectProcessingWorkflow()
-    # Simulate what restoration looks like by setting fields the way run()
+    # Simulate what restoration looks like by setting fields the way run
     # would on continuation start.
     wf._completed_operations = ["validate", "list_documents", "compile:d-1"]
     wf._produced_artifact_ids = ["art-d-1"]
@@ -1508,7 +1508,7 @@ def test_continue_as_new_does_not_trigger_on_partial_batch(monkeypatch):
 
 def test_continuation_completes_full_pipeline_after_resume(monkeypatch):
     """Multi-step pipeline (compile + index) completes correctly when started
-    from a continuation checkpoint."""
+ from a continuation checkpoint."""
 
     def handler(method, payload, kwargs):
         name = _activity_name(method)
@@ -1549,8 +1549,8 @@ def test_continuation_completes_full_pipeline_after_resume(monkeypatch):
 
 def test_completion_validation_blocks_succeeded_when_no_artifacts(monkeypatch):
     """Compile reported success but produced ZERO artifacts (a real
-    failure mode when the parser silently no-ops on a corrupt PDF).
-    The completion gate must fail-fast rather than mark SUCCEEDED."""
+ failure mode when the parser silently no-ops on a corrupt PDF).
+ The completion gate must fail-fast rather than mark SUCCEEDED."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -1583,7 +1583,7 @@ def test_completion_validation_blocks_succeeded_when_no_artifacts(monkeypatch):
 
 def test_completion_validation_passes_when_artifacts_present(monkeypatch):
     """Sanity-check counterpart: a real artifact gets through the
-    gate without changing the existing happy-path semantics."""
+ gate without changing the existing happy-path semantics."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -1613,12 +1613,12 @@ def test_completion_validation_passes_when_artifacts_present(monkeypatch):
 
 def test_completion_validation_fails_when_graph_step_completed_without_artifact(monkeypatch):
     """Per-stage required-output rule: a `graph` step recorded as
-    COMPLETED without a `graph_json` artifact is a contract
-    violation, not a SUCCEEDED state. This is the regression test
-    for the audit-listed bug class where the workflow could mark a
-    graph-enabled run as SUCCEEDED while the canonical graph output
-    was missing — operators saw 'completed' but the Knowledge Graph
-    tab was empty."""
+ COMPLETED without a `graph_json` artifact is a contract
+ violation, not a SUCCEEDED state. This is the regression test
+ for the audit-listed bug class where the workflow could mark a
+ graph-enabled run as SUCCEEDED while the canonical graph output
+ was missing — operators saw 'completed' but the Knowledge Graph
+ tab was empty."""
     def handler(method, payload, kwargs):
         name = _activity_name(method)
         if name.endswith("validate_context"):
@@ -1671,10 +1671,10 @@ def test_completion_validation_fails_when_graph_step_completed_without_artifact(
 
 def test_failed_run_persists_error_report_artifact(monkeypatch):
     """Failure path must persist an `error_report` artifact via the
-    `j1.processing.persist_error_report` activity BEFORE finalize +
-    terminal-event emission, so the FE artifact-listing surface
-    carries the failure detail under the failed run alongside any
-    partial artifacts produced by earlier stages."""
+ `j1.processing.persist_error_report` activity BEFORE finalize +
+ terminal-event emission, so the FE artifact-listing surface
+ carries the failure detail under the failed run alongside any
+ partial artifacts produced by earlier stages."""
     seen_persist_inputs: list = []
 
     def handler(method, payload, kwargs):
@@ -1755,13 +1755,13 @@ def test_failed_run_persists_error_report_artifact(monkeypatch):
 
 def test_completed_run_persists_validation_report_and_final_summary(monkeypatch):
     """A successful run must persist BOTH `validation_report` and
-    `final_summary` artifacts at the COMPLETED transition. They land
-    via the standard artifact-listing surface so the FE / operators
-    have a single canonical run-outcome artifact to read.
+ `final_summary` artifacts at the COMPLETED transition. They land
+ via the standard artifact-listing surface so the FE / operators
+ have a single canonical run-outcome artifact to read.
 
-    The validation report carries the rules that ran + an empty
-    error list (validation passed). The final summary carries the
-    final_status + executed-step tally + artifact-kind counts."""
+ The validation report carries the rules that ran + an empty
+ error list (validation passed). The final summary carries the
+ final_status + executed-step tally + artifact-kind counts."""
     seen_validation: list = []
     seen_final_summary: list = []
 
@@ -1842,9 +1842,9 @@ def test_completed_run_persists_validation_report_and_final_summary(monkeypatch)
 
 def test_failed_run_persists_final_summary_with_failed_status(monkeypatch):
     """A failed run must persist a `final_summary` artifact too —
-    the FE / operators need ONE canonical run-outcome artifact for
-    both success and failure paths. Final status is `failed`,
-    failure_code + failure_message carry the cause."""
+ the FE / operators need ONE canonical run-outcome artifact for
+ both success and failure paths. Final status is `failed`,
+ failure_code + failure_message carry the cause."""
     seen_final_summary: list = []
 
     def handler(method, payload, kwargs):

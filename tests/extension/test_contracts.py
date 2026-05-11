@@ -70,9 +70,9 @@ METHOD_NAMES = {
 def test_each_contract_is_a_protocol(contract):
     """Every contract is a Protocol class and is @runtime_checkable.
 
-    `_is_protocol` / `_is_runtime_protocol` are CPython-internal but
-    are the documented way to introspect Protocol classes.
-    """
+ `_is_protocol` / `_is_runtime_protocol` are CPython-internal but
+ are the documented way to introspect Protocol classes.
+ """
     assert getattr(contract, "_is_protocol", False), (
         f"{contract.__name__} is not a Protocol class"
     )
@@ -102,10 +102,10 @@ def test_each_contract_declares_expected_methods(contract, methods):
 def test_kinds_are_documented_strings():
     """Every Protocol's `kind` annotation is typed as `str`.
 
-    With `from __future__ import annotations` (PEP 563), annotations
-    are stored as their source-string form; verify against either
-    the type or the literal string.
-    """
+ With `from __future__ import annotations` (PEP 563), annotations
+ are stored as their source-string form; verify against either
+ the type or the literal string.
+ """
     for contract in CONTRACTS:
         annotation = contract.__annotations__.get("kind")
         assert annotation in (str, "str"), (
@@ -119,8 +119,8 @@ def test_kinds_are_documented_strings():
 def test_mocks_satisfy_their_contracts():
     """Each mock should be `isinstance` of its declared contract.
 
-    Protocols with `@runtime_checkable` allow this.
-    """
+ Protocols with `@runtime_checkable` allow this.
+ """
     pairs = [
         (MockSourceConnector(), SourceConnector),
         (MockCompilerAdapter(), CompilerAdapter),
@@ -143,13 +143,13 @@ def test_mocks_satisfy_their_contracts():
 
 def test_legacy_protocols_satisfied_by_new_mocks_via_duck_typing():
     """A class built against the new extension contracts also satisfies
-    the legacy core Protocols (`KnowledgeCompiler`, `EnrichmentProcessor`,
-    `GraphBuilder`) — via duck typing.
+ the legacy core Protocols (`KnowledgeCompiler`, `EnrichmentProcessor`,
+ `GraphBuilder`) — via duck typing.
 
-    The legacy Protocols are NOT decorated `@runtime_checkable`, so
-    `isinstance` checks against them raise. We verify the structural
-    contract by checking the methods exist with the expected names.
-    """
+ The legacy Protocols are NOT decorated `@runtime_checkable`, so
+ `isinstance` checks against them raise. We verify the structural
+ contract by checking the methods exist with the expected names.
+ """
     mock_compiler = MockCompilerAdapter()
     mock_enricher = MockEnrichmentAdapter()
     mock_graph = MockGraphAdapter()

@@ -6,10 +6,10 @@ from typing import Protocol
 class WebhookTransportError(Exception):
     """Raised by clients on connect/timeout/network failures.
 
-    The delivery service treats this as retryable; HTTP responses with
-    non-2xx status codes are reported via `WebhookResponse.status_code`
-    instead of raised.
-    """
+ The delivery service treats this as retryable; HTTP responses with
+ non-2xx status codes are reported via `WebhookResponse.status_code`
+ instead of raised.
+ """
 
 
 @dataclass(frozen=True)
@@ -21,13 +21,13 @@ class WebhookResponse:
 class WebhookHttpClient(Protocol):
     """Pluggable HTTP transport for webhook delivery.
 
-    Implementations must:
-      * raise `WebhookTransportError` for transport-level failures
-        (DNS, connect, timeout) — those are retryable
-      * return a `WebhookResponse` for any HTTP response, including
-        non-2xx. The delivery service decides what to do with the
-        status code.
-    """
+ Implementations must:
+ * raise `WebhookTransportError` for transport-level failures
+ (DNS, connect, timeout) — those are retryable
+ * return a `WebhookResponse` for any HTTP response, including
+ non-2xx. The delivery service decides what to do with the
+ status code.
+ """
 
     def post(
         self,
@@ -42,10 +42,10 @@ class WebhookHttpClient(Protocol):
 class HttpxWebhookClient:
     """Default `httpx`-backed client.
 
-    `httpx` is already a dev dependency (used by FastAPI's TestClient).
-    Production deployments wanting a different stack supply their own
-    client implementing `WebhookHttpClient`.
-    """
+ `httpx` is already a dev dependency (used by FastAPI's TestClient).
+ Production deployments wanting a different stack supply their own
+ client implementing `WebhookHttpClient`.
+ """
 
     def __init__(self) -> None:
         # Lazy import so `j1.adapters.webhook` can be imported in

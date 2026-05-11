@@ -161,17 +161,17 @@ DEFAULT_PDF_CONVERT_EXTENSIONS: tuple[str, ...] = (
 class RAGAnythingSettings:
     """Configuration the RAGAnything adapters need to bootstrap.
 
-    `mode` is currently informational ("local" / "service") — the
-    adapter inspects it to decide whether to spin up an in-process
-    pipeline vs. talk to a service. Today only "local" is wired.
+ `mode` is currently informational ("local" / "service") — the
+ adapter inspects it to decide whether to spin up an in-process
+ pipeline vs. talk to a service. Today only "local" is wired.
 
-    `*_processor` fields each name an importable callable. When set,
-    the matching adapter delegates to it — turning "you must subclass
-    the adapter" into "you can wire it via env". The callable
-    receives the `RAGAnything*Request` value object documented next
-    to each adapter and returns the canonical `ArtifactProcessingResult`
-    / `QueryResult`.
-    """
+ `*_processor` fields each name an importable callable. When set,
+ the matching adapter delegates to it — turning "you must subclass
+ the adapter" into "you can wire it via env". The callable
+ receives the `RAGAnything*Request` value object documented next
+ to each adapter and returns the canonical `ArtifactProcessingResult`
+ / `QueryResult`.
+ """
 
     mode: str = DEFAULT_MODE
     workdir: str = DEFAULT_WORKDIR
@@ -348,9 +348,9 @@ def _parse_bool(raw: str | None, *, default: bool) -> bool:
 
 def _parse_allowed_methods(raw: str | None) -> tuple[str, ...]:
     """Parse a comma-separated parse-method allow-list. Validates
-    each entry against `VALID_PARSE_METHODS` and drops unknowns
-    (with no error — operator typos shouldn't kill startup; the
-    mapper's safety net catches the empty-allow-list case)."""
+ each entry against `VALID_PARSE_METHODS` and drops unknowns
+ (with no error — operator typos shouldn't kill startup; the
+ mapper's safety net catches the empty-allow-list case)."""
     if not raw:
         return ()
     cleaned = [
@@ -362,9 +362,9 @@ def _parse_allowed_methods(raw: str | None) -> tuple[str, ...]:
 
 def _parse_max_concurrency(raw: str | None) -> int:
     """Parse the VLM-max-concurrency env var. Defaults / clamps to 1
-    on missing / invalid / non-positive input — never crash startup
-    on a typo, never let an operator accidentally enable parallel
-    fanout via a malformed value."""
+ on missing / invalid / non-positive input — never crash startup
+ on a typo, never let an operator accidentally enable parallel
+ fanout via a malformed value."""
     if raw is None or not raw.strip():
         return 1
     try:
@@ -377,11 +377,11 @@ def _parse_max_concurrency(raw: str | None) -> int:
 def _parse_extensions(raw: str | None) -> tuple[str, ...]:
     """Parse a comma-separated extension list into a normalised tuple.
 
-    `None`              → bundled default set.
-    `""` / whitespace   → empty (conversion disabled).
-    Otherwise           → each comma-separated entry, lowercased, with
-                          a leading dot ensured.
-    """
+ `None` → bundled default set.
+ `""` / whitespace → empty (conversion disabled).
+ Otherwise → each comma-separated entry, lowercased, with
+ a leading dot ensured.
+ """
     if raw is None:
         return DEFAULT_PDF_CONVERT_EXTENSIONS
     cleaned = [e.strip() for e in raw.split(",") if e.strip()]
@@ -411,13 +411,13 @@ def _parse_timeout(raw: str | None) -> float:
 
 def _validate_parse_method(raw: str | None) -> str:
     """Reject the common misuse where an operator sets
-    `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` (a backend value).
+ `J1_RAGANYTHING_PARSE_METHOD=vlm-http-client` (a backend value).
 
-    Surface a clear migration message at startup instead of letting
-    mineru fail mid-compile with the cryptic 'Invalid value for -m'
-    error. Backend values are forwarded through `J1_RAGANYTHING_BACKEND`
-    instead — that's the correct mineru flag for engine selection.
-    """
+ Surface a clear migration message at startup instead of letting
+ mineru fail mid-compile with the cryptic 'Invalid value for -m'
+ error. Backend values are forwarded through `J1_RAGANYTHING_BACKEND`
+ instead — that's the correct mineru flag for engine selection.
+ """
     if not raw:
         return DEFAULT_PARSE_METHOD
     value = raw.strip()
@@ -438,19 +438,19 @@ def _validate_parse_method(raw: str | None) -> str:
 
 def _validate_backend(raw: str | None) -> str:
     """Validate the backend env var against the J1-allowed subset of
-    MinerU's CLI choices.
+ MinerU's CLI choices.
 
-    Empty / unset → `DEFAULT_BACKEND` (`vlm-http-client`). Anything
-    else must match `EXTERNAL_ONLY_BACKENDS` — the local-model
-    backends (`pipeline` / `vlm-auto-engine` / `hybrid-auto-engine`)
-    are rejected at startup with an actionable migration message
-    pointing at the closest HTTP-client equivalent.
+ Empty / unset → `DEFAULT_BACKEND` (`vlm-http-client`). Anything
+ else must match `EXTERNAL_ONLY_BACKENDS` — the local-model
+ backends (`pipeline` / `vlm-auto-engine` / `hybrid-auto-engine`)
+ are rejected at startup with an actionable migration message
+ pointing at the closest HTTP-client equivalent.
 
-    The rejection is by design: J1 doesn't host MinerU's models in-
-    process. Local-model backends would trigger multi-gigabyte HF
-    downloads and inference on the worker — neither of which the
-    deployment is configured to handle. Operators who need local
-    inference must fork the deployment and remove this guard."""
+ The rejection is by design: J1 doesn't host MinerU's models in-
+ process. Local-model backends would trigger multi-gigabyte HF
+ downloads and inference on the worker — neither of which the
+ deployment is configured to handle. Operators who need local
+ inference must fork the deployment and remove this guard."""
     if not raw:
         return DEFAULT_BACKEND
     value = raw.strip()

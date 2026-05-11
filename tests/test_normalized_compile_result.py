@@ -1,19 +1,19 @@
-"""Unit tests for the Wave 4 typed normalized compile result.
+"""Unit tests for the typed normalized compile result.
 
 The adapter projects `ArtifactActivityResult.content_stats` +
 `compile_metrics` (untyped dicts) onto typed sub-records. These
 tests pin:
 
-  * the projection table (each content_stats / compile_metrics key
-    maps onto the right typed field);
-  * `detected_tables` / `detected_images` projection (placeholder
-    behaviour when bridge only surfaces a count; descriptor pass-
-    through when bridge surfaces per-element dicts);
-  * `quality_signals` aggregation;
-  * `retry_history` deserialization from the workflow's per-
-    attempt audit dicts;
-  * round-trip via `to_payload` / `from_payload`;
-  * pure (no LLM / OCR / vendor imports).
+ * the projection table (each content_stats / compile_metrics key
+ maps onto the right typed field);
+ * `detected_tables` / `detected_images` projection (placeholder
+ behaviour when bridge only surfaces a count; descriptor pass-
+ through when bridge surfaces per-element dicts);
+ * `quality_signals` aggregation;
+ * `retry_history` deserialization from the workflow's per-
+ attempt audit dicts;
+ * round-trip via `to_payload` / `from_payload`;
+ * pure (no LLM / OCR / vendor imports).
 """
 
 from __future__ import annotations
@@ -153,8 +153,8 @@ def test_detected_images_projects_descriptor_dicts():
 
 def test_detected_images_empty_when_no_descriptors():
     """A compile with image_count > 0 but no per-image descriptors
-    yields an empty list — the typed surface intentionally doesn't
-    fabricate page/role info."""
+ yields an empty list — the typed surface intentionally doesn't
+ fabricate page/role info."""
     result = normalize_compile_result(
         _activity_result(content_stats={"image_count": 3}),
         document_id="doc-1",
@@ -167,7 +167,7 @@ def test_detected_images_empty_when_no_descriptors():
 
 def test_detected_tables_uses_descriptors_when_available():
     """Future parsers can surface per-table dicts via
-    `content_stats["tables"]`; the normalizer projects them."""
+ `content_stats["tables"]`; the normalizer projects them."""
     result = normalize_compile_result(
         _activity_result(content_stats={
             "tables": [
@@ -187,8 +187,8 @@ def test_detected_tables_uses_descriptors_when_available():
 
 def test_detected_tables_falls_back_to_placeholders_from_count():
     """When the bridge only surfaces a `table_count` (current
-    RAGAnything behaviour), the normalizer emits one placeholder
-    per count so the FE can render an N-tables tile."""
+ RAGAnything behaviour), the normalizer emits one placeholder
+ per count so the FE can render an N-tables tile."""
     result = normalize_compile_result(
         _activity_result(content_stats={"table_count": 3}),
         document_id="doc-1",
@@ -308,7 +308,7 @@ def test_retry_history_projects_per_attempt_dicts():
 
 def test_retry_history_is_empty_when_no_attempts_provided():
     """Caller didn't track retries → empty history. Final compile
-    mode falls back to `assessment_mode` in metrics when present."""
+ mode falls back to `assessment_mode` in metrics when present."""
     result = normalize_compile_result(
         _activity_result(compile_metrics={"assessment_mode": "standard"}),
         document_id="doc-1",
@@ -319,8 +319,8 @@ def test_retry_history_is_empty_when_no_attempts_provided():
 
 def test_retry_history_tolerates_malformed_entries():
     """Workflow audit dicts can be incomplete (e.g. a crashed
-    attempt that never finished recording). Drop non-dicts; coerce
-    missing fields to defaults."""
+ attempt that never finished recording). Drop non-dicts; coerce
+ missing fields to defaults."""
     attempts = [
         {"attempt_number": 1, "status": "succeeded", "mode": "standard"},
         "not-a-dict",
@@ -338,7 +338,7 @@ def test_retry_history_tolerates_malformed_entries():
 
 def test_raw_artifact_refs_preserve_vendor_ids():
     """Raw vendor output stays in the workspace — the normalized
-    result references it by id only."""
+ result references it by id only."""
     result = normalize_compile_result(
         _activity_result(
             artifact_ids=["a-1", "a-2", "a-3"],
@@ -428,8 +428,8 @@ def test_to_payload_from_payload_round_trips():
 
 
 def test_normalizer_module_does_not_import_llm_or_vendor_clients():
-    """Wave 4 is an adapter — no LLM / vendor coupling allowed in
-    the normalizer. AST-check imports to catch regressions."""
+    """ is an adapter — no LLM / vendor coupling allowed in
+ the normalizer. AST-check imports to catch regressions."""
     mod = sys.modules.get("j1.processing.compile_result")
     assert mod is not None
     tree = ast.parse(inspect.getsource(mod))
@@ -460,7 +460,7 @@ def test_normalizer_module_does_not_import_llm_or_vendor_clients():
 
 def test_normalizer_is_deterministic_for_identical_inputs():
     """Same activity result + same retry history → same normalized
-    payload. Required for Temporal workflow replay."""
+ payload. Required for Temporal workflow replay."""
     attempts = [{"attempt_number": 1, "status": "succeeded", "mode": "standard"}]
     a = normalize_compile_result(
         _activity_result(compile_metrics={"chunks_count": 2}),

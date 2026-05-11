@@ -13,10 +13,10 @@ from j1.processing.planning_settings import (
 
 def test_defaults_when_env_empty():
     """Default behaviour: rule-based planning enabled, LLM-assisted
-    planning OFF, generic domain default with civil_engineering
-    in the override allow-list. These defaults define the baseline
-    contract — flipping them in code should be a deliberate,
-    separately-reviewed change."""
+ planning OFF, generic domain default with civil_engineering
+ in the override allow-list. These defaults define the baseline
+ contract — flipping them in code should be a deliberate,
+ separately-reviewed change."""
     s = load_planning_settings({})
     assert s == PlanningSettings(
         enabled=True,
@@ -152,7 +152,7 @@ def test_plan_mode_unrecognised_value_raises():
 
 def test_legacy_llm_planning_enabled_flag_still_honored_when_plan_mode_unset():
     """Backward compat: deployments that flipped J1_LLM_PLANNING_ENABLED
-    before J1_INGEST_PLAN_MODE existed must continue working."""
+ before J1_INGEST_PLAN_MODE existed must continue working."""
     s = load_planning_settings({"J1_LLM_PLANNING_ENABLED": "true"})
     assert s.plan_mode == "rule_based"
     assert s.llm_planning_enabled is True
@@ -160,8 +160,8 @@ def test_legacy_llm_planning_enabled_flag_still_honored_when_plan_mode_unset():
 
 def test_explicit_llm_planning_disabled_overrides_plan_mode_llm():
     """Explicit J1_LLM_PLANNING_ENABLED=false wins over the
-    derived default — useful for staged rollouts where operators
-    want plan_mode set for telemetry but LLM disabled."""
+ derived default — useful for staged rollouts where operators
+ want plan_mode set for telemetry but LLM disabled."""
     s = load_planning_settings({
         "J1_INGEST_PLAN_MODE": "llm",
         "J1_LLM_PLANNING_ENABLED": "false",

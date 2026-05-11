@@ -5,9 +5,9 @@ deterministic) plus the no-LLM path so the heuristic fallback is
 locked in.
 
 What's NOT covered here:
-  * Wiring through the chunk projector — that's the service's job.
-  * REST envelope shape — covered in test_rest_validation_sets.
-  * Idempotency at the persistence layer — that's the service.
+ * Wiring through the chunk projector — that's the service's job.
+ * REST envelope shape — covered in test_rest_validation_sets.
+ * Idempotency at the persistence layer — that's the service.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def _chunk(
 
 def test_sample_chunks_returns_all_when_under_cap():
     """Small docs (≤ cap) get every chunk sampled — no diversity
-    sacrifice, full coverage."""
+ sacrifice, full coverage."""
     chunks = [_chunk(chunk_id=f"c-{i}") for i in range(3)]
     out = _sample_chunks(chunks, max_samples=8)
     assert [c.chunk_id for c in out] == ["c-0", "c-1", "c-2"]
@@ -66,7 +66,7 @@ def test_sample_chunks_returns_all_when_under_cap():
 
 def test_sample_chunks_strides_evenly_when_over_cap():
     """For docs larger than the cap, take every Nth chunk so the
-    sample spans the whole document instead of just the head."""
+ sample spans the whole document instead of just the head."""
     chunks = [_chunk(chunk_id=f"c-{i}") for i in range(20)]
     out = _sample_chunks(chunks, max_samples=4)
     assert len(out) == 4
@@ -78,8 +78,8 @@ def test_sample_chunks_strides_evenly_when_over_cap():
 
 
 def test_sample_chunks_honours_must_include():
-    """Phase 5 will use must-include for incremental regeneration —
-    the contract is locked here so the field doesn't get repurposed."""
+    """ will use must-include for incremental regeneration —
+ the contract is locked here so the field doesn't get repurposed."""
     chunks = [_chunk(chunk_id=f"c-{i}") for i in range(20)]
     out = _sample_chunks(
         chunks, max_samples=4, must_include_ids=("c-19", "c-15"),
@@ -106,15 +106,15 @@ def test_heuristic_question_uses_first_sentence():
 
 def test_heuristic_question_skips_empty_body():
     """Empty / whitespace-only chunks are dropped — there's nothing
-    to ask a question about, and emitting a placeholder would
-    pollute the set with noise."""
+ to ask a question about, and emitting a placeholder would
+ pollute the set with noise."""
     assert _heuristic_questions_for_chunk(_chunk(body=""), budget=1) == []
     assert _heuristic_questions_for_chunk(_chunk(body="   \n  "), budget=1) == []
 
 
 def test_first_sentence_caps_at_max_chars():
     """Pathological inputs (no punctuation) must get truncated so
-    the generator doesn't emit a 10k-char question."""
+ the generator doesn't emit a 10k-char question."""
     long = "x" * 1000
     out = _first_sentence(long, max_chars=140)
     assert len(out) == 140
@@ -133,8 +133,8 @@ def test_pages_for_chunk_range_inclusive():
 
 def test_pages_for_chunk_no_page_returns_empty():
     """Producer didn't surface page info → no page check. The runner
-    treats `expected_pages=[]` as 'skip the check' rather than
-    'must have no pages'."""
+ treats `expected_pages=[]` as 'skip the check' rather than
+ 'must have no pages'."""
     assert _pages_for_chunk(_chunk(page_start=None, page_end=None)) == []
 
 
@@ -160,10 +160,10 @@ def test_hash_empty_input_has_stable_sentinel():
 
 
 class _StubTextClient:
-    """Records every extract() call + returns canned questions.
+    """Records every extract call + returns canned questions.
 
-    Tests can vary `responses` to simulate different LLM behaviours
-    (success, malformed JSON, exception)."""
+ Tests can vary `responses` to simulate different LLM behaviours
+ (success, malformed JSON, exception)."""
 
     def __init__(
         self,
@@ -185,11 +185,11 @@ class _StubTextClient:
 
 def test_generator_emits_smoke_case_when_no_chunks():
     """An empty run still gets a smoke case — the runner will fail
-    `retrieved_chunks_present`, which is the right operator signal
-    for 'the run produced nothing queryable.' Negatives are added
-    by Phase 3 even on an empty run because the off-topic test is
-    still meaningful (engine should abstain regardless of index
-    state)."""
+ `retrieved_chunks_present`, which is the right operator signal
+ for 'the run produced nothing queryable.' Negatives are added
+ by even on an empty run because the off-topic test is
+ still meaningful (engine should abstain regardless of index
+ state)."""
     gen = DefaultTestCaseGenerator()
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=[],
@@ -198,7 +198,7 @@ def test_generator_emits_smoke_case_when_no_chunks():
     assert vset.status == "draft"
     assert vset.generator_version == GENERATOR_VERSION
     # Always at least the smoke case; negatives ride along by
-    # default (Phase 3). Cap at 3 = smoke + 2 default negatives.
+    # default. Cap at 3 = smoke + 2 default negatives.
     assert len(vset.test_cases) >= 1
     assert vset.test_cases[0].priority == "smoke"
     # No chunks → no chunk cases — the rest are negatives.
@@ -208,7 +208,7 @@ def test_generator_emits_smoke_case_when_no_chunks():
 
 def test_generator_uses_llm_questions_when_available():
     """LLM happy path: the generator forwards the chunk content to
-    `extract()` and emits the LLM-supplied questions verbatim."""
+ `extract` and emits the LLM-supplied questions verbatim."""
     stub = _StubTextClient(
         responses=[
             {
@@ -248,8 +248,8 @@ def test_generator_uses_llm_questions_when_available():
 
 def test_generator_falls_back_to_heuristic_on_llm_failure():
     """LLM raising must not fail the generator — fall back to the
-    deterministic question. Tests run in CI without an LLM, so this
-    path is the load-bearing one."""
+ deterministic question. Tests run in CI without an LLM, so this
+ path is the load-bearing one."""
     stub = _StubTextClient(raise_on_call=True)
     gen = DefaultTestCaseGenerator(text_client=stub)
     chunks = [_chunk(chunk_id="c-1", body="Proposal due 20 May 2026.")]
@@ -271,8 +271,8 @@ def test_generator_falls_back_to_heuristic_on_llm_failure():
 
 def test_generator_uses_heuristic_when_no_llm_configured():
     """No LLM at construction time → straight-to-heuristic, no
-    extract() calls. Lets validation work on a deployment that
-    didn't wire the FAST role."""
+ extract calls. Lets validation work on a deployment that
+ didn't wire the FAST role."""
     gen = DefaultTestCaseGenerator(text_client=None)
     chunks = [_chunk(chunk_id="c-1", body="Heading content body.")]
     vset = gen.generate(
@@ -289,8 +289,8 @@ def test_generator_uses_heuristic_when_no_llm_configured():
 
 def test_generator_caps_total_cases(monkeypatch):
     """`max_cases` is the hard ceiling (incl. the smoke case).
-    Phase 2 plan: synchronous in-process, ≤ 50 cases — the cap
-    flows from REST → service → generator without changes."""
+ plan: synchronous in-process, ≤ 50 cases — the cap
+ flows from REST → service → generator without changes."""
     stub_responses = [
         {
             "questions": [
@@ -314,10 +314,10 @@ def test_generator_caps_total_cases(monkeypatch):
 
 def test_generator_threads_citation_required_through(monkeypatch):
     """Caller-supplied `citation_required` flips the flag on every
-    NON-NEGATIVE case — the runner reads this to enable/skip the
-    `citation_present` check. Negatives intentionally override to
-    `False` because an honest abstain has no citations and shouldn't
-    be failed for that."""
+ NON-NEGATIVE case — the runner reads this to enable/skip the
+ `citation_present` check. Negatives intentionally override to
+ `False` because an honest abstain has no citations and shouldn't
+ be failed for that."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="Some text.")]
 
@@ -335,7 +335,7 @@ def test_generator_threads_citation_required_through(monkeypatch):
 
 def test_generator_records_artifacts_content_hash():
     """Hash is on the set so callers can dedupe `(run_id, hash)` and
-    skip regeneration when the content didn't change."""
+ skip regeneration when the content didn't change."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="A")]
     vset_a = gen.generate(run_id="r", document_ids=[], chunks=chunks)
@@ -346,8 +346,8 @@ def test_generator_records_artifacts_content_hash():
 
 
 def test_generator_emits_negative_cases_by_default():
-    """Phase 3: every generated set carries N negative cases drawn
-    from the deterministic pool. Defaults to 2; respects budget."""
+    """every generated set carries N negative cases drawn
+ from the deterministic pool. Defaults to 2; respects budget."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="alpha")]
 
@@ -366,7 +366,7 @@ def test_generator_emits_negative_cases_by_default():
 
 def test_generator_negative_count_zero_disables_negatives():
     """Caller can opt out via `negative_case_count=0`. Useful for
-    very small budgets or smoke-only sets."""
+ very small budgets or smoke-only sets."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="alpha")]
 
@@ -381,8 +381,8 @@ def test_generator_negative_count_zero_disables_negatives():
 
 def test_generator_negative_count_respects_max_cases():
     """When max_cases is tight, negatives don't crowd out smoke +
-    chunk cases. Smoke is always first; negatives fit in the
-    remaining budget."""
+ chunk cases. Smoke is always first; negatives fit in the
+ remaining budget."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="alpha")]
 
@@ -399,8 +399,8 @@ def test_generator_negative_count_respects_max_cases():
 
 def test_generator_handles_malformed_llm_response():
     """LLM returns the right shape but an unusable entry (empty
-    question, wrong type) — the generator drops the bad ones,
-    keeps the good ones, falls back to heuristic if all are bad."""
+ question, wrong type) — the generator drops the bad ones,
+ keeps the good ones, falls back to heuristic if all are bad."""
     stub = _StubTextClient(
         responses=[
             {

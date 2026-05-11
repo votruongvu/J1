@@ -1,21 +1,21 @@
-"""Wave 3 tests: pre-compile `InitialExecutionPlan` + builder.
+""" tests: pre-compile `InitialExecutionPlan` + builder.
 
 The plan is the cheap, deterministic, pre-compile decision the
 workflow consumes BEFORE dispatching the compile activity. These
 tests pin:
 
-  * the plan stays cheap (no LLM / no OCR / no vision / no MinerU);
-  * the domain layer is consumed via the registry interface only;
-  * no-domain runs still produce a valid plan;
-  * candidate enrichment modules come from the domain pack's
-    `DomainEnrichmentPolicy`, not from hardcoded logic;
-  * the plan does NOT make a final enrichment decision (that lives
-    in `assess_post_compile_enrich`);
-  * the plan does NOT gate graph / index (those are workflow
-    `enricher_kind` / `indexer_kind` decisions);
-  * no split-mode vocabulary leaks into the plan;
-  * the wrapped `compile_plan` is the existing rule-based
-    `AssessmentPlan` and remains intact.
+ * the plan stays cheap (no LLM / no OCR / no vision / no MinerU);
+ * the domain layer is consumed via the registry interface only;
+ * no-domain runs still produce a valid plan;
+ * candidate enrichment modules come from the domain pack's
+ `DomainEnrichmentPolicy`, not from hardcoded logic;
+ * the plan does NOT make a final enrichment decision (that lives
+ in `assess_post_compile_enrich`);
+ * the plan does NOT gate graph / index (those are workflow
+ `enricher_kind` / `indexer_kind` decisions);
+ * no split-mode vocabulary leaks into the plan;
+ * the wrapped `compile_plan` is the existing rule-based
+ `AssessmentPlan` and remains intact.
 """
 
 from __future__ import annotations
@@ -60,9 +60,9 @@ def _profile(**overrides) -> DocumentProfile:
 
 def test_plan_loads_civil_pack_via_domain_pack_interface():
     """Builder MUST consume the pack by interface — no hardcoded
-    `civil_engineering` branches anywhere. We pass the pack in by
-    reference; the builder reads `pack.enrichment_policy` and
-    `pack.id` only."""
+ `civil_engineering` branches anywhere. We pass the pack in by
+ reference; the builder reads `pack.enrichment_policy` and
+ `pack.id` only."""
     pack = build_civil_engineering_pack()
     plan = build_initial_execution_plan(_profile(), domain_pack=pack)
     assert plan.domain_profile_id == "civil_engineering"
@@ -71,7 +71,7 @@ def test_plan_loads_civil_pack_via_domain_pack_interface():
 
 def test_plan_works_without_domain_pack():
     """Runs without a selected pack still produce a valid plan.
-    `enrichment_policy=auto`, no candidate modules, no domain_id."""
+ `enrichment_policy=auto`, no candidate modules, no domain_id."""
     plan = build_initial_execution_plan(_profile())
     assert plan.domain_profile_id is None
     assert plan.enrichment_policy == "auto"
@@ -81,7 +81,7 @@ def test_plan_works_without_domain_pack():
 
 def test_plan_works_with_general_fallback_pack():
     """The general fallback pack carries auto policy + empty lists —
-    indistinguishable from no-pack except for the recorded id."""
+ indistinguishable from no-pack except for the recorded id."""
     plan = build_initial_execution_plan(
         _profile(), domain_pack=build_general_pack(),
     )
@@ -126,7 +126,7 @@ def test_plan_emits_candidate_modules_from_force_and_optional_lists():
 
 def test_plan_deduplicates_candidate_modules():
     """A pack that puts the same task in force AND optional shouldn't
-    produce duplicates in the candidate list."""
+ produce duplicates in the candidate list."""
     pack = DomainPack(
         id="dedupe_test",
         display_name="Dedupe",
@@ -150,12 +150,12 @@ def test_plan_deduplicates_candidate_modules():
 
 def test_assessment_module_does_not_import_llm_clients():
     """The initial-execution-plan module must NOT depend on any
-    LLM / OCR / vision / parser-vendor module. A regression here
-    means an expensive client crept into the cheap path.
+ LLM / OCR / vision / parser-vendor module. A regression here
+ means an expensive client crept into the cheap path.
 
-    Checks only IMPORT statements — docstrings / comments that
-    mention vendor names (e.g. an explanatory note about RAGAnything)
-    are fine. The signal we care about is symbol acquisition."""
+ Checks only IMPORT statements — docstrings / comments that
+ mention vendor names (e.g. an explanatory note about RAGAnything)
+ are fine. The signal we care about is symbol acquisition."""
     import ast
     plan_mod = sys.modules.get("j1.processing.initial_execution_plan")
     assessment_mod = sys.modules.get("j1.processing.assessment")
@@ -190,8 +190,8 @@ def test_assessment_module_does_not_import_llm_clients():
 
 
 def test_plan_does_not_carry_split_mode_vocabulary():
-    """Split-mode was removed in Phase 1. Pin that no field of the
-    plan re-introduces it."""
+    """Split-mode was removed. Pin that no field of the
+ plan re-introduces it."""
     plan = build_initial_execution_plan(
         _profile(), domain_pack=build_civil_engineering_pack(),
     )
@@ -205,9 +205,9 @@ def test_plan_does_not_carry_split_mode_vocabulary():
 
 def test_plan_makes_no_graph_or_index_gating_decisions():
     """The plan must not carry graph_required / index_required /
-    enrich_required boolean gates. Those decisions are workflow-
-    level (`enricher_kind` / `graph_builder_kind` / `indexer_kind`
-    on the request) + post-compile signals."""
+ enrich_required boolean gates. Those decisions are workflow-
+ level (`enricher_kind` / `graph_builder_kind` / `indexer_kind`
+ on the request) + post-compile signals."""
     plan = build_initial_execution_plan(
         _profile(), domain_pack=build_civil_engineering_pack(),
     )
@@ -228,10 +228,10 @@ def test_plan_makes_no_graph_or_index_gating_decisions():
 
 def test_plan_does_not_make_final_enrichment_decision():
     """The candidate list is a SUGGESTION based on cheap signals +
-    domain hints. The real per-document decision happens in
-    `assess_post_compile_enrich` (post-compile). Verify the plan
-    carries `candidate_enrichment_modules` (suggestion) and NOT
-    `recommended_enrichment_tasks` / `final_*` (decision)."""
+ domain hints. The real per-document decision happens in
+ `assess_post_compile_enrich` (post-compile). Verify the plan
+ carries `candidate_enrichment_modules` (suggestion) and NOT
+ `recommended_enrichment_tasks` / `final_*` (decision)."""
     plan = build_initial_execution_plan(
         _profile(), domain_pack=build_civil_engineering_pack(),
     )
@@ -273,8 +273,8 @@ def test_cheap_signals_are_a_whitelisted_snapshot_of_profile():
 
 def test_plan_wraps_existing_assessment_plan():
     """The compile-stage detail (mode / capabilities / parse method)
-    is the existing rule-based `AssessmentPlan` — unchanged contract
-    so the RAGAnything adapter doesn't need to change in Wave 3."""
+ is the existing rule-based `AssessmentPlan` — unchanged contract
+ so the RAGAnything adapter doesn't need to change."""
     plan = build_initial_execution_plan(_profile())
     assert isinstance(plan.compile_plan, AssessmentPlan)
     # Plain PDF with text → STANDARD compile mode.
@@ -283,7 +283,7 @@ def test_plan_wraps_existing_assessment_plan():
 
 def test_plan_defaults_to_raganything_compile_engine():
     """RAGAnything is the default and only currently-wired engine.
-    The field exists so a future engine swap is one line."""
+ The field exists so a future engine swap is one line."""
     plan = build_initial_execution_plan(_profile())
     assert plan.compile_engine == COMPILE_ENGINE_RAGANYTHING
 
@@ -306,7 +306,7 @@ def test_plan_round_trips_through_to_payload_from_payload():
 
 def test_resource_hints_merge_policy_with_caller_overrides():
     """Caller-provided hints win over the policy default — typical
-    use case is the deployment passing already-resolved env values."""
+ use case is the deployment passing already-resolved env values."""
     pack = build_civil_engineering_pack()  # default_model_tier="fast"
     plan = build_initial_execution_plan(
         _profile(),
@@ -322,7 +322,7 @@ def test_resource_hints_merge_policy_with_caller_overrides():
 
 def test_plan_is_deterministic_for_identical_inputs():
     """Same profile + same domain pack ⇒ same plan. Required for
-    Temporal workflow replay."""
+ Temporal workflow replay."""
     pack = build_civil_engineering_pack()
     plan_a = build_initial_execution_plan(_profile(), domain_pack=pack)
     plan_b = build_initial_execution_plan(_profile(), domain_pack=pack)

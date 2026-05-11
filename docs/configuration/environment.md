@@ -12,13 +12,13 @@ each subsection.
 > - Empty strings are treated as unset for most variables.
 > - Booleans accept `1`, `true`, `yes`, `on` (case-insensitive).
 > - JSON-shaped variables (e.g. `J1_TEXT_LLM_LANGCHAIN_CONFIG`) must
->   decode to a JSON **object** — anything else fails fast at startup.
+> decode to a JSON **object** — anything else fails fast at startup.
 > - `*_FILE` variants point at a JSON file mounted from a secret manager;
->   the inline and `_FILE` forms of the same setting are mutually
->   exclusive.
+> the inline and `_FILE` forms of the same setting are mutually
+> exclusive.
 > - Anything marked **NEEDS VERIFICATION** could not be confirmed from
->   docs+code alone at the time of writing — verify against the
->   relevant settings module before relying on it.
+> docs+code alone at the time of writing — verify against the
+> relevant settings module before relying on it.
 
 ---
 
@@ -28,7 +28,7 @@ Loader: [`src/j1/config/settings.py`](../../src/j1/config/settings.py)
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_DATA_ROOT` | No | `/data/j1` | Workspace resolver, intake, registries, search index, audit/cost sinks | Absolute filesystem path to the workspace root. All per-tenant / per-project paths derive from this. | **Must be absolute** — `load_settings()` raises `ConfigError` otherwise. In Docker the container path is mapped to a named volume; on the host it's typically a tmpfs / mounted directory. |
+| `J1_DATA_ROOT` | No | `/data/j1` | Workspace resolver, intake, registries, search index, audit/cost sinks | Absolute filesystem path to the workspace root. All per-tenant / per-project paths derive from this. | **Must be absolute** — `load_settings` raises `ConfigError` otherwise. In Docker the container path is mapped to a named volume; on the host it's typically a tmpfs / mounted directory. |
 
 ---
 
@@ -69,10 +69,10 @@ Loader: [`src/j1/integration/security/settings.py`](../../src/j1/integration/sec
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_AUTH_REQUIRED` | No | `false` | Security loader (`SecuritySettings.auth_required`) | Advisory boolean — surfaced on `SecuritySettings.auth_required` for deployment glue to consult. The framework itself does not enforce it: anonymous mode is determined entirely by whether an `authenticator=` is passed to `create_rest_api(...)`. Set this when your composition root needs to gate "did the operator intend to require auth?" before wiring an authenticator. |  |
+| `J1_AUTH_REQUIRED` | No | `false` | Security loader (`SecuritySettings.auth_required`) | Advisory boolean — surfaced on `SecuritySettings.auth_required` for deployment glue to consult. The framework itself does not enforce it: anonymous mode is determined entirely by whether an `authenticator=` is passed to `create_rest_api(...)`. Set this when your composition root needs to gate "did the operator intend to require auth?" before wiring an authenticator. | |
 | `J1_AUTH_API_KEYS` | No | _(unset)_ | API-key authenticator | Inline JSON object keyed by token: `{"<token>":{"subject":...,"tenant_id":...,"scopes":[...]}}`. | **Secret** — never commit. Mutually exclusive with `J1_AUTH_API_KEYS_FILE`. |
 | `J1_AUTH_API_KEYS_FILE` | No | _(unset)_ | API-key authenticator | Filesystem path to a JSON file with the same shape as `J1_AUTH_API_KEYS`. Designed for secret-manager mounts. | Mutually exclusive with `J1_AUTH_API_KEYS`. |
-| `J1_AUTH_JWT_ENABLED` | No | `false` | JWT authenticator | Boolean — flag to indicate the deployment intends to wire `JwtAuthenticator`. The verifier callable itself is still injected programmatically. |  |
+| `J1_AUTH_JWT_ENABLED` | No | `false` | JWT authenticator | Boolean — flag to indicate the deployment intends to wire `JwtAuthenticator`. The verifier callable itself is still injected programmatically. | |
 | `J1_AUTH_ANONYMOUS_PATHS` | No | _(unset)_ | Security loader | Comma-separated list of URL paths that bypass authentication (e.g. `/health,/capabilities`). | Useful for liveness probes. |
 | `J1_AUTH_DEFAULT_TENANT_ID` | No | _(unset)_ | Security loader | Default tenant assigned to anonymous-mode requests. | Only consulted when no `X-Tenant-Id` header is present and authenticator is anonymous. |
 
@@ -89,7 +89,7 @@ Loader: [`src/j1/llm/settings.py`](../../src/j1/llm/settings.py)
 | `J1_TEXT_LLM_PROVIDER` | No | `openai_compat` | Text-LLM client factory | Provider type. Allowed values: `openai_compat`, `langchain`. | Unknown values raise `LLMConfigError` at startup. |
 | `J1_TEXT_LLM_BASE_URL` | When `openai_compat` | _(unset)_ | OpenAI-compat text client | HTTP base URL of the chat-completions endpoint. | Required for the OpenAI-compat provider; ignored for `langchain`. |
 | `J1_TEXT_LLM_API_KEY` | When provider needs it | _(unset)_ | Text LLM client | Bearer token forwarded to the upstream provider. | **Secret** — never commit. |
-| `J1_TEXT_LLM_MODEL` | When `openai_compat` | _(unset)_ | OpenAI-compat text client | Model identifier the upstream provider expects. |  |
+| `J1_TEXT_LLM_MODEL` | When `openai_compat` | _(unset)_ | OpenAI-compat text client | Model identifier the upstream provider expects. | |
 | `J1_TEXT_LLM_TIMEOUT_SECONDS` | No | `60` | Text LLM client | HTTP timeout per call. | Float; fail-loud on non-numeric. |
 | `J1_TEXT_LLM_MAX_RETRIES` | No | `3` | Text LLM client | Retry budget for transient errors. | Integer. |
 | `J1_TEXT_LLM_TEMPERATURE` | No | `0.2` | Text LLM client | Decoder temperature passed through to the provider. | Float. |
@@ -204,13 +204,13 @@ Loader: [`src/j1/providers/raganything/settings.py`](../../src/j1/providers/raga
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_RAGANYTHING_MODE` | No | `local` | RAGAnything settings loader | Free-form mode string; consumed by the bridge / a deployment-supplied processor hook. |  |
+| `J1_RAGANYTHING_MODE` | No | `local` | RAGAnything settings loader | Free-form mode string; consumed by the bridge / a deployment-supplied processor hook. | |
 | `J1_RAGANYTHING_WORKDIR` | No | `./data/raganything` | RAGAnything bridge | Filesystem directory the vendor uses for its own working files. | Created on first use. |
 | `J1_RAGANYTHING_STORAGE_DIR` | No | `<workdir>/storage` | RAGAnything bridge | Storage directory the vendor writes graph + KV-store files to. | Inferred from `WORKDIR` if unset. |
 | `J1_RAGANYTHING_CACHE_DIR` | No | `<workdir>/cache` | RAGAnything bridge | Cache directory. | Inferred from `WORKDIR` if unset. |
 | `J1_RAGANYTHING_COMPILER_PROCESSOR` | No | _(unset)_ | RAGAnything compiler | Override the default Python bridge with `module.path:callable_name`. The class-loader allowlist must accept the module prefix. | Bypasses the default `_bridge.py`. |
-| `J1_RAGANYTHING_GRAPH_PROCESSOR` | No | _(unset)_ | RAGAnything graph builder | Override hook for the graph stage (same format). |  |
-| `J1_RAGANYTHING_RETRIEVAL_PROCESSOR` | No | _(unset)_ | RAGAnything query provider | Override hook for retrieval (same format). |  |
+| `J1_RAGANYTHING_GRAPH_PROCESSOR` | No | _(unset)_ | RAGAnything graph builder | Override hook for the graph stage (same format). | |
+| `J1_RAGANYTHING_RETRIEVAL_PROCESSOR` | No | _(unset)_ | RAGAnything query provider | Override hook for retrieval (same format). | |
 | `J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS` | No | `.doc,.xls,.ppt,.rtf,.odt,.ods,.odp,.pages,.numbers,.key,.wps` | RAGAnything compiler bridge | Comma-separated list of file extensions (with or without leading dot, case-insensitive) for which the bridge pre-converts to PDF via `soffice --headless --convert-to pdf` before handing the document to raganything. Covers legacy / non-OOXML formats raganything's native parsers can't read. | Set to empty (`J1_RAGANYTHING_PDF_CONVERT_EXTENSIONS=`) to disable conversion entirely. The conversion requires the LibreOffice headless binary (see next row). |
 | `J1_RAGANYTHING_LIBREOFFICE_BINARY` | No | `soffice` | RAGAnything compiler bridge | Name or absolute path of the LibreOffice headless binary. Resolved via `$PATH`. Some distros ship `libreoffice` as the user-facing alias. | When the binary isn't found, the bridge raises `ProviderUnavailable` with an actionable message. |
 | `J1_RAGANYTHING_LIBREOFFICE_TIMEOUT_SECONDS` | No | `120` | RAGAnything compiler bridge | Per-conversion timeout. LibreOffice can be slow on first launch (font cache rebuild). | Must be > 0; non-numeric values fail at startup. |
@@ -225,8 +225,8 @@ Loader: [`src/j1/providers/graphify/settings.py`](../../src/j1/providers/graphif
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_GRAPHIFY_ENABLED` | No | `false` | Bootstrap selection check | Boolean — when false, selecting `graphify` as the default graph provider raises `ConfigError`. |  |
-| `J1_GRAPHIFY_MODE` | No | `cli` | Graphify bridge | `cli` (subprocess) or `python` (lazy-imported package). |  |
+| `J1_GRAPHIFY_ENABLED` | No | `false` | Bootstrap selection check | Boolean — when false, selecting `graphify` as the default graph provider raises `ConfigError`. | |
+| `J1_GRAPHIFY_MODE` | No | `cli` | Graphify bridge | `cli` (subprocess) or `python` (lazy-imported package). | |
 | `J1_GRAPHIFY_COMMAND` | No | `graphify` | Graphify CLI bridge | Binary name (resolved via `PATH`) or absolute path. | Only consulted when `MODE=cli`. |
 | `J1_GRAPHIFY_WORKDIR` | No | `./data/graphify` | Graphify CLI bridge | Working directory passed to the binary. | Created on first use. |
 | `J1_GRAPHIFY_GRAPH_PROCESSOR` | No | _(unset)_ | Graphify graph builder | Override hook (`module.path:callable_name`). | Bypasses the default bridge entirely. |
@@ -261,7 +261,7 @@ Loader: [`src/j1/compose/bootstrap.py`](../../src/j1/compose/bootstrap.py)
 | `J1_ENRICH_SCANNED_PAGES` | No | `true` | Bootstrap | Whether the scanned-page enricher runs. Requires the vision role. |
 
 When any vision-requiring modality is enabled and no vision LLM is
-configured, `Bootstrap.build()` raises `ConfigError` with an
+configured, `Bootstrap.build` raises `ConfigError` with an
 actionable message naming the missing env vars.
 
 ---
@@ -273,7 +273,7 @@ Loader: [`src/j1/integration/events/publisher_settings.py`](../../src/j1/integra
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
 | `J1_EVENT_PUBLISHER_TYPE` | No | `noop` | Event-publisher factory | One of `noop`, `memory`, `bus`, `composite` (and broker-specific values for deployment-supplied publishers). | Unknown values raise `LLMConfigError`-style at load. |
-| `J1_EVENT_PUBLISHER_PRODUCER` | No | `j1` | Event publisher | Logical producer identifier set on every published envelope's `producer` header. |  |
+| `J1_EVENT_PUBLISHER_PRODUCER` | No | `j1` | Event publisher | Logical producer identifier set on every published envelope's `producer` header. | |
 | `J1_EVENT_PUBLISHER_SCHEMA_VERSION` | No | `1.0` | Event publisher | `schemaVersion` header on every published envelope. | Bump when payload shape changes incompatibly. |
 | `J1_EVENT_INCLUDE_SENSITIVE_PAYLOADS` | No | `false` | Event publisher | Boolean — include sensitive payload fields in published events. | Off by default — events are designed for downstream consumers that may not be authorised to see raw content. |
 
@@ -287,7 +287,7 @@ Loader: [`src/j1/integration/events/settings.py`](../../src/j1/integration/event
 
 | Name | Required | Default | Used by | Description | Notes |
 |---|---|---|---|---|---|
-| `J1_WEBHOOK_ENABLED` | No | `false` | Webhook subscriber | Boolean — gate for the webhook delivery subsystem. |  |
+| `J1_WEBHOOK_ENABLED` | No | `false` | Webhook subscriber | Boolean — gate for the webhook delivery subsystem. | |
 | `J1_WEBHOOK_SUBSCRIPTIONS` | No | _(unset)_ | Subscription registry | Inline JSON list of subscription specs. | Mutually exclusive with `J1_WEBHOOK_SUBSCRIPTIONS_FILE`. **Secret** — subscriptions include shared HMAC keys. |
 | `J1_WEBHOOK_SUBSCRIPTIONS_FILE` | No | _(unset)_ | Subscription registry | Filesystem path to a JSON file with the same shape. | Designed for secret-manager mounts. |
 | `J1_WEBHOOK_DEFAULT_TIMEOUT_SECONDS` | No | `10.0` | Webhook delivery service | Default per-attempt HTTP timeout for outbound webhook posts. | Per-subscription `timeout_seconds` overrides this default. |

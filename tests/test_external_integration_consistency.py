@@ -4,16 +4,16 @@ These tests are deliberately structural — they don't exercise behaviour
 (other suites do that). They assert that the *contracts* across the
 external-integration layers stay aligned:
 
-  - Every framework-shipped event type (`KB_EVENT_TYPES`) has a logical
-    channel in `EVENT_TYPE_TO_CHANNEL` AND a documented message in the
-    AsyncAPI spec.
-  - Every scope used by a REST route is one of the central
-    `SCOPE_*` constants (no inline `"kb:..."` literals leak in).
-  - Every error code raised by REST exception handlers is documented
-    in either `docs/rest-api.md` or `docs/security.md`.
-  - Public symbols (events, scopes, channels, publishers, bulk
-    schemas) are exported through `j1.integration.__init__` and the
-    top-level `j1.__init__`.
+ - Every framework-shipped event type (`KB_EVENT_TYPES`) has a logical
+ channel in `EVENT_TYPE_TO_CHANNEL` AND a documented message in the
+ AsyncAPI spec.
+ - Every scope used by a REST route is one of the central
+ `SCOPE_*` constants (no inline `"kb:..."` literals leak in).
+ - Every error code raised by REST exception handlers is documented
+ in either `docs/rest-api.md` or `docs/security.md`.
+ - Public symbols (events, scopes, channels, publishers, bulk
+ schemas) are exported through `j1.integration.__init__` and the
+ top-level `j1.__init__`.
 
 A failure here means a future change drifted the contract. Fix the
 drift, don't widen this test.
@@ -179,9 +179,9 @@ def test_public_symbol_exported_at_top_level(symbol):
 
 def test_no_outer_layer_imports_in_core_subpackages():
     """`j1.intake`, `j1.processing`, `j1.query`, `j1.search`, `j1.artifacts`,
-    `j1.audit`, `j1.cost`, `j1.review`, `j1.connectors`, `j1.enrichers`,
-    `j1.workspace` MUST NOT import `j1.integration.*` or `j1.adapters.*`.
-    """
+ `j1.audit`, `j1.cost`, `j1.review`, `j1.connectors`, `j1.enrichers`,
+ `j1.workspace` MUST NOT import `j1.integration.*` or `j1.adapters.*`.
+ """
     forbidden_prefixes = ("j1.integration", "j1.adapters")
     core_packages = {
         "intake", "processing", "query", "search", "artifacts",
@@ -232,11 +232,11 @@ def test_asyncapi_channels_include_every_logical_channel():
 def test_cloudevents_extension_attrs_align_with_publisher_headers():
     """Webhook (CloudEvents) and queue (publisher) must agree on names.
 
-    CloudEvents extension attribute names are lowercase letters/digits
-    only (≤20 chars). The publisher headers use camelCase. The two sets
-    must carry the same SEMANTIC fields so consumers can read either
-    transport without branching.
-    """
+ CloudEvents extension attribute names are lowercase letters/digits
+ only (≤20 chars). The publisher headers use camelCase. The two sets
+ must carry the same SEMANTIC fields so consumers can read either
+ transport without branching.
+ """
     from j1.integration.events.cloudevents import (
         EXTENSION_ACTOR, EXTENSION_AUTH_TYPE,
         EXTENSION_CORRELATION, EXTENSION_TENANT,

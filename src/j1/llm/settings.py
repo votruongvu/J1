@@ -101,11 +101,11 @@ class _CommonLLMSettings:
     def is_configured(self) -> bool:
         """Return True when enough fields are present to construct a client.
 
-        OpenAI-compat needs at least a `base_url` and `model`.
-        LangChain needs at least a `provider_config` with the class
-        name (deployment-supplied; the LangChain adapter validates the
-        full shape).
-        """
+ OpenAI-compat needs at least a `base_url` and `model`.
+ LangChain needs at least a `provider_config` with the class
+ name (deployment-supplied; the LangChain adapter validates the
+ full shape).
+ """
         if self.provider == PROVIDER_OPENAI_COMPAT:
             return bool(self.base_url and self.model)
         if self.provider == PROVIDER_LANGCHAIN:
@@ -116,23 +116,23 @@ class _CommonLLMSettings:
 @dataclass(frozen=True)
 class _BudgetedLLMSettings(_CommonLLMSettings):
     """Mixin shared by every chat-completion role (text / vision /
-    fast). Carries the prompt-budget knobs so the OpenAI-compat
-    client can defend against context-window overflow uniformly.
+ fast). Carries the prompt-budget knobs so the OpenAI-compat
+ client can defend against context-window overflow uniformly.
 
-    `context_window_tokens=None` disables the check (legacy /
-    don't-know-the-window deployments). When set, the boundary
-    enforces:
+ `context_window_tokens=None` disables the check (legacy /
+ don't-know-the-window deployments). When set, the boundary
+ enforces:
 
-        available_input_tokens =
-            context_window_tokens
-            - max_output_tokens     # reserved for the response
-            - safety_margin_tokens  # accounting for tokenizer drift
+ available_input_tokens =
+ context_window_tokens
+ - max_output_tokens # reserved for the response
+ - safety_margin_tokens # accounting for tokenizer drift
 
-    Estimated prompt tokens above `available_input_tokens` raise
-    `LLMContextOverflowError` BEFORE the HTTP request leaves J1 —
-    operators see an actionable J1 error instead of LM Studio's
-    terse 'Context size has been exceeded' HTTP 400.
-    """
+ Estimated prompt tokens above `available_input_tokens` raise
+ `LLMContextOverflowError` BEFORE the HTTP request leaves J1 —
+ operators see an actionable J1 error instead of LM Studio's
+ terse 'Context size has been exceeded' HTTP 400.
+ """
 
     # Total tokens the model can hold in one turn. Operator-supplied
     # because we can't introspect it from the endpoint reliably
@@ -169,12 +169,12 @@ class EmbeddingSettings(_CommonLLMSettings):
 class FastLLMSettings(_BudgetedLLMSettings):
     """FAST role — same shape as text but tighter defaults.
 
-    Consumed by the adaptive ingestion planner for short structured
-    tasks (document classification, mode selection, light metadata).
-    Lower default temperature (deterministic classification) and
-    tighter timeout reflect the fast-and-cheap intent. Optional:
-    when `is_configured=False`, the planner falls back to
-    deterministic-only operation (no LLM hint)."""
+ Consumed by the adaptive ingestion planner for short structured
+ tasks (document classification, mode selection, light metadata).
+ Lower default temperature (deterministic classification) and
+ tighter timeout reflect the fast-and-cheap intent. Optional:
+ when `is_configured=False`, the planner falls back to
+ deterministic-only operation (no LLM hint)."""
 
     temperature: float = 0.0
     max_output_tokens: int = 512
@@ -198,10 +198,10 @@ class LLMSettings:
 def load_llm_settings(env: Mapping[str, str] | None = None) -> LLMSettings:
     """Read every `J1_*_LLM_*` / `J1_EMBEDDING_*` env var into typed settings.
 
-    Always returns an `LLMSettings` (no exceptions for missing roles —
-    the composition root validates required roles separately, with
-    actionable error messages naming the failing provider/use case).
-    """
+ Always returns an `LLMSettings` (no exceptions for missing roles —
+ the composition root validates required roles separately, with
+ actionable error messages naming the failing provider/use case).
+ """
     source = env if env is not None else os.environ
     return LLMSettings(
         text=_load_text_settings(source),
@@ -248,11 +248,11 @@ def _load_vision_settings(env: Mapping[str, str]) -> VisionLLMSettings:
 def _load_fast_settings(env: Mapping[str, str]) -> FastLLMSettings:
     """Load FAST role settings from env.
 
-    Mirrors `_load_text_settings` shape so the same provider can serve
-    fast and text with just a different model. Returns a settings
-    object even when no env vars are set — `FastLLMSettings.is_configured`
-    is False in that case (no `base_url` / `model` → planner will
-    skip the LLM-fallback path)."""
+ Mirrors `_load_text_settings` shape so the same provider can serve
+ fast and text with just a different model. Returns a settings
+ object even when no env vars are set — `FastLLMSettings.is_configured`
+ is False in that case (no `base_url` / `model` → planner will
+ skip the LLM-fallback path)."""
     provider = _provider(env, ENV_FAST_PROVIDER, PROVIDER_OPENAI_COMPAT)
     return FastLLMSettings(
         provider=provider,

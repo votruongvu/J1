@@ -2,18 +2,18 @@
 
 Locks the contract that:
 
-  * `J1_RAGANYTHING_WORKDIR` defaults to a path inside the workspace
-    volume (`/var/lib/j1/raganything`) — NOT a relative path that
-    would resolve against the container's CWD and land in the
-    writable layer (which is fast but doesn't persist across
-    container recreation).
-  * The cleanup helper deletes a successful compile's per-document
-    output dir.
-  * The cleanup helper is a no-op when `J1_KEEP_FAILED_INGEST_ARTIFACTS`
-    is truthy.
-  * The intake service's storage paths are workspace-rooted (not
-    container-CWD-relative), so a worker-image rebuild doesn't
-    silently change where uploaded files live.
+ * `J1_RAGANYTHING_WORKDIR` defaults to a path inside the workspace
+ volume (`/var/lib/j1/raganything`) — NOT a relative path that
+ would resolve against the container's CWD and land in the
+ writable layer (which is fast but doesn't persist across
+ container recreation).
+ * The cleanup helper deletes a successful compile's per-document
+ output dir.
+ * The cleanup helper is a no-op when `J1_KEEP_FAILED_INGEST_ARTIFACTS`
+ is truthy.
+ * The intake service's storage paths are workspace-rooted (not
+ container-CWD-relative), so a worker-image rebuild doesn't
+ silently change where uploaded files live.
 """
 
 from __future__ import annotations
@@ -30,13 +30,13 @@ from j1.providers.raganything._bridge import _cleanup_output_dir
 
 
 def test_env_example_workdir_is_workspace_rooted():
-    """The .env.example default for `J1_RAGANYTHING_WORKDIR` must
-    point inside the workspace volume so MinerU output persists
-    across container recreation AND lands in the fast Linux-VM
-    overlay disk on macOS Docker Desktop. Relative paths like
-    `./data/raganything` were the prior default; they resolved
-    against the container CWD and survived only as long as the
-    container did."""
+    """The.env.example default for `J1_RAGANYTHING_WORKDIR` must
+ point inside the workspace volume so MinerU output persists
+ across container recreation AND lands in the fast Linux-VM
+ overlay disk on macOS Docker Desktop. Relative paths like
+ `./data/raganything` were the prior default; they resolved
+ against the container CWD and survived only as long as the
+ container did."""
     text = (
         Path(__file__).resolve().parent.parent / ".env.example"
     ).read_text(encoding="utf-8")
@@ -58,10 +58,10 @@ def test_env_example_workdir_is_workspace_rooted():
 
 def test_compose_worker_has_tmpfs_for_tmp():
     """The worker service must mount tmpfs at `/tmp` so MinerU /
-    raganything intermediate scratch + soffice tempdirs go to RAM.
-    Without this, those writes hit the container writable layer
-    (fast on macOS Docker Desktop, but slower than RAM and
-    accumulates across runs until restart)."""
+ raganything intermediate scratch + soffice tempdirs go to RAM.
+ Without this, those writes hit the container writable layer
+ (fast on macOS Docker Desktop, but slower than RAM and
+ accumulates across runs until restart)."""
     compose = (
         Path(__file__).resolve().parent.parent
         / "deploy" / "dev" / "docker-compose.yml"
@@ -75,9 +75,9 @@ def test_compose_worker_has_tmpfs_for_tmp():
 
 def test_compose_workspace_volume_is_named_not_bind():
     """The workspace mount on api + worker must be the named volume
-    `j1_workspace` — never a host bind mount. On macOS Docker
-    Desktop, bind mounts go through gRPC FUSE and are ~10× slower
-    than named-volume writes."""
+ `j1_workspace` — never a host bind mount. On macOS Docker
+ Desktop, bind mounts go through gRPC FUSE and are ~10× slower
+ than named-volume writes."""
     compose = (
         Path(__file__).resolve().parent.parent
         / "deploy" / "dev" / "docker-compose.yml"
@@ -133,7 +133,7 @@ def test_cleanup_recognises_truthy_flag_variants(
 
 def test_cleanup_handles_missing_dir_gracefully(tmp_path):
     """Cleanup must not raise when the output dir was never created
-    (compile failed earlier than mkdir)."""
+ (compile failed earlier than mkdir)."""
     nonexistent = tmp_path / "outputs" / "ghost"
     _cleanup_output_dir(nonexistent, document_id="ghost")
     # No exception. No output side effect to assert.

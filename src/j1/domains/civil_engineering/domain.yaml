@@ -2,19 +2,19 @@
 #
 # Format (loaded by `j1.domains.civil_engineering.pack._load_pack_data`):
 #
-#   id            stable wire id; see `DomainPack.id`
-#   display_name  shown in FE Planning Report
-#   version       SemVer-ish; bumped on schema-breaking changes
-#   document_types  pack-extended `document_type` taxonomy entries
-#   keyword_signals  list of {text, weight, category}
-#   extraction_targets  free-text catalogue of preferred extraction targets
-#   graph_entity_types / graph_relationship_types  ontology v0.1
-#   overlays  per-document-type planning overrides (PlanCard rules)
-#   detection_rules  ordered table — first-match wins, see _score_pack
-#   unsupported_capabilities  capabilities the pack would use but
-#                             which the framework doesn't ship today
-#   prompt_addon  appended to the LLM planner system prompt when
-#                 selected_domain == civil_engineering
+#  id stable wire id; see `DomainPack.id`
+#  display_name shown in FE Planning Report
+#  version SemVer-ish; bumped on schema-breaking changes
+#  document_types pack-extended `document_type` taxonomy entries
+#  keyword_signals list of {text, weight, category}
+#  extraction_targets free-text catalogue of preferred extraction targets
+#  graph_entity_types / graph_relationship_types ontology v0.1
+#  overlays per-document-type planning overrides (PlanCard rules)
+#  detection_rules ordered table — first-match wins, see _score_pack
+#  unsupported_capabilities capabilities the pack would use but
+#  which the framework doesn't ship today
+#  prompt_addon appended to the LLM planner system prompt when
+#  selected_domain == civil_engineering
 #
 # Keep entries sorted within each block for diff-friendliness.
 
@@ -789,13 +789,13 @@ prompt_addon: |
 #
 # How this pack wants the post-compile assessor to handle enrichment.
 # Consumed by `assess_post_compile_enrich`:
-#   * `policy: always`   → upgrade verdict to RECOMMENDED at minimum;
-#                           apply force_recommended_tasks even when
-#                           compile signals are weak.
-#   * `policy: auto`     → assessor decides, force/optional/denied
-#                           lists still applied.
-#   * `policy: never`    → collapse to SKIP unless compile already
-#                           blocked (failed / empty document).
+#  * `policy: always` → upgrade verdict to RECOMMENDED at minimum;
+#  apply force_recommended_tasks even when
+#  compile signals are weak.
+#  * `policy: auto` → assessor decides, force/optional/denied
+#  lists still applied.
+#  * `policy: never` → collapse to SKIP unless compile already
+#  blocked (failed / empty document).
 #
 # Civil docs almost always benefit from requirement + risk extraction
 # (method statements, NCRs, RFIs, tender docs), so we force those
@@ -817,7 +817,7 @@ enrichment_policy:
     requirement and risk extraction to be useful downstream.
     Generic chunking alone loses the actionable signal.
 
-# ---- Extraction hints (Wave 6 enrichers will consume) ----
+# ---- Extraction hints ( enrichers will consume) ----
 #
 # Pure data — generic operators read the hints and project them
 # into per-enricher prompts/queries. No domain-specific code path

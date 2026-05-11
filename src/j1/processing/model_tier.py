@@ -1,14 +1,14 @@
-"""Wave 7 — model tier selection helper.
+"""model tier selection helper.
 
 Resolves which LLM tier (`fast` / `premium` / `vision`) an
 enrichment module should use, given:
 
-  * the deployment default tier (from `EnrichmentConcurrencySettings`),
-  * the domain pack's `DomainEnrichmentPolicy.default_model_tier`,
-  * the post-compile plan's `model_tier_selection`,
-  * the module's input requirements (e.g. an image enricher must
-    use the vision tier or skip),
-  * whether the compile result actually has image content.
+ * the deployment default tier (from `EnrichmentConcurrencySettings`),
+ * the domain pack's `DomainEnrichmentPolicy.default_model_tier`,
+ * the post-compile plan's `model_tier_selection`,
+ * the module's input requirements (e.g. an image enricher must
+ use the vision tier or skip),
+ * whether the compile result actually has image content.
 
 The selection is PURE — no LLM call, no vendor client lookup.
 Returns a `ModelTierDecision` carrying the selected tier + the
@@ -16,12 +16,12 @@ reason so the FE / audit log can render "using vision because the
 compile result has 4 images".
 
 Precedence (highest first):
-  1. Module requirement (a vision enricher MUST have vision or
-     the decision is `SKIPPED`).
-  2. Post-compile plan's `model_tier_selection` (operator/policy
-     override that landed on the analyzer's output).
-  3. Domain policy default (`DomainEnrichmentPolicy.default_model_tier`).
-  4. System default (`EnrichmentConcurrencySettings.default_model_tier`).
+ 1. Module requirement (a vision enricher MUST have vision or
+ the decision is `SKIPPED`).
+ 2. Post-compile plan's `model_tier_selection` (operator/policy
+ override that landed on the analyzer's output).
+ 3. Domain policy default (`DomainEnrichmentPolicy.default_model_tier`).
+ 4. System default (`EnrichmentConcurrencySettings.default_model_tier`).
 
 Vision gating: `MODEL_TIER_VISION` requires image content in the
 compile result. A non-vision module asking for vision falls back
@@ -66,10 +66,10 @@ _VALID_TIERS = frozenset({
 class ModelTierDecision:
     """The selector's typed verdict.
 
-    `selected_tier` is the tier the caller should use; None means
-    the call should be SKIPPED (e.g. vision module on a doc with
-    no images). `reason` is operator-readable provenance the FE +
-    final report render alongside the tier."""
+ `selected_tier` is the tier the caller should use; None means
+ the call should be SKIPPED (e.g. vision module on a doc with
+ no images). `reason` is operator-readable provenance the FE +
+ final report render alongside the tier."""
 
     selected_tier: str | None
     reason: str
@@ -87,8 +87,8 @@ def select_model_tier(
 ) -> ModelTierDecision:
     """Resolve the LLM tier for one module call.
 
-    See module docstring for precedence + vision gating rules.
-    Pure / no I/O — same inputs → same decision."""
+ See module docstring for precedence + vision gating rules.
+ Pure / no I/O — same inputs → same decision."""
     requested = _first_valid_tier(
         plan_tier_selection,
         domain_default_tier,
@@ -138,9 +138,9 @@ def select_model_tier(
 
 def _first_valid_tier(*candidates: str | None) -> str:
     """Walk a precedence chain of tier strings; return the first
-    valid value. Falls back to `MODEL_TIER_FAST` if every
-    candidate is None / invalid (guards against malformed policy
-    fields)."""
+ valid value. Falls back to `MODEL_TIER_FAST` if every
+ candidate is None / invalid (guards against malformed policy
+ fields)."""
     for c in candidates:
         if isinstance(c, str) and c.strip().lower() in _VALID_TIERS:
             return c.strip().lower()
@@ -152,9 +152,9 @@ def _has_image_content(
 ) -> bool:
     """True when the compile output surfaced any image content.
 
-    Treats the absence of `compile_result` (e.g. caller didn't
-    thread it through) as "no image content" rather than raising —
-    conservative for vision-tier gating."""
+ Treats the absence of `compile_result` (e.g. caller didn't
+ thread it through) as "no image content" rather than raising —
+ conservative for vision-tier gating."""
     if compile_result is None:
         return False
     if compile_result.detected_images:

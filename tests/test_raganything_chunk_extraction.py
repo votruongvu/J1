@@ -35,7 +35,7 @@ def _write(path: Path, payload: dict) -> None:
 
 def test_emits_one_chunk_draft_per_entry(tmp_path):
     """LightRAG's KV store is a top-level dict keyed by chunk id —
-    every entry becomes one canonical chunk artifact draft."""
+ every entry becomes one canonical chunk artifact draft."""
     _write(tmp_path / "kv_store_text_chunks.json", {
         "chunk-001": {
             "tokens": 96,
@@ -72,8 +72,8 @@ def test_emits_one_chunk_draft_per_entry(tmp_path):
 
 def test_skips_empty_content_entries(tmp_path):
     """LightRAG sometimes emits placeholder chunks with empty
-    content for split boundaries. Surfacing them as chunks would
-    show blank rows on the FE — drop silently."""
+ content for split boundaries. Surfacing them as chunks would
+ show blank rows on the FE — drop silently."""
     _write(tmp_path / "kv_store_text_chunks.json", {
         "ok": {"tokens": 5, "content": "real content"},
         "empty": {"tokens": 0, "content": ""},
@@ -88,7 +88,7 @@ def test_skips_empty_content_entries(tmp_path):
 
 def test_returns_empty_when_storage_missing(tmp_path):
     """No storage dir on disk yet (e.g. compile of an empty doc) —
-    return empty drafts list rather than raising."""
+ return empty drafts list rather than raising."""
     drafts = _chunk_drafts_from_storage(
         tmp_path / "does-not-exist", document_id="doc-1",
     )
@@ -97,8 +97,8 @@ def test_returns_empty_when_storage_missing(tmp_path):
 
 def test_returns_empty_when_chunks_file_absent(tmp_path):
     """Storage dir exists but no `kv_store_text_chunks.json` — the
-    extractor must NOT explode (this happens when the LightRAG
-    pipeline is partially populated)."""
+ extractor must NOT explode (this happens when the LightRAG
+ pipeline is partially populated)."""
     (tmp_path / "vdb_entities.json").write_text("{}", encoding="utf-8")
     drafts = _chunk_drafts_from_storage(tmp_path, document_id="doc-1")
     assert drafts == []
@@ -106,8 +106,8 @@ def test_returns_empty_when_chunks_file_absent(tmp_path):
 
 def test_handles_invalid_json(tmp_path):
     """A truncated / mid-write KV file shouldn't crash compile —
-    return empty drafts so the workflow proceeds and the operator
-    sees the empty Chunks tab rather than a hard failure."""
+ return empty drafts so the workflow proceeds and the operator
+ sees the empty Chunks tab rather than a hard failure."""
     bad = tmp_path / "kv_store_text_chunks.json"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("{not valid json", encoding="utf-8")
@@ -118,7 +118,7 @@ def test_handles_invalid_json(tmp_path):
 
 def test_tolerates_non_dict_top_level(tmp_path):
     """LightRAG variants always emit a top-level dict; defensive code
-    path for any future drift."""
+ path for any future drift."""
     bad = tmp_path / "kv_store_text_chunks.json"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("[]", encoding="utf-8")
@@ -128,7 +128,7 @@ def test_tolerates_non_dict_top_level(tmp_path):
 
 def test_token_count_falls_back_to_none_when_missing(tmp_path):
     """Producer didn't supply `tokens` → tokenCount is null, NOT
-    fabricated. The FE shows '—' rather than a misleading zero."""
+ fabricated. The FE shows '—' rather than a misleading zero."""
     _write(tmp_path / "kv_store_text_chunks.json", {
         "ch": {"content": "body without tokens field"},
     })
@@ -138,14 +138,14 @@ def test_token_count_falls_back_to_none_when_missing(tmp_path):
 
 def test_chunks_found_at_workdir_root(tmp_path):
     """Regression: LightRAG writes `kv_store_text_chunks.json`
-    DIRECTLY into `working_dir`, not into a `<workdir>/storage`
-    subdirectory. The settings default sets `storage_dir = workdir`,
-    so `_chunk_drafts_from_storage(workdir, ...)` must find the file
-    at the root level.
+ DIRECTLY into `working_dir`, not into a `<workdir>/storage`
+ subdirectory. The settings default sets `storage_dir = workdir`,
+ so `_chunk_drafts_from_storage(workdir,...)` must find the file
+ at the root level.
 
-    Before the storage-default fix, the helper was called with
-    `<workdir>/storage` which doesn't exist for any LightRAG run —
-    the Chunks tab stayed disabled even after a successful index."""
+ Before the storage-default fix, the helper was called with
+ `<workdir>/storage` which doesn't exist for any LightRAG run —
+ the Chunks tab stayed disabled even after a successful index."""
     _write(tmp_path / "kv_store_text_chunks.json", {
         "chunk-001": {"tokens": 5, "content": "real chunk text"},
     })
@@ -156,9 +156,9 @@ def test_chunks_found_at_workdir_root(tmp_path):
 
 def test_chunks_found_at_legacy_storage_subdir(tmp_path):
     """Forward-compat: deployments that explicitly set
-    `J1_RAGANYTHING_STORAGE_DIR=<workdir>/storage` (the OLD default)
-    must keep working. `rglob` already recurses, so the helper
-    finds the file at any depth."""
+ `J1_RAGANYTHING_STORAGE_DIR=<workdir>/storage` (the OLD default)
+ must keep working. `rglob` already recurses, so the helper
+ finds the file at any depth."""
     _write(tmp_path / "storage" / "kv_store_text_chunks.json", {
         "chunk-001": {"tokens": 5, "content": "legacy layout"},
     })
@@ -169,17 +169,17 @@ def test_chunks_found_at_legacy_storage_subdir(tmp_path):
 
 def test_graph_drafts_excludes_chunks_file(tmp_path):
     """The `_graph_drafts_from_storage` helper used to surface
-    `kv_store_text_chunks.json` as a `graph_json` artifact (it
-    matched the `kv_store*.json` pattern). Now that chunks have
-    their own kind, the graph extractor must skip that file —
-    otherwise the FE sees the chunks twice (once under graph,
-    once under chunks).
+ `kv_store_text_chunks.json` as a `graph_json` artifact (it
+ matched the `kv_store*.json` pattern). Now that chunks have
+ their own kind, the graph extractor must skip that file —
+ otherwise the FE sees the chunks twice (once under graph,
+ once under chunks).
 
-    Also excludes `kv_store_doc_status.json` — it's a per-document
-    state machine + duplicate-detection record store, not graph
-    data. Surfacing it under graph put `[DUPLICATE] Original
-    document: ...` rows in the Knowledge Graph tab for runs that
-    re-uploaded the same checksum."""
+ Also excludes `kv_store_doc_status.json` — it's a per-document
+ state machine + duplicate-detection record store, not graph
+ data. Surfacing it under graph put `[DUPLICATE] Original
+ document:...` rows in the Knowledge Graph tab for runs that
+ re-uploaded the same checksum."""
     _write(tmp_path / "kv_store_text_chunks.json", {"ch": {"content": "x"}})
     _write(tmp_path / "kv_store_doc_status.json", {
         "d0d59aaf": {"status": "processed", "content": ""},

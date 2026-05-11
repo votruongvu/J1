@@ -14,10 +14,10 @@ _EMPTY_METADATA: Mapping[str, str] = MappingProxyType({})
 class SecurityContext:
     """Application-level identity passed inward from external interfaces.
 
-    Vendor-neutral: contains no raw HTTP headers, JWT library objects, or
-    OAuth provider objects. Adapters map their wire format into this and
-    nothing else crosses the integration boundary.
-    """
+ Vendor-neutral: contains no raw HTTP headers, JWT library objects, or
+ OAuth provider objects. Adapters map their wire format into this and
+ nothing else crosses the integration boundary.
+ """
 
     subject: str
     tenant_id: str | None

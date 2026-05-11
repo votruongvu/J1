@@ -2,20 +2,20 @@
 
 Walks the 12 steps from the spec in order, in a single test:
 
-  1. Create project workspace.
-  2. Register four sample documents.
-  3. Start `ProjectProcessingWorkflow` (with mocked Temporal runtime so
-     the test stays in-process; the workflow's state machine, signals,
-     and review gate are exercised).
-  4. Run mock knowledge compilation (real `ProcessingService.compile`
-     + stub `KnowledgeCompiler` → real artifact materialization on disk
-     + real audit + real cost recording).
-  5. Run mock enrichment.
-  6. Run mock graph build.
-  7. Run mock search indexing (real `SqliteSearchIndexer` over the
-     artifacts the previous steps wrote).
-  8. Generate query response (real FTS5 search).
-  9. Create review item.
+ 1. Create project workspace.
+ 2. Register four sample documents.
+ 3. Start `ProjectProcessingWorkflow` (with mocked Temporal runtime so
+ the test stays in-process; the workflow's state machine, signals,
+ and review gate are exercised).
+ 4. Run mock knowledge compilation (real `ProcessingService.compile`
+ + stub `KnowledgeCompiler` → real artifact materialization on disk
+ + real audit + real cost recording).
+ 5. Run mock enrichment.
+ 6. Run mock graph build.
+ 7. Run mock search indexing (real `SqliteSearchIndexer` over the
+ artifacts the previous steps wrote).
+ 8. Generate query response (real FTS5 search).
+ 9. Create review item.
  10. Approve review.
  11. Confirm workflow completed.
  12. Verify audit log + cost summary contain the processing events.
@@ -186,11 +186,11 @@ def _patch_workflow_runtime(
 ):
     """Replace `workflow.execute_activity_method` + `workflow.wait_condition`.
 
-    `exec_handler(method, payload, kwargs) -> result` controls every
-    activity invocation. `wait_handler(predicate, kwargs)` (optional)
-    controls how the workflow handles a `wait_condition` (used by
-    pause / budget / review gates).
-    """
+ `exec_handler(method, payload, kwargs) -> result` controls every
+ activity invocation. `wait_handler(predicate, kwargs)` (optional)
+ controls how the workflow handles a `wait_condition` (used by
+ pause / budget / review gates).
+ """
 
     async def _exec(method, payload=None, **kwargs):
         return exec_handler(method, payload, kwargs)

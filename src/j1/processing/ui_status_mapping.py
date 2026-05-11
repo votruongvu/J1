@@ -1,13 +1,13 @@
-"""Wave 9A — shared UI status mapping.
+"""shared UI status mapping.
 
 The backend writes two stable vocabularies the FE depends on:
 
-  * `J1IngestStage` — macro-stage during run (see
-    `project_processing.INGEST_STAGE_*`: `received`, `compiling`,
-    `verifying`, `completed`, `failed`, `cancelled`, …).
-  * `INGESTION_STATUS_*` — the Wave-8 final-status projection
-    (`completed_with_enrichment`, `failed_enrichment_required`, …)
-    persisted on the final-summary artifact.
+ * `J1IngestStage` — macro-stage during run (see
+ `project_processing.INGEST_STAGE_*`: `received`, `compiling`,
+ `verifying`, `completed`, `failed`, `cancelled`, …).
+ * `INGESTION_STATUS_*` — the final-status projection
+ (`completed_with_enrichment`, `failed_enrichment_required`, …)
+ persisted on the final-summary artifact.
 
 The FE branches on a SINGLE UI-state enum it can render — `running`,
 `completed`, `completed_with_warnings`, `failed`, `cancelled`,
@@ -17,29 +17,29 @@ lockstep.
 
 Inputs the projector consumes:
 
-  * `ingest_stage`     — the latest `J1IngestStage` value.
-  * `final_status`     — the `INGESTION_STATUS_*` string (only set
-                         when the run reached a terminal state).
-  * `is_terminal`      — True once the workflow has run to a
-                         conclusion (completed / failed / cancelled).
+ * `ingest_stage` — the latest `J1IngestStage` value.
+ * `final_status` — the `INGESTION_STATUS_*` string (only set
+ when the run reached a terminal state).
+ * `is_terminal` — True once the workflow has run to a
+ conclusion (completed / failed / cancelled).
 
 Output is a typed `UIRunState` carrying:
 
-  * `ui_state`         — one of the `UI_STATE_*` literals.
-  * `severity`         — `info` / `success` / `warning` / `error` /
-                         `neutral` — FE renders the badge colour.
-  * `headline`         — short operator-readable line for the badge.
-  * `primary_artifact` — which artifact tab the FE pre-selects on
-                         the run-detail page (`final_summary`,
-                         `compile_result_summary`,
-                         `enrichment_result`, `error_report`, or
-                         None for in-flight runs).
-  * `recommended_action` — explicit verb the FE can attach to a CTA
-                         (`none`, `review_warnings`,
-                         `inspect_error_report`,
-                         `inspect_compile_output`, `retry`).
-  * `underlying_final_status` — the projected `INGESTION_STATUS_*`
-                         literal when terminal, else None.
+ * `ui_state` — one of the `UI_STATE_*` literals.
+ * `severity` — `info` / `success` / `warning` / `error` /
+ `neutral` — FE renders the badge colour.
+ * `headline` — short operator-readable line for the badge.
+ * `primary_artifact` — which artifact tab the FE pre-selects on
+ the run-detail page (`final_summary`,
+ `compile_result_summary`,
+ `enrichment_result`, `error_report`, or
+ None for in-flight runs).
+ * `recommended_action` — explicit verb the FE can attach to a CTA
+ (`none`, `review_warnings`,
+ `inspect_error_report`,
+ `inspect_compile_output`, `retry`).
+ * `underlying_final_status` — the projected `INGESTION_STATUS_*`
+ literal when terminal, else None.
 
 Pure / deterministic. Same inputs → same projection. The mapping is
 testable + AST-checkable so renames are caught at CI time.
@@ -174,8 +174,8 @@ _PENDING_STAGES: frozenset[str] = frozenset({
 class UIRunState:
     """Typed projection the FE consumes via the run-detail endpoint.
 
-    Pure data — same inputs to `project_ui_state` produce the same
-    `UIRunState`."""
+ Pure data — same inputs to `project_ui_state` produce the same
+ `UIRunState`."""
 
     ui_state: str
     severity: str
@@ -203,14 +203,14 @@ def project_ui_state(
 ) -> UIRunState:
     """Project the macro stage + final-status string onto a UI state.
 
-    Precedence:
-      1. `is_terminal=True` (or a terminal final_status) wins —
-         project off the final-status vocabulary.
-      2. Otherwise, project off the macro stage.
+ Precedence:
+ 1. `is_terminal=True` (or a terminal final_status) wins —
+ project off the final-status vocabulary.
+ 2. Otherwise, project off the macro stage.
 
-    Unknown / missing inputs fall back to PENDING with a neutral
-    badge — the FE renders "starting up" rather than crashing on a
-    missing field."""
+ Unknown / missing inputs fall back to PENDING with a neutral
+ badge — the FE renders "starting up" rather than crashing on a
+ missing field."""
 
     # ---- Terminal projection (final_status wins when known) -----
     if is_terminal or final_status:
@@ -298,7 +298,7 @@ def project_ui_state(
 
 def _project_terminal(final_status: str) -> UIRunState:
     """Terminal-state branch — `final_status` is the
-    `INGESTION_STATUS_*` literal from the Wave-8 projection."""
+ `INGESTION_STATUS_*` literal from the projection."""
 
     if final_status == INGESTION_STATUS_CANCELLED:
         return UIRunState(

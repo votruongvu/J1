@@ -35,14 +35,14 @@ class LockHandle:
 class WorkspaceLock:
     """File-based per-project, per-area lock with lease.
 
-    Atomic acquire via `O_EXCL`. If a stale lock (past expiry) is encountered,
-    the new caller takes it over. The release verifies `lock_id` so a stale
-    holder can't accidentally delete a fresh holder's lock.
+ Atomic acquire via `O_EXCL`. If a stale lock (past expiry) is encountered,
+ the new caller takes it over. The release verifies `lock_id` so a stale
+ holder can't accidentally delete a fresh holder's lock.
 
-    Locks are scoped to `(tenant_id, project_id, area)`. Different tenants,
-    different projects, and different areas of the same project never collide
-    — exactly matching the locking rules in the spec.
-    """
+ Locks are scoped to `(tenant_id, project_id, area)`. Different tenants,
+ different projects, and different areas of the same project never collide
+ — exactly matching the locking rules in the spec.
+ """
 
     def __init__(
         self,
@@ -141,8 +141,8 @@ class WorkspaceLock:
     ) -> None:
         """Unconditionally remove the lock for an area.
 
-        Use only for operator recovery — normal release goes through `release`.
-        """
+ Use only for operator recovery — normal release goes through `release`.
+ """
         path = self._lock_path(ctx, area)
         path.unlink(missing_ok=True)
 

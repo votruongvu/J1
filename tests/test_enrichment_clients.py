@@ -1,14 +1,14 @@
-"""Wave 10.6 — protocol + adapter tests for `enrichment_clients.py`.
+"""protocol + adapter tests for `enrichment_clients.py`.
 
 Pins:
-  1. `TextAnalysisClient` + `VisionAnalysisClient` Protocols are
-     `runtime_checkable` so isinstance() works.
-  2. `TextLLMClientAdapter` is a thin pass-through.
-  3. `PerImageVisionAdapter` loops per image, parses JSON when
-     present, falls back to caption-only otherwise.
-  4. `PerImageVisionAdapter` aggregates usage tokens across images.
-  5. Empty provider produces an empty `images: []` payload — adapter
-     never raises on no-images.
+ 1. `TextAnalysisClient` + `VisionAnalysisClient` Protocols are
+ `runtime_checkable` so isinstance works.
+ 2. `TextLLMClientAdapter` is a thin pass-through.
+ 3. `PerImageVisionAdapter` loops per image, parses JSON when
+ present, falls back to caption-only otherwise.
+ 4. `PerImageVisionAdapter` aggregates usage tokens across images.
+ 5. Empty provider produces an empty `images: []` payload — adapter
+ never raises on no-images.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class _FakeUsage:
 
 class _FakeVisionLLMClient:
     """Mimics the production `VisionLLMClient.analyze_image` —
-    per-image bytes input, text response."""
+ per-image bytes input, text response."""
 
     def __init__(self, responses: list[str] | None = None) -> None:
         self._responses = list(responses or [])
@@ -69,9 +69,9 @@ class _FakeTextClient:
 
 
 def test_text_analysis_client_protocol_is_runtime_checkable():
-    """`runtime_checkable` lets isinstance() flag misconfigured
-    callers. Production clients should match the Protocol
-    structurally."""
+    """`runtime_checkable` lets isinstance flag misconfigured
+ callers. Production clients should match the Protocol
+ structurally."""
     assert isinstance(_FakeTextClient(), TextAnalysisClient)
 
 
@@ -85,9 +85,9 @@ def test_vision_analysis_client_protocol_is_runtime_checkable():
 
 def test_raw_vision_llm_client_does_not_match_analysis_protocol():
     """Production `VisionLLMClient.analyze_image` is per-image bytes;
-    `VisionAnalysisClient` expects `analyze(prompt, schema, metadata)`.
-    Without the adapter, isinstance() would correctly reject the raw
-    client — that's the design check the adapter exists to satisfy."""
+ `VisionAnalysisClient` expects `analyze(prompt, schema, metadata)`.
+ Without the adapter, isinstance would correctly reject the raw
+ client — that's the design check the adapter exists to satisfy."""
     raw = _FakeVisionLLMClient()
     assert not isinstance(raw, VisionAnalysisClient)
 
@@ -119,8 +119,8 @@ def test_text_adapter_implements_protocol():
 
 def test_vision_adapter_returns_empty_images_for_empty_provider():
     """No images → adapter never calls the LLM; returns an empty
-    list rather than raising. The image module's `can_run` should
-    skip BEFORE this is reached, so this is a defence-in-depth path."""
+ list rather than raising. The image module's `can_run` should
+ skip BEFORE this is reached, so this is a defence-in-depth path."""
     fake = _FakeVisionLLMClient()
     adapter = PerImageVisionAdapter(fake, image_provider=lambda: [])
     parsed, _ = adapter.analyze("describe", {})
@@ -168,7 +168,7 @@ def test_vision_adapter_parses_json_response_and_preserves_image_id():
 
 def test_vision_adapter_falls_back_to_caption_for_unstructured_response():
     """Models that return prose (not JSON) should still produce
-    usable image summaries."""
+ usable image summaries."""
     images = [
         VisionImagePayload(image_id="i-1", image_bytes=b"x"),
     ]
@@ -182,7 +182,7 @@ def test_vision_adapter_falls_back_to_caption_for_unstructured_response():
 
 def test_vision_adapter_handles_markdown_fenced_json():
     """Some models wrap JSON in ```json``` fences. The adapter
-    strips the fence and parses the inner payload."""
+ strips the fence and parses the inner payload."""
     images = [
         VisionImagePayload(image_id="i-1", image_bytes=b"x"),
     ]
@@ -197,7 +197,7 @@ def test_vision_adapter_handles_markdown_fenced_json():
 
 def test_vision_adapter_aggregates_usage_tokens():
     """Per-image token usage should sum across the batch so the
-    enrichment module records a representative total."""
+ enrichment module records a representative total."""
     images = [
         VisionImagePayload(image_id="i-1", image_bytes=b"x"),
         VisionImagePayload(image_id="i-2", image_bytes=b"x"),
@@ -225,7 +225,7 @@ def test_vision_adapter_aggregates_usage_tokens():
 
 def test_image_bytes_provider_type_alias_is_exported():
     """`ImageBytesProvider` is exposed so deployment wiring can
-    type its closures explicitly."""
+ type its closures explicitly."""
 
     def _ok() -> list[VisionImagePayload]:
         return [VisionImagePayload(image_id="x", image_bytes=b"y")]
@@ -242,8 +242,8 @@ def test_image_bytes_provider_type_alias_is_exported():
 
 def test_enrichment_clients_source_has_no_legacy_vocabulary():
     """The new client/adapter module is operator-visible (used in
-    deployment wiring). Must stay free of legacy gating /
-    split-mode terminology."""
+ deployment wiring). Must stay free of legacy gating /
+ split-mode terminology."""
     import inspect
     from j1.processing import enrichment_clients
     src = inspect.getsource(enrichment_clients)

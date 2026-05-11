@@ -48,9 +48,9 @@ from j1.workspace.layout import (
 def _now_factory(start: datetime):
     """Returns a callable that yields times advancing from `start`.
 
-    Each call to the returned function returns the *current* simulated time;
-    use the `.advance(seconds)` method to move forward.
-    """
+ Each call to the returned function returns the *current* simulated time;
+ use the `.advance(seconds)` method to move forward.
+ """
 
     class _Clock:
         def __init__(self, t: datetime) -> None:
@@ -120,7 +120,7 @@ def test_release_allows_subsequent_acquire(workspace, ctx):
 
 def test_release_does_not_steal_other_holders_lock(workspace, ctx):
     """If a stale handle is released after a new owner has taken over,
-    the new owner's lock must remain."""
+ the new owner's lock must remain."""
     clock = _now_factory(datetime(2026, 1, 1, tzinfo=timezone.utc))
     lock = WorkspaceLock(workspace, lease_seconds=10, clock=clock)
     h_a = lock.acquire(ctx, owner="A", area=AREA_COMPILED)
@@ -315,8 +315,8 @@ def test_artifact_registration_dedupes_unchanged_content(
     processing_service, artifact_registry, workspace, ctx
 ):
     """Existing dedup behavior: re-registering same content reuses the record.
-    Verified via the activity-layer register_compiled_artifacts (which exercises
-    find_by_content_hash). This is the framework's reprocessing-control story."""
+ Verified via the activity-layer register_compiled_artifacts (which exercises
+ find_by_content_hash). This is the framework's reprocessing-control story."""
     from j1.orchestration.activities.knowledge import (
         KnowledgeProcessingActivities,
     )

@@ -4,17 +4,17 @@ The fast-LLM consult is OFF by default. When enabled, it refines
 ambiguous (OPTIONAL) rule-based enrich-assessment verdicts. The
 consult MUST never:
 
-  * be called before compile,
-  * use a premium / expensive model by default,
-  * fail ingestion (any failure → fall back to rule-based),
-  * overrule deterministic SKIP decisions.
+ * be called before compile,
+ * use a premium / expensive model by default,
+ * fail ingestion (any failure → fall back to rule-based),
+ * overrule deterministic SKIP decisions.
 
 Config vocabulary (env-driven):
 
-  * `J1_ENRICH_ASSESSMENT_FAST_LLM_ENABLED`            (default `false`)
-  * `J1_ENRICH_ASSESSMENT_FAST_LLM_PROVIDER`           (e.g. `openai`)
-  * `J1_ENRICH_ASSESSMENT_FAST_LLM_MODEL`              (e.g. `gpt-4o-mini`)
-  * `J1_ENRICH_ASSESSMENT_FAST_LLM_TIMEOUT_SECONDS`    (default `10.0`)
+ * `J1_ENRICH_ASSESSMENT_FAST_LLM_ENABLED` (default `false`)
+ * `J1_ENRICH_ASSESSMENT_FAST_LLM_PROVIDER` (e.g. `openai`)
+ * `J1_ENRICH_ASSESSMENT_FAST_LLM_MODEL` (e.g. `gpt-4o-mini`)
+ * `J1_ENRICH_ASSESSMENT_FAST_LLM_TIMEOUT_SECONDS` (default `10.0`)
 
 The activity is wired at worker-bootstrap time with a callable that
 talks to the configured LLM. Settings + callable resolution
@@ -40,10 +40,10 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 class FastLLMConsultSettings:
     """Resolved settings for the optional fast-LLM consult.
 
-    `is_actionable` is the gate the activity checks before doing any
-    LLM work. When False (disabled, missing provider, missing model),
-    the activity returns `consulted=False` and the workflow falls
-    back to the rule-based plan."""
+ `is_actionable` is the gate the activity checks before doing any
+ LLM work. When False (disabled, missing provider, missing model),
+ the activity returns `consulted=False` and the workflow falls
+ back to the rule-based plan."""
 
     enabled: bool = False
     provider: str | None = None
@@ -58,9 +58,9 @@ def load_fast_llm_consult_settings(
     env: Mapping[str, str] | None = None,
 ) -> FastLLMConsultSettings:
     """Resolve `FastLLMConsultSettings` from env vars. Defaults are
-    safe (consult disabled, no provider, no model). Invalid timeout
-    values silently fall back to the default rather than raising —
-    a misconfigured timeout MUST NOT block ingestion."""
+ safe (consult disabled, no provider, no model). Invalid timeout
+ values silently fall back to the default rather than raising —
+ a misconfigured timeout MUST NOT block ingestion."""
     src: Mapping[str, str] = env if env is not None else os.environ
     return FastLLMConsultSettings(
         enabled=_parse_bool(src.get(ENV_FAST_LLM_ENABLED), default=False),

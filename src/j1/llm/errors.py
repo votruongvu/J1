@@ -14,19 +14,19 @@ class LLMError(J1Error):
 class LLMConfigError(ConfigError):
     """Raised when LLM-related env / settings are missing or invalid.
 
-    Subclass of `ConfigError` so existing config-error handling at the
-    framework boundary catches it without an extra clause.
-    """
+ Subclass of `ConfigError` so existing config-error handling at the
+ framework boundary catches it without an extra clause.
+ """
 
 
 class LLMProviderUnavailable(LLMError):
     """Raised when an optional provider library isn't installed.
 
-    Example: a `LangChainTextLLMClient` is constructed but the
-    `langchain-core` package isn't on `sys.path`. The error message
-    SHOULD name the missing import and the recommended fix
-    (e.g. `pip install langchain-core`).
-    """
+ Example: a `LangChainTextLLMClient` is constructed but the
+ `langchain-core` package isn't on `sys.path`. The error message
+ SHOULD name the missing import and the recommended fix
+ (e.g. `pip install langchain-core`).
+ """
 
 
 class LLMRoleNotRegistered(LLMError):
@@ -43,16 +43,16 @@ class LLMRoleNotRegistered(LLMError):
 
 class LLMContextOverflowError(LLMProviderUnavailable):
     """Raised by the LLM client BEFORE sending an HTTP request when
-    the assembled prompt's estimated tokens would exceed the
-    configured context window's available input budget.
+ the assembled prompt's estimated tokens would exceed the
+ configured context window's available input budget.
 
-    Subclasses `LLMProviderUnavailable` so existing error handling
-    that catches "LLM is not usable for this call" (and surfaces
-    a controlled error to the user instead of a workflow crash)
-    catches this case too. Callers that want to branch on overflow
-    specifically should test `isinstance(exc, LLMContextOverflowError)`
-    and inspect `exc.diagnostic` for the budget arithmetic.
-    """
+ Subclasses `LLMProviderUnavailable` so existing error handling
+ that catches "LLM is not usable for this call" (and surfaces
+ a controlled error to the user instead of a workflow crash)
+ catches this case too. Callers that want to branch on overflow
+ specifically should test `isinstance(exc, LLMContextOverflowError)`
+ and inspect `exc.diagnostic` for the budget arithmetic.
+ """
 
     def __init__(self, message: str, *, diagnostic: dict | None = None) -> None:
         super().__init__(message)

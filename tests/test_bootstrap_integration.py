@@ -4,20 +4,20 @@ Proves the providers `Bootstrap` registers actually plug into the
 existing `KnowledgeProcessingActivities` + `ProcessingService` and
 drive a real compile through to artifact registration. End-to-end:
 
-  Bootstrap (with stub LLM clients)
-    → constructs RAGAnythingCompiler.from_default with processor hook
-      pointing at a deployment-side callable
-    → callable is invoked by ProcessingService.compile
-    → an ArtifactDraft is materialised onto disk + registered
+ Bootstrap (with stub LLM clients)
+ → constructs RAGAnythingCompiler.from_default with processor hook
+ pointing at a deployment-side callable
+ → callable is invoked by ProcessingService.compile
+ → an ArtifactDraft is materialised onto disk + registered
 
 This is the headline proof that:
-  1. `Bootstrap`'s compiler / graph / retrieval registries plug into
-     the existing pipeline activities WITHOUT a single rewrite of
-     ProcessingService or KnowledgeProcessingActivities.
-  2. Deployment processor hooks (env-driven) are functionally
-     equivalent to constructor injection.
-  3. The new layer respects the framework's existing "core never
-     imports vendor SDK" rule.
+ 1. `Bootstrap`'s compiler / graph / retrieval registries plug into
+ the existing pipeline activities WITHOUT a single rewrite of
+ ProcessingService or KnowledgeProcessingActivities.
+ 2. Deployment processor hooks (env-driven) are functionally
+ equivalent to constructor injection.
+ 3. The new layer respects the framework's existing "core never
+ imports vendor SDK" rule.
 """
 
 import sys
@@ -91,14 +91,14 @@ def _full_registry() -> LLMProviderRegistry:
 def test_bootstrap_compiler_plugs_into_processing_service(tmp_path, monkeypatch):
     """Bootstrap-built compiler runs end-to-end through ProcessingService.
 
-    Wires:
-      Bootstrap.build()
-        → result.compilers["raganything"]   # RAGAnythingCompiler
-        → KnowledgeProcessingActivities.compilers map
-        → activity dispatches to ProcessingService.compile
-        → callable supplied via env-driven processor hook is invoked
-        → ArtifactDraft materialised onto disk + registered
-    """
+ Wires:
+ Bootstrap.build
+ → result.compilers["raganything"] # RAGAnythingCompiler
+ → KnowledgeProcessingActivities.compilers map
+ → activity dispatches to ProcessingService.compile
+ → callable supplied via env-driven processor hook is invoked
+ → ArtifactDraft materialised onto disk + registered
+ """
     # 1. Register a deployment-side processor module under a trusted prefix.
     register_trusted_prefix("test_e2e_processors")
     invocations: list[dict] = []
@@ -131,7 +131,7 @@ def test_bootstrap_compiler_plugs_into_processing_service(tmp_path, monkeypatch)
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
         "J1_RAGANYTHING_COMPILER_PROCESSOR": "test_e2e_processors:compile_doc",
         # Keep enrichment enabled but turn off all visual modalities so
-        # `_full_registry()` doesn't have to register vision.
+        # `_full_registry` doesn't have to register vision.
         # Actually keep vision in the fake registry — easier.
     }
     result = Bootstrap(env=env, llm_registry=_full_registry()).build()
@@ -194,10 +194,10 @@ def test_bootstrap_compiler_plugs_into_processing_service(tmp_path, monkeypatch)
 def test_bootstrap_compiler_plugs_into_knowledge_activities(tmp_path, monkeypatch):
     """Same but going through `KnowledgeProcessingActivities`.
 
-    Confirms the activity-class layer (the one Temporal worker
-    registers) sees the bootstrap-supplied compiler under the right
-    `kind` key.
-    """
+ Confirms the activity-class layer (the one Temporal worker
+ registers) sees the bootstrap-supplied compiler under the right
+ `kind` key.
+ """
     register_trusted_prefix("test_e2e_processors_v2")
 
     def my_compile(request):

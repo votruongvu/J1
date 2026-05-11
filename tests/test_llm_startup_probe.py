@@ -2,12 +2,12 @@
 
 Locks two contracts:
 
-  1. The probe exercises EVERY registered TEXT / FAST / EMBEDDING
-     role with a minimal request and reports per-role results.
-  2. `assert_required_llm_reachable` raises with an operator-readable
-     message when any probed role fails — the worker / api startup
-     hooks aborting on this raise is what gives us the fail-fast
-     behaviour.
+ 1. The probe exercises EVERY registered TEXT / FAST / EMBEDDING
+ role with a minimal request and reports per-role results.
+ 2. `assert_required_llm_reachable` raises with an operator-readable
+ message when any probed role fails — the worker / api startup
+ hooks aborting on this raise is what gives us the fail-fast
+ behaviour.
 """
 
 from __future__ import annotations
@@ -108,8 +108,8 @@ def test_llm_probe_enabled_respects_truthy_overrides(value):
 
 def test_probe_registry_returns_one_result_per_registered_role():
     """Three configured roles → three ProbeResults with provider/model
-    populated. Roles that aren't registered are silently skipped (the
-    operator opted not to configure them)."""
+ populated. Roles that aren't registered are silently skipped (the
+ operator opted not to configure them)."""
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, _OkText())
     registry.register(LLM_ROLE_EMBEDDING, _OkEmbedding())
@@ -125,15 +125,15 @@ def test_probe_registry_returns_one_result_per_registered_role():
 
 def test_probe_registry_calls_text_generate_with_small_token_cap():
     """The text probe uses a small but non-trivial output cap (≤16
-    tokens). With max_tokens=1 most chat models emit a single
-    special token and return EMPTY visible content with
-    finish_reason=length, which trips the openai_compat client's
-    'empty content' warning on every probe tick — pure log noise
-    on a healthy LLM. A few tokens is still negligible cost but
-    leaves room for a real one-word response.
+ tokens). With max_tokens=1 most chat models emit a single
+ special token and return EMPTY visible content with
+ finish_reason=length, which trips the openai_compat client's
+ 'empty content' warning on every probe tick — pure log noise
+ on a healthy LLM. A few tokens is still negligible cost but
+ leaves room for a real one-word response.
 
-    `temperature=0.0` keeps the probe reproducible — same response
-    shape on every check."""
+ `temperature=0.0` keeps the probe reproducible — same response
+ shape on every check."""
     text = _OkText()
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, text)
@@ -173,8 +173,8 @@ def test_probe_registry_marks_failing_role_as_not_ok():
 
 def test_probe_registry_empty_when_no_roles_configured():
     """No probed roles registered → no results. Caller's higher-level
-    `assert_required_llm_reachable` then logs 'no probed roles
-    registered; skipping' rather than raising."""
+ `assert_required_llm_reachable` then logs 'no probed roles
+ registered; skipping' rather than raising."""
     registry = LLMProviderRegistry()
     assert probe_registry(registry) == []
 
@@ -192,8 +192,8 @@ def test_assert_succeeds_when_all_roles_reachable():
 
 def test_assert_succeeds_when_no_probed_roles_registered():
     """An empty registry isn't a misconfiguration — `bootstrap_from_env`
-    constructs an empty registry when no LLM is configured at all
-    (mock-only deployments). Don't fail startup on that case."""
+ constructs an empty registry when no LLM is configured at all
+ (mock-only deployments). Don't fail startup on that case."""
     registry = LLMProviderRegistry()
     assert_required_llm_reachable(registry)
 
@@ -218,8 +218,8 @@ def test_assert_raises_with_actionable_message_on_failure():
 
 def test_assert_raises_when_any_role_fails_even_if_others_pass():
     """One bad role poisons the well — startup must abort even when
-    the other roles are healthy. We can't ingest documents with a
-    half-functional LLM stack."""
+ the other roles are healthy. We can't ingest documents with a
+ half-functional LLM stack."""
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, _OkText())
     registry.register(LLM_ROLE_EMBEDDING, _FailingEmbedding())
@@ -240,10 +240,10 @@ def test_assert_raises_when_any_role_fails_even_if_others_pass():
 
 def test_current_health_returns_healthy_when_no_probe_run_yet():
     """Conservative default: when the probe hasn't run (probe disabled
-    or process startup hook skipped), the cached snapshot reports
-    healthy=True. Matches every other health check in the stack —
-    'assume working until proven otherwise' so a missing probe
-    doesn't trigger a false-alarm banner."""
+ or process startup hook skipped), the cached snapshot reports
+ healthy=True. Matches every other health check in the stack —
+ 'assume working until proven otherwise' so a missing probe
+ doesn't trigger a false-alarm banner."""
     cache_probe_results([])  # reset
     snapshot = current_health()
     assert snapshot.healthy is True
@@ -252,8 +252,8 @@ def test_current_health_returns_healthy_when_no_probe_run_yet():
 
 def test_current_health_reflects_cached_results_after_probe():
     """Calling `cache_probe_results` makes the next `current_health`
-    return the cached results. The API's `/healthz/llm` endpoint
-    reads through this cache so polling can't burn the upstream LLM."""
+ return the cached results. The API's `/healthz/llm` endpoint
+ reads through this cache so polling can't burn the upstream LLM."""
     cache_probe_results([
         ProbeResult(
             role=LLM_ROLE_TEXT, ok=True,
@@ -287,8 +287,8 @@ def test_current_health_healthy_true_when_all_cached_roles_ok():
 
 def test_cache_probe_results_overwrites_previous_state():
     """Subsequent probes (e.g. a future re-probe-on-demand endpoint)
-    must overwrite the cache so the FE never sees a stale healthy
-    status after the LLM goes down."""
+ must overwrite the cache so the FE never sees a stale healthy
+ status after the LLM goes down."""
     cache_probe_results([
         ProbeResult(role=LLM_ROLE_TEXT, ok=True, provider="p", model="m"),
     ])
@@ -309,11 +309,11 @@ def test_cache_probe_results_overwrites_previous_state():
 
 
 class _HangingText:
-    """Stub client that mimics a TextLLMClient.generate() blocked on a
-    socket read against an unreachable LLM endpoint. Without the
-    probe-side deadline this would hang for the client's full
-    configured timeout (300s in the dev stack) and the worker / API
-    container would appear to hang at startup."""
+    """Stub client that mimics a TextLLMClient.generate blocked on a
+ socket read against an unreachable LLM endpoint. Without the
+ probe-side deadline this would hang for the client's full
+ configured timeout (300s in the dev stack) and the worker / API
+ container would appear to hang at startup."""
 
     provider = "openai_compat"
     model = "hung-model"
@@ -325,12 +325,12 @@ class _HangingText:
 
 def test_probe_registry_enforces_short_deadline_against_hanging_client():
     """The probe MUST fail fast when the LLM endpoint hangs. Without
-    this, worker / API startup blocks for minutes per unreachable
-    role and operators see 'container is running but the server is
-    not serving requests' with no clear cause. Pin the upper bound
-    so the probe completes well within the deadline (we use a 0.5s
-    deadline against a 30s hanging stub — anything more than ~3s
-    means the deadline isn't actually enforced)."""
+ this, worker / API startup blocks for minutes per unreachable
+ role and operators see 'container is running but the server is
+ not serving requests' with no clear cause. Pin the upper bound
+ so the probe completes well within the deadline (we use a 0.5s
+ deadline against a 30s hanging stub — anything more than ~3s
+ means the deadline isn't actually enforced)."""
     import time
 
     registry = LLMProviderRegistry()
@@ -352,10 +352,10 @@ def test_probe_registry_enforces_short_deadline_against_hanging_client():
 
 def test_probe_registry_passes_through_real_errors_under_deadline():
     """Real exceptions (auth failure, bad model name, etc.) must still
-    propagate through the probe — the deadline only catches HANGS,
-    not normal failures. A `connection refused` error fires
-    immediately and should be reported as a normal probe failure,
-    not a timeout."""
+ propagate through the probe — the deadline only catches HANGS,
+ not normal failures. A `connection refused` error fires
+ immediately and should be reported as a normal probe failure,
+ not a timeout."""
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, _FailingText())
 
@@ -374,10 +374,10 @@ def test_probe_registry_passes_through_real_errors_under_deadline():
 @pytest.fixture(autouse=True)
 def _stop_monitor_between_tests():
     """Ensure no leftover monitor leaks across tests. The monitor is
-    a daemon thread; tests that start one must stop it so the next
-    test starts with a clean process state. Yields to let the test
-    run, then unconditionally tears down — safe to call even when no
-    monitor is running."""
+ a daemon thread; tests that start one must stop it so the next
+ test starts with a clean process state. Yields to let the test
+ run, then unconditionally tears down — safe to call even when no
+ monitor is running."""
     yield
     stop_health_monitor(timeout=2.0)
     cache_probe_results([])
@@ -389,16 +389,16 @@ def test_llm_health_monitor_interval_default_30s():
 
 def test_llm_health_monitor_interval_zero_disables():
     """`0` is the documented kill-switch for the monitor. Negative
-    values are clamped to 0 so a misconfiguration doesn't loop the
-    monitor instantly."""
+ values are clamped to 0 so a misconfiguration doesn't loop the
+ monitor instantly."""
     assert llm_health_monitor_interval(env={"J1_LLM_HEALTH_MONITOR_INTERVAL_SECONDS": "0"}) == 0.0
     assert llm_health_monitor_interval(env={"J1_LLM_HEALTH_MONITOR_INTERVAL_SECONDS": "-5"}) == 0.0
 
 
 def test_start_health_monitor_disabled_when_interval_zero():
     """When the operator sets the interval to 0, no background thread
-    is spawned. The startup probe still ran (cache reflects that),
-    but the cache won't auto-refresh."""
+ is spawned. The startup probe still ran (cache reflects that),
+ but the cache won't auto-refresh."""
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, _OkText())
 
@@ -408,9 +408,9 @@ def test_start_health_monitor_disabled_when_interval_zero():
 
 def test_start_health_monitor_is_idempotent():
     """The startup hook may be called twice (e.g. uvicorn worker
-    re-init in dev). Subsequent calls must be no-ops so we don't end
-    up with multiple monitors all probing the same upstream LLM
-    every 30s."""
+ re-init in dev). Subsequent calls must be no-ops so we don't end
+ up with multiple monitors all probing the same upstream LLM
+ every 30s."""
     registry = LLMProviderRegistry()
     registry.register(LLM_ROLE_TEXT, _OkText())
 
@@ -422,13 +422,13 @@ def test_start_health_monitor_is_idempotent():
 
 def test_health_monitor_refreshes_cache_when_endpoint_recovers():
     """The whole point of the monitor: when the LLM endpoint goes
-    from FAILING to HEALTHY (operator fixed it), the cached
-    snapshot must reflect the new state within roughly one
-    interval. Without the monitor, the cache stays stale until
-    restart and the FE banner sticks around forever.
+ from FAILING to HEALTHY (operator fixed it), the cached
+ snapshot must reflect the new state within roughly one
+ interval. Without the monitor, the cache stays stale until
+ restart and the FE banner sticks around forever.
 
-    Uses a stub client whose first call fails and subsequent calls
-    succeed — mirrors the recovery scenario exactly."""
+ Uses a stub client whose first call fails and subsequent calls
+ succeed — mirrors the recovery scenario exactly."""
     import time
 
     class _FlipText:
@@ -476,8 +476,8 @@ def test_health_monitor_refreshes_cache_when_endpoint_recovers():
 
 def test_health_monitor_keeps_running_when_a_tick_raises():
     """Defensive: an exception inside `probe_registry` must not kill
-    the monitor — it has to outlive transient errors so it can keep
-    refreshing once the system stabilises."""
+ the monitor — it has to outlive transient errors so it can keep
+ refreshing once the system stabilises."""
     import threading as _threading
     import time
 

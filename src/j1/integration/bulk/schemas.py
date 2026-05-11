@@ -90,11 +90,11 @@ class CitationExportRecord(_RecordModel):
 class MetadataExportRecord(_RecordModel):
     """Denormalised, analytics-friendly projection of `DocumentExportRecord`.
 
-    Imported back, this format is used as a round-trip integrity check:
-    it must reference an existing `documentId` and the supplied fields
-    must match the registry's stored values. Useful for verifying a
-    backup/restore cycle.
-    """
+ Imported back, this format is used as a round-trip integrity check:
+ it must reference an existing `documentId` and the supplied fields
+ must match the registry's stored values. Useful for verifying a
+ backup/restore cycle.
+ """
     document_id: str = Field(min_length=1)
     tenant_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)

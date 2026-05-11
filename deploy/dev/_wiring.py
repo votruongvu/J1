@@ -81,9 +81,9 @@ DEFAULT_PROFILE_ID = "default"
 def _resolve_max_upload_bytes() -> int:
     """Resolve the per-upload size cap, honouring `J1_MAX_UPLOAD_BYTES`.
 
-    A non-positive override falls back to the framework default so a
-    misconfigured value doesn't accidentally disable the boundary.
-    """
+ A non-positive override falls back to the framework default so a
+ misconfigured value doesn't accidentally disable the boundary.
+ """
     raw = os.environ.get("J1_MAX_UPLOAD_BYTES", "").strip()
     if not raw:
         return DEFAULT_MAX_UPLOAD_BYTES
@@ -96,10 +96,10 @@ def _resolve_max_upload_bytes() -> int:
 
 def _resolve_allowed_upload_extensions() -> tuple[str, ...]:
     """Resolve the upload allow-list, honouring
-    `J1_ALLOWED_UPLOAD_EXTENSIONS` (comma-separated, with or without
-    leading dots). The literal value `*` disables the boundary
-    (allow-anything mode); empty / unset uses the framework default.
-    """
+ `J1_ALLOWED_UPLOAD_EXTENSIONS` (comma-separated, with or without
+ leading dots). The literal value `*` disables the boundary
+ (allow-anything mode); empty / unset uses the framework default.
+ """
     raw = os.environ.get("J1_ALLOWED_UPLOAD_EXTENSIONS", "").strip()
     if not raw:
         return DEFAULT_ALLOWED_UPLOAD_EXTENSIONS
@@ -122,10 +122,10 @@ def build_workspace(settings: Settings) -> WorkspaceResolver:
 def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     """Construct a fully wired `ApplicationFacade`.
 
-    Backed entirely by the framework's filesystem-based registries +
-    SQLite FTS5 — the same setup that production deployments use as a
-    single-writer baseline. No external services beyond Temporal.
-    """
+ Backed entirely by the framework's filesystem-based registries +
+ SQLite FTS5 — the same setup that production deployments use as a
+ single-writer baseline. No external services beyond Temporal.
+ """
     audit_sink = JsonlAuditSink(workspace)
     audit_recorder = DefaultAuditRecorder(audit_sink)
     cost_sink = JsonlCostSink(workspace)
@@ -184,17 +184,17 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
 def build_review_service(workspace: WorkspaceResolver):
     """Build the `IngestionResultReviewService` for the REST adapter.
 
-    Read-only surface over completed runs (Results > Overview etc.).
-    Constructs lightweight JSONL-backed dependencies — the run store
-    sits alongside `build_run_progress_surface`'s instance, and the
-    artifact registry is the same JSONL the worker writes to. No
-    external services. Without this wired, the REST adapter degrades
-    `/ingestion-runs/{id}/summary` (and the rest of the review surface
-    as it ships) to 503.
+ Read-only surface over completed runs (Results > Overview etc.).
+ Constructs lightweight JSONL-backed dependencies — the run store
+ sits alongside `build_run_progress_surface`'s instance, and the
+ artifact registry is the same JSONL the worker writes to. No
+ external services. Without this wired, the REST adapter degrades
+ `/ingestion-runs/{id}/summary` (and the rest of the review surface
+ as it ships) to 503.
 
-    Reads `J1_PLANNING_*` env vars at construction so the Planning
-    Report projector knows the privacy caps; misconfigured values
-    surface as `ConfigError` at startup rather than at request time."""
+ Reads `J1_PLANNING_*` env vars at construction so the Planning
+ Report projector knows the privacy caps; misconfigured values
+ surface as `ConfigError` at startup rather than at request time."""
     from j1.ingestion_review import IngestionResultReviewService
     from j1.processing.planning_settings import load_planning_settings
     return IngestionResultReviewService(
@@ -208,26 +208,26 @@ def build_review_service(workspace: WorkspaceResolver):
 def build_validation_service(workspace: WorkspaceResolver):
     """Build the `IngestionValidationService` for the REST adapter.
 
-    Phase 1 surface: synchronous manual test queries scoped to one
-    ingestion run. Phase 2 adds generated set / set-execution.
-    Reuses the same `HybridQueryEngine` providers the facade builds
-    for the public `/answer` endpoint, but invokes them with
-    `RunScope` so retrieval is restricted to artifacts produced by
-    the run under test.
+ surface: synchronous manual test queries scoped to one
+ ingestion run. generated set / set-execution.
+ Reuses the same `HybridQueryEngine` providers the facade builds
+ for the public `/answer` endpoint, but invokes them with
+ `RunScope` so retrieval is restricted to artifacts produced by
+ the run under test.
 
-    Returns `None` when the deployment doesn't have a profile loaded
-    — the engine needs a profile for `ReportGenerator`'s template
-    lookup, and without it we can't construct the engine. The REST
-    adapter degrades `/ingestion-runs/{id}/test-query` to 503 in
-    that case, mirroring the `/answer` degradation pattern.
+ Returns `None` when the deployment doesn't have a profile loaded
+ — the engine needs a profile for `ReportGenerator`'s template
+ lookup, and without it we can't construct the engine. The REST
+ adapter degrades `/ingestion-runs/{id}/test-query` to 503 in
+ that case, mirroring the `/answer` degradation pattern.
 
-    Phase 2 dependencies (set/run stores + generator) are always
-    wired when the validation service is constructible — there's no
-    failure mode where the manual-query path works but the set/run
-    path doesn't, given a profile is present. The FAST/text LLM is
-    optional (the generator falls back to the heuristic question
-    producer when no client is supplied).
-    """
+ dependencies (set/run stores + generator) are always
+ wired when the validation service is constructible — there's no
+ failure mode where the manual-query path works but the set/run
+ path doesn't, given a profile is present. The FAST/text LLM is
+ optional (the generator falls back to the heuristic question
+ producer when no client is supplied).
+ """
     from j1.audit.recorder import DefaultAuditRecorder
     from j1.audit.sink import JsonlAuditSink
     from j1.compose import bootstrap_from_env
@@ -284,7 +284,7 @@ def build_validation_service(workspace: WorkspaceResolver):
     except Exception:  # noqa: BLE001 — bootstrap may not be available in tests
         llm_client = None
 
-    # Phase 3 LLM judge — uses the same FAST/text client as the
+    #  LLM judge — uses the same FAST/text client as the
     # generator. Optional: if no LLM is configured, the runner
     # simply omits the optional semantic checks (`answer_covers_*`,
     # `answer_grounded_*`, `negative_no_fabrication`) and the
@@ -301,14 +301,14 @@ def build_validation_service(workspace: WorkspaceResolver):
         # event per call — same JSONL stream the `/events` endpoint
         # tails, so manual queries show up in the live timeline.
         audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
-        # Phase 2 dependencies — always wire them when we get this
+        #  dependencies — always wire them when we get this
         # far so generate / run aren't 503'd separately from
         # manual query.
         workspace=workspace,
         validation_set_store=JsonlValidationSetStore(workspace),
         validation_run_store=JsonlValidationRunStore(workspace),
         test_case_generator=DefaultTestCaseGenerator(text_client=llm_client),
-        # Phase 3 — optional. Off when no LLM client is wired.
+        # optional. Off when no LLM client is wired.
         judge=judge,
     )
 
@@ -317,22 +317,22 @@ def build_run_progress_surface(
     workspace: WorkspaceResolver,
 ) -> tuple[IngestionRunStore, ProgressReporter]:
     """Build the dependencies the user-facing `/ingestion-runs/*` surface
-    needs. Returns the run store + an audit-backed progress reporter.
+ needs. Returns the run store + an audit-backed progress reporter.
 
-    Both are lightweight (JSONL files under the workspace's audit
-    area), reused by `api.py` to power:
+ Both are lightweight (JSONL files under the workspace's audit
+ area), reused by `api.py` to power:
 
-      * `POST /ingestion-runs`                      — run record + progress events
-      * `GET  /ingestion-runs`                      — list view
-      * `GET  /ingestion-runs/{id}`                 — status snapshot
-      * `GET  /ingestion-runs/{id}/plan`            — execution plan
-      * `POST /ingestion-runs/{id}/confirm`         — plan.confirmed event
-      * `GET  /ingestion-runs/{id}/events[/stream]` — historical + live events
+ * `POST /ingestion-runs` — run record + progress events
+ * `GET /ingestion-runs` — list view
+ * `GET /ingestion-runs/{id}` — status snapshot
+ * `GET /ingestion-runs/{id}/plan` — execution plan
+ * `POST /ingestion-runs/{id}/confirm` — plan.confirmed event
+ * `GET /ingestion-runs/{id}/events[/stream]` — historical + live events
 
-    Without these wired, the REST adapter degrades each `/ingestion-runs/*`
-    handler to 503 with `ingestion-run store not configured`. The dev
-    stack always wires them — production deployments should too unless
-    they intentionally don't expose the surface."""
+ Without these wired, the REST adapter degrades each `/ingestion-runs/*`
+ handler to 503 with `ingestion-run store not configured`. The dev
+ stack always wires them — production deployments should too unless
+ they intentionally don't expose the surface."""
     audit_recorder = DefaultAuditRecorder(JsonlAuditSink(workspace))
     return (
         JsonlIngestionRunStore(workspace),
@@ -342,7 +342,7 @@ def build_run_progress_surface(
 
 def build_batch_run_store(workspace: WorkspaceResolver):
     """Build the JSONL-backed batch-run store. Used by
-    `POST /ingestion-batches` to track multi-upload aggregations."""
+ `POST /ingestion-batches` to track multi-upload aggregations."""
     from j1.runs.batch_store import JsonlBatchRunStore
     return JsonlBatchRunStore(workspace)
 
@@ -350,9 +350,9 @@ def build_batch_run_store(workspace: WorkspaceResolver):
 def maybe_build_authenticator() -> ApiKeyAuthenticator | None:
     """Construct an authenticator only when API keys are configured.
 
-    Honours the framework's "misconfiguration disables a surface" rule:
-    no env var → anonymous mode (suitable for local development).
-    """
+ Honours the framework's "misconfiguration disables a surface" rule:
+ no env var → anonymous mode (suitable for local development).
+ """
     settings = load_security_settings()
     if not settings.api_keys:
         return None
@@ -369,7 +369,7 @@ def build_worker_spec(
     query_providers: Mapping[str, object] | None = None,
     llm_registry: object | None = None,
     enrichment_settings: object | None = None,
-    # Wave 10.6 — shared LLM-call limiter the bootstrap built.
+    # shared LLM-call limiter the bootstrap built.
     # When None, the new EnrichmentModule adapters still construct;
     # they just don't gate concurrent LLM calls. (CompositeEnricher
     # behaves the same way.)
@@ -377,22 +377,22 @@ def build_worker_spec(
 ) -> WorkerSpec:
     """Build the `WorkerSpec` registered by the dev worker.
 
-    Processor maps default to empty for everything except enrichers
-    — when `enrichers` is None, we auto-register the
-    `CompositeEnricher` so the FE's Results > Assets tab can light up
-    out of the box. Real deployments override `enrichers=` with a
-    deliberately-curated map.
+ Processor maps default to empty for everything except enrichers
+ — when `enrichers` is None, we auto-register the
+ `CompositeEnricher` so the FE's Results > Assets tab can light up
+ out of the box. Real deployments override `enrichers=` with a
+ deliberately-curated map.
 
-    `llm_registry` (the `LLMProviderRegistry` from `bootstrap_from_env`)
-    is consulted for the auto-registered composite — without it,
-    `VisualContentDescriber` constructs with `vision_client=None` and
-    emits the 'No vision LLM configured' markdown stub on every run.
-    Pass through `boot.llm_registry` from worker.py and visual
-    enrichment will route through the configured vision LLM.
+ `llm_registry` (the `LLMProviderRegistry` from `bootstrap_from_env`)
+ is consulted for the auto-registered composite — without it,
+ `VisualContentDescriber` constructs with `vision_client=None` and
+ emits the 'No vision LLM configured' markdown stub on every run.
+ Pass through `boot.llm_registry` from worker.py and visual
+ enrichment will route through the configured vision LLM.
 
-    Real processor wiring is deployment-specific (vendor SDKs, model
-    providers, etc.) and lives elsewhere.
-    """
+ Real processor wiring is deployment-specific (vendor SDKs, model
+ providers, etc.) and lives elsewhere.
+ """
     audit_sink = JsonlAuditSink(workspace)
     audit_recorder = DefaultAuditRecorder(audit_sink)
     cost_sink = JsonlCostSink(workspace)
@@ -496,16 +496,16 @@ def build_worker_spec(
             profile = Profile(profile_id="default", metadata={})
         # Pull every available client from the bootstrap registry so
         # the composite's children have what they need:
-        #   * vision  → `VisualContentDescriber` (already used)
-        #   * text    → reserved for future LLM-backed enrichers
-        #               (TableExtractor / RequirementExtractor / etc).
-        #               Today's stub `_produce` methods ignore the
-        #               client; wiring it now means real
-        #               implementations don't have to re-plumb later.
-        #   * embedding → same — reserved for any enricher that
-        #                 wants to compute embeddings (e.g.
-        #                 ConsistencyChecker comparing chunks).
-        # try_*() returns None when the env config is absent; the
+        #  * vision → `VisualContentDescriber` (already used)
+        #  * text → reserved for future LLM-backed enrichers
+        #  (TableExtractor / RequirementExtractor / etc).
+        #  Today's stub `_produce` methods ignore the
+        #  client; wiring it now means real
+        #  implementations don't have to re-plumb later.
+        #  * embedding → same — reserved for any enricher that
+        #  wants to compute embeddings (e.g.
+        #  ConsistencyChecker comparing chunks).
+        # try_* returns None when the env config is absent; the
         # composite handles that gracefully.
         vision_client = None
         text_client = None
@@ -607,7 +607,7 @@ def build_worker_spec(
     else:
         resolved_enrichers = enrichers
 
-    # Wave 10.6 + 11A — bootstrap supplies the RAW analysis clients;
+    #  + 11A — bootstrap supplies the RAW analysis clients;
     # the enrichment activity constructs the `PerImageVisionAdapter`
     # per run so it can resolve actual image bytes from the run's
     # `compile.image` artifacts via `WorkspaceImageBytesProvider`.
@@ -617,22 +617,22 @@ def build_worker_spec(
     #
     # Production / staging deployments OUTSIDE `deploy/dev/` must
     # follow the same wiring pattern when they're built:
-    #   1. `bootstrap_from_env()` → `BootstrapResult` carries the
-    #      `llm_registry` + `llm_call_limiter`.
-    #   2. Resolve `text_client = registry.try_text()` and
-    #      `vision_client = registry.try_vision()` — either may be
-    #      None for deployments without LLM credentials.
-    #   3. Optionally wrap text client in `TextLLMClientAdapter` for
-    #      explicit Protocol surface (production client matches
-    #      structurally either way).
-    #   4. Pass the RAW vision client through (do NOT wrap at
-    #      bootstrap) — the activity wraps per-run.
-    #   5. Pass `llm_call_limiter=boot.llm_call_limiter` so the
-    #      same limiter reaches every adapter AND per-image vision
-    #      calls (Wave 11B — the limiter acquires per-image).
-    #   6. Construct `ProcessingActivities(...,
-    #      enrichment_text_client=..., enrichment_vision_client=...,
-    #      enrichment_llm_call_limiter=...)`.
+    #  1. `bootstrap_from_env` → `BootstrapResult` carries the
+    #  `llm_registry` + `llm_call_limiter`.
+    #  2. Resolve `text_client = registry.try_text` and
+    #  `vision_client = registry.try_vision` — either may be
+    #  None for deployments without LLM credentials.
+    #  3. Optionally wrap text client in `TextLLMClientAdapter` for
+    #  explicit Protocol surface (production client matches
+    #  structurally either way).
+    #  4. Pass the RAW vision client through (do NOT wrap at
+    #  bootstrap) — the activity wraps per-run.
+    #  5. Pass `llm_call_limiter=boot.llm_call_limiter` so the
+    #  same limiter reaches every adapter AND per-image vision
+    #  calls (the limiter acquires per-image).
+    #  6. Construct `ProcessingActivities(...,
+    #  enrichment_text_client=..., enrichment_vision_client=...,
+    #  enrichment_llm_call_limiter=...)`.
     from j1.processing.enrichment_clients import TextLLMClientAdapter
 
     enrichment_text_client: object | None = None
@@ -668,7 +668,7 @@ def build_worker_spec(
         # artifact already exists. Same workspace-area JSONL backing
         # as the audit log, so a single backup covers both.
         result_cache=JsonlProcessingResultCache(workspace),
-        # Wave 10.6 — typed analysis clients + shared limiter for
+        # typed analysis clients + shared limiter for
         # the new EnrichmentModule adapters (text / classification
         # / table / image). When any client is None, the matching
         # adapter SKIPs the module with "no LLM client configured"

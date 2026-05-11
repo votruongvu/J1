@@ -1,8 +1,8 @@
-"""Unit tests for the Phase-4 macro-stage projection that backs
+"""Unit tests for the macro-stage projection that backs
 the `J1IngestStage` Temporal search attribute.
 
 The workflow writes one of the `INGEST_STAGE_*` macro values into
-the search attribute at every stage transition. `_macro_ingest_stage()`
+the search attribute at every stage transition. `_macro_ingest_stage`
 is the pure helper that projects the per-doc workflow operation
 string (`compile:doc-1`, `assess_compile_strategy:doc-7`, …) onto
 the canonical macro vocabulary so the cardinality stays bounded.
@@ -36,8 +36,8 @@ from j1.orchestration.workflows.project_processing import (
 
 def test_macro_stage_constants_are_stable_strings():
     """The values are operator-facing — they show up in Temporal
-    UI filters and ops dashboards. Pin them so a rename here is
-    intentional and traceable."""
+ UI filters and ops dashboards. Pin them so a rename here is
+ intentional and traceable."""
     assert INGEST_STAGE_RECEIVED == "received"
     assert INGEST_STAGE_ASSESSING == "assessing"
     assert INGEST_STAGE_ASSESSMENT_READY == "assessment_ready"
@@ -84,7 +84,7 @@ def test_macro_ingest_stage_projects_known_ops(op, expected):
 
 def test_macro_ingest_stage_strips_document_id_suffix():
     """`compile:doc-1` and `compile:doc-2` collapse onto one value
-    so search-attribute cardinality doesn't grow with run count."""
+ so search-attribute cardinality doesn't grow with run count."""
     assert _macro_ingest_stage("compile:doc-1") == _macro_ingest_stage("compile:doc-2")
     assert _macro_ingest_stage("assess_compile_strategy:doc-1") == _macro_ingest_stage(
         "assess_compile_strategy:doc-9",
@@ -110,17 +110,17 @@ def test_macro_ingest_stage_strips_document_id_suffix():
 )
 def test_macro_ingest_stage_falls_back_to_running_for_non_macro_ops(op):
     """Ops outside the macro vocabulary (enrich, graph, index,
-    finalize, budget gate) fall back to a generic `running` so
-    dashboards still see a coarse "something's happening" signal.
-    Promoting one of these to its own macro stage = a one-line
-    addition to `_OP_TO_MACRO_INGEST_STAGE`."""
+ finalize, budget gate) fall back to a generic `running` so
+ dashboards still see a coarse "something's happening" signal.
+ Promoting one of these to its own macro stage = a one-line
+ addition to `_OP_TO_MACRO_INGEST_STAGE`."""
     assert _macro_ingest_stage(op) == INGEST_STAGE_RUNNING
 
 
 def test_macro_ingest_stage_handles_missing_op():
-    """The helper is also called from `_begin()` where `op` is the
-    current operation — and from edge paths where it may be empty.
-    Must not raise; returns the generic `running` value."""
+    """The helper is also called from `_begin` where `op` is the
+ current operation — and from edge paths where it may be empty.
+ Must not raise; returns the generic `running` value."""
     assert _macro_ingest_stage(None) == INGEST_STAGE_RUNNING
     assert _macro_ingest_stage("") == INGEST_STAGE_RUNNING
 
@@ -129,9 +129,9 @@ def test_macro_ingest_stage_handles_missing_op():
 
 
 def test_known_op_table_yields_bounded_macro_vocabulary():
-    """The point of Phase 4: search-attribute cardinality should
-    not grow with documents or runs. The set of distinct values the
-    helper can return is bounded by the macro-vocabulary constants."""
+    """The point of search-attribute cardinality should
+ not grow with documents or runs. The set of distinct values the
+ helper can return is bounded by the macro-vocabulary constants."""
     all_known_ops = [
         "validate", "list_documents",
         "compile", "compile:doc-1", "compile:doc-2", "compile:doc-99",

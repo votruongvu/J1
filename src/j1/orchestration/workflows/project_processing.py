@@ -119,7 +119,7 @@ class WorkflowState(StrEnum):
     WAITING_FOR_COMPILE_TRIGGER = "waiting_for_compile_trigger"
     # Post-compile health gate. Surfaces while the verification
     # activity runs (typically a single second) so the FE timeline
-    # shows the verification phase rather than skipping straight from
+    # shows the verification stage rather than skipping straight from
     # compile to enrich/finalize. Only reached when the request opted
     # in (`verify_after_compile=True`).
     VERIFYING = "verifying"
@@ -175,12 +175,12 @@ SEARCH_ATTR_WORKSPACE_ID = "J1WorkspaceId"
 SEARCH_ATTR_PARSER_NAME = "J1ParserName"
 SEARCH_ATTR_REQUIRES_VISION = "J1RequiresVision"
 SEARCH_ATTR_REQUIRES_PREMIUM_LLM = "J1RequiresPremiumLLM"
-# Wave 8 — Temporal search attributes for the new pipeline shape.
+# Temporal search attributes for the new pipeline shape.
 # `J1DomainProfileId` lets ops filter on the active domain pack.
 # `J1EnrichmentPolicy` reflects the resolved policy literal
 # (`auto` / `always` / `never`) so dashboards group by policy.
 # `J1RequireEnrichmentSuccess` is the resolved boolean policy
-# flag. `J1FinalStatus` carries the Wave-8 final-status projection
+# flag. `J1FinalStatus` carries the final-status projection
 # string at run terminal. Retry counts let ops aggregate by
 # stage-attempt cost. All best-effort writes; missing attribute
 # registrations silently noop.
@@ -195,13 +195,13 @@ SEARCH_ATTR_ENRICHMENT_RETRY_COUNT = "J1EnrichmentRetryCount"
 # Temporal histories on these — keep in sync with the values quoted
 # in deployment runbooks.
 #
-# Macro-stage vocabulary (Phase 4): the workflow writes one of these
+# Macro-stage vocabulary: the workflow writes one of these
 # stable values as it moves between high-level phases, rather than
 # the raw per-operation string (`compile:doc-1`, `enrich:doc-2`,
 # etc.). The reduced cardinality lets ops dashboards group by stage
 # instead of carrying a long-tail of per-doc values. Mapping from
 # the workflow's internal `op` strings happens in
-# `_macro_ingest_stage()` below.
+# `_macro_ingest_stage` below.
 INGEST_STAGE_RECEIVED = "received"
 INGEST_STAGE_ASSESSING = "assessing"
 INGEST_STAGE_ASSESSMENT_READY = "assessment_ready"
@@ -224,9 +224,9 @@ INGEST_STAGE_FAILED = "failed"
 
 
 # Per-op → macro-stage projection. `op` is the per-doc workflow
-# operation string written by `_begin()` (e.g. `compile:doc-1`,
+# operation string written by `_begin` (e.g. `compile:doc-1`,
 # `assess_compile_strategy:doc-1`, `validate`). The macro stage is
-# the coarse phase the run is in; this lets dashboards group by
+# the coarse stage the run is in; this lets dashboards group by
 # stage without enumerating every per-doc op.
 #
 # Strip the `:doc-id` suffix before lookup so `compile:doc-1` and
@@ -247,13 +247,13 @@ _OP_TO_MACRO_INGEST_STAGE: dict[str, str] = {
 
 def _macro_ingest_stage(op: str | None) -> str:
     """Return the macro-stage value to write into
-    `SEARCH_ATTR_INGEST_STAGE` for the given workflow operation.
+ `SEARCH_ATTR_INGEST_STAGE` for the given workflow operation.
 
-    Pure / deterministic. Strips an optional `:doc-id` suffix before
-    table lookup so per-doc operations collapse onto one stage value.
-    Unknown ops fall back to `INGEST_STAGE_RUNNING` — operators get a
-    coarse "something's happening" signal even when the op string
-    isn't in the table."""
+ Pure / deterministic. Strips an optional `:doc-id` suffix before
+ table lookup so per-doc operations collapse onto one stage value.
+ Unknown ops fall back to `INGEST_STAGE_RUNNING` — operators get a
+ coarse "something's happening" signal even when the op string
+ isn't in the table."""
     if not op:
         return INGEST_STAGE_RUNNING
     base, _, _ = op.partition(":")
@@ -337,13 +337,13 @@ class ProjectProcessingRequest:
     documents_completed: int = 0
     workflow_run_id: str | None = None
     # Domain pack selection.
-    #   `domain_override` — operator's per-upload choice. None
-    #   means "no override; let the workflow apply the workspace
-    #   default + auto-detect chain". `workspace_default_domain`
-    #   carries the workspace/project default. Both are validated
-    #   against the deployment's allow-list inside the planning
-    #   activity; an unrecognised value falls back to `general`
-    #   with a warning recorded on `domain_context`.
+    #  `domain_override` — operator's per-upload choice. None
+    #  means "no override; let the workflow apply the workspace
+    #  default + auto-detect chain". `workspace_default_domain`
+    #  carries the workspace/project default. Both are validated
+    #  against the deployment's allow-list inside the planning
+    #  activity; an unrecognised value falls back to `general`
+    #  with a warning recorded on `domain_context`.
     domain_override: str | None = None
     workspace_default_domain: str | None = None
     # Resume-from-checkpoint context. Empty (default) = fresh run.
@@ -378,7 +378,7 @@ class ProjectProcessingRequest:
     # robust to a degenerate profile.
     assessment_failure_policy: str = "fail_open"
     # Compile-safety-retry knobs. Read once at REST/dev-wiring
-    # boundary via `load_compile_retry_settings()` and threaded
+    # boundary via `load_compile_retry_settings` and threaded
     # through; the workflow rebuilds a `CompileRetrySettings`
     # from these fields for the evaluator. Defaults match
     # `compile_retry.DEFAULT_*`.
@@ -448,16 +448,16 @@ class WorkflowStatus:
 class _BusinessRejection(Exception):
     """Internal sentinel for terminal business failures (rejected approvals, validation, activity errors).
 
-    Why: lets the workflow distinguish business rejections (FAILED_FINAL) from unexpected
-    exceptions (FAILED_RECOVERABLE) without exposing the distinction to callers.
+ Why: lets the workflow distinguish business rejections (FAILED_FINAL) from unexpected
+ exceptions (FAILED_RECOVERABLE) without exposing the distinction to callers.
 
-    `failure_code` is an optional override for the outer-handler-default
-    `ERROR_TYPE_REQUIRED_STEP_FAILED`. Verification rejections set this
-    to one of the `FAILURE_CODE_*` strings from `j1.runs.models` so the
-    final `error_report` artifact + `IngestionRun.failure_code` carry
-    the verification-specific reason (CHUNK_FAILED / INDEX_FAILED /
-    VERIFICATION_FAILED) instead of the generic step-failed label.
-    """
+ `failure_code` is an optional override for the outer-handler-default
+ `ERROR_TYPE_REQUIRED_STEP_FAILED`. Verification rejections set this
+ to one of the `FAILURE_CODE_*` strings from `j1.runs.models` so the
+ final `error_report` artifact + `IngestionRun.failure_code` carry
+ the verification-specific reason (CHUNK_FAILED / INDEX_FAILED /
+ VERIFICATION_FAILED) instead of the generic step-failed label.
+ """
 
     def __init__(self, message: str, *, failure_code: str | None = None) -> None:
         super().__init__(message)
@@ -468,16 +468,16 @@ def _merge_compile_signals(
     profile: DocumentProfile, signals: dict
 ) -> DocumentProfile:
     """Return a new `DocumentProfile` with parser-observed signals
-    overlaid on the deterministic profile.
+ overlaid on the deterministic profile.
 
-    Compile-time signals are authoritative because the parser inspects
-    block-level structure; the deterministic profiler only saw the
-    file from the outside. Keys recognised: `has_images`, `has_tables`,
-    `has_scanned_pages`, `page_count`, `text_extractable_ratio`. Any
-    other keys are ignored — `_artifact_result` already filters the
-    activity payload, but we re-filter here so a stale audit log or
-    a third-party processor with a richer schema doesn't leak fields
-    into the profile."""
+ Compile-time signals are authoritative because the parser inspects
+ block-level structure; the deterministic profiler only saw the
+ file from the outside. Keys recognised: `has_images`, `has_tables`,
+ `has_scanned_pages`, `page_count`, `text_extractable_ratio`. Any
+ other keys are ignored — `_artifact_result` already filters the
+ activity payload, but we re-filter here so a stale audit log or
+ a third-party processor with a richer schema doesn't leak fields
+ into the profile."""
     overrides: dict = {}
     if "has_images" in signals:
         overrides["has_images"] = bool(signals["has_images"])
@@ -529,11 +529,11 @@ def _merge_compile_signals(
 
 def _compile_saw_images(compile_result) -> bool:
     """True iff the compile activity's `content_stats` reports actual
-    image content. Used to set the `REQUIRES_VISION` search attribute
-    from compile evidence rather than pre-compile guesses. Defensive
-    against missing `content_stats` (legacy compilers / test fakes
-    that don't populate it) — returns False in that case so the
-    search attribute defaults to a conservative `false`."""
+ image content. Used to set the `REQUIRES_VISION` search attribute
+ from compile evidence rather than pre-compile guesses. Defensive
+ against missing `content_stats` (legacy compilers / test fakes
+ that don't populate it) — returns False in that case so the
+ search attribute defaults to a conservative `false`."""
     if compile_result is None:
         return False
     stats = getattr(compile_result, "content_stats", None)
@@ -547,9 +547,9 @@ def _compile_saw_images(compile_result) -> bool:
 
 def _enrich_plan_needs_premium_llm(enrich_plan) -> bool:
     """True iff the post-compile enrich plan recommends or requires a
-    vision-aware enrichment task. Drives the `REQUIRES_PREMIUM_LLM`
-    search attribute from assessment output rather than pre-compile
-    heuristics. None plan → False (no premium-LLM signal yet)."""
+ vision-aware enrichment task. Drives the `REQUIRES_PREMIUM_LLM`
+ search attribute from assessment output rather than pre-compile
+ heuristics. None plan → False (no premium-LLM signal yet)."""
     if enrich_plan is None:
         return False
     rec = getattr(enrich_plan, "overall_recommendation", None)
@@ -572,22 +572,22 @@ def _escalation_reason(
     final_retry_reason: str | None,
 ) -> str | None:
     """Render a one-line operator-readable reason for compile-mode
-    escalation, or None when no escalation occurred.
+ escalation, or None when no escalation occurred.
 
-    Inputs:
-      * `initial_mode` / `final_mode` — when they differ, escalation
-        DID happen. The attempt records carry the per-attempt
-        retry_reason ("zero_chunks", "ocr_likely_needed", etc.)
-        that triggered each escalation; this helper joins them
-        into a single audit string.
-      * `attempts` — the per-attempt audit list from the workflow's
-        retry loop.
-      * `final_retry_reason` — the verdict the LAST attempt would
-        have escalated on if the ladder had more rungs (None when
-        the final attempt succeeded cleanly).
+ Inputs:
+ * `initial_mode` / `final_mode` — when they differ, escalation
+ DID happen. The attempt records carry the per-attempt
+ retry_reason ("zero_chunks", "ocr_likely_needed", etc.)
+ that triggered each escalation; this helper joins them
+ into a single audit string.
+ * `attempts` — the per-attempt audit list from the workflow's
+ retry loop.
+ * `final_retry_reason` — the verdict the LAST attempt would
+ have escalated on if the ladder had more rungs (None when
+ the final attempt succeeded cleanly).
 
-    Returns None when initial_mode == final_mode (single-attempt
-    success) so the FE knows to suppress the escalation callout."""
+ Returns None when initial_mode == final_mode (single-attempt
+ success) so the FE knows to suppress the escalation callout."""
     if not initial_mode or not final_mode or initial_mode == final_mode:
         return None
     triggers: list[str] = []
@@ -608,34 +608,34 @@ def _escalation_reason(
 
 def _build_extraction_evidence(compile_result) -> dict[str, Any]:
     """Produce the `extraction_evidence` block for the
-    `compile_strategy_report` payload.
+ `compile_strategy_report` payload.
 
-    The block describes what the PARSER extracted — independent of
-    whether downstream chunking / indexing actually happened. The FE
-    renders this distinctly from chunking status so operators can
-    tell at a glance: "parsing worked, but no chunks landed" vs
-    "parsing failed entirely" vs "everything is green".
+ The block describes what the PARSER extracted — independent of
+ whether downstream chunking / indexing actually happened. The FE
+ renders this distinctly from chunking status so operators can
+ tell at a glance: "parsing worked, but no chunks landed" vs
+ "parsing failed entirely" vs "everything is green".
 
-    Fields:
-      * `parser`              — adapter that produced the result.
-      * `parser_method`       — adapter-level method (txt / auto /
-                                ocr / vlm-* depending on backend).
-      * `text_char_count`     — characters of extracted text.
-      * `content_block_count` — text blocks the parser emitted.
-      * `detected_content_types` — sorted list of content types the
-                                   parser actually saw (text /
-                                   images / tables / equations).
-      * `page_count`          — pages observed (None when unknown).
-      * `chunking_status`     — always `pending_verification` here.
-                                Chunk evidence is verified later
-                                via the per-stage validation gate
-                                + the chunk artifact registry; this
-                                block intentionally never claims a
-                                chunk_count.
+ Fields:
+ * `parser` — adapter that produced the result.
+ * `parser_method` — adapter-level method (txt / auto /
+ ocr / vlm-* depending on backend).
+ * `text_char_count` — characters of extracted text.
+ * `content_block_count` — text blocks the parser emitted.
+ * `detected_content_types` — sorted list of content types the
+ parser actually saw (text /
+ images / tables / equations).
+ * `page_count` — pages observed (None when unknown).
+ * `chunking_status` — always `pending_verification` here.
+ Chunk evidence is verified later
+ via the per-stage validation gate
+ + the chunk artifact registry; this
+ block intentionally never claims a
+ chunk_count.
 
-    Defensive on every field: missing `compile_result` → empty
-    block; missing keys on the result → field omitted rather than
-    zero (the FE distinguishes "unknown" from "zero")."""
+ Defensive on every field: missing `compile_result` → empty
+ block; missing keys on the result → field omitted rather than
+ zero (the FE distinguishes "unknown" from "zero")."""
     if compile_result is None:
         return {
             "parser": "raganything",
@@ -709,11 +709,11 @@ def _build_extraction_evidence(compile_result) -> dict[str, Any]:
 
 
 def _safe_now_iso() -> str:
-    """Return an ISO-8601 timestamp string. Uses `workflow.now()`
-    when running inside Temporal so replay sees the same value;
-    falls back to `datetime.now(timezone.utc)` when called outside
-    a workflow event loop (e.g. unit tests that monkeypatch
-    `execute_activity_method` but not `workflow.now`)."""
+    """Return an ISO-8601 timestamp string. Uses `workflow.now`
+ when running inside Temporal so replay sees the same value;
+ falls back to `datetime.now(timezone.utc)` when called outside
+ a workflow event loop (e.g. unit tests that monkeypatch
+ `execute_activity_method` but not `workflow.now`)."""
     try:
         return workflow.now().isoformat()
     except Exception:  # noqa: BLE001 — outside workflow runtime
@@ -723,11 +723,11 @@ def _safe_now_iso() -> str:
 
 def _parse_method_for_mode(mode: str | None) -> str | None:
     """Mirror the RAGAnything mapper's mode→parse_method table at the
-    workflow layer. Used only for the per-attempt audit record so
-    the FE can render `parse_method=txt|auto|ocr` without re-running
-    the mapper. Vendor-neutral string IO — the workflow doesn't import
-    the mapper directly to avoid circular dep with the providers
-    layer."""
+ workflow layer. Used only for the per-attempt audit record so
+ the FE can render `parse_method=txt|auto|ocr` without re-running
+ the mapper. Vendor-neutral string IO — the workflow doesn't import
+ the mapper directly to avoid circular dep with the providers
+ layer."""
     if mode is None:
         return None
     return {"fast": "txt", "standard": "auto", "deep": "auto"}.get(mode)
@@ -740,17 +740,17 @@ def _project_search_attr_final_status(
     failure_code: str | None = None,
 ) -> str:
     """Build the `J1FinalStatus` search-attribute value at run
-    terminal.
+ terminal.
 
-    Uses `project_final_status()` from `j1.processing.final_status`
-    to map the framework status + recorded step outcomes onto the
-    Wave-8 operator-facing vocabulary. Reads the most recent
-    `enrich_stage` step's `enrichment_outcome` metadata to
-    distinguish completed-without-enrichment from
-    completed-with-enrichment etc. Returns the projected status
-    string — never None.
+ Uses `project_final_status` from `j1.processing.final_status`
+ to map the framework status + recorded step outcomes onto the
+ operator-facing vocabulary. Reads the most recent
+ `enrich_stage` step's `enrichment_outcome` metadata to
+ distinguish completed-without-enrichment from
+ completed-with-enrichment etc. Returns the projected status
+ string — never None.
 
-    Pure / no I/O — safe to call from workflow code."""
+ Pure / no I/O — safe to call from workflow code."""
     from j1.processing.final_status import project_final_status
 
     enrichment_outcome: str | None = None
@@ -790,20 +790,20 @@ def _project_search_attr_final_status(
     return projection.status
 
 
-def _wave8_enrichment_outcome(
+def _enrichment_outcome_label(
     *,
     enrichment_status: str,
     require_success: bool,
 ) -> str:
     """Project the activity's `EnrichmentResult.status` literal +
-    the resolved `require_enrichment_success` flag onto the Wave-8
-    fine-grained outcome vocabulary.
+ the resolved `require_enrichment_success` flag onto the 
+ fine-grained outcome vocabulary.
 
-    Values: `completed` / `completed_with_warnings` /
-    `failed_optional` / `failed_required` / `skipped`. The
-    workflow stores this on step metadata + emits it in the
-    structured log so the final-status projector + FE branch on a
-    single label."""
+ Values: `completed` / `completed_with_warnings` /
+ `failed_optional` / `failed_required` / `skipped`. The
+ workflow stores this on step metadata + emits it in the
+ structured log so the final-status projector + FE branch on a
+ single label."""
     if enrichment_status == "skipped":
         return "skipped"
     if enrichment_status == "failed":
@@ -867,9 +867,9 @@ class ProjectProcessingWorkflow:
         self._validated_stages: set[str] = set()
         # Cached scope identifiers so structured-log lines /
         # search-attribute updates don't have to dig into `request`
-        # every call. Populated on first `_log_step()` and reused.
+        # every call. Populated on first `_log_step` and reused.
         self._scope_log_context: dict[str, str] = {}
-        # Mirrors `request.search_attributes_enabled` once `run()` is
+        # Mirrors `request.search_attributes_enabled` once `run` is
         # called. Default False matches the request default; only
         # flips True when the operator has registered the attributes
         # with the Temporal namespace AND explicitly opted in via the
@@ -917,16 +917,16 @@ class ProjectProcessingWorkflow:
             stage="workflow",
             status="running",
         )
-        # RECEIVED is the canonical first-stage value (Phase 4). The
+        # RECEIVED is the canonical first-stage value. The
         # legacy "starting" alias is retained as a constant for
         # operators whose dashboards filter on it; new runs write
-        # the canonical name and `_macro_ingest_stage()` translates
+        # the canonical name and `_macro_ingest_stage` translates
         # subsequent transitions consistently.
         self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_RECEIVED)
 
-        # Wave 10 — capture the workflow's start timestamp so the
+        # capture the workflow's start timestamp so the
         # `final_ingestion_report` carries duration_ms at terminal.
-        # Sandbox-safe via `workflow.now()`.
+        # Sandbox-safe via `workflow.now`.
         self._workflow_started_at_iso = _safe_now_iso()
 
         try:
@@ -1100,7 +1100,7 @@ class ProjectProcessingWorkflow:
                 # is 0 in the success path; deployments adopting
                 # `continue_optional` policy will populate this.
                 final_status = "succeeded_with_warnings" if self._warning_count() > 0 else "succeeded"
-                # Wave 8 — surface the resolved final status on the
+                # surface the resolved final status on the
                 # search-attribute surface. The string mirrors the
                 # `IngestionFinalStatusProjection` vocabulary so ops
                 # can filter on operator-facing labels directly.
@@ -1122,7 +1122,7 @@ class ProjectProcessingWorkflow:
                     final_status=final_status,
                     warning_count=self._warning_count(),
                 )
-                # Wave 10 — persist the aggregated
+                # persist the aggregated
                 # final_ingestion_report after final_summary so the
                 # builder picks up the just-written summary artifact.
                 await self._persist_final_ingestion_report(
@@ -1164,7 +1164,7 @@ class ProjectProcessingWorkflow:
                 error_type=business_failure_code,
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
-            # Wave 8 — final-status search attr at terminal so ops
+            # final-status search attr at terminal so ops
             # can filter `J1FinalStatus=failed_enrichment_required`
             # / `failed_compile` / etc.
             self._set_search_attribute(
@@ -1195,7 +1195,7 @@ class ProjectProcessingWorkflow:
                 failure_code=business_failure_code,
                 failure_message=self._error,
             )
-            # Wave 10 — even on failure, persist the aggregated
+            # even on failure, persist the aggregated
             # report so the FE renders the (A–F) failure breakdown
             # with the partial-stage state intact.
             await self._persist_final_ingestion_report(
@@ -1232,7 +1232,7 @@ class ProjectProcessingWorkflow:
                 error_type=getattr(exc, "type", None) or "ApplicationError",
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
-            # Wave 10 — best-effort report persistence on the
+            # best-effort report persistence on the
             # ApplicationError-propagation path. Same observability
             # gate as the _BusinessRejection branch above.
             await self._persist_final_ingestion_report(
@@ -1269,7 +1269,7 @@ class ProjectProcessingWorkflow:
                 error_type=ERROR_TYPE_UNEXPECTED_ERROR,
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
-            # Wave 10 — final-effort report persistence on the
+            # final-effort report persistence on the
             # unexpected-exception path.
             await self._persist_final_ingestion_report(
                 request,
@@ -1302,17 +1302,17 @@ class ProjectProcessingWorkflow:
 
     def _compute_final_status(self) -> FinalStatus:
         """Map the internal `WorkflowState` to the operator-facing
-        `FinalStatus`. PARTIAL_COMPLETED is returned when (a) all
-        required steps succeeded AND (b) at least one optional step
-        is recorded as FAILED — same semantic as `_warning_count()`.
+ `FinalStatus`. PARTIAL_COMPLETED is returned when (a) all
+ required steps succeeded AND (b) at least one optional step
+ is recorded as FAILED — same semantic as `_warning_count`.
 
-        Today the workflow is `fail_fast` everywhere so the optional
-        path mostly stays unused, BUT activities / planner-skipped
-        stages can still record `StepStatus.FAILED` on optional
-        steps without aborting the workflow. When that happens, the
-        run completes successfully overall but with warnings — and
-        PARTIAL_COMPLETED is the correct external label so the FE
-        can flip the run header to SUCCEEDED_WITH_WARNINGS."""
+ Today the workflow is `fail_fast` everywhere so the optional
+ path mostly stays unused, BUT activities / planner-skipped
+ stages can still record `StepStatus.FAILED` on optional
+ steps without aborting the workflow. When that happens, the
+ run completes successfully overall but with warnings — and
+ PARTIAL_COMPLETED is the correct external label so the FE
+ can flip the run header to SUCCEEDED_WITH_WARNINGS."""
         if self._state == WorkflowState.COMPLETED:
             if self._warning_count() > 0:
                 return FinalStatus.PARTIAL_COMPLETED
@@ -1335,7 +1335,7 @@ class ProjectProcessingWorkflow:
         # Surface "currently running" state via Temporal search
         # attributes so the UI can group/filter active workflows by
         # stage. Project the per-op string onto a macro-stage value
-        # (Phase 4) so the search-attribute cardinality stays bounded
+        #  so the search-attribute cardinality stays bounded
         # — `compile:doc-1` and `compile:doc-2` both become
         # `compiling`. Best-effort: fails silently if the attribute
         # isn't registered with the namespace.
@@ -1351,8 +1351,8 @@ class ProjectProcessingWorkflow:
 
     def _scope_context(self, request: ProjectProcessingRequest) -> dict[str, str]:
         """Build the standard log-context dict for this run. Cached after
-        first call so each log line doesn't re-derive it. Only operationally
-        safe fields — never document content."""
+ first call so each log line doesn't re-derive it. Only operationally
+ safe fields — never document content."""
         if not self._scope_log_context:
             self._scope_log_context = {
                 "tenant_id": request.scope.tenant_id,
@@ -1379,13 +1379,13 @@ class ProjectProcessingWorkflow:
     ) -> None:
         """Emit a single structured workflow log line.
 
-        `event` is the canonical name (e.g. `ingestion.step.started`)
-        operators / log aggregators filter on. The rest go in `extra`
-        so JSON-encoding loggers pick them up as top-level fields.
+ `event` is the canonical name (e.g. `ingestion.step.started`)
+ operators / log aggregators filter on. The rest go in `extra`
+ so JSON-encoding loggers pick them up as top-level fields.
 
-        Field hygiene: never log document content, file paths, prompts,
-        or LLM responses here. Stage / kind / id / reason / error type
-        are all operationally safe."""
+ Field hygiene: never log document content, file paths, prompts,
+ or LLM responses here. Stage / kind / id / reason / error type
+ are all operationally safe."""
         ctx = self._scope_context(request)
         payload: dict[str, object] = {
             "event": event,
@@ -1406,7 +1406,7 @@ class ProjectProcessingWorkflow:
         # so a deployment-side JSON formatter sees the `extra` keys
         # as native fields. Wrapped in try/except because the logger's
         # `isEnabledFor` consults the workflow runtime — outside a
-        # real Temporal worker (e.g. unit tests driving `run()`
+        # real Temporal worker (e.g. unit tests driving `run`
         # directly via `asyncio.run`) that runtime isn't available.
         # Logging is observability, never correctness; silently
         # degrade rather than fail.
@@ -1429,12 +1429,12 @@ class ProjectProcessingWorkflow:
     ) -> None:
         """Append a StepResult to the workflow's per-stage record.
 
-        Source defaults: caller-supplied kinds → `CALLER`; defaults
-        from capabilities → `DEFAULT`; config-disabled → `CONFIG`.
-        When the planner is enabled, `_stage_enabled` substitutes
-        `PLANNER` / `POLICY` for stages whose decision was made by
-        the plan rather than the caller — the helper signature is
-        unchanged."""
+ Source defaults: caller-supplied kinds → `CALLER`; defaults
+ from capabilities → `DEFAULT`; config-disabled → `CONFIG`.
+ When the planner is enabled, `_stage_enabled` substitutes
+ `PLANNER` / `POLICY` for stages whose decision was made by
+ the plan rather than the caller — the helper signature is
+ unchanged."""
         try:
             now = workflow.now()
         except Exception:  # noqa: BLE001 — outside Temporal runtime
@@ -1459,10 +1459,10 @@ class ProjectProcessingWorkflow:
     def _warning_count(self) -> int:
         """Count step results in WARNING / FAILED-but-non-fatal state.
 
-        Today the workflow is `fail_fast` everywhere, so the count is
-        always 0 when the workflow reaches the success path — but the
-        helper exists so deployments adopting `continue_optional`
-        policy can populate it without a workflow signature change."""
+ Today the workflow is `fail_fast` everywhere, so the count is
+ always 0 when the workflow reaches the success path — but the
+ helper exists so deployments adopting `continue_optional`
+ policy can populate it without a workflow signature change."""
         count = 0
         for r in self._step_results:
             if r.status == StepStatus.FAILED and not r.required:
@@ -1473,27 +1473,27 @@ class ProjectProcessingWorkflow:
         self, request: ProjectProcessingRequest,
     ) -> list[str]:
         """Last-mile gate: don't mark SUCCEEDED unless the required
-        artifacts are actually present.
+ artifacts are actually present.
 
-        The workflow's per-step error handling already raises on a
-        failed required step (the `fail_fast` policy), so most paths
-        never reach this validator. It catches the degenerate cases:
-          * compile reported success but produced ZERO artifacts (the
-            parser may have silently no-oped on an unsupported MIME);
-          * a required step's `StepResult` was never recorded because
-            of a coding-level miss in a new branch;
-          * the workflow drained all documents but produced nothing
-            indexable;
-          * `indexer_kind` was set, artifacts were produced, but no
-            index `StepResult` exists — the document would be reported
-            SUCCEEDED while remaining unsearchable.
+ The workflow's per-step error handling already raises on a
+ failed required step (the `fail_fast` policy), so most paths
+ never reach this validator. It catches the degenerate cases:
+ * compile reported success but produced ZERO artifacts (the
+ parser may have silently no-oped on an unsupported MIME);
+ * a required step's `StepResult` was never recorded because
+ of a coding-level miss in a new branch;
+ * the workflow drained all documents but produced nothing
+ indexable;
+ * `indexer_kind` was set, artifacts were produced, but no
+ index `StepResult` exists — the document would be reported
+ SUCCEEDED while remaining unsearchable.
 
-        Returns a list of human-readable validation errors. An empty
-        list = OK, callers proceed to the SUCCEEDED transition. Any
-        entries cause the caller to raise `_BusinessRejection` and
-        the workflow is marked FAILED with `J1_INGEST_COMPLETION_VALIDATION_FAILED`.
+ Returns a list of human-readable validation errors. An empty
+ list = OK, callers proceed to the SUCCEEDED transition. Any
+ entries cause the caller to raise `_BusinessRejection` and
+ the workflow is marked FAILED with `J1_INGEST_COMPLETION_VALIDATION_FAILED`.
 
-        Cheap to call; no I/O — pure inspection of in-memory state."""
+ Cheap to call; no I/O — pure inspection of in-memory state."""
         errors: list[str] = []
         # Required = at least one artifact got produced. Catches the
         # compile-no-op-and-falls-through case.
@@ -1533,7 +1533,7 @@ class ProjectProcessingWorkflow:
         # `artifact_ids` list. We compare against
         # `_produced_artifact_kinds` (a strict mirror of
         # `_produced_artifact_ids` populated in lockstep with each
-        # `extend()` call) so the rules don't need a registry query.
+        # `extend` call) so the rules don't need a registry query.
         kinds = set(self._produced_artifact_kinds)
         for r in self._step_results:
             if r.status != StepStatus.COMPLETED:
@@ -1603,8 +1603,8 @@ class ProjectProcessingWorkflow:
 
     def _step_summary_payload(self) -> tuple[StepSummaryEntry, ...]:
         """Compact summary embedded in `run.completed` / `run.failed`
-        events so the frontend can render a "what ran" recap without
-        re-fetching `/events`."""
+ events so the frontend can render a "what ran" recap without
+ re-fetching `/events`."""
         return tuple(
             StepSummaryEntry(
                 step=r.step,
@@ -1627,10 +1627,10 @@ class ProjectProcessingWorkflow:
         failure_message: str | None = None,
     ) -> None:
         """Schedule the `j1.runs.report_terminal` activity. Best-effort
-        — telemetry must not block the workflow's exit. Skipped when
-        the request didn't supply a `correlation_id` (which by
-        convention is the run_id; without it the reporter has nothing
-        to correlate against)."""
+ — telemetry must not block the workflow's exit. Skipped when
+ the request didn't supply a `correlation_id` (which by
+ convention is the run_id; without it the reporter has nothing
+ to correlate against)."""
         if not request.correlation_id:
             return
         # Build the resume snapshot for FAILED / SUCCEEDED transitions
@@ -1698,14 +1698,14 @@ class ProjectProcessingWorkflow:
         failure_message: str,
     ) -> None:
         """Schedule `ProcessingActivities.persist_error_report` so the
-        FE artifact-listing surface picks up an `error_report` artifact
-        under the failed run.
+ FE artifact-listing surface picks up an `error_report` artifact
+ under the failed run.
 
-        Best-effort like the other emit helpers — any persistence
-        error (activity timeout, registry write failure) is logged
-        inside the activity and we proceed regardless. Skipped when
-        no `correlation_id` is set (the resolver has nothing to
-        attach the artifact to)."""
+ Best-effort like the other emit helpers — any persistence
+ error (activity timeout, registry write failure) is logged
+ inside the activity and we proceed regardless. Skipped when
+ no `correlation_id` is set (the resolver has nothing to
+ attach the artifact to)."""
         if not request.correlation_id:
             return
         # Snapshot the current step_results into a Temporal-data-
@@ -1742,7 +1742,7 @@ class ProjectProcessingWorkflow:
             step_hint = self._step_results[-1].step
             stage_hint = self._step_results[-1].step
         # Document id from the most recently-recorded step's
-        # metadata (workflow records `metadata={"document_id": ...}`
+        # metadata (workflow records `metadata={"document_id":...}`
         # on per-document steps).
         document_id: str | None = None
         for r in reversed(self._step_results):
@@ -1779,20 +1779,20 @@ class ProjectProcessingWorkflow:
         compile_result: "ArtifactActivityResult",
     ) -> None:
         """Run the `verify_compile_output` activity and either
-        proceed (passed) or raise `_BusinessRejection` with a stable
-        `failure_code` so the outer handler lifts it into the
-        run record / error report.
+ proceed (passed) or raise `_BusinessRejection` with a stable
+ `failure_code` so the outer handler lifts it into the
+ run record / error report.
 
-        Surfaces a `WorkflowState.VERIFYING` transition so the
-        `get_status` query sees the verification phase while the
-        activity is in flight. On pass, the workflow returns to
-        RUNNING; on fail, the raise bubbles to the outer handler
-        which lands at FAILED_FINAL."""
+ Surfaces a `WorkflowState.VERIFYING` transition so the
+ `get_status` query sees the verification stage while the
+ activity is in flight. On pass, the workflow returns to
+ RUNNING; on fail, the raise bubbles to the outer handler
+ which lands at FAILED_FINAL."""
         previous_state = self._state
         self._state = WorkflowState.VERIFYING
-        # Surface the verifying phase on the Temporal search attribute
-        # (Phase 4). The verification activity isn't run through
-        # `_begin()` — it's a synthesized gate inside the per-doc
+        # Surface the verifying stage on the Temporal search attribute
+        # . The verification activity isn't run through
+        # `_begin` — it's a synthesized gate inside the per-doc
         # loop — so the macro-stage write happens here explicitly.
         self._set_search_attribute(
             SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_VERIFYING,
@@ -1884,17 +1884,17 @@ class ProjectProcessingWorkflow:
         compile_result: "ArtifactActivityResult | None" = None,
     ) -> None:
         """Schedule the `persist_compile_strategy_report` activity.
-        Best-effort — any persistence error inside the activity is
-        swallowed there, and a Temporal-side failure here is also
-        swallowed so observability never blocks ingest.
+ Best-effort — any persistence error inside the activity is
+ swallowed there, and a Temporal-side failure here is also
+ swallowed so observability never blocks ingest.
 
-        When `compile_result` is supplied, the payload also carries an
-        `extraction_evidence` block surfacing what the parser actually
-        extracted (parser name, parse method, char/block counts,
-        detected content types). The FE renders this distinctly from
-        chunking status — extraction evidence is "what the probe saw",
-        chunking is "what was indexed", and the two MUST stay
-        separately verifiable."""
+ When `compile_result` is supplied, the payload also carries an
+ `extraction_evidence` block surfacing what the parser actually
+ extracted (parser name, parse method, char/block counts,
+ detected content types). The FE renders this distinctly from
+ chunking status — extraction evidence is "what the probe saw",
+ chunking is "what was indexed", and the two MUST stay
+ separately verifiable."""
         if not request.correlation_id:
             return
         retry_used = bool(
@@ -1975,13 +1975,13 @@ class ProjectProcessingWorkflow:
         final_quality_verdict: str | None,
     ) -> None:
         """Build the typed `NormalizedCompileResult` and persist it
-        as a `compile_result_summary` artifact (Wave 4).
+ as a `compile_result_summary` artifact.
 
-        Pure projection — the builder runs inside the workflow
-        (sandbox-safe, no I/O). Best-effort persistence: a write
-        failure logs at the activity layer; the run completes
-        regardless because the durable signal for downstream stages
-        is the inline `compile_result` the workflow already holds."""
+ Pure projection — the builder runs inside the workflow
+ (sandbox-safe, no I/O). Best-effort persistence: a write
+ failure logs at the activity layer; the run completes
+ regardless because the durable signal for downstream stages
+ is the inline `compile_result` the workflow already holds."""
         normalized = normalize_compile_result(
             compile_result,
             document_id=document_id,
@@ -2013,26 +2013,26 @@ class ProjectProcessingWorkflow:
         enrich_plan: "PostCompileEnrichPlan",
         initial_plan_payload: dict | None,
     ) -> None:
-        """Dispatch the Wave-6 typed enrichment overlay stage.
+        """Dispatch the typed enrichment overlay stage.
 
-        Always invoked when both the initial plan + enrich plan are
-        available — the activity itself decides whether to run the
-        runner or produce a typed `skipped` overlay.
+ Always invoked when both the initial plan + enrich plan are
+ available — the activity itself decides whether to run the
+ runner or produce a typed `skipped` overlay.
 
-        Enforces `require_enrichment_success`: a `failed` enrichment
-        when the policy requires success raises a
-        `_BusinessRejection` with
-        `FAILURE_CODE_ENRICHMENT_REQUIRED`, so the run lands at
-        FAILED_FINAL with the dedicated reason code. Raw compile
-        artifacts remain in the workspace either way.
+ Enforces `require_enrichment_success`: a `failed` enrichment
+ when the policy requires success raises a
+ `_BusinessRejection` with
+ `FAILURE_CODE_ENRICHMENT_REQUIRED`, so the run lands at
+ FAILED_FINAL with the dedicated reason code. Raw compile
+ artifacts remain in the workspace either way.
 
-        Optional-failure handling: a `failed` enrichment when the
-        policy doesn't require success is logged + warning_count
-        bumped, but the workflow continues to graph/index/finalize.
-        Partial / warnings-only outcomes bump `_warning_count` so
-        the final status surfaces as `succeeded_with_warnings`.
-        """
-        # Build the typed `NormalizedCompileResult.to_payload()`
+ Optional-failure handling: a `failed` enrichment when the
+ policy doesn't require success is logged + warning_count
+ bumped, but the workflow continues to graph/index/finalize.
+ Partial / warnings-only outcomes bump `_warning_count` so
+ the final status surfaces as `succeeded_with_warnings`.
+ """
+        # Build the typed `NormalizedCompileResult.to_payload`
         # dict to thread through to the activity. The activity
         # reconstructs the typed dataclass on its side.
         normalized = normalize_compile_result(
@@ -2129,23 +2129,23 @@ class ProjectProcessingWorkflow:
             request, stage="ENRICH",
             step="enrich_stage", action=action,
         )
-        # Wave-8 fine-grained outcome label. Carried on the
+        #  fine-grained outcome label. Carried on the
         # structured log + the step_results metadata so the FE +
         # final-status projector branch on the same vocabulary.
         # Values: completed / completed_with_warnings / failed_optional
         # / failed_required / skipped.
-        enrichment_outcome = _wave8_enrichment_outcome(
+        enrichment_outcome = _enrichment_outcome_label(
             enrichment_status=status,
             require_success=result.require_enrichment_success,
         )
-        # Wave 8 — surface require_success on the search-attribute
+        # surface require_success on the search-attribute
         # surface so ops can filter "what runs were governed by
         # require_success?" without parsing the audit log.
         self._set_search_attribute(
             SEARCH_ATTR_REQUIRE_ENRICHMENT_SUCCESS,
             "true" if result.require_enrichment_success else "false",
         )
-        # Wave 9A — write the enrichment retry count. Reserved
+        # write the enrichment retry count. Reserved
         # for future limiter-driven module retries; current
         # runner emits 0. Operators dashboard-aggregate this with
         # `J1CompileRetryCount` to see total per-run retry cost.
@@ -2169,7 +2169,7 @@ class ProjectProcessingWorkflow:
 
         # Record the enrichment step on the workflow's step_results
         # list so the final-summary / status surface reflects the
-        # outcome. The existing `_warning_count()` method counts
+        # outcome. The existing `_warning_count` method counts
         # FAILED-but-not-required step results — recording an
         # optional-failed step here bumps the count, lifting the
         # final status to `succeeded_with_warnings`.
@@ -2205,7 +2205,7 @@ class ProjectProcessingWorkflow:
                     failure_code=FAILURE_CODE_ENRICHMENT_REQUIRED,
                 )
             # Optional-failure path: record as a non-required
-            # FAILED step so `_warning_count()` picks it up and
+            # FAILED step so `_warning_count` picks it up and
             # the workflow continues to graph/index/finalize.
             self._record_step(
                 step="enrich_stage",
@@ -2220,7 +2220,7 @@ class ProjectProcessingWorkflow:
             )
         elif status == "succeeded_with_warnings":
             # Record as FAILED + required=False to bump
-            # `_warning_count()` so the final status lifts to
+            # `_warning_count` so the final status lifts to
             # `succeeded_with_warnings`. The metadata carries the
             # actual outcome string so the FE renders the right
             # copy.
@@ -2272,16 +2272,16 @@ class ProjectProcessingWorkflow:
         final_compile_quality: str,
     ) -> "PostCompileEnrichPlan | None":
         """Run the rule-based post-compile enrich assessment, optionally
-        consult a fast LLM for ambiguous (OPTIONAL) cases, persist the
-        resulting `post_compile_enrich_plan` artifact, and return the
-        plan for downstream stage gating.
+ consult a fast LLM for ambiguous (OPTIONAL) cases, persist the
+ resulting `post_compile_enrich_plan` artifact, and return the
+ plan for downstream stage gating.
 
-        The rule-based assessor is pure — runs inline (deterministic,
-        Temporal-sandbox-safe). The fast-LLM consult is dispatched via
-        an activity which honours `J1_ENRICH_ASSESSMENT_FAST_LLM_*`
-        env settings; consult failures NEVER block ingestion (we fall
-        back to the rule-based plan). The post-compile artifact write
-        is the only other activity dispatched here."""
+ The rule-based assessor is pure — runs inline (deterministic,
+ Temporal-sandbox-safe). The fast-LLM consult is dispatched via
+ an activity which honours `J1_ENRICH_ASSESSMENT_FAST_LLM_*`
+ env settings; consult failures NEVER block ingestion (we fall
+ back to the rule-based plan). The post-compile artifact write
+ is the only other activity dispatched here."""
         try:
             signals = build_signals_from_compile_metrics(
                 compile_status=str(compile_result.status),
@@ -2340,14 +2340,14 @@ class ProjectProcessingWorkflow:
         final_compile_quality: str,
     ) -> "PostCompileEnrichPlan":
         """Dispatch the fast-LLM consult activity and apply any
-        refinement to the rule-based plan. Activity failures
-        (timeout, missing config, invalid JSON, exception) all fall
-        back to the unmodified rule-based plan — ingestion MUST NEVER
-        fail because the optional consult had a bad day.
+ refinement to the rule-based plan. Activity failures
+ (timeout, missing config, invalid JSON, exception) all fall
+ back to the unmodified rule-based plan — ingestion MUST NEVER
+ fail because the optional consult had a bad day.
 
-        SKIP plans never reach this method (they're filtered upstream
-        by `is_consult_warranted`); even if they did, the pure
-        `apply_fast_llm_refinement` blocks SKIP overrides."""
+ SKIP plans never reach this method (they're filtered upstream
+ by `is_consult_warranted`); even if they did, the pure
+ `apply_fast_llm_refinement` blocks SKIP overrides."""
         compile_warnings = list(
             (compile_result.compile_metrics or {}).get("plan_warnings", [])
             or []
@@ -2416,9 +2416,9 @@ class ProjectProcessingWorkflow:
         assessment_payload: dict | None,
     ) -> "QualityVerdict":
         """Wrap `evaluate_compile_quality` with the workflow's
-        per-attempt context (signals from `compile_metrics`, the
-        plan's OCR-required hint, the resolved parse_method). Pure
-        — never re-invokes any activity."""
+ per-attempt context (signals from `compile_metrics`, the
+ plan's OCR-required hint, the resolved parse_method). Pure
+ — never re-invokes any activity."""
         # Build a synthetic ArtifactProcessingResult from the
         # ArtifactActivityResult so the evaluator's primary signature
         # (which reads metadata + status from a result dataclass)
@@ -2472,17 +2472,17 @@ class ProjectProcessingWorkflow:
         attempt: int = 1,
     ) -> "StageValidationActivityResult | None":
         """Run the per-stage validation contract via the
-        `validate_stage` activity, persist the
-        `stage_validation_report` artifact, and return the result so
-        the caller can gate `_record_step(COMPLETED)` on
-        `result.passed`.
+ `validate_stage` activity, persist the
+ `stage_validation_report` artifact, and return the result so
+ the caller can gate `_record_step(COMPLETED)` on
+ `result.passed`.
 
-        Returns None when correlation_id is unset (the activity needs
-        a run_id to attach the report to). The caller should treat
-        a None return as "validation skipped — not enough context"
-        and proceed with legacy behaviour. Production deployments
-        always set correlation_id, so the None branch is exercised
-        only by test fixtures."""
+ Returns None when correlation_id is unset (the activity needs
+ a run_id to attach the report to). The caller should treat
+ a None return as "validation skipped — not enough context"
+ and proceed with legacy behaviour. Production deployments
+ always set correlation_id, so the None branch is exercised
+ only by test fixtures."""
         if not request.correlation_id:
             return None
         try:
@@ -2532,10 +2532,10 @@ class ProjectProcessingWorkflow:
         rules_evaluated: list[str] | None = None,
     ) -> None:
         """Persist `validation_report.json` summarising the outcome of
-        `_validate_completion`. Called at every terminal transition
-        (success or failure) so operators can see WHICH rules ran
-        and which ones tripped without re-running validation. Best-
-        effort — never blocks the terminal transition."""
+ `_validate_completion`. Called at every terminal transition
+ (success or failure) so operators can see WHICH rules ran
+ and which ones tripped without re-running validation. Best-
+ effort — never blocks the terminal transition."""
         if not request.correlation_id:
             return
         document_id: str | None = None
@@ -2573,9 +2573,9 @@ class ProjectProcessingWorkflow:
         failure_message: str | None = None,
     ) -> None:
         """Persist `final_summary.json` at terminal state. Carries the
-        at-a-glance run outcome so the FE has a single canonical
-        artifact to summarise the run without assembling state from
-        separate endpoints."""
+ at-a-glance run outcome so the FE has a single canonical
+ artifact to summarise the run without assembling state from
+ separate endpoints."""
         if not request.correlation_id:
             return
         document_id: str | None = None
@@ -2638,14 +2638,14 @@ class ProjectProcessingWorkflow:
         failure_code: str | None = None,
         failure_message: str | None = None,
     ) -> None:
-        """Wave 10 — persist the aggregated `final_ingestion_report`
-        artifact at workflow terminal.
+        """persist the aggregated `final_ingestion_report`
+ artifact at workflow terminal.
 
-        The activity reads the per-stage artifact payloads on the
-        worker side (workflow code can't do I/O), builds the typed
-        report, and persists it. Best-effort: any failure is
-        logged inside the activity and the workflow proceeds. The
-        report is observability, not correctness."""
+ The activity reads the per-stage artifact payloads on the
+ worker side (workflow code can't do I/O), builds the typed
+ report, and persists it. Best-effort: any failure is
+ logged inside the activity and the workflow proceeds. The
+ report is observability, not correctness."""
         if not request.correlation_id:
             return
         document_id: str | None = None
@@ -2697,8 +2697,8 @@ class ProjectProcessingWorkflow:
         source: str = "planner",
     ) -> None:
         """Emit a `step.skipped` progress event from inside the
-        workflow. Goes through an activity because the reporter call
-        needs to happen in non-deterministic context."""
+ workflow. Goes through an activity because the reporter call
+ needs to happen in non-deterministic context."""
         if not request.correlation_id:
             return
         try:
@@ -2727,13 +2727,13 @@ class ProjectProcessingWorkflow:
         engine: str | None = None,
     ) -> None:
         """Synthesise a `step.started` / `step.completed` event for
-        a user-facing sub-step that doesn't run as a standalone
-        activity.
+ a user-facing sub-step that doesn't run as a standalone
+ activity.
 
-        Used for `build_content_inventory` and `generate_knowledge_chunks`
-        — both happen inside the compile activity but the FE
-        renders them as separate steps. Best-effort like every
-        emit helper; failure never blocks the workflow."""
+ Used for `build_content_inventory` and `generate_knowledge_chunks`
+ — both happen inside the compile activity but the FE
+ renders them as separate steps. Best-effort like every
+ emit helper; failure never blocks the workflow."""
         if not request.correlation_id:
             return
         try:
@@ -2758,21 +2758,21 @@ class ProjectProcessingWorkflow:
     def _set_search_attribute(self, name: str, value: str) -> None:
         """Opt-in keyword search-attribute upsert.
 
-        Default OFF (`request.search_attributes_enabled=False`). The
-        Temporal cluster rejects upserts for attributes that aren't
-        registered with the namespace, and the rejection happens at
-        workflow-activation completion — the SDK's exception surfaces
-        AFTER this method returns, so a try/except here can't catch
-        it. The clean alternative is to NOT issue the upsert unless
-        the operator has explicitly registered the attributes and
-        flipped `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` (which
-        the deployment passes through to `request.search_attributes_enabled`).
+ Default OFF (`request.search_attributes_enabled=False`). The
+ Temporal cluster rejects upserts for attributes that aren't
+ registered with the namespace, and the rejection happens at
+ workflow-activation completion — the SDK's exception surfaces
+ AFTER this method returns, so a try/except here can't catch
+ it. The clean alternative is to NOT issue the upsert unless
+ the operator has explicitly registered the attributes and
+ flipped `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` (which
+ the deployment passes through to `request.search_attributes_enabled`).
 
-        Uses the typed `SearchAttributeKey` API (the dict form is
-        deprecated as of Temporal Python SDK 1.x). Inner try/except
-        is kept as a final guardrail for unit tests and other
-        non-Temporal-runtime scenarios where the upsert call itself
-        raises synchronously."""
+ Uses the typed `SearchAttributeKey` API (the dict form is
+ deprecated as of Temporal Python SDK 1.x). Inner try/except
+ is kept as a final guardrail for unit tests and other
+ non-Temporal-runtime scenarios where the upsert call itself
+ raises synchronously."""
         if not self._search_attributes_enabled:
             return
         try:
@@ -2787,9 +2787,9 @@ class ProjectProcessingWorkflow:
 
     def _set_search_attribute_int(self, name: str, value: int) -> None:
         """Opt-in int-typed search-attribute upsert. Same gating
-        rules as `_set_search_attribute`; separate method because
-        Temporal's typed-key API distinguishes Keyword from Int at
-        the SDK level."""
+ rules as `_set_search_attribute`; separate method because
+ Temporal's typed-key API distinguishes Keyword from Int at
+ the SDK level."""
         if not self._search_attributes_enabled:
             return
         try:
@@ -2843,11 +2843,11 @@ class ProjectProcessingWorkflow:
     ) -> None:
         """Best-effort registry status update.
 
-        Telemetry-grade: failures are swallowed so they can't block
-        the workflow's outcome. The activity itself logs missing
-        documents; transport-level failures here just mean the
-        registry stays at PENDING for that doc — the next bulk job
-        will re-pick it, which is the previous behaviour."""
+ Telemetry-grade: failures are swallowed so they can't block
+ the workflow's outcome. The activity itself logs missing
+ documents; transport-level failures here just mean the
+ registry stays at PENDING for that doc — the next bulk job
+ will re-pick it, which is the previous behaviour."""
         try:
             await workflow.execute_activity_method(
                 ProjectActivities.set_document_status,
@@ -2873,37 +2873,37 @@ class ProjectProcessingWorkflow:
         enrich_plan: "PostCompileEnrichPlan | None" = None,
     ) -> tuple[bool, str | None, StepSource]:
         """Resolve "should this stage run?" using compile evidence +
-        the post-compile enrich plan + the request's stage kind.
+ the post-compile enrich plan + the request's stage kind.
 
-        Returns `(enabled, skip_reason, source)`. The reason is None
-        when enabled; populated when skipped so the workflow can pass
-        it to `_record_step`.
+ Returns `(enabled, skip_reason, source)`. The reason is None
+ when enabled; populated when skipped so the workflow can pass
+ it to `_record_step`.
 
-        There is intentionally no IngestPlan parameter — gating is
-        compile-first. Pre-compile guesses do not influence
-        enrich/graph/index decisions.
+ There is intentionally no IngestPlan parameter — gating is
+ compile-first. Pre-compile guesses do not influence
+ enrich/graph/index decisions.
 
-        Per-stage rules:
-          * `enrich`:
-              - SKIP from enrich plan (with blocking issues) →
-                skip with `PLANNER` source.
-              - RECOMMENDED / REQUIRED → run with `PLANNER` source.
-              - Else → defer to caller intent (`CALLER`).
-          * `graph`:
-              - compile failed / final quality FAILED → skip
-                (`PLANNER`).
-              - zero chunks produced → skip (`PLANNER`).
-              - enrich plan recommends SKIP for blocking compile
-                issues → skip (`PLANNER`).
-              - low compile quality WITHOUT a caller force →
-                skip (`PLANNER`) to avoid extracting from a
-                degraded parse.
-              - Else → run (`CALLER`).
-          * `index`:
-              - compile failed → skip (`PLANNER`).
-              - zero chunks produced → skip (`PLANNER`).
-              - Else → run (`CALLER`).
-        """
+ Per-stage rules:
+ * `enrich`:
+ - SKIP from enrich plan (with blocking issues) →
+ skip with `PLANNER` source.
+ - RECOMMENDED / REQUIRED → run with `PLANNER` source.
+ - Else → defer to caller intent (`CALLER`).
+ * `graph`:
+ - compile failed / final quality FAILED → skip
+ (`PLANNER`).
+ - zero chunks produced → skip (`PLANNER`).
+ - enrich plan recommends SKIP for blocking compile
+ issues → skip (`PLANNER`).
+ - low compile quality WITHOUT a caller force →
+ skip (`PLANNER`) to avoid extracting from a
+ degraded parse.
+ - Else → run (`CALLER`).
+ * `index`:
+ - compile failed → skip (`PLANNER`).
+ - zero chunks produced → skip (`PLANNER`).
+ - Else → run (`CALLER`).
+ """
         if not request_kind:
             return False, f"{stage}_kind not provided in request", StepSource.CALLER
 
@@ -3018,18 +3018,18 @@ class ProjectProcessingWorkflow:
         # Failure handling is governed by
         # `request.assessment_failure_policy` (read from
         # `J1_ASSESSMENT_FAILURE_POLICY` at request-build time):
-        #   * `fail_open` (default) — assessment failure logs +
-        #     leaves payload None; bridge falls back to
-        #     `settings.parse_method`. Production-friendly.
-        #   * `fail_closed` — assessment failure raises
-        #     `_BusinessRejection`; compile step recorded FAILED;
-        #     run lands at FAILED_FINAL.
+        #  * `fail_open` (default) — assessment failure logs +
+        #  leaves payload None; bridge falls back to
+        #  `settings.parse_method`. Production-friendly.
+        #  * `fail_closed` — assessment failure raises
+        #  `_BusinessRejection`; compile step recorded FAILED;
+        #  run lands at FAILED_FINAL.
         assessment_payload: dict | None = None
         initial_plan_payload: dict | None = None
         if request.planner_enabled:
             # Wrap the cheap pre-compile work (profile + AssessmentPlan
             # build) in synthetic step.* events so the FE timeline +
-            # status panel reflect the assessment phase. Both events
+            # status panel reflect the assessment stage. Both events
             # are best-effort observability — failure never blocks
             # the workflow's actual assessment work below.
             await self._emit_step_lifecycle(
@@ -3048,7 +3048,7 @@ class ProjectProcessingWorkflow:
                     start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
                     retry_policy=DEFAULT_RETRY.to_temporal(),
                 )
-                # Build the InitialExecutionPlan (Wave 3) via an
+                # Build the InitialExecutionPlan via an
                 # activity so domain pack resolution + persistence
                 # stay outside the sandbox. The activity returns the
                 # plan payload; the workflow holds the compile-stage
@@ -3087,7 +3087,7 @@ class ProjectProcessingWorkflow:
                     )
                 else:
                     # Legacy fallback — build the AssessmentPlan
-                    # workflow-side just like before Wave 3 wiring.
+                    # workflow-side just like wiring.
                     fallback = DefaultAssessmentPlanner().assess(profile)
                     assessment_payload = fallback.to_payload()
                     initial_plan_payload = None
@@ -3130,7 +3130,7 @@ class ProjectProcessingWorkflow:
                         f"policy={enrichment_policy_value or 'none'}"
                     ),
                 )
-                # Wave 8 — surface domain + policy as search attributes
+                # surface domain + policy as search attributes
                 # so ops dashboards can filter by domain pack or
                 # enrichment policy without crawling audit logs.
                 if domain_id:
@@ -3374,7 +3374,7 @@ class ProjectProcessingWorkflow:
                     f"{verdict.retry_reason} → next_mode={next_mode.value}"
                 ),
             )
-        # Wave 9A — write the compile retry count to the search
+        # write the compile retry count to the search
         # attribute surface so ops dashboards can aggregate by
         # parse-cost. `retry_count` is attempts beyond the first
         # (0 == no retries, N == N retries after the first attempt).
@@ -3489,7 +3489,7 @@ class ProjectProcessingWorkflow:
             compile_result=compile_result,
         )
 
-        # ── Normalized compile result (Wave 4) ─────────────────────
+        # ── Normalized compile result ─────────────────────
         # Build the typed `NormalizedCompileResult` projection over
         # the activity result + retry history, and persist it as a
         # `compile_result_summary` artifact. Downstream consumers
@@ -3511,7 +3511,7 @@ class ProjectProcessingWorkflow:
         # plan is persisted as a `post_compile_enrich_plan` artifact
         # for FE rendering + future stage-gate consultation. Wrapped
         # in step.* lifecycle events so the FE timeline + status
-        # panel surface the assessment phase explicitly.
+        # panel surface the assessment stage explicitly.
         await self._emit_step_lifecycle(
             request, stage="ASSESS_ENRICHMENT",
             step="assess_enrichment", action="started",
@@ -3540,7 +3540,7 @@ class ProjectProcessingWorkflow:
             action="completed" if enrich_plan is not None else "skipped",
         )
 
-        # ── Wave 6.5: typed enrichment stage ──────────────────────
+        # ── typed enrichment stage ──────────────────────
         # Dispatch the CompositeEnrichmentRunner via an activity
         # (registry + persistence happen activity-side; the
         # workflow stays sandbox-safe). The activity short-circuits
@@ -3595,14 +3595,14 @@ class ProjectProcessingWorkflow:
         # derived ONLY from compile evidence + the post-compile
         # enrich plan — never from pre-compile guesses.
         #
-        #   * REQUIRES_VISION — true iff compile actually saw images
-        #     in the document (content_stats.has_images or
-        #     image_count > 0). Operators filter Temporal histories
-        #     by this to find runs that hit the VLM path.
-        #   * REQUIRES_PREMIUM_LLM — true iff the post-compile
-        #     enrich plan recommends or requires a vision-aware
-        #     enrichment task; signals that downstream stages will
-        #     consume an LLM with image input.
+        #  * REQUIRES_VISION — true iff compile actually saw images
+        #  in the document (content_stats.has_images or
+        #  image_count > 0). Operators filter Temporal histories
+        #  by this to find runs that hit the VLM path.
+        #  * REQUIRES_PREMIUM_LLM — true iff the post-compile
+        #  enrich plan recommends or requires a vision-aware
+        #  enrichment task; signals that downstream stages will
+        #  consume an LLM with image input.
         self._set_search_attribute(
             SEARCH_ATTR_REQUIRES_VISION,
             "true" if _compile_saw_images(compile_result) else "false",
@@ -4014,8 +4014,8 @@ class ProjectProcessingWorkflow:
     ) -> bool:
         """Run pause + budget gates before an expensive operation.
 
-        Returns True when the workflow should stop (cancelled).
-        """
+ Returns True when the workflow should stop (cancelled).
+ """
         self._set_pending(next_operation)
         await self._await_pause_or_cancel()
         if self._cancelled:
@@ -4100,24 +4100,24 @@ class ProjectProcessingWorkflow:
     async def _await_compile_trigger(self, *, document_id: str) -> None:
         """Park the workflow until `SIGNAL_TRIGGER_COMPILE` fires.
 
-        Used only when `request.two_phase_compile=True`. The gate
-        flips `WorkflowState` to `WAITING_FOR_COMPILE_TRIGGER` and
-        sets `_current_operation` to a synthetic
-        `compile_pending:{doc_id}` op so `get_status` queries can
-        tell what the workflow is parked on. On signal, the flag is
-        consumed (reset to False) so a subsequent document in the
-        same run gates independently. A cancel received while parked
-        drops out without raising — the caller checks
-        `self._cancelled` after returning."""
+ Used only when `request.two_phase_compile=True`. The gate
+ flips `WorkflowState` to `WAITING_FOR_COMPILE_TRIGGER` and
+ sets `_current_operation` to a synthetic
+ `compile_pending:{doc_id}` op so `get_status` queries can
+ tell what the workflow is parked on. On signal, the flag is
+ consumed (reset to False) so a subsequent document in the
+ same run gates independently. A cancel received while parked
+ drops out without raising — the caller checks
+ `self._cancelled` after returning."""
         previous_operation = self._current_operation
         previous_state = self._state
         self._compile_triggered = False
         self._current_operation = f"compile_pending:{document_id}"
         self._state = WorkflowState.WAITING_FOR_COMPILE_TRIGGER
-        # Surface the compile-pending phase on the Temporal search
-        # attribute (Phase 4). The synthetic `compile_pending` op
-        # isn't run through `_begin()`, so the macro-stage write
-        # happens here explicitly. Maps via `_macro_ingest_stage()`
+        # Surface the compile-pending stage on the Temporal search
+        # attribute. The synthetic `compile_pending` op
+        # isn't run through `_begin`, so the macro-stage write
+        # happens here explicitly. Maps via `_macro_ingest_stage`
         # so a future op-name change picks up the table change.
         self._set_search_attribute(
             SEARCH_ATTR_INGEST_STAGE,
@@ -4149,12 +4149,12 @@ class ProjectProcessingWorkflow:
     ) -> bool:
         """Return True if the workflow should continue-as-new now.
 
-        Two thresholds (both opt-in):
-          * `continue_as_new_after_documents`: trigger every N documents.
-          * `history_event_threshold`: trigger when Temporal's recorded history
-            length crosses N events. Falls back to False outside a workflow
-            runtime (e.g., direct unit tests).
-        """
+ Two thresholds (both opt-in):
+ * `continue_as_new_after_documents`: trigger every N documents.
+ * `history_event_threshold`: trigger when Temporal's recorded history
+ length crosses N events. Falls back to False outside a workflow
+ runtime (e.g., direct unit tests).
+ """
         if (
             request.continue_as_new_after_documents > 0
             and self._documents_completed > 0
@@ -4165,7 +4165,7 @@ class ProjectProcessingWorkflow:
             try:
                 history_length = workflow.info().get_current_history_length()
             except Exception:
-                # `workflow.info()` raises outside a workflow event loop
+                # `workflow.info` raises outside a workflow event loop
                 # (e.g., direct unit tests). Threshold is unreachable then.
                 return False
             return history_length >= request.history_event_threshold
@@ -4176,10 +4176,10 @@ class ProjectProcessingWorkflow:
     ) -> ProjectProcessingRequest:
         """Compact carry-forward state for `workflow.continue_as_new`.
 
-        Carries IDs, counters, and flags only — never artifact bytes or
-        document content. Big payloads stay in J1 storage and are referenced
-        by ID after restart.
-        """
+ Carries IDs, counters, and flags only — never artifact bytes or
+ document content. Big payloads stay in J1 storage and are referenced
+ by ID after restart.
+ """
         return _replace_request(
             request,
             completed_operations=tuple(self._completed_operations),
@@ -4233,10 +4233,10 @@ class ProjectProcessingWorkflow:
     def trigger_compile(self) -> None:
         """Release the workflow from `WAITING_FOR_COMPILE_TRIGGER`.
 
-        Sent by `POST /ingestion-runs/{id}/compile`. Idempotent — a
-        second signal while compile is already in flight is a no-op
-        (the gate consumes-and-resets the flag, so a future second
-        document in the same run will gate again as expected)."""
+ Sent by `POST /ingestion-runs/{id}/compile`. Idempotent — a
+ second signal while compile is already in flight is a no-op
+ (the gate consumes-and-resets the flag, so a future second
+ document in the same run will gate again as expected)."""
         self._compile_triggered = True
 
     # ---- Query -------------------------------------------------------------

@@ -2,20 +2,20 @@
 
 Verifies:
 - `event_bus=None` (back-compat path): handlers behave exactly as before,
-  no events are emitted.
+ no events are emitted.
 - When a bus is wired in, REST handlers publish events with:
-    * the right type per surface
-    * actor + auth_type carried through from the SecurityContext
-    * tenant_id from the project context
-    * correlation_id == X-Request-Id (so receivers can tie HTTP request
-      → outbound webhook delivery)
+ * the right type per surface
+ * actor + auth_type carried through from the SecurityContext
+ * tenant_id from the project context
+ * correlation_id == X-Request-Id (so receivers can tie HTTP request
+ → outbound webhook delivery)
 - Anonymous traffic emits events with `actor=None` and `auth_type=None`
-  (signals "system" to receivers).
+ (signals "system" to receivers).
 - A misbehaving event bus does NOT break the HTTP response — the
-  publish-then-respond pattern is fail-safe.
+ publish-then-respond pattern is fail-safe.
 - The CloudEvents envelope built from such events carries `kbactor` /
-  `kbauthtype` extension attributes — proving the security context flows
-  all the way through to the webhook payload.
+ `kbauthtype` extension attributes — proving the security context flows
+ all the way through to the webhook payload.
 """
 
 import io
@@ -395,10 +395,10 @@ def test_broken_event_bus_does_not_break_handler(
 ):
     """If publication itself raises, the HTTP response must still succeed.
 
-    `ApplicationEventBus.publish` already swallows subscriber exceptions,
-    but if the bus object itself is malicious / wrong, the publish helper
-    in `j1.adapters.rest.events` traps that too.
-    """
+ `ApplicationEventBus.publish` already swallows subscriber exceptions,
+ but if the bus object itself is malicious / wrong, the publish helper
+ in `j1.adapters.rest.events` traps that too.
+ """
 
     class _BrokenBus:
         def publish(self, event):

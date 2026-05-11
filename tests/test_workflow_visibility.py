@@ -1,9 +1,9 @@
 """Workflow / activity visibility regression tests.
 
 Covers:
-  * `workflow.logger` structured events at lifecycle transitions.
-  * `workflow.upsert_search_attributes` calls at lifecycle transitions.
-  * Activity heartbeats on long-running stages.
+ * `workflow.logger` structured events at lifecycle transitions.
+ * `workflow.upsert_search_attributes` calls at lifecycle transitions.
+ * Activity heartbeats on long-running stages.
 
 The Temporal SDK functions are monkeypatched so the tests can assert
 on call arguments without spinning up a worker.
@@ -88,8 +88,8 @@ def _capture_search_attributes(monkeypatch) -> list[dict]:
 
 def test_compile_activity_invocation_uses_heartbeat_timeout(monkeypatch):
     """The workflow must declare `heartbeat_timeout` on compile so a
-    silent stall surfaces as a heartbeat-timeout retry, not a hang
-    that consumes the full 10-minute start-to-close budget."""
+ silent stall surfaces as a heartbeat-timeout retry, not a hang
+ that consumes the full 10-minute start-to-close budget."""
     captured = _patch_workflow_runtime(
         monkeypatch,
         exec_handler=lambda m, p, k: (
@@ -119,9 +119,9 @@ def test_compile_activity_invocation_uses_heartbeat_timeout(monkeypatch):
 
 def test_safe_heartbeat_silently_no_ops_outside_worker():
     """Outside a Temporal worker `activity.heartbeat` raises. Our
-    helper must swallow that — heartbeats are observability, not
-    correctness, and we don't want unit tests to need a Temporal
-    runtime just to call activity methods directly."""
+ helper must swallow that — heartbeats are observability, not
+ correctness, and we don't want unit tests to need a Temporal
+ runtime just to call activity methods directly."""
     # Should not raise even though there is no activity context.
     _safe_heartbeat({"stage": "compile"})
 
@@ -131,10 +131,10 @@ def test_safe_heartbeat_silently_no_ops_outside_worker():
 
 def test_workflow_sets_search_attribute_on_completion_when_enabled(monkeypatch):
     """When `request.search_attributes_enabled=True`, the workflow
-    announces its lifecycle stage via `upsert_search_attributes` so
-    operators can filter active / failed / completed workflows in
-    the Temporal UI. The flag is opt-in because the cluster rejects
-    upserts for unregistered attributes."""
+ announces its lifecycle stage via `upsert_search_attributes` so
+ operators can filter active / failed / completed workflows in
+ the Temporal UI. The flag is opt-in because the cluster rejects
+ upserts for unregistered attributes."""
     captured_sa = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(
         monkeypatch,
@@ -168,8 +168,8 @@ def test_workflow_sets_search_attribute_on_completion_when_enabled(monkeypatch):
 
 def test_workflow_sets_search_attribute_on_failure_when_enabled(monkeypatch):
     """Failure must also update the search attribute when enabled —
-    a workflow that fails silently (no stage update) defeats the
-    visibility contract."""
+ a workflow that fails silently (no stage update) defeats the
+ visibility contract."""
     captured_sa = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(
         monkeypatch,
@@ -199,11 +199,11 @@ def test_workflow_sets_search_attribute_on_failure_when_enabled(monkeypatch):
 
 def test_workflow_does_not_call_upsert_when_search_attributes_disabled(monkeypatch):
     """Default `search_attributes_enabled=False` means the workflow
-    NEVER calls `upsert_search_attributes`. Critical regression: the
-    Temporal cluster rejects upserts for unregistered attributes at
-    activation-completion time, and that rejection is unrecoverable
-    by a try/except in the workflow body. Default-off prevents the
-    crash for deployments that haven't registered the attributes."""
+ NEVER calls `upsert_search_attributes`. Critical regression: the
+ Temporal cluster rejects upserts for unregistered attributes at
+ activation-completion time, and that rejection is unrecoverable
+ by a try/except in the workflow body. Default-off prevents the
+ crash for deployments that haven't registered the attributes."""
     captured_sa = _capture_search_attributes(monkeypatch)
     _patch_workflow_runtime(
         monkeypatch,
@@ -235,10 +235,10 @@ def test_search_attribute_upsert_synchronous_failure_does_not_block_workflow(
     monkeypatch,
 ):
     """When the operator HAS opted in but the upsert call still
-    raises synchronously (a synchronous SDK error, not the deferred
-    server-side rejection), the workflow must tolerate it. Server-
-    side rejections aren't catchable in the workflow body — that's
-    why the opt-in flag exists — but synchronous SDK errors are."""
+ raises synchronously (a synchronous SDK error, not the deferred
+ server-side rejection), the workflow must tolerate it. Server-
+ side rejections aren't catchable in the workflow body — that's
+ why the opt-in flag exists — but synchronous SDK errors are."""
     def _bad_upsert(_updates):
         raise RuntimeError("synchronous SDK error")
 
@@ -276,8 +276,8 @@ def test_search_attribute_upsert_synchronous_failure_does_not_block_workflow(
 
 def test_log_step_uses_safe_fields_only(monkeypatch):
     """Structured logs must never carry document content, file paths,
-    prompts, or LLM responses. Validate by inspecting the `extra`
-    dict passed to the logger."""
+ prompts, or LLM responses. Validate by inspecting the `extra`
+ dict passed to the logger."""
     captured_logs: list[dict] = []
 
     class _StubLogger:

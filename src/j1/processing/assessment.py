@@ -13,10 +13,10 @@ runtime config. If a different compiler ships later (Unstructured,
 custom) it brings its own mapper; the core flow doesn't change.
 
 Distinct from `IngestPlan` ([planning.py](./planning.py)):
-  * `IngestPlan` decides WHICH stages run (compile / enrich / graph
-    / index) — stage gating.
-  * `AssessmentPlan` decides HOW the compile stage runs — parser
-    intensity + per-capability toggles.
+ * `IngestPlan` decides WHICH stages run (compile / enrich / graph
+ / index) — stage gating.
+ * `AssessmentPlan` decides HOW the compile stage runs — parser
+ intensity + per-capability toggles.
 
 Both are derived from the same `DocumentProfile` and travel side by
 side. They're separate because conflating them produces a 7-mode ×
@@ -38,30 +38,30 @@ from j1.processing.profiling import DocumentProfile
 
 class CompileMode(StrEnum):
     """Compile-stage intensity, vendor-neutral. Two official modes:
-    `standard` and `deep`.
+ `standard` and `deep`.
 
-    These are descriptive labels for adapters + dashboards. The
-    mapping from mode → adapter config lives in the adapter (e.g.
-    RAGAnything maps `standard`→`parse_method=auto`, `deep`→
-    `parse_method=ocr|auto`); do NOT reference vendor parser names
-    here.
+ These are descriptive labels for adapters + dashboards. The
+ mapping from mode → adapter config lives in the adapter (e.g.
+ RAGAnything maps `standard`→`parse_method=auto`, `deep`→
+ `parse_method=ocr|auto`); do NOT reference vendor parser names
+ here.
 
-      * `standard` — reliable default for normal text-first
-        documents. Adapter runs the standard parse path with
-        capability flags from the plan; quality gates still apply.
-        Does NOT mean "fast" — it means "normal reliable compile".
-      * `deep` — complex / low-confidence / multimodal / scanned /
-        layout-heavy documents. Adapter enables every supported
-        quality knob (OCR, layout, multimodal) and emits warnings
-        for later optimisation.
+ * `standard` — reliable default for normal text-first
+ documents. Adapter runs the standard parse path with
+ capability flags from the plan; quality gates still apply.
+ Does NOT mean "fast" — it means "normal reliable compile".
+ * `deep` — complex / low-confidence / multimodal / scanned /
+ layout-heavy documents. Adapter enables every supported
+ quality knob (OCR, layout, multimodal) and emits warnings
+ for later optimisation.
 
-    `FAST` is deprecated and kept ONLY so legacy
-    `compile_strategy_report` payloads can round-trip without
-    crashing replay. The planner NEVER emits FAST; the safety belt
-    (`_coerce_legacy_fast_to_standard`) coerces any FAST it sees
-    on the read path to STANDARD. New planning code MUST emit
-    STANDARD or DEEP. Any code branching on `CompileMode.FAST`
-    is a regression — branch on STANDARD/DEEP."""
+ `FAST` is deprecated and kept ONLY so legacy
+ `compile_strategy_report` payloads can round-trip without
+ crashing replay. The planner NEVER emits FAST; the safety belt
+ (`_coerce_legacy_fast_to_standard`) coerces any FAST it sees
+ on the read path to STANDARD. New planning code MUST emit
+ STANDARD or DEEP. Any code branching on `CompileMode.FAST`
+ is a regression — branch on STANDARD/DEEP."""
 
     # Deprecated, kept readable for legacy artifact compatibility.
     # Do not emit from new planning code.
@@ -72,14 +72,14 @@ class CompileMode(StrEnum):
 
 class Capability(StrEnum):
     """Vendor-neutral compile capabilities the adapter MUST attempt
-    when listed in `AssessmentPlan.required_capabilities`. The
-    adapter MAY also enable them when listed in `optional_capabilities`
-    — that's a hint, not a contract.
+ when listed in `AssessmentPlan.required_capabilities`. The
+ adapter MAY also enable them when listed in `optional_capabilities`
+ — that's a hint, not a contract.
 
-    `text_extraction` is implicitly required by every mode; listing
-    it explicitly is harmless. The other six are opt-in per
-    document.
-    """
+ `text_extraction` is implicitly required by every mode; listing
+ it explicitly is harmless. The other six are opt-in per
+ document.
+ """
 
     TEXT_EXTRACTION = "text_extraction"
     LAYOUT_DETECTION = "layout_detection"
@@ -91,8 +91,8 @@ class Capability(StrEnum):
 
 class Complexity(StrEnum):
     """Operator-facing complexity bucket. Drives dashboard filters
-    and helps explain WHY a `deep` mode was selected without forcing
-    the operator to re-derive from raw signals."""
+ and helps explain WHY a `deep` mode was selected without forcing
+ the operator to re-derive from raw signals."""
 
     LOW = "low"
     MEDIUM = "medium"
@@ -101,17 +101,17 @@ class Complexity(StrEnum):
 
 class FallbackPolicy(StrEnum):
     """How the adapter should react when a required capability isn't
-    supported by the underlying parser.
+ supported by the underlying parser.
 
-      * `degrade_with_warning` (default) — adapter omits the
-        capability + records a warning on the compile result. The
-        run continues; later optimisation passes can decide what
-        to do. THIS IS WHAT THE SPEC ASKS FOR (`degrade gracefully
-        and record a warning/flag for later processing`).
-      * `fail` — adapter aborts the compile with a clear error.
-        Useful for callers that want hard guarantees (e.g. a
-        compliance run that MUST OCR every page).
-    """
+ * `degrade_with_warning` (default) — adapter omits the
+ capability + records a warning on the compile result. The
+ run continues; later optimisation passes can decide what
+ to do. THIS IS WHAT THE SPEC ASKS FOR (`degrade gracefully
+ and record a warning/flag for later processing`).
+ * `fail` — adapter aborts the compile with a clear error.
+ Useful for callers that want hard guarantees (e.g. a
+ compliance run that MUST OCR every page).
+ """
 
     DEGRADE_WITH_WARNING = "degrade_with_warning"
     FAIL = "fail"
@@ -119,32 +119,32 @@ class FallbackPolicy(StrEnum):
 
 class RecommendedProcessingPath(StrEnum):
     """Operator-facing recommended processing path. One value per
-    canonical Compile-Stage outcome the planner can recommend.
+ canonical Compile-Stage outcome the planner can recommend.
 
-    Two-mode model: every non-skip recommendation maps onto either
-    STANDARD_COMPILE or DEEP_COMPILE, mirroring `CompileMode`.
+ Two-mode model: every non-skip recommendation maps onto either
+ STANDARD_COMPILE or DEEP_COMPILE, mirroring `CompileMode`.
 
-      * `STANDARD_COMPILE` — reliable default. Maps to
-        `CompileMode.STANDARD`. Used for normal text-first docs,
-        including 100%-text formats (the bridge takes a plaintext
-        bypass for those, but they still report standard mode).
-      * `DEEP_COMPILE` — richer parsing for scanned, layout-heavy,
-        multimodal, OCR-required, or low-confidence documents.
-        Maps to `CompileMode.DEEP`.
-      * `SKIP_EMPTY_DOCUMENT` — profile shows non-zero page count
-        but every content signal is zero. Surfaced by the
-        post-compile enrich assessor; the planner mirrors it so
-        the FE has a single canonical signal.
-      * `FAILED` — assessment couldn't complete (profile build
-        failure, missing extension, etc.).
+ * `STANDARD_COMPILE` — reliable default. Maps to
+ `CompileMode.STANDARD`. Used for normal text-first docs,
+ including 100%-text formats (the bridge takes a plaintext
+ bypass for those, but they still report standard mode).
+ * `DEEP_COMPILE` — richer parsing for scanned, layout-heavy,
+ multimodal, OCR-required, or low-confidence documents.
+ Maps to `CompileMode.DEEP`.
+ * `SKIP_EMPTY_DOCUMENT` — profile shows non-zero page count
+ but every content signal is zero. Surfaced by the
+ post-compile enrich assessor; the planner mirrors it so
+ the FE has a single canonical signal.
+ * `FAILED` — assessment couldn't complete (profile build
+ failure, missing extension, etc.).
 
-    Legacy values `fast_text_compile`, `multimodal_compile`, and
-    `ocr_parse` are NO LONGER emitted by the planner. `from_payload`
-    accepts them for legacy artifact round-trip and coerces them
-    to the canonical two-mode model (see `_coerce_legacy_recommended_path`).
+ Legacy values `fast_text_compile`, `multimodal_compile`, and
+ `ocr_parse` are NO LONGER emitted by the planner. `from_payload`
+ accepts them for legacy artifact round-trip and coerces them
+ to the canonical two-mode model (see `_coerce_legacy_recommended_path`).
 
-    Wire strings are stable — dashboards key off them, FE renders
-    human-readable labels via a separate mapper."""
+ Wire strings are stable — dashboards key off them, FE renders
+ human-readable labels via a separate mapper."""
 
     STANDARD_COMPILE = "standard_compile"
     DEEP_COMPILE = "deep_compile"
@@ -156,17 +156,17 @@ class RecommendedProcessingPath(StrEnum):
 class AssessmentPlan:
     """The planner's compile-stage decision for one document.
 
-    Vendor-neutral. The adapter consumes it via its own mapper
-    function (e.g. `map_assessment_to_raganything_config`).
+ Vendor-neutral. The adapter consumes it via its own mapper
+ function (e.g. `map_assessment_to_raganything_config`).
 
-    `mode` is the high-level intensity. `required_capabilities` is
-    the minimum the adapter MUST attempt; `optional_capabilities`
-    is hints the adapter MAY enable when supported. `risk_flags`
-    surfaces signals the planner couldn't fully address (e.g.
-    "scanned PDF but OCR not yet wired") so a later optimisation
-    pass can revisit. `reason` is a one-line explanation operators
-    read first when triaging.
-    """
+ `mode` is the high-level intensity. `required_capabilities` is
+ the minimum the adapter MUST attempt; `optional_capabilities`
+ is hints the adapter MAY enable when supported. `risk_flags`
+ surfaces signals the planner couldn't fully address (e.g.
+ "scanned PDF but OCR not yet wired") so a later optimisation
+ pass can revisit. `reason` is a one-line explanation operators
+ read first when triaging.
+ """
 
     document_id: str
     mode: CompileMode
@@ -192,8 +192,8 @@ class AssessmentPlan:
 
     def is_helpful(self, capability: Capability) -> bool:
         """True if the capability is required OR optional. Adapters
-        that find a capability cheap to enable can use this to
-        decide whether to bother."""
+ that find a capability cheap to enable can use this to
+ decide whether to bother."""
         return (
             capability in self.required_capabilities
             or capability in self.optional_capabilities
@@ -201,10 +201,10 @@ class AssessmentPlan:
 
     def to_payload(self) -> dict:
         """JSON-friendly dict for Temporal data-converter transit.
-        Round-trips via `from_payload`. Used by the workflow →
-        compile-activity boundary so the dataclass doesn't need to
-        be serialised by the Temporal codec directly (frozensets /
-        StrEnum need explicit handling)."""
+ Round-trips via `from_payload`. Used by the workflow →
+ compile-activity boundary so the dataclass doesn't need to
+ be serialised by the Temporal codec directly (frozensets /
+ StrEnum need explicit handling)."""
         return {
             "schema_version": "1",
             "document_id": self.document_id,
@@ -223,8 +223,8 @@ class AssessmentPlan:
     @classmethod
     def from_payload(cls, payload: dict) -> "AssessmentPlan":
         """Inverse of `to_payload`. Tolerates unknown values (drops
-        them) so a payload written by a future planner version that
-        adds a new capability doesn't crash an older worker."""
+ them) so a payload written by a future planner version that
+ adds a new capability doesn't crash an older worker."""
         def _to_caps(values) -> frozenset[Capability]:
             out: set[Capability] = set()
             for v in values or ():
@@ -252,10 +252,10 @@ class AssessmentPlan:
         # Tolerate missing / unknown values rather than crashing
         # replay. Legacy values (fast_text_compile, multimodal_compile,
         # ocr_parse) are coerced to the canonical two-mode model:
-        #   fast_text_compile  → STANDARD_COMPILE
-        #   multimodal_compile → STANDARD_COMPILE  (standard handles
-        #                         multimodal capability flags too)
-        #   ocr_parse          → DEEP_COMPILE
+        #  fast_text_compile → STANDARD_COMPILE
+        #  multimodal_compile → STANDARD_COMPILE (standard handles
+        #  multimodal capability flags too)
+        #  ocr_parse → DEEP_COMPILE
         raw_path = payload.get("recommended_path")
         path = _coerce_legacy_recommended_path(raw_path)
         return cls(
@@ -275,8 +275,8 @@ class AssessmentPlan:
 
 class AssessmentPlanner:
     """Planner interface. Implementations MUST be deterministic with
-    respect to (profile, policy_overrides) so workflow replay
-    produces stable plans."""
+ respect to (profile, policy_overrides) so workflow replay
+ produces stable plans."""
 
     def assess(
         self,
@@ -298,12 +298,12 @@ class AssessmentPlanner:
 # vision-only artifacts (figures, scanned regions, equation images).
 #
 # When growing this set:
-#   * Update `_NATIVE_TEXT_EXTENSIONS` in
-#     [_bridge.py](../providers/raganything/_bridge.py) in lockstep
-#     — the bridge's plaintext fast-path that skips MinerU keys off
-#     the same vocabulary.
-#   * Add a regression test in `test_assessment_plan.py` that pins
-#     the new extension to `CompileMode.FAST`.
+#  * Update `_NATIVE_TEXT_EXTENSIONS` in
+#  [_bridge.py](../providers/raganything/_bridge.py) in lockstep
+#  — the bridge's plaintext fast-path that skips MinerU keys off
+#  the same vocabulary.
+#  * Add a regression test in `test_assessment_plan.py` that pins
+#  the new extension to `CompileMode.FAST`.
 #
 # Markup / hypertext formats (`.html`, `.xml`) are intentionally
 # absent — they CAN reference vision content via `<img>`, even though
@@ -338,15 +338,15 @@ _LIKELY_TABLE_EXTENSIONS: frozenset[str] = frozenset({
 # DocumentProfile (populated by the lightweight pypdf-based
 # profiler) and buckets the document into one of three signals:
 #
-#   * `_DENSITY_LOW`   — chars/page < 100 OR > 50% empty pages.
-#                         Likely scanned / image-heavy / poorly
-#                         extracted text. Bias toward deep+OCR.
-#   * `_DENSITY_HIGH`  — chars/page ≥ 800 AND ≤ 20% empty pages.
-#                         Text-rich, well-extracted. Supports
-#                         fast/standard mode without quality risk.
-#   * `_DENSITY_MEDIUM`— anything in between OR signals unknown.
-#                         Planner uses other rules; density doesn't
-#                         override.
+#  * `_DENSITY_LOW` — chars/page < 100 OR > 50% empty pages.
+#  Likely scanned / image-heavy / poorly
+#  extracted text. Bias toward deep+OCR.
+#  * `_DENSITY_HIGH` — chars/page ≥ 800 AND ≤ 20% empty pages.
+#  Text-rich, well-extracted. Supports
+#  fast/standard mode without quality risk.
+#  * `_DENSITY_MEDIUM`— anything in between OR signals unknown.
+#  Planner uses other rules; density doesn't
+#  override.
 #
 # Thresholds are deliberately wide. A normal book page is ~2500
 # chars; a Word-export PDF with margin chrome is ~600 — both fall
@@ -367,10 +367,10 @@ _DENSITY_HIGH_EMPTY_PAGE_RATIO = 0.2
 def _classify_density(profile: DocumentProfile) -> str:
     """Bucket `profile` into LOW / MEDIUM / HIGH text density.
 
-    Pure derivation — uses only fields the lightweight profiler
-    populates (`total_text_chars`, `page_count`, `empty_page_ratio`).
-    Returns `MEDIUM` whenever the inputs aren't available so the
-    classifier never flips a decision based on missing data."""
+ Pure derivation — uses only fields the lightweight profiler
+ populates (`total_text_chars`, `page_count`, `empty_page_ratio`).
+ Returns `MEDIUM` whenever the inputs aren't available so the
+ classifier never flips a decision based on missing data."""
     total = profile.total_text_chars
     pages = profile.page_count or 0
     empty_ratio = profile.empty_page_ratio
@@ -397,22 +397,22 @@ def _classify_density(profile: DocumentProfile) -> str:
 class DefaultAssessmentPlanner(AssessmentPlanner):
     """Deterministic rule-based AssessmentPlanner.
 
-    Decision tree, applied in order:
+ Decision tree, applied in order:
 
-      1. Plain-text extensions (`.txt` / `.md` / etc.) → `fast`.
-      2. Scanned PDF / weak text layer / scan-only image extension
-         → `deep` with `OCR` required.
-      3. Tabular extensions → `standard` with `TABLE_EXTRACTION`
-         required.
-      4. PDFs with images flagged → `standard` with
-         `IMAGE_EXTRACTION` optional.
-      5. Default → `standard` with text + layout required.
+ 1. Plain-text extensions (`.txt` / `.md` / etc.) → `fast`.
+ 2. Scanned PDF / weak text layer / scan-only image extension
+ → `deep` with `OCR` required.
+ 3. Tabular extensions → `standard` with `TABLE_EXTRACTION`
+ required.
+ 4. PDFs with images flagged → `standard` with
+ `IMAGE_EXTRACTION` optional.
+ 5. Default → `standard` with text + layout required.
 
-    Confidence: 1.0 when every relevant signal is known; 0.7 when
-    one major signal (e.g. text_extractable_ratio) is unknown; 0.5
-    when most signals are unknown. Mirrors `DefaultIngestPlanner`'s
-    confidence rubric.
-    """
+ Confidence: 1.0 when every relevant signal is known; 0.7 when
+ one major signal (e.g. text_extractable_ratio) is unknown; 0.5
+ when most signals are unknown. Mirrors `DefaultIngestPlanner`'s
+ confidence rubric.
+ """
 
     def assess(
         self,
@@ -624,22 +624,22 @@ def _enforce_fast_mode_safety(
     profile: DocumentProfile,
 ) -> AssessmentPlan:
     """Belt-and-suspenders: planner never emits FAST in the
-    two-mode model, but if a legacy code path slips through OR a
-    payload from before the two-mode refactor lands here, coerce
-    FAST → STANDARD universally.
+ two-mode model, but if a legacy code path slips through OR a
+ payload from before the two-mode refactor lands here, coerce
+ FAST → STANDARD universally.
 
-    Pre-refactor this helper was scoped to "FAST is only safe for
-    100%-text extensions"; in the two-mode model FAST is not safe
-    for ANY extension because it's no longer part of the official
-    compile-mode vocabulary. The plaintext-extension optimisation
-    moved to the bridge layer (extension-keyed `_NATIVE_TEXT_EXTENSIONS`
-    plaintext bypass) — independent of `CompileMode`.
+ Pre-refactor this helper was scoped to "FAST is only safe for
+ 100%-text extensions"; in the two-mode model FAST is not safe
+ for ANY extension because it's no longer part of the official
+ compile-mode vocabulary. The plaintext-extension optimisation
+ moved to the bridge layer (extension-keyed `_NATIVE_TEXT_EXTENSIONS`
+ plaintext bypass) — independent of `CompileMode`.
 
-    No-op when `plan.mode != FAST`. When FAST is observed, coerce
-    to STANDARD with the safe capability baseline + an audit-trail
-    note in `reason` so operators see the migration. Profile is
-    accepted for parity with the pre-refactor signature but isn't
-    consulted — coercion now ignores extension."""
+ No-op when `plan.mode != FAST`. When FAST is observed, coerce
+ to STANDARD with the safe capability baseline + an audit-trail
+ note in `reason` so operators see the migration. Profile is
+ accepted for parity with the pre-refactor signature but isn't
+ consulted — coercion now ignores extension."""
     if plan.mode != CompileMode.FAST:
         return plan
     # Coerce. Replace mode, augment required capabilities to the
@@ -670,20 +670,20 @@ def _coerce_legacy_recommended_path(
     raw: object,
 ) -> RecommendedProcessingPath:
     """Map any value (current OR legacy) onto the two-mode
-    `RecommendedProcessingPath` vocabulary.
+ `RecommendedProcessingPath` vocabulary.
 
-    Mapping:
-      * Current values pass through (`standard_compile`,
-        `deep_compile`, `skip_empty_document`, `failed`).
-      * Legacy values coerce:
-          - `fast_text_compile`  → STANDARD_COMPILE
-          - `multimodal_compile` → STANDARD_COMPILE
-          - `ocr_parse`          → DEEP_COMPILE
-      * Anything else (None, unknown future value, garbage) →
-        STANDARD_COMPILE.
+ Mapping:
+ * Current values pass through (`standard_compile`,
+ `deep_compile`, `skip_empty_document`, `failed`).
+ * Legacy values coerce:
+ - `fast_text_compile` → STANDARD_COMPILE
+ - `multimodal_compile` → STANDARD_COMPILE
+ - `ocr_parse` → DEEP_COMPILE
+ * Anything else (None, unknown future value, garbage) →
+ STANDARD_COMPILE.
 
-    Pure / safe / never raises — used on the deserialisation path
-    where legacy payloads cross worker boundaries."""
+ Pure / safe / never raises — used on the deserialisation path
+ where legacy payloads cross worker boundaries."""
     if isinstance(raw, RecommendedProcessingPath):
         return raw
     if not isinstance(raw, str):
@@ -705,25 +705,25 @@ def _stamp_recommended_path(
     profile: DocumentProfile,
 ) -> AssessmentPlan:
     """Derive `recommended_path` from `plan.mode` (post-coercion)
-    and return a new plan with the field stamped.
+ and return a new plan with the field stamped.
 
-    Two-mode model: every non-skip outcome maps to either
-    STANDARD_COMPILE or DEEP_COMPILE — the recommended-path enum
-    mirrors `CompileMode`.
+ Two-mode model: every non-skip outcome maps to either
+ STANDARD_COMPILE or DEEP_COMPILE — the recommended-path enum
+ mirrors `CompileMode`.
 
-    Decision table:
-      * `mode == DEEP`                                  → DEEP_COMPILE
-      * `Capability.OCR` in required (and mode!=DEEP,
-         which shouldn't happen but defend against it)  → DEEP_COMPILE
-      * `mode == STANDARD`                              → STANDARD_COMPILE
-      * `mode == FAST` (legacy, post-belt should never
-         see this; coerce defensively)                  → STANDARD_COMPILE
-      * Anything else                                   → STANDARD_COMPILE
+ Decision table:
+ * `mode == DEEP` → DEEP_COMPILE
+ * `Capability.OCR` in required (and mode!=DEEP,
+ which shouldn't happen but defend against it) → DEEP_COMPILE
+ * `mode == STANDARD` → STANDARD_COMPILE
+ * `mode == FAST` (legacy, post-belt should never
+ see this; coerce defensively) → STANDARD_COMPILE
+ * Anything else → STANDARD_COMPILE
 
-    SKIP_EMPTY_DOCUMENT is NOT emitted here — that verdict lives on
-    the post-compile enrich plan because it requires content-level
-    signals (zero text/image/table counts despite a non-zero page
-    count) that aren't available pre-compile."""
+ SKIP_EMPTY_DOCUMENT is NOT emitted here — that verdict lives on
+ the post-compile enrich plan because it requires content-level
+ signals (zero text/image/table counts despite a non-zero page
+ count) that aren't available pre-compile."""
     if plan.mode == CompileMode.DEEP:
         path = RecommendedProcessingPath.DEEP_COMPILE
     elif Capability.OCR in plan.required_capabilities:
@@ -732,7 +732,7 @@ def _stamp_recommended_path(
         # STANDARD or legacy FAST (the safety belt above already
         # coerced FAST → STANDARD; this default is belt-and-
         # suspenders for any code path that constructs an
-        # AssessmentPlan manually without going through `assess()`).
+        # AssessmentPlan manually without going through `assess`).
         path = RecommendedProcessingPath.STANDARD_COMPILE
     if plan.recommended_path == path:
         return plan
@@ -754,8 +754,8 @@ def _stamp_recommended_path(
 
 def _infer_document_type(profile: DocumentProfile) -> str:
     """Derive a coarse document_type from extension. Operators with a
-    real classifier (LLM-based, mime-deep) wire their own
-    `AssessmentPlanner` and call this only as a fallback."""
+ real classifier (LLM-based, mime-deep) wire their own
+ `AssessmentPlanner` and call this only as a fallback."""
     ext = profile.extension.lstrip(".")
     if not ext:
         return "unknown"
@@ -778,8 +778,8 @@ def _infer_document_type(profile: DocumentProfile) -> str:
 
 def _confidence(profile: DocumentProfile) -> float:
     """Same rubric as `DefaultIngestPlanner._confidence` — counts
-    populated signals, remaps to 0.5..1.0. Duplicated to avoid
-    cross-module imports."""
+ populated signals, remaps to 0.5..1.0. Duplicated to avoid
+ cross-module imports."""
     signals = (
         profile.text_extractable_ratio,
         profile.has_images,
@@ -804,14 +804,14 @@ def _confidence(profile: DocumentProfile) -> float:
 # `FallbackPolicy` (which controls per-capability degradation
 # INSIDE a successfully-built plan).
 #
-#   * `fail_open` (default) — workflow logs the error, sets the
-#     compile activity's `assessment_plan_payload=None`, and lets
-#     the bridge fall back to `settings.parse_method`. Production
-#     prefers this: a degenerate profile shouldn't block ingestion.
-#   * `fail_closed` — workflow raises `_BusinessRejection`, the
-#     compile step is recorded FAILED, and the run lands at
-#     FAILED_FINAL. Useful for compliance deployments that require
-#     explicit per-document plans.
+#  * `fail_open` (default) — workflow logs the error, sets the
+#  compile activity's `assessment_plan_payload=None`, and lets
+#  the bridge fall back to `settings.parse_method`. Production
+#  prefers this: a degenerate profile shouldn't block ingestion.
+#  * `fail_closed` — workflow raises `_BusinessRejection`, the
+#  compile step is recorded FAILED, and the run lands at
+#  FAILED_FINAL. Useful for compliance deployments that require
+#  explicit per-document plans.
 #
 # Set via `J1_ASSESSMENT_FAILURE_POLICY=fail_open|fail_closed`.
 ASSESSMENT_FAILURE_POLICY_FAIL_OPEN = "fail_open"
@@ -827,10 +827,10 @@ _VALID_FAILURE_POLICIES = frozenset({
 
 def load_assessment_failure_policy(env: dict | None = None) -> str:
     """Read `J1_ASSESSMENT_FAILURE_POLICY` from `env` (or `os.environ`
-    when None). Unknown values quietly downgrade to `fail_open` —
-    the assessment plan exists for cost optimisation, not as a
-    correctness gate, so a typo in the env shouldn't break ingest.
-    """
+ when None). Unknown values quietly downgrade to `fail_open` —
+ the assessment plan exists for cost optimisation, not as a
+ correctness gate, so a typo in the env shouldn't break ingest.
+ """
     import os
     source = env if env is not None else os.environ
     raw = source.get(ENV_ASSESSMENT_FAILURE_POLICY)

@@ -22,9 +22,9 @@ _BEARER_PREFIX = "bearer "
 class SecurityPolicy:
     """REST-side wrapper around an `Authenticator` plus public-path config.
 
-    `authenticator=None` disables authentication entirely (anonymous mode).
-    `anonymous_paths` are exempt from auth even when `authenticator` is set.
-    """
+ `authenticator=None` disables authentication entirely (anonymous mode).
+ `anonymous_paths` are exempt from auth even when `authenticator` is set.
+ """
 
     authenticator: Authenticator | None = None
     # Anonymous paths bypass authentication. The defaults cover health
@@ -71,10 +71,10 @@ def authenticate_request(
 ) -> SecurityContext:
     """Resolve a `SecurityContext` for the request per `policy`.
 
-    Raises `HTTPException(401)` for missing/invalid credentials when auth is
-    enabled. Returns `ANONYMOUS_CONTEXT` when auth is disabled or the path
-    is configured anonymous.
-    """
+ Raises `HTTPException(401)` for missing/invalid credentials when auth is
+ enabled. Returns `ANONYMOUS_CONTEXT` when auth is disabled or the path
+ is configured anonymous.
+ """
     request_id = getattr(request.state, "request_id", None)
 
     if not policy.enabled:

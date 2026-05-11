@@ -1,20 +1,20 @@
 """Tests for the LLM role abstraction.
 
 Covers:
-  * `load_llm_settings` parses every J1_TEXT_LLM_*, J1_VISION_LLM_*,
-    J1_EMBEDDING_* env var
-  * Invalid provider / numeric / JSON values raise `LLMConfigError`
-  * `is_configured` correctly distinguishes provider types
-  * `LLMProviderRegistry` registration, resolution, validation,
-    diagnostics — including secrets-safe diagnostic shape
-  * `OpenAICompatTextLLMClient` / Vision / Embedding all enforce
-    base_url + model presence
-  * OpenAI-compat clients perform an HTTP POST with the bearer token
-    and parse the standard response shape (using a stub httpx)
-  * LangChain adapter is fully optional — constructor raises
-    `LLMProviderUnavailable` when langchain-core isn't installed
-  * Capability errors surface for unsupported features (e.g.
-    embedding dimension when not configured)
+ * `load_llm_settings` parses every J1_TEXT_LLM_*, J1_VISION_LLM_*,
+ J1_EMBEDDING_* env var
+ * Invalid provider / numeric / JSON values raise `LLMConfigError`
+ * `is_configured` correctly distinguishes provider types
+ * `LLMProviderRegistry` registration, resolution, validation,
+ diagnostics — including secrets-safe diagnostic shape
+ * `OpenAICompatTextLLMClient` / Vision / Embedding all enforce
+ base_url + model presence
+ * OpenAI-compat clients perform an HTTP POST with the bearer token
+ and parse the standard response shape (using a stub httpx)
+ * LangChain adapter is fully optional — constructor raises
+ `LLMProviderUnavailable` when langchain-core isn't installed
+ * Capability errors surface for unsupported features (e.g.
+ embedding dimension when not configured)
 
 Tests do NOT make real network calls. The OpenAI-compat tests stub
 `httpx` at the module level so the fixture is hermetic.
@@ -199,7 +199,7 @@ def test_registry_diagnostics_does_not_leak_secrets():
 
 
 def test_registry_typed_helpers_narrow():
-    """`text() / vision() / embedding()` are typed convenience accessors."""
+    """`text / vision / embedding` are typed convenience accessors."""
     reg = LLMProviderRegistry({
         "text": _StubText(),
         "vision": _StubVision(),
@@ -320,11 +320,11 @@ def test_text_client_extract_returns_parsed_json(monkeypatch):
 
 def test_text_client_extract_sends_json_schema_response_format(monkeypatch):
     """Regression: when a schema is supplied, the body must carry the
-    newer `response_format={type: 'json_schema', json_schema: {...}}`
-    shape, not the older `{type: 'json_object'}`. LM Studio rejects
-    `json_object` outright with `'response_format.type' must be
-    'json_schema' or 'text'` — that 400 was breaking every enricher
-    when pointed at LM Studio."""
+ newer `response_format={type: 'json_schema', json_schema: {...}}`
+ shape, not the older `{type: 'json_object'}`. LM Studio rejects
+ `json_object` outright with `'response_format.type' must be
+ 'json_schema' or 'text'` — that 400 was breaking every enricher
+ when pointed at LM Studio."""
     schema = {"type": "object", "properties": {"kind": {"type": "string"}}}
     calls = _stub_httpx(monkeypatch, response_json={
         "choices": [{"message": {"content": '{"kind": "doc"}'}}],
@@ -650,9 +650,9 @@ def test_normalize_base_url(raw, expected):
 
 def test_text_client_strips_full_chat_url_at_construction(monkeypatch):
     """Operator pastes the full `…/chat/completions` URL into `base_url`
-    by mistake. Without normalisation this produces a request to
-    `…/chat/completions/chat/completions` and 404s. We strip the
-    leaf so the actual request lands on the right endpoint."""
+ by mistake. Without normalisation this produces a request to
+ `…/chat/completions/chat/completions` and 404s. We strip the
+ leaf so the actual request lands on the right endpoint."""
     calls = _stub_httpx(monkeypatch, response_json={
         "choices": [{"message": {"content": "ok"}}],
         "usage": {},
@@ -691,10 +691,10 @@ def test_embedding_client_strips_full_embeddings_url_at_construction(monkeypatch
 
 def test_404_error_message_includes_url_and_base_url_hint(monkeypatch):
     """A 404 from the upstream endpoint must surface enough context that
-    the operator can fix their config without reading the framework
-    source — the constructed URL, the originally-configured base_url,
-    and a hint about the most common cause (missing `/v1` or
-    non-OpenAI-compatible endpoint)."""
+ the operator can fix their config without reading the framework
+ source — the constructed URL, the originally-configured base_url,
+ and a hint about the most common cause (missing `/v1` or
+ non-OpenAI-compatible endpoint)."""
     _stub_httpx(monkeypatch, response_json={"error": "not found"}, status_code=404)
     client = OpenAICompatTextLLMClient(TextLLMSettings(
         provider="openai_compat",
@@ -718,7 +718,7 @@ def test_404_error_message_includes_url_and_base_url_hint(monkeypatch):
 
 def test_non_404_4xx_still_raises_clean_error(monkeypatch):
     """The 404-specific hint must not bleed into other 4xx codes —
-    a 401 (auth failure) shouldn't suggest the URL is wrong."""
+ a 401 (auth failure) shouldn't suggest the URL is wrong."""
     _stub_httpx(
         monkeypatch,
         response_json={"error": "invalid api key"},
@@ -739,14 +739,14 @@ def test_non_404_4xx_still_raises_clean_error(monkeypatch):
     assert "Common causes" not in msg
 
 
-# ---- Token budget enforcement (Phase budget-1) ---------------------
+# ---- Token budget enforcement -------------------------------------
 
 
 def test_text_client_no_op_when_no_context_window_configured(monkeypatch):
     """Backward-compat: deployments without
-    `context_window_tokens` set must NOT see new errors. Big
-    prompts go through the same path they always did (tested
-    against a stub that records the body)."""
+ `context_window_tokens` set must NOT see new errors. Big
+ prompts go through the same path they always did (tested
+ against a stub that records the body)."""
     calls = _stub_httpx(monkeypatch, response_json={
         "choices": [{"message": {"content": "ok"}}],
         "usage": {},
@@ -765,9 +765,9 @@ def test_text_client_no_op_when_no_context_window_configured(monkeypatch):
 
 def test_text_client_raises_overflow_before_http(monkeypatch):
     """The headline regression: an oversized prompt against a
-    small configured window raises `LLMContextOverflowError`
-    BEFORE hitting the HTTP layer. The mock provider must NOT
-    receive the oversized payload."""
+ small configured window raises `LLMContextOverflowError`
+ BEFORE hitting the HTTP layer. The mock provider must NOT
+ receive the oversized payload."""
     calls = _stub_httpx(monkeypatch, response_json={"choices": []})
     client = OpenAICompatTextLLMClient(TextLLMSettings(
         provider="openai_compat",
@@ -795,8 +795,8 @@ def test_text_client_raises_overflow_before_http(monkeypatch):
 
 def test_text_client_passes_through_when_under_budget(monkeypatch):
     """Boundary check enabled but prompt fits → no raise, request
-    goes through normally. Locks the contract that the budget
-    check doesn't accidentally block well-sized prompts."""
+ goes through normally. Locks the contract that the budget
+ check doesn't accidentally block well-sized prompts."""
     calls = _stub_httpx(monkeypatch, response_json={
         "choices": [{"message": {"content": "answer"}}],
         "usage": {},
@@ -814,9 +814,9 @@ def test_text_client_passes_through_when_under_budget(monkeypatch):
 
 
 def test_text_client_raises_on_oversize_extract(monkeypatch):
-    """`extract()` is the prompt path enrichers + judge use. Same
-    boundary protection must fire there too — the budget check
-    sits at `_post`, common to all chat-completion call types."""
+    """`extract` is the prompt path enrichers + judge use. Same
+ boundary protection must fire there too — the budget check
+ sits at `_post`, common to all chat-completion call types."""
     calls = _stub_httpx(monkeypatch, response_json={"choices": []})
     client = OpenAICompatTextLLMClient(TextLLMSettings(
         provider="openai_compat",
@@ -834,9 +834,9 @@ def test_text_client_raises_on_oversize_extract(monkeypatch):
 
 def test_text_client_overflow_when_window_smaller_than_output(monkeypatch):
     """Misconfiguration regression: window < max_output_tokens
-    means available input clamps to zero. EVERY call should fail
-    fast with the actionable error rather than appearing to work
-    on tiny prompts."""
+ means available input clamps to zero. EVERY call should fail
+ fast with the actionable error rather than appearing to work
+ on tiny prompts."""
     calls = _stub_httpx(monkeypatch, response_json={"choices": []})
     client = OpenAICompatTextLLMClient(TextLLMSettings(
         provider="openai_compat",
@@ -852,8 +852,8 @@ def test_text_client_overflow_when_window_smaller_than_output(monkeypatch):
 
 def test_embedding_client_skips_chat_budget_check(monkeypatch):
     """The boundary check is for `messages[]` payloads only. The
-    embeddings endpoint sends a different shape; the check must
-    not accidentally engage there."""
+ embeddings endpoint sends a different shape; the check must
+ not accidentally engage there."""
     calls = _stub_httpx(monkeypatch, response_json={
         "data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}],
         "usage": {},

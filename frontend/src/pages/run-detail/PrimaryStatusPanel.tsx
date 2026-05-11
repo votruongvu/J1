@@ -1,9 +1,9 @@
 /**
  * Always-visible state hero rendered directly under the run header.
  *
- * Wave 9B: branches on the Wave-9A 6-state UI surface (PENDING /
+ * branches on the 6-state UI surface (PENDING /
  * RUNNING / COMPLETED / COMPLETED_WITH_WARNINGS / FAILED / CANCELLED)
- * computed by `projectUiState()`. The underlying `INGESTION_STATUS_*`
+ * computed by `projectUiState`. The underlying `INGESTION_STATUS_*`
  * literal (A–F) picks the specific copy + the failure-vs-warning
  * accent so operators see "completed without enrichment" rendered
  * differently from "completed with warnings".
@@ -31,20 +31,20 @@ interface PrimaryStatusPanelProps {
   run: IngestionRun | null;
   events: ProgressEvent[];
   /**
-   * Wave 9B — the enrichment overlay snapshot (loaded by the
-   * parent page from the `/enrichment-result` endpoint). When
-   * present, refines the COMPLETED branch into completed_with /
-   * completed_without / completed_with_warnings. When absent,
-   * the projector falls back to the run-level status alone.
-   */
+ * the enrichment overlay snapshot (loaded by the
+ * parent page from the `/enrichment-result` endpoint). When
+ * present, refines the COMPLETED branch into completed_with /
+ * completed_without / completed_with_warnings. When absent,
+ * the projector falls back to the run-level status alone.
+ */
   enrichmentSignals?: EnrichmentSignals;
   /**
-   * Wave 10 — the aggregated final-ingestion-report payload, when
-   * available. The panel prefers this over the per-artifact
-   * signals because the report carries the backend's authoritative
-   * `final_status` literal + `final_status_reason` copy. Absent /
-   * null falls back to the per-artifact derivation used by Wave 9B.
-   */
+ * the aggregated final-ingestion-report payload, when
+ * available. The panel prefers this over the per-artifact
+ * signals because the report carries the backend's authoritative
+ * `final_status` literal + `final_status_reason` copy. Absent /
+ * null falls back to the per-artifact derivation used by.
+ */
   finalReport?: FinalIngestionReportPayload | null;
 }
 
@@ -85,9 +85,9 @@ export function PrimaryStatusPanel({
   finalReport,
 }: PrimaryStatusPanelProps) {
   const outputs = useMemo(() => deriveOutputs(events), [events]);
-  // Wave 10 — prefer the aggregated report's `final_status` over
+  // prefer the aggregated report's `final_status` over
   // the per-artifact projection. Falls back when the report is
-  // null (pre-Wave-10 runs, in-flight runs).
+  // null (pre- runs, in-flight runs).
   const uiState = useMemo<UiRunState | null>(
     () => projectUiStateFromReport(
       run, finalReport ?? null, enrichmentSignals ?? {},

@@ -25,28 +25,28 @@ _TABLE_NAME = "artifacts"
 # we filter on equality, never full-text search them.
 _CREATE_TABLE_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS {_TABLE_NAME} USING fts5(
-    artifact_id UNINDEXED,
-    artifact_type UNINDEXED,
-    title,
-    extracted_text,
-    source_document_id UNINDEXED,
-    source_location UNINDEXED,
-    confidence UNINDEXED,
-    review_status UNINDEXED,
-    checksum UNINDEXED,
-    created_at UNINDEXED,
-    byte_size UNINDEXED,
-    run_id UNINDEXED,
-    chunk_id UNINDEXED
+ artifact_id UNINDEXED,
+ artifact_type UNINDEXED,
+ title,
+ extracted_text,
+ source_document_id UNINDEXED,
+ source_location UNINDEXED,
+ confidence UNINDEXED,
+ review_status UNINDEXED,
+ checksum UNINDEXED,
+ created_at UNINDEXED,
+ byte_size UNINDEXED,
+ run_id UNINDEXED,
+ chunk_id UNINDEXED
 )
 """
 
 _INSERT_SQL = f"""
 INSERT INTO {_TABLE_NAME} (
-    artifact_id, artifact_type, title, extracted_text,
-    source_document_id, source_location, confidence,
-    review_status, checksum, created_at, byte_size,
-    run_id, chunk_id
+ artifact_id, artifact_type, title, extracted_text,
+ source_document_id, source_location, confidence,
+ review_status, checksum, created_at, byte_size,
+ run_id, chunk_id
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
@@ -294,12 +294,12 @@ _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 def _sanitize_fts_query(query: str) -> str:
     """Strip punctuation and join tokens with OR for natural-language queries.
 
-    Why: FTS5 treats `?`, `:`, `*`, `(`, `)` as query operators, so a question
-    like "where is the requirement?" raises a syntax error. Implicit AND
-    (FTS5's default for space-separated tokens) is also too strict — common
-    stop words drop recall to zero on natural-language input. Joining with OR
-    matches any token; BM25 ranking still surfaces the best matches first.
-    """
+ Why: FTS5 treats `?`, `:`, `*`, `(`, `)` as query operators, so a question
+ like "where is the requirement?" raises a syntax error. Implicit AND
+ (FTS5's default for space-separated tokens) is also too strict — common
+ stop words drop recall to zero on natural-language input. Joining with OR
+ matches any token; BM25 ranking still surfaces the best matches first.
+ """
     tokens = _FTS_TOKEN_RE.findall(query)
     return " OR ".join(tokens)
 
@@ -355,11 +355,11 @@ def _row_to_hit(row, *, with_score: bool) -> SearchHit:
 def _scope_to_sql(scope: QueryScope) -> tuple[str, list]:
     """Translate a `QueryScope` into a SQL fragment + bind parameters.
 
-    Returned fragment is ANDed onto the caller's existing WHERE clause.
-    `WorkspaceScope` is the no-op default (empty fragment). `RunScope`
-    appends an exact-match equality on `run_id` so BM25 ranking sees
-    only rows from that run.
-    """
+ Returned fragment is ANDed onto the caller's existing WHERE clause.
+ `WorkspaceScope` is the no-op default (empty fragment). `RunScope`
+ appends an exact-match equality on `run_id` so BM25 ranking sees
+ only rows from that run.
+ """
     if isinstance(scope, RunScope):
         return ("AND run_id = ?", [scope.run_id])
     if isinstance(scope, WorkspaceScope):

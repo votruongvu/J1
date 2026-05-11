@@ -119,7 +119,7 @@ ALLOWED_SCOPES: frozenset[str] = frozenset({
 @dataclass(frozen=True)
 class StepRecommendation:
     """One per-step recommendation. `scope=none` for disabled steps;
-    otherwise scope describes the breadth of the step's work."""
+ otherwise scope describes the breadth of the step's work."""
 
     step: str
     enabled: bool
@@ -134,7 +134,7 @@ class StepRecommendation:
 @dataclass(frozen=True)
 class ChunkingRecommendation:
     """Specialised step record for chunking — strategy + per-strategy
-    knobs the chunker reads."""
+ knobs the chunker reads."""
 
     enabled: bool
     strategy: str
@@ -145,7 +145,7 @@ class ChunkingRecommendation:
 @dataclass(frozen=True)
 class PostCompileSignals:
     """Aggregate signals that drove the recommendations. The audit log
-    + Planning Report render these so reviewers can trace decisions."""
+ + Planning Report render these so reviewers can trace decisions."""
 
     has_clear_headings: bool
     has_meaningful_tables: bool
@@ -162,9 +162,9 @@ class PostCompileSignals:
 class ContentReport:
     """Content-shape summary for the FE Planning Report tab.
 
-    Mirrors the LLM-output schema's `content_report` so the FE has a
-    single source of truth regardless of whether the rule-based or
-    the LLM-assisted plan won."""
+ Mirrors the LLM-output schema's `content_report` so the FE has a
+ single source of truth regardless of whether the rule-based or
+ the LLM-assisted plan won."""
 
     language: str | None
     page_count: int | None
@@ -241,14 +241,14 @@ def build_post_compile_assessment(
 ) -> PostCompileAssessment:
     """Run the rule-based post-compile assessment.
 
-    Pure deterministic function. Composes a Processing Plan from:
-      * The Document Understanding output (type / bias / importance).
-      * The parsed-content manifest (counts, parse quality scores).
-      * The merged DocumentProfile (extension, scanned-page hints,
-        text-extractability ratio).
-      * The Lightweight Content Digest (heading outline, page mix).
+ Pure deterministic function. Composes a Processing Plan from:
+ * The Document Understanding output (type / bias / importance).
+ * The parsed-content manifest (counts, parse quality scores).
+ * The merged DocumentProfile (extension, scanned-page hints,
+ text-extractability ratio).
+ * The Lightweight Content Digest (heading outline, page mix).
 
-    Caller decides whether to layer LLM-assisted overrides on top."""
+ Caller decides whether to layer LLM-assisted overrides on top."""
     signals = _derive_signals(
         understanding=understanding,
         manifest=manifest,
@@ -687,7 +687,7 @@ def _pages_with_item_type(
     manifest: ParsedContentManifest | None, type_prefix: str,
 ) -> set[int]:
     """Return the set of page indices that contain at least one item
-    whose `type` starts with `type_prefix` (case-insensitive)."""
+ whose `type` starts with `type_prefix` (case-insensitive)."""
     if manifest is None:
         return set()
     out: set[int] = set()
@@ -703,8 +703,8 @@ def _pages_with_low_confidence(
     manifest: ParsedContentManifest | None,
 ) -> set[int]:
     """Pages where the parser flagged low confidence. Falls back to
-    an empty set when the parser doesn't surface per-block confidence
-    metadata."""
+ an empty set when the parser doesn't surface per-block confidence
+ metadata."""
     if manifest is None:
         return set()
     out: set[int] = set()
@@ -726,8 +726,8 @@ def _pages_with_low_confidence(
 
 def _candidate_entity_types(document_type: DocumentType) -> tuple[str, ...]:
     """Type-aware seed list for graph extraction. The graph builder
-    uses these as a hint when the deployment supports it; producers
-    that don't read it ignore the field."""
+ uses these as a hint when the deployment supports it; producers
+ that don't read it ignore the field."""
     return {
         DocumentType.SOFTWARE_ARCHITECTURE: (
             "system", "service", "component", "module", "actor",

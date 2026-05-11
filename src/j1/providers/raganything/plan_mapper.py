@@ -7,19 +7,19 @@ later means swapping this mapper module — the core
 
 Mapping summary:
 
-  fast      → parse_method="txt"
-              image / formula processing OFF unless explicitly
-              required by the plan.
-              table processing only when required.
+ fast → parse_method="txt"
+ image / formula processing OFF unless explicitly
+ required by the plan.
+ table processing only when required.
 
-  standard  → parse_method="auto"
-              image / table / formula processing follow the plan's
-              required_capabilities + optional_capabilities.
+ standard → parse_method="auto"
+ image / table / formula processing follow the plan's
+ required_capabilities + optional_capabilities.
 
-  deep      → parse_method="ocr" when the plan requires `OCR`,
-              otherwise "auto".
-              image / table / formula processing all enabled.
-              Quality warnings recorded for later optimisation.
+ deep → parse_method="ocr" when the plan requires `OCR`,
+ otherwise "auto".
+ image / table / formula processing all enabled.
+ Quality warnings recorded for later optimisation.
 
 When a capability the plan requires is not supported by the current
 RAGAnything install (per `RAGAnythingSettings.supports_*` defaults
@@ -31,10 +31,10 @@ re-route the document to a different adapter.
 
 Env precedence (final runtime decision order):
 
-    AssessmentPlan
-    > project / profile policy (not yet implemented)
-    > adapter defaults (this module's tables)
-    > env defaults (RAGAnythingSettings allowed_parse_methods etc.)
+ AssessmentPlan
+ > project / profile policy (not yet implemented)
+ > adapter defaults (this module's tables)
+ > env defaults (RAGAnythingSettings allowed_parse_methods etc.)
 """
 
 from __future__ import annotations
@@ -73,9 +73,9 @@ _MODE_TO_PARSE_METHOD: dict[CompileMode, str] = {
 
 class CompileCapabilityUnsupported(Exception):
     """Raised when an `AssessmentPlan` requires a capability the
-    underlying parser doesn't support AND the plan's fallback policy
-    is `FAIL`. Caller (compile activity) maps this to a stage
-    failure with the missing capability in the failure_message."""
+ underlying parser doesn't support AND the plan's fallback policy
+ is `FAIL`. Caller (compile activity) maps this to a stage
+ failure with the missing capability in the failure_message."""
 
     def __init__(self, capability: Capability, message: str) -> None:
         super().__init__(message)
@@ -85,35 +85,35 @@ class CompileCapabilityUnsupported(Exception):
 @dataclass(frozen=True)
 class CompileConfig:
     """RAGAnything-specific compile config derived from an
-    AssessmentPlan. Output is intentionally split into TWO buckets
-    that travel different paths to RAGAnything:
+ AssessmentPlan. Output is intentionally split into TWO buckets
+ that travel different paths to RAGAnything:
 
-      * `parser_kwargs` — values forwarded to
-        `process_document_complete(...)`. Today: only `parse_method`.
-        (Future: `lang`, `device`, `start_page`, etc. as RAGAnything
-        exposes them at the parser level.)
+ * `parser_kwargs` — values forwarded to
+ `process_document_complete(...)`. Today: only `parse_method`.
+ (Future: `lang`, `device`, `start_page`, etc. as RAGAnything
+ exposes them at the parser level.)
 
-      * `config_overrides` — values set on the `RAGAnythingConfig`
-        object before the `RAGAnything` instance is constructed.
-        Today: `enable_image_processing`, `enable_table_processing`,
-        `enable_equation_processing` — the per-capability toggles
-        RAGAnything's CONFIG layer accepts. The bridge applies them
-        defensively (only the fields the installed `RAGAnythingConfig`
-        actually exposes get set), so a vendor version that drops
-        a flag still works.
+ * `config_overrides` — values set on the `RAGAnythingConfig`
+ object before the `RAGAnything` instance is constructed.
+ Today: `enable_image_processing`, `enable_table_processing`,
+ `enable_equation_processing` — the per-capability toggles
+ RAGAnything's CONFIG layer accepts. The bridge applies them
+ defensively (only the fields the installed `RAGAnythingConfig`
+ actually exposes get set), so a vendor version that drops
+ a flag still works.
 
-    This split matters because RAGAnything's `process_document_complete`
-    does NOT take `enable_image_processing` etc. as kwargs — those are
-    config-level, not call-level. Mixing them at the call site was the
-    earlier-iteration mistake that the docstring + tests now guard
-    against.
+ This split matters because RAGAnything's `process_document_complete`
+ does NOT take `enable_image_processing` etc. as kwargs — those are
+ config-level, not call-level. Mixing them at the call site was the
+ earlier-iteration mistake that the docstring + tests now guard
+ against.
 
-    `warnings` + `unhandled_capabilities` carry the "couldn't honour
-    the plan" signal. With the per-capability flags now applied at
-    the config level, these only fire when the deployment EXPLICITLY
-    marks a capability unsupported via `J1_RAGANYTHING_SUPPORTS_*`,
-    or for capabilities (OCR) that ride on parse_method.
-    """
+ `warnings` + `unhandled_capabilities` carry the "couldn't honour
+ the plan" signal. With the per-capability flags now applied at
+ the config level, these only fire when the deployment EXPLICITLY
+ marks a capability unsupported via `J1_RAGANYTHING_SUPPORTS_*`,
+ or for capabilities (OCR) that ride on parse_method.
+ """
 
     parse_method: str
     enable_image_processing: bool
@@ -128,18 +128,18 @@ class CompileConfig:
     def to_parser_kwargs(self) -> dict[str, object]:
         """Kwargs forwarded to `RAGAnything.process_document_complete`.
 
-        Today this is `{parse_method}`. As RAGAnything exposes more
-        parser-level args (`lang`, `device`, `start_page`, …) the
-        mapper grows the dict; the bridge call site stays
-        `**parser_kwargs` so it doesn't need to enumerate them.
-        """
+ Today this is `{parse_method}`. As RAGAnything exposes more
+ parser-level args (`lang`, `device`, `start_page`, …) the
+ mapper grows the dict; the bridge call site stays
+ `**parser_kwargs` so it doesn't need to enumerate them.
+ """
         return {"parse_method": self.parse_method}
 
     def to_config_overrides(self) -> dict[str, object]:
         """Field-name → value dict for `RAGAnythingConfig`. The
-        bridge applies these defensively (`setattr` only when the
-        installed version exposes the field) so a vendor-side
-        rename surfaces as a warning, not a crash."""
+ bridge applies these defensively (`setattr` only when the
+ installed version exposes the field) so a vendor-side
+ rename surfaces as a warning, not a crash."""
         return {
             "enable_image_processing": self.enable_image_processing,
             "enable_table_processing": self.enable_table_processing,
@@ -152,18 +152,18 @@ def map_assessment_to_raganything_config(
     settings: RAGAnythingSettings,
 ) -> CompileConfig:
     """Translate an AssessmentPlan into a `CompileConfig` for the
-    RAGAnything bridge.
+ RAGAnything bridge.
 
-    Honours the plan's `mode` + `required_capabilities` first.
-    Falls back to `settings` only for fields the plan doesn't
-    speak to (currently: nothing — `settings.parse_method` is
-    deliberately ignored in favour of the mode-derived value, since
-    the plan supersedes env at compile time).
+ Honours the plan's `mode` + `required_capabilities` first.
+ Falls back to `settings` only for fields the plan doesn't
+ speak to (currently: nothing — `settings.parse_method` is
+ deliberately ignored in favour of the mode-derived value, since
+ the plan supersedes env at compile time).
 
-    Raises `CompileCapabilityUnsupported` only when the plan's
-    `fallback_policy=FAIL` AND a required capability isn't
-    serviceable. Default policy degrades with warnings.
-    """
+ Raises `CompileCapabilityUnsupported` only when the plan's
+ `fallback_policy=FAIL` AND a required capability isn't
+ serviceable. Default policy degrades with warnings.
+ """
     warnings: list[str] = []
 
     # ---- parse_method ---------------------------------------------
@@ -235,16 +235,16 @@ def map_assessment_to_raganything_config(
     # instance, so plan-driven switches DO reach the parser. The
     # only "unhandled" cases left are:
     #
-    #   * The deployment explicitly disabled support via
-    #     `J1_RAGANYTHING_SUPPORTS_*`. Operators use this when their
-    #     vendor build doesn't have the capability wired (e.g. a
-    #     pinned version where `enable_equation_processing` was
-    #     removed).
-    #   * OCR, which doesn't have a config-level toggle — it rides
-    #     on `parse_method`. We already promoted DEEP+OCR plans to
-    #     `parse_method="ocr"` above; what's left here is the case
-    #     where the plan requires OCR but parse_method resolved to
-    #     something else (e.g. allowed_parse_methods constrained it).
+    #  * The deployment explicitly disabled support via
+    #  `J1_RAGANYTHING_SUPPORTS_*`. Operators use this when their
+    #  vendor build doesn't have the capability wired (e.g. a
+    #  pinned version where `enable_equation_processing` was
+    #  removed).
+    #  * OCR, which doesn't have a config-level toggle — it rides
+    #  on `parse_method`. We already promoted DEEP+OCR plans to
+    #  `parse_method="ocr"` above; what's left here is the case
+    #  where the plan requires OCR but parse_method resolved to
+    #  something else (e.g. allowed_parse_methods constrained it).
     unhandled: list[str] = []
     for required in plan.required_capabilities:
         if required in (
@@ -332,7 +332,7 @@ def _capability_enabled(
 
 def _allowed_parse_methods(settings: RAGAnythingSettings) -> frozenset[str]:
     """Deployment-defined parse-method allow-list. When unset (the
-    common case), every method MinerU's CLI accepts is permitted."""
+ common case), every method MinerU's CLI accepts is permitted."""
     raw = getattr(settings, "allowed_parse_methods", None)
     if raw is None or not raw:
         return frozenset(VALID_PARSE_METHODS)
@@ -346,10 +346,10 @@ def _settings_supports(
     default: bool,
 ) -> bool:
     """Read an optional `supports_*` field from settings. The settings
-    dataclass doesn't define these today; deployments that want to
-    constrain capabilities can subclass `RAGAnythingSettings` or set
-    the corresponding env vars (`J1_RAGANYTHING_SUPPORTS_IMAGE` etc.)
-    once those are wired through `load_raganything_settings`."""
+ dataclass doesn't define these today; deployments that want to
+ constrain capabilities can subclass `RAGAnythingSettings` or set
+ the corresponding env vars (`J1_RAGANYTHING_SUPPORTS_IMAGE` etc.)
+ once those are wired through `load_raganything_settings`."""
     return bool(getattr(settings, field_name, default))
 
 

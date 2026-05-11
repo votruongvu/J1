@@ -1,14 +1,14 @@
-"""Wave 2 completion tests: DomainEnrichmentPolicy + planner consumption.
+""" completion tests: DomainEnrichmentPolicy + planner consumption.
 
 Covers three contract surfaces:
 
 1. `DomainEnrichmentPolicy` dataclass — vocabulary validation,
-   to_dict serialisation, defaults.
+ to_dict serialisation, defaults.
 2. `DomainPack` YAML loader — civil pack carries an `enrichment_policy`
-   block that round-trips through the loader; missing block → defaults.
+ block that round-trips through the loader; missing block → defaults.
 3. `assess_post_compile_enrich(signals, domain_pack=…)` — policy
-   overlays correctly upgrade/downgrade verdicts, apply force /
-   denied task lists, and respect blocking conditions.
+ overlays correctly upgrade/downgrade verdicts, apply force /
+ denied task lists, and respect blocking conditions.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def test_policy_defaults_to_auto_with_empty_lists():
 
 def test_policy_vocabulary_constants_are_stable():
     """The wire vocabulary is documented in YAML and rendered by the
-    FE — pin the values so a rename here is intentional."""
+ FE — pin the values so a rename here is intentional."""
     assert ENRICHMENT_POLICY_AUTO == "auto"
     assert ENRICHMENT_POLICY_ALWAYS == "always"
     assert ENRICHMENT_POLICY_NEVER == "never"
@@ -95,7 +95,7 @@ def test_civil_pack_carries_always_policy_from_yaml():
 
 def test_general_pack_uses_auto_policy_defaults():
     """The general pack carries no policy block in YAML → defaults
-    to auto/empty so it's a no-op in the assessor."""
+ to auto/empty so it's a no-op in the assessor."""
     pack = build_general_pack()
     assert pack.enrichment_policy.policy == ENRICHMENT_POLICY_AUTO
     assert pack.enrichment_policy.force_recommended_tasks == ()
@@ -107,8 +107,8 @@ def test_general_pack_uses_auto_policy_defaults():
 
 def _good_signals() -> SourceSignals:
     """Plain-text-doc compile signals — no images/tables, good quality.
-    The rule-based assessor returns OPTIONAL for these; domain policy
-    can lift to RECOMMENDED."""
+ The rule-based assessor returns OPTIONAL for these; domain policy
+ can lift to RECOMMENDED."""
     return SourceSignals(
         compile_status="succeeded",
         final_compile_quality="good",
@@ -118,8 +118,8 @@ def _good_signals() -> SourceSignals:
 
 
 def test_assessor_without_pack_matches_legacy_behaviour():
-    """Calling without `domain_pack` keeps the pre-Wave-2 verdict
-    intact. No domain_id, empty policy dict."""
+    """Calling without `domain_pack` keeps the pre- verdict
+ intact. No domain_id, empty policy dict."""
     plan = assess_post_compile_enrich(_good_signals())
     assert plan.overall_recommendation == EnrichRecommendation.OPTIONAL
     assert plan.recommended_tasks == ()
@@ -129,7 +129,7 @@ def test_assessor_without_pack_matches_legacy_behaviour():
 
 def test_assessor_with_general_pack_is_a_noop_overlay():
     """The general pack's auto/empty policy should not alter the
-    assessor's verdict — same as no-pack except `domain_id` is set."""
+ assessor's verdict — same as no-pack except `domain_id` is set."""
     plan = assess_post_compile_enrich(
         _good_signals(), domain_pack=build_general_pack(),
     )
@@ -141,7 +141,7 @@ def test_assessor_with_general_pack_is_a_noop_overlay():
 
 def test_civil_pack_upgrades_optional_to_recommended():
     """policy=always lifts OPTIONAL → RECOMMENDED and force tasks
-    show up in recommended_tasks."""
+ show up in recommended_tasks."""
     plan = assess_post_compile_enrich(
         _good_signals(), domain_pack=build_civil_engineering_pack(),
     )
@@ -160,7 +160,7 @@ def test_civil_pack_upgrades_optional_to_recommended():
 
 def test_policy_never_collapses_to_skip_with_blocking_reason():
     """A domain that opts out (policy=never) collapses the verdict
-    to SKIP with a domain-cited blocking reason."""
+ to SKIP with a domain-cited blocking reason."""
     pack = DomainPack(
         id="opted_out_domain",
         display_name="Opted-Out",
@@ -175,7 +175,7 @@ def test_policy_never_collapses_to_skip_with_blocking_reason():
 
 def test_denied_tasks_remove_recommendations_added_by_signals():
     """A pack that denies a task should drop it from recommended_tasks
-    even when compile signals would otherwise pick it up."""
+ even when compile signals would otherwise pick it up."""
     pack = DomainPack(
         id="no_images",
         display_name="No-Images",
@@ -201,7 +201,7 @@ def test_denied_tasks_remove_recommendations_added_by_signals():
 
 def test_blocking_compile_failure_wins_over_policy_always():
     """policy=always must NEVER override a blocking compile failure.
-    SKIP for safety reasons is authoritative."""
+ SKIP for safety reasons is authoritative."""
     pack = build_civil_engineering_pack()
     plan = assess_post_compile_enrich(
         SourceSignals(compile_status="failed"), domain_pack=pack,
@@ -213,8 +213,8 @@ def test_blocking_compile_failure_wins_over_policy_always():
 
 
 def test_plan_payload_round_trips_with_domain_fields():
-    """`PostCompileEnrichPlan.from_payload(plan.to_payload())` must
-    preserve the new domain_id + domain_enrichment_policy fields."""
+    """`PostCompileEnrichPlan.from_payload(plan.to_payload)` must
+ preserve the new domain_id + domain_enrichment_policy fields."""
     pack = build_civil_engineering_pack()
     original = assess_post_compile_enrich(_good_signals(), domain_pack=pack)
     payload = original.to_payload()
@@ -231,8 +231,8 @@ def test_plan_payload_round_trips_with_domain_fields():
 
 def test_enricher_accepts_domain_prompt_addon_kwarg():
     """The base enricher learns the addon at construction so the
-    LLM call site can prepend it. Empty default keeps legacy
-    behaviour for callers that don't pass it."""
+ LLM call site can prepend it. Empty default keeps legacy
+ behaviour for callers that don't pass it."""
     from j1.enrichers import DocumentClassifier
     from j1.profiles.model import Profile
 
@@ -248,8 +248,8 @@ def test_enricher_accepts_domain_prompt_addon_kwarg():
 
 def test_enricher_metadata_records_domain_provenance():
     """When an enricher runs with a domain addon, every artifact's
-    metadata must carry `domain_id` + an `addon_applied` flag so the
-    provenance trail is auditable downstream."""
+ metadata must carry `domain_id` + an `addon_applied` flag so the
+ provenance trail is auditable downstream."""
     from j1.enrichers import DocumentClassifier
     from j1.profiles.model import Profile
 
@@ -266,7 +266,7 @@ def test_enricher_metadata_records_domain_provenance():
 
 def test_enricher_without_domain_addon_keeps_legacy_metadata():
     """No domain context → no domain_id / addon flag in metadata.
-    The legacy-shape contract is preserved for runs without a pack."""
+ The legacy-shape contract is preserved for runs without a pack."""
     from j1.enrichers import DocumentClassifier
     from j1.profiles.model import Profile
 

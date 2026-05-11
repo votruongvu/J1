@@ -5,7 +5,7 @@ exercise the prompt-building, schema-validation, and graceful-
 failure paths without burning real LLM calls.
 
 Cross-check tests (judge → runner → service) live in
-test_validation_runner.py and test_validation_checks_phase3.py.
+test_validation_runner.py and test_validation_checks_.py.
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ from j1.validation.judge import coverage_threshold
 
 
 class _StubLLM:
-    """Records every extract() call + returns canned responses.
+    """Records every extract call + returns canned responses.
 
-    Tests vary `responses` (a list — popped in order) to simulate
-    different LLM behaviours."""
+ Tests vary `responses` (a list — popped in order) to simulate
+ different LLM behaviours."""
 
     def __init__(
         self,
@@ -52,7 +52,7 @@ class _StubLLM:
 
 def test_coverage_judgement_round_trips_canned_response():
     """The stub LLM returns the schema-valid response; the judge
-    marshals it into a typed `CoverageJudgement`."""
+ marshals it into a typed `CoverageJudgement`."""
     stub = _StubLLM(
         responses=[
             {
@@ -83,7 +83,7 @@ def test_coverage_judgement_round_trips_canned_response():
 
 def test_coverage_returns_none_for_empty_points():
     """No expected points → no judge call. Saves a round trip and
-    keeps the runner-side conditional honest."""
+ keeps the runner-side conditional honest."""
     stub = _StubLLM()
     judge = DefaultLLMJudge(text_client=stub)
     result = judge.judge_answer_covers_points(
@@ -105,8 +105,8 @@ def test_coverage_returns_none_for_empty_answer():
 
 def test_coverage_returns_none_on_llm_failure():
     """Critical: when the LLM raises, the judge returns None, not
-    a "coverage = 0" judgement. The runner branches on None to
-    OMIT the optional check rather than count silence as failed."""
+ a "coverage = 0" judgement. The runner branches on None to
+ OMIT the optional check rather than count silence as failed."""
     stub = _StubLLM(raise_on_call=True)
     judge = DefaultLLMJudge(text_client=stub)
     result = judge.judge_answer_covers_points(
@@ -117,7 +117,7 @@ def test_coverage_returns_none_on_llm_failure():
 
 def test_coverage_returns_none_on_malformed_response():
     """LLM returned valid JSON but not the expected shape (missing
-    `points` key, or wrong type). Same OMIT-the-check signal."""
+ `points` key, or wrong type). Same OMIT-the-check signal."""
     stub = _StubLLM(responses=[{"wrong_shape": True}])
     judge = DefaultLLMJudge(text_client=stub)
     result = judge.judge_answer_covers_points(
@@ -128,7 +128,7 @@ def test_coverage_returns_none_on_malformed_response():
 
 def test_coverage_drops_invalid_point_entries():
     """A judge that returns extra noise (non-dict items) must not
-    crash. The judge filters and returns the usable subset."""
+ crash. The judge filters and returns the usable subset."""
     stub = _StubLLM(
         responses=[
             {
@@ -179,8 +179,8 @@ def test_grounding_returns_typed_claims():
 
 def test_grounding_low_severity_does_not_count_as_significant():
     """The contract: low-severity flags are tolerated. Locked here
-    so a future judge prompt change can't silently start failing
-    the grounding check on hedging language."""
+ so a future judge prompt change can't silently start failing
+ the grounding check on hedging language."""
     stub = _StubLLM(
         responses=[
             {
@@ -252,8 +252,8 @@ def test_fabrication_clean_abstain_passes():
 
 def test_judge_with_no_llm_client_returns_none_everywhere():
     """Belt-and-braces: every judge method must collapse to None
-    when no LLM is configured. The runner relies on this for the
-    `judge=None` ergonomics."""
+ when no LLM is configured. The runner relies on this for the
+ `judge=None` ergonomics."""
     judge = DefaultLLMJudge(text_client=None)
     assert (
         judge.judge_answer_covers_points(
@@ -291,6 +291,6 @@ def test_coverage_ratio_matches_covered_total():
 
 def test_coverage_ratio_empty_points_is_one():
     """Vacuous truth — no points to cover means full coverage. The
-    runner doesn't trigger the check on empty point lists, but
-    locking the property keeps reasoning local."""
+ runner doesn't trigger the check on empty point lists, but
+ locking the property keeps reasoning local."""
     assert CoverageJudgement(points=[]).coverage_ratio == 1.0

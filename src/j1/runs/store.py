@@ -45,28 +45,28 @@ class IngestionRunStore(Protocol):
 
     def purge(self, ctx: ProjectContext, run_id: str) -> bool:
         """Physically remove every snapshot of `run_id` from storage.
-        Used by hard-delete (purge). Returns True iff at least one
-        snapshot was removed; False if `run_id` wasn't present
-        (idempotent — purge is allowed to run twice).
+ Used by hard-delete (purge). Returns True iff at least one
+ snapshot was removed; False if `run_id` wasn't present
+ (idempotent — purge is allowed to run twice).
 
-        Distinct from `upsert(run, status=DELETED)` (soft-delete),
-        which appends a tombstone snapshot the reader skips. Purge
-        rewrites the JSONL minus every line for `run_id` so the
-        bytes physically leave the audit area."""
+ Distinct from `upsert(run, status=DELETED)` (soft-delete),
+ which appends a tombstone snapshot the reader skips. Purge
+ rewrites the JSONL minus every line for `run_id` so the
+ bytes physically leave the audit area."""
         ...
 
 
 class JsonlIngestionRunStore:
     """JSONL append-only store. Latest snapshot wins on read.
 
-    Writes are O(1) (append). Reads scan the file and keep the
-    last-written entry per `run_id`. For workspaces with thousands of
-    runs this is still cheap (sequential read of a few MB); switch
-    to a SQLite-backed implementation if write volume justifies it.
+ Writes are O(1) (append). Reads scan the file and keep the
+ last-written entry per `run_id`. For workspaces with thousands of
+ runs this is still cheap (sequential read of a few MB); switch
+ to a SQLite-backed implementation if write volume justifies it.
 
-    Located under the workspace's `audit` area to share retention /
-    backup semantics with the audit log — if you snapshot the audit
-    directory you also snapshot the run records."""
+ Located under the workspace's `audit` area to share retention /
+ backup semantics with the audit log — if you snapshot the audit
+ directory you also snapshot the run records."""
 
     def __init__(self, workspace: WorkspaceResolver) -> None:
         self._workspace = workspace
@@ -119,10 +119,10 @@ class JsonlIngestionRunStore:
     def purge(self, ctx: ProjectContext, run_id: str) -> bool:
         """Rewrite the JSONL file minus every line for `run_id`.
 
-        Atomic via tmp-file + rename so a crash mid-purge can't
-        leave a half-written file. Skips work entirely when the
-        path doesn't exist or no matching lines are found —
-        callers can invoke this idempotently."""
+ Atomic via tmp-file + rename so a crash mid-purge can't
+ leave a half-written file. Skips work entirely when the
+ path doesn't exist or no matching lines are found —
+ callers can invoke this idempotently."""
         path = self._path(ctx)
         if not path.exists():
             return False
@@ -179,8 +179,8 @@ class JsonlIngestionRunStore:
 def _run_from_payload(payload: dict) -> IngestionRun:
     """Hydrate an `IngestionRun` from a JSONL payload.
 
-    Tolerates field additions across versions: unknown fields go
-    ignored, missing fields fall back to dataclass defaults."""
+ Tolerates field additions across versions: unknown fields go
+ ignored, missing fields fall back to dataclass defaults."""
     from datetime import datetime
 
     def _parse_dt(value: object) -> datetime | None:

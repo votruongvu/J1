@@ -35,12 +35,12 @@ EVENT_TYPE_HEADER = "X-KB-Event-Type"
 class WebhookDeliveryService:
     """HTTP delivery with HMAC signing, exponential backoff, and per-attempt logging.
 
-    Synchronous by design — the `WebhookEventSubscriber` runs `deliver`
-    in a worker pool so publication never blocks. `deliver` never raises:
-    every outcome (success, retry exhausted, transport error) becomes a
-    `WebhookDeliveryRecord` written to the store. That isolation is what
-    keeps webhook failures from breaking core ingestion.
-    """
+ Synchronous by design — the `WebhookEventSubscriber` runs `deliver`
+ in a worker pool so publication never blocks. `deliver` never raises:
+ every outcome (success, retry exhausted, transport error) becomes a
+ `WebhookDeliveryRecord` written to the store. That isolation is what
+ keeps webhook failures from breaking core ingestion.
+ """
 
     def __init__(
         self,
@@ -64,10 +64,10 @@ class WebhookDeliveryService:
     ) -> WebhookDeliveryRecord:
         """Deliver `event` to `subscription`. Returns the *final* record.
 
-        Per-attempt records are appended to the store as the retry loop
-        progresses; the returned record is the last one (success or
-        terminal failure).
-        """
+ Per-attempt records are appended to the store as the retry loop
+ progresses; the returned record is the last one (success or
+ terminal failure).
+ """
         delivery_id = self._delivery_id_factory()
         body = json.dumps(to_cloudevent(event)).encode("utf-8")
         headers = self._build_headers(subscription, event, body)

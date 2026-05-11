@@ -102,7 +102,7 @@ def test_projector_accepts_snake_case_field_names(tmp_path):
 
 def test_projector_falls_back_to_synthetic_chunk_id(tmp_path):
     """Producer didn't set a chunk_id → synthesised from artifact_id +
-    index. Keeps the chunk addressable via the detail endpoint."""
+ index. Keeps the chunk addressable via the detail endpoint."""
     path = tmp_path / "anon.json"
     path.write_text(json.dumps({"body": "no id"}), encoding="utf-8")
 
@@ -126,7 +126,7 @@ def test_projector_accepts_content_field_alias(tmp_path):
 
 def test_projector_drops_chunk_with_no_body(tmp_path):
     """A chunk with no text isn't reviewable — drop it rather than
-    surface a blank row to the FE."""
+ surface a blank row to the FE."""
     path = tmp_path / "empty.json"
     path.write_text(json.dumps([
         {"chunk_id": "ok", "body": "fine"},
@@ -251,8 +251,8 @@ def test_projector_normalises_linked_assets(tmp_path):
 
 def test_projector_falls_back_to_artifact_id_for_source(tmp_path):
     """When the chunk dict didn't pin a source_artifact_id, the chunk's
-    own producing artifact IS the source — surface that so the FE
-    can always link to a content endpoint."""
+ own producing artifact IS the source — surface that so the FE
+ can always link to a content endpoint."""
     path = tmp_path / "no-src.json"
     path.write_text(json.dumps({"chunk_id": "ch", "body": "hi"}), encoding="utf-8")
 

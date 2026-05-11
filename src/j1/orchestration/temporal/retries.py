@@ -42,11 +42,11 @@ class RetryPolicySpec:
 # budget before surfacing the real cause.
 #
 # Names match the conventions used in the codebase:
-#   * `ApplicationError.type=` strings (J1_INGEST_*) — raised by
-#     workflows / activities when a required step fails.
-#   * Bare exception class names — Temporal compares
-#     `exception.__class__.__name__` against this list when no typed
-#     `ApplicationError` was raised.
+#  * `ApplicationError.type=` strings (J1_INGEST_*) — raised by
+#  workflows / activities when a required step fails.
+#  * Bare exception class names — Temporal compares
+#  `exception.__class__.__name__` against this list when no typed
+#  `ApplicationError` was raised.
 #
 # Network / HTTP-5xx LLM errors are deliberately NOT here — those are
 # transient and benefit from retry. The list distinguishes between

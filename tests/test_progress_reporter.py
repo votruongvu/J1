@@ -90,9 +90,9 @@ def test_plan_generated_carries_plan_payload(reporter, sink, ctx):
 
 def test_step_started_resets_progress_throttle(reporter, sink, ctx):
     """Reporting step.started must clear any prior throttle state for
-    the same (run, stage, step) so a re-run of the same step starts
-    fresh — otherwise the first progress tick of the second run would
-    be silently dropped."""
+ the same (run, stage, step) so a re-run of the same step starts
+ fresh — otherwise the first progress tick of the second run would
+ be silently dropped."""
     # Drive the throttle into a non-zero state.
     reporter.report_step_started(ctx, run_id="r1", stage="COMPILE", step="parse")
     reporter.report_step_progress(
@@ -122,7 +122,7 @@ def test_step_started_resets_progress_throttle(reporter, sink, ctx):
 
 def test_step_progress_throttles_sub_5_percent_deltas(reporter, sink, ctx):
     """Drop progress events that move <5% to keep audit volume bounded.
-    0% and 100% are always emitted (step boundaries)."""
+ 0% and 100% are always emitted (step boundaries)."""
     reporter.report_step_progress(
         ctx, run_id="r1", stage="C", step="x", progress_percent=0,
     )
@@ -145,7 +145,7 @@ def test_step_progress_throttles_sub_5_percent_deltas(reporter, sink, ctx):
 
 def test_step_progress_clamps_out_of_range_percentages(reporter, sink, ctx):
     """Defensive: out-of-range values get clamped to 0..100 rather
-    than written verbatim into the audit log."""
+ than written verbatim into the audit log."""
     reporter.report_step_progress(
         ctx, run_id="r1", stage="C", step="x", progress_percent=-10,
     )
@@ -224,9 +224,9 @@ def test_run_completed_clean_uses_info_severity(reporter, sink, ctx):
 
 def test_run_cancelled_records_cancelled_action_and_reason(reporter, sink, ctx):
     """`run.cancelled` is its own terminal event (not a flavour of
-    run.failed). The audit `action` and the payload `status` both
-    carry the cancellation marker so consumers can distinguish
-    operator-cancellation from a failure."""
+ run.failed). The audit `action` and the payload `status` both
+ carry the cancellation marker so consumers can distinguish
+ operator-cancellation from a failure."""
     reporter.report_run_cancelled(
         ctx, run_id="r1", reason="operator-cancelled",
     )
@@ -271,8 +271,8 @@ def test_composite_fans_out_to_every_delegate(ctx):
 
 def test_composite_returns_first_non_empty_event_id(ctx, sink):
     """Composite returns the first delegate's event_id so callers
-    that need a stable cursor (e.g. the SSE Last-Event-Id resume
-    point) get the audit-backed reporter's ID."""
+ that need a stable cursor (e.g. the SSE Last-Event-Id resume
+ point) get the audit-backed reporter's ID."""
     audit = AuditProgressReporter(DefaultAuditRecorder(sink))
     noop = NoopProgressReporter()
 
@@ -285,7 +285,7 @@ def test_composite_returns_first_non_empty_event_id(ctx, sink):
 
 def test_composite_swallows_delegate_exceptions(ctx, sink):
     """A failing delegate must NOT prevent other delegates from
-    seeing the event — telemetry is best-effort."""
+ seeing the event — telemetry is best-effort."""
     class _Boom:
         def report_run_created(self, *_, **__):
             raise RuntimeError("boom")
@@ -306,6 +306,6 @@ def test_composite_swallows_delegate_exceptions(ctx, sink):
 
 def test_noop_reporter_implements_protocol():
     """The Noop reporter must satisfy the `ProgressReporter` Protocol
-    so test doubles can be used wherever a reporter is expected."""
+ so test doubles can be used wherever a reporter is expected."""
     reporter = NoopProgressReporter()
     assert isinstance(reporter, ProgressReporter)

@@ -1,15 +1,15 @@
 """Tests for the provider adapter packages.
 
 Covers:
-  * RAGAnything adapters: lazy-import path raises `ProviderUnavailable`
-    when `raganything` isn't installed
-  * Test-friendly path: passing a custom `compile_callable` skips the
-    vendor library entirely
-  * Adapter normalises exceptions into `ArtifactProcessingResult` with
-    `status=FAILED` (so workflow retries / error handling work)
-  * Same shape for `RAGAnythingGraphBuilder` + `RAGAnythingQueryProvider`
-  * Graphify adapter: same lazy-import + injectable callable pattern
-  * Settings loaders honour `J1_RAGANYTHING_*` and `J1_GRAPHIFY_*`
+ * RAGAnything adapters: lazy-import path raises `ProviderUnavailable`
+ when `raganything` isn't installed
+ * Test-friendly path: passing a custom `compile_callable` skips the
+ vendor library entirely
+ * Adapter normalises exceptions into `ArtifactProcessingResult` with
+ `status=FAILED` (so workflow retries / error handling work)
+ * Same shape for `RAGAnythingGraphBuilder` + `RAGAnythingQueryProvider`
+ * Graphify adapter: same lazy-import + injectable callable pattern
+ * Settings loaders honour `J1_RAGANYTHING_*` and `J1_GRAPHIFY_*`
 """
 
 import os
@@ -121,9 +121,9 @@ def test_raganything_settings_explicit_subdirs_take_precedence():
 
 def test_vlm_max_concurrency_defaults_to_one():
     """Safest default: serial dispatch. Self-hosted single-process VLM
-    servers (LM Studio / single llama-server) crash under MinerU's
-    default high-fanout pattern; default 1 protects them out of the
-    box."""
+ servers (LM Studio / single llama-server) crash under MinerU's
+ default high-fanout pattern; default 1 protects them out of the
+ box."""
     s = load_raganything_settings(env={
         "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
     })
@@ -140,7 +140,7 @@ def test_vlm_max_concurrency_honours_explicit_value():
 
 def test_vlm_max_concurrency_clamps_to_one_on_zero_or_negative():
     """Defensive: 0 / negative would mean 'no requests ever' which is
-    nonsensical. Clamp to 1."""
+ nonsensical. Clamp to 1."""
     for raw in ("0", "-1", "-100"):
         s = load_raganything_settings(env={
             "J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1",
@@ -162,9 +162,9 @@ def test_vlm_max_concurrency_falls_back_on_garbage_value():
 
 def test_vlm_max_concurrency_propagates_to_mineru_env(monkeypatch):
     """Bridge propagates `vlm_http_max_concurrency` into the env var
-    `mineru_vl_utils` reads (`MINERU_VL_MAX_CONCURRENCY`). Default 1
-    sets it explicitly so MinerU doesn't fall back to its own
-    high-fanout default."""
+ `mineru_vl_utils` reads (`MINERU_VL_MAX_CONCURRENCY`). Default 1
+ sets it explicitly so MinerU doesn't fall back to its own
+ high-fanout default."""
     from j1.providers.raganything._bridge import _apply_vlm_http_client_env
 
     # Clear any pre-existing operator override so we observe what
@@ -184,8 +184,8 @@ def test_vlm_max_concurrency_env_propagation_respects_operator_override(
     monkeypatch,
 ):
     """Operator-supplied `MINERU_VL_MAX_CONCURRENCY` always wins —
-    consistent with the bridge's policy on every other MINERU_VL_*
-    env var. Lets ops override at runtime without changing settings."""
+ consistent with the bridge's policy on every other MINERU_VL_*
+ env var. Lets ops override at runtime without changing settings."""
     from j1.providers.raganything._bridge import _apply_vlm_http_client_env
 
     monkeypatch.delenv("MINERU_VL_SERVER", raising=False)
@@ -236,15 +236,15 @@ def test_compiler_uses_injected_callable():
 def _simulate_raganything_missing(monkeypatch):
     """Make `import raganything` (anywhere) raise `ImportError`.
 
-    The `[raganything]` extra is now installed in the framework's own
-    Docker image + recommended local-dev install, so `raganything` is
-    actually present in the test environment. To verify the bridge's
-    missing-package error path, we have to force the import to fail.
+ The `[raganything]` extra is now installed in the framework's own
+ Docker image + recommended local-dev install, so `raganything` is
+ actually present in the test environment. To verify the bridge's
+ missing-package error path, we have to force the import to fail.
 
-    Patches `builtins.__import__` for the duration of the test, plus
-    deletes any cached `raganything` modules so the bridge's
-    `import raganything` re-runs the import and hits our hook.
-    """
+ Patches `builtins.__import__` for the duration of the test, plus
+ deletes any cached `raganything` modules so the bridge's
+ `import raganything` re-runs the import and hits our hook.
+ """
     import builtins
     import sys
 
@@ -264,7 +264,7 @@ def _simulate_raganything_missing(monkeypatch):
 
 def test_compiler_default_path_raises_when_raganything_missing(monkeypatch):
     """Without the `raganything` package installed, the real bridge
-    raises `ProviderUnavailable` with an actionable pip-install hint."""
+ raises `ProviderUnavailable` with an actionable pip-install hint."""
     _simulate_raganything_missing(monkeypatch)
     compiler = RAGAnythingCompiler.from_default(
         llm_registry=_registry(),
@@ -276,8 +276,8 @@ def test_compiler_default_path_raises_when_raganything_missing(monkeypatch):
 
 def test_compiler_normalises_exceptions_to_failed_result():
     """A callable raising a non-`ProviderUnavailable` exception turns
-    into a FAILED result, never a raw raise — keeps the workflow retry
-    path predictable."""
+ into a FAILED result, never a raw raise — keeps the workflow retry
+ path predictable."""
     def boom(_request):
         raise RuntimeError("upstream blew up")
 
@@ -294,7 +294,7 @@ def test_compiler_normalises_exceptions_to_failed_result():
 
 def test_compiler_lets_provider_unavailable_propagate():
     """Vendor-missing errors must be observable to operators — don't
-    swallow them into a FAILED result."""
+ swallow them into a FAILED result."""
     def boom(_request):
         raise ProviderUnavailable("install raganything")
 
@@ -404,7 +404,7 @@ def test_graphify_settings_enabled():
 
 def test_graphify_default_cli_path_raises_when_binary_missing(monkeypatch):
     """`mode=cli` (default) raises with an actionable message when
-    `J1_GRAPHIFY_COMMAND` isn't on $PATH."""
+ `J1_GRAPHIFY_COMMAND` isn't on $PATH."""
     import shutil
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     builder = GraphifyGraphBuilder.from_default(
@@ -416,14 +416,14 @@ def test_graphify_default_cli_path_raises_when_binary_missing(monkeypatch):
 
 def _simulate_graphify_missing(monkeypatch):
     """Make `import graphify` raise `ImportError` for the duration
-    of one test.
+ of one test.
 
-    The `[all-providers]` extra now pulls the `graphifyy` PyPI
-    distribution (which provides the `graphify` import name + CLI),
-    so the module is actually present in the test environment. To
-    verify the bridge's missing-package error path, force the
-    import to fail.
-    """
+ The `[all-providers]` extra now pulls the `graphifyy` PyPI
+ distribution (which provides the `graphify` import name + CLI),
+ so the module is actually present in the test environment. To
+ verify the bridge's missing-package error path, force the
+ import to fail.
+ """
     import builtins
     import sys
 
@@ -443,7 +443,7 @@ def _simulate_graphify_missing(monkeypatch):
 
 def test_graphify_python_mode_raises_when_module_missing(monkeypatch):
     """`mode=python` raises with a pip-install hint when the package
-    isn't on sys.path."""
+ isn't on sys.path."""
     _simulate_graphify_missing(monkeypatch)
     builder = GraphifyGraphBuilder.from_default(
         settings=GraphifySettings(mode="python"),
@@ -484,7 +484,7 @@ def test_graphify_uses_injected_callable():
 
 def test_compiler_from_default_loads_env_processor(monkeypatch):
     """`J1_RAGANYTHING_COMPILER_PROCESSOR` lets a deployment wire the
-    compile callable via env without subclassing."""
+ compile callable via env without subclassing."""
     import sys, types
     from j1.llm import register_trusted_prefix
 
@@ -615,10 +615,10 @@ def test_settings_loaders_pick_up_processor_env_vars():
 def _install_fake_raganything(monkeypatch, *, captured: dict):
     """Inject a fake `raganything` module at sys.modules level.
 
-    Records the constructor kwargs and what process_document_complete /
-    aquery were called with. Writes one fake output file when the
-    compile path runs so the bridge has something to walk.
-    """
+ Records the constructor kwargs and what process_document_complete /
+ aquery were called with. Writes one fake output file when the
+ compile path runs so the bridge has something to walk.
+ """
     import sys
     import types
 
@@ -667,11 +667,11 @@ def _install_fake_raganything(monkeypatch, *, captured: dict):
 def test_compiler_default_path_invokes_real_raganything_when_installed(
     monkeypatch, tmp_path,
 ):
-    """from_default() → bridge → vendor `RAGAnything.process_document_complete`.
+    """from_default → bridge → vendor `RAGAnything.process_document_complete`.
 
-    Proves the real default path reaches the vendor boundary; only the
-    vendor module itself is replaced.
-    """
+ Proves the real default path reaches the vendor boundary; only the
+ vendor module itself is replaced.
+ """
     captured: dict = {}
     _install_fake_raganything(monkeypatch, captured=captured)
 
@@ -709,7 +709,7 @@ def test_compiler_default_path_invokes_real_raganything_when_installed(
 def test_query_provider_default_path_invokes_real_aquery_when_installed(
     monkeypatch,
 ):
-    """from_default() → bridge → vendor `RAGAnything.aquery`."""
+    """from_default → bridge → vendor `RAGAnything.aquery`."""
     captured: dict = {}
     _install_fake_raganything(monkeypatch, captured=captured)
 
@@ -728,7 +728,7 @@ def test_query_provider_default_path_invokes_real_aquery_when_installed(
 def test_graph_builder_default_path_invokes_real_storage_walk_when_installed(
     monkeypatch, tmp_path,
 ):
-    """from_default() → bridge → walks RAGAnything storage dir for graph files."""
+    """from_default → bridge → walks RAGAnything storage dir for graph files."""
     captured: dict = {}
     _install_fake_raganything(monkeypatch, captured=captured)
 
@@ -760,12 +760,12 @@ def test_graph_builder_default_path_invokes_real_storage_walk_when_installed(
 def test_graphify_cli_default_path_invokes_subprocess_when_binary_present(
     monkeypatch, tmp_path,
 ):
-    """from_default() → bridge → runs the CLI subprocess.
+    """from_default → bridge → runs the CLI subprocess.
 
-    Mocks `shutil.which` (binary discovery) and `subprocess.run` only.
-    The bridge composes argv, writes input.json, and parses output.json
-    for real.
-    """
+ Mocks `shutil.which` (binary discovery) and `subprocess.run` only.
+ The bridge composes argv, writes input.json, and parses output.json
+ for real.
+ """
     import json as _json
     import subprocess
     from types import SimpleNamespace

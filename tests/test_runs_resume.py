@@ -20,7 +20,7 @@ from j1.runs.resume import (
 @dataclass
 class _StubRequest:
     """Duck-types `ProjectProcessingRequest` for the fields the helpers
-    need. Keeps the test surface independent of workflow imports."""
+ need. Keeps the test surface independent of workflow imports."""
     compiler_kind: str = "raganything"
     enricher_kind: str | None = "composite_enricher"
     graph_builder_kind: str | None = "lightrag_graph"
@@ -42,7 +42,7 @@ def test_settings_snapshot_captures_every_resume_field():
 
 def test_compute_settings_hash_is_order_stable():
     """Hash MUST be invariant to dict key order — operators may build
-    the dict from FastAPI body / env / defaults in any order."""
+ the dict from FastAPI body / env / defaults in any order."""
     snap_a = build_settings_snapshot(_StubRequest())
     snap_b = {k: snap_a[k] for k in reversed(list(snap_a.keys()))}
     assert compute_settings_hash(snap_a) == compute_settings_hash(snap_b)
@@ -50,8 +50,8 @@ def test_compute_settings_hash_is_order_stable():
 
 def test_compute_settings_hash_normalises_strenum_vs_str():
     """A `StrEnum` wrapper compares equal to the bare string — the
-    workflow's `policy` field is a `StrEnum`, the REST request body
-    is a plain string. Same hash."""
+ workflow's `policy` field is a `StrEnum`, the REST request body
+ is a plain string. Same hash."""
     from enum import StrEnum
 
     class _Policy(StrEnum):
@@ -91,17 +91,17 @@ def test_settings_diff_empty_when_compatible():
 
 def test_resumable_stages_is_narrow():
     """Only enrich + graph are resumable in v1. Compile, chunks, and
-    index always re-run — see RESUMABLE_STAGES docstring for the why.
-    Locking the set with a test guards against accidental widening
-    that would skip stages whose outputs aren't actually persisted
-    across runs."""
+ index always re-run — see RESUMABLE_STAGES docstring for the why.
+ Locking the set with a test guards against accidental widening
+ that would skip stages whose outputs aren't actually persisted
+ across runs."""
     assert RESUMABLE_STAGES == frozenset({"enrich", "graph"})
 
 
 def test_build_resume_snapshot_partitions_completed_vs_failed():
     """`step_results_payload` is the workflow's flat list of step
-    outcomes; the snapshot partitions them so the resume endpoint
-    can answer "what's safe to skip" without re-walking the list."""
+ outcomes; the snapshot partitions them so the resume endpoint
+ can answer "what's safe to skip" without re-walking the list."""
     snap = build_resume_snapshot(
         request=_StubRequest(),
         step_results_payload=[

@@ -12,52 +12,52 @@ guide ([rest-api.md](rest-api.md), [security.md](security.md),
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Outer / transport adapters                                     │
-│    j1.adapters.rest      (REST + OpenAPI + SSE)                 │
-│    j1.adapters.webhook   (HTTP webhook delivery + CloudEvents)  │
-│    j1.adapters.<broker>  (Kafka / RabbitMQ / SQS — not shipped) │
-│    j1.adapters.mcp       (MCP — not shipped, see mcp-status.md) │
+│ Outer / transport adapters │
+│ j1.adapters.rest (REST + OpenAPI + SSE) │
+│ j1.adapters.webhook (HTTP webhook delivery + CloudEvents) │
+│ j1.adapters.<broker> (Kafka / RabbitMQ / SQS — not shipped) │
+│ j1.adapters.mcp (MCP — not shipped, see mcp-status.md) │
 └────────────────────────────────────┬────────────────────────────┘
-                                     │  depends on
-                                     ▼
+ │ depends on
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Integration boundary  (j1.integration.*)                       │
-│    Ports + DTOs + ApplicationFacade  (services)                 │
-│    SecurityContext, ApiKeyAuthenticator, JwtAuthenticator       │
-│    ApplicationEvent, ApplicationEventBus                        │
-│    EventPublisher Protocol + Noop / InMemory / Bus / Composite  │
-│    CloudEvents 1.0 mapper, signing, subscriptions               │
-│    AnswerStreamingService, BufferingStreamHandler               │
-│    BulkExportService, BulkImportService, schemas                │
+│ Integration boundary (j1.integration.*) │
+│ Ports + DTOs + ApplicationFacade (services) │
+│ SecurityContext, ApiKeyAuthenticator, JwtAuthenticator │
+│ ApplicationEvent, ApplicationEventBus │
+│ EventPublisher Protocol + Noop / InMemory / Bus / Composite │
+│ CloudEvents 1.0 mapper, signing, subscriptions │
+│ AnswerStreamingService, BufferingStreamHandler │
+│ BulkExportService, BulkImportService, schemas │
 └────────────────────────────────────┬────────────────────────────┘
-                                     │  depends on
-                                     ▼
+ │ depends on
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Application services                                           │
-│    DocumentIntakeService, ProcessingService,                    │
-│    HybridQueryEngine, SqliteSearchIndexer,                      │
-│    ProjectActivities, KnowledgeProcessingActivities, ...        │
+│ Application services │
+│ DocumentIntakeService, ProcessingService, │
+│ HybridQueryEngine, SqliteSearchIndexer, │
+│ ProjectActivities, KnowledgeProcessingActivities,... │
 └────────────────────────────────────┬────────────────────────────┘
-                                     │  depends on
-                                     ▼
+ │ depends on
+ ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Core / domain                                                  │
-│    intake, processing, query, search, artifacts,                │
-│    audit, cost, review, connectors, enrichers,                  │
-│    orchestration (Temporal)                                     │
+│ Core / domain │
+│ intake, processing, query, search, artifacts, │
+│ audit, cost, review, connectors, enrichers, │
+│ orchestration (Temporal) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 The arrow points one way. Static enforcement:
 
 - [`tests/test_integration_layer.py::test_core_modules_do_not_import_external_layer`](../tests/test_integration_layer.py)
-  AST-walks every core module and fails if it imports `j1.integration.*`
-  or `j1.adapters.*`.
+ AST-walks every core module and fails if it imports `j1.integration.*`
+ or `j1.adapters.*`.
 - [`tests/test_integration_layer.py::test_integration_does_not_import_protocol_adapters`](../tests/test_integration_layer.py)
-  asserts `j1.integration` never imports `j1.adapters.*`.
+ asserts `j1.integration` never imports `j1.adapters.*`.
 - [`tests/test_external_integration_consistency.py::test_no_outer_layer_imports_in_core_subpackages`](../tests/test_external_integration_consistency.py)
-  is a second copy of the guard with an explicit allowlist of core
-  packages — catches new packages that forget the rule.
+ is a second copy of the guard with an explicit allowlist of core
+ packages — catches new packages that forget the rule.
 
 ---
 
@@ -110,7 +110,7 @@ publishers, the AsyncAPI spec, and any future broker adapter.
 Success:
 
 ```json
-{ "requestId": "9f1c…", "data": { ... }, "meta": {} }
+{ "requestId": "9f1c…", "data": {... }, "meta": {} }
 ```
 
 Error:
@@ -138,20 +138,20 @@ semantic fields. Verified by
 
 ### Error-code catalogue
 
-| Code                    | HTTP    | Surface |
+| Code | HTTP | Surface |
 |-------------------------|---------|---------|
-| `UNAUTHENTICATED`       | 401     | REST (security middleware) |
-| `INSUFFICIENT_SCOPE`    | 403     | REST (`Depends(scope_required(...))`) |
-| `INVALID_IDENTIFIER`    | 400     | Bad tenant / project / document id |
-| `INVALID_ARGUMENT`      | 400     | `ValueError` |
-| `DOCUMENT_NOT_FOUND`    | 404     | `DocumentNotFoundError` |
-| `ARTIFACT_NOT_FOUND`    | 404     | `ArtifactNotFoundError` |
-| `REVIEW_ITEM_NOT_FOUND` | 404     | `ReviewItemNotFoundError` |
-| `APPLICATION_ERROR`     | 400     | Temporal `ApplicationError` |
-| `J1_ERROR`              | 400     | Any other `J1Error` subclass |
-| `HTTP_<status>`         | matches | `HTTPException` raised inside the adapter |
+| `UNAUTHENTICATED` | 401 | REST (security middleware) |
+| `INSUFFICIENT_SCOPE` | 403 | REST (`Depends(scope_required(...))`) |
+| `INVALID_IDENTIFIER` | 400 | Bad tenant / project / document id |
+| `INVALID_ARGUMENT` | 400 | `ValueError` |
+| `DOCUMENT_NOT_FOUND` | 404 | `DocumentNotFoundError` |
+| `ARTIFACT_NOT_FOUND` | 404 | `ArtifactNotFoundError` |
+| `REVIEW_ITEM_NOT_FOUND` | 404 | `ReviewItemNotFoundError` |
+| `APPLICATION_ERROR` | 400 | Temporal `ApplicationError` |
+| `J1_ERROR` | 400 | Any other `J1Error` subclass |
+| `HTTP_<status>` | matches | `HTTPException` raised inside the adapter |
 | `ANSWER_GENERATION_FAILED` | n/a (SSE event) | `answer.failed` on streamed answer |
-| Bulk import codes       | n/a (response body) | `INVALID_JSON`, `SCHEMA_VALIDATION_FAILED`, `PROJECT_MISMATCH`, `DOCUMENT_NOT_FOUND`, `INTEGRITY_MISMATCH` |
+| Bulk import codes | n/a (response body) | `INVALID_JSON`, `SCHEMA_VALIDATION_FAILED`, `PROJECT_MISMATCH`, `DOCUMENT_NOT_FOUND`, `INTEGRITY_MISMATCH` |
 
 A test
 ([`test_rest_error_codes_are_documented`](../tests/test_external_integration_consistency.py))
@@ -160,17 +160,17 @@ asserts every code raised by a REST handler appears in either
 
 ### Scope catalogue
 
-| Scope            | What it grants |
+| Scope | What it grants |
 |------------------|----------------|
-| `kb:read`        | Generic reads (documents, artifacts, citations, sources, reviews, capabilities, exports) |
-| `kb:search`      | `POST /search` |
-| `kb:retrieve`    | `POST /retrieve` |
-| `kb:answer`      | `POST /answer` (incl. SSE streaming) |
-| `kb:ingest`      | Document upload + ingestion-job start + bulk import |
-| `kb:feedback`    | `POST /feedback` |
-| `kb:admin`       | Project provisioning, workflow control, review decisions |
-| `kb:audit.read`  | Audit + cost reports + feedback exports |
-| `kb:delete`      | Reserved (no endpoints currently bound) |
+| `kb:read` | Generic reads (documents, artifacts, citations, sources, reviews, capabilities, exports) |
+| `kb:search` | `POST /search` |
+| `kb:retrieve` | `POST /retrieve` |
+| `kb:answer` | `POST /answer` (incl. SSE streaming) |
+| `kb:ingest` | Document upload + ingestion-job start + bulk import |
+| `kb:feedback` | `POST /feedback` |
+| `kb:admin` | Project provisioning, workflow control, review decisions |
+| `kb:audit.read` | Audit + cost reports + feedback exports |
+| `kb:delete` | Reserved (no endpoints currently bound) |
 
 Defined once in
 [`j1/integration/security/scopes.py`](../src/j1/integration/security/scopes.py)
@@ -187,15 +187,15 @@ Webhook / event delivery failures **must never** break a core
 operation. Enforced at four layers:
 
 1. **`ApplicationEventBus.publish`** — wraps every subscriber call;
-   subscriber exceptions are logged, not propagated.
+ subscriber exceptions are logged, not propagated.
 2. **`WebhookEventSubscriber.handle`** — wraps registry lookup and
-   executor submission.
+ executor submission.
 3. **`WebhookDeliveryService.deliver`** — wraps the HTTP call and
-   retry loop; transport errors become `WebhookTransportError` and are
-   recorded as failed attempts. Returns instead of raising.
+ retry loop; transport errors become `WebhookTransportError` and are
+ recorded as failed attempts. Returns instead of raising.
 4. **`EventPublisher.publish`** — Protocol contract: implementations
-   MUST NOT raise. Built-in `Noop` / `InMemory` / `Bus` / `Composite`
-   all comply (and the latter three are tested for it).
+ MUST NOT raise. Built-in `Noop` / `InMemory` / `Bus` / `Composite`
+ all comply (and the latter three are tested for it).
 
 Asserted by
 [`tests/test_webhook_delivery.py::test_bus_publish_does_not_raise_when_webhook_dies`](../tests/test_webhook_delivery.py),
@@ -235,11 +235,11 @@ The recipe is consistent across REST, webhook, MCP, queue:
 
 1. Create a sibling package under `j1.adapters.<name>`.
 2. Map your transport's request → an existing port call on
-   `ApplicationFacade` (or a `BulkImportService`, or
-   `AnswerStreamingService`, or …).
+ `ApplicationFacade` (or a `BulkImportService`, or
+ `AnswerStreamingService`, or …).
 3. Map the port's return value → your transport's response.
 4. Use `SecurityContext` from the inbound auth layer; never invent a
-   second one.
+ second one.
 5. Use the existing `ApplicationEvent` model for any events you emit.
 6. Honour the no-raise contract on any publication / delivery call.
 

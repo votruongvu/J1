@@ -7,23 +7,23 @@
  * AssessmentPlan is built pre-compile (cheap deterministic profile
  * + `DefaultAssessmentPlanner`) and persisted as part of the
  * report once compile finishes. While compile is in flight, this
- * panel shows a loading state — the assessment phase shows up on
+ * panel shows a loading state — the assessment stage shows up on
  * the LiveTimeline as `assess_compile_strategy` so operators
  * still see progress.
  *
  * Information surfaced (from richest to terse):
- *   * Selected mode (big badge) + one-line description of what
- *     that mode does.
- *   * Confidence (badge color-coded by bucket).
- *   * Document type + complexity (signals the planner picked up).
- *   * Required + optional capabilities (pills).
- *   * Risk flags (warning style).
- *   * Reason the planner chose this mode.
- *   * Resolved compile config (parse_method actually sent to the
- *     parser).
- *   * Mode escalation hint when the safety retry layer changed the
- *     mode mid-flight (initial → final).
- *   * Unhandled capabilities the deployment couldn't honour.
+ * * Selected mode (big badge) + one-line description of what
+ * that mode does.
+ * * Confidence (badge color-coded by bucket).
+ * * Document type + complexity (signals the planner picked up).
+ * * Required + optional capabilities (pills).
+ * * Risk flags (warning style).
+ * * Reason the planner chose this mode.
+ * * Resolved compile config (parse_method actually sent to the
+ * parser).
+ * * Mode escalation hint when the safety retry layer changed the
+ * mode mid-flight (initial → final).
+ * * Unhandled capabilities the deployment couldn't honour.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -52,13 +52,13 @@ import {
 interface AssessmentPlanPanelProps {
   runId: string;
   /**
-   * Latest SSE event from the parent page. When relevant events
-   * arrive (step lifecycle, run terminal) the panel re-fetches its
-   * artifact so a panel that mounted BEFORE compile finished
-   * eventually picks up the report once it lands. Without this the
-   * panel sticks at "missing" forever for runs the user navigated
-   * into mid-flight.
-   */
+ * Latest SSE event from the parent page. When relevant events
+ * arrive (step lifecycle, run terminal) the panel re-fetches its
+ * artifact so a panel that mounted BEFORE compile finished
+ * eventually picks up the report once it lands. Without this the
+ * panel sticks at "missing" forever for runs the user navigated
+ * into mid-flight.
+ */
   latestEvent?: ProgressEvent | null;
 }
 
@@ -203,8 +203,8 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
       </div>
 
       {/* Hero: recommended path is the headline. Mode + confidence
-          are subordinate context — operators read intent first,
-          adapter detail second. */}
+ are subordinate context — operators read intent first,
+ adapter detail second. */}
       <div
         className="assessment-plan-panel__recommendation"
         data-testid="assessment-plan-recommendation"
@@ -326,9 +326,9 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
       )}
 
       {/* Extraction evidence — what the parser ACTUALLY extracted.
-          Distinct from chunking status (verified separately).
-          Reading this answers "did parsing work?"; reading the
-          Chunks tab answers "did chunking land?". */}
+ Distinct from chunking status (verified separately).
+ Reading this answers "did parsing work?"; reading the
+ Chunks tab answers "did chunking land?". */}
       <div
         className="assessment-plan-panel__extraction"
         data-testid="assessment-plan-extraction"

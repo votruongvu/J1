@@ -43,8 +43,8 @@ def test_duplicate_registration_rejected():
 
 def test_kind_disagreement_rejected():
     """If `adapter.kind` disagrees with `manifest.name`, the registry
-    refuses to index the entry — would otherwise create a confusing
-    two-identity adapter."""
+ refuses to index the entry — would otherwise create a confusing
+ two-identity adapter."""
     reg = CapabilityRegistry()
     adapter = MockCompilerAdapter(kind="confused")
     with pytest.raises(RegistryError, match="kind="):

@@ -68,8 +68,8 @@ EVENT_TYPE_TO_CHANNEL: dict[str, str] = {
 def channel_for(event_type: str) -> str:
     """Return the logical channel for `event_type`, or `kb.audit` for unknowns.
 
-    Routing every unknown / custom event to `kb.audit` is the safe
-    default — operators get a single subscription that catches
-    everything new without code changes.
-    """
+ Routing every unknown / custom event to `kb.audit` is the safe
+ default — operators get a single subscription that catches
+ everything new without code changes.
+ """
     return EVENT_TYPE_TO_CHANNEL.get(event_type, CHANNEL_AUDIT)

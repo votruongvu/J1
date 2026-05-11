@@ -14,7 +14,7 @@ PUBLISHER_TYPE_MEMORY = "memory"
 PUBLISHER_TYPE_BUS = "bus"
 
 # Allowed values mirror the publishers shipped with the framework. Real
-# broker adapters (kafka, rabbitmq, sqs, ...) extend this set in their
+# broker adapters (kafka, rabbitmq, sqs,...) extend this set in their
 # own packages — they map their type string to their own factory.
 _BUILT_IN_TYPES = frozenset({
     PUBLISHER_TYPE_NOOP,
@@ -29,17 +29,17 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 class EventPublisherSettings:
     """Publisher configuration read from the environment.
 
-    `publisher_type` selects which built-in publisher to construct.
-    Default is `noop` — production-safe, no external integration.
-    `bus` requires a deployment-supplied `ApplicationEventBus`;
-    construction is the deployment's responsibility.
+ `publisher_type` selects which built-in publisher to construct.
+ Default is `noop` — production-safe, no external integration.
+ `bus` requires a deployment-supplied `ApplicationEventBus`;
+ construction is the deployment's responsibility.
 
-    `include_sensitive_payloads` is **disabled** by default. When false
-    the publisher / mappers must omit potentially sensitive fields
-    (full document content, full answer text, raw query content beyond
-    a short summary, feedback comments). When true the deployment has
-    explicitly opted in — typically only for trusted internal brokers.
-    """
+ `include_sensitive_payloads` is **disabled** by default. When false
+ the publisher / mappers must omit potentially sensitive fields
+ (full document content, full answer text, raw query content beyond
+ a short summary, feedback comments). When true the deployment has
+ explicitly opted in — typically only for trusted internal brokers.
+ """
 
     publisher_type: str = PUBLISHER_TYPE_NOOP
     producer: str = "j1"

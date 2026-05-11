@@ -107,9 +107,9 @@ class UnknownProcessorError(LookupError):
 @dataclass(frozen=True)
 class _PersistOutcome:
     """Tiny helper-return for `_persist_enrichment_payload`. Carries
-    the artifact_id (None on failure) + the error message (None on
-    success). Defined as a private dataclass so the call sites don't
-    need a tuple-unpack convention."""
+ the artifact_id (None on failure) + the error message (None on
+ success). Defined as a private dataclass so the call sites don't
+ need a tuple-unpack convention."""
 
     artifact_id: str | None
     error: str | None
@@ -123,16 +123,16 @@ def _find_existing_enrichment_result(
     document_id: str | None,
 ) -> dict | None:
     """Look for a previously-persisted `enrichment_result` artifact
-    matching this (run, document) pair.
+ matching this (run, document) pair.
 
-    Returns the artifact's JSON payload (with `_artifact_id` set to
-    the registry id) on hit, None on miss. Defensive — registry /
-    file errors fall through to None so the activity re-runs the
-    stage rather than crashing.
+ Returns the artifact's JSON payload (with `_artifact_id` set to
+ the registry id) on hit, None on miss. Defensive — registry /
+ file errors fall through to None so the activity re-runs the
+ stage rather than crashing.
 
-    Lookup is "most recent `enrichment_result` for the run id",
-    matched on `metadata["run_id"]`. Used as an idempotency guard
-    against Temporal activity retries / workflow replays."""
+ Lookup is "most recent `enrichment_result` for the run id",
+ matched on `metadata["run_id"]`. Used as an idempotency guard
+ against Temporal activity retries / workflow replays."""
     import json as _json
 
     from j1.processing.results import ARTIFACT_KIND_ENRICHMENT_RESULT
@@ -178,11 +178,11 @@ def _read_latest_artifact_payload(
     run_id: str,
 ) -> tuple[dict | None, str | None]:
     """Resolve the latest artifact of `kind` for `run_id` and return
-    (payload_dict, artifact_id).
+ (payload_dict, artifact_id).
 
-    Returns (None, None) on miss or on any read / decode error.
-    Best-effort by design — the final-ingestion-report builder
-    tolerates missing payloads + stages remain PENDING in that case."""
+ Returns (None, None) on miss or on any read / decode error.
+ Best-effort by design — the final-ingestion-report builder
+ tolerates missing payloads + stages remain PENDING in that case."""
     import json as _json
     from pathlib import PurePosixPath
     from j1.workspace.layout import WorkspaceArea
@@ -240,19 +240,19 @@ def _resolve_report_source_payloads(
     run_id: str,
     document_id: str | None,  # noqa: ARG001 — reserved for per-doc filtering
 ) -> dict:
-    """Aggregate per-kind payload reads for the Wave-10 final-
-    ingestion-report builder. Returns a dict with the five payloads
-    (each None on miss) plus the artifact-id ref map.
+    """Aggregate per-kind payload reads for the final-
+ ingestion-report builder. Returns a dict with the five payloads
+ (each None on miss) plus the artifact-id ref map.
 
-    All reads are best-effort — any I/O failure produces a missing
-    entry and the report builder stays robust to it.
+ All reads are best-effort — any I/O failure produces a missing
+ entry and the report builder stays robust to it.
 
-    The function reaches into `processing_service._workspace` to
-    resolve paths; that's an intentional cross-module touch — the
-    ingestion-review service's path resolver lives on a different
-    component, and duplicating the small workspace-resolution + path-
-    traversal guard here keeps the activity self-contained without
-    pulling the FE-facing read service into the worker."""
+ The function reaches into `processing_service._workspace` to
+ resolve paths; that's an intentional cross-module touch — the
+ ingestion-review service's path resolver lives on a different
+ component, and duplicating the small workspace-resolution + path-
+ traversal guard here keeps the activity self-contained without
+ pulling the FE-facing read service into the worker."""
     # Lazy import to keep test-time imports thin.
     from j1.processing.results import (
         ARTIFACT_KIND_COMPILE_RESULT_SUMMARY,
@@ -342,9 +342,9 @@ _PROCESSING_SERVICE_FOR_REGISTRY: "dict[int, object]" = {}
 
 def _processing_service_for_registry(artifact_registry):
     """Return the `ProcessingService` bound to the same workspace as
-    `artifact_registry`, registered at activity construction. Falls
-    back to a sentinel whose `_workspace` returns paths that fail
-    the read — making the report builder skip missing artifacts."""
+ `artifact_registry`, registered at activity construction. Falls
+ back to a sentinel whose `_workspace` returns paths that fail
+ the read — making the report builder skip missing artifacts."""
 
     class _NullWorkspace:
         def area(self, _ctx, _area):
@@ -368,10 +368,10 @@ def _persist_enrichment_payload(
     payload: dict,
     actor: str,
 ) -> _PersistOutcome:
-    """Persist the typed `EnrichmentResult.to_payload()` dict via
-    `ProcessingService.persist_enrichment_result`. Best-effort: a
-    write failure surfaces as a populated `error` on the return;
-    the inline payload still flows to the workflow."""
+    """Persist the typed `EnrichmentResult.to_payload` dict via
+ `ProcessingService.persist_enrichment_result`. Best-effort: a
+ write failure surfaces as a populated `error` on the return;
+ the inline payload still flows to the workflow."""
     try:
         record = service.persist_enrichment_result(
             ctx,
@@ -392,18 +392,18 @@ def _augment_with_image_provider_warnings(
     enrichment_result: Any,
     image_provider: Any,
 ) -> Any:
-    """Wave 11A — splice the image-provider's structured warnings
-    onto the image module's `EnrichmentModuleOutcome.warnings`.
+    """splice the image-provider's structured warnings
+ onto the image module's `EnrichmentModuleOutcome.warnings`.
 
-    The image module runs against the adapter without seeing the
-    provider's per-image misses directly; this helper reads
-    `image_provider.last_result()` after the runner finished and
-    rebuilds the typed `EnrichmentResult` with the warnings spliced
-    into the image outcome.
+ The image module runs against the adapter without seeing the
+ provider's per-image misses directly; this helper reads
+ `image_provider.last_result` after the runner finished and
+ rebuilds the typed `EnrichmentResult` with the warnings spliced
+ into the image outcome.
 
-    Pure transformation — no I/O. Returns a new `EnrichmentResult`
-    when warnings exist; passes the input through unchanged when
-    none do."""
+ Pure transformation — no I/O. Returns a new `EnrichmentResult`
+ when warnings exist; passes the input through unchanged when
+ none do."""
     from dataclasses import replace
     from j1.processing.enrichment_overlay import EnrichmentModuleStatus
 
@@ -444,12 +444,12 @@ def _augment_with_image_provider_warnings(
 class _EmptyDetectionContext:
     """Sentinel detection context for pre-compile pack resolution.
 
-    `select_domain(..., detection_enabled=False)` skips per-pack
-    detection entirely, but the registry's signature still expects a
-    detection_context object. This sentinel provides the attribute
-    surface a pack detector would read (all empty) so the selector
-    can run override → workspace → fallback without touching real
-    document content."""
+ `select_domain(..., detection_enabled=False)` skips per-pack
+ detection entirely, but the registry's signature still expects a
+ detection_context object. This sentinel provides the attribute
+ surface a pack detector would read (all empty) so the selector
+ can run override → workspace → fallback without touching real
+ document content."""
 
     title: str = ""
     title_quality: str = "unknown"
@@ -476,10 +476,10 @@ class ProcessingActivities:
         result_cache: ProcessingResultCache | None = None,
         run_store: IngestionRunStore | None = None,
         fast_llm_consult: "FastLLMConsultCallable | None" = None,
-        # Wave 10.5 — optional LLM clients + shared limiter that the
+        # optional LLM clients + shared limiter that the
         # legacy-wrapper enrichment modules consume. When None (tests
         # / dev / deployments without LLM credentials) the wrappers
-        # construct successfully but `can_run()` returns False with
+        # construct successfully but `can_run` returns False with
         # "no LLM client configured" — the runner records each as
         # SKIPPED. Bootstrap wires these from the same role registry
         # the `CompositeEnricher` uses.
@@ -523,14 +523,14 @@ class ProcessingActivities:
         # safe for deployments that haven't migrated their workspace
         # area to include the cache file).
         self._cache = result_cache
-        # Wave 10 — register this (artifact_registry → processing_service)
+        # register this (artifact_registry → processing_service)
         # binding so `_resolve_report_source_payloads` can look it up
         # without changing the helper signature. Activity instances
         # share the workspace via the processing service.
         _PROCESSING_SERVICE_FOR_REGISTRY[id(self._artifacts)] = self._processing
-        # Wave 10.5 — LLM clients + shared limiter for the legacy-
+        # LLM clients + shared limiter for the legacy-
         # wrapper enrichment modules. When None, the wrappers
-        # construct cleanly but `can_run()` returns False with
+        # construct cleanly but `can_run` returns False with
         # "no LLM client configured" so they skip per-run.
         self._enrichment_text_client = enrichment_text_client
         self._enrichment_vision_client = enrichment_vision_client
@@ -561,13 +561,13 @@ class ProcessingActivities:
 
         # ---- Idempotency check ------------------------------------
         # Skip the expensive processor call entirely if a `completed`
-        # result for the same (document_hash, processor_kind, ...)
+        # result for the same (document_hash, processor_kind,...)
         # already exists. This catches:
-        #   - Temporal activity retries after a worker crash, where
-        #     the previous attempt completed successfully but
-        #     Temporal didn't see the heartbeat.
-        #   - Re-runs of a document that was already processed in a
-        #     prior workflow (cache survives across workflows).
+        #  - Temporal activity retries after a worker crash, where
+        #  the previous attempt completed successfully but
+        #  Temporal didn't see the heartbeat.
+        #  - Re-runs of a document that was already processed in a
+        #  prior workflow (cache survives across workflows).
         # `processor_version` and `mode` come from the compiler
         # interface when implementations expose them; the empty
         # default keeps existing compilers working without changes.
@@ -723,12 +723,12 @@ class ProcessingActivities:
         cache_key_parts: dict,
     ) -> None:
         """Mark the cache row as `processing` before invoking the
-        processor. Best-effort, non-blocking — lookup-time gating
-        isn't done today (Temporal's deterministic workflow_id +
-        single-active-attempt-per-activity already prevent the
-        races this would catch). The row exists for operator
-        visibility: the cache file should always answer 'what's
-        happening with this document right now?'."""
+ processor. Best-effort, non-blocking — lookup-time gating
+ isn't done today (Temporal's deterministic workflow_id +
+ single-active-attempt-per-activity already prevent the
+ races this would catch). The row exists for operator
+ visibility: the cache file should always answer 'what's
+ happening with this document right now?'."""
         if self._cache is None:
             return
         try:
@@ -763,10 +763,10 @@ class ProcessingActivities:
     ) -> None:
         """Audit-trail the failure for operators inspecting the cache.
 
-        Doesn't gate retries — Temporal's retry policy is the source
-        of truth for that. We just record what happened so the
-        cache file can answer 'has this document failed before?'
-        without a separate join."""
+ Doesn't gate retries — Temporal's retry policy is the source
+ of truth for that. We just record what happened so the
+ cache file can answer 'has this document failed before?'
+ without a separate join."""
         if self._cache is None:
             return
         try:
@@ -916,14 +916,14 @@ class ProcessingActivities:
         self, input: PersistErrorReportInput,
     ) -> ArtifactActivityResult:
         """Persist the failure-path `error_report` artifact so the FE
-        artifact-listing surface picks it up under the failed run.
+ artifact-listing surface picks it up under the failed run.
 
-        Called from the workflow's FAILED_FINAL handler before
-        `_safe_finalize` so the artifact lands in time for the run's
-        terminal event. Best-effort from the workflow's perspective:
-        any persistence failure is logged but does NOT mask the
-        original `_BusinessRejection` — the workflow re-raises
-        regardless of whether this activity succeeded."""
+ Called from the workflow's FAILED_FINAL handler before
+ `_safe_finalize` so the artifact lands in time for the run's
+ terminal event. Best-effort from the workflow's perspective:
+ any persistence failure is logged but does NOT mask the
+ original `_BusinessRejection` — the workflow re-raises
+ regardless of whether this activity succeeded."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_error_report(
@@ -953,11 +953,11 @@ class ProcessingActivities:
         self, input: PersistValidationReportInput,
     ) -> ArtifactActivityResult:
         """Persist `validation_report.json` summarising
-        `_validate_completion`'s outcome. Called from the workflow at
-        EVERY terminal transition (success or failure) so operators
-        can see WHICH rules ran and which ones tripped without
-        re-running validation. Best-effort — failure here doesn't
-        change the workflow's terminal status."""
+ `_validate_completion`'s outcome. Called from the workflow at
+ EVERY terminal transition (success or failure) so operators
+ can see WHICH rules ran and which ones tripped without
+ re-running validation. Best-effort — failure here doesn't
+ change the workflow's terminal status."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_validation_report(
@@ -985,9 +985,9 @@ class ProcessingActivities:
         self, input: PersistFinalSummaryInput,
     ) -> ArtifactActivityResult:
         """Persist `final_summary.json` at terminal state. Carries the
-        at-a-glance run outcome (status + executed-stage tally +
-        artifact-kind counts + warning count + failure detail).
-        Best-effort like the other terminal-state artifact writes."""
+ at-a-glance run outcome (status + executed-stage tally +
+ artifact-kind counts + warning count + failure detail).
+ Best-effort like the other terminal-state artifact writes."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_final_summary(
@@ -1018,11 +1018,11 @@ class ProcessingActivities:
         self, input: PersistCompileStrategyReportInput,
     ) -> ArtifactActivityResult:
         """Persist the AssessmentPlan + retry-attempts +
-        final-quality verdict as a `compile_strategy_report`
-        artifact. Best-effort — any persistence error is logged
-        inside the activity and the workflow proceeds; the run's
-        compile result is the durable signal, this artifact is
-        purely observability."""
+ final-quality verdict as a `compile_strategy_report`
+ artifact. Best-effort — any persistence error is logged
+ inside the activity and the workflow proceeds; the run's
+ compile result is the durable signal, this artifact is
+ purely observability."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_compile_strategy_report(
@@ -1047,10 +1047,10 @@ class ProcessingActivities:
     def persist_enrichment_result(
         self, input: PersistEnrichmentResultInput,
     ) -> ArtifactActivityResult:
-        """Persist the Wave-6 typed enrichment overlay as an
-        `enrichment_result` artifact. Best-effort — write failure
-        returned in the response; the inline payload is what the
-        workflow + downstream consumers rely on."""
+        """Persist the typed enrichment overlay as an
+ `enrichment_result` artifact. Best-effort — write failure
+ returned in the response; the inline payload is what the
+ workflow + downstream consumers rely on."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_enrichment_result(
@@ -1075,28 +1075,28 @@ class ProcessingActivities:
     def run_enrichment_stage(
         self, input: RunEnrichmentStageInput,
     ) -> RunEnrichmentStageResult:
-        """Run the Wave-6 typed enrichment overlay stage (Wave 6.5).
+        """Run the typed enrichment overlay stage.
 
-        Resolves the domain pack via the registry (override →
-        workspace default → fallback to general), rebuilds the
-        `NormalizedCompileResult` + `PostCompileEnrichPlan` from
-        their persisted payloads, builds an `EnrichmentContext`,
-        runs `CompositeEnrichmentRunner` over the default skeleton
-        module set, and persists the resulting `EnrichmentResult`
-        as an `enrichment_result` artifact.
+ Resolves the domain pack via the registry (override →
+ workspace default → fallback to general), rebuilds the
+ `NormalizedCompileResult` + `PostCompileEnrichPlan` from
+ their persisted payloads, builds an `EnrichmentContext`,
+ runs `CompositeEnrichmentRunner` over the default skeleton
+ module set, and persists the resulting `EnrichmentResult`
+ as an `enrichment_result` artifact.
 
-        Skipped-path handling: when `enrich_plan.should_enrich` is
-        False, the activity short-circuits to
-        `build_skipped_enrichment_result()` (typed sentinel with
-        `status="skipped"` + reason). The artifact is still
-        persisted so downstream consumers see an explicit skipped
-        record rather than the absence of an artifact.
+ Skipped-path handling: when `enrich_plan.should_enrich` is
+ False, the activity short-circuits to
+ `build_skipped_enrichment_result` (typed sentinel with
+ `status="skipped"` + reason). The artifact is still
+ persisted so downstream consumers see an explicit skipped
+ record rather than the absence of an artifact.
 
-        Best-effort persistence: a write failure is recorded on
-        `persist_error` but the inline result is still returned to
-        the workflow, so `require_enrichment_success` enforcement
-        + final-summary copy stay accurate even when the artifact
-        write fails."""
+ Best-effort persistence: a write failure is recorded on
+ `persist_error` but the inline result is still returned to
+ the workflow, so `require_enrichment_success` enforcement
+ + final-summary copy stay accurate even when the artifact
+ write fails."""
         from j1.domains.registry import default_registry, select_domain
         from j1.processing.compile_result import NormalizedCompileResult
         from j1.processing.enrich_assessment import PostCompileEnrichPlan
@@ -1150,7 +1150,7 @@ class ProcessingActivities:
         )
         domain_pack = registry.get(domain_context.selected_domain)
 
-        # Wave 8 — resolve `require_enrichment_success` using the
+        # resolve `require_enrichment_success` using the
         # full precedence chain: request override → domain pack
         # opinion → env fallback → system default. Today the
         # request shape doesn't carry a per-run override; the
@@ -1177,7 +1177,7 @@ class ProcessingActivities:
         )
         require_success = resolved_require_success.require_enrichment_success
 
-        # Wave 8 — idempotency check. When an `enrichment_result`
+        # idempotency check. When an `enrichment_result`
         # artifact already exists for this (run, doc) pair, return
         # the cached payload instead of re-running the runner.
         # Guards against Temporal activity retries / workflow
@@ -1235,13 +1235,13 @@ class ProcessingActivities:
             domain_pack=domain_pack,
             initial_plan=initial_plan,
         )
-        # Wave 10.5 — register the legacy-compatible adapter modules
-        # alongside the Wave-6 skeletons. The adapters skip cleanly
+        # register the legacy-compatible adapter modules
+        # alongside the skeletons. The adapters skip cleanly
         # when the activity wasn't constructed with LLM clients
         # (tests / dev without credentials) so adding them here is
         # safe in every deployment.
         #
-        # Wave 11A — construct the `PerImageVisionAdapter` PER RUN
+        # construct the `PerImageVisionAdapter` PER RUN
         # (not at worker startup) so it can resolve actual image
         # bytes from the current run's compile-image artifacts.
         # When no raw vision client is wired (`vision_client=None`),
@@ -1273,12 +1273,12 @@ class ProcessingActivities:
             # Protocol's `analyze` method) or the raw production
             # `VisionLLMClient` (per-image bytes; `analyze_image`).
             # In the former case we use it as-is — preserves the
-            # Wave-10.6 backward-compatible path where tests pass a
+            #  backward-compatible path where tests pass a
             # pre-constructed adapter directly. In the latter case
             # (production path), construct a per-run adapter that
             # wraps the raw client with the workspace-aware
             # `WorkspaceImageBytesProvider` AND the shared LLM-call
-            # limiter (Wave 11B — per-image acquisition).
+            # limiter (per-image acquisition).
             if hasattr(self._enrichment_vision_client, "analyze"):
                 vision_adapter = self._enrichment_vision_client
             else:
@@ -1299,7 +1299,7 @@ class ProcessingActivities:
             *legacy_modules,
         ])
         result = runner.run(context)
-        # Wave 11A — surface the image-provider warnings (if any)
+        # surface the image-provider warnings (if any)
         # on the image module's outcome so missing-byte misses
         # reach the final report. We splice the warnings into the
         # already-built outcome rather than re-running the module.
@@ -1328,10 +1328,10 @@ class ProcessingActivities:
         self, input: PersistCompileResultSummaryInput,
     ) -> ArtifactActivityResult:
         """Persist the typed `NormalizedCompileResult` as a
-        `compile_result_summary` artifact. Best-effort — a write
-        failure is returned in the response; the workflow logs it
-        and continues because the durable signal for downstream
-        stages is the inline payload the workflow already holds."""
+ `compile_result_summary` artifact. Best-effort — a write
+ failure is returned in the response; the workflow logs it
+ and continues because the durable signal for downstream
+ stages is the inline payload the workflow already holds."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_compile_result_summary(
@@ -1357,20 +1357,20 @@ class ProcessingActivities:
         self, input: BuildInitialExecutionPlanInput,
     ) -> BuildInitialExecutionPlanResult:
         """Resolve the domain pack, build the
-        `InitialExecutionPlan`, persist it as an
-        `initial_execution_plan` artifact, and return the payload.
+ `InitialExecutionPlan`, persist it as an
+ `initial_execution_plan` artifact, and return the payload.
 
-        Pack-resolution precedence: override → workspace default →
-        general fallback. NO auto-detection at pre-compile time —
-        the detection context (title / headings / early-page text)
-        isn't available until compile output. The activity therefore
-        uses `select_domain(..., detection_enabled=False)` so the
-        resolution stays cheap and deterministic.
+ Pack-resolution precedence: override → workspace default →
+ general fallback. NO auto-detection at pre-compile time —
+ the detection context (title / headings / early-page text)
+ isn't available until compile output. The activity therefore
+ uses `select_domain(..., detection_enabled=False)` so the
+ resolution stays cheap and deterministic.
 
-        Best-effort persistence: a write error is reported on the
-        result but the inline payload still flows to the workflow,
-        so downstream stages have the plan even when the artifact
-        write failed."""
+ Best-effort persistence: a write error is reported on the
+ result but the inline payload still flows to the workflow,
+ so downstream stages have the plan even when the artifact
+ write failed."""
         from j1.domains.registry import default_registry, select_domain
         from j1.processing.initial_execution_plan import (
             build_initial_execution_plan as _build_plan,
@@ -1436,11 +1436,11 @@ class ProcessingActivities:
         self, input: PersistInitialExecutionPlanInput,
     ) -> ArtifactActivityResult:
         """Persist the pre-compile initial execution plan as an
-        `initial_execution_plan` artifact. Best-effort — any
-        persistence error is returned in the response; the workflow
-        logs it and proceeds because the durable signal for
-        downstream stages is the inline plan the workflow already
-        holds, not the artifact."""
+ `initial_execution_plan` artifact. Best-effort — any
+ persistence error is returned in the response; the workflow
+ logs it and proceeds because the durable signal for
+ downstream stages is the inline plan the workflow already
+ holds, not the artifact."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_initial_execution_plan(
@@ -1466,11 +1466,11 @@ class ProcessingActivities:
         self, input: PersistPostCompileEnrichPlanInput,
     ) -> ArtifactActivityResult:
         """Persist the post-compile rule-based enrich-assessment
-        verdict as a `post_compile_enrich_plan` artifact. Best-effort
-        — any persistence error is returned in the response, the
-        workflow logs it and proceeds; the durable signal for
-        downstream stage gating is the inline assessment result the
-        workflow already holds."""
+ verdict as a `post_compile_enrich_plan` artifact. Best-effort
+ — any persistence error is returned in the response, the
+ workflow logs it and proceeds; the durable signal for
+ downstream stage gating is the inline assessment result the
+ workflow already holds."""
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_post_compile_enrich_plan(
@@ -1495,22 +1495,22 @@ class ProcessingActivities:
     def persist_final_ingestion_report(
         self, input: PersistFinalIngestionReportInput,
     ) -> ArtifactActivityResult:
-        """Wave 10 — build the typed `FinalIngestionReport` from the
-        per-stage artifacts already on disk, then persist it as a
-        `final_ingestion_report` artifact.
+        """build the typed `FinalIngestionReport` from the
+ per-stage artifacts already on disk, then persist it as a
+ `final_ingestion_report` artifact.
 
-        Activity flow:
-          1. Resolve the persisted artifact payloads for this
-             (run, doc) pair by reading the latest matching
-             `initial_execution_plan` / `compile_result_summary` /
-             `post_compile_enrich_plan` / `enrichment_result` /
-             `final_summary` artifacts off the registry.
-          2. Build the typed `FinalIngestionReport`.
-          3. Persist as a `final_ingestion_report` artifact.
+ Activity flow:
+ 1. Resolve the persisted artifact payloads for this
+ (run, doc) pair by reading the latest matching
+ `initial_execution_plan` / `compile_result_summary` /
+ `post_compile_enrich_plan` / `enrichment_result` /
+ `final_summary` artifacts off the registry.
+ 2. Build the typed `FinalIngestionReport`.
+ 3. Persist as a `final_ingestion_report` artifact.
 
-        Best-effort throughout: any read or persistence error
-        produces a `status="failed"` result; the workflow logs it
-        and proceeds. The report is observability, not correctness."""
+ Best-effort throughout: any read or persistence error
+ produces a `status="failed"` result; the workflow logs it
+ and proceeds. The report is observability, not correctness."""
         from j1.processing.final_ingestion_report import (
             ReportSourceInputs,
             build_final_ingestion_report,
@@ -1589,22 +1589,22 @@ class ProcessingActivities:
     ) -> FastLLMConsultEnrichResult:
         """Optional fast-LLM consult on the rule-based enrich plan.
 
-        Activity-side logic:
-          1. Resolve `FastLLMConsultSettings` from env. Disabled by
-             default → return `consulted=False`.
-          2. If no `fast_llm_consult` callable was wired at bootstrap
-             (worker has no LLM client for the configured provider/
-             model) → return `consulted=False`.
-          3. Settings disabled, missing provider, or missing model →
-             return `consulted=False`.
-          4. Call the callable; any exception → log + return
-             `consulted=False` (NEVER raise).
-          5. Callable returns None or unparseable refinement →
-             `consulted=False`.
+ Activity-side logic:
+ 1. Resolve `FastLLMConsultSettings` from env. Disabled by
+ default → return `consulted=False`.
+ 2. If no `fast_llm_consult` callable was wired at bootstrap
+ (worker has no LLM client for the configured provider/
+ model) → return `consulted=False`.
+ 3. Settings disabled, missing provider, or missing model →
+ return `consulted=False`.
+ 4. Call the callable; any exception → log + return
+ `consulted=False` (NEVER raise).
+ 5. Callable returns None or unparseable refinement →
+ `consulted=False`.
 
-        The callable is responsible for honouring the configured
-        timeout. The activity wraps everything in a broad except so
-        a misbehaving LLM cannot fail ingestion."""
+ The callable is responsible for honouring the configured
+ timeout. The activity wraps everything in a broad except so
+ a misbehaving LLM cannot fail ingestion."""
         from j1.processing.enrich_assessment import (
             EnrichRecommendation,
             FastLLMConsultPrompt,
@@ -1681,23 +1681,23 @@ class ProcessingActivities:
         self, input: ValidateStageInput,
     ) -> StageValidationActivityResult:
         """Run the per-stage validation contract for one stage of one
-        run. Reads back each artifact the stage produced, dispatches
-        to the right validator (`validate_compile` / `validate_chunks`
-        / etc.), persists a `stage_validation_report` artifact with
-        the full result, and returns a compact summary the workflow
-        uses to decide between COMPLETED and FAILED.
+ run. Reads back each artifact the stage produced, dispatches
+ to the right validator (`validate_compile` / `validate_chunks`
+ / etc.), persists a `stage_validation_report` artifact with
+ the full result, and returns a compact summary the workflow
+ uses to decide between COMPLETED and FAILED.
 
-        Failure modes:
-          * Unknown `stage_name` → returns `passed=True` with a
-            warning check. Defensive: an unrecognised stage isn't
-            a fatal workflow event; the validation just doesn't
-            assert anything.
-          * Unreadable artifact → check fails, persisted in the
-            report, surfaced as `passed=False`.
-          * Persist failure → return `passed=False` with the error
-            in the response. The workflow treats this as a stage
-            failure (we can't audit a stage we couldn't validate
-            durably)."""
+ Failure modes:
+ * Unknown `stage_name` → returns `passed=True` with a
+ warning check. Defensive: an unrecognised stage isn't
+ a fatal workflow event; the validation just doesn't
+ assert anything.
+ * Unreadable artifact → check fails, persisted in the
+ report, surfaced as `passed=False`.
+ * Persist failure → return `passed=False` with the error
+ in the response. The workflow treats this as a stage
+ failure (we can't audit a stage we couldn't validate
+ durably)."""
         from pathlib import Path
         from j1.processing.stage_validation import (
             STAGE_COMPILE,
@@ -1885,27 +1885,27 @@ class ProcessingActivities:
     ) -> VerifyCompileActivityResult:
         """Post-compile health gate.
 
-        Verifies the compile activity produced enough chunk artifacts
-        (`min_chunks`, default 1) and — when `require_index_manifest`
-        is set — that the index activity wrote a manifest. Returns
-        `passed=False` with one of the `FAILURE_CODE_*` strings from
-        `j1.runs.models` when the gate rejects; the workflow lifts
-        that into `IngestionRun.failure_code` on rejection.
+ Verifies the compile activity produced enough chunk artifacts
+ (`min_chunks`, default 1) and — when `require_index_manifest`
+ is set — that the index activity wrote a manifest. Returns
+ `passed=False` with one of the `FAILURE_CODE_*` strings from
+ `j1.runs.models` when the gate rejects; the workflow lifts
+ that into `IngestionRun.failure_code` on rejection.
 
-        Kind-only check: we look at the artifact kinds passed in by
-        the workflow OR (fallback) resolve each artifact id against
-        the registry. Schema integrity is the per-stage validators'
-        job (`validate_compile` / `validate_chunks`) — this gate
-        catches the cheap "compile succeeded but produced nothing"
-        case before declaring SUCCEEDED.
+ Kind-only check: we look at the artifact kinds passed in by
+ the workflow OR (fallback) resolve each artifact id against
+ the registry. Schema integrity is the per-stage validators'
+ job (`validate_compile` / `validate_chunks`) — this gate
+ catches the cheap "compile succeeded but produced nothing"
+ case before declaring SUCCEEDED.
 
-        Failure modes:
-          * `chunk_count < min_chunks` → CHUNK_FAILED.
-          * `require_index_manifest=True` and no `index_manifest`
-            artifact → INDEX_FAILED.
-          * Unresolvable artifact ids when kinds aren't provided →
-            VERIFICATION_FAILED (we can't verify what we can't read).
-        """
+ Failure modes:
+ * `chunk_count < min_chunks` → CHUNK_FAILED.
+ * `require_index_manifest=True` and no `index_manifest`
+ artifact → INDEX_FAILED.
+ * Unresolvable artifact ids when kinds aren't provided →
+ VERIFICATION_FAILED (we can't verify what we can't read).
+ """
         from j1.processing.stage_validators import (
             verify_compile_output_health,
         )
@@ -1959,15 +1959,15 @@ class ProcessingActivities:
         self, ctx, input, *, stage: str, step: str, engine: str | None,
     ) -> None:
         """Emit `step.started` if a reporter is configured AND the
-        caller supplied a `correlation_id` (which by convention
-        equals `run_id`). No-op otherwise — keeps existing behaviour
-        for deployments that don't opt into the progress surface.
+ caller supplied a `correlation_id` (which by convention
+ equals `run_id`). No-op otherwise — keeps existing behaviour
+ for deployments that don't opt into the progress surface.
 
-        Also flips the `IngestionRun` record to `RUNNING` and updates
-        `current_stage` / `current_step` / `progress_percent` so the
-        FE's polling endpoint reflects mid-pipeline state. Without
-        this update the run sits at ASSESSING until terminal and the
-        UI's PrimaryStatusPanel stays on 'Building execution plan…'."""
+ Also flips the `IngestionRun` record to `RUNNING` and updates
+ `current_stage` / `current_step` / `progress_percent` so the
+ FE's polling endpoint reflects mid-pipeline state. Without
+ this update the run sits at ASSESSING until terminal and the
+ UI's PrimaryStatusPanel stays on 'Building execution plan…'."""
         if input.correlation_id:
             self._update_run_progress(
                 ctx, run_id=input.correlation_id,
@@ -1990,8 +1990,8 @@ class ProcessingActivities:
         self, ctx, input, *, stage: str, step: str, result,
     ) -> None:
         """Emit `step.completed`, `step.skipped`, or `step.failed`
-        based on the activity result's `status`. `result.status` is
-        a `ResultStatus` (SUCCEEDED / FAILED / SKIPPED)."""
+ based on the activity result's `status`. `result.status` is
+ a `ResultStatus` (SUCCEEDED / FAILED / SKIPPED)."""
         status_value = (
             result.status.value if hasattr(result.status, "value")
             else str(result.status)
@@ -2046,9 +2046,9 @@ class ProcessingActivities:
         self, ctx, input, *, stage: str, step: str, exc: Exception,
     ) -> None:
         """Emit `step.failed` for an unhandled exception path before
-        re-raising. Critical: the reporter MUST NOT swallow the
-        exception — the failure-propagation contract requires the
-        workflow to see it."""
+ re-raising. Critical: the reporter MUST NOT swallow the
+ exception — the failure-propagation contract requires the
+ workflow to see it."""
         if self._reporter is None or not input.correlation_id:
             return
         try:
@@ -2074,14 +2074,14 @@ class ProcessingActivities:
         progress_percent: int | None,
     ) -> None:
         """Best-effort update of the IngestionRun record so the FE's
-        polling endpoint sees mid-pipeline state.
+ polling endpoint sees mid-pipeline state.
 
-        Mirrors `_persist_run_terminal` in `RunsActivities` but for
-        non-terminal transitions: status flips to RUNNING the first
-        time a stage starts, and `current_stage` / `current_step` /
-        `progress_percent` track the most recent stage event. Failures
-        are swallowed — telemetry never blocks ingest. No-op when
-        `run_store` is unwired (legacy deployments)."""
+ Mirrors `_persist_run_terminal` in `RunsActivities` but for
+ non-terminal transitions: status flips to RUNNING the first
+ time a stage starts, and `current_stage` / `current_step` /
+ `progress_percent` track the most recent stage event. Failures
+ are swallowed — telemetry never blocks ingest. No-op when
+ `run_store` is unwired (legacy deployments)."""
         if self._run_store is None:
             return
         try:
@@ -2168,17 +2168,17 @@ _STAGE_END_PROGRESS: dict[str, int] = {
 def _compile_cache_key_parts(input, compiler, document) -> dict:
     """Build the cache-key parts for a compile activity input.
 
-    `processor_version` and `mode` are pulled from the compiler when
-    it surfaces them (an attribute named `version` / `mode`). Most
-    compiler implementations don't yet, so the cache key collapses to
-    `(document_hash, processor_kind)` — sufficient for the immediate
-    "don't re-parse the same document" guarantee. Implementations
-    that bump output shape should expose `version` so cache rows
-    invalidate cleanly across upgrades.
+ `processor_version` and `mode` are pulled from the compiler when
+ it surfaces them (an attribute named `version` / `mode`). Most
+ compiler implementations don't yet, so the cache key collapses to
+ `(document_hash, processor_kind)` — sufficient for the immediate
+ "don't re-parse the same document" guarantee. Implementations
+ that bump output shape should expose `version` so cache rows
+ invalidate cleanly across upgrades.
 
-    `document_hash` comes from the registry's checksum field —
-    content-derived, prefix-tagged (`sha256:…`), and stable across
-    re-uploads of identical content."""
+ `document_hash` comes from the registry's checksum field —
+ content-derived, prefix-tagged (`sha256:…`), and stable across
+ re-uploads of identical content."""
     return {
         "document_hash": getattr(document, "checksum", "") or "",
         "processor_kind": input.processor_kind or "",
@@ -2195,10 +2195,10 @@ def _make_key(parts: dict) -> str:
 def _safe_heartbeat(details: dict[str, object]) -> None:
     """Emit an `activity.heartbeat` if we're inside a Temporal worker.
 
-    Outside a worker (e.g. unit tests calling the activity method
-    directly), the SDK raises `RuntimeError`. Heartbeats are
-    visibility, never correctness, so silently degrade. Details are
-    deliberately small structured fields — never document content."""
+ Outside a worker (e.g. unit tests calling the activity method
+ directly), the SDK raises `RuntimeError`. Heartbeats are
+ visibility, never correctness, so silently degrade. Details are
+ deliberately small structured fields — never document content."""
     try:
         activity.heartbeat(details)
     except Exception:  # noqa: BLE001 — visibility never blocks ingest
@@ -2207,10 +2207,10 @@ def _safe_heartbeat(details: dict[str, object]) -> None:
 
 def _current_activity_attempt() -> int:
     """Return the current attempt number (1-based) when running
-    inside a Temporal worker, else 1.
+ inside a Temporal worker, else 1.
 
-    Lets cache rows record which attempt produced them — useful for
-    operators triaging "did the second attempt also fail?"."""
+ Lets cache rows record which attempt produced them — useful for
+ operators triaging "did the second attempt also fail?"."""
     try:
         info = activity.info()
         return int(getattr(info, "attempt", 1))
@@ -2222,34 +2222,34 @@ def _current_activity_attempt() -> int:
 def _heartbeating(details: dict[str, object], *, interval_seconds: float = 30.0):
     """Background heartbeat ticker for long-running synchronous calls.
 
-    Use as a context manager around any blocking call that may exceed
-    the activity's `heartbeat_timeout`. A daemon thread emits
-    `activity.heartbeat(details)` every `interval_seconds` until the
-    block exits. The first heartbeat fires immediately on entry so
-    Temporal sees the activity is alive even if the call returns
-    quickly.
+ Use as a context manager around any blocking call that may exceed
+ the activity's `heartbeat_timeout`. A daemon thread emits
+ `activity.heartbeat(details)` every `interval_seconds` until the
+ block exits. The first heartbeat fires immediately on entry so
+ Temporal sees the activity is alive even if the call returns
+ quickly.
 
-    Without this, the compile activity hits `heartbeat_timeout` mid-
-    parse on real documents (MinerU + raganything routinely run for
-    minutes), Temporal marks the activity timed-out, and retries —
-    spawning fresh subprocesses on every retry. The "many MinerU
-    starts for one document" symptom.
+ Without this, the compile activity hits `heartbeat_timeout` mid-
+ parse on real documents (MinerU + raganything routinely run for
+ minutes), Temporal marks the activity timed-out, and retries —
+ spawning fresh subprocesses on every retry. The "many MinerU
+ starts for one document" symptom.
 
-    Threading + contextvars: `temporalio.activity.heartbeat()` reads
-    the current activity from a `ContextVar`. `threading.Thread`
-    does NOT propagate contextvars, so a naive daemon-thread call to
-    `activity.heartbeat()` raises `RuntimeError: Not in activity
-    context`. We capture the current context (which includes the
-    activity contextvar set by the worker before invoking us) and
-    run each heartbeat invocation under that context via
-    `ctx.run(...)`. This is the standard Python pattern for
-    propagating contextvars to threads.
+ Threading + contextvars: `temporalio.activity.heartbeat` reads
+ the current activity from a `ContextVar`. `threading.Thread`
+ does NOT propagate contextvars, so a naive daemon-thread call to
+ `activity.heartbeat` raises `RuntimeError: Not in activity
+ context`. We capture the current context (which includes the
+ activity contextvar set by the worker before invoking us) and
+ run each heartbeat invocation under that context via
+ `ctx.run(...)`. This is the standard Python pattern for
+ propagating contextvars to threads.
 
-    Heartbeat semantics: this proves the WORKER is alive, not that
-    progress is being made. Callers that have real per-step progress
-    (page counters, etc.) should heartbeat with those richer details
-    via `_safe_heartbeat` directly; the ticker is the safety net for
-    everyone else."""
+ Heartbeat semantics: this proves the WORKER is alive, not that
+ progress is being made. Callers that have real per-step progress
+ (page counters, etc.) should heartbeat with those richer details
+ via `_safe_heartbeat` directly; the ticker is the safety net for
+ everyone else."""
     stop = threading.Event()
     captured_ctx = contextvars.copy_context()
 

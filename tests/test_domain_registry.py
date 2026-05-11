@@ -29,7 +29,7 @@ from j1.domains.registry import (
 @dataclass
 class _Ctx:
     """Minimal detection context — populates only the fields the
-    civil pack actually reads."""
+ civil pack actually reads."""
 
     title: str = ""
     title_quality: str = "clear"
@@ -53,7 +53,7 @@ def test_default_registry_contains_general_and_civil_engineering():
 
 def test_general_pack_has_no_detector():
     """`general` exists for fallback and never competes in
-    auto-detection — its `detect` callable is None."""
+ auto-detection — its `detect` callable is None."""
     reg = default_registry()
     assert reg.get("general").detect is None
 
@@ -71,7 +71,7 @@ def test_extended_document_types_includes_civil_types():
 
 def test_unknown_user_override_falls_back_with_warning():
     """Bad domain id → `general` + warning so reviewers see the
-    misconfiguration."""
+ misconfiguration."""
     ctx = _Ctx(title="Whatever")
     result = select_domain(
         registry=default_registry(),
@@ -85,7 +85,7 @@ def test_unknown_user_override_falls_back_with_warning():
 
 def test_user_override_civil_selects_civil_even_for_generic_text():
     """Operator forced civil — honored even when evidence is weak.
-    A warning is added so reviewers see the mismatch."""
+ A warning is added so reviewers see the mismatch."""
     ctx = _Ctx(title="Quarterly Business Review")
     result = select_domain(
         registry=default_registry(),
@@ -183,7 +183,7 @@ def test_generic_business_report_falls_back_to_general():
 
 def test_weak_civil_signals_below_threshold_fall_back():
     """A document that mentions 'site' and 'project' once is not
-    enough to push past the default threshold."""
+ enough to push past the default threshold."""
     ctx = _Ctx(
         title="Weekly Status Update",
         filename="weekly.pdf",

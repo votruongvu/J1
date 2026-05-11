@@ -53,7 +53,7 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
       && e.event !== EVENT_TYPES.PLAN_CONFIRMED,
   );
 
-  // Phase 3: project the flat event list into macro-stage sections
+  // project the flat event list into macro-stage sections
   // so the timeline can draw "Compile" / "Verification" headers
   // around the operator-detail step rows. Pure helper — cheap to
   // recompute on each event arrival.
