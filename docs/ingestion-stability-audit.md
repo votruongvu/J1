@@ -1,7 +1,26 @@
-# J1 Ingestion Stability Audit
+# J1 Ingestion Stability Audit (historical)
 
-> Status: **draft, in progress**
-> Scope: end-to-end ingestion pipeline (upload → compile → plan → enrich → graph → index → finalize)
+> **⚠ Historical audit — pre-Wave-8 pipeline.** This document is a
+> preserved point-in-time audit of the legacy ingestion pipeline.
+> It references concepts that have since been **removed** (split
+> mode / complete mode, pre-compile `IngestPlan` gating,
+> `DefaultIngestPlanner`). The currently shipping pipeline is
+> different in shape — enrichment is decided post-compile, the
+> compile stage uses one black-box call, and the final-status
+> vocabulary is the Wave-8 `INGESTION_STATUS_*` literals.
+>
+> **Authoritative current architecture:**
+> - [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md)
+> - [`architecture/final-ingestion-report.md`](architecture/final-ingestion-report.md)
+> - [`architecture/enrichment-overlay.md`](architecture/enrichment-overlay.md)
+>
+> The audit findings + R-numbered remediation tickets below
+> documented the legacy system's failure modes; many have since
+> been resolved by the Wave 1–12 refactor. The document remains
+> for institutional memory only.
+
+> Status: **draft, in progress (historical)**
+> Scope: end-to-end legacy ingestion pipeline (upload → compile → plan → enrich → graph → index → finalize)
 > Goal: deterministic, observable, idempotent, artifact-safe ingestion
 
 ## 1. Problem summary

@@ -1,5 +1,17 @@
 # J1 Ingestion Operations Guide
 
+> **⚠ Mixed-status document.** The operational model below (resume,
+> rebuild index, full re-index, delete, batch) is **current** and
+> still accurate. The pipeline-shape sections that mention "split
+> mode" / `insert_content` describe the **legacy** compile pipeline
+> shape; those concepts have been removed from the currently
+> shipping system. Treat split-mode references as historical.
+>
+> **For the current pipeline shape see
+> [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md);
+> for the production worker wiring runbook see
+> [`operations/production-worker-wiring.md`](operations/production-worker-wiring.md).**
+
 > Companion to [`ingestion-stability-audit.md`](./ingestion-stability-audit.md).
 > Audience: operators + the next implementation iteration.
 

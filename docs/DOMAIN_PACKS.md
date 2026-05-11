@@ -1,4 +1,23 @@
-# Domain Packs
+# Domain Packs (legacy / pre-Wave-8)
+
+> **⚠ Superseded.** This page describes the original Domain Pack
+> system as it layered on top of the legacy `post_compile_planning`
+> module. The current pipeline still uses `DomainPack` — but the
+> integration points are now `DomainEnrichmentPolicy`,
+> `DomainPromptPack`, `DomainExtractionHints`, and
+> `DomainValidationRules` consumed by the post-compile enrichment
+> overlay. The legacy `post_compile_planning` integration has been
+> replaced.
+>
+> **Authoritative current docs:**
+> - [`architecture/domain-profiles.md`](architecture/domain-profiles.md)
+> - [`architecture/enrichment-overlay.md`](architecture/enrichment-overlay.md)
+> - [`guides/adding-a-domain-profile.md`](guides/adding-a-domain-profile.md)
+>
+> Concepts in this page that reference `post_compile_planning.py`
+> or the legacy `planning_result.py` no longer match the running
+> code base. The `DomainPack` data shape itself is current; the
+> integration point is the new enrichment-overlay runner.
 
 How J1 layers domain-specific planning on top of the generic post-compile planner without coupling core to any one industry.
 

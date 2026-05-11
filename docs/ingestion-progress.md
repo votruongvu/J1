@@ -1,5 +1,18 @@
 # Ingestion Run + Progress Surface
 
+> **⚠ Mixed-status document.** The SSE / progress event surface
+> described below is **current**. References to `IngestPlan` /
+> `DefaultIngestPlanner` (Section "Adaptive planning") describe
+> the **legacy** pre-compile planner that has been removed; the
+> current pipeline uses `InitialExecutionPlan` (cheap pre-compile)
+> + `PostCompileEnrichPlan` (post-compile) — see
+> [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md).
+>
+> The macro-event vocabulary (`compile.*`, `verification.*`,
+> `assess_enrichment.*`, `enrich.*`) IS current; see
+> [`architecture/final-ingestion-report.md`](architecture/final-ingestion-report.md)
+> for the final-status mapping the FE consumes.
+
 A user-facing progress layer that sits on top of the existing
 Temporal-backed ingestion workflow. Temporal remains the orchestration
 engine and stays useful for technical debugging; this layer is what

@@ -1,4 +1,25 @@
-# Ingestion Profiles
+# Ingestion Profiles (legacy)
+
+> **⚠ Legacy document — pre-Wave-8 pipeline.** This page describes
+> the historical `DefaultIngestPlanner` / `IngestPlan` /
+> `IngestPolicy` pre-compile planning system, which has been
+> **removed** from the currently shipping pipeline. The new
+> pipeline makes enrichment decisions AFTER compile evidence is
+> available, not before. Pages below remain for compatibility with
+> older deployments that still reference them.
+>
+> **Authoritative replacements:**
+> - Pipeline shape → [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md)
+> - Per-domain customisation → [`architecture/domain-profiles.md`](architecture/domain-profiles.md)
+> - Post-compile enrichment plan → [`architecture/enrichment-overlay.md`](architecture/enrichment-overlay.md)
+> - Adding a domain profile → [`guides/adding-a-domain-profile.md`](guides/adding-a-domain-profile.md)
+>
+> Concepts called out below as "active" or "default" are **not
+> active** in the current code base. The `J1_INGEST_PLANNER_*` /
+> `J1_POST_COMPILE_PLANNING_ENABLED` env vars no longer drive the
+> pipeline; the post-compile assessor + the typed
+> `InitialExecutionPlan` + `PostCompileEnrichPlan` are the current
+> surface.
 
 How J1 picks an ingestion strategy per file, what each strategy actually does, and how to debug when the wrong one fires.
 

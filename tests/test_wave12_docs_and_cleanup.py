@@ -167,6 +167,139 @@ def test_tech_debt_doc_records_known_asymmetries():
     assert "production worker" in text or "staging" in text or "prod" in text
 
 
+# ---- 5. docs/architecture.md is an Option-A index ------------------
+
+
+def test_architecture_md_points_to_new_authoritative_docs():
+    """The top-level architecture page is an index that points
+    readers to `docs/architecture/*.md` as authoritative for the
+    ingestion pipeline. It must NOT inline the legacy
+    `DefaultIngestPlanner` description as active architecture."""
+    text = (
+        _DOCS_ROOT / "architecture.md"
+    ).read_text(encoding="utf-8")
+    # Authoritative references — the new docs must be linked.
+    assert "architecture/ingestion-pipeline.md" in text
+    assert "architecture/enrichment-overlay.md" in text
+    assert "architecture/final-ingestion-report.md" in text
+    assert "architecture/domain-profiles.md" in text
+    assert "operations/production-worker-wiring.md" in text
+    # Legacy concepts MUST be labelled as retired, NOT described as
+    # active. A "Retired concepts" / "Legacy / compatibility" section
+    # is required.
+    lower = text.lower()
+    assert "retired concepts" in lower or "legacy" in lower
+
+
+def test_architecture_md_does_not_describe_ingest_planner_as_active():
+    """The legacy `DefaultIngestPlanner` is gone from runtime. If
+    the architecture index describes it as active behaviour, the
+    test fails. References under a 'Retired' / 'Legacy' heading
+    are OK — those are explicitly compatibility notes."""
+    text = (
+        _DOCS_ROOT / "architecture.md"
+    ).read_text(encoding="utf-8")
+    # Forbidden ACTIVE-architecture wording.
+    forbidden_active = (
+        "DefaultIngestPlanner consumes",   # was the §8 §8.2 heading
+        "off by default. when `J1_INGEST_PLANNER_ENABLED=false`",
+        "the planner uses the legacy",
+        "adaptive ingestion planning is the framework's intended",
+    )
+    lower = text.lower()
+    for term in forbidden_active:
+        assert term.lower() not in lower, (
+            f"architecture.md still describes {term!r} as active"
+        )
+
+
+# ---- 6. Legacy ingestion docs carry deprecation banners ----------
+
+
+_LEGACY_DOCS_THAT_NEED_BANNER: tuple[Path, ...] = (
+    _DOCS_ROOT / "INGESTION_PROFILES.md",
+    _DOCS_ROOT / "ingestion-stability-audit.md",
+    _DOCS_ROOT / "ingestion-stage-validation.md",
+    _DOCS_ROOT / "ingestion-operations.md",
+    _DOCS_ROOT / "ingestion-progress.md",
+    _DOCS_ROOT / "DOMAIN_PACKS.md",
+)
+
+
+@pytest.mark.parametrize("doc", _LEGACY_DOCS_THAT_NEED_BANNER)
+def test_legacy_doc_carries_deprecation_banner(doc):
+    """Every legacy ingestion doc must open with a banner that
+    points the reader to the current architecture docs. The banner
+    must appear in the first 1200 characters so readers see it
+    before any legacy detail."""
+    head = doc.read_text(encoding="utf-8")[:1200].lower()
+    assert (
+        "legacy" in head or "historical" in head or "superseded" in head
+        or "mixed-status" in head
+    ), f"{doc.name} missing legacy-context banner"
+    assert "architecture/" in head, (
+        f"{doc.name} banner must link to the new docs"
+    )
+
+
+# ---- 7. Active docs do not describe legacy concepts as current ---
+
+
+_ACTIVE_DOCS_THAT_MUST_STAY_CLEAN: tuple[Path, ...] = (
+    _DOCS_ROOT / "architecture" / "ingestion-pipeline.md",
+    _DOCS_ROOT / "architecture" / "domain-profiles.md",
+    _DOCS_ROOT / "architecture" / "enrichment-overlay.md",
+    _DOCS_ROOT / "architecture" / "final-ingestion-report.md",
+    _DOCS_ROOT / "guides" / "adding-a-domain-profile.md",
+    _DOCS_ROOT / "guides" / "adding-an-enrichment-module.md",
+    _DOCS_ROOT / "operations" / "production-worker-wiring.md",
+    _DOCS_ROOT / "reference" / "artifacts.md",
+)
+
+
+@pytest.mark.parametrize("doc", _ACTIVE_DOCS_THAT_MUST_STAY_CLEAN)
+def test_active_doc_has_no_legacy_concepts(doc):
+    """The new architecture docs are authoritative. They MUST NOT
+    describe split mode / `IngestPlanner` / `IngestPlan` /
+    `IngestPolicy` / pre-compile gating as active behaviour."""
+    text = doc.read_text(encoding="utf-8").lower()
+    for term in (
+        "split_mode", "splitmode", "split mode",
+        "ingestplanner",
+        "ingestplan ",   # trailing space to allow "IngestPlanner" already filtered above
+        "ingestpolicy",
+        "defaultingestplanner",
+        "j1_ingest_planner_enabled=false",
+        "pre-compile graph gating",
+        "pre-compile index gating",
+        "graph gating",
+        "index gating",
+    ):
+        assert term not in text, (
+            f"{doc.name} contains legacy term {term!r} as active concept"
+        )
+
+
+# ---- 8. final_summary is documented as compatibility-only --------
+
+
+def test_final_summary_labelled_as_compatibility_only():
+    """Wherever `final_summary` is mentioned in the authoritative
+    docs, it must be labelled as compatibility / backward-compat /
+    legacy — `final_ingestion_report` is the preferred aggregate."""
+    final_report_doc = (
+        _DOCS_ROOT / "architecture" / "final-ingestion-report.md"
+    ).read_text(encoding="utf-8").lower()
+    assert "final_ingestion_report" in final_report_doc
+    # The doc must position final_summary as backward-compat.
+    assert "final_summary" in final_report_doc
+    assert (
+        "backward compatibility" in final_report_doc
+        or "back-compat" in final_report_doc
+        or "preferred" in final_report_doc
+    )
+
+
 # ---- 4. Small cleanup — image_summaries[].warnings projection ----
 
 

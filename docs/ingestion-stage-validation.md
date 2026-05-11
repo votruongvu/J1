@@ -1,5 +1,18 @@
 # Stage Output Validation / Quality Gates
 
+> **⚠ Legacy document — partial coverage of the pre-Wave-8
+> pipeline.** This page describes the per-stage validation
+> contract used during the legacy "split mode" / "complete mode"
+> compile path. The validation contract itself (don't mark a stage
+> succeeded just because a function returned successfully) remains
+> a valid framework principle and is enforced by the current
+> per-stage validator activities. But the specific stage names +
+> mode distinctions ("split mode") below describe the **legacy**
+> pipeline shape and are not how the current pipeline works.
+>
+> **For the current ingestion pipeline shape see
+> [`architecture/ingestion-pipeline.md`](architecture/ingestion-pipeline.md).**
+
 Status: **partial — 4 of 13 stages wired** (compile, generate_chunks, enrich, graph + final-validation aggregator). The remaining 9 stages (`persist_original_document`, `resolve_config`, `document_profile`, `parse_or_compile`, `content_inventory`, `execution_plan`, `persist_or_index_chunks`, `artifact_manifest`, `final_summary`) follow the same contract documented here and are queued for follow-up sessions.
 
 ## Core rule
