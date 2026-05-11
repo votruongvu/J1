@@ -36,6 +36,18 @@ export const EVENT_TYPES = {
   VERIFICATION_STARTED: "verification.started",
   VERIFICATION_COMPLETED: "verification.completed",
   VERIFICATION_FAILED: "verification.failed",
+  // Wave 9A — post-compile assessment + enrichment macro events.
+  // Mirrors `PROGRESS_EVENT_ASSESS_ENRICHMENT_*` /
+  // `PROGRESS_EVENT_ENRICH_*` in `j1/runs/reporter.py`. Derived
+  // client-side from the workflow's `step.*` events emitted under
+  // `ASSESS_ENRICHMENT` / `ENRICH` stages.
+  ASSESS_ENRICHMENT_STARTED: "assess_enrichment.started",
+  ASSESS_ENRICHMENT_COMPLETED: "assess_enrichment.completed",
+  ASSESS_ENRICHMENT_SKIPPED: "assess_enrichment.skipped",
+  ENRICH_STARTED: "enrich.started",
+  ENRICH_COMPLETED: "enrich.completed",
+  ENRICH_FAILED: "enrich.failed",
+  ENRICH_SKIPPED: "enrich.skipped",
 } as const;
 
 export type ProgressEventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];

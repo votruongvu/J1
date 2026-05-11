@@ -720,7 +720,12 @@ class IngestionResultReviewService:
         post-compile enrichment stage runs). Same envelope shape as
         the other overlay endpoints: `status / runId / plan /
         artifactId` (`plan` carries the
-        `EnrichmentResult.to_payload()` dict here)."""
+        `EnrichmentResult.to_payload()` dict here).
+
+        Returns `status="unavailable"` with an operator-readable
+        `unavailableReason` when no enrichment_result artifact has
+        been persisted yet — e.g. enrichment was skipped by policy,
+        the run predates the overlay, or persistence failed."""
         from j1.processing.results import ARTIFACT_KIND_ENRICHMENT_RESULT
 
         run = self._load_run(ctx, run_id)

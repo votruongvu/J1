@@ -22,14 +22,23 @@ import type { ProgressEvent } from "@/types/ingestion";
  * event isn't yet folded under a macro stage and should render as a
  * standalone row (assess_compile_strategy, finalize, etc.).
  */
-export type MacroStage = "COMPILE" | "VERIFY" | null;
+export type MacroStage =
+  | "COMPILE"
+  | "VERIFY"
+  | "ASSESS_ENRICHMENT"
+  | "ENRICH"
+  | null;
 
 /** Stage strings the backend emits — uppercase, snake_cased. */
 const STAGE_COMPILE = "COMPILE";
 const STAGE_VERIFY = "VERIFY";
+const STAGE_ASSESS_ENRICHMENT = "ASSESS_ENRICHMENT";
+const STAGE_ENRICH = "ENRICH";
 
 const COMPILE_STEPS = new Set(["compile"]);
 const VERIFY_STEPS = new Set(["verify_compile"]);
+const ASSESS_ENRICHMENT_STEPS = new Set(["assess_enrichment"]);
+const ENRICH_STEPS = new Set(["enrich_stage"]);
 
 /**
  * Classify a progress event into one of the Phase-3 macro stages.
@@ -46,6 +55,12 @@ export function classifyMacroStage(event: ProgressEvent): MacroStage {
   }
   if (stageUpper === STAGE_VERIFY && VERIFY_STEPS.has(step)) {
     return "VERIFY";
+  }
+  if (stageUpper === STAGE_ASSESS_ENRICHMENT && ASSESS_ENRICHMENT_STEPS.has(step)) {
+    return "ASSESS_ENRICHMENT";
+  }
+  if (stageUpper === STAGE_ENRICH && ENRICH_STEPS.has(step)) {
+    return "ENRICH";
   }
   return null;
 }
@@ -80,6 +95,23 @@ export function deriveMacroEventType(event: ProgressEvent): string | null {
     if (t === EVENT_TYPES.STEP_COMPLETED) return EVENT_TYPES.VERIFICATION_COMPLETED;
     if (t === EVENT_TYPES.STEP_FAILED) return EVENT_TYPES.VERIFICATION_FAILED;
   }
+  if (macro === "ASSESS_ENRICHMENT") {
+    if (t === EVENT_TYPES.STEP_STARTED) {
+      return EVENT_TYPES.ASSESS_ENRICHMENT_STARTED;
+    }
+    if (t === EVENT_TYPES.STEP_COMPLETED) {
+      return EVENT_TYPES.ASSESS_ENRICHMENT_COMPLETED;
+    }
+    if (t === EVENT_TYPES.STEP_SKIPPED) {
+      return EVENT_TYPES.ASSESS_ENRICHMENT_SKIPPED;
+    }
+  }
+  if (macro === "ENRICH") {
+    if (t === EVENT_TYPES.STEP_STARTED) return EVENT_TYPES.ENRICH_STARTED;
+    if (t === EVENT_TYPES.STEP_COMPLETED) return EVENT_TYPES.ENRICH_COMPLETED;
+    if (t === EVENT_TYPES.STEP_FAILED) return EVENT_TYPES.ENRICH_FAILED;
+    if (t === EVENT_TYPES.STEP_SKIPPED) return EVENT_TYPES.ENRICH_SKIPPED;
+  }
   return null;
 }
 
@@ -109,6 +141,8 @@ export interface TimelineSection {
 const MACRO_TITLE: Record<NonNullable<MacroStage>, string> = {
   COMPILE: "Compile",
   VERIFY: "Verification",
+  ASSESS_ENRICHMENT: "Enrichment Assessment",
+  ENRICH: "Enrichment",
 };
 
 function macroStatus(
@@ -121,7 +155,13 @@ function macroStatus(
       || e.event === EVENT_TYPES.STEP_PROGRESS
     ) {
       last = "running";
-    } else if (e.event === EVENT_TYPES.STEP_COMPLETED) {
+    } else if (
+      e.event === EVENT_TYPES.STEP_COMPLETED
+      || e.event === EVENT_TYPES.STEP_SKIPPED
+    ) {
+      // Skipped is a clean terminal for the macro section — the
+      // FE renders "Enrichment skipped" with the same neutral
+      // styling as a completion, not a failure.
       last = "completed";
     } else if (e.event === EVENT_TYPES.STEP_FAILED) {
       last = "failed";

@@ -25,7 +25,10 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  RunCompileResultResponse,
   RunEnrichPlanResponse,
+  RunEnrichmentResultResponse,
+  RunInitialExecutionPlanResponse,
   StartValidationRunRequest,
   ValidationRun,
   ValidationRunListItem,
@@ -164,6 +167,32 @@ export interface IngestionClient {
    * reached post-compile yet or the artifact wasn't persisted.
    */
   getRunEnrichPlan(runId: string): Promise<RunEnrichPlanResponse>;
+
+  /**
+   * GET the pre-compile initial execution plan (Wave 8). Returns the
+   * resolved domain pack, enrichment policy, candidate modules + cheap
+   * signals. Status is `"unavailable"` when the artifact wasn't
+   * persisted yet (legacy / pre-compile / persist failure).
+   */
+  getRunInitialExecutionPlan(
+    runId: string,
+  ): Promise<RunInitialExecutionPlanResponse>;
+
+  /**
+   * GET the typed NormalizedCompileResult (Wave 8). Returns chunks +
+   * detected tables/images + retry history + quality signals + raw
+   * artifact refs. Status `"unavailable"` when the run didn't reach
+   * the post-compile normalize step.
+   */
+  getRunCompileResult(runId: string): Promise<RunCompileResultResponse>;
+
+  /**
+   * GET the typed EnrichmentResult overlay (Wave 6/8). Returns
+   * per-module outcomes + document-metadata + terminology + validation
+   * + warnings/errors. Status `"unavailable"` when enrichment hasn't
+   * run yet (or was skipped before the artifact wrote).
+   */
+  getRunEnrichmentResult(runId: string): Promise<RunEnrichmentResultResponse>;
 
   // ---- Validation (Phase 1) ---------------------------------------
 

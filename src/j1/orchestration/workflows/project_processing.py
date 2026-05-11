@@ -2098,6 +2098,14 @@ class ProjectProcessingWorkflow:
             SEARCH_ATTR_REQUIRE_ENRICHMENT_SUCCESS,
             "true" if result.require_enrichment_success else "false",
         )
+        # Wave 9A — write the enrichment retry count. Reserved
+        # for future limiter-driven module retries; current
+        # runner emits 0. Operators dashboard-aggregate this with
+        # `J1CompileRetryCount` to see total per-run retry cost.
+        self._set_search_attribute_int(
+            SEARCH_ATTR_ENRICHMENT_RETRY_COUNT,
+            int(getattr(result, "retry_count", 0) or 0),
+        )
         self._log_step(
             request,
             event="ingestion.enrichment.stage_completed",
@@ -3261,6 +3269,15 @@ class ProjectProcessingWorkflow:
                     f"{verdict.retry_reason} → next_mode={next_mode.value}"
                 ),
             )
+        # Wave 9A — write the compile retry count to the search
+        # attribute surface so ops dashboards can aggregate by
+        # parse-cost. `retry_count` is attempts beyond the first
+        # (0 == no retries, N == N retries after the first attempt).
+        # Best-effort upsert: gated on `search_attributes_enabled`.
+        self._set_search_attribute_int(
+            SEARCH_ATTR_COMPILE_RETRY_COUNT,
+            max(0, len(compile_attempts_payload) - 1),
+        )
         if compile_result.status != "succeeded":
             self._record_step(
                 step="compile",

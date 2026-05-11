@@ -120,6 +120,20 @@ export const EventTypeDisplay: Readonly<Record<ProgressEventType, string>> = {
   "run.failed": "Run failed",
   "run.cancelled": "Run cancelled",
   "human_review.required": "Human review required",
+  // Macro-stage events derived client-side by `deriveMacroEventType`.
+  "compile.started": "Base compile started",
+  "compile.completed": "Base compile completed",
+  "compile.failed": "Base compile failed",
+  "verification.started": "Compile verification started",
+  "verification.completed": "Compile verification completed",
+  "verification.failed": "Compile verification failed",
+  "assess_enrichment.started": "Compile quality analysis started",
+  "assess_enrichment.completed": "Compile quality analysis completed",
+  "assess_enrichment.skipped": "Compile quality analysis skipped",
+  "enrich.started": "Domain enrichment started",
+  "enrich.completed": "Domain enrichment completed",
+  "enrich.failed": "Domain enrichment failed",
+  "enrich.skipped": "Domain enrichment skipped",
 };
 
 export function eventTypeLabel(type: string): string {

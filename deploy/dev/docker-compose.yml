@@ -241,6 +241,12 @@ services:
             --name "$$1" --type Keyword \
           || echo "[temporal-init] $$1 already registered — skipping"
         }
+        register_int() {
+          tctl --auto_confirm --address temporal:7233 \
+            admin cluster add-search-attributes \
+            --name "$$1" --type Int \
+          || echo "[temporal-init] $$1 already registered — skipping"
+        }
         # Stage / mode — written on every workflow.
         register_keyword J1IngestStage
         register_keyword J1IngestMode
@@ -252,6 +258,13 @@ services:
         # Adaptive-plan signals — written when the planner runs.
         register_keyword J1RequiresVision
         register_keyword J1RequiresPremiumLLM
+        # Wave 8/9A — new pipeline surface.
+        register_keyword J1DomainProfileId
+        register_keyword J1EnrichmentPolicy
+        register_keyword J1RequireEnrichmentSuccess
+        register_keyword J1FinalStatus
+        register_int     J1CompileRetryCount
+        register_int     J1EnrichmentRetryCount
         echo "[temporal-init] done."
 
   temporal-ui:

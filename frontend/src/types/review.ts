@@ -115,7 +115,12 @@ export interface ContentInventory {
   unavailableReason?: string | null;
 }
 
-// ---- Planning Report (richer projection over IngestPlan) -------
+// ---- Planning Report (legacy planning artifact projection) -----
+//
+// Surfaces the historical planning report shape for tenants that
+// still query the legacy endpoint. The current pipeline derives
+// stage decisions from compile evidence + the post-compile enrich
+// plan; this type stays for backwards-compatible response parsing.
 
 export interface PlanningStepDecision {
   stepId: string;
@@ -362,7 +367,127 @@ export interface PostCompileEnrichPlanPayload {
   source_signals: Record<string, unknown>;
   /** "rule_based" | "rule_based_with_fast_llm" */
   decision_source: "rule_based" | "rule_based_with_fast_llm";
+  /** Wave 5+ — closure fields (always present on new runs; absent on legacy). */
+  should_enrich?: boolean;
+  confidence?: number;
+  require_enrichment_success?: boolean;
+  warnings?: string[];
 }
+
+
+// ---- Wave 8 typed artifact endpoints ----------------------------
+
+/**
+ * Shared envelope for the three Wave-8 artifact endpoints. All three
+ * (`/initial-execution-plan`, `/compile-result`, `/enrichment-result`)
+ * return the same 7-key wire shape — `status="completed"` carries
+ * the typed `plan` payload; `status="unavailable"` carries an
+ * operator-readable `unavailableReason` and `plan: null`.
+ */
+export interface RunArtifactEnvelope<TPlan> {
+  runId: string;
+  documentId?: string | null;
+  documentName?: string | null;
+  status: "completed" | "unavailable";
+  unavailableReason?: string | null;
+  artifactId?: string | null;
+  plan: TPlan | null;
+}
+
+
+/**
+ * Pre-compile initial execution plan payload (mirrors
+ * `InitialExecutionPlan.to_payload()` in Python). Cheap profile +
+ * resolved domain pack + enrichment policy + candidate modules.
+ */
+export interface InitialExecutionPlanPayload {
+  schema_version?: string;
+  document_id?: string | null;
+  domain_profile_id?: string | null;
+  enrichment_policy?: "auto" | "always" | "never" | string | null;
+  require_enrichment_success?: boolean | null;
+  candidate_modules?: string[];
+  cheap_signals?: Record<string, unknown>;
+  resource_hints?: Record<string, unknown>;
+  reasons?: string[];
+  warnings?: string[];
+  compile_plan?: Record<string, unknown> | null;
+}
+
+
+/**
+ * Typed `NormalizedCompileResult.to_payload()` projection. Bridges
+ * the vendor-specific compile output into a stable FE-facing shape
+ * — chunks, detected tables/images, retry history, quality
+ * signals. Raw vendor blob stays in the workspace; the FE only
+ * sees `raw_artifact_refs` pointing at it.
+ */
+export interface NormalizedCompileResultPayload {
+  schema_version?: string;
+  document_id?: string | null;
+  parser?: string | null;
+  parse_method?: string | null;
+  status?: string;
+  chunks_count?: number;
+  extracted_text_chars?: number;
+  page_count?: number | null;
+  detected_tables?: Array<Record<string, unknown>>;
+  detected_images?: Array<Record<string, unknown>>;
+  quality_signals?: Record<string, unknown>;
+  retry_attempts?: Array<Record<string, unknown>>;
+  final_quality?: string | null;
+  warnings?: string[];
+  errors?: string[];
+  raw_artifact_refs?: string[];
+  metadata_presence?: Record<string, unknown>;
+}
+
+
+/**
+ * Typed `EnrichmentResult.to_payload()` projection. The post-compile
+ * overlay carrying per-module outcomes, document-metadata, terminology,
+ * validation findings, and aggregate model usage.
+ */
+export interface EnrichmentResultPayload {
+  schema_version?: string;
+  document_id?: string | null;
+  /** `succeeded` / `succeeded_with_warnings` / `failed` / `skipped`. */
+  status?: "succeeded" | "succeeded_with_warnings" | "failed" | "skipped";
+  reason?: string;
+  domain_id?: string | null;
+  module_outcomes?: EnrichmentModuleOutcomePayload[];
+  document_metadata?: Record<string, unknown>;
+  terminology?: Array<Record<string, unknown>>;
+  classification?: Record<string, unknown> | null;
+  validation?: Record<string, unknown> | null;
+  warnings?: string[];
+  errors?: string[];
+  model_usage?: Record<string, unknown>;
+}
+
+
+export interface EnrichmentModuleOutcomePayload {
+  module_id: string;
+  /** `run` / `partial` / `skipped` / `failed`. */
+  status: string;
+  reason?: string;
+  duration_ms?: number | null;
+  output_artifact_refs?: string[];
+  source_refs?: Array<Record<string, unknown>>;
+  model_usage?: Record<string, unknown>;
+  warnings?: string[];
+  errors?: string[];
+}
+
+
+export type RunInitialExecutionPlanResponse =
+  RunArtifactEnvelope<InitialExecutionPlanPayload>;
+
+export type RunCompileResultResponse =
+  RunArtifactEnvelope<NormalizedCompileResultPayload>;
+
+export type RunEnrichmentResultResponse =
+  RunArtifactEnvelope<EnrichmentResultPayload>;
 
 // ---- Validation (Phase 1: manual test query) --------------------
 

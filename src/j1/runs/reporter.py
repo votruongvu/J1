@@ -66,9 +66,16 @@ __all__ = [
     "AuditProgressReporter",
     "CompositeProgressReporter",
     "NoopProgressReporter",
+    "PROGRESS_EVENT_ASSESS_ENRICHMENT_COMPLETED",
+    "PROGRESS_EVENT_ASSESS_ENRICHMENT_SKIPPED",
+    "PROGRESS_EVENT_ASSESS_ENRICHMENT_STARTED",
     "PROGRESS_EVENT_COMPILE_COMPLETED",
     "PROGRESS_EVENT_COMPILE_FAILED",
     "PROGRESS_EVENT_COMPILE_STARTED",
+    "PROGRESS_EVENT_ENRICH_COMPLETED",
+    "PROGRESS_EVENT_ENRICH_FAILED",
+    "PROGRESS_EVENT_ENRICH_SKIPPED",
+    "PROGRESS_EVENT_ENRICH_STARTED",
     "PROGRESS_EVENT_VERIFICATION_COMPLETED",
     "PROGRESS_EVENT_VERIFICATION_FAILED",
     "PROGRESS_EVENT_VERIFICATION_STARTED",
@@ -122,6 +129,18 @@ PROGRESS_EVENT_COMPILE_FAILED = "compile.failed"
 PROGRESS_EVENT_VERIFICATION_STARTED = "verification.started"
 PROGRESS_EVENT_VERIFICATION_COMPLETED = "verification.completed"
 PROGRESS_EVENT_VERIFICATION_FAILED = "verification.failed"
+# Wave 9A — post-compile assessment + enrichment macro events. The
+# workflow already emits `step.*` events under the
+# `ASSESS_ENRICHMENT` / `ENRICH` stages; the FE timeline projects
+# those onto these canonical macro names so it can draw section
+# headers above the per-module step rows.
+PROGRESS_EVENT_ASSESS_ENRICHMENT_STARTED = "assess_enrichment.started"
+PROGRESS_EVENT_ASSESS_ENRICHMENT_COMPLETED = "assess_enrichment.completed"
+PROGRESS_EVENT_ASSESS_ENRICHMENT_SKIPPED = "assess_enrichment.skipped"
+PROGRESS_EVENT_ENRICH_STARTED = "enrich.started"
+PROGRESS_EVENT_ENRICH_COMPLETED = "enrich.completed"
+PROGRESS_EVENT_ENRICH_FAILED = "enrich.failed"
+PROGRESS_EVENT_ENRICH_SKIPPED = "enrich.skipped"
 
 # Audit `action` values — prefix + bare event name. These are what
 # the audit log records and the audit-history filter accepts.
@@ -190,6 +209,26 @@ _MACRO_STAGE_EVENT_TABLE: dict[
         PROGRESS_EVENT_STEP_STARTED: PROGRESS_EVENT_VERIFICATION_STARTED,
         PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_VERIFICATION_COMPLETED,
         PROGRESS_EVENT_STEP_FAILED: PROGRESS_EVENT_VERIFICATION_FAILED,
+    },
+    # Wave 9A — post-compile assessment macro row. Workflow emits
+    # `step.started` then `step.completed` (or `step.skipped` when
+    # the assessor returned None). The FE collapses these into a
+    # single timeline node so operators see "ran the assessor → got
+    # an enrich plan" without scrolling per-step.
+    ("ASSESS_ENRICHMENT", "assess_enrichment"): {
+        PROGRESS_EVENT_STEP_STARTED: PROGRESS_EVENT_ASSESS_ENRICHMENT_STARTED,
+        PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_ASSESS_ENRICHMENT_COMPLETED,
+        PROGRESS_EVENT_STEP_SKIPPED: PROGRESS_EVENT_ASSESS_ENRICHMENT_SKIPPED,
+    },
+    # Wave 9A — enrichment macro row. Workflow emits started /
+    # completed / failed / skipped via `_emit_step_lifecycle(
+    # stage="ENRICH", step="enrich_stage", action=…)`. FE uses
+    # these to draw the enrichment overlay section.
+    ("ENRICH", "enrich_stage"): {
+        PROGRESS_EVENT_STEP_STARTED: PROGRESS_EVENT_ENRICH_STARTED,
+        PROGRESS_EVENT_STEP_COMPLETED: PROGRESS_EVENT_ENRICH_COMPLETED,
+        PROGRESS_EVENT_STEP_FAILED: PROGRESS_EVENT_ENRICH_FAILED,
+        PROGRESS_EVENT_STEP_SKIPPED: PROGRESS_EVENT_ENRICH_SKIPPED,
     },
 }
 

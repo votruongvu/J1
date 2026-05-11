@@ -38,7 +38,10 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  RunCompileResultResponse,
   RunEnrichPlanResponse,
+  RunEnrichmentResultResponse,
+  RunInitialExecutionPlanResponse,
   StartValidationRunRequest,
   ValidationRun,
   ValidationRunListItem,
@@ -307,6 +310,42 @@ export class ApiClient implements IngestionClient {
       { headers: this.headers() },
     );
     return (await this.json<RunEnrichPlanResponse>(resp));
+  }
+
+  async getRunInitialExecutionPlan(
+    runId: string,
+  ): Promise<RunInitialExecutionPlanResponse> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/initial-execution-plan`,
+      ),
+      { headers: this.headers() },
+    );
+    return (await this.json<RunInitialExecutionPlanResponse>(resp));
+  }
+
+  async getRunCompileResult(
+    runId: string,
+  ): Promise<RunCompileResultResponse> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/compile-result`,
+      ),
+      { headers: this.headers() },
+    );
+    return (await this.json<RunCompileResultResponse>(resp));
+  }
+
+  async getRunEnrichmentResult(
+    runId: string,
+  ): Promise<RunEnrichmentResultResponse> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/enrichment-result`,
+      ),
+      { headers: this.headers() },
+    );
+    return (await this.json<RunEnrichmentResultResponse>(resp));
   }
 
   async listRunChunks(

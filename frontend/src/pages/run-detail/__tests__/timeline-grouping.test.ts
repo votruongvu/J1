@@ -70,9 +70,25 @@ describe("classifyMacroStage", () => {
   it("returns null for non-macro stages", () => {
     const event = _event({
       event: EVENT_TYPES.STEP_STARTED,
-      data: { stage: "ENRICH", step: "enrich" },
+      data: { stage: "GRAPH", step: "graph" },
     });
     expect(classifyMacroStage(event)).toBeNull();
+  });
+
+  it("classifies enrich_stage step as ENRICH", () => {
+    const event = _event({
+      event: EVENT_TYPES.STEP_STARTED,
+      data: { stage: "ENRICH", step: "enrich_stage" },
+    });
+    expect(classifyMacroStage(event)).toBe("ENRICH");
+  });
+
+  it("classifies assess_enrichment step as ASSESS_ENRICHMENT", () => {
+    const event = _event({
+      event: EVENT_TYPES.STEP_STARTED,
+      data: { stage: "ASSESS_ENRICHMENT", step: "assess_enrichment" },
+    });
+    expect(classifyMacroStage(event)).toBe("ASSESS_ENRICHMENT");
   });
 
   it("returns null when stage or step is missing", () => {
@@ -143,9 +159,49 @@ describe("deriveMacroEventType", () => {
   it("returns null for non-macro stages", () => {
     const event = _event({
       event: EVENT_TYPES.STEP_STARTED,
-      data: { stage: "ENRICH", step: "enrich" },
+      data: { stage: "GRAPH", step: "graph" },
     });
     expect(deriveMacroEventType(event)).toBeNull();
+  });
+
+  it("projects enrich_stage lifecycle onto enrich.*", () => {
+    const started = _event({
+      event: EVENT_TYPES.STEP_STARTED,
+      data: { stage: "ENRICH", step: "enrich_stage" },
+    });
+    const completed = _event({
+      event: EVENT_TYPES.STEP_COMPLETED,
+      data: { stage: "ENRICH", step: "enrich_stage" },
+    });
+    const failed = _event({
+      event: EVENT_TYPES.STEP_FAILED,
+      data: { stage: "ENRICH", step: "enrich_stage" },
+    });
+    const skipped = _event({
+      event: EVENT_TYPES.STEP_SKIPPED,
+      data: { stage: "ENRICH", step: "enrich_stage" },
+    });
+    expect(deriveMacroEventType(started)).toBe(EVENT_TYPES.ENRICH_STARTED);
+    expect(deriveMacroEventType(completed)).toBe(EVENT_TYPES.ENRICH_COMPLETED);
+    expect(deriveMacroEventType(failed)).toBe(EVENT_TYPES.ENRICH_FAILED);
+    expect(deriveMacroEventType(skipped)).toBe(EVENT_TYPES.ENRICH_SKIPPED);
+  });
+
+  it("projects assess_enrichment started + completed", () => {
+    const started = _event({
+      event: EVENT_TYPES.STEP_STARTED,
+      data: { stage: "ASSESS_ENRICHMENT", step: "assess_enrichment" },
+    });
+    const completed = _event({
+      event: EVENT_TYPES.STEP_COMPLETED,
+      data: { stage: "ASSESS_ENRICHMENT", step: "assess_enrichment" },
+    });
+    expect(deriveMacroEventType(started)).toBe(
+      EVENT_TYPES.ASSESS_ENRICHMENT_STARTED,
+    );
+    expect(deriveMacroEventType(completed)).toBe(
+      EVENT_TYPES.ASSESS_ENRICHMENT_COMPLETED,
+    );
   });
 });
 

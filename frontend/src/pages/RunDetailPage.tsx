@@ -26,7 +26,15 @@ import { ResultsSection } from "./run-detail/results";
 import { TechDrawer } from "./run-detail/TechDrawer";
 import { AssessmentPlanPanel } from "./run-detail/AssessmentPlanPanel";
 import { CompileStrategyPanel } from "./run-detail/CompileStrategyPanel";
+import { CompileResultPanel } from "./run-detail/CompileResultPanel";
 import { EnrichPlanPanel } from "./run-detail/EnrichPlanPanel";
+import { EnrichmentResultPanel } from "./run-detail/EnrichmentResultPanel";
+import { InitialExecutionPlanPanel } from "./run-detail/InitialExecutionPlanPanel";
+import type {
+  EnrichmentResultPayload,
+  InitialExecutionPlanPayload,
+} from "@/types/review";
+import type { EnrichmentSignals } from "@/lib/runState";
 
 interface RunDetailPageProps {
   runId: string;
@@ -44,6 +52,14 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<ProgressEvent | null>(null);
   const [loadError, setLoadError] = useState<{ status: number; message: string } | null>(null);
+  // Wave 9B — typed Wave-8 artifact snapshots threaded into
+  // PrimaryStatusPanel so the success-branch copy refines per the
+  // (A–F) underlying-final-status surface. Both load lazily off the
+  // new endpoints; absent values fall back to the run-level signals.
+  const [initialPlan, setInitialPlan] =
+    useState<InitialExecutionPlanPayload | null>(null);
+  const [enrichmentResult, setEnrichmentResult] =
+    useState<EnrichmentResultPayload | null>(null);
 
   const streamHandle = useRef<StreamHandle | null>(null);
   const eventIdsRef = useRef<Set<string>>(new Set());
@@ -205,6 +221,51 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     };
   }, [runId, client, openStream, pushToast]);
 
+  // Wave 9B — load the typed Wave-8 artifacts (initial execution
+  // plan + enrichment result overlay) so PrimaryStatusPanel can
+  // branch on the underlying INGESTION_STATUS_* literal instead of
+  // the coarse RUN_STATUS. Both panels also fetch their own copies
+  // — duplicating one round-trip is preferable to introducing a
+  // new aggregate endpoint just to share state.
+  useEffect(() => {
+    if (!runId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const resp = await client.getRunInitialExecutionPlan(runId);
+        if (cancelled) return;
+        setInitialPlan(resp.status === "completed" ? resp.plan : null);
+      } catch {
+        if (!cancelled) setInitialPlan(null);
+      }
+    })();
+    void (async () => {
+      try {
+        const resp = await client.getRunEnrichmentResult(runId);
+        if (cancelled) return;
+        setEnrichmentResult(resp.status === "completed" ? resp.plan : null);
+      } catch {
+        if (!cancelled) setEnrichmentResult(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, runId, events.length]);
+
+  const enrichmentSignals: EnrichmentSignals = (() => {
+    if (!enrichmentResult) return {};
+    return {
+      status: enrichmentResult.status,
+      skippedReason:
+        enrichmentResult.status === "skipped"
+          ? enrichmentResult.reason
+          : undefined,
+      requireEnrichmentSuccess: initialPlan?.require_enrichment_success
+        ?? undefined,
+    };
+  })();
+
   const onSelectEvent = (e: ProgressEvent) => {
     setSelectedEvent(e);
     setDrawerOpen(true);
@@ -273,18 +334,30 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       )}
 
       <div style={{ marginBottom: 20 }}>
-        <PrimaryStatusPanel run={run} events={events} />
+        <PrimaryStatusPanel
+          run={run}
+          events={events}
+          enrichmentSignals={enrichmentSignals}
+        />
       </div>
 
-      {/* Assessment Plan FIRST — shows the rule-based assessor's
-          mode + confidence + capabilities + reason at the top of
-          the page so operators see WHICH compile strategy J1
-          picked before scanning compile output / timeline. Reads
-          the same `compile_strategy_report` artifact that the
-          CompileStrategyPanel below renders. `latestEvent` lets
-          the panel re-fetch its artifact on step.completed / run
-          terminal events so a page loaded mid-flight eventually
-          shows the data. */}
+      {/* Wave 9B — Initial Execution Plan panel at the top of the
+          page, mirroring the original AssessmentPlanPanel slot.
+          Shows the resolved domain pack + enrichment policy +
+          candidate modules. Together with the AssessmentPlanPanel
+          (compile-side) they cover the pre-compile decision
+          surface end-to-end. */}
+      <div style={{ marginBottom: 20 }}>
+        <InitialExecutionPlanPanel
+          runId={runId}
+          latestEvent={events.length > 0 ? events[events.length - 1] : null}
+        />
+      </div>
+
+      {/* Assessment Plan — shows the rule-based assessor's mode +
+          confidence + capabilities + reason at the top of the page
+          so operators see WHICH compile strategy J1 picked before
+          scanning compile output / timeline. */}
       <div style={{ marginBottom: 20 }}>
         <AssessmentPlanPanel
           runId={runId}
@@ -298,7 +371,22 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
           />
+          {/* Wave 9B — typed compile-result summary (chunks,
+              detected tables, retry history, raw refs). Surfaces
+              the same data the workflow used to decide whether
+              enrichment runs. */}
+          <CompileResultPanel
+            runId={runId}
+            latestEvent={events.length > 0 ? events[events.length - 1] : null}
+          />
           <EnrichPlanPanel
+            runId={runId}
+            latestEvent={events.length > 0 ? events[events.length - 1] : null}
+          />
+          {/* Wave 9B — typed enrichment overlay. Renders
+              skipped/succeeded/warning/failed states with operator-
+              readable copy + per-module outcomes. */}
+          <EnrichmentResultPanel
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
           />

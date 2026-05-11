@@ -219,6 +219,12 @@ class RunEnrichmentStageResult:
     # re-parse the plan to enforce the policy.
     require_enrichment_success: bool = False
     persist_error: str | None = None
+    # Wave 9A — count of per-module retry attempts inside the
+    # runner (sum of `attempts - 1` across module outcomes). The
+    # workflow upserts this into `J1EnrichmentRetryCount` so ops
+    # dashboards can aggregate by enrichment cost. Always >= 0;
+    # 0 means "no module needed a retry".
+    retry_count: int = 0
 
 
 @dataclass(frozen=True)
