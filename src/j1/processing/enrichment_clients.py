@@ -141,24 +141,38 @@ class PerImageVisionAdapter:
     prompt + schema → JSON dict).
 
     For each image in the provider, the adapter:
-      1. Calls `vision_client.analyze_image(image=..., prompt=...,
-         media_type=...)` once per image.
-      2. Attempts `json.loads` on the text response; falls back to
+      1. Acquires the shared `LLMCallLimiter` (Wave 11B) when one
+         was supplied — so each external vision call gets its own
+         semaphore slot, mirroring how the text path treats each
+         `text_client.extract` invocation.
+      2. Calls `vision_client.analyze_image(image=..., prompt=...,
+         media_type=...)` exactly once for that image.
+      3. Attempts `json.loads` on the text response; falls back to
          treating the whole response as a plain caption.
-      3. Builds an `{image_id, caption, …}` entry per image.
-      4. Returns `({"images": [entries...]}, usage)` shaped per the
+      4. Builds an `{image_id, caption, …}` entry per image.
+      5. Returns `({"images": [entries...]}, usage)` shaped per the
          `VisionAnalysisClient` Protocol.
 
     Usage aggregation: input/output token counts are summed across
     the per-image calls; provider + model are inherited from the
     last call (the wrapper records aggregate usage on the outcome).
 
-    The limiter is NOT held inside the adapter — the enrichment
-    module wraps the adapter call with the limiter. So a single
-    enrichment-stage acquisition covers the full batch of images.
-    This bounds CONCURRENT enrichment stages, not concurrent
-    per-image LLM calls. Per-image rate limiting is the vendor SDK's
-    responsibility today.
+    Limiter ownership: the adapter holds an optional reference to
+    the shared limiter so EACH per-image LLM call gets its own
+    acquisition. The wrapping image-enrichment module no longer
+    needs to limit the adapter's outer `analyze()` call — that's
+    the caller's choice. When the limiter is None, calls bypass
+    the gate.
+
+    Failure handling: an individual per-image LLM call may raise
+    (network blip, vendor 429). The adapter swallows the exception
+    for that image, records a fallback caption-only entry with a
+    short error reason in `metadata`, and continues to the next
+    image. The aggregate `analyze()` call never raises — the
+    operator sees the per-image misses through the entry's
+    `metadata.error` field. This keeps the limiter acquisition /
+    release symmetry tight (every acquire has a corresponding
+    release in the limiter's `run()` even on raise).
     """
 
     def __init__(
@@ -166,9 +180,11 @@ class PerImageVisionAdapter:
         vision_client: Any,
         *,
         image_provider: ImageBytesProvider,
+        llm_call_limiter: Any | None = None,
     ) -> None:
         self._vision = vision_client
         self._image_provider = image_provider
+        self._llm_call_limiter = llm_call_limiter
 
     def analyze(
         self,
@@ -182,18 +198,32 @@ class PerImageVisionAdapter:
         agg_output_tokens = 0
         provider: str | None = None
         model: str | None = None
+        per_call_metadata_template = dict(metadata or {})
         for image in self._image_provider() or ():
-            text, usage = self._vision.analyze_image(
-                image.image_bytes,
-                prompt=prompt,
-                media_type=image.media_type,
-                metadata=dict(metadata or {}),
-            )
+            entry: dict[str, Any] = {"image_id": image.image_id}
+            per_call_metadata = dict(per_call_metadata_template)
+            per_call_metadata["image_id"] = image.image_id
+            try:
+                text, usage = self._invoke_one(
+                    prompt=prompt,
+                    image=image,
+                    metadata=per_call_metadata,
+                )
+            except Exception as exc:  # noqa: BLE001 — per-image fault
+                # Continue to the next image so a single failure
+                # doesn't lose every result. Record a structured
+                # error on the entry's metadata so the operator
+                # sees the miss through the typed overlay.
+                entry["caption"] = None
+                entry["metadata"] = {
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                entries.append(entry)
+                continue
             # Try JSON-first; if the model returned a dict matching
             # the schema we forward it verbatim. Most vision models
             # in J1 today return prose — we degrade to a caption-only
             # entry in that case.
-            entry: dict[str, Any] = {"image_id": image.image_id}
             parsed_dict = _try_parse_image_response(text)
             if parsed_dict is not None:
                 # Merge the model's parsed fields into the entry.
@@ -218,6 +248,33 @@ class PerImageVisionAdapter:
             output_tokens=agg_output_tokens,
         )
         return ({"images": entries}, agg_usage)
+
+    def _invoke_one(
+        self,
+        *,
+        prompt: str,
+        image: "VisionImagePayload",
+        metadata: Mapping[str, Any],
+    ) -> tuple[str, Any]:
+        """Acquire the limiter (when wired) + call the underlying
+        vision client for exactly one image. Returns `(text, usage)`
+        from the client; raises if the client raises.
+
+        Limiter semantics: the limiter's `run(callable, *args,
+        metadata=...)` acquires the semaphore + invokes the
+        callable + releases on return OR raise. So one image →
+        one acquisition either way."""
+        def _call() -> tuple[str, Any]:
+            return self._vision.analyze_image(
+                image.image_bytes,
+                prompt=prompt,
+                media_type=image.media_type,
+                metadata=dict(metadata),
+            )
+
+        if self._llm_call_limiter is not None:
+            return self._llm_call_limiter.run(_call, metadata=metadata)
+        return _call()
 
 
 @dataclass(frozen=True)

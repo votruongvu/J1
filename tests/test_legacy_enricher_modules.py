@@ -353,14 +353,26 @@ def test_text_wrapper_routes_through_limiter():
     assert len(fake.calls) == 1
 
 
-def test_image_wrapper_routes_through_limiter():
+def test_image_wrapper_delegates_limiter_to_adapter():
+    """Wave 11B — the image module no longer wraps the adapter's
+    outer `analyze` call with the module-side limiter. Instead the
+    adapter owns per-image limiter acquisition. The image module's
+    own `llm_call_limiter` kwarg is therefore inert for the image
+    path; tests that need per-image acquisition checks should
+    drive the adapter directly with its own limiter (see the Wave-
+    11B adapter test in test_per_image_limiter_acquires_once_per_image).
+    """
     fake = _FakeVisionClient(response={"images": [{"image_id": "i-0"}]})
     limiter = _FakeLimiter()
     mod = ImageEnrichmentModule(
         vision_client=fake, llm_call_limiter=limiter,
     )
     mod.run(_ctx(compile_result=_compile_result(images=2)))
-    assert len(limiter.calls) == 1
+    # Module-side limiter is not invoked because the image path
+    # uses the adapter directly. The adapter (constructed by the
+    # activity) is the entity that holds + acquires the limiter
+    # per image — see the Wave-11B per-image limiter tests.
+    assert limiter.calls == []
 
 
 def test_factory_threads_shared_limiter_into_every_wrapper():

@@ -599,11 +599,17 @@ class ImageEnrichmentModule(_LegacyWrapperBase):
             # The vision client speaks the `VisionAnalysisClient`
             # Protocol — `analyze(prompt, schema, metadata)`
             # returning a JSON dict + usage. Production vision LLMs
-            # don't natively expose that shape; the bootstrap wires
+            # don't natively expose that shape; the activity wires
             # a `PerImageVisionAdapter` around the per-image
-            # `VisionLLMClient` so the wrapper stays vendor-neutral.
-            parsed, usage = self._llm_call(
-                self._vision_client.analyze,
+            # `VisionLLMClient`.
+            #
+            # Wave 11B — the adapter owns the per-image limiter
+            # acquisition. We DO NOT wrap the outer `analyze` call
+            # with our own limiter (`_llm_call`) — that would
+            # double-acquire (one outer + one per image). Calling
+            # the adapter directly lets it gate each per-image
+            # vision call with its own semaphore slot.
+            parsed, usage = self._vision_client.analyze(
                 prompt, self._OUTPUT_SCHEMA,
                 metadata={
                     "module_id": self.module_id,

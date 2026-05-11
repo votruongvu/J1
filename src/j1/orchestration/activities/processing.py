@@ -1272,14 +1272,20 @@ class ProcessingActivities:
             # adapter (any object implementing the `VisionAnalysisClient`
             # Protocol's `analyze` method) or the raw production
             # `VisionLLMClient` (per-image bytes; `analyze_image`).
-            # In the former case we use it as-is; in the latter we
-            # construct the per-run adapter on the spot.
+            # In the former case we use it as-is — preserves the
+            # Wave-10.6 backward-compatible path where tests pass a
+            # pre-constructed adapter directly. In the latter case
+            # (production path), construct a per-run adapter that
+            # wraps the raw client with the workspace-aware
+            # `WorkspaceImageBytesProvider` AND the shared LLM-call
+            # limiter (Wave 11B — per-image acquisition).
             if hasattr(self._enrichment_vision_client, "analyze"):
                 vision_adapter = self._enrichment_vision_client
             else:
                 vision_adapter = PerImageVisionAdapter(
                     self._enrichment_vision_client,
                     image_provider=image_provider,
+                    llm_call_limiter=self._enrichment_llm_call_limiter,
                 )
         legacy_modules = build_legacy_enricher_modules(
             text_client=self._enrichment_text_client,

@@ -614,6 +614,25 @@ def build_worker_spec(
     # Text client structurally matches `TextAnalysisClient` already
     # — the adapter is a thin pass-through, kept here to make the
     # dependency arrow visible at the wiring boundary.
+    #
+    # Production / staging deployments OUTSIDE `deploy/dev/` must
+    # follow the same wiring pattern when they're built:
+    #   1. `bootstrap_from_env()` → `BootstrapResult` carries the
+    #      `llm_registry` + `llm_call_limiter`.
+    #   2. Resolve `text_client = registry.try_text()` and
+    #      `vision_client = registry.try_vision()` — either may be
+    #      None for deployments without LLM credentials.
+    #   3. Optionally wrap text client in `TextLLMClientAdapter` for
+    #      explicit Protocol surface (production client matches
+    #      structurally either way).
+    #   4. Pass the RAW vision client through (do NOT wrap at
+    #      bootstrap) — the activity wraps per-run.
+    #   5. Pass `llm_call_limiter=boot.llm_call_limiter` so the
+    #      same limiter reaches every adapter AND per-image vision
+    #      calls (Wave 11B — the limiter acquires per-image).
+    #   6. Construct `ProcessingActivities(...,
+    #      enrichment_text_client=..., enrichment_vision_client=...,
+    #      enrichment_llm_call_limiter=...)`.
     from j1.processing.enrichment_clients import TextLLMClientAdapter
 
     enrichment_text_client: object | None = None

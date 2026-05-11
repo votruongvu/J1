@@ -469,7 +469,13 @@ def _enrichment_skipped_reason_from_payload(
     enrich_plan_payload: dict[str, Any] | None,
 ) -> str | None:
     if enrichment_payload and enrichment_payload.get("status") == "skipped":
-        reason = enrichment_payload.get("reason")
+        # Wave 11B — `EnrichmentResult` serialises the skip reason
+        # under `skipped_reason`; fall back to `reason` for older
+        # payloads that pre-date the rename.
+        reason = (
+            enrichment_payload.get("skipped_reason")
+            or enrichment_payload.get("reason")
+        )
         if reason:
             return str(reason)
     if enrich_plan_payload:
@@ -577,7 +583,15 @@ def _build_enrichment_summary(
         warnings = [str(w) for w in (enrichment_result.get("warnings") or [])]
         errors = [str(e) for e in (enrichment_result.get("errors") or [])]
         if enrichment_status == "skipped":
-            reason = enrichment_result.get("reason")
+            # Wave 11B — the enrichment payload exposes the
+            # operator-readable reason under `skipped_reason` (the
+            # `EnrichmentResult` schema's serialised field). Older
+            # paths used `reason` — keep both readable so a payload
+            # produced before the rename still surfaces the reason.
+            reason = (
+                enrichment_result.get("skipped_reason")
+                or enrichment_result.get("reason")
+            )
             if reason:
                 skipped_reason = str(reason)
         meta = enrichment_result.get("document_metadata") or {}

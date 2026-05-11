@@ -491,8 +491,9 @@ def test_shared_limiter_wraps_vision_call(
         c for c in limiter.calls
         if c["metadata"].get("module_id") == "image_enrichment"
     ]
-    # One acquisition wraps the batch analyze call (per-image
-    # bounding is documented as deferred — Wave 11B).
+    # Wave 11B — per-image limiter acquisition. One image
+    # detected → one acquisition (the `_FakeVisionLLMClient`
+    # records exactly one analyze_image call too).
     assert len(image_calls) == 1
 
 
