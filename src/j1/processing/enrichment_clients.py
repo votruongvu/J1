@@ -41,8 +41,10 @@ __all__ = [
     "VisionAnalysisClient",
     "VisionImagePayload",
     "ImageBytesProvider",
+    "ImageProviderResult",
     "PerImageVisionAdapter",
     "TextLLMClientAdapter",
+    "WorkspaceImageBytesProvider",
 ]
 
 
@@ -100,11 +102,28 @@ class VisionImagePayload:
     to the `PerImageVisionAdapter`.
 
     Public class — image-bytes-providers constructed by the
-    bootstrap reference this type directly."""
+    bootstrap reference this type directly.
+
+    `image_id` is the operator-visible identifier the FE renders;
+    it can equal `source_artifact_id` (typical when the provider
+    sources bytes from the artifact registry) or it can be the
+    parser's internal id when a producer correlates them. The
+    `image_summary.image_id` on the typed overlay mirrors this
+    field verbatim.
+
+    `source_artifact_id` is the artifact-registry id the bytes
+    came from (Wave 11A) — surfaced so the FE can deep-link to the
+    raw artifact endpoint. `None` when the provider sourced bytes
+    from a non-registry source (rare; in-memory tests). `metadata`
+    is free-form, optional, and not serialised through the
+    enrichment-result wire payload — providers attach diagnostic
+    info here that surfaces in adapter logs."""
 
     image_id: str
     image_bytes: bytes
     media_type: str | None = None
+    source_artifact_id: str | None = None
+    metadata: Mapping[str, Any] | None = None
 
 
 ImageBytesProvider = Callable[[], Iterable[VisionImagePayload]]
@@ -272,3 +291,228 @@ class TextLLMClientAdapter:
         metadata: Mapping[str, Any] | None = None,
     ) -> tuple[Mapping[str, Any], Any]:
         return self._client.extract(prompt, schema, metadata=metadata)
+
+
+# ---- Wave 11A — workspace-aware image-bytes provider ------------
+
+
+@dataclass(frozen=True)
+class ImageProviderResult:
+    """Return type for `WorkspaceImageBytesProvider`. Carries the
+    loaded payloads PLUS structured warnings explaining any
+    missing-bytes outcomes.
+
+    `payloads` is the input to the `PerImageVisionAdapter` — empty
+    when no image artifacts could be loaded.
+
+    `warnings` is operator-readable strings describing per-image
+    misses (e.g. "artifact art-1: bytes not loadable; check
+    workspace permissions"). The activity surfaces these on the
+    image module's `EnrichmentModuleOutcome.warnings` so they reach
+    the final report."""
+
+    payloads: tuple["VisionImagePayload", ...]
+    warnings: tuple[str, ...] = ()
+
+
+class WorkspaceImageBytesProvider:
+    """Resolves the current run's detected compile-image artifacts
+    into `VisionImagePayload` records the
+    `PerImageVisionAdapter` consumes.
+
+    Construction: per-run inside the enrichment activity. Closes
+    over the artifact registry + workspace + project context +
+    document id. Workspace-side path resolution mirrors
+    `IngestionResultReviewService._resolve_artifact_path` — full
+    path-traversal guard so a tampered registry entry can never
+    read outside the project workspace.
+
+    Skip semantics: a registry without `compile.image` artifacts
+    for the document yields `payloads=()` so the
+    `ImageEnrichmentModule.can_run` check still skips with
+    "compile detected no images" (the image module's check looks
+    at `compile_result.detected_images` first; if THAT is empty
+    the provider is never invoked anyway). When images WERE
+    detected but their bytes can't be loaded (file missing /
+    permissions denied / decoded mismatch), the provider returns
+    `payloads=()` plus a populated `warnings` list — the activity
+    forwards the warnings to the operator-facing module outcome.
+
+    Pure I/O — no LLM calls. Same workspace+registry inputs →
+    same payloads."""
+
+    # Artifact kinds the provider considers "image-bearing".
+    # Mirrors `_is_image_kind` in `j1/enrichers.py` minus the
+    # `enriched.visuals` re-enrich loop guard (this provider
+    # produces the bytes for the image module; not for re-enriching
+    # an existing overlay).
+    _IMAGE_ARTIFACT_KINDS: tuple[str, ...] = ("compile.image",)
+
+    # Best-effort extension → media-type table. Adapter-side
+    # consumers tolerate `None` so a missing entry isn't fatal.
+    _EXT_TO_MEDIA_TYPE: dict[str, str] = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".tiff": "image/tiff",
+        ".bmp": "image/bmp",
+    }
+
+    def __init__(
+        self,
+        *,
+        artifact_registry: Any,
+        workspace: Any,
+        ctx: Any,
+        document_id: str,
+        run_id: str | None = None,
+    ) -> None:
+        self._artifacts = artifact_registry
+        self._workspace = workspace
+        self._ctx = ctx
+        self._document_id = document_id
+        self._run_id = run_id
+        # Per-construction cache so the adapter calling the
+        # provider multiple times in one stage doesn't re-list /
+        # re-read on each call.
+        self._cached: ImageProviderResult | None = None
+
+    # ---- Public API ----
+
+    def __call__(self) -> Iterable[VisionImagePayload]:
+        """Adapter-facing entrypoint. Returns the payload iterable
+        directly so the `ImageBytesProvider` callable type
+        contract is preserved. Warnings are accessible via
+        `last_result()` after the call."""
+        result = self.load_all()
+        return result.payloads
+
+    def last_result(self) -> ImageProviderResult | None:
+        """Return the most-recent `ImageProviderResult` so the
+        caller (the activity) can read structured warnings to
+        attach to the module outcome."""
+        return self._cached
+
+    def load_all(self) -> ImageProviderResult:
+        """Walk the artifact registry + workspace, build the
+        payload list, accumulate warnings, cache + return."""
+        if self._cached is not None:
+            return self._cached
+        try:
+            records = self._artifacts.list_artifacts(self._ctx) or []
+        except Exception as exc:  # noqa: BLE001 — registry errors → no images
+            self._cached = ImageProviderResult(
+                payloads=(),
+                warnings=(
+                    f"image-artifact registry lookup failed: "
+                    f"{type(exc).__name__}",
+                ),
+            )
+            return self._cached
+
+        # Filter to per-document image-bearing artifacts.
+        image_records = [
+            r for r in records
+            if getattr(r, "kind", "") in self._IMAGE_ARTIFACT_KINDS
+            and self._belongs_to_document(r)
+        ]
+        payloads: list[VisionImagePayload] = []
+        warnings: list[str] = []
+        for record in image_records:
+            payload, warn = self._record_to_payload(record)
+            if payload is not None:
+                payloads.append(payload)
+            if warn:
+                warnings.append(warn)
+        self._cached = ImageProviderResult(
+            payloads=tuple(payloads),
+            warnings=tuple(warnings),
+        )
+        return self._cached
+
+    # ---- Internals ----
+
+    def _belongs_to_document(self, record: Any) -> bool:
+        """A registry record is associated with this document when
+        either:
+          * `record.source_document_ids` lists the document_id, OR
+          * `record.metadata["document_id"]` matches.
+        Either signal is enough — producers populate one or the
+        other depending on the writer."""
+        if not self._document_id:
+            return True
+        sources = getattr(record, "source_document_ids", None) or []
+        if self._document_id in sources:
+            return True
+        meta = getattr(record, "metadata", None) or {}
+        return meta.get("document_id") == self._document_id
+
+    def _record_to_payload(
+        self, record: Any,
+    ) -> tuple[VisionImagePayload | None, str | None]:
+        """Build the typed payload for one image-bearing artifact.
+
+        Returns (None, warning) when the bytes couldn't be loaded.
+        Returns (payload, None) on success."""
+        from pathlib import PurePosixPath
+
+        artifact_id = getattr(record, "artifact_id", None) or "<unknown>"
+        location = (getattr(record, "location", "") or "").strip()
+        if not location:
+            return (
+                None,
+                f"image artifact {artifact_id}: registry has no location",
+            )
+        parts = PurePosixPath(location).parts
+        if len(parts) < 2:
+            return (
+                None,
+                f"image artifact {artifact_id}: location malformed",
+            )
+        area_name, *rest = parts
+        # Resolve workspace area + path-traversal guard.
+        try:
+            from j1.workspace.layout import WorkspaceArea
+            area = WorkspaceArea(area_name)
+        except (ImportError, ValueError):
+            return (
+                None,
+                f"image artifact {artifact_id}: unknown workspace area "
+                f"{area_name!r}",
+            )
+        try:
+            area_root = self._workspace.area(
+                self._ctx, area,
+            ).resolve()
+            candidate = area_root.joinpath(*rest).resolve()
+            candidate.relative_to(area_root)  # path-traversal guard
+            image_bytes = candidate.read_bytes()
+        except Exception as exc:  # noqa: BLE001 — file IO / traversal
+            return (
+                None,
+                f"image artifact {artifact_id}: bytes not loadable "
+                f"({type(exc).__name__})",
+            )
+        if not image_bytes:
+            return (
+                None,
+                f"image artifact {artifact_id}: file is empty",
+            )
+        suffix = candidate.suffix.lower()
+        media_type = self._EXT_TO_MEDIA_TYPE.get(suffix)
+        return (
+            VisionImagePayload(
+                image_id=artifact_id,
+                image_bytes=image_bytes,
+                media_type=media_type,
+                source_artifact_id=artifact_id,
+                metadata={
+                    "document_id": self._document_id,
+                    "kind": getattr(record, "kind", "") or "",
+                    "byte_size": len(image_bytes),
+                },
+            ),
+            None,
+        )

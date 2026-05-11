@@ -388,6 +388,59 @@ def _persist_enrichment_payload(
         )
 
 
+def _augment_with_image_provider_warnings(
+    enrichment_result: Any,
+    image_provider: Any,
+) -> Any:
+    """Wave 11A — splice the image-provider's structured warnings
+    onto the image module's `EnrichmentModuleOutcome.warnings`.
+
+    The image module runs against the adapter without seeing the
+    provider's per-image misses directly; this helper reads
+    `image_provider.last_result()` after the runner finished and
+    rebuilds the typed `EnrichmentResult` with the warnings spliced
+    into the image outcome.
+
+    Pure transformation — no I/O. Returns a new `EnrichmentResult`
+    when warnings exist; passes the input through unchanged when
+    none do."""
+    from dataclasses import replace
+    from j1.processing.enrichment_overlay import EnrichmentModuleStatus
+
+    last = (
+        image_provider.last_result() if hasattr(image_provider, "last_result")
+        else None
+    )
+    if last is None or not last.warnings:
+        return enrichment_result
+    new_outcomes: list[Any] = []
+    spliced = False
+    for outcome in enrichment_result.module_outcomes:
+        if (
+            outcome.module_id == "image_enrichment"
+            and outcome.status in (
+                EnrichmentModuleStatus.RUN,
+                EnrichmentModuleStatus.PARTIAL,
+                EnrichmentModuleStatus.SKIPPED,
+                EnrichmentModuleStatus.FAILED,
+            )
+        ):
+            new_outcomes.append(replace(
+                outcome,
+                warnings=tuple(outcome.warnings) + tuple(last.warnings),
+            ))
+            spliced = True
+        else:
+            new_outcomes.append(outcome)
+    if not spliced:
+        return enrichment_result
+    return replace(
+        enrichment_result,
+        module_outcomes=tuple(new_outcomes),
+        warnings=tuple(enrichment_result.warnings) + tuple(last.warnings),
+    )
+
+
 class _EmptyDetectionContext:
     """Sentinel detection context for pre-compile pack resolution.
 
@@ -1182,17 +1235,55 @@ class ProcessingActivities:
             domain_pack=domain_pack,
             initial_plan=initial_plan,
         )
-        # Wave 10.5 — register the legacy-wrapper modules alongside
-        # the Wave-6 skeletons. The wrappers skip cleanly when the
-        # activity wasn't constructed with LLM clients (tests / dev
-        # without credentials) so adding them here is safe in every
-        # deployment.
+        # Wave 10.5 — register the legacy-compatible adapter modules
+        # alongside the Wave-6 skeletons. The adapters skip cleanly
+        # when the activity wasn't constructed with LLM clients
+        # (tests / dev without credentials) so adding them here is
+        # safe in every deployment.
+        #
+        # Wave 11A — construct the `PerImageVisionAdapter` PER RUN
+        # (not at worker startup) so it can resolve actual image
+        # bytes from the current run's compile-image artifacts.
+        # When no raw vision client is wired (`vision_client=None`),
+        # the image module skips with "no vision LLM client
+        # configured"; when the client exists but no compile images
+        # were detected, the module skips with "compile detected no
+        # images"; when images WERE detected but their bytes can't
+        # be loaded, the provider's warnings flow through to the
+        # outcome.
+        from j1.processing.enrichment_clients import (
+            PerImageVisionAdapter,
+            WorkspaceImageBytesProvider,
+        )
         from j1.processing.legacy_enricher_modules import (
             build_legacy_enricher_modules,
         )
+        image_provider: WorkspaceImageBytesProvider | None = None
+        vision_adapter: object | None = None
+        if self._enrichment_vision_client is not None:
+            image_provider = WorkspaceImageBytesProvider(
+                artifact_registry=self._artifacts,
+                workspace=self._processing._workspace,
+                ctx=ctx,
+                document_id=input.document_id,
+                run_id=input.run_id,
+            )
+            # Detect whether the supplied vision client is already an
+            # adapter (any object implementing the `VisionAnalysisClient`
+            # Protocol's `analyze` method) or the raw production
+            # `VisionLLMClient` (per-image bytes; `analyze_image`).
+            # In the former case we use it as-is; in the latter we
+            # construct the per-run adapter on the spot.
+            if hasattr(self._enrichment_vision_client, "analyze"):
+                vision_adapter = self._enrichment_vision_client
+            else:
+                vision_adapter = PerImageVisionAdapter(
+                    self._enrichment_vision_client,
+                    image_provider=image_provider,
+                )
         legacy_modules = build_legacy_enricher_modules(
             text_client=self._enrichment_text_client,
-            vision_client=self._enrichment_vision_client,
+            vision_client=vision_adapter,
             llm_call_limiter=self._enrichment_llm_call_limiter,
         )
         runner = CompositeEnrichmentRunner(modules=[
@@ -1202,6 +1293,14 @@ class ProcessingActivities:
             *legacy_modules,
         ])
         result = runner.run(context)
+        # Wave 11A — surface the image-provider warnings (if any)
+        # on the image module's outcome so missing-byte misses
+        # reach the final report. We splice the warnings into the
+        # already-built outcome rather than re-running the module.
+        if image_provider is not None:
+            result = _augment_with_image_provider_warnings(
+                result, image_provider,
+            )
         payload = result.to_payload()
         persist_outcome = _persist_enrichment_payload(
             self._processing, ctx,

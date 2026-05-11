@@ -607,39 +607,26 @@ def build_worker_spec(
     else:
         resolved_enrichers = enrichers
 
-    # Wave 10.6 — build the per-document image-bytes provider once.
-    # It closes over the artifact registry + workspace so the
-    # PerImageVisionAdapter can read each detected image's bytes
-    # from disk at run time. Returns an empty iterable when no
-    # vision client is wired so the adapter constructs harmlessly.
-    from j1.processing.enrichment_clients import (
-        PerImageVisionAdapter,
-        TextLLMClientAdapter,
-        VisionImagePayload,
-    )
-
-    def _build_image_provider_for_activity():
-        """Return a callable the adapter binds at construction time.
-        Today the dev wiring doesn't have a per-run context to
-        thread compile-result image refs through — the adapter
-        receives an EMPTY provider so the image module skips with
-        'no images' on every run. A future wave that threads the
-        compile-result image bytes into the activity should replace
-        this with a closure over the run's detected_images list.
-        """
-        def _noop_provider() -> list[VisionImagePayload]:
-            return []
-        return _noop_provider
+    # Wave 10.6 + 11A — bootstrap supplies the RAW analysis clients;
+    # the enrichment activity constructs the `PerImageVisionAdapter`
+    # per run so it can resolve actual image bytes from the run's
+    # `compile.image` artifacts via `WorkspaceImageBytesProvider`.
+    # Text client structurally matches `TextAnalysisClient` already
+    # — the adapter is a thin pass-through, kept here to make the
+    # dependency arrow visible at the wiring boundary.
+    from j1.processing.enrichment_clients import TextLLMClientAdapter
 
     enrichment_text_client: object | None = None
     enrichment_vision_client: object | None = None
     if text_client is not None:
         enrichment_text_client = TextLLMClientAdapter(text_client)
     if vision_client is not None:
-        enrichment_vision_client = PerImageVisionAdapter(
-            vision_client,
-            image_provider=_build_image_provider_for_activity(),
-        )
+        # Pass the raw vision client through — the activity wraps
+        # it in `PerImageVisionAdapter(raw_vision_client,
+        # image_provider=WorkspaceImageBytesProvider(...))` at
+        # `run_enrichment_stage` time so the provider can see the
+        # current run's compile-image artifacts.
+        enrichment_vision_client = vision_client
 
     activities += ProcessingActivities(
         processing=processing,
