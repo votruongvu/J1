@@ -2285,6 +2285,34 @@ def create_rest_api(
         return envelope(plan, _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/compile-result",
+        tags=["ingestion-runs"],
+        summary="Get the typed normalized compile result for an ingestion run",
+        description=(
+            "Returns the typed `NormalizedCompileResult` for the "
+            "run's compile output: chunks_count, "
+            "extracted_text_chars, page_count, detected_tables / "
+            "detected_images (structured), quality_signals, retry "
+            "history, warnings + errors, and raw_artifact_refs "
+            "pointing at the vendor's preserved output. Read by the "
+            "FE's Compile Result panel and by post-compile "
+            "consumers that need typed access to compile signals. "
+            "Returns `status=\"unavailable\"` with a reason when "
+            "the artifact wasn't persisted. Returns 404 if the run "
+            "does not exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_compile_result(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        result = service.get_run_compile_result(ctx, run_id)
+        return envelope(result, _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/initial-execution-plan",
         tags=["ingestion-runs"],
         summary="Get the pre-compile initial execution plan for an ingestion run",

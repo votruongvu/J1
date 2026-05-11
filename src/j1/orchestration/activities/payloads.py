@@ -145,6 +145,20 @@ class PersistPostCompileEnrichPlanInput:
 
 
 @dataclass(frozen=True)
+class PersistCompileResultSummaryInput:
+    """Workflow → activity payload for the
+    `compile_result_summary` artifact. Carries the typed
+    `NormalizedCompileResult.to_payload()` dict — same transport
+    shape as the other persist payloads."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class PersistInitialExecutionPlanInput:
     """Workflow → activity payload for the
     `initial_execution_plan` artifact. Carries the cheap pre-compile

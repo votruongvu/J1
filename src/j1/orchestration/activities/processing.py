@@ -48,6 +48,7 @@ from j1.orchestration.activities.payloads import (
     PersistFinalSummaryInput,
     BuildInitialExecutionPlanInput,
     BuildInitialExecutionPlanResult,
+    PersistCompileResultSummaryInput,
     PersistInitialExecutionPlanInput,
     PersistPostCompileEnrichPlanInput,
     PersistValidationReportInput,
@@ -85,6 +86,7 @@ ACTIVITY_PERSIST_COMPILE_STRATEGY_REPORT = "j1.processing.persist_compile_strate
 ACTIVITY_PERSIST_POST_COMPILE_ENRICH_PLAN = "j1.processing.persist_post_compile_enrich_plan"
 ACTIVITY_PERSIST_INITIAL_EXECUTION_PLAN = "j1.processing.persist_initial_execution_plan"
 ACTIVITY_BUILD_INITIAL_EXECUTION_PLAN = "j1.processing.build_initial_execution_plan"
+ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY = "j1.processing.persist_compile_result_summary"
 ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
@@ -656,6 +658,35 @@ class ProcessingActivities:
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_compile_strategy_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=dict(input.payload),
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY)
+    def persist_compile_result_summary(
+        self, input: PersistCompileResultSummaryInput,
+    ) -> ArtifactActivityResult:
+        """Persist the typed `NormalizedCompileResult` as a
+        `compile_result_summary` artifact. Best-effort — a write
+        failure is returned in the response; the workflow logs it
+        and continues because the durable signal for downstream
+        stages is the inline payload the workflow already holds."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_compile_result_summary(
                 ctx,
                 run_id=input.run_id,
                 document_id=input.document_id,

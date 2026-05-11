@@ -18,6 +18,7 @@ with workflow.unsafe.imports_passed_through():
         FinalizeInput,
         GraphActivityInput,
         IndexActivityInput,
+        PersistCompileResultSummaryInput,
         PersistCompileStrategyReportInput,
         PersistErrorReportInput,
         PersistFinalSummaryInput,
@@ -81,6 +82,10 @@ with workflow.unsafe.imports_passed_through():
         CompileRetrySettings,
         DEFAULT_MAX_ATTEMPTS,
         next_compile_mode,
+    )
+    from j1.processing.compile_result import (
+        NormalizedCompileResult,
+        normalize_compile_result,
     )
     from j1.processing.initial_execution_plan import (
         InitialExecutionPlan,
@@ -1790,6 +1795,45 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001 — never block compile success on telemetry
             pass
 
+    async def _persist_compile_result_summary(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        document_id: str,
+        compile_result: "ArtifactActivityResult",
+        retry_attempts: list[dict],
+        final_quality_verdict: str | None,
+    ) -> None:
+        """Build the typed `NormalizedCompileResult` and persist it
+        as a `compile_result_summary` artifact (Wave 4).
+
+        Pure projection — the builder runs inside the workflow
+        (sandbox-safe, no I/O). Best-effort persistence: a write
+        failure logs at the activity layer; the run completes
+        regardless because the durable signal for downstream stages
+        is the inline `compile_result` the workflow already holds."""
+        normalized = normalize_compile_result(
+            compile_result,
+            document_id=document_id,
+            retry_attempts=retry_attempts,
+            final_quality_verdict=final_quality_verdict,
+        )
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_compile_result_summary,
+                PersistCompileResultSummaryInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id or "",
+                    document_id=document_id,
+                    payload=normalized.to_payload(),
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — never block compile success on telemetry
+            pass
+
     async def _run_post_compile_enrich_assessment(
         self,
         request: ProjectProcessingRequest,
@@ -2930,6 +2974,22 @@ class ProjectProcessingWorkflow:
                 )
             ),
             compile_result=compile_result,
+        )
+
+        # ── Normalized compile result (Wave 4) ─────────────────────
+        # Build the typed `NormalizedCompileResult` projection over
+        # the activity result + retry history, and persist it as a
+        # `compile_result_summary` artifact. Downstream consumers
+        # (post-compile assessor, FE Compile Result panel, final
+        # report) branch on the typed fields instead of nested
+        # dicts. Raw vendor output stays in the workspace and is
+        # referenced by id only via `raw_artifact_refs`.
+        await self._persist_compile_result_summary(
+            request,
+            document_id=document_id,
+            compile_result=compile_result,
+            retry_attempts=compile_attempts_payload,
+            final_quality_verdict=final_quality,
         )
 
         # ── Post-compile enrich assessment ────────────────────────

@@ -84,12 +84,20 @@ ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN = "post_compile_enrich_plan"
 # `AssessmentPlan`. Read by the FE's initial-plan panel and by the
 # post-compile assessor to derive the candidate list.
 ARTIFACT_KIND_INITIAL_EXECUTION_PLAN = "initial_execution_plan"
+# Normalized compile result (Wave 4). Typed projection of what the
+# compile activity returned — chunks_count, detected_tables /
+# detected_images, quality_signals, retry_history, etc. Read by the
+# FE's Compile Result panel and by the post-compile enrichment
+# assessor; raw vendor output stays in the workspace and is
+# referenced by id via `raw_artifact_refs`.
+ARTIFACT_KIND_COMPILE_RESULT_SUMMARY = "compile_result_summary"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
     "ARTIFACT_KIND_ERROR_REPORT",
     "ARTIFACT_KIND_FINAL_SUMMARY",
+    "ARTIFACT_KIND_COMPILE_RESULT_SUMMARY",
     "ARTIFACT_KIND_INITIAL_EXECUTION_PLAN",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",

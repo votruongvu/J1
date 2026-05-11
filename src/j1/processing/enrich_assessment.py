@@ -85,6 +85,19 @@ class SourceSignals:
     table_count: int = 0
     text_block_count: int = 0
     total_text_chars: int = 0
+    # Wave 5 closure: compile-stage warnings the parser surfaced
+    # (e.g. "low-density page 3", "no language detected"). Used by
+    # the assessor to bias OPTIONAL → RECOMMENDED when degraded
+    # extraction is detected. Empty when the parser surfaced no
+    # warnings or the workflow didn't thread them in.
+    compile_warnings: tuple[str, ...] = ()
+    # Wave 5 closure: typed quality scores the parser surfaced
+    # (0..1 each). The assessor consults these directly so the
+    # low-quality bias doesn't depend on the discrete
+    # `final_compile_quality` verdict alone.
+    parse_quality_score: float | None = None
+    text_sufficiency_score: float | None = None
+    layout_complexity_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -123,19 +136,66 @@ class PostCompileEnrichPlan:
     # Snapshot of the applied policy. Empty dict when no policy was
     # consulted. Serialised as-is into the persisted plan.
     domain_enrichment_policy: dict[str, Any] = field(default_factory=dict)
+    # ---- Wave 5 closure fields ---------------------------------
+    # Operator-readable confidence (0..1) in the verdict. Heuristic:
+    # 1.0 for blocking SKIPs, 0.85 when a policy=always / =never
+    # drove the call, 0.7 when compile signals clearly support the
+    # verdict, 0.5 for ambiguous OPTIONAL fallbacks.
+    confidence: float = 0.5
+    # Artifact kinds the recommended tasks are expected to produce.
+    # Mirrors the FE's "what enrichment will add" tile copy. Derived
+    # from `recommended_tasks` via `_TASK_TO_EXPECTED_OUTPUTS`.
+    expected_outputs: tuple[str, ...] = ()
+    # Whether the run should fail if enrichment fails. Sourced from
+    # the active domain pack's policy
+    # (`DomainEnrichmentPolicy.require_enrichment_success`).
+    require_enrichment_success: bool = False
+    # Preferred model tier (fast / premium / vision) for the
+    # enrichment stage. Sourced from
+    # `DomainEnrichmentPolicy.default_model_tier`; None inherits
+    # the deployment default.
+    model_tier_selection: str | None = None
+    # Suggested concurrency knobs the workflow / enricher layer
+    # may consult. Keys today: `default_model_tier` (mirrored from
+    # `model_tier_selection`); future keys: `max_concurrent_llm_calls`,
+    # `enrichment_timeout_seconds`. Empty = inherit deployment.
+    concurrency_hints: dict[str, Any] = field(default_factory=dict)
+    # Non-blocking caveats (low compile quality, missing language,
+    # plan warnings from the parser). Distinct from `reasons` (why
+    # the verdict is what it is) and `blocking_issues` (terminal SKIP
+    # reasons). The FE renders these as a separate "heads up" tile.
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def should_enrich(self) -> bool:
+        """Boolean projection of `overall_recommendation`.
+
+        True for OPTIONAL / RECOMMENDED / REQUIRED — any case where
+        the assessor didn't actively reject enrichment. False for
+        SKIP. The boolean is what most downstream consumers branch
+        on; the enum stays available for callers that need the
+        finer-grained verdict."""
+        return self.overall_recommendation != EnrichRecommendation.SKIP
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "overall_recommendation": self.overall_recommendation.value,
+            "should_enrich": self.should_enrich,
             "reasons": list(self.reasons),
             "recommended_tasks": list(self.recommended_tasks),
             "skipped_tasks": list(self.skipped_tasks),
             "blocking_issues": list(self.blocking_issues),
+            "warnings": list(self.warnings),
             "source_signals": dict(self.source_signals),
             "decision_source": self.decision_source,
             "domain_id": self.domain_id,
             "domain_enrichment_policy": dict(self.domain_enrichment_policy),
+            "confidence": self.confidence,
+            "expected_outputs": list(self.expected_outputs),
+            "require_enrichment_success": self.require_enrichment_success,
+            "model_tier_selection": self.model_tier_selection,
+            "concurrency_hints": dict(self.concurrency_hints),
         }
 
     @classmethod
@@ -160,7 +220,105 @@ class PostCompileEnrichPlan:
             domain_enrichment_policy=dict(
                 payload.get("domain_enrichment_policy") or {}
             ),
+            confidence=float(payload.get("confidence", 0.5) or 0.0),
+            expected_outputs=tuple(payload.get("expected_outputs") or ()),
+            require_enrichment_success=bool(
+                payload.get("require_enrichment_success") or False
+            ),
+            model_tier_selection=(
+                str(payload["model_tier_selection"])
+                if payload.get("model_tier_selection") else None
+            ),
+            concurrency_hints=dict(payload.get("concurrency_hints") or {}),
+            warnings=tuple(payload.get("warnings") or ()),
         )
+
+
+# Task → expected artifact-output kinds. Mirrors the enricher
+# classes' `artifact_type` constants in `j1.enrichers` so the FE
+# renders accurate "Enrichment will add: …" tile copy without
+# branching on task ids. Empty list means the task produces no
+# named artifact (e.g. quality_assessment writes to metadata only).
+_TASK_TO_EXPECTED_OUTPUTS: dict[str, tuple[str, ...]] = {
+    TASK_TABLE_ENRICHMENT: ("enriched.tables",),
+    TASK_IMAGE_CAPTIONING: ("enriched.visuals",),
+    TASK_VISION_ENRICHMENT: ("enriched.visuals",),
+    TASK_REQUIREMENT_EXTRACTION: ("enriched.requirements",),
+    TASK_RISK_EXTRACTION: ("enriched.risks",),
+    TASK_QUALITY_ASSESSMENT: ("enriched.confidence_assessment",),
+}
+
+
+def _expected_outputs_for_tasks(
+    tasks: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Project the recommended-task list onto the artifact kinds
+    those tasks will produce. Deduplicates while preserving order
+    so a (table_enrichment, image_captioning, vision_enrichment)
+    tuple yields ("enriched.tables", "enriched.visuals")."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for task in tasks:
+        for output in _TASK_TO_EXPECTED_OUTPUTS.get(task, ()):
+            if output in seen:
+                continue
+            seen.add(output)
+            out.append(output)
+    return tuple(out)
+
+
+def _build_warnings(signals: SourceSignals) -> tuple[str, ...]:
+    """Compose a non-blocking warning list from the compile signals.
+
+    Mirrors the spec's "caveat surface" — distinct from `reasons`
+    (verdict explanation) and `blocking_issues` (terminal SKIP)."""
+    warnings: list[str] = []
+    if signals.compile_warnings:
+        warnings.extend(signals.compile_warnings)
+    if signals.final_compile_quality == "low":
+        warnings.append(
+            "final compile quality is LOW; enrichment will run on "
+            "degraded input"
+        )
+    if (
+        signals.parse_quality_score is not None
+        and signals.parse_quality_score < 0.5
+    ):
+        warnings.append(
+            f"parser quality score {signals.parse_quality_score:.2f} "
+            "is below 0.5; results may need review"
+        )
+    if signals.has_scanned_pages:
+        warnings.append(
+            "compile saw scanned pages; vision enrichment quality "
+            "depends on the OCR mode used"
+        )
+    return tuple(warnings)
+
+
+def _derive_confidence(
+    *,
+    recommendation: EnrichRecommendation,
+    has_strong_signals: bool,
+    policy_drove_decision: bool,
+) -> float:
+    """Operator-readable verdict confidence.
+
+    Heuristic — not a probabilistic score. Used by the FE to render
+    a confidence pill alongside the recommendation; not consumed by
+    other decision logic."""
+    if recommendation == EnrichRecommendation.SKIP:
+        # Blocking SKIPs are deterministic, hence high confidence.
+        return 1.0
+    if policy_drove_decision:
+        # Domain policy overrides have stable confidence — the
+        # operator opted into them deliberately.
+        return 0.85
+    if recommendation in (
+        EnrichRecommendation.RECOMMENDED, EnrichRecommendation.REQUIRED,
+    ) and has_strong_signals:
+        return 0.75
+    return 0.5
 
 
 def assess_post_compile_enrich(
@@ -177,26 +335,34 @@ def assess_post_compile_enrich(
     a domain policy can't override SKIP for those."""
     if signals.compile_status == "failed":
         block = "compile failed; nothing to enrich"
-        return PostCompileEnrichPlan(
-            overall_recommendation=EnrichRecommendation.SKIP,
-            reasons=(block,),
-            blocking_issues=(block,),
-            source_signals=_signals_to_dict(signals),
-            domain_id=_domain_id(domain_pack),
-            domain_enrichment_policy=_domain_policy_dict(domain_pack),
+        return _finalize_plan(
+            PostCompileEnrichPlan(
+                overall_recommendation=EnrichRecommendation.SKIP,
+                reasons=(block,),
+                blocking_issues=(block,),
+                source_signals=_signals_to_dict(signals),
+                domain_id=_domain_id(domain_pack),
+                domain_enrichment_policy=_domain_policy_dict(domain_pack),
+                warnings=_build_warnings(signals),
+            ),
+            signals=signals, domain_pack=domain_pack,
         )
     if signals.final_compile_quality == "failed":
         block = (
             "final compile quality is FAILED; enrichment would "
             "amplify low-quality input"
         )
-        return PostCompileEnrichPlan(
-            overall_recommendation=EnrichRecommendation.SKIP,
-            reasons=(block,),
-            blocking_issues=(block,),
-            source_signals=_signals_to_dict(signals),
-            domain_id=_domain_id(domain_pack),
-            domain_enrichment_policy=_domain_policy_dict(domain_pack),
+        return _finalize_plan(
+            PostCompileEnrichPlan(
+                overall_recommendation=EnrichRecommendation.SKIP,
+                reasons=(block,),
+                blocking_issues=(block,),
+                source_signals=_signals_to_dict(signals),
+                domain_id=_domain_id(domain_pack),
+                domain_enrichment_policy=_domain_policy_dict(domain_pack),
+                warnings=_build_warnings(signals),
+            ),
+            signals=signals, domain_pack=domain_pack,
         )
     # Affirmative-empty rule: SKIP only when we have positive evidence
     # the document is empty (no chunks, no text chars, no rich-content
@@ -212,13 +378,17 @@ def assess_post_compile_enrich(
         and signals.page_count > 0
     ):
         block = "compile produced no content blocks despite a non-empty source"
-        return PostCompileEnrichPlan(
-            overall_recommendation=EnrichRecommendation.SKIP,
-            reasons=(block,),
-            blocking_issues=(block,),
-            source_signals=_signals_to_dict(signals),
-            domain_id=_domain_id(domain_pack),
-            domain_enrichment_policy=_domain_policy_dict(domain_pack),
+        return _finalize_plan(
+            PostCompileEnrichPlan(
+                overall_recommendation=EnrichRecommendation.SKIP,
+                reasons=(block,),
+                blocking_issues=(block,),
+                source_signals=_signals_to_dict(signals),
+                domain_id=_domain_id(domain_pack),
+                domain_enrichment_policy=_domain_policy_dict(domain_pack),
+                warnings=_build_warnings(signals),
+            ),
+            signals=signals, domain_pack=domain_pack,
         )
 
     reasons: list[str] = []
@@ -243,11 +413,33 @@ def assess_post_compile_enrich(
         skipped.append(TASK_IMAGE_CAPTIONING)
         skipped.append(TASK_VISION_ENRICHMENT)
 
-    if signals.final_compile_quality == "low":
+    # Quality + degraded-extraction signals (Wave 5 closure).
+    low_quality_signal = signals.final_compile_quality == "low"
+    low_parse_score = (
+        signals.parse_quality_score is not None
+        and signals.parse_quality_score < 0.5
+    )
+    has_compile_warnings = bool(signals.compile_warnings)
+    degraded_extraction = (
+        low_quality_signal or low_parse_score or has_compile_warnings
+    )
+    if low_quality_signal:
         recommended.append(TASK_QUALITY_ASSESSMENT)
         reasons.append("compile quality is LOW; quality_assessment recommended")
+    elif low_parse_score:
+        recommended.append(TASK_QUALITY_ASSESSMENT)
+        reasons.append(
+            f"parser quality score "
+            f"{signals.parse_quality_score:.2f} below 0.5; "
+            "quality_assessment recommended"
+        )
     else:
         skipped.append(TASK_QUALITY_ASSESSMENT)
+    if has_compile_warnings:
+        reasons.append(
+            f"compile surfaced {len(signals.compile_warnings)} "
+            "warning(s); enrichment may add useful retrieval metadata"
+        )
 
     # Requirement / risk extraction are domain-opted-in only — the
     # rule-based assessor doesn't read content semantics. A domain
@@ -257,6 +449,16 @@ def assess_post_compile_enrich(
 
     if recommended:
         overall = EnrichRecommendation.RECOMMENDED
+    elif degraded_extraction:
+        # Wave 5 closure: degraded-extraction bias. Even when no
+        # tables/images are present, low quality / compile warnings
+        # justify lifting OPTIONAL → RECOMMENDED so the enrichment
+        # stage can add retrieval hints / quality notes.
+        overall = EnrichRecommendation.RECOMMENDED
+        reasons.append(
+            "degraded extraction signals detected; enrichment "
+            "recommended to surface retrieval-friendly metadata"
+        )
     else:
         overall = EnrichRecommendation.OPTIONAL
         reasons.append(
@@ -271,10 +473,11 @@ def assess_post_compile_enrich(
         source_signals=_signals_to_dict(signals),
         domain_id=_domain_id(domain_pack),
         domain_enrichment_policy=_domain_policy_dict(domain_pack),
+        warnings=_build_warnings(signals),
     )
     if domain_pack is not None:
         plan = _apply_domain_policy(plan, domain_pack.enrichment_policy)
-    return plan
+    return _finalize_plan(plan, signals=signals, domain_pack=domain_pack)
 
 
 def _domain_id(pack: DomainPack | None) -> str | None:
@@ -285,6 +488,55 @@ def _domain_policy_dict(pack: DomainPack | None) -> dict[str, Any]:
     if pack is None:
         return {}
     return pack.enrichment_policy.to_dict()
+
+
+def _finalize_plan(
+    plan: PostCompileEnrichPlan,
+    *,
+    signals: SourceSignals,
+    domain_pack: DomainPack | None,
+) -> PostCompileEnrichPlan:
+    """Populate Wave 5 closure fields on a plan that's otherwise
+    complete.
+
+    Computes `expected_outputs`, `confidence`, `require_enrichment_success`,
+    `model_tier_selection`, and `concurrency_hints` from the plan's
+    recommended tasks + the active domain policy. Pure / no I/O —
+    safe to call from rule-based + LLM-refined paths."""
+    policy = (
+        domain_pack.enrichment_policy if domain_pack is not None else None
+    )
+    expected_outputs = _expected_outputs_for_tasks(plan.recommended_tasks)
+    require_success = policy.require_enrichment_success if policy else False
+    model_tier = policy.default_model_tier if policy else None
+    concurrency_hints: dict[str, Any] = {}
+    if model_tier:
+        concurrency_hints["default_model_tier"] = model_tier
+    has_strong_signals = bool(
+        signals.has_images
+        or signals.image_count > 0
+        or signals.has_tables
+        or signals.table_count > 0
+    )
+    policy_drove_decision = bool(
+        policy is not None
+        and policy.policy in (ENRICHMENT_POLICY_ALWAYS, ENRICHMENT_POLICY_NEVER)
+    )
+    confidence = _derive_confidence(
+        recommendation=plan.overall_recommendation,
+        has_strong_signals=has_strong_signals,
+        policy_drove_decision=policy_drove_decision,
+    )
+    # Replace closure-fields only — preserve all other plan state.
+    from dataclasses import replace as _replace
+    return _replace(
+        plan,
+        expected_outputs=expected_outputs,
+        require_enrichment_success=require_success,
+        model_tier_selection=model_tier,
+        concurrency_hints=concurrency_hints,
+        confidence=confidence,
+    )
 
 
 def _apply_domain_policy(
@@ -380,6 +632,13 @@ def _apply_domain_policy(
         decision_source=plan.decision_source,
         domain_id=plan.domain_id,
         domain_enrichment_policy=plan.domain_enrichment_policy,
+        # Wave 5 closure fields — preserved through the overlay so a
+        # downstream `_finalize_plan` call doesn't have to rederive
+        # them. `_finalize_plan` runs AFTER this overlay and will
+        # recompute expected_outputs / confidence anyway, but we
+        # carry warnings here so the policy overlay never erases
+        # the parser-side caveats.
+        warnings=plan.warnings,
     )
 
 
@@ -432,16 +691,8 @@ def apply_fast_llm_refinement(
         # rule-based blockers are authoritative. We still flip the
         # decision_source so audit logs record that an LLM consult
         # happened (and was overruled).
-        return PostCompileEnrichPlan(
-            schema_version=plan.schema_version,
-            overall_recommendation=plan.overall_recommendation,
-            reasons=plan.reasons,
-            recommended_tasks=plan.recommended_tasks,
-            skipped_tasks=plan.skipped_tasks,
-            blocking_issues=plan.blocking_issues,
-            source_signals=plan.source_signals,
-            decision_source=DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
-        )
+        from dataclasses import replace as _replace
+        return _replace(plan, decision_source=DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM)
     new_rec = plan.overall_recommendation
     if (
         refinement.recommendation is not None
@@ -465,15 +716,21 @@ def apply_fast_llm_refinement(
             reasons.append(reason)
     # Cap reasons so a chatty LLM doesn't bloat the artifact.
     reasons = reasons[:_REFINEMENT_REASON_CAP]
-    return PostCompileEnrichPlan(
-        schema_version=plan.schema_version,
+    # Preserve closure fields (warnings, domain_id, policy snapshot,
+    # confidence, expected_outputs, ...) so an LLM refinement doesn't
+    # wipe the rule-based assessor's earlier work. The expected_outputs
+    # tuple is recomputed below from the new recommended_tasks; other
+    # closure fields carry over unchanged.
+    new_expected = _expected_outputs_for_tasks(tuple(recommended))
+    from dataclasses import replace as _replace
+    return _replace(
+        plan,
         overall_recommendation=new_rec,
         reasons=tuple(reasons),
         recommended_tasks=tuple(recommended),
         skipped_tasks=tuple(skipped),
-        blocking_issues=plan.blocking_issues,
-        source_signals=plan.source_signals,
         decision_source=DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
+        expected_outputs=new_expected,
     )
 
 
@@ -645,6 +902,13 @@ def build_signals_from_compile_metrics(
         except (TypeError, ValueError):
             return None
 
+    plan_warnings = cm.get("plan_warnings") or ()
+    if isinstance(plan_warnings, (list, tuple)):
+        compile_warnings_tuple = tuple(
+            str(w) for w in plan_warnings if w
+        )
+    else:
+        compile_warnings_tuple = ()
     return SourceSignals(
         compile_status=str(compile_status or "succeeded"),
         final_compile_quality=str(final_compile_quality or "good"),
@@ -659,6 +923,44 @@ def build_signals_from_compile_metrics(
         total_text_chars=_int(
             cs.get("total_text_chars") or cm.get("extracted_text_chars")
         ),
+        compile_warnings=compile_warnings_tuple,
+        parse_quality_score=_opt_float(cs.get("parse_quality_score")),
+        text_sufficiency_score=_opt_float(cs.get("text_sufficiency_score")),
+        layout_complexity_score=_opt_float(cs.get("layout_complexity_score")),
+    )
+
+
+def build_signals_from_normalized_compile_result(
+    normalized: Any,  # NormalizedCompileResult (lazy ref to avoid circular import)
+) -> SourceSignals:
+    """Project a Wave-4 `NormalizedCompileResult` onto the
+    rule-based assessor's `SourceSignals` shape.
+
+    Bridges Wave 4 → Wave 5 — callers that have the typed
+    `NormalizedCompileResult` (post-compile + summary persisted)
+    can feed the assessor directly without re-deriving from the
+    raw `ArtifactActivityResult` dicts. Pure / no I/O."""
+    quality = normalized.quality_signals
+    return SourceSignals(
+        compile_status=normalized.status or "succeeded",
+        final_compile_quality=normalized.final_quality_verdict or "good",
+        page_count=normalized.page_count,
+        text_extractable_ratio=quality.text_extractable_ratio,
+        has_images=bool(normalized.detected_images)
+            or "images" in normalized.detected_content_types,
+        has_tables=bool(normalized.detected_tables)
+            or "tables" in normalized.detected_content_types,
+        has_scanned_pages=(
+            "scanned_pages" in normalized.detected_content_types
+        ),
+        image_count=len(normalized.detected_images),
+        table_count=len(normalized.detected_tables),
+        text_block_count=normalized.text_block_count or 0,
+        total_text_chars=normalized.extracted_text_chars,
+        compile_warnings=normalized.warnings,
+        parse_quality_score=quality.parse_quality_score,
+        text_sufficiency_score=quality.text_sufficiency_score,
+        layout_complexity_score=quality.layout_complexity_score,
     )
 
 

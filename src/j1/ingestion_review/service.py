@@ -709,6 +709,80 @@ class IngestionResultReviewService:
             llm_recommendation=llm_rec,
         )
 
+    def get_run_compile_result(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> dict:
+        """Return the typed normalized compile result for `run_id`.
+
+        Reads the `compile_result_summary` artifact (persisted by
+        `_persist_compile_result_summary` after compile + retry loop
+        completes). Mirrors `get_run_initial_execution_plan` /
+        `get_run_enrich_plan` envelope shape; `plan` is the
+        `NormalizedCompileResult.to_payload()` dict.
+
+        Returns `status="unavailable"` with a reason when the
+        artifact wasn't persisted (legacy run, compile failed before
+        the persist step, persistence failed)."""
+        from j1.processing.results import ARTIFACT_KIND_COMPILE_RESULT_SUMMARY
+
+        run = self._load_run(ctx, run_id)
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        candidates = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_COMPILE_RESULT_SUMMARY
+        ]
+        base = {
+            "runId": run_id,
+            "documentId": run.document_id or None,
+            "documentName": run.metadata.get("document_name"),
+        }
+        if not candidates:
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "No compile result summary was persisted for this "
+                    "run yet. Compile may not have completed, the run "
+                    "may predate the normalizer, or persistence failed."
+                ),
+                "plan": None,
+            }
+        candidates.sort(key=lambda a: a.updated_at, reverse=True)
+        artifact = candidates[0]
+        path_resolver = self._artifact_path_resolver(ctx)
+        try:
+            path = path_resolver(artifact)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ReviewNotFound):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "compile_result_summary artifact exists but could "
+                    "not be read; check workspace permissions."
+                ),
+                "plan": None,
+            }
+        if not isinstance(payload, dict):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "compile_result_summary artifact has an unexpected "
+                    "shape (not a JSON object)."
+                ),
+                "plan": None,
+            }
+        return {
+            **base,
+            "status": "completed",
+            "unavailableReason": None,
+            "artifactId": artifact.artifact_id,
+            "plan": payload,
+        }
+
     def get_run_initial_execution_plan(
         self,
         ctx: ProjectContext,
