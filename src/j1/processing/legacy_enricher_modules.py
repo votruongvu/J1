@@ -635,12 +635,27 @@ class ImageEnrichmentModule(_LegacyWrapperBase):
             image_id = _optional_str(raw.get("image_id"))
             if not image_id:
                 continue
+            # Wave 12 cleanup — the `PerImageVisionAdapter` writes
+            # per-image errors onto `entry.metadata.error` when an
+            # individual vision call raises. Lift that error onto
+            # `ImageSummary.warnings` so the typed overlay carries
+            # the operator-visible miss (FE renders warnings; the
+            # raw `metadata.error` was harder to surface).
+            per_image_warnings: tuple[str, ...] = ()
+            entry_meta = raw.get("metadata") if isinstance(
+                raw.get("metadata"), dict
+            ) else None
+            if entry_meta and entry_meta.get("error"):
+                per_image_warnings = (
+                    f"per-image vision call failed: {entry_meta['error']}",
+                )
             summaries.append(ImageSummary(
                 image_id=image_id,
                 caption=_optional_str(raw.get("caption")),
                 role=_optional_str(raw.get("role")),
                 confidence=_optional_float(raw.get("confidence")),
                 provenance=provenance,
+                warnings=per_image_warnings,
             ))
 
         if not summaries:
