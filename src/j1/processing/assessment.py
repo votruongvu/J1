@@ -410,8 +410,8 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
 
  Confidence: 1.0 when every relevant signal is known; 0.7 when
  one major signal (e.g. text_extractable_ratio) is unknown; 0.5
- when most signals are unknown. Mirrors `DefaultIngestPlanner`'s
- confidence rubric.
+ when most signals are unknown. Mirrors the retired planning
+ implementation's confidence rubric.
  """
 
     def assess(
@@ -777,9 +777,9 @@ def _infer_document_type(profile: DocumentProfile) -> str:
 
 
 def _confidence(profile: DocumentProfile) -> float:
-    """Same rubric as `DefaultIngestPlanner._confidence` — counts
- populated signals, remaps to 0.5..1.0. Duplicated to avoid
- cross-module imports."""
+    """Same rubric as the retired planning implementation's
+ `_confidence` — counts populated signals, remaps to 0.5..1.0.
+ Duplicated to avoid cross-module imports."""
     signals = (
         profile.text_extractable_ratio,
         profile.has_images,

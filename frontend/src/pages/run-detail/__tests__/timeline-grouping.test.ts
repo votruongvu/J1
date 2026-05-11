@@ -25,7 +25,7 @@ import {
 // document_id field which lives outside the strict
 // `ProgressEventData` interface (the runtime payload carries it).
 function _event(
-  partial: Partial<ProgressEvent> & {
+  partial: Omit<Partial<ProgressEvent>, "data"> & {
     event: ProgressEvent["event"];
     data?: Record<string, unknown>;
   },
@@ -36,8 +36,8 @@ function _event(
     ts: partial.ts ?? 0,
     data: {
       runId: "run-1",
-      ...(partial.data as never),
-    } as never,
+      ...(partial.data ?? {}),
+    } as ProgressEvent["data"],
   };
 }
 

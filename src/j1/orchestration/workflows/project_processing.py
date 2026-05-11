@@ -90,7 +90,10 @@ with workflow.unsafe.imports_passed_through():
         NormalizedCompileResult,
         normalize_compile_result,
     )
-    from j1.runs.models import FAILURE_CODE_ENRICHMENT_REQUIRED
+    from j1.runs.models import (
+        FAILURE_CODE_ENRICHMENT_REQUIRED,
+        FAILURE_CODE_FINALIZATION_FAILED,
+    )
     from j1.processing.initial_execution_plan import (
         InitialExecutionPlan,
         build_initial_execution_plan,
@@ -1040,7 +1043,25 @@ class ProjectProcessingWorkflow:
                     source="caller",
                 )
 
-            await self._finalize(request)
+            try:
+                await self._finalize(request)
+            except Exception as finalize_exc:  # noqa: BLE001
+                # Finalize raised after a successful compile/enrichment
+                # pipeline. Surface as a typed `FINALIZATION_FAILED`
+                # ApplicationError so the existing failed-path handler
+                # below persists the failure artifact with the right
+                # failure_code — the projector then maps this to
+                # `failed_finalization`. Compile/enrichment artifacts
+                # already in `_produced_artifact_ids` remain preserved.
+                self._error = (
+                    f"finalize step failed: "
+                    f"{type(finalize_exc).__name__}: {finalize_exc}"
+                )
+                raise ApplicationError(
+                    self._error,
+                    type=FAILURE_CODE_FINALIZATION_FAILED,
+                    non_retryable=True,
+                ) from finalize_exc
 
             if self._cancelled:
                 self._state = WorkflowState.CANCELLED

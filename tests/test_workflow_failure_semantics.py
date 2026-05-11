@@ -32,7 +32,9 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     ProcessingActivityResult,
     ProjectScope,
+    StageValidationActivityResult,
     ValidateContextResult,
+    VerifyCompileActivityResult,
 )
 from j1.orchestration.workflows.document_processing import (
     DocumentProcessingRequest,
@@ -46,6 +48,7 @@ from j1.orchestration.workflows.project_processing import (
     WorkflowState,
 )
 from j1.processing.status import FinalStatus
+from j1.runs.models import FAILURE_CODE_FINALIZATION_FAILED
 
 
 # ---- Test harness (mirrors the pattern in test_project_processing_workflow.py)
@@ -351,3 +354,163 @@ def test_document_workflow_caller_specified_enrich_failure_raises(monkeypatch):
 
     assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
     assert "vision LLM rate-limited" in str(excinfo.value)
+
+
+# ---- Project workflow: finalize-stage failure path ----------------------
+
+
+def _run_with_finalize_raise(monkeypatch, *, finalize_exc: Exception):
+    """Run the project workflow with compile succeeding and the
+ `finalize` activity raising. Captures every activity invocation
+ so tests can inspect the failure-path artifact-persistence calls."""
+    captured: list[tuple[str, object]] = []
+
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        captured.append((name, payload))
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name == "j1.processing.compile":
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["art-compile-1"],
+            )
+        if name.endswith("verify_compile_output"):
+            return VerifyCompileActivityResult(
+                passed=True, chunk_count=1, artifact_count=1,
+            )
+        if name.endswith("validate_stage"):
+            # `passed=True` lets the workflow record the stage as
+            # successfully validated so we reach `_finalize`.
+            return StageValidationActivityResult(
+                stage_name=payload.stage_name,
+                validation_status="passed",
+                passed=True,
+                check_count=1,
+            )
+        if name.endswith(".finalize"):
+            raise finalize_exc
+        # All persistence / reporting activities are best-effort —
+        # let them return None so the failure-path code finishes
+        # cleanly and we can inspect what it tried to write.
+        return None
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(
+        scope=_scope(),
+        compiler_kind="c",
+        correlation_id="run-finalize-fail",
+    )
+
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+
+    return wf, excinfo.value, captured
+
+
+def test_finalize_failure_raises_finalization_failed_application_error(monkeypatch):
+    """When `_finalize` raises after a successful compile, the workflow
+ must surface an `ApplicationError(type=FINALIZATION_FAILED)` so the
+ final-status projector maps it to `failed_finalization` (not
+ `failed_unknown`)."""
+    wf, exc, _ = _run_with_finalize_raise(
+        monkeypatch,
+        finalize_exc=RuntimeError("storage backend offline"),
+    )
+
+    assert exc.type == FAILURE_CODE_FINALIZATION_FAILED
+    assert exc.non_retryable is True
+    # Human-readable message names the originating exception so
+    # operators don't have to dig into the cause chain.
+    assert "finalize step failed" in str(exc)
+    assert "RuntimeError" in str(exc)
+    assert "storage backend offline" in str(exc)
+    # State distinguishes terminal-business failure from the
+    # unexpected-exception bucket.
+    assert wf._state == WorkflowState.FAILED_FINAL
+    assert wf._compute_final_status() == FinalStatus.FAILED
+
+
+def test_finalize_failure_preserves_compile_artifacts(monkeypatch):
+    """Compile/enrichment artifacts produced before the finalize raise
+ must remain on the workflow record — `failed_finalization` is
+ explicitly the path where prior pipeline output is preserved."""
+    wf, _exc, _ = _run_with_finalize_raise(
+        monkeypatch,
+        finalize_exc=RuntimeError("disk full"),
+    )
+
+    assert "art-compile-1" in wf._produced_artifact_ids
+
+
+def test_finalize_failure_persists_final_ingestion_report_with_failure_code(
+    monkeypatch,
+):
+    """Best-effort `final_ingestion_report` must be written on the
+ finalize-fail path with `failure_code=FINALIZATION_FAILED` and a
+ human-readable failure message — that's the artifact the FE reads
+ to render the failed_finalization banner."""
+    _wf, _exc, captured = _run_with_finalize_raise(
+        monkeypatch,
+        finalize_exc=RuntimeError("artifact registry unavailable"),
+    )
+
+    report_calls = [
+        payload for (name, payload) in captured
+        if name.endswith("persist_final_ingestion_report")
+    ]
+    assert report_calls, "expected at least one final_ingestion_report call"
+    last = report_calls[-1]
+    assert last.framework_final_status == "failed"
+    assert last.failure_code == FAILURE_CODE_FINALIZATION_FAILED
+    assert "finalize step failed" in (last.failure_message or "")
+    assert "artifact registry unavailable" in (last.failure_message or "")
+
+
+def test_finalize_failure_emits_run_terminal_with_failure_code(monkeypatch):
+    """The terminal run event carries the FINALIZATION_FAILED code so
+ the FE / audit log can render the failed_finalization status
+ without re-deriving from artifact contents."""
+    _wf, _exc, captured = _run_with_finalize_raise(
+        monkeypatch,
+        finalize_exc=RuntimeError("dynamo throttled"),
+    )
+
+    terminal_calls = [
+        payload for (name, payload) in captured
+        if name.endswith("report_terminal")
+    ]
+    assert terminal_calls, "expected report_terminal invocation"
+    last = terminal_calls[-1]
+    assert last.final_status == "failed"
+    assert last.failure_code == FAILURE_CODE_FINALIZATION_FAILED
+
+
+def test_compile_failure_unchanged_by_finalization_path(monkeypatch):
+    """Counter-test: the existing compile-failure contract must NOT
+ regress — a compile failure still surfaces as
+ `J1_INGEST_REQUIRED_STEP_FAILED`, not the new FINALIZATION_FAILED
+ code. Pins the no-overlap invariant between the two failure paths."""
+    def handler(method, payload, kwargs):
+        name = _activity_name(method)
+        if name.endswith("validate_context"):
+            return ValidateContextResult(valid=True)
+        if name.endswith("list_pending_documents"):
+            return ["doc-1"]
+        if name.endswith("compile"):
+            return ArtifactActivityResult(
+                status="failed", error="parser crashed",
+            )
+        return None
+
+    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
+    wf = ProjectProcessingWorkflow()
+    request = ProjectProcessingRequest(scope=_scope(), compiler_kind="c")
+
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(wf.run(request))
+
+    assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
+    assert excinfo.value.type != FAILURE_CODE_FINALIZATION_FAILED

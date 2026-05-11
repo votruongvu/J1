@@ -102,8 +102,8 @@ class PlanningSettings:
  flag only affects whether the FE Planning Report tab is populated.
 
  `llm_planning_enabled` enables the optional LLM-assisted planning
- pass. Default OFF — rule-based planning (the existing
- `DefaultIngestPlanner`) is the documented baseline.
+ pass. Default OFF — rule-based planning (the legacy planning path)
+ is the documented baseline.
 
  `model_profile` names the registered FAST/PREMIUM LLM role to use
  when `llm_planning_enabled=True`. Free-form string so deployments

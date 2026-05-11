@@ -2,7 +2,7 @@
 
 A `DocumentProfile` captures cheap, deterministic signals about an
 input document — extension, MIME type, size, page count, basic
-content hints. The `IngestPlanner` and the
+content hints. The legacy planning path and the
 [`AssessmentPlanner`](./assessment.py) both consume this to decide
 which pipeline stages to run and how to configure compile.
 

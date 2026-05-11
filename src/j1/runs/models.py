@@ -24,6 +24,7 @@ __all__ = [
     "FAILURE_CODE_COMPILE_FAILED",
     "FAILURE_CODE_EMPTY_DOCUMENT",
     "FAILURE_CODE_ENRICHMENT_REQUIRED",
+    "FAILURE_CODE_FINALIZATION_FAILED",
     "FAILURE_CODE_INDEX_FAILED",
     "FAILURE_CODE_VERIFICATION_FAILED",
     "IngestionRun",
@@ -152,6 +153,12 @@ FAILURE_CODE_ENRICHMENT_REQUIRED = "ENRICHMENT_REQUIRED"
 # vocabulary is shared with the failure-code table for consistency
 # with how the existing rule-based skip path tags zero-content runs.
 FAILURE_CODE_EMPTY_DOCUMENT = "EMPTY_DOCUMENT"
+# Finalize-stage failure. Set when the pipeline reached the
+# finalize activity after a successful compile/enrichment but
+# finalize itself raised — produced compile/enrichment artifacts
+# remain readable on the run; the operator-facing final status
+# projects to `failed_finalization`.
+FAILURE_CODE_FINALIZATION_FAILED = "FINALIZATION_FAILED"
 
 
 # Legacy → canonical translation table for the run-status enum.
