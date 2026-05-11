@@ -60,6 +60,8 @@ class _StructuredEnricher:
         model: ModelProvider | None = None,
         text_client: Any | None = None,
         embedding_client: Any | None = None,
+        domain_prompt_addon: str = "",
+        domain_id: str | None = None,
     ) -> None:
         self._profile = profile
         self._enabled = enabled
@@ -77,6 +79,13 @@ class _StructuredEnricher:
         self._model = model
         self._text_client = text_client
         self._embedding_client = embedding_client
+        # Domain-pack prompt augmentation. Empty by default; when set,
+        # the LLM-backed enrichers prepend it to the per-enricher
+        # prompt so domain-specific guidance reaches the model.
+        # See `j1.domains.models.DomainPack.prompt_addon`. `domain_id`
+        # is recorded on every artifact's metadata for provenance.
+        self._domain_prompt_addon = domain_prompt_addon.strip()
+        self._domain_id = domain_id
 
     @property
     def enabled(self) -> bool:
@@ -151,7 +160,7 @@ class _StructuredEnricher:
         return drafts
 
     def _build_metadata(self, artifact_id: str) -> dict[str, str]:
-        return {
+        meta: dict[str, str] = {
             "processor_name": self.kind,
             "processor_version": self.version,
             "artifact_type": self.artifact_type,
@@ -160,6 +169,15 @@ class _StructuredEnricher:
             "source_artifact_id": artifact_id,
             "prompt_name": self.prompt_name,
         }
+        # Provenance trail: when a domain pack augmented the prompt
+        # for this run, record its id + an addon-applied flag on the
+        # artifact metadata so reviewers can see which packs shaped
+        # which enriched outputs.
+        if self._domain_id:
+            meta["domain_id"] = self._domain_id
+        if self._domain_prompt_addon:
+            meta["domain_prompt_addon_applied"] = "true"
+        return meta
 
     def _read_content(self, ctx: ProjectContext, artifact_id: str) -> bytes:
         if self._content_source is None:
@@ -309,13 +327,29 @@ class _LLMBackedEnricher(_StructuredEnricher):
         # fallback estimator. With no configured window this is a
         # no-op (body stays at the char cap above).
         body = self._fit_body_to_budget(body, prompt)
-        full_prompt = (
-            f"{prompt}\n\n"
-            "Respond ONLY with JSON matching the schema. "
-            "Do not include prose around the JSON.\n\n"
-            "---\n"
-            f"{body}\n"
-        )
+        # Domain-pack prompt addon: prepend the active domain's
+        # guidance ahead of the per-enricher prompt so the model has
+        # domain context BEFORE the task-specific instructions. The
+        # addon is empty for runs without an active domain pack —
+        # the resulting `full_prompt` matches the pre-Phase-2-W2
+        # shape in that case.
+        if self._domain_prompt_addon:
+            full_prompt = (
+                f"{self._domain_prompt_addon}\n\n"
+                f"{prompt}\n\n"
+                "Respond ONLY with JSON matching the schema. "
+                "Do not include prose around the JSON.\n\n"
+                "---\n"
+                f"{body}\n"
+            )
+        else:
+            full_prompt = (
+                f"{prompt}\n\n"
+                "Respond ONLY with JSON matching the schema. "
+                "Do not include prose around the JSON.\n\n"
+                "---\n"
+                f"{body}\n"
+            )
 
         try:
             parsed, _usage = self._text_client.extract(

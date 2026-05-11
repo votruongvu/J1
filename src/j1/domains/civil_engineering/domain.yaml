@@ -784,3 +784,35 @@ prompt_addon: |
   - generic fast indexing when the document is clean text and has no strong domain-specific analysis need
 
   If the document does not clearly belong to Civil Engineering, recommend fallback to generic planning.
+
+# ---- Domain enrichment policy ----
+#
+# How this pack wants the post-compile assessor to handle enrichment.
+# Consumed by `assess_post_compile_enrich`:
+#   * `policy: always`   → upgrade verdict to RECOMMENDED at minimum;
+#                           apply force_recommended_tasks even when
+#                           compile signals are weak.
+#   * `policy: auto`     → assessor decides, force/optional/denied
+#                           lists still applied.
+#   * `policy: never`    → collapse to SKIP unless compile already
+#                           blocked (failed / empty document).
+#
+# Civil docs almost always benefit from requirement + risk extraction
+# (method statements, NCRs, RFIs, tender docs), so we force those
+# tasks. Vision enrichment stays driven by compile signals — the
+# rule-based assessor opts in when has_images / image_count > 0.
+enrichment_policy:
+  policy: always
+  force_recommended_tasks:
+    - requirement_extraction
+    - risk_extraction
+  optional_tasks:
+    - quality_assessment
+  denied_tasks: []
+  require_enrichment_success: false
+  default_model_tier: fast
+  reasoning: >-
+    Civil engineering documents (BOQ, method statements, NCRs, RFIs,
+    inspection reports, tender documents) rely on domain-specific
+    requirement and risk extraction to be useful downstream.
+    Generic chunking alone loses the actionable signal.

@@ -20,6 +20,7 @@ import yaml
 
 from j1.domains.models import (
     DomainDetectionResult,
+    DomainEnrichmentPolicy,
     DomainPack,
     DomainPlanningOverlay,
     KeywordSignal,
@@ -92,11 +93,49 @@ def build_civil_engineering_pack() -> DomainPack:
         prompt_addon=str(data.get("prompt_addon") or "").strip(),
         overlays=overlays,
         unsupported_capabilities=unsupported,
+        enrichment_policy=_parse_enrichment_policy(data.get("enrichment_policy")),
         detect=_make_detector(
             keyword_signals=keyword_signals,
             detection_rules=detection_rules,
             overlays=overlays,
         ),
+    )
+
+
+def _parse_enrichment_policy(raw: Any) -> DomainEnrichmentPolicy:
+    """Build a `DomainEnrichmentPolicy` from the YAML sub-mapping.
+
+    Missing block (None / empty dict) → policy=auto with empty lists.
+    Tolerant of malformed entries: unknown keys are ignored, lists
+    coerced via tuple(), and the policy string passes through to
+    the dataclass which raises on invalid vocabulary at startup."""
+    if not isinstance(raw, dict) or not raw:
+        return DomainEnrichmentPolicy()
+    return DomainEnrichmentPolicy(
+        policy=str(raw.get("policy") or "auto"),
+        force_recommended_tasks=tuple(
+            str(t).strip()
+            for t in (raw.get("force_recommended_tasks") or ())
+            if str(t).strip()
+        ),
+        optional_tasks=tuple(
+            str(t).strip()
+            for t in (raw.get("optional_tasks") or ())
+            if str(t).strip()
+        ),
+        denied_tasks=tuple(
+            str(t).strip()
+            for t in (raw.get("denied_tasks") or ())
+            if str(t).strip()
+        ),
+        require_enrichment_success=bool(
+            raw.get("require_enrichment_success") or False
+        ),
+        default_model_tier=(
+            str(raw["default_model_tier"]).strip()
+            if raw.get("default_model_tier") else None
+        ),
+        reasoning=str(raw.get("reasoning") or "").strip(),
     )
 
 

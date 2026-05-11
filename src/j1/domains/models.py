@@ -20,8 +20,12 @@ __all__ = [
     "DOMAIN_SELECTION_FALLBACK_GENERAL",
     "DOMAIN_SELECTION_USER",
     "DOMAIN_SELECTION_WORKSPACE",
+    "ENRICHMENT_POLICY_ALWAYS",
+    "ENRICHMENT_POLICY_AUTO",
+    "ENRICHMENT_POLICY_NEVER",
     "DomainContext",
     "DomainDetectionResult",
+    "DomainEnrichmentPolicy",
     "DomainPack",
     "DomainPlanningOverlay",
     "DomainSelectionSource",
@@ -40,6 +44,29 @@ DOMAIN_SELECTION_FALLBACK_GENERAL = "fallback_general"
 
 # Type alias for the four-string selection-source vocabulary above.
 DomainSelectionSource = str
+
+
+# Domain enrichment-policy vocabulary. Stable wire strings — operator
+# docs + YAML schemas refer to these by literal value.
+#
+# `AUTO`   — the post-compile rule-based assessor decides. Domain
+#            still contributes via force/optional/denied task lists.
+# `ALWAYS` — upgrade the assessor's verdict to at least RECOMMENDED;
+#            apply force_recommended_tasks regardless of compile
+#            signals. SKIP remains honoured for blocking conditions
+#            (compile failure, empty document).
+# `NEVER`  — collapse to SKIP unless the run already had a stronger
+#            blocking reason. Disables enrichment for this domain
+#            even when compile produced rich signals.
+ENRICHMENT_POLICY_AUTO = "auto"
+ENRICHMENT_POLICY_ALWAYS = "always"
+ENRICHMENT_POLICY_NEVER = "never"
+
+_ENRICHMENT_POLICY_VOCABULARY = frozenset({
+    ENRICHMENT_POLICY_AUTO,
+    ENRICHMENT_POLICY_ALWAYS,
+    ENRICHMENT_POLICY_NEVER,
+})
 
 
 # ---- Dataclasses ----------------------------------------------------
@@ -171,6 +198,74 @@ DetectionFn = Callable[..., DomainDetectionResult]
 
 
 @dataclass(frozen=True)
+class DomainEnrichmentPolicy:
+    """How a domain pack wants the post-compile assessor to handle
+    enrichment for documents under its selection.
+
+    Lets a domain say "this kind of work is meaningless without
+    enrichment" (policy=always + force_recommended_tasks=[…]) or
+    "we never enrich this domain" (policy=never) without the core
+    rule-based assessor needing to grow domain-specific branches.
+
+    Field semantics:
+      * `policy` — one of `auto` / `always` / `never`. Drives the
+        verdict upgrade/downgrade in `assess_post_compile_enrich`.
+      * `force_recommended_tasks` — task ids the pack always wants
+        recommended whenever enrichment runs. Bypasses the
+        per-signal heuristics (e.g. a civil pack always wants
+        requirement extraction even when no tables/images were
+        detected).
+      * `optional_tasks` — additional tasks the pack suggests when
+        signals are ambiguous. Recommended only when other rule-
+        based recommendations exist; never standalone.
+      * `denied_tasks` — tasks the pack opts OUT of even when
+        compile signals would otherwise recommend them (e.g. a
+        domain with regulated data may want image_captioning OFF).
+      * `require_enrichment_success` — when True, downstream
+        workflow treats an enrichment failure as a run failure
+        instead of a warning. Workflow consumes the flag via the
+        request, not via this policy directly; the field is
+        surfaced here so the FE shows the operator the
+        domain-stated requirement alongside the run setting.
+      * `default_model_tier` — `fast` / `premium` / `vision` hint
+        for downstream model-selection helpers. None = inherit from
+        deployment default.
+      * `reasoning` — one-sentence operator-readable explanation
+        that lands on the persisted plan (`reasons` tuple) when
+        this policy influences the verdict.
+    """
+
+    policy: str = ENRICHMENT_POLICY_AUTO
+    force_recommended_tasks: tuple[str, ...] = ()
+    optional_tasks: tuple[str, ...] = ()
+    denied_tasks: tuple[str, ...] = ()
+    require_enrichment_success: bool = False
+    default_model_tier: str | None = None
+    reasoning: str = ""
+
+    def __post_init__(self) -> None:
+        if self.policy not in _ENRICHMENT_POLICY_VOCABULARY:
+            raise ValueError(
+                f"unknown enrichment policy {self.policy!r}; expected one "
+                f"of {sorted(_ENRICHMENT_POLICY_VOCABULARY)}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-friendly projection. Used to embed the policy on the
+        persisted post-compile-enrich plan + planning result so the
+        FE can render "Domain policy: always" alongside the verdict."""
+        return {
+            "policy": self.policy,
+            "force_recommended_tasks": list(self.force_recommended_tasks),
+            "optional_tasks": list(self.optional_tasks),
+            "denied_tasks": list(self.denied_tasks),
+            "require_enrichment_success": self.require_enrichment_success,
+            "default_model_tier": self.default_model_tier,
+            "reasoning": self.reasoning,
+        }
+
+
+@dataclass(frozen=True)
 class DomainPack:
     """One Domain Pack.
 
@@ -201,6 +296,15 @@ class DomainPack:
     # current framework — surfaced to the planning result so the
     # backlog stays visible.
     unsupported_capabilities: tuple[UnsupportedCapability, ...] = ()
+    # How this domain wants the post-compile assessor to handle
+    # enrichment. Defaults to auto-no-overrides — the rule-based
+    # assessor still drives the verdict, the pack just doesn't
+    # contribute force/optional/denied lists. Packs that need
+    # domain-mandatory tasks (civil's requirement_extraction, etc.)
+    # populate `force_recommended_tasks` here.
+    enrichment_policy: DomainEnrichmentPolicy = field(
+        default_factory=DomainEnrichmentPolicy,
+    )
     # Detection function. Generic pack uses a no-op; civil pack
     # uses a keyword + structural scorer.
     detect: DetectionFn | None = None

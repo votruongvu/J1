@@ -11,6 +11,12 @@ mode (gated on `J1_ENRICH_FAST_LLM_ENABLED`) can sit in front of
 the rule-based path for ambiguous cases without changing the
 return shape; the schema is forward-compatible via
 `decision_source`.
+
+Domain-aware overlay: when the run's selected `DomainPack` carries
+a `DomainEnrichmentPolicy`, the assessor consults it for `always` /
+`never` verdict adjustments and merges `force_recommended_tasks` /
+`denied_tasks` into the per-task list. The pure-rule path remains
+the default — generic / no-domain runs see no change.
 """
 
 from __future__ import annotations
@@ -18,6 +24,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from j1.domains.models import (
+    ENRICHMENT_POLICY_ALWAYS,
+    ENRICHMENT_POLICY_AUTO,
+    ENRICHMENT_POLICY_NEVER,
+    DomainEnrichmentPolicy,
+    DomainPack,
+)
 
 
 SCHEMA_VERSION = "1"
@@ -101,6 +115,14 @@ class PostCompileEnrichPlan:
     blocking_issues: tuple[str, ...] = ()
     source_signals: dict[str, Any] = field(default_factory=dict)
     decision_source: str = DECISION_SOURCE_RULE_BASED
+    # Domain pack id whose `DomainEnrichmentPolicy` shaped this plan.
+    # None / "general" when the run had no active domain pack. The
+    # FE renders "Domain policy: always (civil_engineering)" when set
+    # so the operator sees the influence trail.
+    domain_id: str | None = None
+    # Snapshot of the applied policy. Empty dict when no policy was
+    # consulted. Serialised as-is into the persisted plan.
+    domain_enrichment_policy: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -112,6 +134,8 @@ class PostCompileEnrichPlan:
             "blocking_issues": list(self.blocking_issues),
             "source_signals": dict(self.source_signals),
             "decision_source": self.decision_source,
+            "domain_id": self.domain_id,
+            "domain_enrichment_policy": dict(self.domain_enrichment_policy),
         }
 
     @classmethod
@@ -129,11 +153,28 @@ class PostCompileEnrichPlan:
             decision_source=str(
                 payload.get("decision_source") or DECISION_SOURCE_RULE_BASED
             ),
+            domain_id=(
+                str(payload["domain_id"])
+                if payload.get("domain_id") else None
+            ),
+            domain_enrichment_policy=dict(
+                payload.get("domain_enrichment_policy") or {}
+            ),
         )
 
 
-def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
-    """Rule-based assessor. Pure function — no I/O, no LLM."""
+def assess_post_compile_enrich(
+    signals: SourceSignals,
+    *,
+    domain_pack: DomainPack | None = None,
+) -> PostCompileEnrichPlan:
+    """Rule-based assessor. Pure function — no I/O, no LLM.
+
+    When `domain_pack` is provided AND carries a non-default
+    `enrichment_policy`, the verdict + per-task lists are adjusted
+    via `_apply_domain_policy` AFTER the rule-based decision. Blocking
+    conditions (compile failure, empty document) remain authoritative —
+    a domain policy can't override SKIP for those."""
     if signals.compile_status == "failed":
         block = "compile failed; nothing to enrich"
         return PostCompileEnrichPlan(
@@ -141,6 +182,8 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
             reasons=(block,),
             blocking_issues=(block,),
             source_signals=_signals_to_dict(signals),
+            domain_id=_domain_id(domain_pack),
+            domain_enrichment_policy=_domain_policy_dict(domain_pack),
         )
     if signals.final_compile_quality == "failed":
         block = (
@@ -152,6 +195,8 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
             reasons=(block,),
             blocking_issues=(block,),
             source_signals=_signals_to_dict(signals),
+            domain_id=_domain_id(domain_pack),
+            domain_enrichment_policy=_domain_policy_dict(domain_pack),
         )
     # Affirmative-empty rule: SKIP only when we have positive evidence
     # the document is empty (no chunks, no text chars, no rich-content
@@ -172,6 +217,8 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
             reasons=(block,),
             blocking_issues=(block,),
             source_signals=_signals_to_dict(signals),
+            domain_id=_domain_id(domain_pack),
+            domain_enrichment_policy=_domain_policy_dict(domain_pack),
         )
 
     reasons: list[str] = []
@@ -202,9 +249,9 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
     else:
         skipped.append(TASK_QUALITY_ASSESSMENT)
 
-    # Requirement / risk extraction default skipped unless explicitly
-    # opted into via domain hints (deferred — domain wiring lives on
-    # the request, not on the assessor input).
+    # Requirement / risk extraction are domain-opted-in only — the
+    # rule-based assessor doesn't read content semantics. A domain
+    # pack's `force_recommended_tasks` upgrades them below.
     skipped.append(TASK_REQUIREMENT_EXTRACTION)
     skipped.append(TASK_RISK_EXTRACTION)
 
@@ -216,12 +263,123 @@ def assess_post_compile_enrich(signals: SourceSignals) -> PostCompileEnrichPlan:
             "no rich content signals (images/tables); enrichment optional"
         )
 
-    return PostCompileEnrichPlan(
+    plan = PostCompileEnrichPlan(
         overall_recommendation=overall,
         reasons=tuple(reasons),
         recommended_tasks=tuple(recommended),
         skipped_tasks=tuple(skipped),
         source_signals=_signals_to_dict(signals),
+        domain_id=_domain_id(domain_pack),
+        domain_enrichment_policy=_domain_policy_dict(domain_pack),
+    )
+    if domain_pack is not None:
+        plan = _apply_domain_policy(plan, domain_pack.enrichment_policy)
+    return plan
+
+
+def _domain_id(pack: DomainPack | None) -> str | None:
+    return pack.id if pack is not None else None
+
+
+def _domain_policy_dict(pack: DomainPack | None) -> dict[str, Any]:
+    if pack is None:
+        return {}
+    return pack.enrichment_policy.to_dict()
+
+
+def _apply_domain_policy(
+    plan: PostCompileEnrichPlan,
+    policy: DomainEnrichmentPolicy,
+) -> PostCompileEnrichPlan:
+    """Overlay the domain enrichment policy onto a rule-based plan.
+
+    Rules:
+      * `policy=never` → collapse to SKIP unless already blocked.
+      * `policy=always` → upgrade OPTIONAL → RECOMMENDED.
+      * Force-recommended tasks are added (deduped) and removed from
+        `skipped_tasks`.
+      * Denied tasks are removed from `recommended_tasks` and added
+        to `skipped_tasks`.
+      * `policy.reasoning` is appended to `reasons` so the operator
+        sees the domain influence trail."""
+    # SKIP from a blocking condition wins regardless of policy. The
+    # rule-based path sets `blocking_issues` on those skips; we only
+    # honour the policy on non-blocking SKIPs (which the current
+    # rule-based path doesn't produce, but stays defensive).
+    if plan.blocking_issues:
+        return plan
+
+    new_recommendation = plan.overall_recommendation
+    new_reasons = list(plan.reasons)
+    new_recommended = list(plan.recommended_tasks)
+    new_skipped = list(plan.skipped_tasks)
+    new_blocking = list(plan.blocking_issues)
+
+    if policy.policy == ENRICHMENT_POLICY_NEVER:
+        block = (
+            f"domain policy=never (domain_id={plan.domain_id!r}) "
+            "suppresses enrichment"
+        )
+        new_recommendation = EnrichRecommendation.SKIP
+        new_reasons.append(block)
+        new_blocking.append(block)
+        # Move all recommended tasks to skipped so the FE renders the
+        # full opt-out picture.
+        new_skipped = list(set(new_skipped + new_recommended))
+        new_recommended = []
+    else:
+        if policy.policy == ENRICHMENT_POLICY_ALWAYS:
+            if new_recommendation in (
+                EnrichRecommendation.OPTIONAL,
+            ):
+                new_recommendation = EnrichRecommendation.RECOMMENDED
+                new_reasons.append(
+                    f"domain policy=always (domain_id={plan.domain_id!r}) "
+                    "upgraded recommendation"
+                )
+
+        # Force-recommended tasks: add (dedup) + drop from skipped.
+        for task in policy.force_recommended_tasks:
+            if task not in new_recommended:
+                new_recommended.append(task)
+                new_reasons.append(
+                    f"domain force-recommended task: {task}"
+                )
+            if task in new_skipped:
+                new_skipped.remove(task)
+
+        # Denied tasks: drop from recommended + add to skipped.
+        for task in policy.denied_tasks:
+            if task in new_recommended:
+                new_recommended.remove(task)
+                new_reasons.append(
+                    f"domain denied task: {task}"
+                )
+            if task not in new_skipped:
+                new_skipped.append(task)
+
+        # When force tasks lifted the recommended list out of empty,
+        # upgrade OPTIONAL → RECOMMENDED so the UI banner reflects it.
+        if (
+            new_recommended
+            and new_recommendation == EnrichRecommendation.OPTIONAL
+        ):
+            new_recommendation = EnrichRecommendation.RECOMMENDED
+
+    if policy.reasoning:
+        new_reasons.append(f"domain reasoning: {policy.reasoning}")
+
+    return PostCompileEnrichPlan(
+        overall_recommendation=new_recommendation,
+        schema_version=plan.schema_version,
+        reasons=tuple(new_reasons),
+        recommended_tasks=tuple(new_recommended),
+        skipped_tasks=tuple(new_skipped),
+        blocking_issues=tuple(new_blocking),
+        source_signals=plan.source_signals,
+        decision_source=plan.decision_source,
+        domain_id=plan.domain_id,
+        domain_enrichment_policy=plan.domain_enrichment_policy,
     )
 
 
