@@ -32,6 +32,7 @@ from j1.domains.models import (
     DomainEnrichmentPolicy,
     DomainPack,
 )
+from j1.processing.enrichment_policy import ResolvedEnrichmentPolicy
 
 
 SCHEMA_VERSION = "1"
@@ -325,6 +326,8 @@ def assess_post_compile_enrich(
     signals: SourceSignals,
     *,
     domain_pack: DomainPack | None = None,
+    initial_plan_candidates: tuple[str, ...] = (),
+    resolved_policy: "ResolvedEnrichmentPolicy | None" = None,
 ) -> PostCompileEnrichPlan:
     """Rule-based assessor. Pure function — no I/O, no LLM.
 
@@ -332,7 +335,19 @@ def assess_post_compile_enrich(
     `enrichment_policy`, the verdict + per-task lists are adjusted
     via `_apply_domain_policy` AFTER the rule-based decision. Blocking
     conditions (compile failure, empty document) remain authoritative —
-    a domain policy can't override SKIP for those."""
+    a domain policy can't override SKIP for those.
+
+    `initial_plan_candidates` (Wave-3 → Wave-5 bridge): the
+    `InitialExecutionPlan.candidate_enrichment_modules` list. Tasks
+    appearing here that the rule-based path didn't already
+    recommend are added to `recommended_tasks` as domain-suggested
+    optional candidates. Each addition records its provenance via a
+    `reasons` entry "candidate from initial execution plan: <task>".
+
+    `resolved_policy` (Wave-cleanup): the layered policy resolution
+    (request > project > domain > system). When provided, overrides
+    the domain pack's policy field. Lets per-run operator overrides
+    drive the verdict without modifying the pack."""
     if signals.compile_status == "failed":
         block = "compile failed; nothing to enrich"
         return _finalize_plan(
@@ -465,6 +480,32 @@ def assess_post_compile_enrich(
             "no rich content signals (images/tables); enrichment optional"
         )
 
+    # Wave-cleanup: merge initial-plan candidates as optional
+    # additions BEFORE the policy overlay runs. This makes the
+    # initial-plan's suggestion explicit on the recommended list
+    # so the FE can render "candidate from initial execution plan".
+    # The domain policy can still demote them via `denied_tasks`.
+    for candidate in initial_plan_candidates:
+        if not candidate:
+            continue
+        if candidate in recommended:
+            continue
+        recommended.append(candidate)
+        if candidate in skipped:
+            skipped.remove(candidate)
+        reasons.append(
+            f"candidate from initial execution plan: {candidate}"
+        )
+    # Promotion: if any initial-plan candidates landed and the
+    # rule-based verdict is OPTIONAL, lift to RECOMMENDED so the FE
+    # banner reflects the candidate intent.
+    if (
+        initial_plan_candidates
+        and recommended
+        and overall == EnrichRecommendation.OPTIONAL
+    ):
+        overall = EnrichRecommendation.RECOMMENDED
+
     plan = PostCompileEnrichPlan(
         overall_recommendation=overall,
         reasons=tuple(reasons),
@@ -475,9 +516,43 @@ def assess_post_compile_enrich(
         domain_enrichment_policy=_domain_policy_dict(domain_pack),
         warnings=_build_warnings(signals),
     )
-    if domain_pack is not None:
-        plan = _apply_domain_policy(plan, domain_pack.enrichment_policy)
-    return _finalize_plan(plan, signals=signals, domain_pack=domain_pack)
+    effective_policy = _effective_policy_for_overlay(
+        domain_pack=domain_pack, resolved_policy=resolved_policy,
+    )
+    if effective_policy is not None:
+        plan = _apply_domain_policy(plan, effective_policy)
+    return _finalize_plan(
+        plan,
+        signals=signals,
+        domain_pack=domain_pack,
+        resolved_policy=resolved_policy,
+    )
+
+
+def _effective_policy_for_overlay(
+    *,
+    domain_pack: DomainPack | None,
+    resolved_policy: ResolvedEnrichmentPolicy | None,
+) -> DomainEnrichmentPolicy | None:
+    """Pick the policy snapshot used by `_apply_domain_policy`.
+
+    `resolved_policy` carries the operator/project/system precedence
+    chain. When present and its `policy` differs from the domain
+    pack's, we synthesise a new `DomainEnrichmentPolicy` carrying
+    the resolved policy literal but the domain pack's task lists +
+    reasoning. This lets a per-run `never` override collapse the
+    verdict to SKIP while the FE still sees the domain context."""
+    if resolved_policy is None:
+        return domain_pack.enrichment_policy if domain_pack else None
+    base = (
+        domain_pack.enrichment_policy
+        if domain_pack else DomainEnrichmentPolicy()
+    )
+    if base.policy == resolved_policy.policy:
+        return base
+    # Synthesize an overlay carrying the resolved policy literal.
+    from dataclasses import replace as _replace
+    return _replace(base, policy=resolved_policy.policy)
 
 
 def _domain_id(pack: DomainPack | None) -> str | None:
@@ -495,6 +570,7 @@ def _finalize_plan(
     *,
     signals: SourceSignals,
     domain_pack: DomainPack | None,
+    resolved_policy: ResolvedEnrichmentPolicy | None = None,
 ) -> PostCompileEnrichPlan:
     """Populate Wave 5 closure fields on a plan that's otherwise
     complete.
@@ -502,7 +578,12 @@ def _finalize_plan(
     Computes `expected_outputs`, `confidence`, `require_enrichment_success`,
     `model_tier_selection`, and `concurrency_hints` from the plan's
     recommended tasks + the active domain policy. Pure / no I/O —
-    safe to call from rule-based + LLM-refined paths."""
+    safe to call from rule-based + LLM-refined paths.
+
+    When `resolved_policy` is provided, the plan's
+    `domain_enrichment_policy` dict carries an extra `resolved`
+    block recording the (policy, source) pair so the FE can render
+    "Policy: never (from request)" alongside the verdict."""
     policy = (
         domain_pack.enrichment_policy if domain_pack is not None else None
     )
@@ -518,15 +599,26 @@ def _finalize_plan(
         or signals.has_tables
         or signals.table_count > 0
     )
+    effective_policy_literal = (
+        resolved_policy.policy
+        if resolved_policy is not None
+        else (policy.policy if policy else None)
+    )
     policy_drove_decision = bool(
-        policy is not None
-        and policy.policy in (ENRICHMENT_POLICY_ALWAYS, ENRICHMENT_POLICY_NEVER)
+        effective_policy_literal
+        in (ENRICHMENT_POLICY_ALWAYS, ENRICHMENT_POLICY_NEVER)
     )
     confidence = _derive_confidence(
         recommendation=plan.overall_recommendation,
         has_strong_signals=has_strong_signals,
         policy_drove_decision=policy_drove_decision,
     )
+    # Surface the resolved policy on the plan's policy dict so the
+    # FE / final report sees which precedence layer won.
+    policy_dict = dict(plan.domain_enrichment_policy)
+    if resolved_policy is not None:
+        policy_dict["resolved"] = resolved_policy.to_dict()
+
     # Replace closure-fields only — preserve all other plan state.
     from dataclasses import replace as _replace
     return _replace(
@@ -536,6 +628,7 @@ def _finalize_plan(
         model_tier_selection=model_tier,
         concurrency_hints=concurrency_hints,
         confidence=confidence,
+        domain_enrichment_policy=policy_dict,
     )
 
 

@@ -816,3 +816,115 @@ enrichment_policy:
     inspection reports, tender documents) rely on domain-specific
     requirement and risk extraction to be useful downstream.
     Generic chunking alone loses the actionable signal.
+
+# ---- Extraction hints (Wave 6 enrichers will consume) ----
+#
+# Pure data — generic operators read the hints and project them
+# into per-enricher prompts/queries. No domain-specific code path
+# branches on these in core ingestion.
+
+extraction_hints:
+  metadata_fields:
+    - project_number
+    - project_name
+    - contractor
+    - subcontractor
+    - engineer
+    - client_owner
+    - drawing_number
+    - drawing_revision
+    - discipline
+    - location
+    - work_package
+    - document_date
+    - approval_status
+  entity_hints:
+    - Contractor
+    - Subcontractor
+    - Engineer
+    - Project
+    - WorkPackage
+    - Drawing
+    - StructuralElement
+    - Material
+    - InspectionFinding
+    - NonConformance
+    - Defect
+    - RiskItem
+    - Specification
+    - Standard
+  table_hints:
+    - "BOQ tables: item / description / unit / quantity / rate columns"
+    - "Test result tables: sample / test / value / pass-fail columns"
+    - "Schedule tables: activity / start / end / dependency columns"
+    - "Inspection checklists: item / status / comment columns"
+  image_hints:
+    - "Drawings: inspect title block for drawing_number / revision / discipline"
+    - "Site photos may show defects, work-in-progress, or completed work"
+    - "Diagrams typically show structural elements + dimensions"
+  terminology_hints:
+    - "RFI = Request for Information"
+    - "NCR = Non-Conformance Report"
+    - "BOQ = Bill of Quantities"
+    - "EOT = Extension of Time"
+    - "VO = Variation Order"
+    - "ITP = Inspection and Test Plan"
+  retrieval_hints:
+    - "Normalize abbreviations on retrieval (RFI / NCR / BOQ / VO)"
+    - "Drawing numbers often follow project-prefixed schemes (e.g. ABC-S-001)"
+    - "Specifications cite standards (ACI / EN / BS / AASHTO)"
+
+# ---- Validation rules (analyzer + validation enricher) ----
+#
+# What the domain considers required / suspicious. Pure data; the
+# analyzer + validation enricher decide how to enforce.
+
+validation_rules:
+  required_metadata_fields:
+    - project_number
+    - document_date
+  expected_document_structure:
+    - Method statements should include 'Scope', 'Procedure', and 'Safety' sections.
+    - Inspection reports should include findings + responsible-party fields.
+    - BOQ should have summary totals at the bottom of each section.
+  low_quality_warning_conditions:
+    - page_count > 30 with total_text_chars < 5000 (likely heavily scanned)
+    - text_extractable_ratio < 0.4 (poor OCR / scan quality)
+    - has_tables but table_count == 0 in extraction
+  enrichment_triggers:
+    - document_type == method_statement implies risk_extraction
+    - document_type == inspection_report implies requirement_extraction
+    - has_drawings implies image_captioning
+
+# ---- Per-enricher prompt overrides ----
+#
+# Replace the enricher's built-in default. The pack-level
+# `prompt_addon` is still applied across every enricher; this
+# block ADDS per-enricher customisation. Leave any field unset
+# (or null) to keep the default.
+
+prompt_pack:
+  table_enrichment_prompt: |-
+    Extract structured table data from this content.
+    Focus on civil-engineering tables: BOQs (item/description/
+    unit/quantity/rate), test results (sample/test/value/pass-fail),
+    schedules (activity/start/end), and inspection checklists
+    (item/status/comment).
+    Preserve numeric units exactly as written.
+  image_enrichment_prompt: |-
+    Describe the visual content for civil-engineering operators.
+    For drawings: capture drawing_number, revision, scale, and
+    discipline if visible in the title block. For site photos:
+    note defects, work activities, and structural elements. For
+    diagrams: list structural elements and their relationships.
+  classification_prompt: |-
+    Classify this civil-engineering document among the pack's
+    document types (BOQ / method_statement / NCR / RFI / inspection_report
+    / variation_order / tender_document / drawing / specification / ...).
+    If the document doesn't match any specific civil type, classify
+    as 'other'.
+  validation_prompt: |-
+    Validate this civil-engineering document against the domain
+    rules. Required metadata: project_number, document_date.
+    Expected structure varies by document type (see the pack's
+    expected_document_structure list).

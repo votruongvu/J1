@@ -31,8 +31,10 @@ __all__ = [
     "COMPILE_ENGINE_RAGANYTHING",
     "CompileAttemptRecord",
     "CompileQualitySignals",
+    "ContentRepresentationFlags",
     "DetectedImage",
     "DetectedTable",
+    "MetadataPresence",
     "NormalizedCompileResult",
     "build_compile_attempt_records",
     "normalize_compile_result",
@@ -101,6 +103,68 @@ class DetectedTable:
             "caption": self.caption,
             "row_count": self.row_count,
             "column_count": self.column_count,
+        }
+
+
+@dataclass(frozen=True)
+class MetadataPresence:
+    """Metadata-coverage signal the post-compile analyzer reads to
+    recommend metadata enrichment.
+
+    Pure data — the analyzer / validation enricher decide how to
+    act on a missing field. The post-compile flow populates this
+    from `DomainValidationRules.required_metadata_fields` ∩ the
+    metadata keys observed in the parsed-content manifest:
+
+      * `required_fields` — the domain's required metadata list
+        (copied from the active pack at evaluation time).
+      * `present_fields` — keys actually observed in the parsed
+        metadata. Empty when the parser surfaced no metadata.
+      * `missing_fields` — `required_fields − present_fields`.
+        The analyzer uses non-empty `missing_fields` as a
+        recommend-enrichment trigger.
+
+    Defaults are empty so packs without `required_metadata_fields`
+    contribute a no-op presence record."""
+
+    required_fields: tuple[str, ...] = ()
+    present_fields: tuple[str, ...] = ()
+    missing_fields: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "required_fields": list(self.required_fields),
+            "present_fields": list(self.present_fields),
+            "missing_fields": list(self.missing_fields),
+        }
+
+
+@dataclass(frozen=True)
+class ContentRepresentationFlags:
+    """Coarse "is this content well represented?" flags the post-
+    compile analyzer reads to recommend table/image enrichment.
+
+    Pure data; no heuristic logic on the dataclass. Builder code
+    (`normalize_compile_result` + callers) populates these from
+    compile signals — e.g. `tables_present_but_unstructured=True`
+    when `has_tables=True` but `detected_tables` is empty (parser
+    only surfaced a count). The analyzer reads them as additional
+    recommend triggers.
+
+    Each flag is three-state (True / False / None=unknown) so a
+    pack/parser that doesn't surface the signal can leave it `None`
+    and the analyzer treats it as "no signal" rather than "no
+    problem"."""
+
+    tables_present_but_unstructured: bool | None = None
+    images_present_but_undescribed: bool | None = None
+    text_only_but_low_density: bool | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tables_present_but_unstructured": self.tables_present_but_unstructured,
+            "images_present_but_undescribed": self.images_present_but_undescribed,
+            "text_only_but_low_density": self.text_only_but_low_density,
         }
 
 
@@ -216,6 +280,18 @@ class NormalizedCompileResult:
     quality_signals: CompileQualitySignals = field(
         default_factory=CompileQualitySignals,
     )
+    # Metadata coverage. Populated by callers that have a domain
+    # pack's `validation_rules.required_metadata_fields`; empty
+    # otherwise. Drives the analyzer's "missing metadata"
+    # enrichment-recommendation trigger.
+    metadata_presence: MetadataPresence = field(
+        default_factory=MetadataPresence,
+    )
+    # Coarse content-representation flags. Three-state booleans
+    # so `None` means "no signal" rather than "no problem".
+    representation_flags: ContentRepresentationFlags = field(
+        default_factory=ContentRepresentationFlags,
+    )
     # Workflow-side verdict — "good" / "low" / "failed" — from the
     # compile-quality evaluator after the retry loop completes.
     final_quality_verdict: str | None = None
@@ -250,6 +326,8 @@ class NormalizedCompileResult:
             "graph_artifact_refs": list(self.graph_artifact_refs),
             "index_artifact_refs": list(self.index_artifact_refs),
             "quality_signals": self.quality_signals.to_dict(),
+            "metadata_presence": self.metadata_presence.to_dict(),
+            "representation_flags": self.representation_flags.to_dict(),
             "final_quality_verdict": self.final_quality_verdict,
             "duration_ms": self.duration_ms,
             "warnings": list(self.warnings),
@@ -300,6 +378,15 @@ class NormalizedCompileResult:
             quality_signals=CompileQualitySignals(
                 **(payload.get("quality_signals") or {})
             ),
+            metadata_presence=MetadataPresence(
+                **{
+                    k: tuple(v) if isinstance(v, list) else v
+                    for k, v in (payload.get("metadata_presence") or {}).items()
+                }
+            ),
+            representation_flags=ContentRepresentationFlags(
+                **(payload.get("representation_flags") or {})
+            ),
             final_quality_verdict=(
                 str(payload["final_quality_verdict"])
                 if payload.get("final_quality_verdict") else None
@@ -340,6 +427,7 @@ def normalize_compile_result(
     extra_warnings: tuple[str, ...] = (),
     graph_artifact_refs: tuple[str, ...] = (),
     index_artifact_refs: tuple[str, ...] = (),
+    metadata_presence: MetadataPresence | None = None,
 ) -> NormalizedCompileResult:
     """Build a `NormalizedCompileResult` from the activity result.
 
@@ -415,6 +503,17 @@ def normalize_compile_result(
         if isinstance(mode_from_metrics, str):
             final_compile_mode = mode_from_metrics
 
+    # Derive content-representation flags from the projected signals.
+    # Pure heuristic; analyzer reads them as additional recommend
+    # triggers. Three-state: True / False / None means "no signal".
+    flags = _derive_representation_flags(
+        content_stats=content_stats,
+        detected_tables=detected_tables,
+        detected_images=detected_images,
+        text_block_count=text_block_count,
+        page_count=page_count,
+    )
+
     return NormalizedCompileResult(
         document_id=document_id,
         compile_engine=compile_engine,
@@ -432,12 +531,76 @@ def normalize_compile_result(
         graph_artifact_refs=graph_artifact_refs,
         index_artifact_refs=index_artifact_refs,
         quality_signals=quality,
+        metadata_presence=metadata_presence or MetadataPresence(),
+        representation_flags=flags,
         final_quality_verdict=final_quality_verdict,
         duration_ms=duration_ms,
         warnings=tuple(warnings),
         errors=tuple(errors),
         retry_history=retry_history,
         final_compile_mode=final_compile_mode,
+    )
+
+
+def _derive_representation_flags(
+    *,
+    content_stats: dict[str, Any],
+    detected_tables: tuple[DetectedTable, ...],
+    detected_images: tuple[DetectedImage, ...],
+    text_block_count: int | None,
+    page_count: int | None,
+) -> ContentRepresentationFlags:
+    """Compute the coarse "well-represented?" flags from compile
+    signals. Pure / deterministic.
+
+    Rules:
+      * tables_present_but_unstructured = True when the bridge
+        surfaced a table_count > 0 but the descriptor list is empty
+        (placeholder fallback used). Means: tables exist but we
+        only know the count, so structured-table enrichment would
+        add value.
+      * images_present_but_undescribed = True when images exist
+        but none carry a `caption` field. The image enricher can
+        add captions to make these retrievable.
+      * text_only_but_low_density = True when no tables/images and
+        the page-averaged text density looks thin (<400 chars/page).
+        Flags long scanned-text-heavy docs that may need additional
+        retrieval metadata.
+    """
+    table_count = content_stats.get("table_count")
+    image_count = content_stats.get("image_count")
+
+    tables_unstructured: bool | None = None
+    if isinstance(table_count, int):
+        if table_count > 0 and all(
+            t.caption is None and t.row_count is None
+            for t in detected_tables
+        ):
+            tables_unstructured = True
+        elif table_count > 0:
+            tables_unstructured = False
+
+    images_undescribed: bool | None = None
+    if isinstance(image_count, int):
+        if image_count > 0 and detected_images and all(
+            i.caption is None for i in detected_images
+        ):
+            images_undescribed = True
+        elif image_count > 0:
+            images_undescribed = False
+
+    text_only_low_density: bool | None = None
+    has_tables = bool(table_count and table_count > 0)
+    has_images = bool(image_count and image_count > 0)
+    if not has_tables and not has_images and page_count and page_count > 0:
+        chars = content_stats.get("total_text_chars")
+        if isinstance(chars, int):
+            text_only_low_density = (chars / page_count) < 400
+
+    return ContentRepresentationFlags(
+        tables_present_but_unstructured=tables_unstructured,
+        images_present_but_undescribed=images_undescribed,
+        text_only_but_low_density=text_only_low_density,
     )
 
 

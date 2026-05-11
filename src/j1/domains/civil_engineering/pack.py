@@ -21,8 +21,11 @@ import yaml
 from j1.domains.models import (
     DomainDetectionResult,
     DomainEnrichmentPolicy,
+    DomainExtractionHints,
     DomainPack,
     DomainPlanningOverlay,
+    DomainPromptPack,
+    DomainValidationRules,
     KeywordSignal,
     UnsupportedCapability,
 )
@@ -94,11 +97,86 @@ def build_civil_engineering_pack() -> DomainPack:
         overlays=overlays,
         unsupported_capabilities=unsupported,
         enrichment_policy=_parse_enrichment_policy(data.get("enrichment_policy")),
+        extraction_hints=_parse_extraction_hints(data.get("extraction_hints")),
+        validation_rules=_parse_validation_rules(data.get("validation_rules")),
+        prompt_pack=_parse_prompt_pack(data.get("prompt_pack")),
         detect=_make_detector(
             keyword_signals=keyword_signals,
             detection_rules=detection_rules,
             overlays=overlays,
         ),
+    )
+
+
+def _parse_extraction_hints(raw: Any) -> DomainExtractionHints:
+    """Build a `DomainExtractionHints` from the YAML sub-mapping.
+
+    Missing block → defaults (all empty tuples). Tolerant of
+    malformed entries: non-iterable categories silently become
+    empty tuples."""
+    if not isinstance(raw, dict) or not raw:
+        return DomainExtractionHints()
+
+    def _tuple(key: str) -> tuple[str, ...]:
+        items = raw.get(key) or ()
+        if not isinstance(items, (list, tuple)):
+            return ()
+        return tuple(str(s).strip() for s in items if str(s).strip())
+
+    return DomainExtractionHints(
+        metadata_fields=_tuple("metadata_fields"),
+        entity_hints=_tuple("entity_hints"),
+        table_hints=_tuple("table_hints"),
+        image_hints=_tuple("image_hints"),
+        terminology_hints=_tuple("terminology_hints"),
+        retrieval_hints=_tuple("retrieval_hints"),
+    )
+
+
+def _parse_validation_rules(raw: Any) -> DomainValidationRules:
+    """Build a `DomainValidationRules` from the YAML sub-mapping.
+
+    Same tolerance contract as `_parse_extraction_hints`."""
+    if not isinstance(raw, dict) or not raw:
+        return DomainValidationRules()
+
+    def _tuple(key: str) -> tuple[str, ...]:
+        items = raw.get(key) or ()
+        if not isinstance(items, (list, tuple)):
+            return ()
+        return tuple(str(s).strip() for s in items if str(s).strip())
+
+    return DomainValidationRules(
+        required_metadata_fields=_tuple("required_metadata_fields"),
+        expected_document_structure=_tuple("expected_document_structure"),
+        low_quality_warning_conditions=_tuple("low_quality_warning_conditions"),
+        enrichment_triggers=_tuple("enrichment_triggers"),
+    )
+
+
+def _parse_prompt_pack(raw: Any) -> DomainPromptPack:
+    """Build a `DomainPromptPack` from the YAML sub-mapping.
+
+    Each field is a single string. Missing / empty → None (the
+    enricher uses its built-in default). Heredoc-style YAML scalars
+    work; we strip surrounding whitespace."""
+    if not isinstance(raw, dict) or not raw:
+        return DomainPromptPack()
+
+    def _str_or_none(key: str) -> str | None:
+        value = raw.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    return DomainPromptPack(
+        text_enrichment_prompt=_str_or_none("text_enrichment_prompt"),
+        metadata_enrichment_prompt=_str_or_none("metadata_enrichment_prompt"),
+        table_enrichment_prompt=_str_or_none("table_enrichment_prompt"),
+        image_enrichment_prompt=_str_or_none("image_enrichment_prompt"),
+        classification_prompt=_str_or_none("classification_prompt"),
+        validation_prompt=_str_or_none("validation_prompt"),
     )
 
 

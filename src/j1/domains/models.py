@@ -26,9 +26,12 @@ __all__ = [
     "DomainContext",
     "DomainDetectionResult",
     "DomainEnrichmentPolicy",
+    "DomainExtractionHints",
     "DomainPack",
     "DomainPlanningOverlay",
+    "DomainPromptPack",
     "DomainSelectionSource",
+    "DomainValidationRules",
     "KeywordSignal",
     "UnsupportedCapability",
 ]
@@ -266,6 +269,144 @@ class DomainEnrichmentPolicy:
 
 
 @dataclass(frozen=True)
+class DomainExtractionHints:
+    """Per-domain extraction hints the Wave-6 enrichers will consume.
+
+    Pure data. Generic and domain-agnostic — concrete packs populate
+    the lists with their vocabulary; the enricher reads them through
+    this interface so no domain-specific branches leak into core
+    code.
+
+    Field semantics:
+      * `metadata_fields` — operator-facing metadata keys the
+        domain wants extracted (e.g. ``project_number``,
+        ``drawing_revision``). The metadata enricher reads this
+        list and asks the LLM for those keys specifically.
+      * `entity_hints` — entity types the domain expects (e.g.
+        ``Contractor``, ``StructuralElement``, ``InspectionFinding``).
+      * `table_hints` — operator-readable cues for table
+        interpretation (e.g. "BOQ tables have item/description/
+        unit/quantity columns").
+      * `image_hints` — cues for image interpretation (e.g. "site
+        photos may show defects; drawings should be inspected for
+        revision boxes").
+      * `terminology_hints` — domain glossary entries / synonym
+        pairs that retrieval + classification should normalise on.
+      * `retrieval_hints` — phrasing/lookup tips the indexer can
+        encode as additional keys ("query for 'RFI'/'request for
+        information' should match both").
+
+    All fields default to empty tuples / dicts so a pack that
+    doesn't populate a category is a no-op for that enricher."""
+
+    metadata_fields: tuple[str, ...] = ()
+    entity_hints: tuple[str, ...] = ()
+    table_hints: tuple[str, ...] = ()
+    image_hints: tuple[str, ...] = ()
+    terminology_hints: tuple[str, ...] = ()
+    retrieval_hints: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "metadata_fields": list(self.metadata_fields),
+            "entity_hints": list(self.entity_hints),
+            "table_hints": list(self.table_hints),
+            "image_hints": list(self.image_hints),
+            "terminology_hints": list(self.terminology_hints),
+            "retrieval_hints": list(self.retrieval_hints),
+        }
+
+
+@dataclass(frozen=True)
+class DomainValidationRules:
+    """Per-domain validation rules the post-compile analyzer +
+    validation enricher consume.
+
+    Pure data — no validation logic lives on the dataclass. The
+    rules describe WHAT the domain considers required / suspicious;
+    consumers decide how to enforce them.
+
+    Field semantics:
+      * `required_metadata_fields` — metadata keys the domain
+        REQUIRES on every document. A missing field surfaces as a
+        validation warning + biases the post-compile analyzer
+        toward recommending metadata enrichment.
+      * `expected_document_structure` — operator-readable phrases
+        describing the structure the domain expects (e.g.
+        "method statements should have a 'Procedure' section").
+        Surfaced on the FE as a checklist; not auto-asserted.
+      * `low_quality_warning_conditions` — triggers that flag a
+        compile result as low-quality even when the parser's
+        verdict is "good" (e.g. "page_count > 50 but
+        total_text_chars < 5000"). Consumed by
+        `assess_post_compile_enrich` as additional warning sources.
+      * `enrichment_triggers` — conditions that should force-
+        recommend enrichment regardless of compile signals (e.g.
+        "document_type == method_statement → require risk
+        extraction"). Pack-side description; the analyzer
+        evaluates them via the existing rule chain.
+
+    All fields default to empty so a pack that doesn't populate
+    them is a no-op."""
+
+    required_metadata_fields: tuple[str, ...] = ()
+    expected_document_structure: tuple[str, ...] = ()
+    low_quality_warning_conditions: tuple[str, ...] = ()
+    enrichment_triggers: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "required_metadata_fields": list(self.required_metadata_fields),
+            "expected_document_structure": list(self.expected_document_structure),
+            "low_quality_warning_conditions": list(self.low_quality_warning_conditions),
+            "enrichment_triggers": list(self.enrichment_triggers),
+        }
+
+
+@dataclass(frozen=True)
+class DomainPromptPack:
+    """Per-domain prompt template strings consumed by enrichers.
+
+    Pure data — no LLM coupling. Each field is the prompt text the
+    matching enricher prepends to its system message; None means
+    "use the enricher's built-in default".
+
+    Distinct from `DomainPack.prompt_addon`:
+      * `prompt_addon` is a one-paragraph DOMAIN-WIDE addendum
+        prepended to EVERY enricher's prompt for context.
+      * `DomainPromptPack` holds PER-ENRICHER overrides. A pack can
+        replace just the table prompt, for example, leaving the
+        rest to defaults.
+
+    Field semantics mirror the enricher kinds in `j1.enrichers`:
+      * `text_enrichment_prompt` — generic text-enrichment override.
+      * `metadata_enrichment_prompt` — metadata extraction.
+      * `table_enrichment_prompt` — table interpretation.
+      * `image_enrichment_prompt` — vision / image captioning.
+      * `classification_prompt` — document classification.
+      * `validation_prompt` — domain-rule validation enricher.
+
+    All fields default to None (no override)."""
+
+    text_enrichment_prompt: str | None = None
+    metadata_enrichment_prompt: str | None = None
+    table_enrichment_prompt: str | None = None
+    image_enrichment_prompt: str | None = None
+    classification_prompt: str | None = None
+    validation_prompt: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text_enrichment_prompt": self.text_enrichment_prompt,
+            "metadata_enrichment_prompt": self.metadata_enrichment_prompt,
+            "table_enrichment_prompt": self.table_enrichment_prompt,
+            "image_enrichment_prompt": self.image_enrichment_prompt,
+            "classification_prompt": self.classification_prompt,
+            "validation_prompt": self.validation_prompt,
+        }
+
+
+@dataclass(frozen=True)
 class DomainPack:
     """One Domain Pack.
 
@@ -304,6 +445,30 @@ class DomainPack:
     # populate `force_recommended_tasks` here.
     enrichment_policy: DomainEnrichmentPolicy = field(
         default_factory=DomainEnrichmentPolicy,
+    )
+    # Per-domain extraction hints the Wave-6 enrichers will consume.
+    # Defaults to empty so generic / unconfigured packs are no-op.
+    # The civil pack populates metadata_fields, entity_hints, table/
+    # image hints, and terminology entries; the analyzer + enrichers
+    # read these through the typed interface only.
+    extraction_hints: DomainExtractionHints = field(
+        default_factory=DomainExtractionHints,
+    )
+    # Per-domain validation rules the post-compile analyzer +
+    # validation enricher consume. Defaults to empty; populated
+    # packs surface required metadata fields, expected structure,
+    # extra low-quality conditions, and enrichment triggers.
+    validation_rules: DomainValidationRules = field(
+        default_factory=DomainValidationRules,
+    )
+    # Per-enricher prompt overrides (table / image / metadata /
+    # classification / validation / text). None means "use the
+    # enricher's built-in default". Sits alongside `prompt_addon`
+    # (the domain-wide addendum): the addon is appended to EVERY
+    # prompt; the prompt-pack fields REPLACE the per-enricher
+    # default when set.
+    prompt_pack: DomainPromptPack = field(
+        default_factory=DomainPromptPack,
     )
     # Detection function. Generic pack uses a no-op; civil pack
     # uses a keyword + structural scorer.
