@@ -25,6 +25,7 @@ import {
   type RunStatus,
 } from "@/lib/constants/runStatus";
 import type { IngestionRun, RunFinal } from "@/types/ingestion";
+import type { FinalIngestionReportPayload } from "@/types/review";
 
 
 // ---- Wave-8 final-status vocabulary (mirrors final_status.py) -----
@@ -412,4 +413,45 @@ export function isTerminalStatus(status: RunStatus): boolean {
   if (status === RUN_STATUS.CANCELLED) return true;
   if (COMPLETED_STATUSES.has(status)) return true;
   return false;
+}
+
+
+// ---- Wave 10 — report-preferred projection ----------------------
+
+/**
+ * Wave 10 — project a `UiRunState` directly from the typed
+ * `FinalIngestionReport`. The report carries the backend's
+ * authoritative `final_status` literal so the FE doesn't have to
+ * re-derive it from `run.status + run.final + enrichment_result`.
+ *
+ * Falls back to `projectUiState(run, enrichmentSignals)` when the
+ * report is null (pre-Wave-10 runs, in-flight runs).
+ */
+export function projectUiStateFromReport(
+  run: Pick<IngestionRun, "status" | "final"> | null,
+  report: FinalIngestionReportPayload | null,
+  fallbackEnrichment: EnrichmentSignals = {},
+): UiRunState | null {
+  if (!run) return null;
+  if (report?.final_status) {
+    const finalStatus = report.final_status as IngestionFinalStatus;
+    return projectTerminalFromReport(finalStatus, report, run);
+  }
+  return projectUiState(run, fallbackEnrichment);
+}
+
+
+function projectTerminalFromReport(
+  finalStatus: IngestionFinalStatus,
+  report: FinalIngestionReportPayload,
+  run: Pick<IngestionRun, "final">,
+): UiRunState {
+  // Use the report's `final_status_reason` as the headline override
+  // when present — the backend already produced operator-readable
+  // copy. Otherwise fall through to the per-status defaults.
+  const ui = projectTerminal(finalStatus, run);
+  if (report.final_status_reason) {
+    return { ...ui, headline: report.final_status_reason };
+  }
+  return ui;
 }

@@ -2708,6 +2708,60 @@ pre.json .b {
   color: var(--text-subtle);
 }
 
+/* ── Wave 10 — per-(A–F) variants ─────────────────────── */
+/* Each underlying-final-status literal gets its own accent so
+   operators can tell at a glance which outcome they're looking
+   at — without changing the base `psp--success / warnings /
+   failed` styling each variant inherits from. The variant
+   classes are emitted by `PrimaryStatusPanel.tsx` next to the
+   base class (e.g. `psp psp--warnings psp--completed_without_enrichment`). */
+
+/* A. completed_without_enrichment — neutral/skipped accent on the
+   left bar so it doesn't read as a yellow "warning" badge while
+   still inheriting the warning tone. */
+.psp--completed_without_enrichment::before {
+  background: var(--text-subtle);
+}
+
+/* B. completed_with_enrichment — full success styling, no override
+   needed (handled by `psp--success`). Left-bar already success. */
+
+/* C. completed_with_enrichment_warnings — keep the warning tone but
+   slightly emphasise the left bar so it reads as "warnings"
+   rather than "just completed with warnings". */
+.psp--completed_with_enrichment_warnings::before {
+  background: var(--warning);
+}
+.psp--completed_with_enrichment_warnings .psp__eyebrow {
+  color: var(--warning-fg);
+  font-weight: 700;
+}
+
+/* D. failed_compile — base failed tone + emphasized eyebrow so the
+   operator sees "Base compile failed" loudly. */
+.psp--failed_compile .psp__eyebrow {
+  color: var(--error-fg);
+  font-weight: 700;
+}
+
+/* E. failed_enrichment_required — same tone as failed but the
+   eyebrow should signal "we have compile output, just not the
+   required overlay" so the operator doesn't think compile failed. */
+.psp--failed_enrichment_required .psp__eyebrow {
+  color: var(--error-fg);
+  font-weight: 700;
+}
+.psp--failed_enrichment_required .psp__lede strong {
+  color: var(--error-fg);
+}
+
+/* F. failed_finalization — same base tone; emphasise that previous
+   stages succeeded. */
+.psp--failed_finalization .psp__eyebrow {
+  color: var(--error-fg);
+  font-weight: 700;
+}
+
 /* ── Results section ──────────────────────────────────── */
 /* Visible only when the run is terminal. Owns its own tab strip
    (independent of the technical drawer's tabs). Sub-tabs are

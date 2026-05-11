@@ -51,6 +51,7 @@ from j1.orchestration.activities.payloads import (
     BuildInitialExecutionPlanResult,
     PersistCompileResultSummaryInput,
     PersistEnrichmentResultInput,
+    PersistFinalIngestionReportInput,
     PersistInitialExecutionPlanInput,
     PersistPostCompileEnrichPlanInput,
     PersistValidationReportInput,
@@ -92,6 +93,7 @@ ACTIVITY_PERSIST_INITIAL_EXECUTION_PLAN = "j1.processing.persist_initial_executi
 ACTIVITY_BUILD_INITIAL_EXECUTION_PLAN = "j1.processing.build_initial_execution_plan"
 ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY = "j1.processing.persist_compile_result_summary"
 ACTIVITY_PERSIST_ENRICHMENT_RESULT = "j1.processing.persist_enrichment_result"
+ACTIVITY_PERSIST_FINAL_INGESTION_REPORT = "j1.processing.persist_final_ingestion_report"
 ACTIVITY_RUN_ENRICHMENT_STAGE = "j1.processing.run_enrichment_stage"
 ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
@@ -165,6 +167,196 @@ def _find_existing_enrichment_result(
         "status": artifact.metadata.get("status") or "succeeded",
         "domain_id": artifact.metadata.get("domain_id"),
     }
+
+
+def _read_latest_artifact_payload(
+    artifact_registry,
+    processing_service,
+    ctx,
+    *,
+    kind: str,
+    run_id: str,
+) -> tuple[dict | None, str | None]:
+    """Resolve the latest artifact of `kind` for `run_id` and return
+    (payload_dict, artifact_id).
+
+    Returns (None, None) on miss or on any read / decode error.
+    Best-effort by design — the final-ingestion-report builder
+    tolerates missing payloads + stages remain PENDING in that case."""
+    import json as _json
+    from pathlib import PurePosixPath
+    from j1.workspace.layout import WorkspaceArea
+
+    if not run_id:
+        return (None, None)
+    try:
+        records = artifact_registry.list_artifacts(ctx, kind=kind)
+    except Exception:  # noqa: BLE001
+        return (None, None)
+    matches = [
+        r for r in records
+        if (r.metadata or {}).get("run_id") == run_id
+    ]
+    if not matches:
+        # Fall back to "all of kind" — some artifact writers don't
+        # populate metadata.run_id; correlation_id on the record is
+        # the next best filter.
+        matches = [r for r in records if getattr(r, "correlation_id", None) == run_id]
+    if not matches:
+        return (None, None)
+    matches.sort(key=lambda r: r.updated_at, reverse=True)
+    record = matches[0]
+    # Resolve the path via the workspace + simple path-traversal
+    # guard (mirrors `IngestionResultReviewService._resolve_artifact_path`
+    # but inline to keep the activity self-contained).
+    location = (record.location or "").strip()
+    if not location:
+        return (None, record.artifact_id)
+    parts = PurePosixPath(location).parts
+    if len(parts) < 2:
+        return (None, record.artifact_id)
+    area_name, *rest = parts
+    try:
+        area = WorkspaceArea(area_name)
+    except ValueError:
+        return (None, record.artifact_id)
+    try:
+        area_root = processing_service._workspace.area(ctx, area).resolve()
+        candidate = area_root.joinpath(*rest).resolve()
+        candidate.relative_to(area_root)  # guard
+        text = candidate.read_text(encoding="utf-8")
+        payload = _json.loads(text)
+    except Exception:  # noqa: BLE001
+        return (None, record.artifact_id)
+    if not isinstance(payload, dict):
+        return (None, record.artifact_id)
+    return (payload, record.artifact_id)
+
+
+def _resolve_report_source_payloads(
+    artifact_registry,
+    ctx,
+    *,
+    run_id: str,
+    document_id: str | None,  # noqa: ARG001 — reserved for per-doc filtering
+) -> dict:
+    """Aggregate per-kind payload reads for the Wave-10 final-
+    ingestion-report builder. Returns a dict with the five payloads
+    (each None on miss) plus the artifact-id ref map.
+
+    All reads are best-effort — any I/O failure produces a missing
+    entry and the report builder stays robust to it.
+
+    The function reaches into `processing_service._workspace` to
+    resolve paths; that's an intentional cross-module touch — the
+    ingestion-review service's path resolver lives on a different
+    component, and duplicating the small workspace-resolution + path-
+    traversal guard here keeps the activity self-contained without
+    pulling the FE-facing read service into the worker."""
+    # Lazy import to keep test-time imports thin.
+    from j1.processing.results import (
+        ARTIFACT_KIND_COMPILE_RESULT_SUMMARY,
+        ARTIFACT_KIND_ENRICHMENT_RESULT,
+        ARTIFACT_KIND_FINAL_SUMMARY,
+        ARTIFACT_KIND_INITIAL_EXECUTION_PLAN,
+        ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN,
+    )
+
+    # Need a processing service for workspace path resolution.
+    # Caller passes the registry as the first positional; we resolve
+    # the processing service from the activity instance via closure
+    # in the caller (`persist_final_ingestion_report` above).
+    # This helper expects to be called WITH the activity instance's
+    # `self._processing`, threaded via the closure below. Activities
+    # call `_resolve_report_source_payloads(self._artifacts, ctx,
+    # run_id=...)`; for the workspace we use a separate accessor
+    # threaded explicitly. Simpler: capture both registries from the
+    # caller as kwargs. (Signature kept simple — callers pass the
+    # activity registries directly.)
+    # NOTE: this function is called only from the
+    # `persist_final_ingestion_report` activity which has
+    # `self._processing` in scope; we expect the caller to wire
+    # `processing_service` through. Since callers always have the
+    # activity instance available, we pass the registry directly
+    # and use the workspace via the artifact_registry's bound
+    # workspace if exposed. As a fallback, we accept a
+    # `processing_service` kwarg.
+    processing_service = _processing_service_for_registry(artifact_registry)
+
+    initial_plan, init_id = _read_latest_artifact_payload(
+        artifact_registry, processing_service, ctx,
+        kind=ARTIFACT_KIND_INITIAL_EXECUTION_PLAN, run_id=run_id,
+    )
+    compile_result, cmp_id = _read_latest_artifact_payload(
+        artifact_registry, processing_service, ctx,
+        kind=ARTIFACT_KIND_COMPILE_RESULT_SUMMARY, run_id=run_id,
+    )
+    enrich_plan, pcp_id = _read_latest_artifact_payload(
+        artifact_registry, processing_service, ctx,
+        kind=ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN, run_id=run_id,
+    )
+    enrichment_result, enr_id = _read_latest_artifact_payload(
+        artifact_registry, processing_service, ctx,
+        kind=ARTIFACT_KIND_ENRICHMENT_RESULT, run_id=run_id,
+    )
+    final_summary, fs_id = _read_latest_artifact_payload(
+        artifact_registry, processing_service, ctx,
+        kind=ARTIFACT_KIND_FINAL_SUMMARY, run_id=run_id,
+    )
+
+    artifact_refs: dict[str, str] = {}
+    for key, val in (
+        ("initial_execution_plan", init_id),
+        ("compile_result_summary", cmp_id),
+        ("post_compile_enrich_plan", pcp_id),
+        ("enrichment_result", enr_id),
+        ("final_summary", fs_id),
+    ):
+        if val:
+            artifact_refs[key] = val
+
+    raw_refs: tuple[str, ...] = tuple(
+        str(r) for r in (
+            (compile_result or {}).get("raw_artifact_refs") or []
+        )
+    )
+
+    return {
+        "initial_execution_plan": initial_plan,
+        "compile_result_summary": compile_result,
+        "post_compile_enrich_plan": enrich_plan,
+        "enrichment_result": enrichment_result,
+        "final_summary": final_summary,
+        "artifact_refs": artifact_refs,
+        "raw_compile_artifact_refs": raw_refs,
+    }
+
+
+# Module-level cache for the (artifact_registry → processing_service)
+# binding. Established at activity construction so the helper above
+# can look it up without changing the function signature. Empty
+# entries are tolerated — the helper falls back to a stub workspace
+# that resolves to None, which the readers tolerate.
+_PROCESSING_SERVICE_FOR_REGISTRY: "dict[int, object]" = {}
+
+
+def _processing_service_for_registry(artifact_registry):
+    """Return the `ProcessingService` bound to the same workspace as
+    `artifact_registry`, registered at activity construction. Falls
+    back to a sentinel whose `_workspace` returns paths that fail
+    the read — making the report builder skip missing artifacts."""
+
+    class _NullWorkspace:
+        def area(self, _ctx, _area):
+            from pathlib import Path
+            return Path("/__nonexistent__")
+
+    class _Sentinel:
+        _workspace = _NullWorkspace()
+
+    return _PROCESSING_SERVICE_FOR_REGISTRY.get(
+        id(artifact_registry), _Sentinel(),
+    )
 
 
 def _persist_enrichment_payload(
@@ -268,6 +460,11 @@ class ProcessingActivities:
         # safe for deployments that haven't migrated their workspace
         # area to include the cache file).
         self._cache = result_cache
+        # Wave 10 — register this (artifact_registry → processing_service)
+        # binding so `_resolve_report_source_payloads` can look it up
+        # without changing the helper signature. Activity instances
+        # share the workspace via the processing service.
+        _PROCESSING_SERVICE_FOR_REGISTRY[id(self._artifacts)] = self._processing
 
     def all_activities(self) -> list:
         return [
@@ -281,6 +478,7 @@ class ProcessingActivities:
             self.persist_final_summary,
             self.persist_compile_strategy_report,
             self.persist_post_compile_enrich_plan,
+            self.persist_final_ingestion_report,
             self.fast_llm_consult_enrich,
             self.validate_stage,
         ]
@@ -1150,6 +1348,98 @@ class ProcessingActivities:
             return ArtifactActivityResult(
                 status="failed",
                 error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_FINAL_INGESTION_REPORT)
+    def persist_final_ingestion_report(
+        self, input: PersistFinalIngestionReportInput,
+    ) -> ArtifactActivityResult:
+        """Wave 10 — build the typed `FinalIngestionReport` from the
+        per-stage artifacts already on disk, then persist it as a
+        `final_ingestion_report` artifact.
+
+        Activity flow:
+          1. Resolve the persisted artifact payloads for this
+             (run, doc) pair by reading the latest matching
+             `initial_execution_plan` / `compile_result_summary` /
+             `post_compile_enrich_plan` / `enrichment_result` /
+             `final_summary` artifacts off the registry.
+          2. Build the typed `FinalIngestionReport`.
+          3. Persist as a `final_ingestion_report` artifact.
+
+        Best-effort throughout: any read or persistence error
+        produces a `status="failed"` result; the workflow logs it
+        and proceeds. The report is observability, not correctness."""
+        from j1.processing.final_ingestion_report import (
+            ReportSourceInputs,
+            build_final_ingestion_report,
+        )
+
+        ctx = input.scope.to_context()
+        try:
+            sources = _resolve_report_source_payloads(
+                self._artifacts, ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=(
+                    f"resolve_report_source_payloads failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
+        try:
+            inputs = ReportSourceInputs(
+                run_id=input.run_id,
+                document_id=input.document_id,
+                document_name=input.document_name,
+                tenant_id=ctx.tenant_id,
+                project_id=ctx.project_id,
+                started_at=input.started_at,
+                completed_at=input.completed_at,
+                framework_final_status=input.framework_final_status,
+                failure_code=input.failure_code,
+                failure_message=input.failure_message,
+                warning_count=input.warning_count,
+                initial_execution_plan=sources["initial_execution_plan"],
+                compile_result_summary=sources["compile_result_summary"],
+                post_compile_enrich_plan=sources["post_compile_enrich_plan"],
+                enrichment_result=sources["enrichment_result"],
+                final_summary=sources["final_summary"],
+                artifact_refs=sources["artifact_refs"],
+                raw_compile_artifact_refs=sources["raw_compile_artifact_refs"],
+                operator_notes=input.operator_notes,
+            )
+            report = build_final_ingestion_report(inputs)
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=(
+                    f"build_final_ingestion_report failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
+        try:
+            record = self._processing.persist_final_ingestion_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=report.to_dict(),
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"persist_final_ingestion_report failed: {exc}",
             )
         return ArtifactActivityResult(
             status="succeeded",

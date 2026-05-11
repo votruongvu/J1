@@ -21,6 +21,7 @@ with workflow.unsafe.imports_passed_through():
         PersistCompileResultSummaryInput,
         PersistCompileStrategyReportInput,
         PersistErrorReportInput,
+        PersistFinalIngestionReportInput,
         PersistFinalSummaryInput,
         PersistInitialExecutionPlanInput,
         PersistPostCompileEnrichPlanInput,
@@ -923,6 +924,11 @@ class ProjectProcessingWorkflow:
         # subsequent transitions consistently.
         self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_RECEIVED)
 
+        # Wave 10 — capture the workflow's start timestamp so the
+        # `final_ingestion_report` carries duration_ms at terminal.
+        # Sandbox-safe via `workflow.now()`.
+        self._workflow_started_at_iso = _safe_now_iso()
+
         try:
             if not is_continuation:
                 await self._validate(request)
@@ -1116,6 +1122,18 @@ class ProjectProcessingWorkflow:
                     final_status=final_status,
                     warning_count=self._warning_count(),
                 )
+                # Wave 10 — persist the aggregated
+                # final_ingestion_report after final_summary so the
+                # builder picks up the just-written summary artifact.
+                await self._persist_final_ingestion_report(
+                    request,
+                    framework_final_status=(
+                        "partial_completed"
+                        if final_status == "succeeded_with_warnings"
+                        else "completed"
+                    ),
+                    warning_count=self._warning_count(),
+                )
                 await self._emit_run_terminal(
                     request, final_status=final_status,
                     warning_count=self._warning_count(),
@@ -1177,6 +1195,16 @@ class ProjectProcessingWorkflow:
                 failure_code=business_failure_code,
                 failure_message=self._error,
             )
+            # Wave 10 — even on failure, persist the aggregated
+            # report so the FE renders the (A–F) failure breakdown
+            # with the partial-stage state intact.
+            await self._persist_final_ingestion_report(
+                request,
+                framework_final_status="failed",
+                warning_count=self._warning_count(),
+                failure_code=business_failure_code,
+                failure_message=self._error,
+            )
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -1204,6 +1232,16 @@ class ProjectProcessingWorkflow:
                 error_type=getattr(exc, "type", None) or "ApplicationError",
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
+            # Wave 10 — best-effort report persistence on the
+            # ApplicationError-propagation path. Same observability
+            # gate as the _BusinessRejection branch above.
+            await self._persist_final_ingestion_report(
+                request,
+                framework_final_status="failed",
+                warning_count=self._warning_count(),
+                failure_code=getattr(exc, "type", None) or "ApplicationError",
+                failure_message=self._error,
+            )
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -1231,6 +1269,15 @@ class ProjectProcessingWorkflow:
                 error_type=ERROR_TYPE_UNEXPECTED_ERROR,
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
+            # Wave 10 — final-effort report persistence on the
+            # unexpected-exception path.
+            await self._persist_final_ingestion_report(
+                request,
+                framework_final_status="failed",
+                warning_count=self._warning_count(),
+                failure_code=ERROR_TYPE_UNEXPECTED_ERROR,
+                failure_message=self._error,
+            )
             await self._safe_finalize(request)
             await self._emit_run_terminal(
                 request, final_status="failed",
@@ -2580,6 +2627,64 @@ class ProjectProcessingWorkflow:
                 retry_policy=DEFAULT_RETRY.to_temporal(),
             )
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
+            pass
+
+    async def _persist_final_ingestion_report(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        framework_final_status: str,
+        warning_count: int = 0,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        """Wave 10 — persist the aggregated `final_ingestion_report`
+        artifact at workflow terminal.
+
+        The activity reads the per-stage artifact payloads on the
+        worker side (workflow code can't do I/O), builds the typed
+        report, and persists it. Best-effort: any failure is
+        logged inside the activity and the workflow proceeds. The
+        report is observability, not correctness."""
+        if not request.correlation_id:
+            return
+        document_id: str | None = None
+        document_name: str | None = None
+        for r in reversed(self._step_results):
+            if isinstance(r.metadata, dict):
+                doc = r.metadata.get("document_id")
+                if doc:
+                    document_id = str(doc)
+                    name = r.metadata.get("document_name")
+                    if name:
+                        document_name = str(name)
+                    break
+        # Workflow start/end timestamps from the run-state cache.
+        started_at = (
+            self._workflow_started_at_iso
+            if hasattr(self, "_workflow_started_at_iso") else None
+        )
+        completed_at = _safe_now_iso()
+        try:
+            await workflow.execute_activity_method(
+                ProcessingActivities.persist_final_ingestion_report,
+                PersistFinalIngestionReportInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    document_id=document_id,
+                    document_name=document_name,
+                    framework_final_status=framework_final_status,
+                    failure_code=failure_code,
+                    failure_message=failure_message,
+                    warning_count=warning_count,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    actor=request.actor,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks exit
             pass
 
     async def _emit_step_skipped(

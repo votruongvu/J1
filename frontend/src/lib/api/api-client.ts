@@ -38,6 +38,7 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  FinalIngestionReportResponse,
   RunCompileResultResponse,
   RunEnrichPlanResponse,
   RunEnrichmentResultResponse,
@@ -346,6 +347,18 @@ export class ApiClient implements IngestionClient {
       { headers: this.headers() },
     );
     return (await this.json<RunEnrichmentResultResponse>(resp));
+  }
+
+  async getRunFinalIngestionReport(
+    runId: string,
+  ): Promise<FinalIngestionReportResponse> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/final-ingestion-report`,
+      ),
+      { headers: this.headers() },
+    );
+    return (await this.json<FinalIngestionReportResponse>(resp));
   }
 
   async listRunChunks(

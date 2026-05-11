@@ -936,6 +936,84 @@ class IngestionResultReviewService:
             "plan": payload,
         }
 
+    def get_run_final_ingestion_report(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> dict:
+        """Wave 10 — return the aggregated end-to-end final ingestion
+        report for `run_id`.
+
+        Reads the `final_ingestion_report` artifact (persisted by
+        the workflow at terminal). Same envelope shape as the other
+        artifact endpoints:
+          * `status="completed"` + the typed `report` payload when the
+            artifact exists and was readable.
+          * `status="unavailable"` + `unavailableReason` when the
+            artifact wasn't persisted yet (in-flight run), or for
+            pre-Wave-10 runs that completed before this artifact
+            kind was introduced. The FE falls back to per-artifact
+            endpoints in this case.
+
+        Raises `ReviewNotFound` when the run doesn't exist in the
+        caller's tenant/project."""
+        from j1.processing.results import ARTIFACT_KIND_FINAL_INGESTION_REPORT
+
+        run = self._load_run(ctx, run_id)
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        candidates = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_FINAL_INGESTION_REPORT
+        ]
+        base = {
+            "runId": run_id,
+            "documentId": run.document_id or None,
+            "documentName": run.metadata.get("document_name"),
+        }
+        if not candidates:
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "final_ingestion_report_not_available — this run "
+                    "predates Wave 10 or hasn't reached terminal yet"
+                ),
+                "report": None,
+            }
+        candidates.sort(key=lambda a: a.updated_at, reverse=True)
+        artifact = candidates[0]
+        path_resolver = self._artifact_path_resolver(ctx)
+        try:
+            path = path_resolver(artifact)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ReviewNotFound):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "final_ingestion_report artifact exists but could "
+                    "not be read; check workspace permissions"
+                ),
+                "report": None,
+            }
+        if not isinstance(payload, dict):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "final_ingestion_report artifact has an unexpected "
+                    "shape (not a JSON object)"
+                ),
+                "report": None,
+            }
+        return {
+            **base,
+            "status": "completed",
+            "unavailableReason": None,
+            "artifactId": artifact.artifact_id,
+            "report": payload,
+        }
+
     def get_run_enrich_plan(
         self,
         ctx: ProjectContext,

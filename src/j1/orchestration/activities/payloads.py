@@ -172,6 +172,47 @@ class PersistEnrichmentResultInput:
 
 
 @dataclass(frozen=True)
+class PersistFinalIngestionReportInput:
+    """Wave 10 — workflow → activity payload for the
+    `final_ingestion_report` artifact.
+
+    The activity has TWO responsibilities (kept in one activity to
+    minimise round-trips at terminal time):
+
+      1. Resolve the persisted Wave-8 artifact payloads
+         (`initial_execution_plan`, `compile_result_summary`,
+         `post_compile_enrich_plan`, `enrichment_result`,
+         `final_summary`) from the artifact registry.
+      2. Run `build_final_ingestion_report()` to project them onto
+         the typed report.
+      3. Persist the result as a `final_ingestion_report` artifact.
+
+    The workflow doesn't read artifact payloads itself (Temporal
+    sandbox forbids file I/O), so the activity owns the full
+    fetch + build + persist transaction.
+
+    Best-effort: write failures don't propagate to the workflow's
+    terminal status — they're reported on the activity result and
+    logged. The report is observability, not correctness."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    # Workflow's terminal state at the time of the persist call.
+    framework_final_status: str
+    failure_code: str | None = None
+    failure_message: str | None = None
+    warning_count: int = 0
+    # Document name + workspace identifiers carried through so the
+    # activity doesn't have to re-resolve them from the run record.
+    document_name: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    operator_notes: tuple[str, ...] = ()
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class RunEnrichmentStageInput:
     """Workflow → activity payload for `run_enrichment_stage`.
 

@@ -528,6 +528,68 @@ class ProcessingService:
             f"run {run_id!r}"
         )
 
+    def persist_final_ingestion_report(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        payload: dict,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write a `final_ingestion_report` artifact (Wave 10) — the
+        end-to-end run summary aggregating compile + enrichment +
+        finalize state. Operator + FE single source of truth at
+        terminal.
+
+        `payload` is the `FinalIngestionReport.to_payload()` dict —
+        the service layer doesn't import the report module to keep
+        the dependency graph thin."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_FINAL_INGESTION_REPORT,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+
+        final_status = str(payload.get("final_status") or "unknown")
+        domain = str(payload.get("domain_profile_id") or "none")
+        # Compact filename — one report per (run, doc) pair.
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_FINAL_INGESTION_REPORT,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"final_ingestion_report_{run_id}.json",
+                "final_status": final_status,
+                "domain_profile_id": domain,
+                "schema_version": str(payload.get("schema_version") or "1.0"),
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            "failed to persist final_ingestion_report artifact for "
+            f"run {run_id!r}"
+        )
+
     def persist_initial_execution_plan(
         self,
         ctx: ProjectContext,

@@ -101,12 +101,19 @@ ARTIFACT_KIND_COMPILE_RESULT_SUMMARY = "compile_result_summary"
 # they are; this is the AGGREGATED typed view downstream consumers
 # branch on.
 ARTIFACT_KIND_ENRICHMENT_RESULT = "enrichment_result"
+# Wave 10 — end-to-end run summary artifact. The aggregated view
+# the FE renders on the run-detail page + the operator/debug
+# report consumed by the audit log. Produced at workflow terminal
+# (success OR failure) so every Wave-10+ run carries a single
+# authoritative report rather than a fan-out across artifact kinds.
+ARTIFACT_KIND_FINAL_INGESTION_REPORT = "final_ingestion_report"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
     "ARTIFACT_KIND_ERROR_REPORT",
     "ARTIFACT_KIND_FINAL_SUMMARY",
+    "ARTIFACT_KIND_FINAL_INGESTION_REPORT",
     "ARTIFACT_KIND_COMPILE_RESULT_SUMMARY",
     "ARTIFACT_KIND_ENRICHMENT_RESULT",
     "ARTIFACT_KIND_INITIAL_EXECUTION_PLAN",

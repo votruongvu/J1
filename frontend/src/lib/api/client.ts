@@ -25,6 +25,7 @@ import type {
   ReviewGraphSnapshot,
   ReviewQualityReport,
   ReviewRunSummary,
+  FinalIngestionReportResponse,
   RunCompileResultResponse,
   RunEnrichPlanResponse,
   RunEnrichmentResultResponse,
@@ -193,6 +194,17 @@ export interface IngestionClient {
    * run yet (or was skipped before the artifact wrote).
    */
   getRunEnrichmentResult(runId: string): Promise<RunEnrichmentResultResponse>;
+
+  /**
+   * Wave 10 — GET the aggregated final ingestion report. This is
+   * the single source of truth the run-detail page prefers when
+   * present; the FE falls back to per-artifact endpoints when the
+   * envelope returns `status="unavailable"` (pre-Wave-10 runs,
+   * in-flight runs, persistence failures).
+   */
+  getRunFinalIngestionReport(
+    runId: string,
+  ): Promise<FinalIngestionReportResponse>;
 
   // ---- Validation (Phase 1) ---------------------------------------
 

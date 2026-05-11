@@ -32,6 +32,7 @@ import { EnrichmentResultPanel } from "./run-detail/EnrichmentResultPanel";
 import { InitialExecutionPlanPanel } from "./run-detail/InitialExecutionPlanPanel";
 import type {
   EnrichmentResultPayload,
+  FinalIngestionReportPayload,
   InitialExecutionPlanPayload,
 } from "@/types/review";
 import type { EnrichmentSignals } from "@/lib/runState";
@@ -60,6 +61,12 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     useState<InitialExecutionPlanPayload | null>(null);
   const [enrichmentResult, setEnrichmentResult] =
     useState<EnrichmentResultPayload | null>(null);
+  // Wave 10 — aggregated final-ingestion-report. Preferred over
+  // per-artifact projection when present; pre-Wave-10 runs return
+  // `null` here and the FE falls back to the existing per-artifact
+  // signals (initialPlan + enrichmentResult above).
+  const [finalReport, setFinalReport] =
+    useState<FinalIngestionReportPayload | null>(null);
 
   const streamHandle = useRef<StreamHandle | null>(null);
   const eventIdsRef = useRef<Set<string>>(new Set());
@@ -248,12 +255,42 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         if (!cancelled) setEnrichmentResult(null);
       }
     })();
+    // Wave 10 — also try the aggregated final-ingestion-report. The
+    // FE prefers this when available; falls back to the per-artifact
+    // signals above when the report is unavailable (pre-Wave-10
+    // runs, in-flight runs, persist failures).
+    void (async () => {
+      try {
+        const resp = await client.getRunFinalIngestionReport(runId);
+        if (cancelled) return;
+        setFinalReport(resp.status === "completed" ? resp.report : null);
+      } catch {
+        if (!cancelled) setFinalReport(null);
+      }
+    })();
     return () => {
       cancelled = true;
     };
   }, [client, runId, events.length]);
 
   const enrichmentSignals: EnrichmentSignals = (() => {
+    // Wave 10 — prefer the report's enrichment summary when present.
+    // It's the authoritative aggregated view (uses post-compile plan
+    // override when the resolved policy differs from initial-plan).
+    if (finalReport?.enrichment_summary) {
+      const summary = finalReport.enrichment_summary;
+      const status = summary.enrichment_status ?? undefined;
+      return {
+        status: status ?? undefined,
+        skippedReason: summary.skipped_reason ?? undefined,
+        requireEnrichmentSuccess:
+          summary.require_enrichment_success ?? undefined,
+      };
+    }
+    // Fallback for pre-Wave-10 runs: derive from per-artifact data
+    // the FE already fetched. Same semantics, slightly cruder
+    // (`requireEnrichmentSuccess` comes from the initial plan
+    // rather than the resolved post-compile policy).
     if (!enrichmentResult) return {};
     return {
       status: enrichmentResult.status,
@@ -338,6 +375,7 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
           run={run}
           events={events}
           enrichmentSignals={enrichmentSignals}
+          finalReport={finalReport}
         />
       </div>
 

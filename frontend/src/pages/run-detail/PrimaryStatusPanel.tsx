@@ -18,12 +18,13 @@ import { userFacingStepLabel } from "@/lib/processing-steps";
 import { RUN_STATUS } from "@/lib/constants/runStatus";
 import {
   INGESTION_STATUS,
-  projectUiState,
+  projectUiStateFromReport,
   UI_STATE,
   type EnrichmentSignals,
   type UiRunState,
 } from "@/lib/runState";
 import type { IngestionRun, ProgressEvent } from "@/types/ingestion";
+import type { FinalIngestionReportPayload } from "@/types/review";
 
 
 interface PrimaryStatusPanelProps {
@@ -37,6 +38,14 @@ interface PrimaryStatusPanelProps {
    * the projector falls back to the run-level status alone.
    */
   enrichmentSignals?: EnrichmentSignals;
+  /**
+   * Wave 10 — the aggregated final-ingestion-report payload, when
+   * available. The panel prefers this over the per-artifact
+   * signals because the report carries the backend's authoritative
+   * `final_status` literal + `final_status_reason` copy. Absent /
+   * null falls back to the per-artifact derivation used by Wave 9B.
+   */
+  finalReport?: FinalIngestionReportPayload | null;
 }
 
 
@@ -73,11 +82,17 @@ export function PrimaryStatusPanel({
   run,
   events,
   enrichmentSignals,
+  finalReport,
 }: PrimaryStatusPanelProps) {
   const outputs = useMemo(() => deriveOutputs(events), [events]);
+  // Wave 10 — prefer the aggregated report's `final_status` over
+  // the per-artifact projection. Falls back when the report is
+  // null (pre-Wave-10 runs, in-flight runs).
   const uiState = useMemo<UiRunState | null>(
-    () => (run ? projectUiState(run, enrichmentSignals ?? {}) : null),
-    [run, enrichmentSignals],
+    () => projectUiStateFromReport(
+      run, finalReport ?? null, enrichmentSignals ?? {},
+    ),
+    [run, finalReport, enrichmentSignals],
   );
 
   if (!run || !uiState) return null;

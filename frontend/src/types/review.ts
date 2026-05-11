@@ -489,6 +489,104 @@ export type RunCompileResultResponse =
 export type RunEnrichmentResultResponse =
   RunArtifactEnvelope<EnrichmentResultPayload>;
 
+
+// ---- Wave 10 — final_ingestion_report --------------------------
+
+/**
+ * Aggregated end-to-end report — the single source of truth the
+ * run-detail page prefers when present. Mirrors the Python
+ * `FinalIngestionReport.to_dict()` shape. The envelope uses
+ * `report` as the payload key (vs. `plan` on the other artifact
+ * endpoints).
+ */
+export interface FinalIngestionReportResponse {
+  runId: string;
+  documentId?: string | null;
+  documentName?: string | null;
+  status: "completed" | "unavailable";
+  unavailableReason?: string | null;
+  artifactId?: string | null;
+  report: FinalIngestionReportPayload | null;
+}
+
+
+export interface StageSummaryPayload {
+  stage_id: string;
+  label: string;
+  /** pending | skipped | running | succeeded | succeeded_with_warnings | failed */
+  status: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  reasons?: string[];
+  warnings?: string[];
+  errors?: string[];
+  artifact_refs?: Record<string, string>;
+}
+
+
+export interface CompileSummaryPayload {
+  compile_engine?: string | null;
+  compile_status?: string | null;
+  chunks_count?: number;
+  page_count?: number | null;
+  extracted_text_chars?: number | null;
+  detected_tables_count?: number;
+  detected_images_count?: number;
+  quality_verdict?: string | null;
+  warnings?: string[];
+  errors?: string[];
+  retry_count?: number;
+  artifact_refs?: string[];
+}
+
+
+export interface EnrichmentSummaryPayload {
+  should_enrich?: boolean;
+  enrichment_status?:
+    | "succeeded"
+    | "succeeded_with_warnings"
+    | "failed"
+    | "skipped"
+    | null;
+  policy?: string | null;
+  require_enrichment_success?: boolean;
+  selected_modules?: string[];
+  skipped_modules?: string[];
+  module_outcomes?: Array<Record<string, unknown>>;
+  what_enrichment_added?: string[];
+  warnings?: string[];
+  errors?: string[];
+  retry_count?: number;
+  skipped_reason?: string | null;
+  artifact_refs?: string[];
+}
+
+
+export interface FinalIngestionReportPayload {
+  schema_version: string;
+  run_id: string;
+  document_id?: string | null;
+  document_name?: string | null;
+  tenant_id?: string | null;
+  project_id?: string | null;
+  domain_profile_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  /** Wave-8 `INGESTION_STATUS_*` literal. */
+  final_status: string;
+  final_status_reason?: string;
+  stages?: StageSummaryPayload[];
+  compile_summary?: CompileSummaryPayload;
+  enrichment_summary?: EnrichmentSummaryPayload;
+  artifact_refs?: Record<string, string>;
+  warnings?: string[];
+  errors?: string[];
+  retry_counts?: Record<string, number>;
+  operator_notes?: string[];
+}
+
 // ---- Validation (Phase 1: manual test query) --------------------
 
 export interface ValidationCheck {

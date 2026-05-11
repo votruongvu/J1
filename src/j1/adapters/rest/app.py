@@ -2371,6 +2371,35 @@ def create_rest_api(
         return envelope(plan, _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/final-ingestion-report",
+        tags=["ingestion-runs"],
+        summary="Get the aggregated end-to-end final ingestion report",
+        description=(
+            "Wave 10 — returns the typed `FinalIngestionReport` that "
+            "aggregates the entire ingestion pipeline (initial "
+            "execution plan, compile result, post-compile enrich "
+            "plan, enrichment overlay, finalize) into a single "
+            "FE-facing payload. The report is the single source of "
+            "truth for the run-detail page when present; the FE "
+            "falls back to per-artifact endpoints when not. Returns "
+            "`status=\"unavailable\"` with reason "
+            "`final_ingestion_report_not_available` for pre-Wave-10 "
+            "runs and in-flight runs that haven't reached terminal "
+            "yet. Returns 404 if the run does not exist in the "
+            "caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_final_ingestion_report(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        report = service.get_run_final_ingestion_report(ctx, run_id)
+        return envelope(report, _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/graph",
         tags=["ingestion-runs"],
         summary="Get the neutral graph snapshot for an ingestion run",
