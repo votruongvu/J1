@@ -396,6 +396,73 @@ class ProcessingService:
             f"run {run_id!r}"
         )
 
+    def persist_initial_execution_plan(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        payload: dict,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write an `initial_execution_plan` artifact carrying the
+        pre-compile run plan (selected domain, enrichment_policy,
+        candidate modules, cheap signals, wrapped compile plan).
+
+        Mirrors `persist_post_compile_enrich_plan` so the FE artifact
+        listing surfaces it uniformly. `payload` is the
+        `InitialExecutionPlan.to_payload()` dict — the service layer
+        doesn't import `initial_execution_plan` to keep the
+        dependency graph thin."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_INITIAL_EXECUTION_PLAN,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+
+        domain_id = payload.get("domain_profile_id") or "none"
+        enrichment_policy = str(payload.get("enrichment_policy") or "auto")
+        candidate_count = len(
+            payload.get("candidate_enrichment_modules") or []
+        )
+        compile_engine = str(payload.get("compile_engine") or "raganything")
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_INITIAL_EXECUTION_PLAN,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"initial_execution_plan_{run_id}.json",
+                "domain_profile_id": domain_id,
+                "enrichment_policy": enrichment_policy,
+                "candidate_module_count": candidate_count,
+                "compile_engine": compile_engine,
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.COMPILED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            "failed to persist initial_execution_plan artifact for "
+            f"run {run_id!r}"
+        )
+
     def persist_stage_validation_report(
         self,
         ctx: ProjectContext,

@@ -709,6 +709,83 @@ class IngestionResultReviewService:
             llm_recommendation=llm_rec,
         )
 
+    def get_run_initial_execution_plan(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> dict:
+        """Return the pre-compile initial execution plan for `run_id`.
+
+        Reads the `initial_execution_plan` artifact (persisted by the
+        workflow's pre-compile `build_initial_execution_plan` activity).
+        When no artifact exists — e.g. legacy run, profiling failed,
+        run hasn't reached the pre-compile build yet — the response
+        carries `status="unavailable"` with an operator-readable
+        reason. Schema is the `InitialExecutionPlan.to_payload()`
+        dict, exposed under the `plan` field; the wrapping dict adds
+        `runId` / `documentId` / `unavailableReason` for FE rendering.
+
+        Raises `ReviewNotFound` when the run doesn't exist in the
+        caller's tenant/project."""
+        from j1.processing.results import ARTIFACT_KIND_INITIAL_EXECUTION_PLAN
+
+        run = self._load_run(ctx, run_id)
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        candidates = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_INITIAL_EXECUTION_PLAN
+        ]
+        base = {
+            "runId": run_id,
+            "documentId": run.document_id or None,
+            "documentName": run.metadata.get("document_name"),
+        }
+        if not candidates:
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "No initial execution plan was persisted for this "
+                    "run yet. The run may predate the pre-compile "
+                    "planner, profiling may have failed, or persistence "
+                    "failed."
+                ),
+                "plan": None,
+            }
+        candidates.sort(key=lambda a: a.updated_at, reverse=True)
+        artifact = candidates[0]
+        path_resolver = self._artifact_path_resolver(ctx)
+        try:
+            path = path_resolver(artifact)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ReviewNotFound):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "initial_execution_plan artifact exists but could "
+                    "not be read; check workspace permissions."
+                ),
+                "plan": None,
+            }
+        if not isinstance(payload, dict):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "initial_execution_plan artifact has an unexpected "
+                    "shape (not a JSON object)."
+                ),
+                "plan": None,
+            }
+        return {
+            **base,
+            "status": "completed",
+            "unavailableReason": None,
+            "artifactId": artifact.artifact_id,
+            "plan": payload,
+        }
+
     def get_run_enrich_plan(
         self,
         ctx: ProjectContext,

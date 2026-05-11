@@ -291,6 +291,24 @@ def test_standard_compile_with_zero_chunks_retries_to_deep(monkeypatch):
             return ["doc-standard"]
         if name.endswith("profile_document"):
             return _plain_text_profile()
+        if name.endswith("build_initial_execution_plan"):
+            from j1.processing.initial_execution_plan import (
+                build_initial_execution_plan as _build,
+            )
+            from j1.orchestration.activities.payloads import (
+                BuildInitialExecutionPlanResult,
+            )
+            plan = _build(_plain_text_profile())
+            return BuildInitialExecutionPlanResult(
+                status="succeeded",
+                plan_payload=plan.to_payload(),
+                artifact_id="initial-plan-art",
+            )
+        if name.endswith("persist_initial_execution_plan"):
+            return ArtifactActivityResult(
+                status="succeeded", artifact_ids=["ip-1"],
+                kinds=("initial_execution_plan",),
+            )
         if name.endswith("compile"):
             compile_payloads.append(payload)
             mode = (payload.assessment_plan_payload or {}).get("mode")

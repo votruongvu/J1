@@ -76,12 +76,21 @@ ARTIFACT_KIND_COMPILE_STRATEGY_REPORT = "compile_strategy_report"
 # decision_source. Read by the FE's enrich-plan card and by future
 # stage-gate logic that wants to consult the recommendation.
 ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN = "post_compile_enrich_plan"
+# Pre-compile initial execution plan. Built by
+# `j1.processing.initial_execution_plan.build_initial_execution_plan`
+# immediately after the cheap document profile finishes; carries the
+# selected domain_profile_id, enrichment_policy, candidate enrichment
+# modules, cheap_signals snapshot, and the wrapped compile-stage
+# `AssessmentPlan`. Read by the FE's initial-plan panel and by the
+# post-compile assessor to derive the candidate list.
+ARTIFACT_KIND_INITIAL_EXECUTION_PLAN = "initial_execution_plan"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
     "ARTIFACT_KIND_COMPILED_TEXT",
     "ARTIFACT_KIND_ERROR_REPORT",
     "ARTIFACT_KIND_FINAL_SUMMARY",
+    "ARTIFACT_KIND_INITIAL_EXECUTION_PLAN",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",

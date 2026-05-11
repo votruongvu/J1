@@ -101,6 +101,24 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
                 "test passed planner_enabled=True without a profile"
             )
             return profile
+        if name.endswith("build_initial_execution_plan"):
+            # Mirror what the real activity produces: a populated
+            # plan payload (with the legacy `compile_plan` shape the
+            # rest of the workflow consumes) plus a stub artifact id.
+            from j1.processing.assessment import DefaultAssessmentPlanner
+            from j1.processing.initial_execution_plan import (
+                build_initial_execution_plan as _build,
+            )
+            plan = _build(profile)
+            from j1.orchestration.activities.payloads import (
+                BuildInitialExecutionPlanResult,
+            )
+            return BuildInitialExecutionPlanResult(
+                status="succeeded",
+                plan_payload=plan.to_payload(),
+                artifact_id="initial-plan-art-1",
+                domain_profile_id=plan.domain_profile_id,
+            )
         if name.endswith("compile"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-1"],
@@ -135,6 +153,7 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
             or name.endswith("persist_error_report")
             or name.endswith("persist_compile_strategy_report")
             or name.endswith("persist_post_compile_enrich_plan")
+            or name.endswith("persist_initial_execution_plan")
         ):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["report-1"],

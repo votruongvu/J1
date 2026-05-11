@@ -10,6 +10,8 @@ from temporalio.exceptions import ApplicationError
 with workflow.unsafe.imports_passed_through():
     from j1.orchestration.activities.payloads import (
         ArtifactActivityResult,
+        BuildInitialExecutionPlanInput,
+        BuildInitialExecutionPlanResult,
         CompileActivityInput,
         EnrichActivityInput,
         FastLLMConsultEnrichInput,
@@ -19,6 +21,7 @@ with workflow.unsafe.imports_passed_through():
         PersistCompileStrategyReportInput,
         PersistErrorReportInput,
         PersistFinalSummaryInput,
+        PersistInitialExecutionPlanInput,
         PersistPostCompileEnrichPlanInput,
         PersistValidationReportInput,
         ProcessingActivityResult,
@@ -78,6 +81,10 @@ with workflow.unsafe.imports_passed_through():
         CompileRetrySettings,
         DEFAULT_MAX_ATTEMPTS,
         next_compile_mode,
+    )
+    from j1.processing.initial_execution_plan import (
+        InitialExecutionPlan,
+        build_initial_execution_plan,
     )
     from j1.processing.results import ArtifactProcessingResult, ResultStatus
     from j1.processing.profiling import DocumentProfile
@@ -2487,6 +2494,7 @@ class ProjectProcessingWorkflow:
         #     `_BusinessRejection`; compile step recorded FAILED;
         #     run lands at FAILED_FINAL.
         assessment_payload: dict | None = None
+        initial_plan_payload: dict | None = None
         if request.planner_enabled:
             # Wrap the cheap pre-compile work (profile + AssessmentPlan
             # build) in synthetic step.* events so the FE timeline +
@@ -2509,8 +2517,49 @@ class ProjectProcessingWorkflow:
                     start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
                     retry_policy=DEFAULT_RETRY.to_temporal(),
                 )
-                assessment = DefaultAssessmentPlanner().assess(profile)
-                assessment_payload = assessment.to_payload()
+                # Build the InitialExecutionPlan (Wave 3) via an
+                # activity so domain pack resolution + persistence
+                # stay outside the sandbox. The activity returns the
+                # plan payload; the workflow holds the compile-stage
+                # AssessmentPlan as the legacy `assessment_payload`
+                # so existing per-compile-attempt code paths still
+                # work unchanged.
+                #
+                # Backward-compat: if the activity isn't wired (None
+                # return) or carries no plan_payload, fall back to
+                # the legacy in-workflow DefaultAssessmentPlanner.
+                # Lets existing test harnesses + deployments that
+                # haven't registered the new activity keep working.
+                build_result = await workflow.execute_activity_method(
+                    ProcessingActivities.build_initial_execution_plan,
+                    BuildInitialExecutionPlanInput(
+                        scope=request.scope,
+                        run_id=request.correlation_id or "",
+                        document_id=document_id,
+                        profile=profile,
+                        domain_override=request.domain_override,
+                        workspace_default_domain=request.workspace_default_domain,
+                        allowed_domain_overrides=(),
+                        actor=request.actor,
+                    ),
+                    start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                    retry_policy=DEFAULT_RETRY.to_temporal(),
+                )
+                plan_payload_raw = (
+                    getattr(build_result, "plan_payload", None)
+                    if build_result is not None else None
+                )
+                if plan_payload_raw:
+                    initial_plan_payload = dict(plan_payload_raw)
+                    assessment_payload = (
+                        initial_plan_payload.get("compile_plan") or None
+                    )
+                else:
+                    # Legacy fallback — build the AssessmentPlan
+                    # workflow-side just like before Wave 3 wiring.
+                    fallback = DefaultAssessmentPlanner().assess(profile)
+                    assessment_payload = fallback.to_payload()
+                    initial_plan_payload = None
                 # Surface the assessment mode as a Temporal search
                 # attribute so operators can filter histories without
                 # reading the audit log. INGEST_MODE comes from the
@@ -2518,11 +2567,22 @@ class ProjectProcessingWorkflow:
                 # vision / premium-LLM search attrs are deferred until
                 # after compile so they reflect compile evidence +
                 # post-compile assessment, not pre-compile guesses.
-                mode_value = assessment_payload.get("mode")
+                mode_value = (
+                    assessment_payload.get("mode")
+                    if assessment_payload else None
+                )
                 if mode_value:
                     self._set_search_attribute(
                         SEARCH_ATTR_INGEST_MODE, mode_value,
                     )
+                confidence = (
+                    assessment_payload.get("confidence")
+                    if assessment_payload else None
+                )
+                domain_id = (
+                    initial_plan_payload.get("domain_profile_id")
+                    if initial_plan_payload else None
+                )
                 self._log_step(
                     request,
                     event="ingestion.assessment.created",
@@ -2530,8 +2590,8 @@ class ProjectProcessingWorkflow:
                     status="completed",
                     document_id=document_id,
                     reason=(
-                        f"mode={mode_value} "
-                        f"confidence={assessment_payload.get('confidence')}"
+                        f"mode={mode_value} confidence={confidence} "
+                        f"domain={domain_id or 'none'}"
                     ),
                 )
                 await self._emit_step_lifecycle(

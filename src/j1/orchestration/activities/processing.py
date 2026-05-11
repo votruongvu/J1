@@ -46,6 +46,9 @@ from j1.orchestration.activities.payloads import (
     PersistCompileStrategyReportInput,
     PersistErrorReportInput,
     PersistFinalSummaryInput,
+    BuildInitialExecutionPlanInput,
+    BuildInitialExecutionPlanResult,
+    PersistInitialExecutionPlanInput,
     PersistPostCompileEnrichPlanInput,
     PersistValidationReportInput,
     ProcessingActivityResult,
@@ -80,6 +83,8 @@ ACTIVITY_PERSIST_VALIDATION_REPORT = "j1.processing.persist_validation_report"
 ACTIVITY_PERSIST_FINAL_SUMMARY = "j1.processing.persist_final_summary"
 ACTIVITY_PERSIST_COMPILE_STRATEGY_REPORT = "j1.processing.persist_compile_strategy_report"
 ACTIVITY_PERSIST_POST_COMPILE_ENRICH_PLAN = "j1.processing.persist_post_compile_enrich_plan"
+ACTIVITY_PERSIST_INITIAL_EXECUTION_PLAN = "j1.processing.persist_initial_execution_plan"
+ACTIVITY_BUILD_INITIAL_EXECUTION_PLAN = "j1.processing.build_initial_execution_plan"
 ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
@@ -87,6 +92,26 @@ ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
 
 class UnknownProcessorError(LookupError):
     pass
+
+
+class _EmptyDetectionContext:
+    """Sentinel detection context for pre-compile pack resolution.
+
+    `select_domain(..., detection_enabled=False)` skips per-pack
+    detection entirely, but the registry's signature still expects a
+    detection_context object. This sentinel provides the attribute
+    surface a pack detector would read (all empty) so the selector
+    can run override → workspace → fallback without touching real
+    document content."""
+
+    title: str = ""
+    title_quality: str = "unknown"
+    filename: str | None = None
+    early_page_text: str = ""
+    heading_outline: tuple = ()
+    table_captions: tuple = ()
+    image_captions: tuple = ()
+    document_type_hint: str | None = None
 
 
 class ProcessingActivities:
@@ -631,6 +656,115 @@ class ProcessingActivities:
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_compile_strategy_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=dict(input.payload),
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_BUILD_INITIAL_EXECUTION_PLAN)
+    def build_initial_execution_plan(
+        self, input: BuildInitialExecutionPlanInput,
+    ) -> BuildInitialExecutionPlanResult:
+        """Resolve the domain pack, build the
+        `InitialExecutionPlan`, persist it as an
+        `initial_execution_plan` artifact, and return the payload.
+
+        Pack-resolution precedence: override → workspace default →
+        general fallback. NO auto-detection at pre-compile time —
+        the detection context (title / headings / early-page text)
+        isn't available until compile output. The activity therefore
+        uses `select_domain(..., detection_enabled=False)` so the
+        resolution stays cheap and deterministic.
+
+        Best-effort persistence: a write error is reported on the
+        result but the inline payload still flows to the workflow,
+        so downstream stages have the plan even when the artifact
+        write failed."""
+        from j1.domains.registry import default_registry, select_domain
+        from j1.processing.initial_execution_plan import (
+            build_initial_execution_plan as _build_plan,
+        )
+
+        ctx = input.scope.to_context()
+
+        registry = default_registry()
+        allowed = (
+            frozenset(input.allowed_domain_overrides)
+            if input.allowed_domain_overrides else None
+        )
+        # Sentinel context: no title / no headings / no captions.
+        # `detection_enabled=False` makes the absence inert — the
+        # selector falls through override → workspace → fallback
+        # without scoring a single rule.
+        sentinel_ctx = _EmptyDetectionContext()
+        domain_context = select_domain(
+            registry=registry,
+            detection_context=sentinel_ctx,
+            user_override=input.domain_override,
+            workspace_default=input.workspace_default_domain,
+            detection_enabled=False,
+            allowed_overrides=allowed,
+        )
+        pack = registry.get(domain_context.selected_domain)
+        plan = _build_plan(
+            input.profile,
+            domain_pack=pack,
+            resource_hints=dict(input.resource_hints) or None,
+        )
+        plan_payload = plan.to_payload()
+        # Surface the selection trail on the plan as well so the FE
+        # can render "domain picked via: user override" without
+        # parsing the audit log.
+        plan_payload.setdefault("domain_selection_source", domain_context.selection_source)
+        plan_payload.setdefault("domain_selection_confidence", domain_context.confidence)
+
+        artifact_id: str | None = None
+        error: str | None = None
+        try:
+            record = self._processing.persist_initial_execution_plan(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=plan_payload,
+                actor=input.actor,
+            )
+            artifact_id = record.artifact_id
+        except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            error = f"{type(exc).__name__}: {exc}"
+
+        return BuildInitialExecutionPlanResult(
+            status="succeeded",
+            plan_payload=plan_payload,
+            artifact_id=artifact_id,
+            error=error,
+            domain_profile_id=plan.domain_profile_id,
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_INITIAL_EXECUTION_PLAN)
+    def persist_initial_execution_plan(
+        self, input: PersistInitialExecutionPlanInput,
+    ) -> ArtifactActivityResult:
+        """Persist the pre-compile initial execution plan as an
+        `initial_execution_plan` artifact. Best-effort — any
+        persistence error is returned in the response; the workflow
+        logs it and proceeds because the durable signal for
+        downstream stages is the inline plan the workflow already
+        holds, not the artifact."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_initial_execution_plan(
                 ctx,
                 run_id=input.run_id,
                 document_id=input.document_id,

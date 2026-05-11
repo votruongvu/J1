@@ -145,6 +145,74 @@ class PersistPostCompileEnrichPlanInput:
 
 
 @dataclass(frozen=True)
+class PersistInitialExecutionPlanInput:
+    """Workflow → activity payload for the
+    `initial_execution_plan` artifact. Carries the cheap pre-compile
+    plan (selected domain, enrichment_policy, candidate modules,
+    cheap_signals, wrapped compile plan) as a plain dict — same
+    transport shape as `PersistPostCompileEnrichPlanInput`."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
+class BuildInitialExecutionPlanInput:
+    """Workflow → activity payload for `build_initial_execution_plan`.
+
+    The activity owns the full work unit: resolve the domain pack
+    (override → workspace default → fallback to general), build the
+    `InitialExecutionPlan` from the cheap profile + resolved pack,
+    persist as an `initial_execution_plan` artifact, and return the
+    payload to the workflow.
+
+    Pack resolution is the activity's job because the registry is a
+    module-state singleton — touching it from workflow code would
+    cause replay non-determinism. The plan-build helper itself is
+    pure but takes the resolved pack as input."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str
+    # The DocumentProfile dataclass — same shape the
+    # `profile_document` activity already returns. Temporal's data
+    # converter handles the frozen dataclass round-trip directly;
+    # we don't keep a separate `to_payload()` form.
+    profile: "Any"
+    # Operator-supplied override (e.g. `civil_engineering`). None ⇒
+    # the activity walks the workspace default → fallback chain.
+    domain_override: str | None = None
+    workspace_default_domain: str | None = None
+    allowed_domain_overrides: tuple[str, ...] = ()
+    # Optional caller hints (concurrency, model-tier) the deployment
+    # has already resolved. The plan merges with policy defaults.
+    resource_hints: dict[str, Any] = field(default_factory=dict)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
+class BuildInitialExecutionPlanResult:
+    """Activity → workflow return for `build_initial_execution_plan`.
+
+    Carries the built plan payload so the workflow can route it
+    downstream + the artifact_id for the persisted JSON. `status` is
+    `"succeeded"` / `"failed"` mirroring the rest of the activity
+    payloads."""
+
+    status: str
+    plan_payload: dict[str, Any] = field(default_factory=dict)
+    artifact_id: str | None = None
+    error: str | None = None
+    # Selected domain id (mirrors plan_payload["domain_profile_id"])
+    # — surfaced as a top-level field so the workflow can update
+    # search attributes / step events without re-parsing the payload.
+    domain_profile_id: str | None = None
+
+
+@dataclass(frozen=True)
 class FastLLMConsultEnrichInput:
     """Workflow → activity payload for the optional fast-LLM consult.
 

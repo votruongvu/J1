@@ -2285,6 +2285,35 @@ def create_rest_api(
         return envelope(plan, _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/initial-execution-plan",
+        tags=["ingestion-runs"],
+        summary="Get the pre-compile initial execution plan for an ingestion run",
+        description=(
+            "Returns the pre-compile initial execution plan "
+            "(`InitialExecutionPlan`): the selected domain profile, "
+            "the enrichment policy, the candidate enrichment "
+            "modules, the cheap signals snapshot, resource hints, "
+            "operator-readable reasons + warnings, and the wrapped "
+            "compile-stage plan. Built by the workflow's pre-compile "
+            "`build_initial_execution_plan` activity, persisted as an "
+            "`initial_execution_plan` artifact. Returns "
+            "`status=\"unavailable\"` with a reason when the run "
+            "hasn't reached pre-compile build or the artifact wasn't "
+            "persisted. Returns 404 if the run does not exist in the "
+            "caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_initial_execution_plan(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        plan = service.get_run_initial_execution_plan(ctx, run_id)
+        return envelope(plan, _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/graph",
         tags=["ingestion-runs"],
         summary="Get the neutral graph snapshot for an ingestion run",
