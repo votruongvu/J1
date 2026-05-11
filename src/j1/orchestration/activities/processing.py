@@ -113,6 +113,60 @@ class _PersistOutcome:
     error: str | None
 
 
+def _find_existing_enrichment_result(
+    artifact_registry,
+    ctx,
+    *,
+    run_id: str,
+    document_id: str | None,
+) -> dict | None:
+    """Look for a previously-persisted `enrichment_result` artifact
+    matching this (run, document) pair.
+
+    Returns the artifact's JSON payload (with `_artifact_id` set to
+    the registry id) on hit, None on miss. Defensive — registry /
+    file errors fall through to None so the activity re-runs the
+    stage rather than crashing.
+
+    Lookup is "most recent `enrichment_result` for the run id",
+    matched on `metadata["run_id"]`. Used as an idempotency guard
+    against Temporal activity retries / workflow replays."""
+    import json as _json
+
+    from j1.processing.results import ARTIFACT_KIND_ENRICHMENT_RESULT
+    from j1.workspace.layout import WorkspaceArea
+
+    if not run_id:
+        return None
+    try:
+        records = artifact_registry.list_artifacts(
+            ctx, kind=ARTIFACT_KIND_ENRICHMENT_RESULT,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    matches = [
+        r for r in records
+        if (r.metadata or {}).get("run_id") == run_id
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda r: r.updated_at, reverse=True)
+    # Successfully found an existing record. Returning a sentinel
+    # payload signals the activity to short-circuit re-execution.
+    # We don't read the full JSON off disk here — the workflow's
+    # downstream consumers already hold the inline plan payload
+    # from the original execution; the activity just needs to
+    # avoid running the LLM-cost runner a second time.
+    artifact = matches[0]
+    return {
+        "_artifact_id": artifact.artifact_id,
+        "_cache_hit": True,
+        "document_id": document_id or "",
+        "status": artifact.metadata.get("status") or "succeeded",
+        "domain_id": artifact.metadata.get("domain_id"),
+    }
+
+
 def _persist_enrichment_payload(
     service,
     ctx,
@@ -828,6 +882,54 @@ class ProcessingActivities:
         )
         domain_pack = registry.get(domain_context.selected_domain)
 
+        # Wave 8 — resolve `require_enrichment_success` using the
+        # full precedence chain: request override → domain pack
+        # opinion → env fallback → system default. Today the
+        # request shape doesn't carry a per-run override; the
+        # resolver still walks the chain so domain-absent runs pick
+        # up the env-level fallback from
+        # `EnrichmentConcurrencySettings.require_enrichment_success`.
+        from j1.processing.enrichment_policy import (
+            resolve_require_enrichment_success,
+        )
+        from j1.processing.enrichment_settings import (
+            load_enrichment_settings as load_concurrency_settings,
+        )
+        concurrency_settings = load_concurrency_settings()
+        resolved_require_success = resolve_require_enrichment_success(
+            request_override=None,
+            project_default=None,
+            domain_policy=(
+                domain_pack.enrichment_policy if domain_pack else None
+            ),
+            env_default=(
+                concurrency_settings.require_enrichment_success
+                if concurrency_settings.enabled else None
+            ),
+        )
+        require_success = resolved_require_success.require_enrichment_success
+
+        # Wave 8 — idempotency check. When an `enrichment_result`
+        # artifact already exists for this (run, doc) pair, return
+        # the cached payload instead of re-running the runner.
+        # Guards against Temporal activity retries / workflow
+        # replays that would otherwise pay the LLM cost twice.
+        # Best-effort: a registry-lookup failure falls through to
+        # the run path so a transient registry hiccup doesn't
+        # bypass enrichment entirely.
+        cached_payload = _find_existing_enrichment_result(
+            self._artifacts, ctx, run_id=input.run_id,
+            document_id=input.document_id,
+        )
+        if cached_payload is not None:
+            return RunEnrichmentStageResult(
+                status=str(cached_payload.get("status") or "succeeded"),
+                plan_payload=cached_payload,
+                artifact_id=cached_payload.get("_artifact_id"),
+                require_enrichment_success=require_success,
+                persist_error=None,
+            )
+
         # Skip-path: build a sentinel typed overlay so the FE sees
         # an explicit "enrichment skipped" record.
         if not enrich_plan.should_enrich:
@@ -853,7 +955,7 @@ class ProcessingActivities:
                 status="skipped",
                 plan_payload=payload,
                 artifact_id=persist_error.artifact_id,
-                require_enrichment_success=enrich_plan.require_enrichment_success,
+                require_enrichment_success=require_success,
                 persist_error=persist_error.error,
             )
 

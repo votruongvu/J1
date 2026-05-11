@@ -174,6 +174,21 @@ SEARCH_ATTR_WORKSPACE_ID = "J1WorkspaceId"
 SEARCH_ATTR_PARSER_NAME = "J1ParserName"
 SEARCH_ATTR_REQUIRES_VISION = "J1RequiresVision"
 SEARCH_ATTR_REQUIRES_PREMIUM_LLM = "J1RequiresPremiumLLM"
+# Wave 8 — Temporal search attributes for the new pipeline shape.
+# `J1DomainProfileId` lets ops filter on the active domain pack.
+# `J1EnrichmentPolicy` reflects the resolved policy literal
+# (`auto` / `always` / `never`) so dashboards group by policy.
+# `J1RequireEnrichmentSuccess` is the resolved boolean policy
+# flag. `J1FinalStatus` carries the Wave-8 final-status projection
+# string at run terminal. Retry counts let ops aggregate by
+# stage-attempt cost. All best-effort writes; missing attribute
+# registrations silently noop.
+SEARCH_ATTR_DOMAIN_PROFILE_ID = "J1DomainProfileId"
+SEARCH_ATTR_ENRICHMENT_POLICY = "J1EnrichmentPolicy"
+SEARCH_ATTR_REQUIRE_ENRICHMENT_SUCCESS = "J1RequireEnrichmentSuccess"
+SEARCH_ATTR_FINAL_STATUS = "J1FinalStatus"
+SEARCH_ATTR_COMPILE_RETRY_COUNT = "J1CompileRetryCount"
+SEARCH_ATTR_ENRICHMENT_RETRY_COUNT = "J1EnrichmentRetryCount"
 
 # Values written into `SEARCH_ATTR_INGEST_STAGE`. Operators filter
 # Temporal histories on these — keep in sync with the values quoted
@@ -717,6 +732,86 @@ def _parse_method_for_mode(mode: str | None) -> str | None:
     return {"fast": "txt", "standard": "auto", "deep": "auto"}.get(mode)
 
 
+def _project_search_attr_final_status(
+    *,
+    framework_final_status: str,
+    step_results: list,
+    failure_code: str | None = None,
+) -> str:
+    """Build the `J1FinalStatus` search-attribute value at run
+    terminal.
+
+    Uses `project_final_status()` from `j1.processing.final_status`
+    to map the framework status + recorded step outcomes onto the
+    Wave-8 operator-facing vocabulary. Reads the most recent
+    `enrich_stage` step's `enrichment_outcome` metadata to
+    distinguish completed-without-enrichment from
+    completed-with-enrichment etc. Returns the projected status
+    string — never None.
+
+    Pure / no I/O — safe to call from workflow code."""
+    from j1.processing.final_status import project_final_status
+
+    enrichment_outcome: str | None = None
+    enrichment_skipped_reason: str | None = None
+    enrichment_required = False
+    enrichment_status_for_projector: str | None = None
+    for record in reversed(step_results):
+        if record.step != "enrich_stage":
+            continue
+        meta = record.metadata or {}
+        enrichment_outcome = meta.get("enrichment_outcome")
+        enrichment_skipped_reason = meta.get("enrichment_skipped_reason")
+        if meta.get("failure_code") == "ENRICHMENT_REQUIRED":
+            enrichment_required = True
+        # Project the workflow's per-step outcome label onto the
+        # value the final-status projector expects.
+        if enrichment_outcome == "skipped":
+            enrichment_status_for_projector = "skipped"
+        elif enrichment_outcome == "failed_required":
+            enrichment_status_for_projector = "failed"
+            enrichment_required = True
+        elif enrichment_outcome == "failed_optional":
+            enrichment_status_for_projector = "failed"
+        elif enrichment_outcome == "completed_with_warnings":
+            enrichment_status_for_projector = "succeeded_with_warnings"
+        elif enrichment_outcome == "completed":
+            enrichment_status_for_projector = "succeeded"
+        break
+
+    projection = project_final_status(
+        framework_final_status=framework_final_status,
+        failure_code=failure_code,
+        enrichment_status=enrichment_status_for_projector,
+        enrichment_required=enrichment_required,
+        enrichment_skipped_reason=enrichment_skipped_reason,
+    )
+    return projection.status
+
+
+def _wave8_enrichment_outcome(
+    *,
+    enrichment_status: str,
+    require_success: bool,
+) -> str:
+    """Project the activity's `EnrichmentResult.status` literal +
+    the resolved `require_enrichment_success` flag onto the Wave-8
+    fine-grained outcome vocabulary.
+
+    Values: `completed` / `completed_with_warnings` /
+    `failed_optional` / `failed_required` / `skipped`. The
+    workflow stores this on step metadata + emits it in the
+    structured log so the final-status projector + FE branch on a
+    single label."""
+    if enrichment_status == "skipped":
+        return "skipped"
+    if enrichment_status == "failed":
+        return "failed_required" if require_success else "failed_optional"
+    if enrichment_status == "succeeded_with_warnings":
+        return "completed_with_warnings"
+    return "completed"
+
+
 
 
 
@@ -999,6 +1094,20 @@ class ProjectProcessingWorkflow:
                 # is 0 in the success path; deployments adopting
                 # `continue_optional` policy will populate this.
                 final_status = "succeeded_with_warnings" if self._warning_count() > 0 else "succeeded"
+                # Wave 8 — surface the resolved final status on the
+                # search-attribute surface. The string mirrors the
+                # `IngestionFinalStatusProjection` vocabulary so ops
+                # can filter on operator-facing labels directly.
+                self._set_search_attribute(
+                    SEARCH_ATTR_FINAL_STATUS,
+                    _project_search_attr_final_status(
+                        framework_final_status=(
+                            "partial_completed" if final_status == "succeeded_with_warnings"
+                            else "completed"
+                        ),
+                        step_results=list(self._step_results),
+                    ),
+                )
                 # Persist the final_summary artifact at successful
                 # terminal — single canonical artifact summarising
                 # the run for the FE / operators.
@@ -1037,6 +1146,17 @@ class ProjectProcessingWorkflow:
                 error_type=business_failure_code,
             )
             self._set_search_attribute(SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_FAILED)
+            # Wave 8 — final-status search attr at terminal so ops
+            # can filter `J1FinalStatus=failed_enrichment_required`
+            # / `failed_compile` / etc.
+            self._set_search_attribute(
+                SEARCH_ATTR_FINAL_STATUS,
+                _project_search_attr_final_status(
+                    framework_final_status="failed",
+                    step_results=list(self._step_results),
+                    failure_code=business_failure_code,
+                ),
+            )
             # Persist the failure-path `error_report` artifact so the
             # FE artifact-listing surface carries the failure detail
             # under the run, alongside whatever partial artifacts the
@@ -1962,13 +2082,30 @@ class ProjectProcessingWorkflow:
             request, stage="ENRICH",
             step="enrich_stage", action=action,
         )
+        # Wave-8 fine-grained outcome label. Carried on the
+        # structured log + the step_results metadata so the FE +
+        # final-status projector branch on the same vocabulary.
+        # Values: completed / completed_with_warnings / failed_optional
+        # / failed_required / skipped.
+        enrichment_outcome = _wave8_enrichment_outcome(
+            enrichment_status=status,
+            require_success=result.require_enrichment_success,
+        )
+        # Wave 8 — surface require_success on the search-attribute
+        # surface so ops can filter "what runs were governed by
+        # require_success?" without parsing the audit log.
+        self._set_search_attribute(
+            SEARCH_ATTR_REQUIRE_ENRICHMENT_SUCCESS,
+            "true" if result.require_enrichment_success else "false",
+        )
         self._log_step(
             request,
             event="ingestion.enrichment.stage_completed",
             stage="enrichment",
-            status=status,
+            status=enrichment_outcome,
             document_id=document_id,
             reason=(
+                f"enrichment_outcome={enrichment_outcome} "
                 f"enrichment_status={status} "
                 f"require_success={result.require_enrichment_success} "
                 f"persist_error={result.persist_error or 'none'}"
@@ -2002,6 +2139,7 @@ class ProjectProcessingWorkflow:
                     metadata={
                         "document_id": document_id,
                         "failure_code": FAILURE_CODE_ENRICHMENT_REQUIRED,
+                        "enrichment_outcome": enrichment_outcome,
                     },
                 )
                 raise _BusinessRejection(
@@ -2020,7 +2158,10 @@ class ProjectProcessingWorkflow:
                 required=False,
                 source=StepSource.CALLER,
                 reason="enrichment failed (optional)",
-                metadata={"document_id": document_id},
+                metadata={
+                    "document_id": document_id,
+                    "enrichment_outcome": enrichment_outcome,
+                },
             )
         elif status == "succeeded_with_warnings":
             # Record as FAILED + required=False to bump
@@ -2037,6 +2178,7 @@ class ProjectProcessingWorkflow:
                 metadata={
                     "document_id": document_id,
                     "enrichment_status": "succeeded_with_warnings",
+                    "enrichment_outcome": enrichment_outcome,
                 },
             )
         elif status == "skipped":
@@ -2046,7 +2188,10 @@ class ProjectProcessingWorkflow:
                 required=False,
                 source=StepSource.CALLER,
                 reason="enrichment skipped by post-compile assessor",
-                metadata={"document_id": document_id},
+                metadata={
+                    "document_id": document_id,
+                    "enrichment_outcome": enrichment_outcome,
+                },
             )
         else:
             # "succeeded"
@@ -2059,6 +2204,7 @@ class ProjectProcessingWorkflow:
                 metadata={
                     "document_id": document_id,
                     "artifact_id": result.artifact_id or "",
+                    "enrichment_outcome": enrichment_outcome,
                 },
             )
 
@@ -2855,6 +3001,10 @@ class ProjectProcessingWorkflow:
                     initial_plan_payload.get("domain_profile_id")
                     if initial_plan_payload else None
                 )
+                enrichment_policy_value = (
+                    initial_plan_payload.get("enrichment_policy")
+                    if initial_plan_payload else None
+                )
                 self._log_step(
                     request,
                     event="ingestion.assessment.created",
@@ -2863,9 +3013,22 @@ class ProjectProcessingWorkflow:
                     document_id=document_id,
                     reason=(
                         f"mode={mode_value} confidence={confidence} "
-                        f"domain={domain_id or 'none'}"
+                        f"domain={domain_id or 'none'} "
+                        f"policy={enrichment_policy_value or 'none'}"
                     ),
                 )
+                # Wave 8 — surface domain + policy as search attributes
+                # so ops dashboards can filter by domain pack or
+                # enrichment policy without crawling audit logs.
+                if domain_id:
+                    self._set_search_attribute(
+                        SEARCH_ATTR_DOMAIN_PROFILE_ID, domain_id,
+                    )
+                if enrichment_policy_value:
+                    self._set_search_attribute(
+                        SEARCH_ATTR_ENRICHMENT_POLICY,
+                        enrichment_policy_value,
+                    )
                 await self._emit_step_lifecycle(
                     request, stage="ASSESS_COMPILE_STRATEGY",
                     step="assess_compile_strategy", action="completed",
