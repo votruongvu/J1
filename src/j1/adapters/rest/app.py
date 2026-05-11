@@ -2285,6 +2285,35 @@ def create_rest_api(
         return envelope(plan, _req_id(request))
 
     @app.get(
+        "/ingestion-runs/{run_id}/enrichment-result",
+        tags=["ingestion-runs"],
+        summary="Get the typed enrichment overlay for an ingestion run",
+        description=(
+            "Returns the Wave-6 typed enrichment overlay "
+            "(`EnrichmentResult`): per-module outcomes with run/skip "
+            "reasons + provenance, document-metadata overlay, "
+            "terminology map, classification result, table / image "
+            "summaries, validation findings, retrieval hints, and "
+            "aggregate model usage. The raw vendor compile output + "
+            "per-enricher artifacts stay where they are; this is the "
+            "AGGREGATED typed view downstream consumers branch on. "
+            "Returns `status=\"unavailable\"` with a reason when the "
+            "enrichment stage was skipped or the artifact wasn't "
+            "persisted. Returns 404 if the run does not exist in "
+            "the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_ingestion_run_enrichment_result(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_review_service()
+        result = service.get_run_enrichment_result(ctx, run_id)
+        return envelope(result, _req_id(request))
+
+    @app.get(
         "/ingestion-runs/{run_id}/compile-result",
         tags=["ingestion-runs"],
         summary="Get the typed normalized compile result for an ingestion run",

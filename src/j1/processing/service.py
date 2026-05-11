@@ -396,6 +396,73 @@ class ProcessingService:
             f"run {run_id!r}"
         )
 
+    def persist_enrichment_result(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str | None,
+        payload: dict,
+        actor: str = "system",
+    ) -> ArtifactRecord:
+        """Write the typed Wave-6 enrichment overlay as an
+        `enrichment_result` artifact. Same persistence shape as
+        the other JSON-overlay artifacts.
+
+        `payload` is the `EnrichmentResult.to_payload()` dict — the
+        service layer doesn't import `enrichment_overlay` to keep
+        the dependency graph thin."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_ENRICHMENT_RESULT,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+
+        status = str(payload.get("status") or "succeeded")
+        module_outcomes = payload.get("module_outcomes") or []
+        module_count = len(module_outcomes)
+        run_count = sum(
+            1 for o in module_outcomes
+            if isinstance(o, dict) and o.get("status") == "run"
+        )
+        domain_id = str(payload.get("domain_id") or "none")
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_ENRICHMENT_RESULT,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id] if document_id else [],
+            metadata={
+                "filename": f"enrichment_result_{run_id}.json",
+                "status": status,
+                "module_count": module_count,
+                "module_run_count": run_count,
+                "domain_id": domain_id,
+            },
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.ENRICHED,
+            action=ACTION_COMPILE_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id or run_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id] if document_id else [],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            "failed to persist enrichment_result artifact for "
+            f"run {run_id!r}"
+        )
+
     def persist_compile_result_summary(
         self,
         ctx: ProjectContext,

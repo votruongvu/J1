@@ -49,6 +49,7 @@ from j1.orchestration.activities.payloads import (
     BuildInitialExecutionPlanInput,
     BuildInitialExecutionPlanResult,
     PersistCompileResultSummaryInput,
+    PersistEnrichmentResultInput,
     PersistInitialExecutionPlanInput,
     PersistPostCompileEnrichPlanInput,
     PersistValidationReportInput,
@@ -87,6 +88,7 @@ ACTIVITY_PERSIST_POST_COMPILE_ENRICH_PLAN = "j1.processing.persist_post_compile_
 ACTIVITY_PERSIST_INITIAL_EXECUTION_PLAN = "j1.processing.persist_initial_execution_plan"
 ACTIVITY_BUILD_INITIAL_EXECUTION_PLAN = "j1.processing.build_initial_execution_plan"
 ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY = "j1.processing.persist_compile_result_summary"
+ACTIVITY_PERSIST_ENRICHMENT_RESULT = "j1.processing.persist_enrichment_result"
 ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
 ACTIVITY_VALIDATE_STAGE = "j1.processing.validate_stage"
 ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
@@ -658,6 +660,34 @@ class ProcessingActivities:
         ctx = input.scope.to_context()
         try:
             record = self._processing.persist_compile_strategy_report(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                payload=dict(input.payload),
+                actor=input.actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ArtifactActivityResult(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=[record.artifact_id],
+            kinds=(record.kind,),
+        )
+
+    @activity.defn(name=ACTIVITY_PERSIST_ENRICHMENT_RESULT)
+    def persist_enrichment_result(
+        self, input: PersistEnrichmentResultInput,
+    ) -> ArtifactActivityResult:
+        """Persist the Wave-6 typed enrichment overlay as an
+        `enrichment_result` artifact. Best-effort — write failure
+        returned in the response; the inline payload is what the
+        workflow + downstream consumers rely on."""
+        ctx = input.scope.to_context()
+        try:
+            record = self._processing.persist_enrichment_result(
                 ctx,
                 run_id=input.run_id,
                 document_id=input.document_id,

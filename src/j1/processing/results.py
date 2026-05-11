@@ -91,6 +91,16 @@ ARTIFACT_KIND_INITIAL_EXECUTION_PLAN = "initial_execution_plan"
 # assessor; raw vendor output stays in the workspace and is
 # referenced by id via `raw_artifact_refs`.
 ARTIFACT_KIND_COMPILE_RESULT_SUMMARY = "compile_result_summary"
+# Typed enrichment overlay (Wave 6). Produced by
+# `j1.processing.enrichment_modules.CompositeEnrichmentRunner` after
+# the post-compile enrichment plan opts in; carries per-module
+# outcomes, document-metadata overlay, terminology map,
+# classification result, table/image summaries, validation findings,
+# retrieval hints, model usage. Raw vendor output + per-enricher
+# artifacts (`enriched.tables`, `enriched.visuals`, …) stay where
+# they are; this is the AGGREGATED typed view downstream consumers
+# branch on.
+ARTIFACT_KIND_ENRICHMENT_RESULT = "enrichment_result"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
@@ -98,6 +108,7 @@ __all__ = [
     "ARTIFACT_KIND_ERROR_REPORT",
     "ARTIFACT_KIND_FINAL_SUMMARY",
     "ARTIFACT_KIND_COMPILE_RESULT_SUMMARY",
+    "ARTIFACT_KIND_ENRICHMENT_RESULT",
     "ARTIFACT_KIND_INITIAL_EXECUTION_PLAN",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",

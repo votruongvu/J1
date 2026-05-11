@@ -709,6 +709,77 @@ class IngestionResultReviewService:
             llm_recommendation=llm_rec,
         )
 
+    def get_run_enrichment_result(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+    ) -> dict:
+        """Return the Wave-6 typed enrichment overlay for `run_id`.
+
+        Reads the `enrichment_result` artifact (persisted after the
+        post-compile enrichment stage runs). Same envelope shape as
+        the other overlay endpoints: `status / runId / plan /
+        artifactId` (`plan` carries the
+        `EnrichmentResult.to_payload()` dict here)."""
+        from j1.processing.results import ARTIFACT_KIND_ENRICHMENT_RESULT
+
+        run = self._load_run(ctx, run_id)
+        artifacts = self._resolve_run_artifacts(ctx, run)
+        candidates = [
+            a for a in artifacts
+            if a.kind == ARTIFACT_KIND_ENRICHMENT_RESULT
+        ]
+        base = {
+            "runId": run_id,
+            "documentId": run.document_id or None,
+            "documentName": run.metadata.get("document_name"),
+        }
+        if not candidates:
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "No enrichment result was persisted for this run "
+                    "yet. Enrichment may have been skipped by policy, "
+                    "the run may predate the enrichment overlay, or "
+                    "persistence failed."
+                ),
+                "plan": None,
+            }
+        candidates.sort(key=lambda a: a.updated_at, reverse=True)
+        artifact = candidates[0]
+        path_resolver = self._artifact_path_resolver(ctx)
+        try:
+            path = path_resolver(artifact)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ReviewNotFound):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "enrichment_result artifact exists but could not "
+                    "be read; check workspace permissions."
+                ),
+                "plan": None,
+            }
+        if not isinstance(payload, dict):
+            return {
+                **base,
+                "status": "unavailable",
+                "unavailableReason": (
+                    "enrichment_result artifact has an unexpected "
+                    "shape (not a JSON object)."
+                ),
+                "plan": None,
+            }
+        return {
+            **base,
+            "status": "completed",
+            "unavailableReason": None,
+            "artifactId": artifact.artifact_id,
+            "plan": payload,
+        }
+
     def get_run_compile_result(
         self,
         ctx: ProjectContext,

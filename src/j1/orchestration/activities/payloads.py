@@ -159,6 +159,19 @@ class PersistCompileResultSummaryInput:
 
 
 @dataclass(frozen=True)
+class PersistEnrichmentResultInput:
+    """Workflow → activity payload for the `enrichment_result`
+    artifact. Carries the typed `EnrichmentResult.to_payload()`
+    dict."""
+
+    scope: ProjectScope
+    run_id: str
+    document_id: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+    actor: str = "system"
+
+
+@dataclass(frozen=True)
 class PersistInitialExecutionPlanInput:
     """Workflow → activity payload for the
     `initial_execution_plan` artifact. Carries the cheap pre-compile
