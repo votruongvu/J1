@@ -62,6 +62,7 @@ class _StructuredEnricher:
         embedding_client: Any | None = None,
         domain_prompt_addon: str = "",
         domain_id: str | None = None,
+        llm_call_limiter: Any | None = None,
     ) -> None:
         self._profile = profile
         self._enabled = enabled
@@ -86,6 +87,14 @@ class _StructuredEnricher:
         # is recorded on every artifact's metadata for provenance.
         self._domain_prompt_addon = domain_prompt_addon.strip()
         self._domain_id = domain_id
+        # Wave-7 concurrency limiter. Optional — when None, LLM
+        # calls run directly (preserves the pre-Wave-7 behaviour for
+        # deployments that haven't wired the limiter). When set,
+        # every call to `_text_client.extract()` /
+        # `_vision_client.analyze_image()` flows through
+        # `limiter.run()`, which enforces a worker-wide concurrency
+        # ceiling + per-call timeout + bounded retries.
+        self._llm_call_limiter = llm_call_limiter
 
     @property
     def enabled(self) -> bool:
@@ -352,11 +361,23 @@ class _LLMBackedEnricher(_StructuredEnricher):
             )
 
         try:
-            parsed, _usage = self._text_client.extract(
-                full_prompt,
-                self._OUTPUT_SCHEMA,
-                metadata={"processor_name": self.kind, "artifact_id": artifact_id},
-            )
+            # Route through the Wave-7 limiter when wired —
+            # enforces worker-wide concurrency + per-call timeout
+            # + bounded retries. Falls back to direct invocation
+            # when no limiter is configured (pre-Wave-7 behaviour).
+            if self._llm_call_limiter is not None:
+                parsed, _usage = self._llm_call_limiter.run(
+                    self._text_client.extract,
+                    full_prompt,
+                    self._OUTPUT_SCHEMA,
+                    metadata={"processor_name": self.kind, "artifact_id": artifact_id},
+                )
+            else:
+                parsed, _usage = self._text_client.extract(
+                    full_prompt,
+                    self._OUTPUT_SCHEMA,
+                    metadata={"processor_name": self.kind, "artifact_id": artifact_id},
+                )
         except Exception as exc:  # noqa: BLE001 — surface as soft skip
             error_response = self._error_response(artifact_id, exc)
             return error_response, self._render_md(error_response)
@@ -838,15 +859,29 @@ class VisualContentDescriber(_StructuredEnricher):
         # Call the vision LLM. `media_type=None` lets the implementation
         # default (typically image/png). `metadata` is forwarded for
         # the provider's telemetry — useful when reconciling spend.
+        # Route through the Wave-7 limiter when wired (same pattern
+        # as the text path): worker-wide concurrency + per-call
+        # timeout + bounded retries.
         try:
-            description, usage = self._vision_client.analyze_image(
-                content,
-                prompt=prompt,
-                metadata={
-                    "processor_name": self.kind,
-                    "artifact_id": artifact_id,
-                },
-            )
+            if self._llm_call_limiter is not None:
+                description, usage = self._llm_call_limiter.run(
+                    self._vision_client.analyze_image,
+                    content,
+                    prompt=prompt,
+                    metadata={
+                        "processor_name": self.kind,
+                        "artifact_id": artifact_id,
+                    },
+                )
+            else:
+                description, usage = self._vision_client.analyze_image(
+                    content,
+                    prompt=prompt,
+                    metadata={
+                        "processor_name": self.kind,
+                        "artifact_id": artifact_id,
+                    },
+                )
         except Exception as exc:  # noqa: BLE001 — surface the failure as a soft skip
             return {
                 "source_artifact_id": artifact_id,
@@ -1335,6 +1370,14 @@ class CompositeEnricher:
         tables_enabled: bool | None = None,
         diagrams_enabled: bool | None = None,
         scanned_pages_enabled: bool | None = None,
+        # Wave-7 concurrency limiter. When provided, the same
+        # `LLMCallLimiter` instance is threaded into every LLM-
+        # backed child enricher so all of their LLM calls share one
+        # worker-wide semaphore. Pass through `BootstrapResult.
+        # llm_call_limiter` from the production composition path.
+        # None preserves the pre-Wave-7 behaviour for tests +
+        # legacy deployments.
+        llm_call_limiter: Any | None = None,
     ) -> None:
         if enrichers is None:
             child_classes = _filter_generic_enrichers(
@@ -1354,11 +1397,13 @@ class CompositeEnricher:
                     embedding_client=embedding_client,
                     artifact_lookup=artifact_lookup,
                     artifact_record_lookup=artifact_record_lookup,
+                    llm_call_limiter=llm_call_limiter,
                 )
                 for cls_ in child_classes
             )
         self._profile = profile
         self._enrichers = enrichers
+        self._llm_call_limiter = llm_call_limiter
 
     @classmethod
     def from_default(
@@ -1375,6 +1420,7 @@ class CompositeEnricher:
         tables_enabled: bool | None = None,
         diagrams_enabled: bool | None = None,
         scanned_pages_enabled: bool | None = None,
+        llm_call_limiter: Any | None = None,
     ) -> "CompositeEnricher":
         return cls(
             profile,
@@ -1388,6 +1434,7 @@ class CompositeEnricher:
             tables_enabled=tables_enabled,
             diagrams_enabled=diagrams_enabled,
             scanned_pages_enabled=scanned_pages_enabled,
+            llm_call_limiter=llm_call_limiter,
         )
 
     def enrich(
@@ -1456,6 +1503,7 @@ def _construct_child(
     embedding_client: Any | None = None,
     artifact_lookup: Callable[[ProjectContext, str], str | None] | None = None,
     artifact_record_lookup: Callable[[ProjectContext, str], Any] | None = None,
+    llm_call_limiter: Any | None = None,
 ) -> _StructuredEnricher:
     """Build one composite child, forwarding clients per child class.
 
@@ -1489,6 +1537,12 @@ def _construct_child(
         common_kwargs["text_client"] = text_client
     if embedding_client is not None:
         common_kwargs["embedding_client"] = embedding_client
+    # Wave-7: thread the limiter into every LLM-capable child so all
+    # of their LLM calls share one worker-wide semaphore. Pure
+    # passthrough — children without LLM call sites silently ignore
+    # the kwarg.
+    if llm_call_limiter is not None:
+        common_kwargs["llm_call_limiter"] = llm_call_limiter
     if cls_ is VisualContentDescriber:
         return cls_(
             profile,

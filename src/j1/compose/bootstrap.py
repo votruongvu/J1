@@ -200,7 +200,14 @@ def load_enrichment_settings(
 
 @dataclass(frozen=True)
 class BootstrapResult:
-    """Everything a deployment entrypoint needs."""
+    """Everything a deployment entrypoint needs.
+
+    `llm_call_limiter` is the Wave-7 LLM-call concurrency limiter
+    threaded into every LLM-backed enricher. None when concurrency
+    settings aren't wired (legacy / mock paths) or when the
+    `EnrichmentConcurrencySettings.enabled` flag is False. Same
+    instance is reused across enrichers for one shared worker-wide
+    semaphore."""
 
     selection: ProcessingSelection
     enrichment: EnrichmentSettings
@@ -209,6 +216,11 @@ class BootstrapResult:
     graph_builders: Mapping[str, object] = field(default_factory=dict)
     retrieval_providers: Mapping[str, object] = field(default_factory=dict)
     diagnostics: StartupDiagnostics = field(default_factory=StartupDiagnostics)
+    # Wave 7.5 — Optional limiter wired into LLM-backed enrichers
+    # at composition time. See `j1.processing.llm_call_limiter` +
+    # `EnrichmentConcurrencySettings`.
+    llm_call_limiter: object | None = None
+    enrichment_concurrency_settings: object | None = None
 
 
 
@@ -233,8 +245,31 @@ class Bootstrap:
         self._llm_registry_override = llm_registry
 
     def build(self) -> BootstrapResult:
+        from j1.processing.enrichment_settings import (
+            load_enrichment_settings as load_enrichment_concurrency_settings,
+        )
+        from j1.processing.llm_call_limiter import build_limiter_from_settings
+
         selection = load_processing_selection(self._env)
         enrichment = load_enrichment_settings(self._env)
+        # Wave 7.5: concurrency settings + shared limiter. Separate
+        # from `EnrichmentSettings` (modality kill switches) — the
+        # `EnrichmentConcurrencySettings` carries
+        # `max_concurrent_llm_calls`, `timeout_seconds`,
+        # `retry_limit`, model-tier knobs. We build the limiter
+        # once and share it across every LLM-backed enricher; per-
+        # tier semaphores are intentionally deferred (one shared
+        # ceiling matches the env-var vocabulary today). Tests
+        # opting out of the limiter pass `enabled=false` via env
+        # — the `BootstrapResult.llm_call_limiter` stays None.
+        concurrency_settings = load_enrichment_concurrency_settings(self._env)
+        llm_call_limiter: object | None
+        if concurrency_settings.enabled:
+            llm_call_limiter = build_limiter_from_settings(
+                concurrency_settings,
+            )
+        else:
+            llm_call_limiter = None
         llm_settings = load_llm_settings(self._env)
         raganything_settings = load_raganything_settings(self._env)
         graphify_settings = load_graphify_settings(self._env)
@@ -363,6 +398,8 @@ class Bootstrap:
             graph_builders=graph_builders,
             retrieval_providers=retrieval_providers,
             diagnostics=diagnostics,
+            llm_call_limiter=llm_call_limiter,
+            enrichment_concurrency_settings=concurrency_settings,
         )
 
 
@@ -371,6 +408,48 @@ def bootstrap_from_env(
 ) -> BootstrapResult:
     """Shortcut for the typical entrypoint use case."""
     return Bootstrap(env=env).build()
+
+
+def build_composite_enricher_from_bootstrap(
+    result: "BootstrapResult",
+    *,
+    profile: object,
+    content_source: object | None = None,
+    vision_client: object | None = None,
+    text_client: object | None = None,
+    embedding_client: object | None = None,
+    artifact_lookup: object | None = None,
+    artifact_record_lookup: object | None = None,
+) -> object:
+    """Wave 7.5 — production helper that constructs a
+    `CompositeEnricher` with the bootstrap's LLM-call limiter +
+    enrichment modality settings already wired.
+
+    Use this from deployment composition / activity-bootstrap code
+    so the limiter is guaranteed to reach every LLM-backed child.
+    Direct callers of `CompositeEnricher.from_default` keep working
+    — they just don't get the limiter unless they pass it
+    themselves, which the bootstrap-aware helper does for them.
+
+    Returns a `CompositeEnricher` instance. Typed as `object` here
+    to avoid a hard dependency on `j1.enrichers` from this module;
+    callers see the concrete type."""
+    from j1.enrichers import CompositeEnricher
+
+    return CompositeEnricher.from_default(
+        profile,
+        content_source=content_source,
+        vision_client=vision_client,
+        text_client=text_client,
+        embedding_client=embedding_client,
+        artifact_lookup=artifact_lookup,
+        artifact_record_lookup=artifact_record_lookup,
+        images_enabled=result.enrichment.images,
+        tables_enabled=result.enrichment.tables,
+        diagrams_enabled=result.enrichment.diagrams,
+        scanned_pages_enabled=result.enrichment.scanned_pages,
+        llm_call_limiter=result.llm_call_limiter,
+    )
 
 
 # ---- Internal helpers ----------------------------------------------
