@@ -112,28 +112,32 @@ export function EnrichmentResultPanel({
   if (state.kind === "loading") {
     return (
       <div className="card" data-testid="enrichment-result-loading">
-        Loading enrichment overlay…
+        <div className="card__body">Loading enrichment overlay…</div>
       </div>
     );
   }
   if (state.kind === "unavailable") {
     return (
       <div className="card" data-testid="enrichment-result-unavailable">
-        <h3>Enrichment Overlay</h3>
-        <p style={{ color: "var(--text-muted)" }}>
-          {state.reason
-            ?? "Enrichment overlay is not available for this run yet."}
-        </p>
+        <div className="card__body">
+          <h3>Enrichment Overlay</h3>
+          <p style={{ color: "var(--text-muted)" }}>
+            {state.reason
+              ?? "Enrichment overlay is not available for this run yet."}
+          </p>
+        </div>
       </div>
     );
   }
   if (state.kind === "error") {
     return (
       <div className="card" data-testid="enrichment-result-error">
-        <h3>Enrichment Overlay</h3>
-        <p style={{ color: "var(--error-fg)" }}>
-          Couldn't load enrichment overlay: {state.message}
-        </p>
+        <div className="card__body">
+          <h3>Enrichment Overlay</h3>
+          <p style={{ color: "var(--error-fg)" }}>
+            Couldn't load enrichment overlay: {state.message}
+          </p>
+        </div>
       </div>
     );
   }
@@ -170,6 +174,7 @@ function EnrichmentResultContent({
       </div>
 
       <div className="card" data-testid="enrichment-result-card">
+        <div className="card__body">
         <h3>Enrichment Overlay</h3>
 
         {isSkipped ? (
@@ -257,6 +262,7 @@ function EnrichmentResultContent({
             </dd>
           </dl>
         )}
+        </div>
       </div>
     </div>
   );

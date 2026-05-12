@@ -106,28 +106,32 @@ export function CompileResultPanel({
   if (state.kind === "loading") {
     return (
       <div className="card" data-testid="compile-result-loading">
-        Loading compile result…
+        <div className="card__body">Loading compile result…</div>
       </div>
     );
   }
   if (state.kind === "unavailable") {
     return (
       <div className="card" data-testid="compile-result-unavailable">
-        <h3>Base Compile Result</h3>
-        <p style={{ color: "var(--text-muted)" }}>
-          {state.reason
-            ?? "Base compile result is not available for this run yet."}
-        </p>
+        <div className="card__body">
+          <h3>Base Compile Result</h3>
+          <p style={{ color: "var(--text-muted)" }}>
+            {state.reason
+              ?? "Base compile result is not available for this run yet."}
+          </p>
+        </div>
       </div>
     );
   }
   if (state.kind === "error") {
     return (
       <div className="card" data-testid="compile-result-error">
-        <h3>Base Compile Result</h3>
-        <p style={{ color: "var(--error-fg)" }}>
-          Couldn't load compile result: {state.message}
-        </p>
+        <div className="card__body">
+          <h3>Base Compile Result</h3>
+          <p style={{ color: "var(--error-fg)" }}>
+            Couldn't load compile result: {state.message}
+          </p>
+        </div>
       </div>
     );
   }
@@ -148,7 +152,8 @@ function CompileResultContent({
   return (
     <div data-testid="compile-result-panel">
       <div className="card" data-testid="compile-result-card">
-        <h3>Base Compile Result</h3>
+        <div className="card__body">
+          <h3>Base Compile Result</h3>
         <p
           style={{ color: "var(--text-muted)", marginTop: "-0.4rem" }}
           data-testid="compile-result-tagline"
@@ -242,6 +247,7 @@ function CompileResultContent({
             </>
           )}
         </dl>
+        </div>
       </div>
     </div>
   );

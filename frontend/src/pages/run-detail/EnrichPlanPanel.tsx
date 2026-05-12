@@ -98,28 +98,32 @@ export function EnrichPlanPanel({
   if (state.kind === "loading") {
     return (
       <div className="card" data-testid="enrich-plan-loading">
-        Loading enrich plan…
+        <div className="card__body">Loading enrich plan…</div>
       </div>
     );
   }
   if (state.kind === "unavailable") {
     return (
       <div className="card" data-testid="enrich-plan-unavailable">
-        <h3>Enrich Plan</h3>
-        <p style={{ color: "var(--text-muted)" }}>
-          {state.reason
-            ?? "Enrich plan is not available for this run yet."}
-        </p>
+        <div className="card__body">
+          <h3>Enrich Plan</h3>
+          <p style={{ color: "var(--text-muted)" }}>
+            {state.reason
+              ?? "Enrich plan is not available for this run yet."}
+          </p>
+        </div>
       </div>
     );
   }
   if (state.kind === "error") {
     return (
       <div className="card" data-testid="enrich-plan-error">
-        <h3>Enrich Plan</h3>
-        <p style={{ color: "var(--error-fg)" }}>
-          Couldn't load enrich plan: {state.message}
-        </p>
+        <div className="card__body">
+          <h3>Enrich Plan</h3>
+          <p style={{ color: "var(--error-fg)" }}>
+            Couldn't load enrich plan: {state.message}
+          </p>
+        </div>
       </div>
     );
   }
@@ -144,6 +148,7 @@ function EnrichPlanContent({ plan }: { plan: PostCompileEnrichPlanPayload }) {
         </div>
       )}
       <div className="card" data-testid="enrich-plan-card">
+        <div className="card__body">
         <h3>Enrich Plan</h3>
         <dl className="kv">
           <dt>Recommendation</dt>
@@ -199,6 +204,7 @@ function EnrichPlanContent({ plan }: { plan: PostCompileEnrichPlanPayload }) {
             </>
           )}
         </dl>
+        </div>
       </div>
     </div>
   );
