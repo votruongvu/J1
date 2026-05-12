@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/lib/api/client";
 import { Banner } from "@/components/Banner";
+import { Icon } from "@/components/icons";
 import { useClient } from "@/lib/hooks/useClient";
 import { relativeTime } from "@/lib/format";
 import {
@@ -167,8 +168,8 @@ export function DocumentDetailPage({
   if (loading && !detail) {
     return (
       <div className="document-detail">
-        <button className="btn btn--ghost" onClick={onBack}>← Documents</button>
-        <div>Loading document…</div>
+        <BackLink onBack={onBack} />
+        <div className="muted">Loading document…</div>
       </div>
     );
   }
@@ -176,7 +177,7 @@ export function DocumentDetailPage({
   if (error) {
     return (
       <div className="document-detail">
-        <button className="btn btn--ghost" onClick={onBack}>← Documents</button>
+        <BackLink onBack={onBack} />
         <Banner kind="err" title={`Failed to load (HTTP ${error.status})`}>
           {error.message}
         </Banner>
@@ -187,35 +188,93 @@ export function DocumentDetailPage({
   if (!detail) return null;
 
   const otherActions = detail.availableActions.filter((a) => a !== "view");
+  const summary = detail.currentResultSummary;
 
   return (
     <div className="document-detail">
-      <div className="document-detail__back">
-        <button className="btn btn--ghost" onClick={onBack}>← Documents</button>
-      </div>
-
-      <header className="document-detail__header">
-        <div>
-          <h2 className="document-detail__title">{detail.displayName}</h2>
-          <div className="document-detail__meta">
-            <KnowledgeStateBadge state={detail.knowledgeState} />
-            <ResultStatusBadge summary={detail.currentResultSummary} />
-            <code className="mono document-detail__id">
-              {detail.documentId}
-            </code>
+      <div className="run-hero doc-hero">
+        <div className="run-hero__top">
+          <div>
+            <div className="run-hero__crumb">
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  onBack();
+                }}
+              >
+                <Icon.ChevronLeft className="icon-sm" /> Documents
+              </a>
+              <span>·</span>
+              <span className="mono">
+                {ctx.tenant} / {ctx.project}
+              </span>
+            </div>
+            <h2>
+              <span className="run-hero__doc-icon">
+                <Icon.File className="icon" />
+              </span>
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {detail.displayName}
+              </span>
+              <KnowledgeStateBadge state={detail.knowledgeState} />
+              <ResultStatusBadge summary={summary} />
+            </h2>
+            <div className="run-hero__id">{detail.documentId}</div>
+          </div>
+          <div className="run-hero__actions">
+            {otherActions.map((action) => (
+              <ActionButton
+                key={action}
+                action={action}
+                disabled={busy}
+                onClick={() => handleAction(action)}
+              />
+            ))}
           </div>
         </div>
-        <div className="document-detail__actions">
-          {otherActions.map((action) => (
-            <ActionButton
-              key={action}
-              action={action}
-              disabled={busy}
-              onClick={() => handleAction(action)}
-            />
-          ))}
+
+        <div className="run-stats">
+          <div className="run-stats__item">
+            <label>Overall</label>
+            <div className="v">
+              <ResultStatusBadge summary={summary} />
+            </div>
+          </div>
+          <div className="run-stats__item">
+            <label>Compile</label>
+            <div className="vsmall">{summary.compileStatus ?? "—"}</div>
+          </div>
+          <div className="run-stats__item">
+            <label>Enrichment</label>
+            <div className="vsmall">{summary.enrichmentStatus ?? "—"}</div>
+          </div>
+          <div className="run-stats__item">
+            <label>Validation</label>
+            <div className="vsmall">{summary.validationStatus ?? "—"}</div>
+          </div>
+          <div className="run-stats__item">
+            <label>Active run</label>
+            <div className="v mono">
+              {detail.activeRunId
+                ? `${detail.activeRunId.slice(0, 12)}…`
+                : "none yet"}
+            </div>
+          </div>
+          <div className="run-stats__item">
+            <label>Updated</label>
+            <div className="vsmall">
+              {detail.updatedAt ? relativeTime(detail.updatedAt) : "—"}
+            </div>
+          </div>
         </div>
-      </header>
+      </div>
 
       {detail.knowledgeState === "detached" && (
         <Banner kind="warn" title="This document is detached">
@@ -229,11 +288,11 @@ export function DocumentDetailPage({
           active indexes. Re-attaching requires re-uploading the file.
         </Banner>
       )}
-
-      <section className="document-detail__section">
-        <h3>Current result</h3>
-        <CurrentResultTable detail={detail} />
-      </section>
+      {summary.failureCode && (
+        <Banner kind="err" title="Last run failure">
+          <code className="mono">{summary.failureCode}</code>
+        </Banner>
+      )}
 
       <section className="document-detail__section">
         <h3>
@@ -264,31 +323,20 @@ export function DocumentDetailPage({
 }
 
 
-function CurrentResultTable({ detail }: { detail: DocumentDetail }) {
-  const s = detail.currentResultSummary;
+function BackLink({ onBack }: { onBack: () => void }) {
   return (
-    <dl className="kv document-detail__kv">
-      <dt>Overall</dt>
-      <dd><ResultStatusBadge summary={s} /></dd>
-      <dt>Compile</dt>
-      <dd>{s.compileStatus ?? "—"}</dd>
-      <dt>Enrichment</dt>
-      <dd>{s.enrichmentStatus ?? "—"}</dd>
-      <dt>Validation</dt>
-      <dd>{s.validationStatus ?? "—"}</dd>
-      {s.failureCode && (
-        <>
-          <dt>Failure code</dt>
-          <dd className="mono">{s.failureCode}</dd>
-        </>
-      )}
-      <dt>Active run</dt>
-      <dd>
-        {detail.activeRunId
-          ? <code className="mono">{detail.activeRunId}</code>
-          : <span className="muted">none yet</span>}
-      </dd>
-    </dl>
+    <div className="document-detail__back">
+      <a
+        href="#"
+        className="run-hero__crumb"
+        onClick={(e) => {
+          e.preventDefault();
+          onBack();
+        }}
+      >
+        <Icon.ChevronLeft className="icon-sm" /> Documents
+      </a>
+    </div>
   );
 }
 

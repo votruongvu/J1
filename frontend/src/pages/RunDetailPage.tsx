@@ -17,7 +17,7 @@ import {
   type ProgressEvent,
   isTerminalEvent,
 } from "@/types/ingestion";
-import type { ProjectContext, StreamStatus, Toast } from "@/types/ui";
+import type { ProjectContext, RunOrigin, StreamStatus, Toast } from "@/types/ui";
 import { Banner } from "@/components/Banner";
 import { RunHeader } from "./run-detail/RunHeader";
 import { LiveTimeline } from "./run-detail/LiveTimeline";
@@ -35,11 +35,15 @@ import type { EnrichmentSignals } from "@/lib/runState";
 interface RunDetailPageProps {
   runId: string;
   ctx: ProjectContext;
+  /** Where the operator came from. Drives the back-link label and
+   * the post-action navigation when an action ends the current run
+   * (delete / purge). Absent when arrived via deep link. */
+  origin?: RunOrigin;
   onBack: () => void;
   pushToast: (toast: Omit<Toast, "id">) => void;
 }
 
-export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPageProps) {
+export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDetailPageProps) {
   const client = useClient();
 
   const [run, setRun] = useState<IngestionRun | null>(null);
@@ -62,6 +66,13 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
   // signals (initialPlan + enrichmentResult above).
   const [finalReport, setFinalReport] =
     useState<FinalIngestionReportPayload | null>(null);
+  // Resolved document filename. We render this in the run-hero
+  // instead of `run.document_name` whenever a document detail
+  // lookup succeeds — the per-run metadata sometimes carries only
+  // the document id, and falling back to the id in the title was
+  // confusing operators.
+  const [documentDisplayName, setDocumentDisplayName] =
+    useState<string | null>(null);
 
   const streamHandle = useRef<StreamHandle | null>(null);
   const eventIdsRef = useRef<Set<string>>(new Set());
@@ -268,6 +279,34 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
     };
   }, [client, runId, events.length]);
 
+  // If the run record fell back to the documentId for its display
+  // name (no filename preserved in metadata), look up the document
+  // and use its displayName for the run-hero title. Quiet on
+  // failure — the existing fallback (run.document_name) keeps the
+  // page usable.
+  useEffect(() => {
+    if (!run?.document_id) {
+      setDocumentDisplayName(null);
+      return;
+    }
+    if (run.document_name && run.document_name !== run.document_id) {
+      setDocumentDisplayName(run.document_name);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const d = await client.getDocumentDetail(run.document_id!);
+        if (!cancelled) setDocumentDisplayName(d.displayName ?? null);
+      } catch {
+        if (!cancelled) setDocumentDisplayName(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, run?.document_id, run?.document_name]);
+
   const enrichmentSignals: EnrichmentSignals = (() => {
     // prefer the report's enrichment summary when present.
     // It's the authoritative aggregated view (uses post-compile plan
@@ -308,6 +347,8 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
       <RunHeader
         run={run}
         ctx={ctx}
+        origin={origin}
+        documentDisplayName={documentDisplayName}
         onBack={onBack}
         onOpenDrawer={() => setDrawerOpen(true)}
         onRefresh={() => {

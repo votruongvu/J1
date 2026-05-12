@@ -61,6 +61,11 @@ export type CostTier = "S" | "M" | "L" | "NONE" | "LOW" | "MEDIUM" | "HIGH";
 export interface IngestionRun {
   runId: string;
   document_name: string;
+  /** Stable document identifier this run was created for. Present
+   * whenever the backend tagged the run with a documentId — used by
+   * the run-hero to render the parent document reference alongside
+   * the run id. */
+  document_id?: string;
   mode: string;
   policy: string;
   status: RunStatus;

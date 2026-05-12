@@ -158,14 +158,22 @@ export function App() {
               documentId={route.documentId}
               ctx={ctx}
               onBack={() => setRoute({ name: "documents" })}
-              onOpenRun={(runId) => setRoute({ name: "run", runId })}
+              onOpenRun={(runId) =>
+                setRoute({
+                  name: "run",
+                  runId,
+                  origin: { name: "document", documentId: route.documentId },
+                })
+              }
               pushToast={pushToast}
             />
           )}
           {route.name === "list" && (
             <AllRunsPage
               ctx={ctx}
-              onOpenRun={(runId) => setRoute({ name: "run", runId })}
+              onOpenRun={(runId) =>
+                setRoute({ name: "run", runId, origin: { name: "list" } })
+              }
               onNewRun={() => setRoute({ name: "upload" })}
               pushToast={pushToast}
             />
@@ -181,7 +189,17 @@ export function App() {
             <RunDetailPage
               runId={route.runId}
               ctx={ctx}
-              onBack={() => setRoute({ name: "documents" })}
+              origin={route.origin}
+              onBack={() => {
+                const o = route.origin;
+                if (o?.name === "document") {
+                  setRoute({ name: "document", documentId: o.documentId });
+                } else if (o?.name === "list") {
+                  setRoute({ name: "list" });
+                } else {
+                  setRoute({ name: "documents" });
+                }
+              }}
               pushToast={pushToast}
             />
           )}

@@ -192,6 +192,7 @@ export function runFromApi(api: ApiRunRecord): IngestionRun {
   return {
     runId: api.runId,
     document_name: documentName,
+    document_id: api.documentId ?? undefined,
     mode,
     policy,
     status: translateStatus(api.status),

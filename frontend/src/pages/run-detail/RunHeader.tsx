@@ -10,7 +10,7 @@
  */
 
 import type { IngestionRun } from "@/types/ingestion";
-import type { ProjectContext, Toast } from "@/types/ui";
+import type { ProjectContext, RunOrigin, Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 import { StatusBadge } from "@/components/badges";
 import { RunControls } from "./RunControls";
@@ -18,6 +18,15 @@ import { RunControls } from "./RunControls";
 interface RunHeaderProps {
   run: IngestionRun | null;
   ctx: ProjectContext;
+  /** Where the user came from — drives the back-link label so they
+   * see "Document" when they came from the document detail page and
+   * "All runs" when they came from the legacy list. */
+  origin?: RunOrigin;
+  /** Resolved document filename, if the run-detail page looked it up
+   * via `documentId`. Used as the H2 title — preferred over
+   * `run.document_name` which can fall back to the doc id when the
+   * filename was not preserved in metadata. */
+  documentDisplayName?: string | null;
   onBack: () => void;
   onOpenDrawer: () => void;
   onRefresh: () => void;
@@ -32,6 +41,12 @@ interface RunHeaderProps {
   ) => void;
 }
 
+function originLabel(origin: RunOrigin | undefined): string {
+  if (origin?.name === "document") return "Document";
+  if (origin?.name === "list") return "All runs";
+  return "Documents";
+}
+
 function formatDuration(seconds: number | null): string {
   if (seconds == null) return "—";
   if (seconds < 60) return `${seconds}s`;
@@ -40,12 +55,24 @@ function formatDuration(seconds: number | null): string {
 }
 
 export function RunHeader({
-  run, ctx, onBack, onOpenDrawer, onRefresh, pushToast, onAfterAction,
+  run, ctx, origin, documentDisplayName, onBack, onOpenDrawer, onRefresh,
+  pushToast, onAfterAction,
 }: RunHeaderProps) {
   if (!run) return null;
   const startedMs = run.started_at ? new Date(run.started_at).getTime() : null;
   const endMs = run.completed_at ? new Date(run.completed_at).getTime() : Date.now();
   const durationSec = startedMs ? Math.max(0, Math.round((endMs - startedMs) / 1000)) : null;
+
+  const documentId = run.document_id ?? null;
+  // Prefer the resolved document filename (looked up via the
+  // document detail endpoint) over `run.document_name`, which falls
+  // back to the documentId when the filename was not preserved in
+  // run metadata.
+  const docTitle = documentDisplayName ?? run.document_name;
+  // If the FE had to fall back to the documentId for the title
+  // (metadata didn't preserve the filename), don't repeat it on the
+  // sub-line — it's already in the H2.
+  const showDocIdLine = documentId && documentId !== docTitle;
 
   return (
     <div className="run-hero">
@@ -59,7 +86,7 @@ export function RunHeader({
                 onBack();
               }}
             >
-              <Icon.ChevronLeft className="icon-sm" /> All runs
+              <Icon.ChevronLeft className="icon-sm" /> {originLabel(origin)}
             </a>
             <span>·</span>
             <span className="mono">
@@ -71,11 +98,21 @@ export function RunHeader({
               <Icon.File className="icon" />
             </span>
             <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {run.document_name}
+              {docTitle}
             </span>
             <StatusBadge status={run.status} />
           </h2>
-          <div className="run-hero__id">{run.runId}</div>
+          <div className="run-hero__id">
+            {showDocIdLine && (
+              <>
+                <span className="run-hero__id-label">Document</span>
+                <span className="mono">{documentId}</span>
+                <span className="run-hero__id-sep">·</span>
+              </>
+            )}
+            <span className="run-hero__id-label">Run</span>
+            <span className="mono">{run.runId}</span>
+          </div>
         </div>
         <div className="run-hero__actions">
           <RunControls

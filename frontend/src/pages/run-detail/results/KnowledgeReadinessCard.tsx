@@ -148,20 +148,29 @@ export function KnowledgeReadinessCard({
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {/* Generate runs server-side and can take a minute on
+              large documents. Only the button itself blocks (to
+              avoid duplicate POSTs); the rest of the validation
+              controls + the manual query console stay interactive
+              so the operator can continue working. */}
           <button
             type="button"
             className="btn btn--primary"
             onClick={onGenerate}
-            disabled={generating || running}
+            disabled={generating}
+            aria-busy={generating}
           >
+            {generating && (
+              <span className="btn-spinner" aria-hidden="true" />
+            )}
             {generating ? "Generating…" : "Generate Test Set"}
           </button>
           <button
             type="button"
             className="btn"
             onClick={onRun}
-            disabled={running || generating || !setItem}
+            disabled={running || !setItem}
             title={!setItem ? "Generate a set first" : undefined}
           >
             {running ? "Running…" : "Run Validation"}
@@ -190,6 +199,12 @@ export function KnowledgeReadinessCard({
           >
             {downloading === "json" ? "Downloading…" : "Download .json"}
           </button>
+          {generating && (
+            <span className="readiness-bg-note" role="status">
+              Test-set generation is running in the background. You can keep
+              using the rest of the page.
+            </span>
+          )}
         </div>
         {downloadError && (
           <div
