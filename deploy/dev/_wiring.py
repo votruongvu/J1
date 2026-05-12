@@ -414,11 +414,17 @@ def _build_native_query_provider_or_none():
     """Construct ``RAGAnythingQueryProvider`` if RAGAnything is
     installed AND an LLM registry can be loaded. Returns ``None``
     on any failure — the validation service handles None
-    gracefully (mode degrades to bm25_primary with a warning).
+    gracefully (mode degrades to ``bm25_quality_debug``).
 
-    Kept separate so the import failures + bootstrap failures
-    don't leak into the main validation-service wiring path.
+    Every failure path logs a WARN so the operator can grep
+    server logs to see WHY native isn't available. Previously
+    these were swallowed silently, which made "I changed the
+    default to lightrag_native and now every query is empty"
+    impossible to diagnose without code-spelunking.
     """
+    import logging
+    _wlog = logging.getLogger("j1.deploy.wiring")
+
     try:
         from j1.compose import bootstrap_from_env
         from j1.providers.raganything.retrieval import (
@@ -427,20 +433,36 @@ def _build_native_query_provider_or_none():
         from j1.providers.raganything.settings import (
             load_raganything_settings,
         )
-    except Exception:  # noqa: BLE001 — vendor / config not installable
+    except Exception as exc:  # noqa: BLE001 — vendor / config not installable
+        _wlog.warning(
+            "native query provider unavailable: import failed: %s",
+            exc, exc_info=True,
+        )
         return None
 
     try:
         boot = bootstrap_from_env()
-    except Exception:  # noqa: BLE001 — bootstrap may not be available
+    except Exception as exc:  # noqa: BLE001 — bootstrap may not be available
+        _wlog.warning(
+            "native query provider unavailable: bootstrap failed: %s",
+            exc, exc_info=True,
+        )
         return None
     llm_registry = getattr(boot, "llm_registry", None)
     if llm_registry is None:
+        _wlog.warning(
+            "native query provider unavailable: bootstrap returned "
+            "no llm_registry",
+        )
         return None
 
     try:
         rag_settings = load_raganything_settings()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _wlog.warning(
+            "native query provider unavailable: settings load failed: %s",
+            exc, exc_info=True,
+        )
         return None
 
     try:
@@ -448,7 +470,11 @@ def _build_native_query_provider_or_none():
             llm_registry=llm_registry,
             settings=rag_settings,
         )
-    except Exception:  # noqa: BLE001 — degrade silently
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        _wlog.warning(
+            "native query provider unavailable: from_default failed: %s",
+            exc, exc_info=True,
+        )
         return None
 
 

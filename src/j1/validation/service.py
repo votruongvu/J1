@@ -1152,18 +1152,29 @@ class IngestionValidationService:
                     )
                 except concurrent.futures.TimeoutError:
                     future.cancel()
-                    return (
-                        None,
-                        int((time.monotonic() - started) * 1000),
-                        f"native_query_timeout_after_"
-                        f"{self._native_query_timeout_seconds}s",
+                    latency_ms = int(
+                        (time.monotonic() - started) * 1000,
                     )
+                    reason = (
+                        f"native_query_timeout_after_"
+                        f"{self._native_query_timeout_seconds}s"
+                    )
+                    _log.warning(
+                        "native_query failed run_id=%s document_id=%s "
+                        "latency_ms=%d reason=%s",
+                        run.run_id, run.document_id, latency_ms, reason,
+                    )
+                    return (None, latency_ms, reason)
         except Exception as exc:  # noqa: BLE001
-            return (
-                None,
-                int((time.monotonic() - started) * 1000),
-                f"{type(exc).__name__}: {exc}",
+            latency_ms = int((time.monotonic() - started) * 1000)
+            reason = f"{type(exc).__name__}: {exc}"
+            _log.warning(
+                "native_query failed run_id=%s document_id=%s "
+                "latency_ms=%d reason=%s",
+                run.run_id, run.document_id, latency_ms, reason,
+                exc_info=True,
             )
+            return (None, latency_ms, reason)
 
         latency_ms = int((time.monotonic() - started) * 1000)
         # ``RAGAnythingQueryProvider.query`` returns a ``QueryResult``
@@ -1171,12 +1182,22 @@ class IngestionValidationService:
         # We only need its ``answer`` for the synthesized-answer
         # override; sources are augmented from BM25 separately.
         if getattr(result, "status", None) != ResultStatus.SUCCEEDED:
-            return (
-                None, latency_ms,
-                str(getattr(result, "error", None) or "native_query_failed"),
+            reason = str(
+                getattr(result, "error", None) or "native_query_failed",
             )
+            _log.warning(
+                "native_query failed run_id=%s document_id=%s "
+                "latency_ms=%d reason=%s",
+                run.run_id, run.document_id, latency_ms, reason,
+            )
+            return (None, latency_ms, reason)
         answer = (getattr(result, "answer", "") or "").strip()
         if not answer:
+            _log.warning(
+                "native_query returned empty answer run_id=%s "
+                "document_id=%s latency_ms=%d",
+                run.run_id, run.document_id, latency_ms,
+            )
             return (None, latency_ms, "native_query_empty_answer")
         return (answer, latency_ms, None)
 

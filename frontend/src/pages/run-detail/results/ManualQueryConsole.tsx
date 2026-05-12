@@ -374,7 +374,7 @@ const SYNTHESIS_SKIP_MESSAGES: Record<string, string> = {
   no_synthesizer_wired:
     "LLM synthesis requested, but no LLM client is configured on this deployment.",
   native_unavailable_no_fallback:
-    "LLM synthesis was requested, but skipped because the LightRAG native answer failed and BM25 fallback is off.",
+    "LLM synthesis was requested, but the LightRAG native answer failed and BM25 fallback is off.",
   no_evidence_blocks:
     "LLM synthesis was requested, but skipped because no evidence blocks were retrieved.",
 };
@@ -395,6 +395,11 @@ function FinalAnswerSection({
   const disabledReason =
     (debug?.synthesize_answer_disabled_reason as string | null | undefined) ??
     null;
+  // Why did native fail? Surfaced verbatim so operators can
+  // diagnose (vendor down / timeout / missing workspace /
+  // ImportError) without having to grep server logs.
+  const nativeFailedReason =
+    (debug?.native_query_failed_reason as string | null | undefined) ?? null;
 
   let skipMessage: string | null = null;
   if (!hasAnswer && !wasCalled) {
@@ -412,6 +417,15 @@ function FinalAnswerSection({
       skipMessage = `LLM disabled: ${errorText}.`;
     } else {
       skipMessage = SYNTHESIS_SKIP_MESSAGES.user_disabled ?? null;
+    }
+    // For the native-unavailable case, append the actual native
+    // error so the operator sees WHY native failed.
+    if (
+      skipMessage &&
+      disabledReason === "native_unavailable_no_fallback" &&
+      nativeFailedReason
+    ) {
+      skipMessage = `${skipMessage} Native failure: ${nativeFailedReason}.`;
     }
   }
 
