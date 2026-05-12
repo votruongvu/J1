@@ -112,22 +112,32 @@ class ProcessingService:
         correlation_id: str | None = None,
         assessment_plan: object | None = None,
     ) -> ArtifactProcessingResult:
-        # Detect whether the compiler accepts `assessment_plan` (the
-        # `KnowledgeCompiler` Protocol's `compile` signature only
-        # requires `(ctx, document_id)`; concrete adapters opt in
-        # via the additive kwarg). Mock compilers + legacy
-        # implementations stay working without changes.
+        # Detect whether the compiler accepts ``assessment_plan`` and
+        # ``run_id`` (the ``KnowledgeCompiler`` Protocol's ``compile``
+        # signature only requires ``(ctx, document_id)``; concrete
+        # adapters opt in via additive kwargs). Mock compilers +
+        # legacy implementations stay working without changes.
+        #
+        # ``run_id`` MUST flow through whenever the caller supplied a
+        # ``correlation_id``. Concrete adapters (RAGAnythingCompiler)
+        # use it to namespace LightRAG's per-run ``working_dir``;
+        # without it a reindex shares the workdir with the original
+        # run, hits LightRAG's doc-status dedupe, and produces zero
+        # new chunks → "Compile safety retry triggered" → LOW
+        # quality. The orchestration ``run_knowledge_compilation_activity``
+        # does the same passthrough.
         compile_kwargs: dict = {}
-        if assessment_plan is not None:
-            try:
-                import inspect
-                sig = inspect.signature(compiler.compile)
-                if "assessment_plan" in sig.parameters:
-                    compile_kwargs["assessment_plan"] = assessment_plan
-            except (TypeError, ValueError):
-                # Builtins / C extensions don't expose a signature;
-                # fall back to no kwarg (legacy behaviour).
-                pass
+        try:
+            import inspect
+            sig = inspect.signature(compiler.compile)
+            if assessment_plan is not None and "assessment_plan" in sig.parameters:
+                compile_kwargs["assessment_plan"] = assessment_plan
+            if correlation_id and "run_id" in sig.parameters:
+                compile_kwargs["run_id"] = correlation_id
+        except (TypeError, ValueError):
+            # Builtins / C extensions don't expose a signature;
+            # fall back to no kwargs (legacy behaviour).
+            pass
         try:
             output = compiler.compile(ctx, document.document_id, **compile_kwargs)
         except Exception as exc:

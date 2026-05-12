@@ -188,8 +188,32 @@ class KnowledgeProcessingActivities:
                 non_retryable=True,
             ) from exc
 
+        # Thread ``run_id`` (= the workflow's ``correlation_id``)
+        # through to the compiler when the concrete implementation
+        # accepts it. Mirrors the inspect-based passthrough used for
+        # ``assessment_plan`` in the legacy ``ProcessingService`` and
+        # for ``document_id`` / ``run_id`` in
+        # ``run_graph_build_activity``. Concrete adapters (e.g.
+        # ``RAGAnythingCompiler``) use ``run_id`` to namespace
+        # LightRAG's ``working_dir`` per-run; without this passthrough
+        # the workspace stays shared across runs and a reindex sees
+        # LightRAG's stale ``kv_store_doc_status`` from the first run
+        # → de-duplicates → returns zero new chunks → "Compile safety
+        # retry triggered" → still LOW quality. Legacy / mock
+        # compilers without the kwarg keep working unchanged.
+        compile_kwargs: dict[str, str | None] = {}
         try:
-            result = compiler.compile(ctx, input.document_id)
+            import inspect
+            sig = inspect.signature(compiler.compile)
+            if "run_id" in sig.parameters and input.correlation_id:
+                compile_kwargs["run_id"] = input.correlation_id
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            result = compiler.compile(
+                ctx, input.document_id, **compile_kwargs,
+            )
         except Exception as exc:
             self._audit.record(
                 ctx,
