@@ -86,6 +86,24 @@ _VALID_VERDICTS: frozenset[str] = frozenset({"pass", "warning", "fail"})
 # the same guarantee.
 _TOP_K_HARD_CAP = 50
 
+# Default candidate-retrieval breadth for validation queries.
+# Decoupled from the FE/request ``top_k`` (which was historically
+# both the recall ceiling AND the user-visible cap). Per the
+# retrieval audit, raw FTS ``LIMIT`` set to a small request top_k
+# starved the reranker — relevant chunks below rank N were never
+# in the candidate pool, so no downstream rerank or coverage
+# selection could recover them. Production now retrieves up to
+# this many candidates from the engine, then the reranker
+# (``j1.validation.rerank``) picks the final blocks. Operators
+# tune via constructor kwargs.
+_DEFAULT_VALIDATION_CANDIDATE_TOP_K = 20
+
+# Default cap on final evidence blocks sent to the LLM. The
+# rerank + coverage-selection layer enforces this — tighter than
+# the candidate pool above. Aligned with
+# ``rerank.RerankConfig.evidence_max_blocks``.
+_DEFAULT_VALIDATION_EVIDENCE_MAX_BLOCKS = 5
+
 # Preview length for retrieved-chunk excerpts on the response. Mirrors
 # the chunk projector's value so the UI layer renders consistent
 # preview lengths across the Validation tab and the Chunks tab.
@@ -117,6 +135,10 @@ class IngestionValidationService:
         answer_synthesizer: AnswerSynthesizer | None = None,
         domain_registry: DomainRegistry | None = None,
         source_registry: "SourceRegistry | None" = None,
+        validation_candidate_top_k: int = _DEFAULT_VALIDATION_CANDIDATE_TOP_K,
+        validation_evidence_max_blocks: int = (
+            _DEFAULT_VALIDATION_EVIDENCE_MAX_BLOCKS
+        ),
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -148,6 +170,26 @@ class IngestionValidationService:
         # spec-compliant default for deployments that haven't
         # adopted the document-centric flow.
         self._source_registry = source_registry
+        # Decoupled candidate vs final-evidence sizing. The
+        # request's ``top_k`` controls the user-visible "how many
+        # retrievals does the FE show" knob; the service
+        # independently retrieves ``candidate_top_k`` rows from
+        # the engine so the reranker has enough breadth to pick
+        # from. Final evidence is capped at
+        # ``evidence_max_blocks`` regardless of either input.
+        #
+        # TODO: a follow-up change should evaluate routing the
+        # graph + knowledge queries through RAGAnything's native
+        # ``aquery`` (currently NOT wired into HybridQueryEngine,
+        # per the retrieval audit). For now this minimal change
+        # only fixes the candidate-starvation issue inside the
+        # existing J1 BM25 retriever.
+        self._validation_candidate_top_k = max(
+            1, min(int(validation_candidate_top_k), _TOP_K_HARD_CAP),
+        )
+        self._validation_evidence_max_blocks = max(
+            1, int(validation_evidence_max_blocks),
+        )
 
     def run_manual_test_query(
         self,
@@ -174,7 +216,17 @@ class IngestionValidationService:
         # the response also lands in the audit log on the same row.
         request_id = f"tq-{uuid.uuid4().hex[:12]}"
 
-        top_k = max(1, min(request.top_k, _TOP_K_HARD_CAP))
+        requested_top_k = max(1, min(request.top_k, _TOP_K_HARD_CAP))
+        # Decouple raw FTS candidate breadth from the FE-requested
+        # value. The engine is asked for at least
+        # ``candidate_top_k`` rows so the downstream reranker
+        # (``j1.validation.rerank``) has enough candidates to
+        # cover the question's aspects. If the FE / caller asked
+        # for MORE than the configured floor, honour that — they
+        # want broader output. Final evidence is still capped
+        # downstream at ``evidence_max_blocks``.
+        candidate_top_k = max(requested_top_k, self._validation_candidate_top_k)
+        candidate_top_k = min(candidate_top_k, _TOP_K_HARD_CAP)
         mode = _coerce_mode(request.mode)
 
         # Resolve the validation scope (spec section 9). Default
@@ -193,7 +245,7 @@ class IngestionValidationService:
         query_request = QueryRequest(
             question=request.question,
             mode=mode,
-            max_results=top_k,
+            max_results=candidate_top_k,
             scope=engine_scope,
         )
 
@@ -267,6 +319,22 @@ class IngestionValidationService:
             evidence_blocks=evidence_blocks,
             synthesized_answer=synthesized_answer,
             llm_trace=llm_trace,
+            requested_top_k=requested_top_k,
+            candidate_top_k_used=candidate_top_k,
+            evidence_max_blocks=self._validation_evidence_max_blocks,
+            scope_run_id=run.run_id,
+        )
+        # Operator-readable retrieval breakdown. Helps confirm
+        # whether failures are "FTS only returned N rows" vs
+        # "FTS returned plenty but reranker / selection
+        # filtered". Logged once per request.
+        _log.info(
+            "manual_query retrieval: run_id=%s requested_top_k=%d "
+            "candidate_top_k_used=%d fts_returned=%d evidence_max=%d "
+            "selected_evidence=%d",
+            run.run_id, requested_top_k, candidate_top_k,
+            len(retrieved), self._validation_evidence_max_blocks,
+            len(evidence_blocks),
         )
         return ManualTestQueryResponseDTO(
             request_id=request_id,
@@ -372,12 +440,23 @@ class IngestionValidationService:
             # quality from raw topK" change operators asked for
             # — increasing K helps recall, but final block
             # selection is now driven by evidence quality.
+            # Build a per-call ``RerankConfig`` so the reranker
+            # honours the service's ``evidence_max_blocks`` setting
+            # rather than the module default. Same value also caps
+            # the legacy priority-sort path via ``max_blocks``
+            # below.
+            from j1.validation.rerank import RerankConfig as _RerankConfig
+            _config = _RerankConfig(
+                evidence_max_blocks=self._validation_evidence_max_blocks,
+            )
             textual_blocks = build_evidence_blocks(
                 ctx=ctx,
                 retrieved=retrieved,
                 artifact_registry=self._artifacts,
                 path_resolver=_resolver,
                 query=request.question,
+                rerank_config=_config,
+                max_blocks=self._validation_evidence_max_blocks,
             )
 
         # Graph-paths fallback. Fires when:
@@ -1054,6 +1133,10 @@ def _build_manual_query_debug(
     evidence_blocks: list[EvidenceBlockDTO],
     synthesized_answer: str | None,
     llm_trace: LLMTraceDTO | None,
+    requested_top_k: int | None = None,
+    candidate_top_k_used: int | None = None,
+    evidence_max_blocks: int | None = None,
+    scope_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the debug-info dict surfaced on the response.
 
@@ -1228,6 +1311,23 @@ def _build_manual_query_debug(
         "text_chunk_result_count": text_chunk_result_count,
         "graph_paths_fallback_used": graph_paths_fallback_used,
         "dropped_result_reasons": dropped_result_reasons,
+        # Decoupled-top-k counters. Operators inspect these to
+        # confirm whether a failure was "FTS LIMIT too small"
+        # (candidate_top_k_used == requested_top_k AND
+        # fts_returned_count == requested_top_k) vs a quality
+        # issue downstream (large pool, narrow selection).
+        # ``raw_candidate_kinds`` / ``selected_evidence_kinds``
+        # are aliases of ``artifact_types_before_filter`` /
+        # ``…_after_filter`` so the operator's spec-listed
+        # field names also show up verbatim.
+        "requested_top_k": requested_top_k,
+        "candidate_top_k_used": candidate_top_k_used,
+        "fts_returned_count": len(retrieved),
+        "evidence_max_blocks": evidence_max_blocks,
+        "selected_evidence_count": len(evidence_blocks),
+        "raw_candidate_kinds": types_before,
+        "selected_evidence_kinds": types_after,
+        "scope_run_id": scope_run_id,
     }
 
 
@@ -1309,10 +1409,14 @@ def _coerce_mode(raw: str) -> QueryMode:
 def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]:
     """Translate `QueryResponse.sources` into the public chunk-ref DTO.
 
- `score` is not surfaced on the engine's `SourceReference` today,
- so we default to 0.0 — the FE renders this as a neutral indicator.
- Hooking up real BM25 scores requires plumbing them through
- `KnowledgeQueryProvider`, which is a + concern.
+ `score` is propagated from ``SourceReference.score`` — the
+ ``KnowledgeQueryProvider``'s FTS BM25 score now flows end-to-
+ end. Earlier this projection hardcoded ``score=0.0`` so the
+ downstream reranker (``j1.validation.rerank``) saw every
+ candidate as score-zero and could only act on lexical /
+ source-trust / coverage signals. Sources without a real score
+ (e.g. graph_json walked by ``GraphQueryProvider``) keep the
+ 0.0 default — that's the legitimate "no raw IR rank" case.
 
  `artifact_kind` comes from the engine source's
  `artifact_type` (the indexer's column name for it). Used by
@@ -1328,7 +1432,7 @@ def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]
                 run_id=getattr(source, "run_id", None),
                 document_id=getattr(source, "source_document_id", None),
                 source_location=getattr(source, "source_location", None),
-                score=0.0,
+                score=float(getattr(source, "score", 0.0) or 0.0),
                 preview=title[:_PREVIEW_MAX_CHARS],
                 artifact_kind=getattr(source, "artifact_type", None),
             )

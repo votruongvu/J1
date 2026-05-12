@@ -44,6 +44,15 @@ class SourceReference:
     # chunk_id). Citations the FE renders read these fields directly.
     chunk_id: str | None = None
     run_id: str | None = None
+    # Raw retrieval score (BM25 from FTS, or 0.0 for sources that
+    # don't have one — graph artifacts walked via
+    # ``GraphQueryProvider`` for example). Propagated from
+    # ``SearchHit.score`` so the validation reranker
+    # (``j1.validation.rerank``) can blend raw IR strength with
+    # its own lexical / source-trust / coverage signals. Earlier
+    # this field didn't exist and the downstream projection
+    # hardcoded ``score=0.0`` — losing the FTS rank entirely.
+    score: float = 0.0
 
 
 @dataclass(frozen=True)

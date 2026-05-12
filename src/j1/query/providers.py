@@ -89,6 +89,11 @@ def _hit_to_source(hit: SearchHit) -> SourceReference:
     # Server-derived: `chunk_id` and `run_id` come from the FTS row,
     # which the indexer populated from the artifact's metadata at
     # index time. Never echoed from request input or LLM output.
+    #
+    # ``score`` carries the FTS BM25 rank forward to the
+    # downstream validation reranker — earlier this was dropped
+    # at the projection boundary and the reranker had to operate
+    # without raw-IR strength as an input signal.
     return SourceReference(
         artifact_id=hit.artifact_id,
         artifact_type=hit.artifact_type,
@@ -97,6 +102,7 @@ def _hit_to_source(hit: SearchHit) -> SourceReference:
         source_location=hit.source_location,
         chunk_id=hit.chunk_id,
         run_id=hit.run_id,
+        score=float(hit.score or 0.0),
     )
 
 
