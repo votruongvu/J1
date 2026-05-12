@@ -21,6 +21,8 @@ from typing import Any
 from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
 from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
+from j1.domains.models import DomainValidationGuidance
+from j1.domains.registry import DomainRegistry
 from j1.ingestion_review.exceptions import ReviewNotFound
 from j1.ingestion_review.projectors.chunks import ChunkProjector, _ChunkRecord
 from j1.processing.results import ARTIFACT_KIND_CHUNK
@@ -110,6 +112,7 @@ class IngestionValidationService:
         test_case_generator: DefaultTestCaseGenerator | None = None,
         judge: LLMJudge | None = None,
         answer_synthesizer: AnswerSynthesizer | None = None,
+        domain_registry: DomainRegistry | None = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -128,6 +131,12 @@ class IngestionValidationService:
         # and the response reports `llm.called=False`. Batch validation
         # runs do not consult this — they must stay deterministic.
         self._synthesizer = answer_synthesizer
+        # Optional domain registry. When wired, the set generator
+        # asks for the run's domain pack and threads the pack's
+        # `validation_guidance` into the LLM prompt as a TESTING-LENS
+        # rubric (never as factual evidence). None = generation
+        # always runs in generic mode.
+        self._domain_registry = domain_registry
 
     def run_manual_test_query(
         self,
@@ -354,6 +363,18 @@ class IngestionValidationService:
 
         run = self._load_run(ctx, run_id)
         chunks = self._project_run_chunks(ctx, run)
+        # Build the evidence blocks the generator will hand to the
+        # LLM. Sourced from the same `_ChunkRecord` list we already
+        # have — no extra IO. Falls back to empty list when the run
+        # produced no chunks (generator then ships only smoke +
+        # domain-driven negatives).
+        evidence_blocks = _evidence_blocks_from_chunks(chunks)
+        # Look up the run's domain pack (if any). Quiet on every
+        # failure — generation still works in generic mode when no
+        # domain pack is wired or the planning_result.json is missing.
+        domain_id, domain_guidance = self._resolve_domain_for_run(
+            ctx, run,
+        )
         # gather modality artifacts the generator can
         # author cases against. Single registry scan; the partition
         # below is O(n) over the run's artifact list.
@@ -363,7 +384,8 @@ class IngestionValidationService:
 
         # Generate first so we can compute the artifacts hash off
         # the sampled chunks. Cheap — no LLM call yet on the empty
-        # path; the real LLM cost is per chunk inside generate.
+        # path; the real LLM cost is in the ONE whole-document call
+        # the generator makes inside.
         vset = self._generator.generate(
             run_id=run.run_id,
             document_ids=_document_ids(run),
@@ -376,6 +398,9 @@ class IngestionValidationService:
             table_artifacts=tables,
             visual_artifacts=visuals,
             graph_artifacts=graphs,
+            evidence_blocks=evidence_blocks,
+            domain_guidance=domain_guidance,
+            domain_id=domain_id,
         )
 
         # Idempotency: scan existing sets for a hash match. Force
@@ -699,6 +724,42 @@ class IngestionValidationService:
                 graphs.append(record)
         return tables, visuals, graphs
 
+    def _resolve_domain_for_run(
+        self, ctx: ProjectContext, run: IngestionRun,
+    ) -> tuple[str | None, DomainValidationGuidance | None]:
+        """Look up the run's domain pack via the planning result.
+
+ Returns `(None, None)` quietly on every failure path (no
+ registry wired, planning_result missing, pack id unknown,
+ pack has no validation block). Domain awareness is opt-in —
+ generation runs in generic mode when anything is missing."""
+        if self._domain_registry is None or self._workspace is None:
+            return (None, None)
+        try:
+            planning_path = self._workspace.area(
+                ctx, WorkspaceArea.PLANNING,
+            ) / run.run_id / "planning_result.json"
+        except Exception:  # noqa: BLE001 — workspace may not have planning
+            return (None, None)
+        if not planning_path.is_file():
+            return (None, None)
+        try:
+            import json
+            data = json.loads(planning_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — malformed JSON shouldn't 500
+            return (None, None)
+        dctx = data.get("domain_context") or {}
+        domain_id = dctx.get("selected_domain")
+        if not isinstance(domain_id, str) or not domain_id:
+            return (None, None)
+        pack = self._domain_registry.get(domain_id)
+        if pack is None:
+            return (domain_id, None)
+        guidance = getattr(pack, "validation_guidance", None)
+        if guidance is None or not guidance.enabled:
+            return (domain_id, None)
+        return (domain_id, guidance)
+
     def _find_existing_set(
         self,
         ctx: ProjectContext,
@@ -859,6 +920,47 @@ class IngestionValidationService:
 
 
 # ---- Module-level helpers (easy to unit-test) --------------------------
+
+
+def _evidence_blocks_from_chunks(
+    chunks: list[_ChunkRecord],
+) -> list[EvidenceBlockDTO]:
+    """Project the run's chunks into evidence blocks for the
+ generator's LLM call.
+
+ We don't sample here — the generator's internal `_sample_chunks`
+ is what decides which chunks are *quoted*; here we hand over the
+ full set so the LLM can pick whichever chunk contains the most
+ useful evidence for each generated case. The generator's
+ own budget caps still bound the prompt size.
+
+ Empty chunks (body-less, e.g. a structural index entry) are
+ dropped so the LLM doesn't see "[3] " with nothing after it.
+ """
+    blocks: list[EvidenceBlockDTO] = []
+    for chunk in chunks:
+        body = (chunk.body or "").strip()
+        if not body:
+            continue
+        # Source artifact id: prefer the parent chunk artifact's id
+        # (so the LLM cites the actual artifact registered in the
+        # run, not the synthetic chunk id). Falls back to the chunk
+        # id when the projector didn't surface a parent — the FE
+        # still gets a stable id either way.
+        artifact_id = chunk.source_artifact_id or chunk.chunk_id or ""
+        if not artifact_id:
+            continue
+        blocks.append(EvidenceBlockDTO(
+            artifact_id=artifact_id,
+            artifact_type="chunk",
+            text=body,
+            chunk_id=chunk.chunk_id,
+            score=0.0,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            section=chunk.section,
+        ))
+    return blocks
 
 
 def _document_ids(run: IngestionRun) -> list[str]:

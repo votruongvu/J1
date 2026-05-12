@@ -556,6 +556,18 @@ class ValidationTestCaseRecord(CamelModel):
     citation_required: bool = False
     source_traceability: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # New fields from the evidence-grounded generator. The FE uses
+    # these to render the scope badge ("Generic / Domain-aware /
+    # Negative-check"), the expected-answer block, and the evidence
+    # quote that supported the answer.
+    expected_answer: str | None = None
+    evidence_quote: str | None = None
+    source_artifact_id: str | None = None
+    source_artifact_type: str | None = None
+    question_type: str | None = None
+    validation_scope: str = "generic"
+    difficulty: str | None = None
+    domain_id: str | None = None
 
 
 class ValidationSetRecord(CamelModel):
@@ -570,6 +582,14 @@ class ValidationSetRecord(CamelModel):
     artifacts_content_hash: str | None = None
     test_cases: list[ValidationTestCaseRecord]
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Domain pack used while generating (None when generic mode).
+    domain_id: str | None = None
+    # LLM trace from the single whole-document call. None when the
+    # generator fell back to the heuristic path (no LLM wired).
+    llm: LLMTraceRecord | None = None
+    # What was actually sent to the LLM. Operator-readable summary
+    # so testers can verify the generator wasn't fed garbage.
+    context_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerateValidationSetRequestRecord(CamelModel):

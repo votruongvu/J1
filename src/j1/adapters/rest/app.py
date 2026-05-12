@@ -5110,10 +5110,29 @@ def _set_to_record(vset) -> ValidationSetRecord:
                 citation_required=tc.citation_required,
                 source_traceability=list(tc.source_traceability),
                 metadata=dict(tc.metadata),
+                expected_answer=tc.expected_answer,
+                evidence_quote=tc.evidence_quote,
+                source_artifact_id=tc.source_artifact_id,
+                source_artifact_type=tc.source_artifact_type,
+                question_type=tc.question_type,
+                validation_scope=tc.validation_scope,
+                difficulty=tc.difficulty,
+                domain_id=tc.domain_id,
             )
             for tc in vset.test_cases
         ],
         metadata=dict(vset.metadata),
+        domain_id=vset.domain_id,
+        llm=LLMTraceRecord(
+            called=vset.llm.called,
+            provider=vset.llm.provider,
+            model=vset.llm.model,
+            latency_ms=vset.llm.latency_ms,
+            prompt_tokens=vset.llm.prompt_tokens,
+            completion_tokens=vset.llm.completion_tokens,
+            error=vset.llm.error,
+        ) if vset.llm is not None else None,
+        context_summary=dict(vset.context_summary or {}),
     )
 
 

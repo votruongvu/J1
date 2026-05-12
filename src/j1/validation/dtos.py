@@ -234,6 +234,38 @@ ValidationTestType = Literal[
 ]
 
 
+# Question-type the generator-LLM tagged the case as. Drives FE
+# grouping and operator-friendly badges on the generated set
+# (separate from `type`, which is the runner-facing kind that
+# determines which deterministic checks apply).
+ValidationQuestionType = Literal[
+    "fact_retrieval",
+    "list_extraction",
+    "table_extraction",
+    "summary",
+    "risk_extraction",
+    "constraint_extraction",
+    "reasoning_from_context",
+    "domain_enrichment_check",
+    "missing_information_check",
+]
+
+
+# Scope tag the FE uses to badge generated cases. `generic` =
+# evidence-only question (no domain lens applied). `domain_evidence`
+# = generated under domain guidance AND answer is grounded in the
+# document. `domain_enrichment` = checks the enrichment-pipeline
+# output rather than the source document. `negative_check` = the
+# domain-checklist field is missing from the evidence; the answer
+# must be the abstention sentence.
+ValidationScope = Literal[
+    "generic",
+    "domain_evidence",
+    "domain_enrichment",
+    "negative_check",
+]
+
+
 # Test priority. `smoke` runs first, are guaranteed to be fast, and
 # fail loudly on regressions. `normal` is the bulk. `deep` is the
 # expensive long-tail (modality-aware checks, semantic judging).
@@ -292,6 +324,37 @@ class ValidationTestCaseDTO:
     # from?" without re-running the generator.
     source_traceability: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Operator-readable single-sentence expected answer. Populated
+    # by the LLM generator from the evidence; empty for the heuristic
+    # fallback path (which only knows the chunk's first sentence).
+    # Distinct from `expected_answer_points` — that's the bullet-list
+    # the answer-coverage check scores against.
+    expected_answer: str | None = None
+    # Verbatim text quote from the evidence that supports the
+    # expected answer. Required for non-negative LLM-generated cases
+    # (grounding contract); empty/None for heuristics + negative
+    # checks (the latter intentionally cites no evidence).
+    evidence_quote: str | None = None
+    # Artifact id the evidence quote was lifted from. Pairs with
+    # `evidence_quote` so a tester can click through to the source.
+    source_artifact_id: str | None = None
+    # Mirrors `EvidenceBlockDTO.artifact_type` so the FE can render
+    # the source's modality badge alongside the question.
+    source_artifact_type: str | None = None
+    # The generator-LLM's question-type tag (fact_retrieval,
+    # list_extraction, risk_extraction, missing_information_check,
+    # ...). Drives FE grouping; falls back to `None` for legacy /
+    # heuristic cases.
+    question_type: ValidationQuestionType | None = None
+    # Domain-aware lens tag. See `ValidationScope` literal docs.
+    # Defaults to `generic`.
+    validation_scope: ValidationScope = "generic"
+    # Difficulty hint the LLM emits ("easy" / "medium" / "hard").
+    # Surfaces in the FE as a small badge; runner ignores it.
+    difficulty: str | None = None
+    # The domain pack id that was active when this case was
+    # generated. None for domain-agnostic generation.
+    domain_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -316,6 +379,18 @@ class ValidationSetDTO:
     artifacts_content_hash: str | None
     test_cases: list[ValidationTestCaseDTO]
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Domain pack id used when generating this set. None when no
+    # domain pack was active; `"general"` for the generic fallback.
+    domain_id: str | None = None
+    # LLM trace from the single whole-document call. None when the
+    # generator fell back to the heuristic path (no LLM wired).
+    # Surfaces in the FE alongside the set so testers can see
+    # provider/model/latency/tokens for the generation step.
+    llm: LLMTraceDTO | None = None
+    # What the generator passed to the LLM (sources + sizes +
+    # whether domain guidance was applied). Lets a tester verify
+    # "the model actually saw the document" without re-running.
+    context_summary: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

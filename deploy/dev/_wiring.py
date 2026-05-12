@@ -322,7 +322,25 @@ def build_validation_service(workspace: WorkspaceResolver):
         # optional. Off when no LLM client is wired.
         judge=judge,
         answer_synthesizer=synthesizer,
+        # Domain registry — the set generator looks up the run's
+        # domain pack here and threads the pack's `validation_guidance`
+        # into the LLM prompt as a TESTING LENS (never evidence).
+        # `default_registry()` ships the general + civil_engineering
+        # packs. None-able: when no registry is wired the generator
+        # falls back to generic mode (no domain-driven negatives).
+        domain_registry=_domain_registry_or_none(),
     )
+
+
+def _domain_registry_or_none():
+    """Return the default domain registry, or None on import failure.
+ Generator runs in generic mode when this returns None — the set
+ still generates, just without the domain testing-lens overlay."""
+    try:
+        from j1.domains import default_registry
+        return default_registry()
+    except Exception:  # noqa: BLE001 — degrade quietly to generic mode
+        return None
 
 
 def build_run_progress_surface(

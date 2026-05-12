@@ -726,6 +726,27 @@ export type ExecutionStatus =
   | "failed"
   | "cancelled";
 
+// Question-type tag from the evidence-grounded generator. Drives FE
+// grouping + badges on the generated set view.
+export type ValidationQuestionType =
+  | "fact_retrieval"
+  | "list_extraction"
+  | "table_extraction"
+  | "summary"
+  | "risk_extraction"
+  | "constraint_extraction"
+  | "reasoning_from_context"
+  | "domain_enrichment_check"
+  | "missing_information_check";
+
+// Scope tag the FE uses to badge generated cases. Mirrors the
+// server's `ValidationScope` literal.
+export type ValidationScope =
+  | "generic"
+  | "domain_evidence"
+  | "domain_enrichment"
+  | "negative_check";
+
 export interface ValidationTestCase {
   testCaseId: string;
   question: string;
@@ -741,6 +762,15 @@ export interface ValidationTestCase {
   citationRequired: boolean;
   sourceTraceability: string[];
   metadata: Record<string, unknown>;
+  // New fields from the evidence-grounded generator.
+  expectedAnswer?: string | null;
+  evidenceQuote?: string | null;
+  sourceArtifactId?: string | null;
+  sourceArtifactType?: string | null;
+  questionType?: ValidationQuestionType | null;
+  validationScope?: ValidationScope;
+  difficulty?: string | null;
+  domainId?: string | null;
 }
 
 export interface ValidationSet {
@@ -755,6 +785,9 @@ export interface ValidationSet {
   artifactsContentHash?: string | null;
   testCases: ValidationTestCase[];
   metadata: Record<string, unknown>;
+  domainId?: string | null;
+  llm?: LLMTrace | null;
+  contextSummary?: Record<string, unknown>;
 }
 
 export interface ValidationSetListItem {

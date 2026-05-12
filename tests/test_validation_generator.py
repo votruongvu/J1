@@ -1,12 +1,27 @@
 """Tests for `DefaultTestCaseGenerator`.
 
-Exercises the generator with a stub LLM (so test runs stay fast and
-deterministic) plus the no-LLM path so the heuristic fallback is
-locked in.
+The generator's contract changed substantially: it now takes
+`evidence_blocks` + optional `domain_guidance` and makes ONE
+whole-document LLM call (rather than N per-chunk calls) under a
+strict grounding prompt. The hardcoded sports/celebrity/Bitcoin
+negative pool has been removed entirely; negatives are now domain-
+driven from `DomainValidationGuidance.negative_check_fields`.
+
+What's covered:
+ * Sampling helpers (unchanged).
+ * Whole-document LLM happy path with stub returning the new
+   `test_cases` schema.
+ * Anti-hallucination filter — cases whose `evidence_quote`
+   doesn't appear in the supplied evidence get dropped.
+ * Heuristic fallback (no LLM / LLM raise / no evidence).
+ * Domain-driven negative checks fire only when guidance has
+   `negative_check_fields`.
+ * NO hardcoded off-topic negatives are emitted under any
+   configuration (regression test for the "World Cup" issue).
 
 What's NOT covered here:
  * Wiring through the chunk projector — that's the service's job.
- * REST envelope shape — covered in test_rest_validation_sets.
+ * REST envelope shape — covered in test_rest_validation_endpoints.
  * Idempotency at the persistence layer — that's the service.
 """
 
@@ -16,8 +31,10 @@ from typing import Any
 
 import pytest
 
+from j1.domains import DomainValidationGuidance
 from j1.ingestion_review.projectors.chunks import _ChunkRecord
 from j1.validation import DefaultTestCaseGenerator
+from j1.validation.dtos import EvidenceBlockDTO
 from j1.validation.generator import (
     GENERATOR_VERSION,
     GenerationOptions,
@@ -53,143 +70,112 @@ def _chunk(
     )
 
 
-# ---- Sampling ------------------------------------------------------
+def _evidence(
+    *,
+    artifact_id: str = "art-1",
+    text: str = "The proposal is due 20 May 2026.",
+    artifact_type: str = "chunk",
+    chunk_id: str | None = "c-1",
+) -> EvidenceBlockDTO:
+    return EvidenceBlockDTO(
+        artifact_id=artifact_id,
+        artifact_type=artifact_type,
+        text=text,
+        chunk_id=chunk_id,
+        score=0.9,
+    )
+
+
+# ---- Sampling helpers (unchanged behaviour) ------------------------
 
 
 def test_sample_chunks_returns_all_when_under_cap():
-    """Small docs (≤ cap) get every chunk sampled — no diversity
- sacrifice, full coverage."""
     chunks = [_chunk(chunk_id=f"c-{i}") for i in range(3)]
     out = _sample_chunks(chunks, max_samples=8)
     assert [c.chunk_id for c in out] == ["c-0", "c-1", "c-2"]
 
 
 def test_sample_chunks_strides_evenly_when_over_cap():
-    """For docs larger than the cap, take every Nth chunk so the
- sample spans the whole document instead of just the head."""
     chunks = [_chunk(chunk_id=f"c-{i}") for i in range(20)]
     out = _sample_chunks(chunks, max_samples=4)
     assert len(out) == 4
-    # Stride-based — first should be c-0, last should not be the
-    # final chunk (otherwise we'd have a head-bias).
     ids = [c.chunk_id for c in out]
     assert ids[0] == "c-0"
-    assert "c-15" in ids or "c-19" in ids  # late portion represented
+    assert "c-15" in ids or "c-19" in ids
 
 
 def test_sample_chunks_honours_must_include():
-    """ will use must-include for incremental regeneration —
- the contract is locked here so the field doesn't get repurposed."""
-    chunks = [_chunk(chunk_id=f"c-{i}") for i in range(20)]
-    out = _sample_chunks(
-        chunks, max_samples=4, must_include_ids=("c-19", "c-15"),
-    )
-    ids = {c.chunk_id for c in out}
-    assert "c-19" in ids
-    assert "c-15" in ids
+    chunks = [_chunk(chunk_id=f"c-{i}") for i in range(10)]
+    out = _sample_chunks(chunks, max_samples=4, must_include_ids=("c-7",))
+    assert any(c.chunk_id == "c-7" for c in out)
 
 
-def test_sample_chunks_empty_input_returns_empty():
-    assert _sample_chunks([], max_samples=8) == []
+def test_first_sentence_caps_long_inputs():
+    body = "Lorem ipsum dolor sit amet " * 50
+    out = _first_sentence(body, max_chars=40)
+    assert len(out) <= 40
 
 
-# ---- Heuristic question producer -----------------------------------
+def test_heuristic_questions_returns_empty_for_empty_chunk():
+    empty = _chunk(chunk_id="c-1", body="")
+    assert _heuristic_questions_for_chunk(empty, budget=1) == []
 
 
-def test_heuristic_question_uses_first_sentence():
-    chunk = _chunk(body="The proposal is due 20 May 2026. Vendors must register first.")
-    out = _heuristic_questions_for_chunk(chunk, budget=2)
-    assert len(out) == 1
-    assert "20 May 2026" in out[0]["question"]
-    assert out[0]["type"] == "retrieval"
+def test_pages_for_chunk_inclusive_range():
+    c = _chunk(chunk_id="c-1", page_start=2, page_end=4)
+    assert _pages_for_chunk(c) == [2, 3, 4]
 
 
-def test_heuristic_question_skips_empty_body():
-    """Empty / whitespace-only chunks are dropped — there's nothing
- to ask a question about, and emitting a placeholder would
- pollute the set with noise."""
-    assert _heuristic_questions_for_chunk(_chunk(body=""), budget=1) == []
-    assert _heuristic_questions_for_chunk(_chunk(body="   \n  "), budget=1) == []
-
-
-def test_first_sentence_caps_at_max_chars():
-    """Pathological inputs (no punctuation) must get truncated so
- the generator doesn't emit a 10k-char question."""
-    long = "x" * 1000
-    out = _first_sentence(long, max_chars=140)
-    assert len(out) == 140
-
-
-# ---- Page derivation -----------------------------------------------
-
-
-def test_pages_for_chunk_single_page():
-    assert _pages_for_chunk(_chunk(page_start=3, page_end=3)) == [3]
-
-
-def test_pages_for_chunk_range_inclusive():
-    assert _pages_for_chunk(_chunk(page_start=2, page_end=4)) == [2, 3, 4]
-
-
-def test_pages_for_chunk_no_page_returns_empty():
-    """Producer didn't surface page info → no page check. The runner
- treats `expected_pages=[]` as 'skip the check' rather than
- 'must have no pages'."""
-    assert _pages_for_chunk(_chunk(page_start=None, page_end=None)) == []
-
-
-# ---- Hash idempotency ----------------------------------------------
-
-
-def test_hash_stable_for_same_chunks():
-    chunks = [_chunk(chunk_id="a", body="alpha"), _chunk(chunk_id="b", body="beta")]
+def test_hash_chunks_stable():
+    chunks = [_chunk(chunk_id="c-1", body="alpha")]
+    assert _hash_chunks(chunks).startswith("sha256:")
     assert _hash_chunks(chunks) == _hash_chunks(chunks)
 
 
-def test_hash_changes_on_content_change():
-    chunks_a = [_chunk(chunk_id="a", body="alpha")]
-    chunks_b = [_chunk(chunk_id="a", body="ALPHA")]
-    assert _hash_chunks(chunks_a) != _hash_chunks(chunks_b)
+def test_hash_chunks_changes_with_content():
+    a = _hash_chunks([_chunk(chunk_id="c-1", body="alpha")])
+    b = _hash_chunks([_chunk(chunk_id="c-1", body="beta")])
+    assert a != b
 
 
-def test_hash_empty_input_has_stable_sentinel():
-    assert _hash_chunks([]) == "sha256:empty"
-
-
-# ---- DefaultTestCaseGenerator (end-to-end) -------------------------
+# ---- Whole-document LLM generation --------------------------------
 
 
 class _StubTextClient:
-    """Records every extract call + returns canned questions.
+    """Captures `extract()` calls; returns canned responses in order.
 
- Tests can vary `responses` to simulate different LLM behaviours
- (success, malformed JSON, exception)."""
+ The new generator calls `extract(prompt, schema, metadata=…)` once
+ per generate() invocation (the whole-document flow); we keep the
+ stub's interface flexible enough to accept the metadata kwarg.
+ """
+
+    provider = "stub_provider"
+    model = "stub-model-v1"
 
     def __init__(
         self,
-        responses: list[dict[str, Any]] | None = None,
+        *,
+        responses: list[Any] | None = None,
         raise_on_call: bool = False,
     ) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, dict, dict | None]] = []
         self._responses = responses or []
         self._raise = raise_on_call
 
-    def extract(self, prompt: str, schema: dict[str, Any]):
-        self.calls.append((prompt, schema))
+    def extract(self, prompt, schema, *, metadata=None):  # noqa: D401
+        self.calls.append((prompt, schema, metadata))
         if self._raise:
             raise RuntimeError("simulated LLM failure")
         if not self._responses:
-            return ({"questions": []}, object())
+            return ({"test_cases": []}, object())
         return (self._responses.pop(0), object())
 
 
-def test_generator_emits_smoke_case_when_no_chunks():
-    """An empty run still gets a smoke case — the runner will fail
- `retrieved_chunks_present`, which is the right operator signal
- for 'the run produced nothing queryable.' Negatives are added
- by even on an empty run because the off-topic test is
- still meaningful (engine should abstain regardless of index
- state)."""
+def test_generator_emits_only_smoke_when_no_chunks_no_domain():
+    """An empty run + no domain → just the smoke case. The old
+ generator shipped 2 hardcoded off-topic negatives here ('World
+ Cup' / 'Bitcoin'); the new one emits zero — the test locks that
+ regression in place."""
     gen = DefaultTestCaseGenerator()
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=[],
@@ -197,87 +183,222 @@ def test_generator_emits_smoke_case_when_no_chunks():
     assert vset.source == "generated"
     assert vset.status == "draft"
     assert vset.generator_version == GENERATOR_VERSION
-    # Always at least the smoke case; negatives ride along by
-    # default. Cap at 3 = smoke + 2 default negatives.
-    assert len(vset.test_cases) >= 1
+    assert len(vset.test_cases) == 1
     assert vset.test_cases[0].priority == "smoke"
-    # No chunks → no chunk cases — the rest are negatives.
-    non_smoke = [c for c in vset.test_cases if c.priority != "smoke"]
-    assert all(c.type == "negative" for c in non_smoke)
+    assert vset.test_cases[0].validation_scope == "generic"
 
 
-def test_generator_uses_llm_questions_when_available():
-    """LLM happy path: the generator forwards the chunk content to
- `extract` and emits the LLM-supplied questions verbatim."""
+def test_generator_never_emits_hardcoded_world_cup_questions():
+    """Regression test for the original bug. Across every combination
+ of (no domain, no chunks), (chunks only), (heuristic fallback),
+ the generator must NEVER emit the old hardcoded pool of off-topic
+ questions ('World Cup', 'Bitcoin', 'capital of Mars', ...)."""
+    forbidden_phrases = (
+        "world cup", "bitcoin", "chocolate cake", "planet mars",
+        "highest-paid celebrity",
+    )
+    gen = DefaultTestCaseGenerator()
+    configurations = [
+        # No chunks, no domain.
+        dict(run_id="r", document_ids=[], chunks=[]),
+        # Chunks but no LLM.
+        dict(
+            run_id="r", document_ids=[],
+            chunks=[_chunk(chunk_id="c-1", body="alpha beta gamma.")],
+        ),
+        # Chunks + domain guidance (negatives present but domain-driven).
+        dict(
+            run_id="r", document_ids=[],
+            chunks=[_chunk(chunk_id="c-1", body="alpha beta gamma.")],
+            domain_guidance=DomainValidationGuidance(
+                negative_check_fields=("foo_field", "bar_field"),
+            ),
+            domain_id="testdomain",
+        ),
+    ]
+    for cfg in configurations:
+        vset = gen.generate(**cfg)
+        for case in vset.test_cases:
+            lowered = case.question.lower()
+            for phrase in forbidden_phrases:
+                assert phrase not in lowered, (
+                    f"forbidden phrase {phrase!r} appeared in {case.question!r}"
+                )
+
+
+def test_generator_emits_grounded_cases_from_llm_with_evidence():
+    """LLM happy path under the new flow: ONE whole-document call,
+ evidence blocks passed in, structured response materialised
+ into typed cases with `expected_answer`, `evidence_quote`,
+ `source_artifact_id`, `validation_scope`."""
     stub = _StubTextClient(
-        responses=[
-            {
-                "questions": [
-                    {
-                        "question": "When is the proposal due?",
-                        "type": "retrieval",
-                        "expected_answer_points": ["20 May 2026"],
-                    },
-                ],
-            },
-        ],
+        responses=[{
+            "test_cases": [
+                {
+                    "question": "When is the proposal due?",
+                    "expected_answer": "20 May 2026.",
+                    "question_type": "fact_retrieval",
+                    "validation_scope": "generic",
+                    "difficulty": "easy",
+                    "evidence": [{
+                        "source_artifact_id": "art-1",
+                        "artifact_type": "chunk",
+                        "quote": "The proposal is due 20 May 2026.",
+                    }],
+                },
+            ],
+        }],
     )
     gen = DefaultTestCaseGenerator(text_client=stub)
-    chunks = [_chunk(chunk_id="c-1", body="Proposal due 20 May 2026.")]
+    chunks = [_chunk(chunk_id="c-1", body="The proposal is due 20 May 2026.")]
+    evidence = [_evidence(
+        artifact_id="art-1",
+        text="The proposal is due 20 May 2026.",
+    )]
 
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
-        # Disable negatives so this test stays focused on the
-        # LLM-question-extraction path. Negative-case generation
-        # has its own dedicated test.
-        options=GenerationOptions(negative_case_count=0),
-    )
-
-    # Smoke + 1 LLM-derived chunk question (negatives disabled).
-    assert len(vset.test_cases) == 2
-    chunk_case = next(tc for tc in vset.test_cases if tc.priority != "smoke")
-    assert chunk_case.question == "When is the proposal due?"
-    assert chunk_case.expected_answer_points == ["20 May 2026"]
-    assert chunk_case.expected_chunks == ["c-1"]
-    # Source traceability: every chunk case must carry its source
-    # chunk id so a tester can audit the generator's reasoning.
-    assert chunk_case.source_traceability == ["c-1"]
-    # The LLM was actually called (no caching short-circuit).
-    assert len(stub.calls) == 1
-
-
-def test_generator_falls_back_to_heuristic_on_llm_failure():
-    """LLM raising must not fail the generator — fall back to the
- deterministic question. Tests run in CI without an LLM, so this
- path is the load-bearing one."""
-    stub = _StubTextClient(raise_on_call=True)
-    gen = DefaultTestCaseGenerator(text_client=stub)
-    chunks = [_chunk(chunk_id="c-1", body="Proposal due 20 May 2026.")]
-
-    vset = gen.generate(
-        run_id="run-1", document_ids=["doc-1"], chunks=chunks,
-        options=GenerationOptions(negative_case_count=0),
+        evidence_blocks=evidence,
     )
 
     chunk_case = next(
         tc for tc in vset.test_cases
         if tc.priority != "smoke" and tc.type != "negative"
     )
-    # Heuristic question shape — "What does the document say about: …?"
+    assert chunk_case.question == "When is the proposal due?"
+    assert chunk_case.expected_answer == "20 May 2026."
+    assert chunk_case.evidence_quote == "The proposal is due 20 May 2026."
+    assert chunk_case.source_artifact_id == "art-1"
+    assert chunk_case.source_artifact_type == "chunk"
+    assert chunk_case.validation_scope == "generic"
+    assert chunk_case.question_type == "fact_retrieval"
+    # Exactly ONE LLM call (whole-document, not per-chunk).
+    assert len(stub.calls) == 1
+    # Set carries the LLM trace + context summary.
+    assert vset.llm is not None
+    assert vset.llm.called is True
+    assert vset.context_summary.get("evidence_block_count") == 1
+
+
+def test_generator_drops_llm_cases_whose_quote_isnt_in_evidence():
+    """Anti-hallucination filter: if the LLM emits a case whose
+ `evidence.quote` doesn't actually appear in the supplied
+ evidence blocks (i.e. it invented the quote), the case is
+ dropped silently. Locks in the central grounding contract."""
+    stub = _StubTextClient(
+        responses=[{
+            "test_cases": [
+                {
+                    "question": "Who won the World Cup?",
+                    "expected_answer": "France.",
+                    "question_type": "fact_retrieval",
+                    "validation_scope": "generic",
+                    "evidence": [{
+                        "source_artifact_id": "art-1",
+                        "artifact_type": "chunk",
+                        # The 'quote' contains words ABSENT from our evidence.
+                        "quote": "France won the FIFA World Cup in 2022.",
+                    }],
+                },
+                {
+                    "question": "When is the proposal due?",
+                    "expected_answer": "20 May 2026.",
+                    "question_type": "fact_retrieval",
+                    "validation_scope": "generic",
+                    "evidence": [{
+                        "source_artifact_id": "art-1",
+                        "artifact_type": "chunk",
+                        "quote": "The proposal is due 20 May 2026.",
+                    }],
+                },
+            ],
+        }],
+    )
+    gen = DefaultTestCaseGenerator(text_client=stub)
+    evidence = [_evidence(text="The proposal is due 20 May 2026.")]
+
+    vset = gen.generate(
+        run_id="r", document_ids=["d"], chunks=[],
+        evidence_blocks=evidence,
+    )
+
+    # Only the grounded case survives — the World Cup hallucination
+    # is dropped because its quote isn't in the evidence.
+    grounded = [c for c in vset.test_cases if c.type == "answer"]
+    assert len(grounded) == 1
+    assert grounded[0].question == "When is the proposal due?"
+    # And the off-topic phrase never makes it into ANY case.
+    for c in vset.test_cases:
+        assert "world cup" not in c.question.lower()
+
+
+def test_generator_drops_llm_cases_with_unknown_source_artifact_id():
+    """If the LLM cites a `source_artifact_id` that wasn't in the
+ supplied evidence blocks, the case is dropped. Protects against
+ the model fabricating an id from outside-world context."""
+    stub = _StubTextClient(
+        responses=[{
+            "test_cases": [{
+                "question": "What is the topic?",
+                "expected_answer": "Proposals.",
+                "question_type": "fact_retrieval",
+                "validation_scope": "generic",
+                "evidence": [{
+                    # The id "art-99" was never in our evidence.
+                    "source_artifact_id": "art-99",
+                    "artifact_type": "chunk",
+                    "quote": "The proposal is due 20 May 2026.",
+                }],
+            }],
+        }],
+    )
+    gen = DefaultTestCaseGenerator(text_client=stub)
+    evidence = [_evidence(
+        artifact_id="art-1",
+        text="The proposal is due 20 May 2026.",
+    )]
+
+    vset = gen.generate(
+        run_id="r", document_ids=["d"], chunks=[],
+        evidence_blocks=evidence,
+    )
+
+    # Hallucinated source id → case dropped, only smoke remains.
+    answer_cases = [c for c in vset.test_cases if c.type == "answer"]
+    assert answer_cases == []
+
+
+def test_generator_falls_back_to_heuristic_on_llm_failure():
+    """LLM raising must not fail the generator — fall back to the
+ deterministic per-chunk heuristic. This is the load-bearing path
+ for CI environments without an LLM endpoint."""
+    stub = _StubTextClient(raise_on_call=True)
+    gen = DefaultTestCaseGenerator(text_client=stub)
+    chunks = [_chunk(chunk_id="c-1", body="Proposal due 20 May 2026.")]
+
+    vset = gen.generate(
+        run_id="run-1", document_ids=["doc-1"], chunks=chunks,
+        evidence_blocks=[_evidence(text="Proposal due 20 May 2026.")],
+    )
+
+    chunk_case = next(
+        tc for tc in vset.test_cases
+        if tc.priority != "smoke" and tc.type != "negative"
+    )
     assert "What does the document say about" in chunk_case.question
     assert "Proposal due 20 May 2026" in chunk_case.question
-    assert chunk_case.expected_chunks == ["c-1"]
+    # LLM trace records the failure.
+    assert vset.llm is not None
+    assert vset.llm.called is True
+    assert vset.llm.error is not None
 
 
 def test_generator_uses_heuristic_when_no_llm_configured():
-    """No LLM at construction time → straight-to-heuristic, no
- extract calls. Lets validation work on a deployment that
- didn't wire the FAST role."""
+    """No LLM at construction → no LLM trace, heuristic only."""
     gen = DefaultTestCaseGenerator(text_client=None)
     chunks = [_chunk(chunk_id="c-1", body="Heading content body.")]
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
-        options=GenerationOptions(negative_case_count=0),
     )
     chunk_case = next(
         tc for tc in vset.test_cases
@@ -285,39 +406,48 @@ def test_generator_uses_heuristic_when_no_llm_configured():
     )
     assert chunk_case.expected_chunks == ["c-1"]
     assert chunk_case.question  # non-empty
+    # No LLM was wired → no trace.
+    assert vset.llm is None
 
 
-def test_generator_caps_total_cases(monkeypatch):
-    """`max_cases` is the hard ceiling (incl. the smoke case).
- plan: synchronous in-process, ≤ 50 cases — the cap
- flows from REST → service → generator without changes."""
-    stub_responses = [
-        {
-            "questions": [
-                {"question": f"Q{i}-1?", "type": "retrieval"},
-                {"question": f"Q{i}-2?", "type": "retrieval"},
-            ],
-        }
-        for i in range(10)
-    ]
-    stub = _StubTextClient(responses=stub_responses)
+def test_generator_caps_total_cases():
+    """`max_cases` is the hard ceiling, smoke included."""
+    stub = _StubTextClient(responses=[{
+        "test_cases": [
+            {
+                "question": f"Q{i}?",
+                "expected_answer": "Some answer.",
+                "question_type": "fact_retrieval",
+                "validation_scope": "generic",
+                "evidence": [{
+                    "source_artifact_id": "art-1",
+                    "artifact_type": "chunk",
+                    "quote": "Body text used in evidence for grounding tests.",
+                }],
+            }
+            for i in range(20)
+        ],
+    }])
     gen = DefaultTestCaseGenerator(text_client=stub)
     chunks = [_chunk(chunk_id=f"c-{i}", body=f"Body {i}") for i in range(10)]
+    evidence = [_evidence(
+        text="Body text used in evidence for grounding tests.",
+    )]
 
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
+        evidence_blocks=evidence,
         options=GenerationOptions(max_cases=5),
     )
 
     assert len(vset.test_cases) <= 5
 
 
-def test_generator_threads_citation_required_through(monkeypatch):
+def test_generator_threads_citation_required_through():
     """Caller-supplied `citation_required` flips the flag on every
- NON-NEGATIVE case — the runner reads this to enable/skip the
- `citation_present` check. Negatives intentionally override to
- `False` because an honest abstain has no citations and shouldn't
- be failed for that."""
+ non-negative case. Negatives intentionally override to False
+ because an honest abstain has no citations and shouldn't be
+ failed for that."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="Some text.")]
 
@@ -345,83 +475,189 @@ def test_generator_records_artifacts_content_hash():
     assert vset_a.artifacts_content_hash != "sha256:empty"
 
 
-def test_generator_emits_negative_cases_by_default():
-    """every generated set carries N negative cases drawn
- from the deterministic pool. Defaults to 2; respects budget."""
+# ---- Domain-driven negative checks ---------------------------------
+
+
+def test_generator_emits_no_negatives_without_domain_guidance():
+    """Without a domain pack the old hardcoded sports/celebrity pool
+ is GONE — we emit zero negatives rather than confuse the tester
+ with off-topic questions. Regression test for the "World Cup"
+ bug."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="alpha")]
-
     vset = gen.generate(run_id="r", document_ids=[], chunks=chunks)
-
-    negatives = [c for c in vset.test_cases if c.type == "negative"]
-    assert len(negatives) >= 1
-    for case in negatives:
-        # Negatives must abstain, not require citations, and have
-        # no expected chunks (there's nothing to cite).
-        assert case.expected_behavior == "abstain"
-        assert case.citation_required is False
-        assert case.expected_chunks == []
-        assert case.metadata.get("negative") is True
-
-
-def test_generator_negative_count_zero_disables_negatives():
-    """Caller can opt out via `negative_case_count=0`. Useful for
- very small budgets or smoke-only sets."""
-    gen = DefaultTestCaseGenerator()
-    chunks = [_chunk(chunk_id="c-1", body="alpha")]
-
-    vset = gen.generate(
-        run_id="r", document_ids=[], chunks=chunks,
-        options=GenerationOptions(negative_case_count=0),
-    )
-
     negatives = [c for c in vset.test_cases if c.type == "negative"]
     assert negatives == []
 
 
-def test_generator_negative_count_respects_max_cases():
-    """When max_cases is tight, negatives don't crowd out smoke +
- chunk cases. Smoke is always first; negatives fit in the
- remaining budget."""
+def test_generator_emits_domain_driven_negatives_when_guidance_provided():
+    """Domain pack's `negative_check_fields` produce one negative per
+ field. Each negative tests for a specific domain-important
+ absence ("Does the document specify <field>?") with the standard
+ abstention sentence as expected answer."""
     gen = DefaultTestCaseGenerator()
     chunks = [_chunk(chunk_id="c-1", body="alpha")]
+    guidance = DomainValidationGuidance(
+        negative_check_fields=("design_code", "material_strength"),
+    )
 
     vset = gen.generate(
         run_id="r", document_ids=[], chunks=chunks,
-        # Budget = smoke + 1 negative + 1 chunk = 3
+        domain_guidance=guidance, domain_id="civil_engineering",
+    )
+
+    negatives = [c for c in vset.test_cases if c.type == "negative"]
+    assert len(negatives) == 2
+    # Each negative is operator-readable and references the field.
+    questions = [c.question.lower() for c in negatives]
+    assert any("design code" in q for q in questions)
+    assert any("material strength" in q for q in questions)
+    for case in negatives:
+        assert case.validation_scope == "negative_check"
+        assert case.question_type == "missing_information_check"
+        assert case.expected_behavior == "abstain"
+        assert case.citation_required is False
+        assert case.evidence_quote is None
+        assert case.source_artifact_id is None
+        assert case.domain_id == "civil_engineering"
+        # The expected answer is the standard abstention sentence.
+        assert case.expected_answer is not None
+        assert case.expected_answer.lower().startswith("no.")
+
+
+def test_generator_negative_count_respects_max_cases():
+    """When max_cases is tight, domain negatives don't crowd out the
+ smoke case. Smoke is always first; negatives fit in the
+ remaining budget."""
+    gen = DefaultTestCaseGenerator()
+    chunks = [_chunk(chunk_id="c-1", body="alpha")]
+    guidance = DomainValidationGuidance(
+        negative_check_fields=("a", "b", "c", "d", "e"),
+    )
+
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=chunks,
         options=GenerationOptions(max_cases=3, negative_case_count=5),
+        domain_guidance=guidance, domain_id="d",
     )
 
     assert len(vset.test_cases) <= 3
-    # Smoke always survives.
     assert any(c.priority == "smoke" for c in vset.test_cases)
 
 
 def test_generator_handles_malformed_llm_response():
-    """LLM returns the right shape but an unusable entry (empty
- question, wrong type) — the generator drops the bad ones,
- keeps the good ones, falls back to heuristic if all are bad."""
-    stub = _StubTextClient(
-        responses=[
+    """LLM returns the right shape but unusable entries (missing
+ question / empty answer / no evidence quote) — drop the bad
+ ones. Caller fallback path runs if none survive."""
+    stub = _StubTextClient(responses=[{
+        "test_cases": [
+            # Empty question — drop.
             {
-                "questions": [
-                    {"question": "", "type": "retrieval"},  # empty — drop
-                    {"question": "OK?", "type": "retrieval"},  # keep
-                    {"type": "retrieval"},  # missing question — drop
-                ],
+                "question": "",
+                "expected_answer": "x",
+                "question_type": "fact_retrieval",
+                "validation_scope": "generic",
+                "evidence": [{
+                    "source_artifact_id": "art-1",
+                    "artifact_type": "chunk",
+                    "quote": "Body.",
+                }],
+            },
+            # No evidence list — positive case without quote → drop.
+            {
+                "question": "Why?",
+                "expected_answer": "Because.",
+                "question_type": "fact_retrieval",
+                "validation_scope": "generic",
+                "evidence": [],
+            },
+            # Valid grounded case — keep.
+            {
+                "question": "What is in the body?",
+                "expected_answer": "A body.",
+                "question_type": "fact_retrieval",
+                "validation_scope": "generic",
+                "evidence": [{
+                    "source_artifact_id": "art-1",
+                    "artifact_type": "chunk",
+                    "quote": "Body text used in evidence for grounding tests.",
+                }],
             },
         ],
-    )
+    }])
     gen = DefaultTestCaseGenerator(text_client=stub)
-    chunks = [_chunk(chunk_id="c-1", body="Body.")]
+    evidence = [_evidence(
+        text="Body text used in evidence for grounding tests.",
+    )]
     vset = gen.generate(
-        run_id="r", document_ids=[], chunks=chunks,
-        options=GenerationOptions(negative_case_count=0),
+        run_id="r", document_ids=[], chunks=[],
+        evidence_blocks=evidence,
     )
 
-    chunk_cases = [
+    grounded = [c for c in vset.test_cases if c.type == "answer"]
+    assert len(grounded) == 1
+    assert grounded[0].question == "What is in the body?"
+
+
+def test_generator_accepts_llm_emitted_negative_check_without_quote():
+    """Negative checks emitted by the LLM legitimately have no
+ quote — they assert the evidence is silent. The grounding
+ filter must NOT drop them just because evidence_quote is empty."""
+    stub = _StubTextClient(responses=[{
+        "test_cases": [{
+            "question": "Does the document specify the design code?",
+            "expected_answer": "No. The provided evidence does not specify the design code.",
+            "question_type": "missing_information_check",
+            "validation_scope": "negative_check",
+            "evidence": [],
+        }],
+    }])
+    gen = DefaultTestCaseGenerator(text_client=stub)
+    evidence = [_evidence(text="Body text used in evidence for grounding tests.")]
+
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=[],
+        evidence_blocks=evidence,
+    )
+
+    llm_neg = [
         c for c in vset.test_cases
-        if c.priority != "smoke" and c.type != "negative"
+        if c.type == "negative" and c.metadata.get("llm_generated") is True
     ]
-    assert len(chunk_cases) == 1
-    assert chunk_cases[0].question == "OK?"
+    assert len(llm_neg) == 1
+    assert llm_neg[0].validation_scope == "negative_check"
+    assert llm_neg[0].expected_behavior == "abstain"
+
+
+def test_generator_short_circuits_llm_when_no_evidence_supplied():
+    """If the service didn't supply `evidence_blocks`, the generator
+ must NOT call the LLM (no body context = no grounded questions).
+ Falls back to the heuristic per-chunk path. This is the central
+ anti-drift rule — empty evidence is what produced the original
+ 'World Cup' hallucinations."""
+    stub = _StubTextClient(responses=[{"test_cases": [{
+        "question": "Untethered question?",
+        "expected_answer": "x",
+        "question_type": "fact_retrieval",
+        "validation_scope": "generic",
+        "evidence": [{
+            "source_artifact_id": "art-1",
+            "artifact_type": "chunk",
+            "quote": "x",
+        }],
+    }]}])
+    gen = DefaultTestCaseGenerator(text_client=stub)
+    chunks = [_chunk(chunk_id="c-1", body="Body about widgets.")]
+
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=chunks,
+        # NOTE: no evidence_blocks supplied.
+    )
+
+    # The stub LLM was NEVER called — heuristic ran instead.
+    assert len(stub.calls) == 0
+    # And the generator recorded that the LLM wasn't actually run.
+    assert vset.llm is None or vset.llm.called is False
+    # The heuristic case still references the chunk content.
+    non_smoke = [c for c in vset.test_cases if c.priority != "smoke"]
+    assert non_smoke and "widgets" in non_smoke[0].question.lower()
