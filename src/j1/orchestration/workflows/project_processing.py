@@ -32,8 +32,6 @@ with workflow.unsafe.imports_passed_through():
         SetDocumentStatusInput,
         SpendSummary,
         ValidateContextResult,
-        VerifyCompileActivityResult,
-        VerifyCompileInput,
     )
     from j1.orchestration.activities.processing import ProcessingActivities
     from j1.orchestration.activities.profiling import (
@@ -117,12 +115,6 @@ class WorkflowState(StrEnum):
     # activity dispatches; `trigger_compile` advances back to RUNNING.
     # Only reached when the request opted in (`two_phase_compile=True`).
     WAITING_FOR_COMPILE_TRIGGER = "waiting_for_compile_trigger"
-    # Post-compile health gate. Surfaces while the verification
-    # activity runs (typically a single second) so the FE timeline
-    # shows the verification stage rather than skipping straight from
-    # compile to enrich/finalize. Only reached when the request opted
-    # in (`verify_after_compile=True`).
-    VERIFYING = "verifying"
     FAILED_RECOVERABLE = "failed_recoverable"
     FAILED_FINAL = "failed_final"
     COMPLETED = "completed"
@@ -395,15 +387,6 @@ class ProjectProcessingRequest:
     # sends `SIGNAL_TRIGGER_COMPILE` to advance the workflow. When
     # False (default), compile dispatches inline as before.
     two_phase_compile: bool = False
-    # Post-compile verification gate. When True, the workflow runs
-    # the `verify_compile_output` activity after each document's
-    # compile retry loop completes. Failures (zero chunks produced,
-    # missing index manifest, etc.) terminate the run with a stable
-    # `failure_code` (`CHUNK_FAILED` / `INDEX_FAILED` /
-    # `VERIFICATION_FAILED`) instead of letting an empty compile
-    # silently land at SUCCEEDED. Minimum chunks required is
-    # `compile_retry_min_chunks`.
-    verify_after_compile: bool = False
 
 
 @dataclass(frozen=True)
@@ -1726,101 +1709,6 @@ class ProjectProcessingWorkflow:
             )
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow exit
             pass
-
-    async def _run_post_compile_verification(
-        self,
-        request: ProjectProcessingRequest,
-        *,
-        document_id: str,
-        compile_result: "ArtifactActivityResult",
-    ) -> None:
-        """Run the `verify_compile_output` activity and either
- proceed (passed) or raise `_BusinessRejection` with a stable
- `failure_code` so the outer handler lifts it into the
- run record / error report.
-
- Surfaces a `WorkflowState.VERIFYING` transition so the
- `get_status` query sees the verification stage while the
- activity is in flight. On pass, the workflow returns to
- RUNNING; on fail, the raise bubbles to the outer handler
- which lands at FAILED_FINAL."""
-        previous_state = self._state
-        self._state = WorkflowState.VERIFYING
-        # Surface the verifying stage on the Temporal search attribute
-        # . The verification activity isn't run through
-        # `_begin` — it's a synthesized gate inside the per-doc
-        # loop — so the macro-stage write happens here explicitly.
-        self._set_search_attribute(
-            SEARCH_ATTR_INGEST_STAGE, INGEST_STAGE_VERIFYING,
-        )
-        try:
-            verification = await workflow.execute_activity_method(
-                ProcessingActivities.verify_compile_output,
-                VerifyCompileInput(
-                    scope=request.scope,
-                    run_id=request.correlation_id or "",
-                    document_id=document_id,
-                    output_artifact_ids=list(compile_result.artifact_ids),
-                    output_artifact_kinds=tuple(compile_result.kinds),
-                    min_chunks=max(1, request.compile_retry_min_chunks),
-                    require_index_manifest=False,
-                    actor=request.actor,
-                ),
-                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
-                retry_policy=DEFAULT_RETRY.to_temporal(),
-            )
-        finally:
-            # Restore RUNNING regardless of outcome — the outer
-            # handler flips to FAILED_FINAL on raise; on success we
-            # want the next stage to see the run as in-flight.
-            if self._state == WorkflowState.VERIFYING:
-                self._state = (
-                    previous_state
-                    if previous_state != WorkflowState.VERIFYING
-                    else WorkflowState.RUNNING
-                )
-        if not verification.passed:
-            from j1.runs.models import FAILURE_CODE_VERIFICATION_FAILED
-
-            reason_code = (
-                verification.reason_code or FAILURE_CODE_VERIFICATION_FAILED
-            )
-            self._record_step(
-                step="verify_compile",
-                status=StepStatus.FAILED,
-                required=True,
-                source=StepSource.CALLER,
-                reason=verification.message or "verification failed",
-                error=StepError(
-                    type="VerificationFailed",
-                    message=(verification.message or "verification failed")[:512],
-                    retryable=False,
-                ),
-                metadata={
-                    "document_id": document_id,
-                    "failure_code": reason_code,
-                    "chunk_count": verification.chunk_count,
-                },
-            )
-            raise _BusinessRejection(
-                (
-                    f"post-compile verification failed for {document_id} "
-                    f"({reason_code}): "
-                    f"{verification.message or 'no detail'}"
-                ),
-                failure_code=reason_code,
-            )
-        self._record_step(
-            step="verify_compile",
-            status=StepStatus.COMPLETED,
-            required=True,
-            source=StepSource.CALLER,
-            artifact_count=0,
-            metadata={
-                "document_id": document_id,
-                "chunk_count": verification.chunk_count,
-            },
-        )
 
     async def _persist_compile_strategy_report(
         self,
@@ -3263,20 +3151,6 @@ class ProjectProcessingWorkflow:
             metadata={"document_id": document_id},
         )
         self._complete(compile_op)
-
-        # ── Post-compile verification gate ─────────────────────────
-        # Run the chunk-count / index health check when the request
-        # opted in. Failure here lands a terminal FAILED with a
-        # stable `failure_code` (CHUNK_FAILED / INDEX_FAILED /
-        # VERIFICATION_FAILED) instead of letting an empty compile
-        # silently land at SUCCEEDED. The activity is fast (no
-        # artifact reads) so the gate adds negligible latency.
-        if request.verify_after_compile:
-            await self._run_post_compile_verification(
-                request,
-                document_id=document_id,
-                compile_result=compile_result,
-            )
 
         # ── Compile-strategy report ────────────────────────────────
         # Persist the AssessmentPlan + per-attempt audit + final

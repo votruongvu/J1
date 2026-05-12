@@ -48,7 +48,6 @@ def test_state_enum_has_all_required_states():
         "waiting_for_budget_approval",
         "waiting_for_review",
         "waiting_for_compile_trigger",
-        "verifying",
         "failed_recoverable",
         "failed_final",
         "completed",

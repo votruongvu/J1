@@ -59,8 +59,6 @@ from j1.orchestration.activities.payloads import (
     ProcessingActivityResult,
     QueryActivityInput,
     QueryActivityResult,
-    VerifyCompileActivityResult,
-    VerifyCompileInput,
 )
 from j1.processing.contracts import (
     EnrichmentProcessor,
@@ -92,7 +90,6 @@ ACTIVITY_PERSIST_ENRICHMENT_RESULT = "j1.processing.persist_enrichment_result"
 ACTIVITY_PERSIST_FINAL_INGESTION_REPORT = "j1.processing.persist_final_ingestion_report"
 ACTIVITY_RUN_ENRICHMENT_STAGE = "j1.processing.run_enrichment_stage"
 ACTIVITY_FAST_LLM_CONSULT_ENRICH = "j1.processing.fast_llm_consult_enrich"
-ACTIVITY_VERIFY_COMPILE_OUTPUT = "j1.processing.verify_compile_output"
 
 
 class UnknownProcessorError(LookupError):
@@ -561,7 +558,6 @@ class ProcessingActivities:
             self.persist_post_compile_enrich_plan,
             self.persist_final_ingestion_report,
             self.fast_llm_consult_enrich,
-            self.verify_compile_output,
         ]
 
     @activity.defn(name=ACTIVITY_COMPILE)
@@ -1663,80 +1659,6 @@ class ProcessingActivities:
             recommendation=rec_value,
             add_reasons=list(refinement.add_reasons),
             add_recommended_tasks=list(refinement.add_recommended_tasks),
-        )
-
-    @activity.defn(name=ACTIVITY_VERIFY_COMPILE_OUTPUT)
-    def verify_compile_output(
-        self, input: VerifyCompileInput,
-    ) -> VerifyCompileActivityResult:
-        """Post-compile health gate.
-
- Verifies the compile activity produced enough chunk artifacts
- (`min_chunks`, default 1) and — when `require_index_manifest`
- is set — that the index activity wrote a manifest. Returns
- `passed=False` with one of the `FAILURE_CODE_*` strings from
- `j1.runs.models` when the gate rejects; the workflow lifts
- that into `IngestionRun.failure_code` on rejection.
-
- Kind-only check: we look at the artifact kinds passed in by
- the workflow OR (fallback) resolve each artifact id against
- the registry. Schema integrity is the per-stage validators'
- job (`validate_compile` / `validate_chunks`) — this gate
- catches the cheap "compile succeeded but produced nothing"
- case before declaring SUCCEEDED.
-
- Failure modes:
- * `chunk_count < min_chunks` → CHUNK_FAILED.
- * `require_index_manifest=True` and no `index_manifest`
- artifact → INDEX_FAILED.
- * Unresolvable artifact ids when kinds aren't provided →
- VERIFICATION_FAILED (we can't verify what we can't read).
- """
-        from j1.processing.compile_verification import (
-            verify_compile_output_health,
-        )
-        from j1.runs.models import FAILURE_CODE_VERIFICATION_FAILED
-
-        ctx = input.scope.to_context()
-        artifact_kinds: tuple[str, ...] = tuple(input.output_artifact_kinds)
-        errors: list[str] = []
-        if not artifact_kinds and input.output_artifact_ids:
-            resolved: list[str] = []
-            for aid in input.output_artifact_ids:
-                try:
-                    record = self._artifacts.get(ctx, aid)
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(
-                        f"artifact_id {aid!r} not resolvable: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
-                    continue
-                resolved.append(record.kind)
-            artifact_kinds = tuple(resolved)
-        if errors:
-            return VerifyCompileActivityResult(
-                passed=False,
-                reason_code=FAILURE_CODE_VERIFICATION_FAILED,
-                message=(
-                    "verification could not resolve all compile artifacts; "
-                    "cannot confirm output health"
-                ),
-                chunk_count=0,
-                artifact_count=len(input.output_artifact_ids),
-                errors=errors,
-            )
-        passed, reason_code, message, chunk_count = verify_compile_output_health(
-            artifact_kinds=artifact_kinds,
-            min_chunks=input.min_chunks,
-            require_index_manifest=input.require_index_manifest,
-        )
-        return VerifyCompileActivityResult(
-            passed=passed,
-            reason_code=reason_code,
-            message=message,
-            chunk_count=chunk_count,
-            artifact_count=len(artifact_kinds),
-            errors=[],
         )
 
     # ---- Progress-reporter integration -------------------------

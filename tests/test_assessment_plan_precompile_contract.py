@@ -34,7 +34,6 @@ from j1.orchestration.activities.payloads import (
     BuildInitialExecutionPlanResult,
     ProjectScope,
     ValidateContextResult,
-    VerifyCompileActivityResult,
 )
 from j1.orchestration.workflows.project_processing import (
     ProjectProcessingRequest,
@@ -129,10 +128,6 @@ def test_initial_execution_plan_persisted_before_compile_invocation(
         if name == "j1.processing.compile":
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-compile-1"],
-            )
-        if name.endswith("verify_compile_output"):
-            return VerifyCompileActivityResult(
-                passed=True, chunk_count=1, artifact_count=1,
             )
         return None
 
@@ -388,10 +383,6 @@ def test_workflow_threads_built_assessment_plan_into_compile(monkeypatch):
             captured_compile_payloads.append(payload)
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-compile-1"],
-            )
-        if name.endswith("verify_compile_output"):
-            return VerifyCompileActivityResult(
-                passed=True, chunk_count=1, artifact_count=1,
             )
         return None
 

@@ -357,59 +357,6 @@ class FastLLMConsultEnrichResult:
 
 
 @dataclass(frozen=True)
-class VerifyCompileInput:
-    """Workflow → activity payload for `verify_compile_output`.
-
- Verification is the post-compile health gate: it counts chunks
- produced by the compile activity, optionally checks the index
- is reachable, and returns a structured pass/fail with a stable
- `reason_code` the workflow lifts into `IngestionRun.failure_code`
- on rejection. See `FAILURE_CODE_*` in `j1.runs.models`."""
-
-    scope: ProjectScope
-    run_id: str
-    document_id: str | None
-    # Artifact ids the compile activity produced (chunk records,
-    # parser manifests, etc.). The verifier counts chunk artifacts
-    # by `kind == "chunk"`.
-    output_artifact_ids: list[str] = field(default_factory=list)
-    # Per-artifact kinds, parallel to `output_artifact_ids`. When
-    # populated, the verifier uses these directly instead of reading
-    # each record back from storage to inspect `kind`.
-    output_artifact_kinds: tuple[str, ...] = field(default_factory=tuple)
-    # Minimum chunks the verifier requires. 0 disables the check
-    # (e.g. for an empty-document run that legitimately produced
-    # nothing). Defaults to 1 — every non-empty compile must yield
-    # at least one chunk.
-    min_chunks: int = 1
-    # When True, the verifier also confirms the index activity ran
-    # successfully (looks for an `index_manifest`-kind artifact in
-    # `output_artifact_kinds`). Off by default — the workflow only
-    # opts in after `OPERATION_INDEX` completes.
-    require_index_manifest: bool = False
-    attempt: int = 1
-    actor: str = "system"
-
-
-@dataclass(frozen=True)
-class VerifyCompileActivityResult:
-    """Workflow → activity return for `verify_compile_output`.
-
- `passed=False` means the workflow should fail the run with
- `failure_code=reason_code`. `reason_code` is one of the
- `FAILURE_CODE_*` strings from `j1.runs.models` (e.g.
- `CHUNK_FAILED`, `INDEX_FAILED`, `VERIFICATION_FAILED`). When
- `passed=True`, `reason_code` is None and the workflow proceeds."""
-
-    passed: bool
-    reason_code: str | None = None
-    message: str | None = None
-    chunk_count: int = 0
-    artifact_count: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class PersistErrorReportInput:
     """Workflow → activity payload for the failure-path
  `error_report` artifact. The workflow calls this from its

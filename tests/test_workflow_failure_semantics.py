@@ -33,7 +33,6 @@ from j1.orchestration.activities.payloads import (
     ProcessingActivityResult,
     ProjectScope,
     ValidateContextResult,
-    VerifyCompileActivityResult,
 )
 from j1.orchestration.workflows.document_processing import (
     DocumentProcessingRequest,
@@ -374,10 +373,6 @@ def _run_with_finalize_raise(monkeypatch, *, finalize_exc: Exception):
         if name == "j1.processing.compile":
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-compile-1"],
-            )
-        if name.endswith("verify_compile_output"):
-            return VerifyCompileActivityResult(
-                passed=True, chunk_count=1, artifact_count=1,
             )
         if name.endswith(".finalize"):
             raise finalize_exc
