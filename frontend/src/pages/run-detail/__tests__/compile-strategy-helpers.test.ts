@@ -22,9 +22,11 @@ import {
   isFallbackOnly,
   modeDescription,
   recommendedPathDescription,
+  recommendedPathFromAssessmentPlan,
   recommendedPathFromReport,
   recommendedPathLabel,
   resolvedCompileConfig,
+  type AssessmentPlanPayload,
   type CompileStrategyReport,
 } from "../compile-strategy-helpers";
 
@@ -582,5 +584,92 @@ describe("contentTypeLabel", () => {
 
   it("falls back to the raw token for unknown content types", () => {
     expect(contentTypeLabel("custom_blob")).toBe("custom_blob");
+  });
+});
+
+
+// ---- recommendedPathFromAssessmentPlan ----------------------------
+//
+// The pre-compile Assessment Plan panel reads its primary content from
+// the `initial_execution_plan` artifact (the AssessmentPlan lives at
+// `compile_plan` on that payload). Recommendation badge derivation
+// therefore needs a plan-only entry point — otherwise the panel can't
+// render anything until the post-compile `compile_strategy_report`
+// lands, which is exactly the bug the audit fixed. Pin the contract.
+
+
+describe("recommendedPathFromAssessmentPlan", () => {
+  it("derives standard_compile from a plain pre-compile plan", () => {
+    const plan: AssessmentPlanPayload = {
+      mode: "standard",
+      required_capabilities: ["text_extraction"],
+      optional_capabilities: [],
+    };
+    expect(recommendedPathFromAssessmentPlan(plan)).toBe("standard_compile");
+  });
+
+  it("derives deep_compile when the plan flags OCR", () => {
+    const plan: AssessmentPlanPayload = {
+      mode: "standard",
+      required_capabilities: ["ocr"],
+      optional_capabilities: [],
+    };
+    expect(recommendedPathFromAssessmentPlan(plan)).toBe("deep_compile");
+  });
+
+  it("honours an explicit canonical recommended_path", () => {
+    const plan: AssessmentPlanPayload = {
+      mode: "standard",
+      recommended_path: "deep_compile",
+    };
+    expect(recommendedPathFromAssessmentPlan(plan)).toBe("deep_compile");
+  });
+
+  it("migrates legacy recommended_path values onto canonical ones", () => {
+    expect(recommendedPathFromAssessmentPlan({
+      mode: "standard",
+      recommended_path: "multimodal_compile",
+    })).toBe("standard_compile");
+    expect(recommendedPathFromAssessmentPlan({
+      mode: "deep",
+      recommended_path: "ocr_parse",
+    })).toBe("deep_compile");
+  });
+
+  it("never returns a legacy enum value, even for ambiguous input", () => {
+    const inputs: AssessmentPlanPayload[] = [
+      { mode: "fast" },
+      { mode: "standard" },
+      { mode: "deep" },
+      { recommended_path: "fast_text_compile" },
+      {},
+    ];
+    const legacy = new Set([
+      "fast_text_compile", "multimodal_compile", "ocr_parse",
+    ]);
+    for (const plan of inputs) {
+      const out = recommendedPathFromAssessmentPlan(plan);
+      expect(legacy.has(out as string)).toBe(false);
+    }
+  });
+
+  it("tolerates null/undefined plan — backstop returns standard_compile", () => {
+    expect(recommendedPathFromAssessmentPlan(null)).toBe("standard_compile");
+    expect(recommendedPathFromAssessmentPlan(undefined)).toBe("standard_compile");
+  });
+
+  it("matches recommendedPathFromReport when given the report's plan", () => {
+    // The two helpers must agree when fed the same plan — otherwise the
+    // pre-compile panel and the post-compile report can disagree about
+    // the recommended path for the same run.
+    const report = _report({
+      assessment_plan: {
+        mode: "standard",
+        required_capabilities: ["ocr"],
+        optional_capabilities: [],
+      },
+    });
+    expect(recommendedPathFromAssessmentPlan(report.assessment_plan))
+      .toBe(recommendedPathFromReport(report));
   });
 });

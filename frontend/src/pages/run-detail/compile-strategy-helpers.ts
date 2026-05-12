@@ -384,15 +384,27 @@ export function recommendedPathDescription(
 export function recommendedPathFromReport(
   report: CompileStrategyReport,
 ): RecommendedProcessingPath {
-  const explicit = report.assessment_plan?.recommended_path;
+  return recommendedPathFromAssessmentPlan(report.assessment_plan);
+}
+
+/**
+ * Plan-only version of `recommendedPathFromReport`. Reads exactly the
+ * AssessmentPlan fields the panel needs, so the FE can derive the
+ * recommended-path badge from the PRE-compile `initial_execution_plan`
+ * artifact — no post-compile report required.
+ */
+export function recommendedPathFromAssessmentPlan(
+  plan: AssessmentPlanPayload | null | undefined,
+): RecommendedProcessingPath {
+  const explicit = plan?.recommended_path;
   if (explicit) {
     const canonical = canonicalRecommendedPath(explicit);
     if (canonical) return canonical;
   }
-  const mode = report.assessment_plan?.mode;
+  const mode = plan?.mode;
   const caps = new Set([
-    ...(report.assessment_plan?.required_capabilities ?? []),
-    ...(report.assessment_plan?.optional_capabilities ?? []),
+    ...(plan?.required_capabilities ?? []),
+    ...(plan?.optional_capabilities ?? []),
   ]);
   if (caps.has("ocr")) return "deep_compile";
   if (mode === "deep") return "deep_compile";

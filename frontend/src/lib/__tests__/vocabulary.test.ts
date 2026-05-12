@@ -91,7 +91,7 @@ describe("New macro-event labels (macro-event labels)", () => {
 // JSX text nodes).
 
 const _NEW_PANEL_PATHS = [
-  "src/pages/run-detail/InitialExecutionPlanPanel.tsx",
+  "src/pages/run-detail/AssessmentPlanPanel.tsx",
   "src/pages/run-detail/CompileResultPanel.tsx",
   "src/pages/run-detail/EnrichmentResultPanel.tsx",
   "src/pages/run-detail/PrimaryStatusPanel.tsx",

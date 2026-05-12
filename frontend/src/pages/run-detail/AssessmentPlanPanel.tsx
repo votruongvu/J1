@@ -1,35 +1,39 @@
 /**
- * Assessment Plan panel — surfaced FIRST on the run detail page so
- * operators see exactly which compile strategy J1 picked before
- * diving into outputs.
+ * Assessment Plan panel — pre-compile contract surface.
  *
- * Source of truth: the `compile_strategy_report` artifact. The
- * AssessmentPlan is built pre-compile (cheap deterministic profile
- * + `DefaultAssessmentPlanner`) and persisted as part of the
- * report once compile finishes. While compile is in flight, this
- * panel shows a loading state — the assessment stage shows up on
- * the LiveTimeline as `assess_compile_strategy` so operators
- * still see progress.
+ * The AssessmentPlan is built BEFORE compile by the
+ * `build_initial_execution_plan` activity. The plan + domain pack +
+ * enrichment policy are persisted to the `initial_execution_plan`
+ * artifact synchronously inside that activity, so this panel can
+ * render its primary content the moment the workflow starts — it
+ * does NOT have to wait for compile to finish.
  *
- * Information surfaced (from richest to terse):
- * * Selected mode (big badge) + one-line description of what
- * that mode does.
- * * Confidence (badge color-coded by bucket).
- * * Document type + complexity (signals the planner picked up).
- * * Required + optional capabilities (pills).
- * * Risk flags (warning style).
- * * Reason the planner chose this mode.
- * * Resolved compile config (parse_method actually sent to the
- * parser).
- * * Mode escalation hint when the safety retry layer changed the
- * mode mid-flight (initial → final).
- * * Unhandled capabilities the deployment couldn't honour.
+ * Primary source: `GET /ingestion-runs/{id}/initial-execution-plan`
+ * — the pre-compile artifact. Carries the AssessmentPlan as
+ * `compile_plan` (mode + confidence + capabilities + reason) plus
+ * the resolved domain profile + enrichment policy + candidate
+ * modules.
+ *
+ * Secondary source: `compile_strategy_report` artifact (POST-compile).
+ * When present, the panel additionally renders the post-compile
+ * sections: extraction evidence, mode escalation hint, resolved
+ * compile config, unhandled capabilities, plan warnings. These all
+ * appear under a clearly-labelled "After compile" group so reviewers
+ * can tell pre-compile intent from post-compile observation at a
+ * glance.
+ *
+ * Why two fetches: the primary surface MUST not stall behind compile.
+ * Earlier versions of this panel read the AssessmentPlan out of the
+ * post-compile `compile_strategy_report` exclusively, which left the
+ * panel stuck in its "missing" state for the entire compile duration
+ * — a bug operators correctly flagged as broken pre-compile rendering.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ProgressEvent } from "@/types/ingestion";
+import type { InitialExecutionPlanPayload } from "@/types/review";
 import {
   COMPILE_STRATEGY_REPORT_KIND,
   canonicalRecommendedPath,
@@ -38,10 +42,9 @@ import {
   contentTypeLabel,
   formatConfidence,
   hasModeEscalation,
-  isFallbackOnly,
   modeDescription,
   recommendedPathDescription,
-  recommendedPathFromReport,
+  recommendedPathFromAssessmentPlan,
   recommendedPathLabel,
   resolvedCompileConfig,
   type AssessmentPlanPayload,
@@ -53,52 +56,57 @@ interface AssessmentPlanPanelProps {
   runId: string;
   /**
  * Latest SSE event from the parent page. When relevant events
- * arrive (step lifecycle, run terminal) the panel re-fetches its
- * artifact so a panel that mounted BEFORE compile finished
- * eventually picks up the report once it lands. Without this the
- * panel sticks at "missing" forever for runs the user navigated
- * into mid-flight.
+ * arrive (step lifecycle, run terminal) both fetches re-run so a
+ * panel that mounted BEFORE the artifacts existed eventually picks
+ * them up when they land. Without this the panel sticks at its
+ * mount-time state forever for runs the user navigated into
+ * mid-flight.
  */
   latestEvent?: ProgressEvent | null;
 }
+
+type PrePlanState =
+  | { kind: "loading" }
+  | { kind: "missing"; reason: string | null }
+  | { kind: "ready"; plan: InitialExecutionPlanPayload }
+  | { kind: "error"; message: string };
 
 export function AssessmentPlanPanel({
   runId, latestEvent,
 }: AssessmentPlanPanelProps) {
   const client = useClient();
-  const [state, setState] = useState<
-    | { kind: "loading" }
-    | { kind: "missing" }
-    | { kind: "ready"; report: CompileStrategyReport }
-    | { kind: "error"; message: string }
-  >({ kind: "loading" });
+  // Primary: pre-compile initial_execution_plan artifact. This is the
+  // source of truth for the AssessmentPlan + domain pack + enrichment
+  // policy. Always rendered when available, regardless of compile
+  // status.
+  const [preState, setPreState] = useState<PrePlanState>({ kind: "loading" });
+  // Secondary: post-compile compile_strategy_report. Provides the
+  // "after compile" enrichments (extraction evidence, mode escalation,
+  // resolved compile config). null when compile hasn't finished or the
+  // report hasn't been written yet — that's expected, not an error.
+  const [postReport, setPostReport] = useState<CompileStrategyReport | null>(
+    null,
+  );
 
-  const loadReport = useCallback(() => {
+  const loadPrePlan = useCallback(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const page = await client.listRunArtifacts(runId, {
-          kind: COMPILE_STRATEGY_REPORT_KIND,
-        });
-        const artifact = page.items[0];
-        if (!artifact) {
-          // Don't downgrade an already-loaded report on a transient
-          // refetch miss — only flip to "missing" if we never had
-          // data in the first place.
-          if (!cancelled) {
-            setState((prev) => prev.kind === "ready" ? prev : { kind: "missing" });
-          }
-          return;
+        const resp = await client.getRunInitialExecutionPlan(runId);
+        if (cancelled) return;
+        if (resp.status === "completed" && resp.plan) {
+          setPreState({ kind: "ready", plan: resp.plan });
+        } else {
+          // Keep prior ready state across transient refetch misses.
+          setPreState((prev) =>
+            prev.kind === "ready"
+              ? prev
+              : { kind: "missing", reason: resp.unavailableReason ?? null },
+          );
         }
-        const content = await client.getRunArtifactContent(
-          runId, artifact.artifactId,
-        );
-        const text = await content.blob.text();
-        const report = JSON.parse(text) as CompileStrategyReport;
-        if (!cancelled) setState({ kind: "ready", report });
       } catch (e) {
         if (!cancelled) {
-          setState((prev) =>
+          setPreState((prev) =>
             prev.kind === "ready"
               ? prev
               : {
@@ -112,15 +120,51 @@ export function AssessmentPlanPanel({
     return () => { cancelled = true; };
   }, [client, runId]);
 
-  // Initial load on mount / runId change.
-  useEffect(() => {
-    setState({ kind: "loading" });
-    return loadReport();
-  }, [loadReport]);
+  const loadPostReport = useCallback(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await client.listRunArtifacts(runId, {
+          kind: COMPILE_STRATEGY_REPORT_KIND,
+        });
+        const artifact = page.items[0];
+        if (!artifact) {
+          // Don't downgrade an already-loaded report on a transient
+          // refetch miss — only clear if we never had one.
+          setPostReport((prev) => prev ?? null);
+          return;
+        }
+        const content = await client.getRunArtifactContent(
+          runId, artifact.artifactId,
+        );
+        const text = await content.blob.text();
+        const report = JSON.parse(text) as CompileStrategyReport;
+        if (!cancelled) setPostReport(report);
+      } catch {
+        // Compile-strategy report is best-effort enrichment; failing
+        // to load it must NOT degrade the pre-compile primary surface.
+        // Silently leave `postReport` at its current value.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [client, runId]);
 
-  // SSE-driven refresh: re-fetch when compile-completion-adjacent
-  // events arrive. Cheap (one HTTP call returning a few KB) and lets
-  // a panel mounted mid-flight pick up the report once it lands.
+  useEffect(() => {
+    setPreState({ kind: "loading" });
+    setPostReport(null);
+    const cancelPre = loadPrePlan();
+    const cancelPost = loadPostReport();
+    return () => {
+      cancelPre();
+      cancelPost();
+    };
+  }, [loadPrePlan, loadPostReport]);
+
+  // SSE-driven refresh: re-fetch both artifacts when lifecycle events
+  // arrive. The pre-compile plan lands within a second of upload; the
+  // post-compile report lands when compile completes. Refreshing on
+  // every step.completed / step.failed / step.skipped / run.* covers
+  // both timings without a polling loop.
   useEffect(() => {
     if (!latestEvent) return;
     const refreshOn = new Set<string>([
@@ -128,12 +172,16 @@ export function AssessmentPlanPanel({
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,
     ]);
-    if (refreshOn.has(latestEvent.event) || isTerminalEvent(latestEvent.event)) {
-      loadReport();
+    if (
+      refreshOn.has(latestEvent.event)
+      || isTerminalEvent(latestEvent.event)
+    ) {
+      loadPrePlan();
+      loadPostReport();
     }
-  }, [latestEvent, loadReport]);
+  }, [latestEvent, loadPrePlan, loadPostReport]);
 
-  if (state.kind === "loading") {
+  if (preState.kind === "loading") {
     return (
       <div className="card" data-testid="assessment-plan-loading">
         <div className="card__body">
@@ -145,51 +193,64 @@ export function AssessmentPlanPanel({
       </div>
     );
   }
-  if (state.kind === "missing") {
+  if (preState.kind === "missing") {
     return (
       <div className="card" data-testid="assessment-plan-missing">
         <div className="card__body">
           <h3>Assessment Plan</h3>
           <p style={{ color: "var(--text-muted)" }}>
-            No assessment data available for this run yet. The plan is
-            persisted as part of the compile-strategy report once compile
-            completes.
+            {preState.reason
+              ?? "Assessment plan is not available for this run yet."}
           </p>
         </div>
       </div>
     );
   }
-  if (state.kind === "error") {
+  if (preState.kind === "error") {
     return (
       <div className="card" data-testid="assessment-plan-error">
         <div className="card__body">
           <h3>Assessment Plan</h3>
           <p style={{ color: "var(--error-fg)" }}>
-            Couldn't load assessment plan: {state.message}
+            Couldn't load assessment plan: {preState.message}
           </p>
         </div>
       </div>
     );
   }
-  return <AssessmentPlanContent report={state.report} />;
+  return <AssessmentPlanContent plan={preState.plan} report={postReport} />;
 }
 
-function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
-  const plan = report.assessment_plan;
-  const initialPlan = report.initial_assessment_plan;
-  const fallback = isFallbackOnly(report);
-  const escalated = hasModeEscalation(report);
-  const mappedConfig = resolvedCompileConfig(report);
-  const required = plan.required_capabilities ?? [];
-  const optional = plan.optional_capabilities ?? [];
-  const risk = plan.risk_flags ?? [];
-  const unhandled = report.unhandled_capabilities ?? [];
-  const planWarnings = report.plan_warnings ?? [];
-  const confBucket = confidenceBucket(plan.confidence);
-  const recommendedPath = recommendedPathFromReport(report);
+function AssessmentPlanContent({
+  plan, report,
+}: {
+  plan: InitialExecutionPlanPayload;
+  report: CompileStrategyReport | null;
+}) {
+  // Pre-compile: AssessmentPlan + domain context come from the
+  // `initial_execution_plan` payload's `compile_plan` and top-level
+  // fields. Always rendered.
+  const assessmentPlan = (plan.compile_plan ?? null) as
+    | AssessmentPlanPayload
+    | null;
+  const required = assessmentPlan?.required_capabilities ?? [];
+  const optional = assessmentPlan?.optional_capabilities ?? [];
+  const risk = assessmentPlan?.risk_flags ?? [];
+  const confBucket = confidenceBucket(assessmentPlan?.confidence);
+  const recommendedPath = recommendedPathFromAssessmentPlan(assessmentPlan);
   const badgeVariant =
     canonicalRecommendedPath(recommendedPath) ?? recommendedPath;
-  const extraction: ExtractionEvidence = report.extraction_evidence ?? {};
+
+  // Post-compile: extraction evidence + escalation + resolved config +
+  // unhandled capabilities + plan warnings come from the
+  // `compile_strategy_report` when present. Each block guards on
+  // `report` so it only renders once the post-compile artifact exists.
+  const escalated = report ? hasModeEscalation(report) : false;
+  const mappedConfig = report ? resolvedCompileConfig(report) : null;
+  const extraction: ExtractionEvidence | null =
+    report?.extraction_evidence ?? null;
+  const unhandled = report?.unhandled_capabilities ?? [];
+  const planWarnings = report?.plan_warnings ?? [];
 
   return (
     <div
@@ -202,15 +263,16 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
           className="assessment-plan-panel__source"
           data-testid="assessment-plan-source"
         >
-          {fallback
-            ? "fallback (no AssessmentPlan attached)"
-            : "rule-based assessor"}
+          {assessmentPlan?.mode
+            ? "rule-based assessor"
+            : "pre-compile (no compile_plan attached)"}
         </span>
       </div>
 
-      {/* Hero: recommended path is the headline. Always shown — it's
- computed from the compile report even when no AssessmentPlan
- was attached, so this stays meaningful in the fallback case. */}
+      {/* Hero: recommended path. Derived from the pre-compile
+ AssessmentPlan, so it's available the moment the workflow
+ finishes building the InitialExecutionPlan — long before
+ compile starts. */}
       <div
         className="assessment-plan-panel__recommendation"
         data-testid="assessment-plan-recommendation"
@@ -227,95 +289,81 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
         </div>
       </div>
 
-      {/* Selected mode + confidence + profile signals + capabilities
- only render when an AssessmentPlan was actually attached.
- In the fallback case all these fields would be em dashes, so
- we skip the whole block and show the operator a clean "no
- planner data" message instead. The recommended path above
- and the extraction evidence below remain visible because both
- are derived from the compile report (not the missing plan). */}
-      {fallback ? (
-        <div
-          className="assessment-plan-panel__fallback-note"
-          data-testid="assessment-plan-fallback-note"
-        >
-          No AssessmentPlan was attached to this run — compile ran
-          with the default mapping. Profile signals, capabilities, and
-          confidence are not available; the recommended path above is
-          derived from the compile result.
-        </div>
-      ) : (
-        <>
-          {/* Hero: mode + confidence side by side */}
-          <div className="assessment-plan-panel__hero">
-            <div className="assessment-plan-panel__hero-item">
-              <div className="assessment-plan-panel__label">Selected mode</div>
-              <span
-                className={`badge mode-badge mode-badge--lg mode-badge--${plan.mode ?? "unknown"}`}
-                data-testid="assessment-plan-mode"
-              >
-                {plan.mode ?? "—"}
-              </span>
-              <div
-                className="assessment-plan-panel__hint"
-                data-testid="assessment-plan-mode-description"
-              >
-                {modeDescription(plan.mode)}
-              </div>
-            </div>
-            <div className="assessment-plan-panel__hero-item">
-              <div className="assessment-plan-panel__label">Confidence</div>
-              <span
-                className={`badge confidence-badge confidence-badge--${confBucket}`}
-                data-testid="assessment-plan-confidence"
-              >
-                {formatConfidence(plan.confidence)}
-              </span>
-              <div className="assessment-plan-panel__hint">
-                {confBucket === "low" && "Operator review recommended."}
-                {confBucket === "medium" && "Some signals were ambiguous."}
-                {confBucket === "high" && "Strong signals; planner is confident."}
-                {confBucket === "unknown" && "Confidence not reported."}
-              </div>
+      {/* Domain pack + enrichment policy. Top-level fields on the
+ initial_execution_plan payload — operator-facing context the
+ panel showed before the InitialExecutionPlanPanel was folded in. */}
+      <dl className="kv assessment-plan-panel__kv">
+        <dt>Domain profile</dt>
+        <dd data-testid="assessment-plan-domain">
+          <span className="badge">{plan.domain_profile_id ?? "general"}</span>
+        </dd>
+        <dt>Domain enrichment policy</dt>
+        <dd data-testid="assessment-plan-policy">
+          <span
+            className={`badge enrich-policy enrich-policy--${plan.enrichment_policy ?? "auto"}`}
+          >
+            {policyLabel(plan.enrichment_policy)}
+          </span>
+        </dd>
+        <dt>Require enrichment success</dt>
+        <dd data-testid="assessment-plan-require-success">
+          {plan.require_enrichment_success
+            ? "Yes — a failed enrichment will fail the run"
+            : "No — enrichment is best-effort"}
+        </dd>
+      </dl>
+
+      {/* Hero: mode + confidence side by side. From the AssessmentPlan
+ in the pre-compile artifact — never gated on compile. */}
+      {assessmentPlan && (
+        <div className="assessment-plan-panel__hero">
+          <div className="assessment-plan-panel__hero-item">
+            <div className="assessment-plan-panel__label">Selected mode</div>
+            <span
+              className={`badge mode-badge mode-badge--lg mode-badge--${assessmentPlan.mode ?? "unknown"}`}
+              data-testid="assessment-plan-mode"
+            >
+              {assessmentPlan.mode ?? "—"}
+            </span>
+            <div
+              className="assessment-plan-panel__hint"
+              data-testid="assessment-plan-mode-description"
+            >
+              {modeDescription(assessmentPlan.mode)}
             </div>
           </div>
-        </>
-      )}
-
-      {escalated && (
-        <div
-          className="assessment-plan-panel__escalation"
-          data-testid="assessment-plan-escalation"
-        >
-          <strong>Compile-safety retry escalated mode:</strong>{" "}
-          <span className="mono">{report.initial_mode}</span> →{" "}
-          <span className="mono">{report.final_mode}</span>
-          {initialPlan?.mode && initialPlan.mode !== plan.mode && (
-            <span className="muted">
-              {" "}(initial assessor confidence{" "}
-              {formatConfidence(initialPlan.confidence)})
+          <div className="assessment-plan-panel__hero-item">
+            <div className="assessment-plan-panel__label">Confidence</div>
+            <span
+              className={`badge confidence-badge confidence-badge--${confBucket}`}
+              data-testid="assessment-plan-confidence"
+            >
+              {formatConfidence(assessmentPlan.confidence)}
             </span>
-          )}
+            <div className="assessment-plan-panel__hint">
+              {confBucket === "low" && "Operator review recommended."}
+              {confBucket === "medium" && "Some signals were ambiguous."}
+              {confBucket === "high" && "Strong signals; planner is confident."}
+              {confBucket === "unknown" && "Confidence not reported."}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Profile signals + capabilities + risk flags are all derived
- from the AssessmentPlan. Skip the whole group in the fallback
- case (otherwise every value is an em dash). The extraction
- evidence and resolved-config blocks below DO render in fallback
- because they come from the compile result, not the missing plan. */}
-      {!fallback && (
+      {/* Profile signals + capabilities. Derived from the AssessmentPlan;
+ only rendered when the plan is actually attached. */}
+      {assessmentPlan && (
         <>
           <dl className="kv assessment-plan-panel__kv">
             <dt>Document type</dt>
-            <dd>{plan.document_type ?? "—"}</dd>
+            <dd>{assessmentPlan.document_type ?? "—"}</dd>
             <dt>Complexity</dt>
-            <dd>{plan.complexity ?? "—"}</dd>
+            <dd>{assessmentPlan.complexity ?? "—"}</dd>
             <dt>Fallback policy</dt>
-            <dd className="mono">{plan.fallback_policy ?? "—"}</dd>
+            <dd className="mono">{assessmentPlan.fallback_policy ?? "—"}</dd>
             <dt>Reason</dt>
             <dd data-testid="assessment-plan-reason">
-              {plan.reason || "—"}
+              {assessmentPlan.reason || "—"}
             </dd>
           </dl>
 
@@ -358,109 +406,136 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
         </>
       )}
 
-      {/* Extraction evidence — what the parser ACTUALLY extracted.
- Distinct from chunking status (verified separately).
- Reading this answers "did parsing work?"; reading the
- Chunks tab answers "did chunking land?". */}
-      <div
-        className="assessment-plan-panel__extraction"
-        data-testid="assessment-plan-extraction"
-      >
-        <div className="assessment-plan-panel__label">Extraction evidence</div>
-        <dl className="kv">
-          <dt>Parser</dt>
-          <dd className="mono">{extraction.parser ?? "raganything"}</dd>
-          <dt>Parser method</dt>
-          <dd className="mono">{extraction.parser_method ?? "—"}</dd>
-          <dt>Text characters</dt>
-          <dd data-testid="assessment-plan-text-char-count">
-            {extraction.text_char_count == null
-              ? "—"
-              : extraction.text_char_count.toLocaleString()}
-          </dd>
-          <dt>Content blocks</dt>
-          <dd data-testid="assessment-plan-content-block-count">
-            {extraction.content_block_count == null
-              ? "—"
-              : extraction.content_block_count.toLocaleString()}
-          </dd>
-          <dt>Pages</dt>
-          <dd>
-            {extraction.page_count == null
-              ? "—"
-              : extraction.page_count.toLocaleString()}
-          </dd>
-          <dt>Detected content</dt>
-          <dd data-testid="assessment-plan-detected-types">
-            {(extraction.detected_content_types ?? []).length === 0 ? (
-              <span className="muted">—</span>
-            ) : (
-              <div className="cap-pills">
-                {(extraction.detected_content_types ?? []).map((c) => (
-                  <span key={c} className="badge cap-pill">
-                    {contentTypeLabel(c)}
-                  </span>
-                ))}
-              </div>
-            )}
-          </dd>
-          <dt>Chunking status</dt>
-          <dd data-testid="assessment-plan-chunking-status">
-            <span
-              className="badge chunking-status-badge"
-              title="Chunks are verified separately during compile/index — not by this probe."
+      {/* ───────── After compile (secondary) ─────────────────────────
+   Everything below depends on the `compile_strategy_report`
+   artifact — only renders once compile has completed. Reviewers
+   can tell pre-compile intent (above) from post-compile
+   observation (here) at a glance. */}
+      {report && (escalated || mappedConfig || extraction
+                  || unhandled.length > 0 || planWarnings.length > 0) && (
+        <div
+          className="assessment-plan-panel__post-compile"
+          data-testid="assessment-plan-post-compile"
+        >
+          <div className="assessment-plan-panel__label">After compile</div>
+
+          {escalated && (
+            <div
+              className="assessment-plan-panel__escalation"
+              data-testid="assessment-plan-escalation"
             >
-              {(extraction.chunking_status === "pending_verification")
-                ? "Pending — verified during compile/index"
-                : (extraction.chunking_status ?? "Pending verification")}
-            </span>
-          </dd>
-        </dl>
-      </div>
+              <strong>Compile-safety retry escalated mode:</strong>{" "}
+              <span className="mono">{report!.initial_mode}</span> →{" "}
+              <span className="mono">{report!.final_mode}</span>
+            </div>
+          )}
 
-      {/* Resolved compile config */}
-      <div
-        className="assessment-plan-panel__config"
-        data-testid="assessment-plan-config"
-      >
-        <div className="assessment-plan-panel__label">
-          Resolved compile config
-        </div>
-        <dl className="kv">
-          <dt>parse_method</dt>
-          <dd className="mono">{mappedConfig.parse_method ?? "—"}</dd>
-          <dt>assessment_mode</dt>
-          <dd className="mono">{mappedConfig.assessment_mode ?? "—"}</dd>
-        </dl>
-      </div>
+          {extraction && (
+            <div
+              className="assessment-plan-panel__extraction"
+              data-testid="assessment-plan-extraction"
+            >
+              <div className="assessment-plan-panel__label">
+                Extraction evidence
+              </div>
+              <dl className="kv">
+                <dt>Parser</dt>
+                <dd className="mono">{extraction.parser ?? "raganything"}</dd>
+                <dt>Parser method</dt>
+                <dd className="mono">{extraction.parser_method ?? "—"}</dd>
+                <dt>Text characters</dt>
+                <dd data-testid="assessment-plan-text-char-count">
+                  {extraction.text_char_count == null
+                    ? "—"
+                    : extraction.text_char_count.toLocaleString()}
+                </dd>
+                <dt>Content blocks</dt>
+                <dd data-testid="assessment-plan-content-block-count">
+                  {extraction.content_block_count == null
+                    ? "—"
+                    : extraction.content_block_count.toLocaleString()}
+                </dd>
+                <dt>Pages</dt>
+                <dd>
+                  {extraction.page_count == null
+                    ? "—"
+                    : extraction.page_count.toLocaleString()}
+                </dd>
+                <dt>Detected content</dt>
+                <dd data-testid="assessment-plan-detected-types">
+                  {(extraction.detected_content_types ?? []).length === 0 ? (
+                    <span className="muted">—</span>
+                  ) : (
+                    <div className="cap-pills">
+                      {(extraction.detected_content_types ?? []).map((c) => (
+                        <span key={c} className="badge cap-pill">
+                          {contentTypeLabel(c)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </dd>
+                <dt>Chunking status</dt>
+                <dd data-testid="assessment-plan-chunking-status">
+                  <span
+                    className="badge chunking-status-badge"
+                    title="Chunks are verified separately during compile/index — not by this probe."
+                  >
+                    {(extraction.chunking_status === "pending_verification")
+                      ? "Pending — verified during compile/index"
+                      : (extraction.chunking_status ?? "Pending verification")}
+                  </span>
+                </dd>
+              </dl>
+            </div>
+          )}
 
-      {unhandled.length > 0 && (
-        <div
-          className="assessment-plan-panel__unhandled"
-          data-testid="assessment-plan-unhandled"
-        >
-          <div className="assessment-plan-panel__label">
-            Unhandled capabilities ({unhandled.length})
-          </div>
-          <p className="muted">
-            The deployment couldn't honour these requested capabilities.
-            Compile may have produced lower-quality output for these areas.
-          </p>
-          <CapabilityPills caps={unhandled} variant="unhandled" />
-        </div>
-      )}
+          {mappedConfig && (mappedConfig.parse_method || mappedConfig.assessment_mode) && (
+            <div
+              className="assessment-plan-panel__config"
+              data-testid="assessment-plan-config"
+            >
+              <div className="assessment-plan-panel__label">
+                Resolved compile config
+              </div>
+              <dl className="kv">
+                <dt>parse_method</dt>
+                <dd className="mono">{mappedConfig.parse_method ?? "—"}</dd>
+                <dt>assessment_mode</dt>
+                <dd className="mono">{mappedConfig.assessment_mode ?? "—"}</dd>
+              </dl>
+            </div>
+          )}
 
-      {planWarnings.length > 0 && (
-        <div
-          className="assessment-plan-panel__warnings"
-          data-testid="assessment-plan-warnings"
-        >
-          <div className="assessment-plan-panel__label">
-            Plan warnings ({planWarnings.length})
-          </div>
-          <ul className="bullet-list">
-            {planWarnings.map((w, i) => <li key={i}>{w}</li>)}
-          </ul>
+          {unhandled.length > 0 && (
+            <div
+              className="assessment-plan-panel__unhandled"
+              data-testid="assessment-plan-unhandled"
+            >
+              <div className="assessment-plan-panel__label">
+                Unhandled capabilities ({unhandled.length})
+              </div>
+              <p className="muted">
+                The deployment couldn't honour these requested capabilities.
+                Compile may have produced lower-quality output for these areas.
+              </p>
+              <CapabilityPills caps={unhandled} variant="unhandled" />
+            </div>
+          )}
+
+          {planWarnings.length > 0 && (
+            <div
+              className="assessment-plan-panel__warnings"
+              data-testid="assessment-plan-warnings"
+            >
+              <div className="assessment-plan-panel__label">
+                Plan warnings ({planWarnings.length})
+              </div>
+              <ul className="bullet-list">
+                {planWarnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -486,6 +561,20 @@ function CapabilityPills({
       ))}
     </div>
   );
+}
+
+function policyLabel(policy: string | null | undefined): string {
+  if (!policy) return "auto";
+  switch (policy) {
+    case "auto":
+      return "Auto — decide per-run from compile signals";
+    case "always":
+      return "Always — run enrichment whenever compile succeeds";
+    case "never":
+      return "Never — domain enrichment is disabled";
+    default:
+      return policy;
+  }
 }
 
 // Re-export the panel type so tests can reference it.

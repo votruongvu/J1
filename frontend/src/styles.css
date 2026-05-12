@@ -3632,6 +3632,18 @@ pre.json .b {
   font-size: 13px;
   line-height: 1.5;
 }
+.assessment-plan-panel__post-compile {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.1));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.assessment-plan-panel__post-compile > .assessment-plan-panel__label:first-child {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
 .assessment-plan-panel__escalation {
   padding: 8px 12px;
   border-left: 3px solid var(--warning-fg);
