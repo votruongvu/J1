@@ -15,7 +15,9 @@ the same way `IngestionResultReviewService` is wired.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -104,6 +106,68 @@ _DEFAULT_VALIDATION_CANDIDATE_TOP_K = 20
 # ``rerank.RerankConfig.evidence_max_blocks``.
 _DEFAULT_VALIDATION_EVIDENCE_MAX_BLOCKS = 5
 
+# Query-provider mode catalogue. The validation surface dispatches
+# the manual-query request through one of these:
+#
+#   * ``bm25_primary``    — current behaviour. Calls
+#     ``HybridQueryEngine`` (BM25 over J1 artifacts + the
+#     downstream reranker / coverage selector). This is the
+#     safe default while ``rag_native_primary`` is being
+#     evaluated in dev.
+#   * ``rag_native_primary`` — calls ``RAGAnythingQueryProvider``
+#     (LightRAG's native ``aquery`` against the per-run
+#     workspace). When native query fails / times out / has no
+#     workspace, falls back to BM25 if
+#     ``J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25`` is true.
+#     Native produces only an answer string (no citations); the
+#     BM25 path is invoked in parallel to augment citations /
+#     evidence — debug field
+#     ``citation_augmentation_used`` records this.
+#   * ``hybrid_ab``       — runs BOTH paths. Returns the BM25
+#     response as the stable answer; surfaces the native
+#     answer + latency in the debug payload so operators can
+#     A/B-compare in dev without changing user-facing
+#     behaviour. Pure observability.
+#
+# Constants are stable strings (mirrored in ``.env.example`` so
+# operators can toggle without reading code).
+QUERY_PROVIDER_MODE_BM25 = "bm25_primary"
+QUERY_PROVIDER_MODE_NATIVE = "rag_native_primary"
+QUERY_PROVIDER_MODE_HYBRID_AB = "hybrid_ab"
+_VALID_QUERY_PROVIDER_MODES: frozenset[str] = frozenset({
+    QUERY_PROVIDER_MODE_BM25,
+    QUERY_PROVIDER_MODE_NATIVE,
+    QUERY_PROVIDER_MODE_HYBRID_AB,
+})
+
+# Default native-query timeout (seconds). Bounds the
+# ``rag.aquery`` call so a stuck vendor request can't hang a
+# validation HTTP handler. The persistent-loop helper raises
+# ``concurrent.futures.TimeoutError`` past this deadline and the
+# dispatcher catches it as a fallback trigger.
+_DEFAULT_NATIVE_QUERY_TIMEOUT_SECONDS = 30.0
+
+
+@dataclass(frozen=True)
+class _DispatchResult:
+    """Outcome of one ``_dispatch_query`` call.
+
+    ``response`` is always the ``QueryResponse`` the rest of the
+    validation pipeline operates on (citations, run-scope
+    checks, evidence). ``native_answer``, when present, is used
+    by ``run_manual_test_query`` to override the synthesized
+    answer; ``None`` means "use the local synthesizer's output."
+    ``debug_extras`` carries mode-specific telemetry that gets
+    merged into the manual-query debug payload.
+    """
+
+    response: Any  # j1.query.models.QueryResponse — typed Any to
+                   # avoid coupling the dataclass to the optional
+                   # import surface.
+    native_answer: str | None
+    native_latency_ms: int | None
+    debug_extras: dict[str, Any]
+
 # Preview length for retrieved-chunk excerpts on the response. Mirrors
 # the chunk projector's value so the UI layer renders consistent
 # preview lengths across the Validation tab and the Chunks tab.
@@ -139,6 +203,17 @@ class IngestionValidationService:
         validation_evidence_max_blocks: int = (
             _DEFAULT_VALIDATION_EVIDENCE_MAX_BLOCKS
         ),
+        # Native-query plumbing. All four are optional so legacy
+        # callers / tests don't have to change. When
+        # ``native_query_provider`` is ``None`` OR the mode is
+        # ``bm25_primary``, the service skips the native path
+        # entirely.
+        native_query_provider: Any | None = None,
+        query_provider_mode: str = QUERY_PROVIDER_MODE_BM25,
+        native_query_timeout_seconds: float = (
+            _DEFAULT_NATIVE_QUERY_TIMEOUT_SECONDS
+        ),
+        native_query_fallback_to_bm25: bool = True,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -189,6 +264,35 @@ class IngestionValidationService:
         )
         self._validation_evidence_max_blocks = max(
             1, int(validation_evidence_max_blocks),
+        )
+
+        # Native-query dispatch state. The mode strings are
+        # validated here once so a misconfigured env var becomes
+        # an obvious server-side log instead of a silent fallthrough.
+        # Modes that name native-query are demoted to
+        # ``bm25_primary`` if the native provider isn't wired —
+        # operators get the warning, and the path stays predictable.
+        self._native_query_provider = native_query_provider
+        mode = (query_provider_mode or "").strip() or QUERY_PROVIDER_MODE_BM25
+        if mode not in _VALID_QUERY_PROVIDER_MODES:
+            _log.warning(
+                "unknown query_provider_mode=%r; falling back to %r",
+                mode, QUERY_PROVIDER_MODE_BM25,
+            )
+            mode = QUERY_PROVIDER_MODE_BM25
+        if mode != QUERY_PROVIDER_MODE_BM25 and native_query_provider is None:
+            _log.warning(
+                "query_provider_mode=%r requested but no "
+                "native_query_provider wired; falling back to %r",
+                mode, QUERY_PROVIDER_MODE_BM25,
+            )
+            mode = QUERY_PROVIDER_MODE_BM25
+        self._query_provider_mode = mode
+        self._native_query_timeout_seconds = max(
+            1.0, float(native_query_timeout_seconds),
+        )
+        self._native_query_fallback_to_bm25 = bool(
+            native_query_fallback_to_bm25,
         )
 
     def run_manual_test_query(
@@ -250,7 +354,10 @@ class IngestionValidationService:
         )
 
         try:
-            response = self._query_engine.query(ctx, query_request)
+            dispatch = self._dispatch_query(
+                ctx=ctx, run=run, query_request=query_request,
+            )
+            response = dispatch.response
         except Exception as exc:  # noqa: BLE001
             # Engine failures must not 500 — surface them as a structured
             # `inconclusive` response so the FE can render an actionable
@@ -303,6 +410,28 @@ class IngestionValidationService:
             evidence=evidence_blocks,
         )
 
+        # In ``rag_native_primary`` mode the native LightRAG aquery
+        # produced its own prose answer. We prefer that over the
+        # local synthesizer's answer — it was generated from the
+        # full graph + vector context LightRAG has, whereas the
+        # local synthesizer only saw the BM25-augmented evidence
+        # blocks. The local synthesizer's trace is preserved in
+        # ``llm`` so operators can still see what it would have
+        # said for comparison. Citation augmentation is recorded
+        # in the debug payload.
+        if dispatch.native_answer:
+            synthesized_answer = dispatch.native_answer
+            if llm_trace is None:
+                llm_trace = LLMTraceDTO(
+                    called=True,
+                    provider="raganything",
+                    model="native",
+                    latency_ms=dispatch.native_latency_ms,
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    error=None,
+                )
+
         self._audit_manual_query(
             ctx=ctx,
             run=run,
@@ -324,6 +453,12 @@ class IngestionValidationService:
             evidence_max_blocks=self._validation_evidence_max_blocks,
             scope_run_id=run.run_id,
         )
+        # Merge the dispatcher's mode-specific debug. ``debug_extras``
+        # carries query_provider_mode / native_query_used /
+        # native_query_failed_reason / native_latency_ms /
+        # bm25_latency_ms / citation_augmentation_used /
+        # fallback_used — populated by ``_dispatch_query``.
+        debug.update(dispatch.debug_extras)
         # Operator-readable retrieval breakdown. Helps confirm
         # whether failures are "FTS only returned N rows" vs
         # "FTS returned plenty but reranker / selection
@@ -383,6 +518,337 @@ class IngestionValidationService:
         # Default / fallback path. `"run"` (or `"active"` without a
         # registry wired) → scope to this specific run id.
         return RunScope(run_id=run.run_id)
+
+    # ---- Query dispatcher (BM25 / native / hybrid_ab) ------------------
+
+    def _dispatch_query(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        query_request: "QueryRequest",
+    ) -> "_DispatchResult":
+        """Route the manual-query request through the configured
+        provider mode.
+
+        Returns a ``_DispatchResult`` carrying:
+
+          * ``response``           — the BM25 ``QueryResponse``. The
+            rest of the pipeline (retrieved_chunks / citations /
+            evidence builder / synthesizer / checks) operates on
+            this object regardless of mode, so the response
+            contract (citations, run-scope checks, evidence pack)
+            is preserved across all three modes.
+          * ``native_answer``      — non-empty when native ran AND
+            produced an answer. The caller uses it to override
+            ``synthesized_answer`` so the LLM-generated text the
+            FE renders is the native one (when in
+            ``rag_native_primary``).
+          * ``debug_extras``       — provider-mode telemetry merged
+            into the response debug payload.
+          * ``native_latency_ms``  — wall-clock duration of the
+            native call (None when native didn't run).
+
+        Mode behaviours:
+
+          ``bm25_primary`` (default)
+            Single BM25 call. Native provider untouched.
+
+          ``rag_native_primary``
+            Native call first. If it succeeds, the answer is held
+            for synthesized_answer override AND we ALSO call BM25
+            (so citations / retrieved_chunks / evidence blocks
+            exist on the response — native doesn't expose
+            citation metadata in J1's shape). Debug records
+            ``citation_augmentation_used=True``. If native fails
+            or times out AND ``native_query_fallback_to_bm25``,
+            we fall back to BM25-only — the local synthesizer
+            then produces the LLM answer as usual.
+
+          ``hybrid_ab``
+            BM25 is always the stable answer path. Native runs
+            best-effort for observability; its answer + latency
+            land in ``debug_extras`` so operators can compare. A
+            native failure is recorded but never affects the
+            response.
+        """
+        mode = self._query_provider_mode
+        engine_query = self._query_engine.query  # bound method, cheap to alias
+
+        if mode == QUERY_PROVIDER_MODE_BM25:
+            bm25_start = time.monotonic()
+            response = engine_query(ctx, query_request)
+            bm25_latency = int((time.monotonic() - bm25_start) * 1000)
+            return _DispatchResult(
+                response=response,
+                native_answer=None,
+                native_latency_ms=None,
+                debug_extras={
+                    "query_provider_mode": mode,
+                    "native_query_enabled": (
+                        self._native_query_provider is not None
+                    ),
+                    "native_query_used": False,
+                    "bm25_latency_ms": bm25_latency,
+                    "fallback_used": False,
+                    "citation_augmentation_used": False,
+                },
+            )
+
+        if mode == QUERY_PROVIDER_MODE_NATIVE:
+            return self._dispatch_native_primary(
+                ctx=ctx, run=run, query_request=query_request,
+            )
+
+        if mode == QUERY_PROVIDER_MODE_HYBRID_AB:
+            return self._dispatch_hybrid_ab(
+                ctx=ctx, run=run, query_request=query_request,
+            )
+
+        # Defensive — constructor validates mode, but a future
+        # refactor that adds a new mode without updating dispatch
+        # falls through to BM25 with a warning rather than 500ing.
+        _log.warning(
+            "unhandled query_provider_mode=%r in dispatcher; "
+            "falling back to bm25_primary",
+            mode,
+        )
+        response = engine_query(ctx, query_request)
+        return _DispatchResult(
+            response=response,
+            native_answer=None,
+            native_latency_ms=None,
+            debug_extras={
+                "query_provider_mode": QUERY_PROVIDER_MODE_BM25,
+                "native_query_enabled": (
+                    self._native_query_provider is not None
+                ),
+                "native_query_used": False,
+                "bm25_latency_ms": 0,
+                "fallback_used": False,
+                "citation_augmentation_used": False,
+            },
+        )
+
+    def _run_native_query(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        query_request: "QueryRequest",
+    ) -> tuple[str | None, int, str | None]:
+        """Best-effort native ``aquery`` call.
+
+        Returns ``(native_answer, latency_ms, error)``:
+          * ``native_answer`` is the raw prose LightRAG produced,
+            or ``None`` when the call failed / timed out / the
+            provider was unwired.
+          * ``latency_ms`` is the wall-clock duration even on
+            failure (so debug telemetry reports useful numbers).
+          * ``error`` is a short reason string when the call
+            didn't yield an answer; ``None`` on success.
+
+        Per-run workspace isolation is enforced by the bridge —
+        ``RAGAnythingQueryProvider`` threads ``run_id`` +
+        ``document_id`` into the request so the LightRAG
+        ``working_dir`` lands at the per-run scoped path
+        (``{workdir}/runs/{tenant}/{project}/{doc}/{run}/``).
+        """
+        if self._native_query_provider is None:
+            return (None, 0, "native_provider_not_wired")
+        # Lazy import — only required when native mode is wired.
+        from j1.processing.results import ResultStatus
+
+        started = time.monotonic()
+        try:
+            # NOTE: the provider's own try/except converts most
+            # vendor failures to a FAILED ``QueryResult`` rather
+            # than raising. Timeout propagates as
+            # ``concurrent.futures.TimeoutError`` from the
+            # persistent loop helper; the bridge re-raises it.
+            # Both shapes are handled below.
+            from j1.providers.raganything._persistent_loop import (
+                get_persistent_loop,
+            )
+            # The provider's ``query`` is synchronous from our
+            # POV (it dispatches onto the persistent loop
+            # internally). We still need a wall-clock timeout so
+            # a stuck call doesn't hang the validation handler.
+            # The provider already handles the loop dispatch; we
+            # bound it via a thread-future wrapper.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+            ) as pool:
+                future = pool.submit(
+                    self._native_query_provider.query,
+                    ctx,
+                    query_request.question,
+                    max_results=query_request.max_results,
+                    document_id=run.document_id,
+                    run_id=run.run_id,
+                )
+                try:
+                    result = future.result(
+                        timeout=self._native_query_timeout_seconds,
+                    )
+                except concurrent.futures.TimeoutError:
+                    future.cancel()
+                    return (
+                        None,
+                        int((time.monotonic() - started) * 1000),
+                        f"native_query_timeout_after_"
+                        f"{self._native_query_timeout_seconds}s",
+                    )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                None,
+                int((time.monotonic() - started) * 1000),
+                f"{type(exc).__name__}: {exc}",
+            )
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        # ``RAGAnythingQueryProvider.query`` returns a ``QueryResult``
+        # (not the ``QueryResponse`` the rest of the pipeline uses).
+        # We only need its ``answer`` for the synthesized-answer
+        # override; sources are augmented from BM25 separately.
+        if getattr(result, "status", None) != ResultStatus.SUCCEEDED:
+            return (
+                None, latency_ms,
+                str(getattr(result, "error", None) or "native_query_failed"),
+            )
+        answer = (getattr(result, "answer", "") or "").strip()
+        if not answer:
+            return (None, latency_ms, "native_query_empty_answer")
+        return (answer, latency_ms, None)
+
+    def _dispatch_native_primary(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        query_request: "QueryRequest",
+    ) -> "_DispatchResult":
+        """``rag_native_primary`` dispatch: native first, BM25 for
+        citations / fallback."""
+        native_answer, native_latency, native_error = self._run_native_query(
+            ctx=ctx, run=run, query_request=query_request,
+        )
+
+        # Always run BM25 too — even when native succeeds, we need
+        # its citations / retrieved_chunks / evidence pack so the
+        # response contract (run-scope checks, citation lineage)
+        # stays intact. Operators who specifically want to avoid
+        # the BM25 cost can set the mode back to bm25_primary.
+        bm25_start = time.monotonic()
+        bm25_response = self._query_engine.query(ctx, query_request)
+        bm25_latency = int((time.monotonic() - bm25_start) * 1000)
+
+        if native_answer is None:
+            # Native failed / timed out / not wired. Fall back to
+            # pure BM25 if configured, else surface the failure
+            # in debug so the operator can see WHY.
+            if self._native_query_fallback_to_bm25:
+                return _DispatchResult(
+                    response=bm25_response,
+                    native_answer=None,
+                    native_latency_ms=native_latency,
+                    debug_extras={
+                        "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
+                        "native_query_enabled": True,
+                        "native_query_used": False,
+                        "native_query_failed_reason": native_error,
+                        "native_latency_ms": native_latency,
+                        "bm25_latency_ms": bm25_latency,
+                        "fallback_used": True,
+                        "citation_augmentation_used": False,
+                    },
+                )
+            # Fallback disabled. Return BM25 anyway (we need SOME
+            # response) but tag the failure prominently.
+            return _DispatchResult(
+                response=bm25_response,
+                native_answer=None,
+                native_latency_ms=native_latency,
+                debug_extras={
+                    "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
+                    "native_query_enabled": True,
+                    "native_query_used": False,
+                    "native_query_failed_reason": native_error,
+                    "native_latency_ms": native_latency,
+                    "bm25_latency_ms": bm25_latency,
+                    "fallback_used": False,
+                    "citation_augmentation_used": False,
+                },
+            )
+
+        # Native succeeded. Use the native answer as the
+        # synthesized answer; BM25 provides citations / evidence.
+        # Mark citation_augmentation_used so debug callers know
+        # the answer text and citations came from DIFFERENT
+        # query paths.
+        return _DispatchResult(
+            response=bm25_response,
+            native_answer=native_answer,
+            native_latency_ms=native_latency,
+            debug_extras={
+                "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
+                "native_query_enabled": True,
+                "native_query_used": True,
+                "native_query_failed_reason": None,
+                "native_latency_ms": native_latency,
+                "bm25_latency_ms": bm25_latency,
+                "fallback_used": False,
+                "citation_augmentation_used": True,
+            },
+        )
+
+    def _dispatch_hybrid_ab(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        query_request: "QueryRequest",
+    ) -> "_DispatchResult":
+        """``hybrid_ab`` dispatch: BM25 is the stable answer; native
+        runs for observability only."""
+        bm25_start = time.monotonic()
+        bm25_response = self._query_engine.query(ctx, query_request)
+        bm25_latency = int((time.monotonic() - bm25_start) * 1000)
+
+        # Best-effort native — failures never affect the response.
+        native_answer, native_latency, native_error = self._run_native_query(
+            ctx=ctx, run=run, query_request=query_request,
+        )
+
+        # Preview slices keep debug payloads bounded. 240 chars is
+        # the same cap the FE applies to ``preview`` fields, so
+        # operators see "what the model said in roughly one line."
+        _PREVIEW_CAP = 240
+        bm25_preview = (bm25_response.answer or "")[:_PREVIEW_CAP]
+        native_preview = (native_answer or "")[:_PREVIEW_CAP]
+
+        return _DispatchResult(
+            response=bm25_response,
+            native_answer=None,  # never overrides synthesized_answer
+            native_latency_ms=native_latency,
+            debug_extras={
+                "query_provider_mode": QUERY_PROVIDER_MODE_HYBRID_AB,
+                "native_query_enabled": True,
+                # We DID call native — it just doesn't drive the
+                # response. ``native_query_used`` records whether
+                # the call SUCCEEDED, not whether it influenced
+                # output.
+                "native_query_used": native_answer is not None,
+                "native_query_failed_reason": native_error,
+                "native_latency_ms": native_latency,
+                "bm25_latency_ms": bm25_latency,
+                "fallback_used": False,
+                "citation_augmentation_used": False,
+                "hybrid_ab_native_answer_preview": native_preview,
+                "hybrid_ab_bm25_answer_preview": bm25_preview,
+            },
+        )
 
     def _build_evidence_blocks_for_run(
         self,

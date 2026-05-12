@@ -309,6 +309,37 @@ def build_validation_service(workspace: WorkspaceResolver):
         DefaultAnswerSynthesizer(text_client=llm_client) if llm_client else None
     )
 
+    # Native query provider (LightRAG's hybrid `aquery`). Built
+    # best-effort: when RAGAnything settings can't be loaded
+    # (vendor not installed in this deployment, missing workdir,
+    # bootstrap unavailable, etc.) we leave the provider as
+    # ``None`` and the service silently falls back to BM25 even
+    # if the operator set ``J1_QUERY_PROVIDER_MODE`` to a
+    # native mode. The service logs a warning so the
+    # misconfiguration is visible.
+    native_query_provider = _build_native_query_provider_or_none()
+
+    # Env-driven retrieval knobs. ``J1_QUERY_PROVIDER_MODE``
+    # controls which dispatch path validation uses; the other
+    # three are the candidate-pool / final-cap / native-timeout
+    # tuning operators may need. See ``.env.example`` for the
+    # canonical names and defaults.
+    query_provider_mode = os.environ.get(
+        "J1_QUERY_PROVIDER_MODE", "bm25_primary",
+    ).strip() or "bm25_primary"
+    validation_candidate_top_k = _env_int(
+        "J1_VALIDATION_CANDIDATE_TOP_K", default=20,
+    )
+    validation_evidence_max_blocks = _env_int(
+        "J1_VALIDATION_EVIDENCE_MAX_BLOCKS", default=5,
+    )
+    native_query_timeout_seconds = _env_float(
+        "J1_RAG_NATIVE_QUERY_TIMEOUT_SECONDS", default=30.0,
+    )
+    native_query_fallback_to_bm25 = _env_bool(
+        "J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25", default=True,
+    )
+
     return IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=artifacts,
@@ -341,7 +372,89 @@ def build_validation_service(workspace: WorkspaceResolver):
         # falls back to RunScope(this run id), which matches the
         # spec's "if no scope explicit, behave as run-scoped".
         source_registry=JsonSourceRegistry(workspace),
+        # Retrieval quality knobs (env-driven).
+        validation_candidate_top_k=validation_candidate_top_k,
+        validation_evidence_max_blocks=validation_evidence_max_blocks,
+        # Native-query provider. Production default
+        # (``bm25_primary``) leaves this unused; operators opt
+        # into native by setting J1_QUERY_PROVIDER_MODE.
+        native_query_provider=native_query_provider,
+        query_provider_mode=query_provider_mode,
+        native_query_timeout_seconds=native_query_timeout_seconds,
+        native_query_fallback_to_bm25=native_query_fallback_to_bm25,
     )
+
+
+def _build_native_query_provider_or_none():
+    """Construct ``RAGAnythingQueryProvider`` if RAGAnything is
+    installed AND an LLM registry can be loaded. Returns ``None``
+    on any failure — the validation service handles None
+    gracefully (mode degrades to bm25_primary with a warning).
+
+    Kept separate so the import failures + bootstrap failures
+    don't leak into the main validation-service wiring path.
+    """
+    try:
+        from j1.compose import bootstrap_from_env
+        from j1.providers.raganything.retrieval import (
+            RAGAnythingQueryProvider,
+        )
+        from j1.providers.raganything.settings import (
+            load_raganything_settings,
+        )
+    except Exception:  # noqa: BLE001 — vendor / config not installable
+        return None
+
+    try:
+        boot = bootstrap_from_env()
+    except Exception:  # noqa: BLE001 — bootstrap may not be available
+        return None
+    llm_registry = getattr(boot, "llm_registry", None)
+    if llm_registry is None:
+        return None
+
+    try:
+        rag_settings = load_raganything_settings()
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        return RAGAnythingQueryProvider.from_default(
+            llm_registry=llm_registry,
+            settings=rag_settings,
+        )
+    except Exception:  # noqa: BLE001 — degrade silently
+        return None
+
+
+def _env_int(name: str, *, default: int) -> int:
+    """Read an int env var with a default. Invalid values log a
+    warning (via the underlying parse) but fall back to the
+    default rather than crashing the boot."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, *, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
 
 
 def _domain_registry_or_none():

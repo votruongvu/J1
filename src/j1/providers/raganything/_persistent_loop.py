@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from concurrent.futures import TimeoutError as _FuturesTimeoutError
 from typing import Awaitable, TypeVar
 
 _log = logging.getLogger("j1.providers.raganything._persistent_loop")
@@ -96,20 +97,45 @@ class _PersistentEventLoop:
                 pass
             self._loop.close()
 
-    def run_coroutine(self, coro: Awaitable[_T]) -> _T:
+    def run_coroutine(
+        self,
+        coro: Awaitable[_T],
+        *,
+        timeout: float | None = None,
+    ) -> _T:
         """Schedule `coro` on the persistent loop and block until done.
 
  Caller blocks the calling thread (a Temporal activity
  worker thread) — same blocking semantics as the previous
  ``asyncio.run`` call site. Raised exceptions inside the
  coroutine surface to the caller verbatim.
+
+ ``timeout`` (seconds) bounds how long the caller will block.
+ On expiry the underlying scheduled coroutine is cancelled
+ and ``concurrent.futures.TimeoutError`` is raised. Used by
+ the native RAGAnything query path so a stuck vendor call
+ can't hang a validation request. ``None`` (default)
+ preserves the historical "block indefinitely" semantics so
+ every existing caller is unaffected.
  """
         # `run_coroutine_threadsafe` is the only correct way to
         # bridge a coroutine from one thread into a loop running
         # in another. ``Future.result`` blocks the calling
-        # thread until the loop completes the coroutine.
+        # thread until the loop completes the coroutine — with
+        # an optional timeout that maps onto the underlying
+        # ``concurrent.futures.Future.result(timeout=…)``.
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
+        try:
+            return future.result(timeout=timeout)
+        except _FuturesTimeoutError:
+            # Best-effort: cancel the in-flight task on the loop
+            # so we don't keep doing LLM work the caller has
+            # already given up on. The cancel propagates via
+            # the loop thread; it may not interrupt LLM-side
+            # blocking IO, but it stops further work from
+            # scheduling.
+            future.cancel()
+            raise
 
     def shutdown(self) -> None:
         """Stop the loop and join the thread.
