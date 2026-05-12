@@ -378,27 +378,23 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
         />
       </div>
 
-      {/* Assessment Plan — shows the rule-based assessor's mode +
- confidence + capabilities + reason at the top of the page
- so operators see WHICH compile strategy J1 picked before
- scanning compile output / timeline. */}
-      <div style={{ marginBottom: 20 }}>
-        <AssessmentPlanPanel
-          runId={runId}
-          latestEvent={events.length > 0 ? events[events.length - 1] : null}
-        />
-      </div>
-
       <div className="run-body">
         <div className="col">
+          <LiveTimeline
+            events={events}
+            streamStatus={streamStatus}
+            onSelectEvent={onSelectEvent}
+          />
+        </div>
+        <div className="col run-body__scroll">
+          <AssessmentPlanPanel
+            runId={runId}
+            latestEvent={events.length > 0 ? events[events.length - 1] : null}
+          />
           <CompileStrategyPanel
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
           />
-          {/* typed compile-result summary (chunks,
- detected tables, retry history, raw refs). Surfaces
- the same data the workflow used to decide whether
- enrichment runs. */}
           <CompileResultPanel
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
@@ -407,19 +403,9 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
           />
-          {/* typed enrichment overlay. Renders
- skipped/succeeded/warning/failed states with operator-
- readable copy + per-module outcomes. */}
           <EnrichmentResultPanel
             runId={runId}
             latestEvent={events.length > 0 ? events[events.length - 1] : null}
-          />
-        </div>
-        <div className="col">
-          <LiveTimeline
-            events={events}
-            streamStatus={streamStatus}
-            onSelectEvent={onSelectEvent}
           />
         </div>
       </div>

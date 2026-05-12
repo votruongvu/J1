@@ -1458,8 +1458,9 @@ pre,
 /* ── Two-column body ──────────────────────────────────── */
 .run-body {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 24px;
+  align-items: start;
 }
 @media (max-width: 1080px) {
   .run-body {
@@ -1470,6 +1471,24 @@ pre,
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
+}
+/* Right-side stacked-artifact panels share one viewport-sized
+   scroll container so the long sequence (assess → compile strategy →
+   compile result → enrich plan → enrichment result) doesn't push
+   the page into a long vertical scroll. Height tracks the viewport
+   so it visually balances against the LiveTimeline column. */
+.run-body__scroll {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  padding-right: 8px;
+}
+@media (max-width: 1080px) {
+  .run-body__scroll {
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
+  }
 }
 
 /* ── Plan ─────────────────────────────────────────────── */
