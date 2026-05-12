@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from j1.processing.status import StepSource, StepStatus
 
@@ -90,7 +91,14 @@ class StepResult:
     reason: str | None = None
     error: StepError | None = None
     artifact_count: int = 0
-    metadata: dict[str, object] = field(default_factory=dict)
+    # `dict[str, Any]` rather than `dict[str, object]` because
+    # Temporal's payload converter recursively coerces values against
+    # the annotated type, and `object` is treated as a concrete type
+    # the converter doesn't know how to materialise — runs that ship
+    # a `list[StepResult]` across the activity boundary fail with
+    # "Failed converting value for key 'document_id' in mapping
+    # dict[str, object]". `Any` is the documented escape hatch.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
         """True when no further work is expected on this step."""
