@@ -65,6 +65,77 @@ TARGET_ARTIFACT_SET = "artifact_set"
 CHECKSUM_PREFIX = "sha256:"
 
 
+# Artifact kinds that the validation + retrieval surfaces gate on
+# `metadata.run_id`. If any of these is registered without a
+# run_id, the orchestration layer raises so the bug surfaces
+# loudly at write time rather than silently breaking validation
+# lineage checks downstream (the "graph_json with run_id=None"
+# class of failures the test reports keep finding).
+#
+# Generic / blob-style kinds NOT listed here are still permitted
+# without a run_id — they're typically operator-uploaded files
+# that legitimately have no run context.
+_LINEAGE_REQUIRED_KINDS: frozenset[str] = frozenset({
+    "graph_json",
+    "chunk",
+    "compiled.text",
+    "compiled.json",
+    "parsed_content_manifest",
+    "enriched.tables",
+    "enriched.visuals",
+    "enriched.document_map",
+    "enriched.requirements",
+    "enriched.formulas",
+    "enriched.risks",
+    "enriched.consistency_findings",
+    "enriched.source_map",
+    "enriched.confidence_assessment",
+    "graph_corpus",
+    "report",
+})
+
+
+class LineageError(RuntimeError):
+    """Raised when an artifact write violates the lineage contract.
+
+    Distinct exception class so the Temporal layer can decide to
+    treat it as non-retryable (it indicates a programmer error in
+    the producer, not a transient failure).
+    """
+
+
+def _enforce_lineage_or_raise(
+    kind: str, metadata: dict, artifact_id: str,
+) -> None:
+    """Fail-fast guard: artifacts of lineage-required kinds MUST
+    carry a ``run_id`` in metadata at write time.
+
+    The orchestration registration activity stamps ``run_id`` from
+    the workflow's ``correlation_id`` (see ``_register_drafts``);
+    this guard catches any future producer that bypasses that path
+    — for example a custom adapter that calls the artifact
+    registry directly. Without this check, retrieval and validation
+    surfaces silently see ``run_id=None`` rows and the failure mode
+    is invisible until a tester runs validation hours later.
+
+    The check is intentionally minimal: presence-only. Whether the
+    `run_id` value is correct is verified by the existing
+    `retrieved_chunks_belong_to_run` validation check.
+    """
+    if kind not in _LINEAGE_REQUIRED_KINDS:
+        return
+    run_id = metadata.get("run_id") if isinstance(metadata, dict) else None
+    if not run_id:
+        raise LineageError(
+            f"refusing to register artifact {artifact_id!r} of kind "
+            f"{kind!r}: no run_id in metadata. Lineage-required "
+            "kinds must be registered with run_id set so retrieval "
+            "and validation can scope correctly. This is a "
+            "programmer error — the producer must pass run_id (or "
+            "correlation_id at the activity boundary) through."
+        )
+
+
 class KnowledgeProcessingActivities:
     def __init__(
         self,
@@ -444,6 +515,18 @@ class KnowledgeProcessingActivities:
         merged_metadata = dict(draft.metadata)
         if run_id and "run_id" not in merged_metadata:
             merged_metadata["run_id"] = run_id
+        # Fail-fast lineage guard. The earlier orchestration fix
+        # ensures `correlation_id` flows through to `run_id`; this
+        # check is the defense-in-depth that catches any future
+        # producer that forgets to pass `run_id` through. Without it,
+        # graph_json / chunk / enriched.* artifacts could silently
+        # land with `run_id=None`, poisoning validation lineage
+        # checks (which is exactly the bug the latest test reports
+        # surface). The check is scoped to the artifact kinds the
+        # validation/retrieval surface gates on — generic blob
+        # uploads that legitimately have no run context skip the
+        # guard.
+        _enforce_lineage_or_raise(draft.kind, merged_metadata, artifact_id)
         record = ArtifactRecord(
             artifact_id=artifact_id,
             project=ctx,

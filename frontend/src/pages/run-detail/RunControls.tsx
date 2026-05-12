@@ -1,17 +1,36 @@
 /**
- * Status-aware control buttons for an ingestion run — pause / resume /
- * cancel. Each button only renders for statuses where the action is
- * legal (the backend also enforces this and returns 409 if it isn't).
+ * Status-aware control buttons for an ingestion run.
  *
- * UX contract:
+ * Phase 8 reorganisation: the document-centric refactor moved
+ * destructive lifecycle actions (delete the run, purge the run,
+ * re-process from scratch) up to the document layer — users
+ * should manage documents, not runs. This component now splits
+ * its action set into two tiers:
+ *
+ *  * **Primary controls** — workflow lifecycle (pause / resume /
+ *    cancel), the "Continue from compiled result" affordance, and
+ *    rebuild-index. These are run-scoped concerns that legitimately
+ *    operate on a specific attempt, not the document as a whole.
+ *
+ *  * **Advanced (debug)** — the old run-level destructive actions
+ *    (re-process / soft-delete / purge). Hidden behind an
+ *    `Advanced ▾` disclosure so a normal user reaching for "delete
+ *    this run" is gently nudged toward the document-level
+ *    Detach / Remove instead.
+ *
+ * Compact mode (used on the legacy runs list) hides the advanced
+ * disclosure entirely — there's no room for a collapsible panel in
+ * a list row, and the list view shouldn't encourage run-level
+ * destructive ops anyway.
+ *
+ * UX contract (unchanged):
  * - One in-flight action at a time. While a request is pending,
  * all buttons disable + the active one shows a spinner.
- * - Cancel uses `window.confirm` because it's irreversible.
+ * - Cancel + advanced destructive actions use `window.confirm`.
  * - Success/failure surface as a toast.
  * - After every attempted action the parent refreshes the run via
  * `onRefresh` so the run record's new status flows back into
- * header/panels (the backend flips status synchronously, but the
- * SSE/polling channels reconverge anyway).
+ * header/panels.
  */
 
 import { useCallback, useState } from "react";
@@ -54,6 +73,10 @@ export function RunControls({
 }: RunControlsProps) {
   const client = useClient();
   const [pending, setPending] = useState<ControlAction | null>(null);
+  // Disclosure state for the run-level destructive actions
+  // (re-process / delete / purge). Hidden by default in detail
+  // view; entirely omitted in compact list-row view.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const dispatch = useCallback(
     async (action: ControlAction) => {
@@ -66,11 +89,17 @@ export function RunControls({
         if (!ok) return;
       }
       if (action === "delete") {
+        // The document-centric refactor moved primary cleanup
+        // up to the document level — Detach / Remove on the
+        // document page handles what a normal user wants.
+        // Run-level delete still works as a debug affordance but
+        // the copy makes the document-level path obvious.
         const ok = window.confirm(
-          `Delete "${run.document_name}"?\n\n` +
-            `This soft-deletes the run + every artifact it produced. ` +
-            `Tombstoned records stay on disk for audit but no longer ` +
-            `appear in the UI. The action is reversible only by an admin.`,
+          `Delete THIS RUN of "${run.document_name}"?\n\n` +
+            `This soft-deletes ONLY this attempt. The document and ` +
+            `its other runs stay attached to the knowledge base.\n\n` +
+            `Looking to remove the document from search/answers? ` +
+            `Use Detach or Remove on the document page instead.`,
         );
         if (!ok) return;
       }
@@ -78,13 +107,20 @@ export function RunControls({
         const ok = window.confirm(
           `Re-process "${run.document_name}" from scratch?\n\n` +
             `Starts a NEW ingestion run for the same document. The ` +
-            `original run stays visible until you delete it explicitly.`,
+            `original active run is preserved until the new run ` +
+            `reaches a successful terminal state.\n\n` +
+            `Tip: "Re-index" on the document page is the document-` +
+            `centric equivalent of this action.`,
         );
         if (!ok) return;
       }
       if (action === "resumeCheckpoint") {
+        // Operator-friendly relabel per spec: "Continue from
+        // compiled result" tells the user exactly where the
+        // workflow picks up, vs. the generic "Resume" which
+        // collided with the paused→running button.
         const ok = window.confirm(
-          `Resume "${run.document_name}" from the last checkpoint?\n\n` +
+          `Continue "${run.document_name}" from the compiled result?\n\n` +
             `Skips enrich + graph stages that already completed in ` +
             `the prior run; compile and chunk-generation always re-run. ` +
             `Refused (412) if settings drifted since the prior run — ` +
@@ -183,39 +219,36 @@ export function RunControls({
 
   if (!run) return null;
   const status = run.status;
+  const isActive = ACTIVE_STATUSES.has(status);
+  const isDeleted = status === RUN_STATUS.DELETED;
+  // ---- Primary controls (always visible on terminal/inflight runs)
   const showPause = PAUSE_FROM.has(status);
   const showResume = RESUME_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
-  // Re-process + Delete are only legal on terminal runs (the
-  // backend returns 409 otherwise). Show whenever the run is NOT
-  // active. Hide on already-deleted runs (status === "deleted")
-  // — there's nothing more to delete and the document is gone
-  // from the active KB.
-  const isActive = ACTIVE_STATUSES.has(status);
-  const isDeleted = status === RUN_STATUS.DELETED;
-  const showReindex = !isActive && !isDeleted;
-  const showDelete = !isActive && !isDeleted;
-  // Resume from checkpoint is meaningful on FAILED runs that have a
-  // resume snapshot. The snapshot is only persisted on the SUCCEEDED
-  // / FAILED / TIMED_OUT paths — cancelled runs aren't a useful
-  // resume point. We show the button on any failed run; the backend
-  // returns 412 if the snapshot is absent / settings drifted.
-  const showResumeCheckpoint =
-    status === RUN_STATUS.FAILED;
-  // Rebuild index works against any terminal run that produced
-  // chunks — typical use is a SUCCEEDED run where the vector store
-  // was cleared. Show on every non-active, non-deleted run; the
-  // backend returns 412 when no chunks exist for the run.
+  // "Continue from compiled result" — only on FAILED runs (the
+  // resume snapshot is persisted on SUCCEEDED / FAILED paths;
+  // CANCELLED isn't a meaningful resume point). The backend
+  // returns 412 if the snapshot is absent or settings drifted.
+  const showResumeCheckpoint = status === RUN_STATUS.FAILED;
+  // Rebuild index is a niche-but-legitimate run-level action
+  // (run-scoped retry of the index activity only). Stays in the
+  // primary surface because there's no document-level equivalent.
   const showRebuildIndex = !isActive && !isDeleted;
-  // Purge is the second step of the two-step delete ritual. Only
-  // show on already-soft-deleted runs so an accidental click on a
-  // live run can't physically destroy data. Operators who want to
-  // purge an undeleted terminal run can soft-delete first.
-  const showPurge = isDeleted;
+
+  // ---- Advanced (debug) — run-level destructive actions.
+  // Document-centric refactor moved these up to the document
+  // layer; we keep them here for power users but gate behind a
+  // disclosure so a normal user doesn't reach for them by mistake.
+  const showAdvancedReindex = !isActive && !isDeleted;
+  const showAdvancedDelete = !isActive && !isDeleted;
+  const showAdvancedPurge = isDeleted;
+  const hasAdvanced =
+    !compact && (showAdvancedReindex || showAdvancedDelete || showAdvancedPurge);
+
   if (
     !showPause && !showResume && !showCancel
-    && !showReindex && !showDelete && !showResumeCheckpoint
-    && !showRebuildIndex && !showPurge
+    && !showResumeCheckpoint && !showRebuildIndex
+    && !hasAdvanced
     && status !== RUN_STATUS.CANCELLING
   ) {
     return null;
@@ -287,35 +320,21 @@ export function RunControls({
           className={btnClass}
           disabled={anyPending}
           onClick={() => void dispatch("resumeCheckpoint")}
-          aria-label="Resume from last checkpoint"
+          aria-label="Continue from compiled result"
           title={
-            "Start a new run that skips enrich + graph stages " +
-            "completed by this run. Compile + chunks always re-run."
+            "Continue from the compiled result — skips enrich + graph " +
+            "stages completed by this run. Compile + chunks always re-run."
           }
+          data-testid="run-controls-continue"
         >
           {isPending("resumeCheckpoint") ? (
             <Icon.RefreshCw className="icon-sm spin" />
           ) : (
             <Icon.Play className="icon-sm" />
           )}
-          {!compact && <span style={{ marginLeft: 4 }}>Resume</span>}
-        </button>
-      )}
-      {showReindex && (
-        <button
-          type="button"
-          className={btnClass}
-          disabled={anyPending}
-          onClick={() => void dispatch("reindex")}
-          aria-label="Re-process from original document"
-          title="Start a new ingestion run for the same document"
-        >
-          {isPending("reindex") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.RefreshCw className="icon-sm" />
+          {!compact && (
+            <span style={{ marginLeft: 4 }}>Continue from compiled result</span>
           )}
-          {!compact && <span style={{ marginLeft: 4 }}>Re-process</span>}
         </button>
       )}
       {showRebuildIndex && (
@@ -338,42 +357,99 @@ export function RunControls({
           {!compact && <span style={{ marginLeft: 4 }}>Rebuild index</span>}
         </button>
       )}
-      {showDelete && (
-        <button
-          type="button"
-          className={`${btnClass} btn--danger`}
-          disabled={anyPending}
-          onClick={() => void dispatch("delete")}
-          aria-label="Delete run from knowledge base"
-          title="Soft-delete the run + its artifacts"
-        >
-          {isPending("delete") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.XCircle className="icon-sm" />
+
+      {/* Advanced (debug) — collapsed by default. Detail view
+          only — list-row compact mode skips the advanced section
+          entirely because there's no room for a disclosure. */}
+      {hasAdvanced && (
+        <div className="run-controls__advanced">
+          <button
+            type="button"
+            className={`${btnClass} btn--ghost run-controls__advanced-toggle`}
+            onClick={() => setAdvancedOpen((v) => !v)}
+            aria-expanded={advancedOpen}
+            aria-controls="run-controls-advanced-panel"
+            data-testid="run-controls-advanced-toggle"
+            title={
+              "Run-level destructive actions. Most users should " +
+              "manage documents (Detach / Remove / Re-index) instead."
+            }
+          >
+            Advanced {advancedOpen ? "▴" : "▾"}
+          </button>
+          {advancedOpen && (
+            <div
+              id="run-controls-advanced-panel"
+              className="run-controls__advanced-panel"
+              role="group"
+              aria-label="Advanced run actions"
+            >
+              <p className="run-controls__advanced-note">
+                These act on this specific run, not the document.
+                Looking to remove the document from search/answers?
+                Use <strong>Detach</strong> or <strong>Remove</strong>{" "}
+                on the document page.
+              </p>
+              {showAdvancedReindex && (
+                <button
+                  type="button"
+                  className={btnClass}
+                  disabled={anyPending}
+                  onClick={() => void dispatch("reindex")}
+                  aria-label="Re-process from original document"
+                  title="Start a new ingestion run for the same document"
+                  data-testid="run-controls-reprocess"
+                >
+                  {isPending("reindex") ? (
+                    <Icon.RefreshCw className="icon-sm spin" />
+                  ) : (
+                    <Icon.RefreshCw className="icon-sm" />
+                  )}
+                  <span style={{ marginLeft: 4 }}>Re-process</span>
+                </button>
+              )}
+              {showAdvancedDelete && (
+                <button
+                  type="button"
+                  className={`${btnClass} btn--danger`}
+                  disabled={anyPending}
+                  onClick={() => void dispatch("delete")}
+                  aria-label="Delete this run only"
+                  title="Soft-delete this run + its artifacts only"
+                  data-testid="run-controls-delete"
+                >
+                  {isPending("delete") ? (
+                    <Icon.RefreshCw className="icon-sm spin" />
+                  ) : (
+                    <Icon.XCircle className="icon-sm" />
+                  )}
+                  <span style={{ marginLeft: 4 }}>Delete this run</span>
+                </button>
+              )}
+              {showAdvancedPurge && (
+                <button
+                  type="button"
+                  className={`${btnClass} btn--danger`}
+                  disabled={anyPending}
+                  onClick={() => void dispatch("purge")}
+                  aria-label="Permanently purge run + artifacts"
+                  title={
+                    "Physically delete the run + every artifact file on disk. " +
+                    "Audit log stays intact. CANNOT be undone."
+                  }
+                  data-testid="run-controls-purge"
+                >
+                  {isPending("purge") ? (
+                    <Icon.RefreshCw className="icon-sm spin" />
+                  ) : (
+                    <Icon.XCircle className="icon-sm" />
+                  )}
+                  <span style={{ marginLeft: 4 }}>Purge</span>
+                </button>
+              )}
+            </div>
           )}
-          {!compact && <span style={{ marginLeft: 4 }}>Delete</span>}
-        </button>
-      )}
-      {showPurge && (
-        <button
-          type="button"
-          className={`${btnClass} btn--danger`}
-          disabled={anyPending}
-          onClick={() => void dispatch("purge")}
-          aria-label="Permanently purge run + artifacts"
-          title={
-            "Physically delete the run + every artifact file on disk. " +
-            "Audit log stays intact. CANNOT be undone."
-          }
-        >
-          {isPending("purge") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.XCircle className="icon-sm" />
-          )}
-          {!compact && <span style={{ marginLeft: 4 }}>Purge</span>}
-        </button>
+        </div>
       )}
     </div>
   );

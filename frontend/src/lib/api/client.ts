@@ -37,6 +37,13 @@ import type {
   ValidationSetListItem,
 } from "@/types/review";
 import type { ProjectContext } from "@/types/ui";
+import type {
+  DocumentDetail,
+  DocumentLifecycleResponse,
+  DocumentListItem,
+  DocumentReindexResponse,
+  DocumentRunSummary,
+} from "@/types/documents";
 
 /** Handlers passed to `openStream`. */
 export interface StreamHandlers {
@@ -380,6 +387,55 @@ export interface IngestionClient {
 
   /** GET batch detail — aggregate status + per-file run rows. */
   getBatch(batchRunId: string): Promise<BatchDetail>;
+
+  // ---- Document-centric surface (Phase 6+ of the refactor) -----
+  //
+  // The user manages documents, not runs. Each document carries a
+  // knowledge state (attached / detached / removed) and a pointer
+  // to its current "usable" run. These methods are the FE's window
+  // into that surface; the older run-centric methods above remain
+  // for the run-detail page during the migration.
+
+  /**
+ * GET /documents — list documents in the project. `includeRemoved`
+ * defaults to false; pass true for admin/history views.
+ */
+  listDocuments(opts?: { includeRemoved?: boolean }): Promise<DocumentListItem[]>;
+
+  /** GET /documents/{id}/detail — single document with full run history. */
+  getDocumentDetail(documentId: string): Promise<DocumentDetail>;
+
+  /** GET /documents/{id}/runs — run history only (most recent first). */
+  listDocumentRuns(documentId: string): Promise<DocumentRunSummary[]>;
+
+  /**
+ * POST /documents/{id}/attach — restore knowledge usage. 409
+ * when the document was previously removed (must re-upload).
+ */
+  attachDocument(documentId: string): Promise<DocumentLifecycleResponse>;
+
+  /**
+ * POST /documents/{id}/detach — stop using the document for
+ * retrieval / search / validation / answers. Preserves
+ * everything on disk so the user can re-attach later.
+ */
+  detachDocument(documentId: string): Promise<DocumentLifecycleResponse>;
+
+  /**
+ * POST /documents/{id}/remove — disown the document's generated
+ * knowledge. Clears active_run_id; the document is hidden from
+ * the normal list. Re-attach requires re-upload.
+ */
+  removeDocument(documentId: string): Promise<DocumentLifecycleResponse>;
+
+  /**
+ * POST /documents/{id}/reindex — start a new ingestion attempt.
+ * The new run carries `runType="reindex"`. The document's
+ * activeRunId only flips when the new run reaches a usable
+ * terminal state — a failed reindex preserves the previous good
+ * result.
+ */
+  reindexDocument(documentId: string): Promise<DocumentReindexResponse>;
 }
 
 /** Per-role probe result from `/healthz/llm`. */

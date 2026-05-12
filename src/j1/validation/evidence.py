@@ -73,15 +73,60 @@ _DEDUP_PREFIX_LEN = 200
 _COMPILED_TEXT_WINDOW_CHARS = 3000
 
 # Artifact kinds we deliberately skip when building evidence.
-# Enrichment metadata + graph JSON aren't useful as natural-language
-# context for the LLM (they get rendered separately as evidence
-# flags / graph paths in the response).
+# Pure-metadata kinds with no usable text body (their `hit.preview`
+# is just the artifact title). Note: `graph_json` deliberately
+# stayed OUT of this set — the artifact-type policy below
+# deprioritises it instead of skipping it entirely, so it can
+# still appear in the evidence context when chunk/compiled.text
+# don't fill the budget.
 _SKIP_KINDS: frozenset[str] = frozenset({
     "enriched.document_map",
     "enriched.tables",
     "enriched.visuals",
-    "graph_json",
 })
+
+
+# Artifact-type policy (spec section 7): textual kinds win the
+# evidence budget. `chunk` is the canonical ground truth (smallest
+# unit, highest fidelity); `compiled.text` and
+# `parsed_content_manifest` come next as document-level fallbacks.
+# Domain-extracted text kinds (`enriched.requirements`, etc.) fill
+# remaining space. `graph_json` and `enriched.formulas` are
+# DELIBERATELY low-priority so they don't crowd out chunks even
+# when retrieval scored them higher — the answer synthesizer is
+# a TEXTUAL surface; relationship/equation blobs belong on
+# dedicated graph/formula tabs.
+#
+# Lower number = filled into context budget first. Python's stable
+# sort preserves engine score ordering within each priority tier,
+# so within "all chunks" the highest-scoring chunk still comes
+# first.
+_KIND_PRIORITY: dict[str, int] = {
+    # Tier 1 — textual ground truth.
+    "chunk": 0,
+    "compiled.text": 1,
+    "parsed_content_manifest": 2,
+    # Tier 2 — domain-extracted prose (operator-relevant
+    # natural-language outputs).
+    "enriched.requirements": 5,
+    "enriched.risks": 5,
+    "enriched.consistency_findings": 5,
+    "enriched.source_map": 5,
+    "enriched.confidence_assessment": 5,
+    # Tier 3 — non-textual kinds that the synthesizer CAN consume
+    # (preview-only) but should never let dominate. Spec rule:
+    # "Do not let graph_json or formulas dominate normal retrieval
+    # answers."
+    "graph_json": 50,
+    "enriched.formulas": 50,
+}
+_DEFAULT_KIND_PRIORITY = 30  # unknown kinds — middle of pack
+
+
+def _kind_priority(kind: str) -> int:
+    """Stable priority for the evidence iteration order. Lower =
+    higher priority (filled into context budget first)."""
+    return _KIND_PRIORITY.get(kind, _DEFAULT_KIND_PRIORITY)
 
 # Compiled-text kinds we fall back to when no chunk body is
 # available. Listed explicitly so we don't accidentally try to
@@ -131,7 +176,17 @@ def build_evidence_blocks(
     chunk_cache: dict[str, dict[str, _ChunkRecord]] = {}
     projector = ChunkProjector(path_resolver=path_resolver)
 
-    for hit in retrieved:
+    # Artifact-type policy: re-order hits so textual kinds fill the
+    # evidence budget first. Python's `sorted` is stable, so within
+    # each priority tier the engine's score order is preserved —
+    # e.g. within "all chunks" the highest-scoring chunk still
+    # comes first.
+    ordered = sorted(
+        retrieved,
+        key=lambda r: _kind_priority((r.artifact_kind or "").strip()),
+    )
+
+    for hit in ordered:
         if len(blocks) >= max_blocks:
             break
         if used_chars >= total_budget_chars:

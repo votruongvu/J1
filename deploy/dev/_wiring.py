@@ -202,6 +202,11 @@ def build_review_service(workspace: WorkspaceResolver):
         artifact_registry=JsonArtifactRegistry(workspace),
         workspace=workspace,
         planning_settings=load_planning_settings(),
+        # Phase 5 hardening: resume_from_checkpoint consults the
+        # document's knowledge_state at the service layer so
+        # detached/removed documents can't be resumed from any
+        # caller path (REST + future CLI / scripted callers).
+        source_registry=JsonSourceRegistry(workspace),
     )
 
 
@@ -463,6 +468,20 @@ def build_worker_spec(
         # forever. Pass the same store the API uses so terminal
         # events update both surfaces.
         run_store=JsonlIngestionRunStore(workspace),
+        # Document-centric promotion hook (Phase 4): when a run
+        # reaches a usable terminal state (succeeded / succeeded-
+        # with-warnings), the activity points the parent document's
+        # `active_run_id` at the new run. Failed/cancelled runs
+        # don't promote — which is exactly what makes "failed
+        # reindex doesn't clobber the previous good run" hold.
+        source_registry=JsonSourceRegistry(workspace),
+        # Lineage hardening: after the promotion flips active_run_id,
+        # the supersede sweep stamps the PREVIOUS active run's
+        # artifacts with `search_state=superseded` so retrieval
+        # stops surfacing them. Closes the "mixed-run retrieval
+        # results after reindex" gap the latest validation reports
+        # exposed.
+        artifact_registry=JsonArtifactRegistry(workspace),
     ).all_activities()
     # Profiling activity (`j1.ingestion.profile_document`). Required
     # whenever `planner_enabled=True` flows through the workflow —

@@ -46,6 +46,19 @@ class SourceRegistry(Protocol):
  `DocumentNotFoundError` if the document isn't registered."""
         ...
 
+    def update_document_fields(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        **updates,
+    ) -> DocumentRecord:
+        """Generic field update for the document-centric lifecycle.
+
+ Used by `DocumentLifecycleService` to flip `knowledge_state` +
+ the timestamp/active-run fields. Raises `DocumentNotFoundError`
+ when the id isn't registered."""
+        ...
+
 
 class JsonSourceRegistry:
     def __init__(self, workspace: WorkspaceResolver) -> None:
@@ -91,6 +104,37 @@ class JsonSourceRegistry:
                 record.status = status
                 self._write(ctx, records)
                 return
+        raise DocumentNotFoundError(
+            f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
+        )
+
+    def update_document_fields(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        **updates,
+    ) -> DocumentRecord:
+        """Replace one or more fields on a stored `DocumentRecord`.
+
+        Public surface for the document-centric lifecycle actions
+        (attach / detach / remove). Distinct from `update_status`
+        because `status` carries the *ingestion* outcome of the
+        upload itself; the new fields (`knowledge_state`,
+        `active_run_id`, `removed_at`, `updated_at`,
+        `latest_version_id`) describe knowledge-layer state which is
+        conceptually separate.
+
+        Raises `DocumentNotFoundError` if the id isn't present.
+        Returns the updated record so callers don't have to re-read.
+        """
+        from dataclasses import replace as _replace
+        records = self._read(ctx)
+        for i, record in enumerate(records):
+            if record.document_id == document_id:
+                merged = _replace(record, **updates)
+                records[i] = merged
+                self._write(ctx, records)
+                return merged
         raise DocumentNotFoundError(
             f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
         )

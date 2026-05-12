@@ -337,11 +337,19 @@ def test_artifact_registration_dedupes_unchanged_content(
         DraftPayload(kind="compiled.text", content=b"same content", suggested_extension=".txt")
     ]
     payload = ProjectScope.from_context(ctx)
+    # `compiled.text` is a lineage-required kind — the fail-fast
+    # guard refuses to register it without a run_id. Pass
+    # correlation_id (the workflow's run id at production callsites)
+    # so the test mirrors the real contract.
     a = activities.register_compiled_artifacts_activity(
-        RegisterArtifactsInput(scope=payload, drafts=drafts)
+        RegisterArtifactsInput(
+            scope=payload, drafts=drafts, correlation_id="run-dedupe"
+        )
     )
     b = activities.register_compiled_artifacts_activity(
-        RegisterArtifactsInput(scope=payload, drafts=drafts)
+        RegisterArtifactsInput(
+            scope=payload, drafts=drafts, correlation_id="run-dedupe"
+        )
     )
     assert a.artifact_ids
     assert b.artifact_ids == []

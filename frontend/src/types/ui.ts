@@ -34,5 +34,13 @@ export interface Toast {
   body?: string;
 }
 
-/** Routing state. Three top-level views. */
-export type Route = { name: "list" } | { name: "upload" } | { name: "run"; runId: string };
+/** Routing state. Five top-level views — runs (legacy) + documents
+ * (the new document-centric surface from the Phase 7 refactor) +
+ * upload. The two list views coexist during the migration so
+ * operators can switch between them via the main nav tab. */
+export type Route =
+  | { name: "list" }                                   // legacy: runs list
+  | { name: "upload" }
+  | { name: "run"; runId: string }
+  | { name: "documents" }                              // new: documents list
+  | { name: "document"; documentId: string };          // new: document detail

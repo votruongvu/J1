@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
+    from j1.intake.registry import SourceRegistry
     from j1.processing.planning_settings import PlanningSettings
 
 from j1.artifacts.models import ArtifactRecord
@@ -160,6 +161,7 @@ class IngestionResultReviewService:
         artifact_registry: ArtifactRegistry,
         workspace: WorkspaceResolver,
         planning_settings: "PlanningSettings | None" = None,
+        source_registry: "SourceRegistry | None" = None,
     ) -> None:
         from j1.processing.planning_settings import (
             PlanningSettings as _PlanningSettings,
@@ -172,6 +174,13 @@ class IngestionResultReviewService:
         # we substitute the safe defaults so the projector always has
         # the cap fields it needs.
         self._planning_settings = planning_settings or _PlanningSettings()
+        # Phase 5 hardening: when wired, `resume_from_checkpoint`
+        # consults the document's knowledge_state at the service
+        # layer (currently the REST layer also gates this; the
+        # service-level check makes the rule load-bearing for any
+        # caller, not just the REST adapter). None-able so existing
+        # tests that don't wire a source_registry keep working.
+        self._source_registry = source_registry
 
     # ---- Run summary --------------------------------------------------
 
@@ -1462,6 +1471,14 @@ class IngestionResultReviewService:
             raise ResumeNotPossible(
                 f"run {run_id!r} is in non-resumable state {run.status}"
             )
+
+        # Phase 5 hardening: document-level knowledge-state gate at
+        # the service layer. The REST adapter ALSO gates this in
+        # Phase 3 — having the rule here too means future async /
+        # CLI / scripted callers can't bypass it. Quiet when no
+        # source_registry was wired (legacy test fixtures).
+        self._enforce_document_attached(ctx, run, run_id)
+
         snapshot = (
             (run.metadata or {}).get("resume_snapshot")
             if isinstance(run.metadata, dict)
@@ -1473,6 +1490,21 @@ class IngestionResultReviewService:
                 "before resume support landed, or via a path that "
                 "doesn't snapshot (e.g. cancelled). Use full-reindex."
             )
+
+        # Phase 5 hardening: explicit compile-checkpoint guard. The
+        # snapshot's existence ALONE isn't enough — compile may have
+        # been the failing step itself, in which case there's no
+        # usable checkpoint to resume from. The spec's section 5
+        # rule: "Resume should only exist after a successful compile
+        # checkpoint."
+        completed = list(snapshot.get("completed_steps") or [])
+        if "compile" not in completed:
+            raise ResumeNotPossible(
+                f"run {run_id!r} did not reach the compile checkpoint "
+                "successfully — there is nothing to resume from. Use "
+                "full-reindex to start from the beginning."
+            )
+
         prior_settings = snapshot.get("settings_snapshot") or {}
         if not compatible_settings(prior_settings, candidate_settings):
             diff = settings_diff(prior_settings, candidate_settings)
@@ -1481,7 +1513,6 @@ class IngestionResultReviewService:
                 "resume; full-reindex instead",
                 diff=diff,
             )
-        completed = list(snapshot.get("completed_steps") or [])
         # Intersect with the policy-allowed set: only enrich + graph
         # are safe to skip in v1. Compile + chunks always re-run
         # because their outputs are the structural backbone.
@@ -1495,6 +1526,53 @@ class IngestionResultReviewService:
             "carry_forward_artifact_ids": carry_ids,
             "carry_forward_artifact_kinds": carry_kinds,
         }
+
+    def _enforce_document_attached(
+        self, ctx: ProjectContext, run, run_id: str,
+    ) -> None:
+        """Service-layer guard: refuse resume on a detached/removed
+        document.
+
+        Phase 5 makes this rule load-bearing for every caller — the
+        REST adapter ALSO gates this (Phase 3), but a future async
+        / CLI / scripted caller would otherwise bypass it.
+
+        No-op when:
+          * The service wasn't wired with a source_registry
+            (legacy test fixtures).
+          * The run carries no document_id (extremely legacy data).
+          * The registry lookup fails (defensive — the existing
+            run-not-found path will surface the bug elsewhere).
+
+        Distinct exception (`ResumeNotPossible`, not
+        `ResumeIncompatible`) because the failure mode is "the
+        knowledge layer disowned this document," not "settings
+        drifted."
+        """
+        from j1.ingestion_review.exceptions import ResumeNotPossible
+        if self._source_registry is None:
+            return
+        document_id = getattr(run, "document_id", None)
+        if not document_id:
+            return
+        try:
+            document = self._source_registry.get(ctx, document_id)
+        except Exception:  # noqa: BLE001 — defensive
+            return
+        state = getattr(document, "knowledge_state", "attached") or "attached"
+        if state == "attached":
+            return
+        if state == "removed":
+            raise ResumeNotPossible(
+                f"document {document_id!r} has been removed from the "
+                f"knowledge base — resume from run {run_id!r} is "
+                "disabled. Re-upload the document to restore."
+            )
+        # "detached" or any future not-attached state.
+        raise ResumeNotPossible(
+            f"document {document_id!r} is {state} — attach it from "
+            "the document page before resuming."
+        )
 
     def purge_run(
         self,

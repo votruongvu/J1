@@ -204,6 +204,13 @@ class ManualTestQueryResponseDTO:
     # `retrieved_chunks[]` (which is the engine's metadata-only
     # projection — preview is artifact-title, not body).
     evidence_sent_to_llm: list[EvidenceBlockDTO] = field(default_factory=list)
+    # Lineage-hardening debug surfaces. When a tester sees "Not in
+    # retrieved evidence" they should be able to tell WHY at a
+    # glance — was retrieval empty? Were all hits filtered out by
+    # the knowledge-state gate? Did the synthesizer get evidence
+    # but the LLM still abstained? These counters answer that
+    # without forcing operators to open the raw payload drawer.
+    debug: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- validation sets, runs, summaries ---------------------

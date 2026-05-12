@@ -350,6 +350,11 @@ def test_register_compiled_artifacts_writes_and_registers(
             scope=ProjectScope.from_context(ctx),
             drafts=drafts,
             source_document_ids=["doc-1"],
+            # `compiled.text` is a lineage-required kind under the
+            # fail-fast guard added in the lineage hardening round.
+            # Real callers always pass correlation_id here (the
+            # workflow's run id); the test mirrors that contract.
+            correlation_id="run-test",
         )
     )
     assert result.status == "succeeded"
@@ -433,12 +438,16 @@ def test_register_compiled_artifacts_is_idempotent(knowledge_activities, ctx):
     ]
     first = knowledge_activities.register_compiled_artifacts_activity(
         RegisterArtifactsInput(
-            scope=ProjectScope.from_context(ctx), drafts=drafts
+            scope=ProjectScope.from_context(ctx),
+            drafts=drafts,
+            correlation_id="run-idempotent",
         )
     )
     second = knowledge_activities.register_compiled_artifacts_activity(
         RegisterArtifactsInput(
-            scope=ProjectScope.from_context(ctx), drafts=drafts
+            scope=ProjectScope.from_context(ctx),
+            drafts=drafts,
+            correlation_id="run-idempotent",
         )
     )
     assert first.artifact_ids

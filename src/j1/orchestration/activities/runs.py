@@ -18,6 +18,8 @@ from typing import Any
 
 from temporalio import activity
 
+from j1.artifacts.registry import ArtifactRegistry
+from j1.intake.registry import SourceRegistry
 from j1.orchestration.activities.payloads import ProjectScope
 from j1.runs.models import RunStatus
 from j1.runs.reporter import ProgressReporter
@@ -176,6 +178,8 @@ class RunsActivities:
         self,
         progress_reporter: ProgressReporter | None = None,
         run_store: IngestionRunStore | None = None,
+        source_registry: "SourceRegistry | None" = None,
+        artifact_registry: "ArtifactRegistry | None" = None,
     ) -> None:
         # `progress_reporter` writes the audit-log progress events
         # the FE's SSE timeline reads. `run_store` updates the
@@ -189,6 +193,21 @@ class RunsActivities:
         # so the FE's polling fallback sees the truth.
         self._reporter = progress_reporter
         self._run_store = run_store
+        # `source_registry` enables the document-centric "promote
+        # run to active on terminal success" hook (Phase 4 of the
+        # document-centric refactor). When None, the hook is a
+        # no-op — the run still transitions cleanly, just no
+        # `document.active_run_id` update. Deployments that haven't
+        # adopted the document-centric flow keep working unchanged.
+        self._source_registry = source_registry
+        # `artifact_registry` powers the post-promotion supersede
+        # sweep: when a new run becomes the document's active, the
+        # previous active's artifacts get stamped
+        # `search_state=superseded` so retrieval stops surfacing
+        # them. Without this, retrieval after a successful reindex
+        # would return mixed-run results (the "graph_json from old
+        # run still in search results" failure mode).
+        self._artifact_registry = artifact_registry
 
     def all_activities(self) -> list:
         return [
@@ -423,6 +442,83 @@ class RunsActivities:
         try:
             self._run_store.upsert(ctx, run)
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+            pass
+
+        # Document-centric promotion (Phase 4): when this run
+        # reached a usable terminal state, point the document at it
+        # as the current "active" result. Failed / cancelled /
+        # warning-only runs do NOT promote, which is exactly what
+        # makes "failed reindex doesn't clobber the previous
+        # successful run" true: the previous active_run_id stays
+        # pointing at the prior good run.
+        self._maybe_promote_to_active(ctx, run)
+
+    def _maybe_promote_to_active(self, ctx, run) -> None:
+        """Update `document.active_run_id` to this run when it
+        reached a usable terminal state.
+
+        Definition of "usable" matches the Phase 1 backfill's tier-1
+        rule (`SUCCEEDED` + `SUCCEEDED_WITH_WARNINGS`). Anything
+        else — including failures with a compile checkpoint — does
+        NOT promote, because a failed reindex must preserve the
+        previous good active for retrieval / answer generation.
+
+        Quiet on every failure path (no registry wired, lookup
+        miss, write fails): the run-status update is the
+        load-bearing operation; the promotion is a best-effort
+        side effect. We never want a registry hiccup to leave a
+        run in the wrong status.
+        """
+        if self._source_registry is None:
+            return
+        if run.status not in (
+            RunStatus.SUCCEEDED, RunStatus.SUCCEEDED_WITH_WARNINGS,
+        ):
+            return
+        if not getattr(run, "document_id", None):
+            return
+        try:
+            doc = self._source_registry.get(ctx, run.document_id)
+        except Exception:  # noqa: BLE001 — best-effort
+            return
+        # Don't promote a run onto a removed document — the
+        # knowledge has been disowned. Operator must re-upload to
+        # bring the document back; until then we leave
+        # active_run_id cleared.
+        if doc.knowledge_state == "removed":
+            return
+        if doc.active_run_id == run.run_id:
+            return  # already pointing at us; nothing to do
+        previous_active_run_id = doc.active_run_id
+        try:
+            self._source_registry.update_document_fields(
+                ctx, run.document_id,
+                active_run_id=run.run_id,
+                updated_at=run.completed_at or run.updated_at,
+            )
+        except Exception:  # noqa: BLE001 — quiet best-effort
+            return
+
+        # Post-promotion supersede sweep. Mark the previous active
+        # run's artifacts as `search_state=superseded` so retrieval
+        # stops surfacing them. Without this, a successful reindex
+        # leaves both runs' artifacts active in retrieval — the
+        # "graph_json from old run still appears in search results"
+        # failure mode the lineage hardening targets.
+        if self._artifact_registry is None or not previous_active_run_id:
+            return
+        try:
+            from j1.documents.artifact_state import (
+                supersede_previous_active_artifacts,
+            )
+            supersede_previous_active_artifacts(
+                ctx=ctx,
+                artifacts=self._artifact_registry,
+                document_id=run.document_id,
+                new_run_id=run.run_id,
+                previous_run_id=previous_active_run_id,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; never blocks promotion
             pass
 
     @activity.defn(name=ACTIVITY_REPORT_STEP_SKIPPED)

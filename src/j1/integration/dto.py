@@ -18,6 +18,14 @@ class DocumentDTO:
     checksum: str
     status: str
     created_at: datetime
+    # Document-centric refactor (Phase 1): exposes the knowledge-
+    # layer state to API consumers + the REST guard that blocks
+    # reindex/resume on detached or removed documents. Defaults
+    # to "attached" so existing callers without these fields on
+    # disk still behave as before.
+    knowledge_state: str = "attached"
+    active_run_id: str | None = None
+    latest_version_id: str | None = None
 
 
 # ---- Job / workflow DTOs --------------------------------------------------

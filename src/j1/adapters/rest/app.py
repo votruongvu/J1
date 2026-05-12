@@ -116,6 +116,10 @@ from j1.adapters.rest.schemas import (
     VersionRecord,
 )
 from j1.artifacts.registry import ArtifactNotFoundError
+from j1.documents.service import (
+    DocumentLifecycleError,
+    DocumentLifecycleService,
+)
 from j1.ingestion_review import (
     IngestionResultReviewService,
     ReviewNotFound,
@@ -411,6 +415,7 @@ def create_rest_api(
     progress_reporter: "ProgressReporter | None" = None,
     review_service: IngestionResultReviewService | None = None,
     validation_service: IngestionValidationService | None = None,
+    document_lifecycle_service: "DocumentLifecycleService | None" = None,
     confirm_handler: RunConfirmHandler | None = None,
     compile_handler: RunCompileHandler | None = None,
     llm_registry: object | None = None,
@@ -1314,6 +1319,14 @@ def create_rest_api(
                 f"original document {original.document_id!r} not found "
                 "in this project; cannot full-reindex",
             )
+        # Document-centric guard (Phase 3): a re-index against a
+        # detached document doesn't make sense — the result wouldn't
+        # be visible to retrieval anyway. A re-index against a
+        # removed document is even more nonsensical because the
+        # knowledge has been disowned. Forces the user to attach
+        # first via the new lifecycle action. 409 (not 404) because
+        # the document exists; the state just disallows the action.
+        _enforce_document_attached_for_action(ctx, original.document_id, "full-reindex")
         actor = security.subject if security else "system"
         new_run_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc)
@@ -1336,6 +1349,14 @@ def create_rest_api(
                     "document_name", doc_dto.original_filename,
                 ),
             },
+            # Document-centric classification (Phase 4). The
+            # `reindex_of` metadata key stays for backward compat
+            # with FE consumers that learned to read it earlier;
+            # `parent_run_id` is the new structured field that
+            # downstream surfaces (projector, run-history UI) read.
+            run_type="reindex",
+            parent_run_id=run_id,
+            document_version_id=original.document_version_id,
         )
         store.upsert(ctx, new_run)
 
@@ -1445,6 +1466,11 @@ def create_rest_api(
                 f"original document {original.document_id!r} not found "
                 "in this project; cannot resume",
             )
+        # Document-centric guard (Phase 3): resume requires the
+        # document to still be attached. Detached → user should
+        # attach first; removed → knowledge has been disowned and
+        # resume from old runs is disabled permanently per spec.
+        _enforce_document_attached_for_action(ctx, original.document_id, "resume")
         # Resolve the new run's settings up-front so the compatibility
         # check sees the same dict the workflow will receive. The
         # resume endpoint inherits processor selections from the
@@ -1984,6 +2010,574 @@ def create_rest_api(
                 "(pass `review_service=` to create_rest_api)",
             )
         return review_service
+
+    def _enforce_document_attached_for_action(
+        ctx: ProjectContext, document_id: str, action: str,
+    ) -> None:
+        """Reject `action` (reindex / resume / etc.) when the
+ document isn't currently attached to the knowledge base.
+
+ Reads `knowledge_state` off the source-lookup DTO. When the
+ facade can't return the document we don't raise here — the
+ calling endpoint has its own 404 path right after the lookup
+ — so a missing document doesn't double-fail at this layer.
+ """
+        try:
+            dto = facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            return
+        state = getattr(dto, "knowledge_state", "attached") or "attached"
+        if state == "attached":
+            return
+        if state == "removed":
+            raise HTTPException(
+                409,
+                f"document {document_id!r} has been removed from the "
+                f"knowledge base; re-upload to enable {action}",
+            )
+        # "detached" or any future not-attached state.
+        raise HTTPException(
+            409,
+            f"document {document_id!r} is {state}; attach it before "
+            f"calling {action}",
+        )
+
+    def _require_document_lifecycle_service() -> DocumentLifecycleService:
+        """503 when the deployment didn't wire the lifecycle service.
+ Same degradation pattern as `_require_review_service` — the
+ endpoint exists in the API surface but returns 503 until a
+ wiring layer constructs the service."""
+        if document_lifecycle_service is None:
+            raise HTTPException(
+                503,
+                "document-lifecycle service not configured "
+                "(pass `document_lifecycle_service=` to create_rest_api)",
+            )
+        return document_lifecycle_service
+
+    def _doc_record_to_payload(record) -> dict[str, Any]:
+        """Project a `DocumentRecord` into a wire-friendly dict.
+
+ Used by all three lifecycle endpoints so the FE gets the same
+ shape regardless of which action it called. Phase 6 will
+ supersede this with a proper Pydantic schema + a richer
+ projector; this minimal shape is enough for the FE to refresh
+ its document-state cache after a mutating call.
+ """
+        return {
+            "documentId": record.document_id,
+            "knowledgeState": record.knowledge_state,
+            "activeRunId": record.active_run_id,
+            "latestVersionId": record.latest_version_id,
+            "removedAt": (
+                record.removed_at.isoformat() if record.removed_at else None
+            ),
+            "updatedAt": (
+                record.updated_at.isoformat() if record.updated_at else None
+            ),
+        }
+
+    # ---- Document lifecycle (attach / detach / remove) ----------------
+    #
+    # These are the document-centric replacements for the old
+    # run-level `DELETE /ingestion-runs/{id}` and purge actions. They
+    # operate on the document — the user's mental model — rather than
+    # on a specific run attempt. The retrieval gate at
+    # `j1.documents.lifecycle.filter_to_attached_artifacts` activates
+    # immediately on success; downstream retrieval/validation/answer
+    # paths see the change without any cache busting.
+
+    @app.post(
+        "/documents/{document_id}/attach",
+        tags=["documents"],
+        summary="Attach a document to the active knowledge base",
+        description=(
+            "Restore the document so retrieval / search / validation "
+            "/ answer generation can use it again. Idempotent — calling "
+            "on an already-attached document returns the same record "
+            "without emitting a duplicate audit event. Rejected with "
+            "HTTP 409 when the document has previously been `removed` "
+            "— removed documents must be re-uploaded to come back."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def post_document_attach(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        svc = _require_document_lifecycle_service()
+        try:
+            updated = svc.attach(ctx, document_id, actor=security.subject)
+        except DocumentNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except DocumentLifecycleError as exc:
+            # 409 Conflict — the document exists but is in a state
+            # that disallows this transition (e.g. removed). Distinct
+            # from 404 (doesn't exist) so the FE can render different
+            # operator-friendly copy.
+            raise HTTPException(409, str(exc))
+        return envelope(_doc_record_to_payload(updated), _req_id(request))
+
+    @app.post(
+        "/documents/{document_id}/detach",
+        tags=["documents"],
+        summary="Detach a document from the active knowledge base",
+        description=(
+            "Stop using the document for retrieval / search / "
+            "validation / answer generation. The document, its run "
+            "history, and its artifacts are preserved on disk so the "
+            "user can re-attach later. Idempotent. Rejected with 409 "
+            "when the document was previously removed."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def post_document_detach(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        svc = _require_document_lifecycle_service()
+        try:
+            updated = svc.detach(ctx, document_id, actor=security.subject)
+        except DocumentNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except DocumentLifecycleError as exc:
+            raise HTTPException(409, str(exc))
+        return envelope(_doc_record_to_payload(updated), _req_id(request))
+
+    @app.post(
+        "/documents/{document_id}/remove",
+        tags=["documents"],
+        summary="Remove a document's generated knowledge from the knowledge base",
+        description=(
+            "Disown the document from the active knowledge layer. "
+            "Clears `active_run_id`, sets `removed_at`, and stamps "
+            "every artifact tied to the document as `removed` so "
+            "retrieval / search / validation / answer generation can "
+            "no longer surface it. Idempotent — calling on an "
+            "already-removed document is a no-op. Run history remains "
+            "on disk as a minimal tombstone for audit; this is NOT a "
+            "hard purge of files. Re-attaching a removed document "
+            "requires a fresh upload."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def post_document_remove(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        svc = _require_document_lifecycle_service()
+        try:
+            updated = svc.remove(ctx, document_id, actor=security.subject)
+        except DocumentNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except DocumentLifecycleError as exc:
+            raise HTTPException(409, str(exc))
+        return envelope(_doc_record_to_payload(updated), _req_id(request))
+
+    # ---- Document-centric re-index (Phase 4) -----------------------
+    #
+    # Document-centric replacement for `POST /ingestion-runs/{id}/
+    # full-reindex`. The user manages documents, not runs — this
+    # endpoint takes a document_id and dispatches a fresh
+    # `run_type="reindex"` attempt under it. The previous active
+    # run is preserved unchanged; the new run only becomes "active"
+    # if it reaches a usable terminal state (see the promotion
+    # hook in `RunsActivities._maybe_promote_to_active`). A failed
+    # reindex therefore does NOT clobber the previous successful
+    # active — same data on disk, just no FE flip.
+
+    @app.post(
+        "/documents/{document_id}/reindex",
+        tags=["documents"],
+        summary="Re-index a document (create a new ingestion run)",
+        description=(
+            "Start a fresh ingestion attempt for this document. The "
+            "new run carries `runType=reindex` and "
+            "`parentRunId=<document.activeRunId>` so the run-history "
+            "UI can render the relationship. The document's "
+            "`activeRunId` does NOT flip immediately — it only "
+            "updates if the new run reaches a usable terminal state "
+            "(succeeded / succeeded-with-warnings), guaranteeing "
+            "that a failed reindex preserves the previous good "
+            "result for retrieval. Returns 409 when the document is "
+            "detached or removed (attach it first via "
+            "`POST /documents/{id}/attach`)."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_document_reindex(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        from j1.ingestion_review.exceptions import RunStillActive
+        store = _require_run_store()
+        # State guard: refuse on detached / removed documents per
+        # the spec's section-8 action matrix. The lifecycle service
+        # would also refuse, but rejecting at the API edge gives
+        # the FE a faster + more actionable error path.
+        _enforce_document_attached_for_action(ctx, document_id, "reindex")
+
+        # Pre-reindex repair: invalidate any orphan artifacts tied
+        # to this document that lack a `run_id` stamp (leftovers
+        # from before the lineage fail-fast guard landed). Without
+        # this sweep, retrieval after the new reindex would still
+        # surface the broken artifacts alongside the new run's
+        # output — exactly the failure mode the latest validation
+        # reports flag. Best-effort: a failure here logs but doesn't
+        # block the reindex dispatch.
+        try:
+            from j1.documents.artifact_state import invalidate_orphan_artifacts
+            invalidated = invalidate_orphan_artifacts(
+                ctx=ctx,
+                artifacts=facade.retrieval._artifacts,  # noqa — direct registry access
+                document_id=document_id,
+            )
+            if invalidated:
+                import logging as _logging
+                _logging.getLogger("j1.adapters.rest").info(
+                    "reindex pre-sweep invalidated %d orphan artifact(s) "
+                    "for document %s",
+                    invalidated, document_id,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Resolve the document so we can derive the workflow name +
+        # the parent-run pointer + the version id to inherit.
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        active_run_id = getattr(doc_dto, "active_run_id", None)
+
+        # Inherit settings from the previous active run when one
+        # exists. New documents (no prior run) get the deployment
+        # defaults — same fallback chain as the upload flow.
+        previous_meta: dict[str, Any] = {}
+        previous_version_id: str | None = None
+        if active_run_id:
+            previous = store.get(ctx, active_run_id)
+            if previous is not None:
+                # Same active-state guard the run-level full-reindex
+                # uses: don't kick off a new attempt while the
+                # previous workflow might still be writing artifacts.
+                active_states = {
+                    RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+                    RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+                }
+                if str(previous.status) in active_states:
+                    raise HTTPException(
+                        409,
+                        f"previous run {active_run_id!r} is currently "
+                        f"{previous.status} — cancel it before "
+                        "starting a reindex",
+                    )
+                previous_meta = dict(previous.metadata or {})
+                previous_version_id = previous.document_version_id
+
+        actor = security.subject if security else "system"
+        new_run_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        new_run = IngestionRun(
+            run_id=new_run_id,
+            document_id=document_id,
+            workflow_id=None,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                # Keep the `reindex_of` key for backward-compat with
+                # any FE that learned to read it from the legacy
+                # endpoint. The structured `parent_run_id` field
+                # below is the canonical one.
+                "reindex_of": active_run_id or "",
+                "policy": previous_meta.get("policy", "auto"),
+                "mode": previous_meta.get("mode", "STANDARD"),
+                "document_name": previous_meta.get(
+                    "document_name", doc_dto.original_filename,
+                ),
+            },
+            run_type="reindex",
+            parent_run_id=active_run_id,
+            document_version_id=previous_version_id,
+        )
+        store.upsert(ctx, new_run)
+
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=new_run_id, document_id=document_id,
+                actor=actor,
+            )
+
+        body = IngestRequest(
+            compiler_kind=_resolve_compiler_kind(None),
+            enricher_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.enricher_kinds
+                 if processing_capabilities else frozenset()),
+                "enricherKind",
+            ),
+            graph_builder_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.graph_builder_kinds
+                 if processing_capabilities else frozenset()),
+                "graphBuilderKind",
+            ),
+            indexer_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.indexer_kinds
+                 if processing_capabilities else frozenset()),
+                "indexerKind",
+            ),
+            actor=actor,
+            correlation_id=new_run_id,
+            reindex_of=active_run_id or None,
+        )
+        workflow_id = await starter(ctx, document_id, body)
+        new_run.workflow_id = workflow_id
+        new_run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, new_run)
+        _emit_ops_event(
+            ctx,
+            action=ACTION_OPS_RUN_REINDEXED,
+            target_id=new_run_id,
+            actor=actor,
+            correlation_id=new_run_id,
+            payload={
+                "document_id": document_id,
+                "parent_run_id": active_run_id,
+                "workflow_id": workflow_id,
+                "run_type": "reindex",
+            },
+        )
+        return envelope(
+            {
+                "documentId": document_id,
+                "reindexRunId": new_run_id,
+                "parentRunId": active_run_id,
+                "workflowId": workflow_id,
+                "runType": "reindex",
+            },
+            _req_id(request),
+        )
+
+    # ---- Document-centric read API (Phase 6) ----------------------
+    #
+    # Read-side surface the FE consumes to render document-centric
+    # views. Server computes `availableActions` per the spec's
+    # state matrix so the FE never has to infer action rules from
+    # `knowledgeState` + run status. All three endpoints degrade to
+    # 503 when the source registry isn't wired (consistent with the
+    # existing degradation pattern across the adapter).
+
+    def _require_source_registry():
+        """503 when `facade.source_lookup` isn't available. The
+ read endpoints depend on the source registry because they
+ list/get documents directly."""
+        lookup = getattr(facade, "source_lookup", None)
+        if lookup is None:
+            raise HTTPException(
+                503,
+                "source-lookup service not configured "
+                "(pass it via the ApplicationFacade)",
+            )
+        return lookup
+
+    def _runs_for_document(ctx: ProjectContext, document_id: str):
+        """All runs tied to a document. Returns an empty list when
+ the run store isn't wired — the projector handles that
+ gracefully (active run becomes None, history is empty)."""
+        if ingestion_run_store is None:
+            return []
+        all_runs = ingestion_run_store.list(ctx)
+        return [r for r in all_runs if r.document_id == document_id]
+
+    def _document_summary_to_payload(dto) -> dict[str, Any]:
+        """Camel-case projection. Keeps the wire shape consistent
+ with the rest of the adapter; the FE consumes JSON only."""
+        return {
+            "documentId": dto.document_id,
+            "displayName": dto.display_name,
+            "knowledgeState": dto.knowledge_state,
+            "activeRunId": dto.active_run_id,
+            "latestVersionId": dto.latest_version_id,
+            "createdAt": dto.created_at.isoformat() if dto.created_at else None,
+            "updatedAt": dto.updated_at.isoformat() if dto.updated_at else None,
+            "removedAt": dto.removed_at.isoformat() if dto.removed_at else None,
+            "currentResultSummary": _result_summary_payload(dto.current_result_summary),
+            "availableActions": list(dto.available_actions),
+            "runHistorySummary": [
+                _run_summary_payload(r) for r in dto.run_history_summary
+            ],
+        }
+
+    def _document_detail_to_payload(dto) -> dict[str, Any]:
+        """Detail view differs from the summary only in that it
+ carries the full run history (no cap)."""
+        return {
+            "documentId": dto.document_id,
+            "displayName": dto.display_name,
+            "knowledgeState": dto.knowledge_state,
+            "activeRunId": dto.active_run_id,
+            "latestVersionId": dto.latest_version_id,
+            "createdAt": dto.created_at.isoformat() if dto.created_at else None,
+            "updatedAt": dto.updated_at.isoformat() if dto.updated_at else None,
+            "removedAt": dto.removed_at.isoformat() if dto.removed_at else None,
+            "currentResultSummary": _result_summary_payload(dto.current_result_summary),
+            "availableActions": list(dto.available_actions),
+            "runHistory": [_run_summary_payload(r) for r in dto.run_history],
+        }
+
+    def _result_summary_payload(summary) -> dict[str, Any]:
+        return {
+            "status": summary.status,
+            "compileStatus": summary.compile_status,
+            "enrichmentStatus": summary.enrichment_status,
+            "validationStatus": summary.validation_status,
+            "failureCode": summary.failure_code,
+        }
+
+    def _run_summary_payload(r) -> dict[str, Any]:
+        return {
+            "runId": r.run_id,
+            "runType": r.run_type,
+            "status": r.status,
+            "startedAt": r.started_at.isoformat() if r.started_at else None,
+            "completedAt": (
+                r.completed_at.isoformat() if r.completed_at else None
+            ),
+            "failureCode": r.failure_code,
+            "isActive": r.is_active,
+        }
+
+    @app.get(
+        "/documents",
+        tags=["documents"],
+        summary="List documents in the project with knowledge-state + actions",
+        description=(
+            "Document-centric replacement for the run-list. Each row "
+            "carries the document's `knowledgeState`, server-computed "
+            "`availableActions`, current-result summary derived from "
+            "the active run, and a capped run-history tail (most "
+            "recent 3 attempts). Removed documents are excluded by "
+            "default — pass `?includeRemoved=true` to surface them "
+            "in audit/admin views."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_documents(
+        request: Request,
+        ctx: ProjectContext = Depends(get_ctx),
+        include_removed: bool = Query(default=False, alias="includeRemoved"),
+    ) -> dict[str, Any]:
+        from j1.documents.projector import project_document_summary
+        # We use the underlying registry (via facade.source_lookup's
+        # backing store) to LIST all documents in this project.
+        # SourceLookupService doesn't expose `list_documents` on its
+        # public interface, so we read the registry directly via
+        # the ApplicationFacade-provided service's internals. Phase
+        # 9 could add a proper public method.
+        lookup = _require_source_registry()
+        sources_registry = getattr(lookup, "_sources", None)
+        if sources_registry is None:
+            raise HTTPException(
+                503, "source registry not exposed for listing",
+            )
+        documents = sources_registry.list_documents(ctx)
+        # Build a run map once so each document's projection is a
+        # filtered slice — O(D + R) total vs. O(D * R) if we called
+        # the store per document.
+        all_runs = (
+            ingestion_run_store.list(ctx)
+            if ingestion_run_store is not None else []
+        )
+        runs_by_doc: dict[str, list] = {}
+        for run in all_runs:
+            runs_by_doc.setdefault(run.document_id, []).append(run)
+
+        rows = []
+        for document in documents:
+            if document.knowledge_state == "removed" and not include_removed:
+                continue
+            dto = project_document_summary(
+                document=document,
+                runs=runs_by_doc.get(document.document_id, []),
+            )
+            rows.append(_document_summary_to_payload(dto))
+        return envelope({"documents": rows}, _req_id(request))
+
+    @app.get(
+        "/documents/{document_id}/detail",
+        tags=["documents"],
+        summary="Get a single document with full run history + actions",
+        description=(
+            "Document-centric detail projection: knowledge state + "
+            "active-run pointer + server-computed `availableActions` "
+            "+ the full `runHistory` (un-capped). Distinct path from "
+            "the existing `GET /documents/{id}` (which returns just "
+            "the upload metadata) so the two shapes can coexist "
+            "during the document-centric migration. Returns 404 when "
+            "the document doesn't exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_document_detail(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        from j1.documents.projector import project_document_detail
+        lookup = _require_source_registry()
+        try:
+            record = lookup._sources.get(ctx, document_id)
+        except Exception:
+            raise HTTPException(404, f"document {document_id!r} not found")
+        runs = _runs_for_document(ctx, document_id)
+        dto = project_document_detail(document=record, runs=runs)
+        return envelope(_document_detail_to_payload(dto), _req_id(request))
+
+    @app.get(
+        "/documents/{document_id}/runs",
+        tags=["documents"],
+        summary="Run history for a document, most recent first",
+        description=(
+            "Compact per-run rows: `runId`, `runType`, `status`, "
+            "timestamps, `isActive` flag. Use this when you only need "
+            "the history without the full document detail (e.g. the "
+            "run-history panel pagination)."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_document_runs(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        from j1.documents.projector import project_run_history
+        lookup = _require_source_registry()
+        try:
+            record = lookup._sources.get(ctx, document_id)
+        except Exception:
+            raise HTTPException(404, f"document {document_id!r} not found")
+        runs = _runs_for_document(ctx, document_id)
+        history = project_run_history(document=record, runs=runs)
+        return envelope(
+            {"runs": [_run_summary_payload(r) for r in history]},
+            _req_id(request),
+        )
 
     @app.get(
         "/ingestion-runs/{run_id}/summary",
@@ -2568,6 +3162,7 @@ def create_rest_api(
                 )
                 for b in result.evidence_sent_to_llm
             ],
+            debug=dict(getattr(result, "debug", None) or {}),
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 

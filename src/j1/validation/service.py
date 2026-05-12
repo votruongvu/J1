@@ -237,6 +237,12 @@ class IngestionValidationService:
             actor=actor,
         )
 
+        debug = _build_manual_query_debug(
+            retrieved=retrieved,
+            evidence_blocks=evidence_blocks,
+            synthesized_answer=synthesized_answer,
+            llm_trace=llm_trace,
+        )
         return ManualTestQueryResponseDTO(
             request_id=request_id,
             run_id=run.run_id,
@@ -252,6 +258,7 @@ class IngestionValidationService:
             synthesized_answer=synthesized_answer,
             llm=llm_trace,
             evidence_sent_to_llm=evidence_blocks,
+            debug=debug,
         )
 
     def _build_evidence_blocks_for_run(
@@ -926,6 +933,93 @@ class IngestionValidationService:
 
 
 # ---- Module-level helpers (easy to unit-test) --------------------------
+
+
+def _build_manual_query_debug(
+    *,
+    retrieved: list[RetrievedChunkRefDTO],
+    evidence_blocks: list[EvidenceBlockDTO],
+    synthesized_answer: str | None,
+    llm_trace: LLMTraceDTO | None,
+) -> dict[str, Any]:
+    """Build the debug-info dict surfaced on the response.
+
+    Goal: when a tester sees ``"Not in retrieved evidence"`` they
+    should be able to tell WHY at a glance — was retrieval empty?
+    Were all hits filtered out by the knowledge-state gate? Did
+    the synthesizer get evidence but the LLM still abstain?
+
+    The counters answer the most common diagnostic questions:
+
+      * ``retrieved_count``                — hits returned by the engine.
+      * ``evidence_items_before_filter``   — usually = retrieved_count.
+        Today these are the same; we still expose both so a future
+        evidence-side filter (e.g. artifact-type policy) has an
+        obvious place to land.
+      * ``evidence_items_after_filter``    — what actually reached
+        the synthesizer.
+      * ``artifact_types_before_filter`` / ``…_after_filter`` — what
+        kinds were in play. Helps spot "graph_json dominated" cases.
+      * ``total_context_chars``            — sum of evidence text
+        lengths sent to the LLM.
+      * ``fallback_reason``                — when synthesizer
+        produced no answer, the categorical reason
+        (``"no_retrieval"``, ``"no_evidence"``, ``"llm_abstained"``,
+        ``"llm_error"``, or ``"synthesis_disabled"``).
+      * ``top_evidence_preview``           — short prefix of the
+        first block's text so the FE can render an inline preview
+        without expanding the full evidence panel.
+    """
+    types_before = sorted({
+        c.artifact_kind or "" for c in retrieved if c.artifact_kind
+    })
+    types_after = sorted({b.artifact_type for b in evidence_blocks if b.artifact_type})
+    total_chars = sum(len(b.text or "") for b in evidence_blocks)
+    top_preview = ""
+    if evidence_blocks:
+        first_text = evidence_blocks[0].text or ""
+        top_preview = first_text[:240]
+
+    # Artifact-type policy debug: which kinds did the policy
+    # deprioritize? Useful when "graph_json dominated retrieval but
+    # the synthesizer ignored it" — the operator can see the policy
+    # at work instead of suspecting a bug.
+    from j1.validation.evidence import _KIND_PRIORITY, _DEFAULT_KIND_PRIORITY
+    _LOW_PRIORITY_THRESHOLD = 40  # kinds at this priority or worse
+    deprioritized_kinds = sorted({
+        c.artifact_kind for c in retrieved
+        if c.artifact_kind
+        and _KIND_PRIORITY.get(c.artifact_kind, _DEFAULT_KIND_PRIORITY)
+        >= _LOW_PRIORITY_THRESHOLD
+        and c.artifact_kind not in types_after
+    })
+
+    fallback_reason: str | None = None
+    if not synthesized_answer:
+        # Categorise WHY synthesis didn't produce an answer. Ordered
+        # most-specific-first so the FE can render a tailored hint.
+        if llm_trace is None or not llm_trace.called:
+            fallback_reason = "synthesis_disabled"
+        elif llm_trace.error:
+            fallback_reason = "llm_error"
+        elif not retrieved:
+            fallback_reason = "no_retrieval"
+        elif not evidence_blocks:
+            fallback_reason = "no_evidence"
+        else:
+            fallback_reason = "llm_abstained"
+
+    return {
+        "retrieved_count": len(retrieved),
+        "evidence_items_before_filter": len(retrieved),
+        "evidence_items_after_filter": len(evidence_blocks),
+        "artifact_types_before_filter": types_before,
+        "artifact_types_after_filter": types_after,
+        "total_context_chars": total_chars,
+        "fallback_reason": fallback_reason,
+        "top_evidence_preview": top_preview,
+        "deprioritized_kinds": deprioritized_kinds,
+    }
 
 
 def _evidence_blocks_from_chunks(

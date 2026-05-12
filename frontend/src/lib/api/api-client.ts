@@ -50,6 +50,13 @@ import type {
   ValidationSetListItem,
 } from "@/types/review";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
+import type {
+  DocumentDetail,
+  DocumentLifecycleResponse,
+  DocumentListItem,
+  DocumentReindexResponse,
+  DocumentRunSummary,
+} from "@/types/documents";
 import {
   ApiError,
   type BatchDetail,
@@ -855,5 +862,74 @@ export class ApiClient implements IngestionClient {
       currentRunId: data.currentRunId == null ? null : String(data.currentRunId),
       runs,
     };
+  }
+
+  // ---- Document-centric surface --------------------------------
+  //
+  // Mirrors the Phase 6 read endpoints + Phase 3/4 write endpoints.
+  // Each call uses the standard `headers()` (which carries tenant
+  // + project) and the envelope-extractor `this.json()`. Wire
+  // shape is already camelCase server-side so no field-name
+  // translation needed.
+
+  async listDocuments(
+    opts?: { includeRemoved?: boolean },
+  ): Promise<DocumentListItem[]> {
+    const params = new URLSearchParams();
+    if (opts?.includeRemoved) params.set("includeRemoved", "true");
+    const qs = params.toString();
+    const path = qs ? `/documents?${qs}` : "/documents";
+    const resp = await fetch(this.url(path), { headers: this.headers() });
+    const data = await this.json<{ documents?: DocumentListItem[] }>(resp);
+    return data.documents ?? [];
+  }
+
+  async getDocumentDetail(documentId: string): Promise<DocumentDetail> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/detail`),
+      { headers: this.headers() },
+    );
+    return await this.json<DocumentDetail>(resp);
+  }
+
+  async listDocumentRuns(documentId: string): Promise<DocumentRunSummary[]> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/runs`),
+      { headers: this.headers() },
+    );
+    const data = await this.json<{ runs?: DocumentRunSummary[] }>(resp);
+    return data.runs ?? [];
+  }
+
+  async attachDocument(documentId: string): Promise<DocumentLifecycleResponse> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/attach`),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<DocumentLifecycleResponse>(resp);
+  }
+
+  async detachDocument(documentId: string): Promise<DocumentLifecycleResponse> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/detach`),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<DocumentLifecycleResponse>(resp);
+  }
+
+  async removeDocument(documentId: string): Promise<DocumentLifecycleResponse> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/remove`),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<DocumentLifecycleResponse>(resp);
+  }
+
+  async reindexDocument(documentId: string): Promise<DocumentReindexResponse> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/reindex`),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<DocumentReindexResponse>(resp);
   }
 }

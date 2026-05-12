@@ -4168,3 +4168,339 @@ pre.json .b {
   color: var(--text-muted);
   cursor: help;
 }
+
+/* ─── Document-centric surface (Phase 7) ──────────────────────────────
+   New top-level nav, document list rows, detail page, lifecycle
+   confirmation modals. Visual language matches the existing run
+   list so the two surfaces feel cohesive during the migration. */
+
+.main-nav {
+  display: flex;
+  gap: 4px;
+  padding: 8px 24px 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+.main-nav__tab {
+  padding: 8px 16px;
+  font-size: 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.main-nav__tab--active {
+  color: var(--fg);
+  border-bottom-color: var(--accent, #5b8def);
+  font-weight: 600;
+}
+.main-nav__legacy {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.05));
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--text-muted);
+}
+
+.documents-page {
+  padding: 24px;
+}
+.documents-page__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  gap: 16px;
+}
+.documents-page__title {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+.documents-page__subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  max-width: 640px;
+}
+.documents-page__loading {
+  color: var(--text-muted);
+  padding: 16px 0;
+}
+
+.documents-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.documents-list__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+}
+.documents-list__open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.documents-list__primary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 15px;
+}
+.documents-list__name {
+  color: var(--fg);
+}
+.documents-list__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  align-items: center;
+}
+.documents-list__id {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.documents-list__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Knowledge-state pill */
+.knowledge-state {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.knowledge-state--attached {
+  background: var(--ok-bg, rgba(40, 160, 100, 0.15));
+  color: var(--ok-fg, #1e6f4d);
+}
+.knowledge-state--detached {
+  background: var(--warn-bg, rgba(200, 140, 30, 0.18));
+  color: var(--warn-fg, #8a5b00);
+}
+.knowledge-state--removed {
+  background: var(--err-bg, rgba(220, 60, 60, 0.15));
+  color: var(--err-fg, #b04040);
+}
+
+/* Result status pill — operator-readable run summary */
+.result-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.result-pill--ok     { background: rgba(40, 160, 100, 0.15); color: #1e6f4d; }
+.result-pill--warn   { background: rgba(200, 140, 30, 0.18); color: #8a5b00; }
+.result-pill--err    { background: rgba(220, 60, 60, 0.15);  color: #b04040; }
+.result-pill--info   { background: rgba(70, 130, 220, 0.15); color: #1f4e9a; }
+.result-pill--neutral { background: var(--surface-soft, rgba(0,0,0,0.05)); color: var(--text-muted); }
+
+/* Detail page */
+.document-detail {
+  padding: 24px;
+}
+.document-detail__back {
+  margin-bottom: 16px;
+}
+.document-detail__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.document-detail__title {
+  margin: 0 0 8px;
+  font-size: 24px;
+}
+.document-detail__meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+.document-detail__id {
+  font-size: 11px;
+}
+.document-detail__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.document-detail__section {
+  margin-top: 24px;
+}
+.document-detail__section h3 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.document-detail__count {
+  font-size: 12px;
+  font-weight: normal;
+}
+.document-detail__kv {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 6px 14px;
+  font-size: 14px;
+}
+.document-detail__kv dt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.document-detail__kv dd {
+  margin: 0;
+}
+.run-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.run-history-table th,
+.run-history-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.run-history-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.run-history-row--active {
+  background: var(--accent-soft, rgba(70, 130, 220, 0.06));
+}
+.run-history-row__active-badge {
+  font-size: 10px;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent, #5b8def);
+  color: white;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Confirmation modal — minimal vanilla implementation */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+.modal-card {
+  background: var(--surface, #fff);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+.modal-card h3 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.modal-card p {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.btn--danger {
+  background: var(--err-fg, #b04040);
+  color: white;
+  border: none;
+}
+.btn--danger:hover {
+  background: var(--err-fg-strong, #9a3636);
+}
+
+/* ─── Run controls — Phase 8 advanced disclosure ─────────────────
+   Destructive run-level actions (re-process / delete / purge) sit
+   behind an "Advanced ▾" toggle on the run-detail page. List-row
+   compact mode skips this section entirely. */
+.run-controls__advanced {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.run-controls__advanced-toggle {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.run-controls__advanced-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.03));
+  border-radius: 6px;
+  margin-top: 4px;
+  border: 1px dashed var(--border);
+}
+.run-controls__advanced-note {
+  flex-basis: 100%;
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.run-controls__advanced-note strong {
+  color: var(--fg);
+}

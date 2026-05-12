@@ -532,6 +532,11 @@ class ManualTestQueryResponseRecord(CamelModel):
     # — distinct from `retrievedChunks[]` which is the engine's
     # metadata-only projection (preview is the artifact title).
     evidence_sent_to_llm: list[EvidenceBlockRecord] = Field(default_factory=list)
+    # Lineage-hardening diagnostic surface. Counters + reason
+    # codes the FE renders when synthesis falls back. Free-form
+    # dict because the shape is for debug rendering only — never
+    # part of the behavior contract.
+    debug: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---- Validation sets / runs -------------------------------
