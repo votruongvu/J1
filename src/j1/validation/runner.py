@@ -48,8 +48,11 @@ from j1.validation.dtos import (
     ValidationSummaryDTO,
     ValidationTestCaseDTO,
 )
+from j1.validation.evidence import build_evidence_blocks
 from j1.validation.judge import LLMJudge
 from j1.validation.synthesis import AnswerSynthesizer
+from j1.workspace.layout import WorkspaceArea
+from j1.workspace.resolver import WorkspaceResolver
 
 _log = logging.getLogger("j1.validation.runner")
 
@@ -122,9 +125,16 @@ class DefaultValidationRunner:
         judge: LLMJudge | None = None,
         answer_synthesizer: AnswerSynthesizer | None = None,
         synthesize_answers: bool = True,
+        workspace: WorkspaceResolver | None = None,
     ) -> None:
         self._query_engine = query_engine
         self._artifacts = artifact_registry
+        # Workspace is needed to load real artifact body text for
+        # the synthesizer. When None (legacy callers / tests), the
+        # runner falls back to the engine's preview text — same
+        # broken behaviour as before, but at least non-crashing.
+        # Production wiring MUST pass it.
+        self._workspace = workspace
         self._on_lifecycle = lifecycle_callback or (lambda _vrun: None)
         # Optional LLM judge for semantic checks. When None
         # the runner skips the optional checks entirely — the
@@ -309,6 +319,7 @@ class DefaultValidationRunner:
         # Negative cases skip synthesis (the engine's abstention
         # text is already what the runner wants to grade).
         synthesized_answer, llm_trace = self._maybe_synthesize_for_case(
+            ctx=ctx,
             case=case,
             retrieved=retrieved,
         )
@@ -373,6 +384,7 @@ class DefaultValidationRunner:
     def _maybe_synthesize_for_case(
         self,
         *,
+        ctx: ProjectContext,
         case: ValidationTestCaseDTO,
         retrieved: list[RetrievedChunkRefDTO],
     ) -> tuple[str | None, LLMTraceDTO | None]:
@@ -396,24 +408,63 @@ class DefaultValidationRunner:
         if not retrieved:
             return (None, None)
 
-        # Project the retrieved chunks straight into evidence blocks.
-        # The runner doesn't have access to artifact-body files at
-        # this layer (the engine returned only refs), so we use the
-        # `preview` text the retrieval engine already surfaced —
-        # same trade-off the manual-query service's evidence builder
-        # falls back to for non-chunk kinds. Good enough for a
-        # one-paragraph answer; tests can stub the synthesizer.
-        evidence = [
-            EvidenceBlockDTO(
-                artifact_id=r.artifact_id,
-                artifact_type=r.artifact_kind or "chunk",
-                text=r.preview or "",
-                chunk_id=r.chunk_id,
-                score=r.score,
+        # CRITICAL: load REAL body text for each retrieved chunk
+        # before sending to the synthesizer. Earlier this path used
+        # ``r.preview`` (which is just the artifact title like
+        # "compiled.text/b7e57…") as evidence text — so the LLM
+        # saw a list of titles, not content, and correctly replied
+        # "Not in the retrieved evidence." That was the failure
+        # mode the latest validation report flagged on every
+        # retrieval/smoke case despite citations including chunk +
+        # compiled.text. The manual-query path already uses
+        # ``build_evidence_blocks`` for real text; we use the same
+        # helper here so both paths share one evidence pipeline.
+        #
+        # ``build_evidence_blocks`` requires a workspace +
+        # path-resolver. When the runner wasn't wired with a
+        # workspace (legacy test fixtures, deployments that
+        # predate this fix), fall back to the title-only evidence —
+        # same broken behaviour as before, with a WARNING logged
+        # so operators can spot the misconfiguration.
+        evidence: list[EvidenceBlockDTO]
+        if self._workspace is not None:
+            from pathlib import Path, PurePosixPath
+
+            def _resolver(record):
+                location = record.location
+                parts = PurePosixPath(location).parts
+                if len(parts) < 2:
+                    return Path(location)
+                area_name, *rest = parts
+                area = WorkspaceArea(area_name)
+                return self._workspace.area(  # type: ignore[union-attr]
+                    ctx, area,
+                ).joinpath(*rest)
+
+            evidence = build_evidence_blocks(
+                ctx=ctx,
+                retrieved=retrieved,
+                artifact_registry=self._artifacts,
+                path_resolver=_resolver,
             )
-            for r in retrieved
-            if (r.preview or "").strip()
-        ]
+        else:
+            _log.warning(
+                "validation runner: no workspace wired — synthesizer "
+                "will see artifact titles instead of body text, which "
+                "causes false 'Not in the retrieved evidence' "
+                "fallbacks. Pass workspace=... to DefaultValidationRunner."
+            )
+            evidence = [
+                EvidenceBlockDTO(
+                    artifact_id=r.artifact_id,
+                    artifact_type=r.artifact_kind or "chunk",
+                    text=r.preview or "",
+                    chunk_id=r.chunk_id,
+                    score=r.score,
+                )
+                for r in retrieved
+                if (r.preview or "").strip()
+            ]
         if not evidence:
             return (None, None)
         result = self._synthesizer.synthesize(

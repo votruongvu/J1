@@ -553,6 +553,13 @@ class IngestionValidationService:
             # strings. None-safe — runner falls back to the raw
             # engine answer when no synthesizer is wired.
             answer_synthesizer=self._synthesizer,
+            # Workspace is REQUIRED for the synthesizer to read
+            # real artifact body text (chunk NDJSON, compiled.text
+            # files, document_map JSON). Without it the runner
+            # falls back to artifact-title-only evidence and the
+            # LLM correctly says "Not in the retrieved evidence."
+            # since titles don't answer questions.
+            workspace=self._workspace,
         )
         vrun = runner.run(ctx, vset, actor=actor)
         self._audit_run_completed(ctx, run_id, vrun, actor)

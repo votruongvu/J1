@@ -101,14 +101,30 @@ def _hit_to_source(hit: SearchHit) -> SourceReference:
 
 
 def _record_to_source(record: ArtifactRecord) -> SourceReference:
+    # CRITICAL: ``run_id`` and ``chunk_id`` MUST be propagated from
+    # the artifact's metadata into the projected ``SourceReference``.
+    # Validation's ``retrieved_chunks_belong_to_run`` /
+    # ``citations_belong_to_run`` checks read these fields straight
+    # from ``SourceReference`` (via ``_retrieved_chunks_from_response``
+    # in ``j1.validation.runner``). Earlier this function omitted
+    # both, so every record-backed source (graph_json, consistency,
+    # report providers) projected with ``run_id=None`` regardless
+    # of the artifact's actual lineage — making the validator flag
+    # them as run-id orphans even when ``metadata.run_id`` was
+    # correctly stamped at registration. Classification of the bug:
+    # ``retrieval_mapper_missing_run_id``, not
+    # ``artifact_persistence_missing_run_id``.
+    meta = record.metadata if isinstance(record.metadata, dict) else {}
     return SourceReference(
         artifact_id=record.artifact_id,
         artifact_type=record.kind,
-        title=str(record.metadata.get("title", f"{record.kind}/{record.artifact_id}")),
+        title=str(meta.get("title", f"{record.kind}/{record.artifact_id}")),
         source_document_id=(
             record.source_document_ids[0] if record.source_document_ids else None
         ),
-        source_location=record.metadata.get("source_location"),
+        source_location=meta.get("source_location"),
+        chunk_id=meta.get("chunk_id"),
+        run_id=meta.get("run_id"),
     )
 
 
