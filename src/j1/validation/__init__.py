@@ -17,6 +17,7 @@ specific store yet.
 """
 
 from j1.validation.dtos import (
+    EvidenceBlockDTO,
     ExecutionStatus,
     ExpectedBehavior,
     LLMTraceDTO,
@@ -74,6 +75,7 @@ __all__ = [
     "DefaultLLMJudge",
     "DefaultTestCaseGenerator",
     "DefaultValidationRunner",
+    "EvidenceBlockDTO",
     "ExecutionStatus",
     "ExpectedBehavior",
     "FabricationJudgement",

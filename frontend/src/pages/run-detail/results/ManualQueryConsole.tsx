@@ -17,6 +17,7 @@ import { useClient } from "@/lib/hooks/useClient";
 import { ApiError } from "@/lib/api/client";
 import { validationStatusMeta } from "@/lib/display";
 import type {
+  EvidenceBlock,
   LLMTrace,
   ManualTestQueryResponse,
   ValidationCheck,
@@ -196,6 +197,10 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
         <FinalAnswerSection
           synthesized={response.synthesizedAnswer ?? null}
           llm={response.llm ?? null}
+        />
+
+        <EvidenceSentToLLMSection
+          blocks={response.evidenceSentToLlm ?? []}
         />
 
         <section>
@@ -407,6 +412,124 @@ function LLMTraceStrip({ llm }: { llm: LLMTrace }) {
       {llm.called ? "LLM" : "LLM (skipped)"}
       {parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}
     </p>
+  );
+}
+
+interface EvidenceSentToLLMSectionProps {
+  blocks: EvidenceBlock[];
+}
+
+function EvidenceSentToLLMSection({ blocks }: EvidenceSentToLLMSectionProps) {
+  // Collapsed-by-default once more than three blocks. Most testers
+  // want to spot-check that "the right chunk made it in" rather than
+  // read every block — the toggle reveals the rest when needed.
+  const COLLAPSE_THRESHOLD = 3;
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded || blocks.length <= COLLAPSE_THRESHOLD
+    ? blocks
+    : blocks.slice(0, COLLAPSE_THRESHOLD);
+
+  return (
+    <section>
+      <h4 style={{ marginBottom: 4 }}>
+        Evidence Sent to LLM ({blocks.length})
+      </h4>
+      <p style={{ color: "var(--fg-muted)", marginTop: 0, fontSize: 12 }}>
+        Exactly what the model saw, after deduplication and budget
+        capping. Block numbers match the <code>[N]</code> citations in
+        the Final Answer.
+      </p>
+      {blocks.length === 0 ? (
+        <p style={{ fontStyle: "italic", color: "var(--fg-muted)" }}>
+          No evidence blocks — synthesis was skipped or retrieval was
+          empty.
+        </p>
+      ) : (
+        <ol
+          style={{
+            listStyle: "none",
+            padding: 0,
+            margin: 0,
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          {visible.map((b, i) => (
+            <EvidenceBlockRow key={`${b.artifactId}-${i}`} block={b} index={i + 1} />
+          ))}
+        </ol>
+      )}
+      {blocks.length > COLLAPSE_THRESHOLD && (
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          style={{ marginTop: 8 }}
+        >
+          {expanded
+            ? "Show fewer"
+            : `Show all (${blocks.length - COLLAPSE_THRESHOLD} more)`}
+        </button>
+      )}
+    </section>
+  );
+}
+
+function EvidenceBlockRow({
+  block,
+  index,
+}: {
+  block: EvidenceBlock;
+  index: number;
+}) {
+  const meta: string[] = [block.artifactType];
+  if (block.pageStart != null) {
+    meta.push(
+      block.pageEnd != null && block.pageEnd !== block.pageStart
+        ? `pages ${block.pageStart}-${block.pageEnd}`
+        : `page ${block.pageStart}`,
+    );
+  }
+  if (block.section) meta.push(`§ ${block.section}`);
+  if (block.score != null && block.score > 0) {
+    meta.push(`score ${block.score.toFixed(2)}`);
+  }
+  return (
+    <li
+      style={{
+        background: "var(--bg-sunken)",
+        borderRadius: 6,
+        padding: "10px 12px",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "baseline",
+          marginBottom: 4,
+          fontSize: 12,
+          color: "var(--fg-muted)",
+        }}
+      >
+        <strong style={{ color: "var(--fg)" }}>[{index}]</strong>
+        <span>{meta.join(" · ")}</span>
+        <code style={{ marginLeft: "auto", fontSize: 11 }}>
+          {block.chunkId ?? block.artifactId}
+        </code>
+      </div>
+      <div
+        style={{
+          whiteSpace: "pre-wrap",
+          fontSize: 13,
+          lineHeight: 1.45,
+        }}
+      >
+        {block.text}
+      </div>
+    </li>
   );
 }
 

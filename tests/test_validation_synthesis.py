@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from j1.llm.clients import LLMUsage
-from j1.validation.dtos import RetrievedChunkRefDTO
+from j1.validation.dtos import EvidenceBlockDTO
 from j1.validation.synthesis import (
     DefaultAnswerSynthesizer,
     SynthesisResult,
@@ -55,15 +55,17 @@ class _StubTextLLM:
         return (self._text, self._usage)
 
 
-def _chunk(artifact_id: str, preview: str) -> RetrievedChunkRefDTO:
-    return RetrievedChunkRefDTO(
+def _chunk(artifact_id: str, preview: str) -> EvidenceBlockDTO:
+    """Test helper — preserves the old `_chunk(id, text)` signature so
+ the existing test bodies don't need rewriting. `preview` is
+ reinterpreted as the evidence-block text (which is what the LLM
+ actually sees now)."""
+    return EvidenceBlockDTO(
         artifact_id=artifact_id,
+        artifact_type="chunk",
+        text=preview,
         chunk_id=f"chunk-{artifact_id}",
-        run_id="run-1",
-        document_id="doc-1",
-        source_location=None,
         score=0.9,
-        preview=preview,
     )
 
 
@@ -79,7 +81,7 @@ def test_synthesize_happy_path_records_text_and_usage():
 
     result = synth.synthesize(
         question="What are the six stages?",
-        chunks=[_chunk("a1", "Stage 1 is A. Stage 2 is B. ...")],
+        evidence=[_chunk("a1", "Stage 1 is A. Stage 2 is B. ...")],
     )
 
     assert result.answer == "The six stages are A, B, C, D, E, F."
@@ -99,7 +101,7 @@ def test_synthesize_passes_system_prompt_and_question_to_llm():
 
     synth.synthesize(
         question="What is the proposal due date?",
-        chunks=[_chunk("a1", "The proposal is due 2026-12-01.")],
+        evidence=[_chunk("a1", "The proposal is due 2026-12-01.")],
     )
 
     assert len(llm.calls) == 1
@@ -107,7 +109,11 @@ def test_synthesize_passes_system_prompt_and_question_to_llm():
     assert "What is the proposal due date?" in call["prompt"]
     assert "2026-12-01" in call["prompt"]
     assert call["system_prompt"] is not None
-    assert "ONLY the context" in call["system_prompt"]
+    # The prompt instructs the model to stay grounded in the evidence
+    # blocks and allow direct inference (vs. the prior strict-only
+    # wording that caused false abstentions).
+    assert "ONLY the evidence blocks" in call["system_prompt"]
+    assert "inference from the evidence is allowed" in call["system_prompt"]
     # Caller tag flows through so LLM logs/budget tracking can
     # attribute the call back to the validation surface.
     assert call["metadata"] == {"caller": "validation.manual_query"}
@@ -123,7 +129,7 @@ def test_synthesize_short_circuits_when_no_chunks():
     llm = _StubTextLLM()
     synth = DefaultAnswerSynthesizer(text_client=llm)
 
-    result = synth.synthesize(question="q", chunks=[])
+    result = synth.synthesize(question="q", evidence=[])
 
     assert result.answer is None
     assert result.error == "no_evidence"
@@ -138,7 +144,7 @@ def test_synthesize_short_circuits_when_chunks_all_empty_previews():
 
     result = synth.synthesize(
         question="q",
-        chunks=[_chunk("a1", ""), _chunk("a2", "   ")],
+        evidence=[_chunk("a1", ""), _chunk("a2", "   ")],
     )
 
     # The LLM is still called because the prompt builder treats this
@@ -160,7 +166,7 @@ def test_synthesize_captures_llm_failure_without_raising():
 
     result = synth.synthesize(
         question="q",
-        chunks=[_chunk("a1", "some context")],
+        evidence=[_chunk("a1", "some context")],
     )
 
     assert result.answer is None
@@ -188,7 +194,7 @@ def test_synthesize_truncates_long_chunk_previews():
     huge = "x" * 10_000
     synth.synthesize(
         question="q",
-        chunks=[_chunk("a1", huge)],
+        evidence=[_chunk("a1", huge)],
     )
 
     prompt = llm.calls[0]["prompt"]
@@ -213,7 +219,7 @@ def test_synthesize_stops_after_context_budget_exhausted():
     # enough of them to overshoot _MAX_CONTEXT_CHARS by ~2x.
     chunk_text = "y" * 1500
     chunks = [_chunk(f"a{i}", chunk_text) for i in range(10)]
-    synth.synthesize(question="q", chunks=chunks)
+    synth.synthesize(question="q", evidence=chunks)
 
     prompt = llm.calls[0]["prompt"]
     # The prompt body (context block) shouldn't exceed the cap by

@@ -122,6 +122,34 @@ class ManualTestQueryRequest:
 
 
 @dataclass(frozen=True)
+class EvidenceBlockDTO:
+    """One block of evidence as actually sent to the LLM.
+
+ Distinct from `RetrievedChunkRefDTO` (which is the engine's
+ metadata-only hit projection) because the synthesizer needs the
+ real chunk body — not the artifact's display title. The service
+ builds these by loading each retrieved chunk's body via the
+ chunk projector / artifact registry, then deduplicating and
+ budgeting before the LLM call.
+
+ Returned verbatim on the response as `evidenceSentToLlm[]` so
+ the FE can render "exactly what the model received" for
+ debugging — distinct from the existing `retrievedChunks[]` which
+ stays as the raw retrieval projection.
+ """
+
+    artifact_id: str
+    artifact_type: str
+    text: str
+    chunk_id: str | None = None
+    score: float = 0.0
+    page_start: int | None = None
+    page_end: int | None = None
+    section: str | None = None
+    source_location: str | None = None
+
+
+@dataclass(frozen=True)
 class LLMTraceDTO:
     """Per-call LLM trace attached to manual test query responses.
 
@@ -171,6 +199,11 @@ class ManualTestQueryResponseDTO:
     raw_response: dict[str, Any] | None = None
     synthesized_answer: str | None = None
     llm: LLMTraceDTO | None = None
+    # The clean evidence blocks (with real text) actually passed to
+    # the LLM. Empty when synthesis was skipped. Distinct from
+    # `retrieved_chunks[]` (which is the engine's metadata-only
+    # projection — preview is artifact-title, not body).
+    evidence_sent_to_llm: list[EvidenceBlockDTO] = field(default_factory=list)
 
 
 # ---- validation sets, runs, summaries ---------------------

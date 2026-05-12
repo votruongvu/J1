@@ -658,6 +658,23 @@ export interface LLMTrace {
   error?: string | null;
 }
 
+// One evidence block as actually sent to the LLM. The FE renders
+// these in the "Evidence Sent to LLM" panel so testers can verify
+// exactly what the model saw. Distinct from `retrievedChunks` (the
+// engine's metadata-only projection where `preview` is the artifact
+// title, not the body).
+export interface EvidenceBlock {
+  artifactId: string;
+  artifactType: string;
+  text: string;
+  chunkId?: string | null;
+  score?: number | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  section?: string | null;
+  sourceLocation?: string | null;
+}
+
 export interface ManualTestQueryResponse {
   requestId: string;
   runId: string;
@@ -675,6 +692,9 @@ export interface ManualTestQueryResponse {
   // check `llm.error` to distinguish.
   synthesizedAnswer?: string | null;
   llm?: LLMTrace | null;
+  // The clean evidence (with real body text) actually sent to the
+  // LLM. Empty array when synthesis was skipped.
+  evidenceSentToLlm?: EvidenceBlock[];
 }
 
 // ---- Validation sets and runs -------------------------

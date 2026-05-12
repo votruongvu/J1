@@ -32,6 +32,7 @@ from j1.runs.models import IngestionRun
 from j1.runs.store import IngestionRunStore
 from j1.validation.checks import aggregate_status, run_checks
 from j1.validation.dtos import (
+    EvidenceBlockDTO,
     LLMTraceDTO,
     ManualTestQueryRequest,
     ManualTestQueryResponseDTO,
@@ -42,6 +43,7 @@ from j1.validation.dtos import (
     ValidationRunDTO,
     ValidationSetDTO,
 )
+from j1.validation.evidence import build_evidence_blocks
 from j1.validation.generator import (
     DefaultTestCaseGenerator,
     GenerationOptions,
@@ -205,9 +207,14 @@ class IngestionValidationService:
             else None
         )
 
-        synthesized_answer, llm_trace = self._maybe_synthesize_answer(
+        evidence_blocks = self._build_evidence_blocks_for_run(
+            ctx=ctx,
             request=request,
             retrieved=retrieved,
+        )
+        synthesized_answer, llm_trace = self._maybe_synthesize_answer(
+            request=request,
+            evidence=evidence_blocks,
         )
 
         self._audit_manual_query(
@@ -235,13 +242,48 @@ class IngestionValidationService:
             raw_response=raw_response,
             synthesized_answer=synthesized_answer,
             llm=llm_trace,
+            evidence_sent_to_llm=evidence_blocks,
+        )
+
+    def _build_evidence_blocks_for_run(
+        self,
+        *,
+        ctx: ProjectContext,
+        request: ManualTestQueryRequest,
+        retrieved: list[RetrievedChunkRefDTO],
+    ) -> list[EvidenceBlockDTO]:
+        """Materialise the clean evidence blocks the synthesizer will
+ actually see. Returns `[]` when synthesis is opted out (saves
+ the file IO) or when the workspace isn't wired (legacy paths).
+ The same list is echoed back on the response so the FE can
+ render "Evidence Sent to LLM"."""
+        if not request.synthesize or self._synthesizer is None:
+            return []
+        if self._workspace is None or not retrieved:
+            return []
+
+        def _resolver(record):
+            from pathlib import Path, PurePosixPath
+            location = record.location
+            parts = PurePosixPath(location).parts
+            if len(parts) < 2:
+                return Path(location)
+            area_name, *rest = parts
+            area = WorkspaceArea(area_name)
+            return self._workspace.area(ctx, area).joinpath(*rest)  # type: ignore[union-attr]
+
+        return build_evidence_blocks(
+            ctx=ctx,
+            retrieved=retrieved,
+            artifact_registry=self._artifacts,
+            path_resolver=_resolver,
         )
 
     def _maybe_synthesize_answer(
         self,
         *,
         request: ManualTestQueryRequest,
-        retrieved: list[RetrievedChunkRefDTO],
+        evidence: list[EvidenceBlockDTO],
     ) -> tuple[str | None, LLMTraceDTO]:
         """Run the LLM synthesizer when opted in AND wired.
 
@@ -264,7 +306,7 @@ class IngestionValidationService:
 
         result = self._synthesizer.synthesize(
             question=request.question,
-            chunks=retrieved,
+            evidence=evidence,
         )
         return result.answer, LLMTraceDTO(
             called=True,

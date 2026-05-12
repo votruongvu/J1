@@ -78,6 +78,7 @@ from j1.adapters.rest.schemas import (
     JobEventsRecord,
     JobStartRecord,
     JobStatusRecord,
+    EvidenceBlockRecord,
     GenerateValidationSetRequestRecord,
     LLMTraceRecord,
     ManualTestQueryRequestRecord,
@@ -2553,6 +2554,20 @@ def create_rest_api(
                 completion_tokens=result.llm.completion_tokens,
                 error=result.llm.error,
             ) if result.llm is not None else None,
+            evidence_sent_to_llm=[
+                EvidenceBlockRecord(
+                    artifact_id=b.artifact_id,
+                    artifact_type=b.artifact_type,
+                    text=b.text,
+                    chunk_id=b.chunk_id,
+                    score=b.score,
+                    page_start=b.page_start,
+                    page_end=b.page_end,
+                    section=b.section,
+                    source_location=b.source_location,
+                )
+                for b in result.evidence_sent_to_llm
+            ],
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 

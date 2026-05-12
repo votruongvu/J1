@@ -31,14 +31,15 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from j1.llm.clients import TextLLMClient
-from j1.validation.dtos import RetrievedChunkRefDTO
+from j1.validation.dtos import EvidenceBlockDTO
 
 _log = logging.getLogger("j1.validation.synthesis")
 
 
-# Per-chunk character cap. Local LLMs (8B-class) choke on long
-# contexts; trading per-chunk fidelity for total-context room keeps
-# the call within the configured context window.
+# Per-block character cap inside the prompt. The evidence builder
+# upstream already truncates each block to a sensible size; this is a
+# second defensive cap so an unusually long block can't blow the
+# context budget alone.
 _MAX_CHUNK_CHARS = 1500
 
 # Hard cap on the joined context. Keeps the prompt comfortably under
@@ -51,12 +52,22 @@ _MAX_CONTEXT_CHARS = 6000
 # of the evidence.
 _MAX_OUTPUT_TOKENS = 256
 
+# Grounding prompt. Strict on hallucination ("ONLY the context") but
+# explicit that direct inference is allowed — the prior wording was
+# too brittle and caused the model to abstain when the evidence
+# implied the answer without using the exact phrasing. The "[N]"
+# citation convention matches the numbered evidence blocks the
+# prompt builder emits so the user can verify which block supported
+# each claim.
 _SYSTEM_PROMPT = (
     "You answer questions about an ingested document using ONLY the "
-    "context provided below. Be concise (1-3 sentences). If the "
-    "answer is not present in the context, reply exactly: "
-    '"Not present in the retrieved evidence." Do not invent facts, '
-    "do not reference outside knowledge, do not list sources."
+    "evidence blocks provided below. Be concise (1-3 sentences). "
+    "Reference the evidence blocks like [1] or [2] when supporting a "
+    "claim. Direct inference from the evidence is allowed — answer "
+    "when the evidence clearly implies the answer, even if the exact "
+    "phrasing differs. Only reply \"Not in the retrieved evidence.\" "
+    "when the evidence neither states nor implies the answer. Do not "
+    "invent facts or reference outside knowledge."
 )
 
 
@@ -87,15 +98,21 @@ class AnswerSynthesizer(Protocol):
         self,
         *,
         question: str,
-        chunks: Sequence[RetrievedChunkRefDTO],
+        evidence: Sequence[EvidenceBlockDTO],
     ) -> SynthesisResult: ...
 
 
 class DefaultAnswerSynthesizer:
     """LLM-backed synthesizer. Builds a context-grounded prompt from
- the retrieved chunks and calls `TextLLMClient.generate`. Any
- client exception is captured and surfaced via `SynthesisResult.error`
- — the caller decides whether to expose it to the FE."""
+ the supplied evidence blocks and calls `TextLLMClient.generate`.
+ Any client exception is captured and surfaced via
+ `SynthesisResult.error` — the caller decides whether to expose
+ it to the FE.
+
+ The synthesizer is intentionally dumb about evidence quality:
+ it trusts the caller (the validation service) to have already
+ loaded real chunk bodies, deduped, and budgeted. This module's
+ only job is "string formatting + one LLM call"."""
 
     def __init__(self, text_client: TextLLMClient) -> None:
         self._client = text_client
@@ -104,12 +121,12 @@ class DefaultAnswerSynthesizer:
         self,
         *,
         question: str,
-        chunks: Sequence[RetrievedChunkRefDTO],
+        evidence: Sequence[EvidenceBlockDTO],
     ) -> SynthesisResult:
         provider = getattr(self._client, "provider", None)
         model = getattr(self._client, "model", None)
 
-        if not chunks:
+        if not evidence:
             return SynthesisResult(
                 answer=None,
                 provider=provider,
@@ -120,7 +137,7 @@ class DefaultAnswerSynthesizer:
                 error="no_evidence",
             )
 
-        prompt = _build_prompt(question, chunks)
+        prompt = _build_prompt(question, evidence)
         started = time.monotonic()
         try:
             text, usage = self._client.generate(
@@ -157,28 +174,45 @@ class DefaultAnswerSynthesizer:
 
 
 def _build_prompt(
-    question: str, chunks: Sequence[RetrievedChunkRefDTO],
+    question: str, evidence: Sequence[EvidenceBlockDTO],
 ) -> str:
-    """Compose the user-message body. Numbered context blocks let the
- LLM reference passages internally without us needing to parse
- citations out of free-text — we display the evidence separately
- in the UI."""
+    """Compose the user-message body. Numbered evidence blocks let
+ the LLM reference passages via `[N]` in its answer; the FE
+ renders the same numbering in the "Evidence Sent to LLM"
+ panel so a tester can verify which block backed each claim."""
     parts: list[str] = []
     used = 0
-    for idx, chunk in enumerate(chunks, start=1):
-        preview = (chunk.preview or "").strip()
-        if not preview:
+    for idx, block in enumerate(evidence, start=1):
+        text = (block.text or "").strip()
+        if not text:
             continue
-        if len(preview) > _MAX_CHUNK_CHARS:
-            preview = preview[:_MAX_CHUNK_CHARS] + "…"
-        # +budget for the surrounding "[N] …\n\n" framing
-        if used + len(preview) > _MAX_CONTEXT_CHARS:
+        if len(text) > _MAX_CHUNK_CHARS:
+            text = text[:_MAX_CHUNK_CHARS].rstrip() + "…"
+
+        # Header carries the artifact type + page info when present
+        # so the model knows whether it's reading a chunk fragment
+        # or a compiled-text window. Helps grounding decisions for
+        # "where in the doc does X happen?" style questions.
+        header_bits: list[str] = [f"[{idx}]"]
+        if block.artifact_type:
+            header_bits.append(f"({block.artifact_type})")
+        if block.page_start is not None:
+            if block.page_end is not None and block.page_end != block.page_start:
+                header_bits.append(f"pages {block.page_start}-{block.page_end}")
+            else:
+                header_bits.append(f"page {block.page_start}")
+        if block.section:
+            header_bits.append(f"§ {block.section}")
+        header = " ".join(header_bits)
+
+        block_str = f"{header}\n{text}"
+        if used + len(block_str) > _MAX_CONTEXT_CHARS:
             break
-        parts.append(f"[{idx}] {preview}")
-        used += len(preview)
+        parts.append(block_str)
+        used += len(block_str)
 
     context_block = "\n\n".join(parts) if parts else "(no evidence retrieved)"
-    return f"Question: {question}\n\nContext:\n{context_block}"
+    return f"Question: {question}\n\nEvidence:\n{context_block}"
 
 
 __all__ = [

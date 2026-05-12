@@ -461,6 +461,26 @@ class EvidenceFlagsRecord(CamelModel):
     images_used: bool = False
 
 
+class EvidenceBlockRecord(CamelModel):
+    """One evidence block as actually sent to the LLM.
+
+ Distinct from `RetrievedChunkRefRecord` (which carries retrieval
+ metadata + a truncated preview from the artifact title). Each
+ block here carries the chunk/artifact's REAL body text — what
+ the model saw — plus optional page/section hints so the FE can
+ render a "look at the source" link."""
+
+    artifact_id: str
+    artifact_type: str
+    text: str
+    chunk_id: str | None = None
+    score: float = 0.0
+    page_start: int | None = None
+    page_end: int | None = None
+    section: str | None = None
+    source_location: str | None = None
+
+
 class LLMTraceRecord(CamelModel):
     """Per-call LLM trace attached to manual test query responses.
 
@@ -507,6 +527,11 @@ class ManualTestQueryResponseRecord(CamelModel):
     raw_response: dict[str, Any] | None = None
     synthesized_answer: str | None = None
     llm: LLMTraceRecord | None = None
+    # The clean evidence (with real body text) actually sent to the
+    # LLM. The FE renders this as the "Evidence Sent to LLM" panel
+    # — distinct from `retrievedChunks[]` which is the engine's
+    # metadata-only projection (preview is the artifact title).
+    evidence_sent_to_llm: list[EvidenceBlockRecord] = Field(default_factory=list)
 
 
 # ---- Validation sets / runs -------------------------------
