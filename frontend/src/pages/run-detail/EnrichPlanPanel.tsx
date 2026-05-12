@@ -83,9 +83,15 @@ export function EnrichPlanPanel({
     return loadPlan();
   }, [loadPlan]);
 
+  // STEP_STARTED is included because post_compile_enrich_plan is
+  // persisted by a silent activity (no SSE event) between
+  // assess_enrichment's step.completed and the next stage's
+  // step.started. Without STEP_STARTED here the panel only fills on
+  // some later step.completed, batching with other panels.
   useEffect(() => {
     if (!latestEvent) return;
     const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_STARTED,
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,

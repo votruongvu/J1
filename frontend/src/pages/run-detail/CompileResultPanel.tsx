@@ -89,11 +89,19 @@ export function CompileResultPanel({
     return loadPlan();
   }, [loadPlan]);
 
+  // STEP_STARTED is included because compile_result_summary is
+  // persisted by a silent activity (no SSE event) between compile's
+  // step.completed and the next stage's step.started. Without
+  // STEP_STARTED the panel only refreshes on later step.completed
+  // events, which is why all post-compile panels used to populate
+  // simultaneously near workflow terminal.
   useEffect(() => {
     if (!latestEvent) return;
     const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_STARTED,
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
+      EVENT_TYPES.STEP_SKIPPED,
     ]);
     if (
       refreshOn.has(latestEvent.event)

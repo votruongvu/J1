@@ -87,10 +87,16 @@ export function CompileStrategyPanel({
   }, [loadReport]);
 
   // Refetch on compile-completion-adjacent SSE events so the panel
-  // picks up the report when the user loaded mid-flight.
+  // picks up the report when the user loaded mid-flight. STEP_STARTED
+  // is included because compile_strategy_report is persisted by a
+  // separate silent activity (no progress signal) between compile's
+  // step.completed and the next stage's step.started — without
+  // STEP_STARTED here the panel only re-loads on later step.completed
+  // events, by which point several silent persists have piled up.
   useEffect(() => {
     if (!latestEvent) return;
     const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_STARTED,
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,

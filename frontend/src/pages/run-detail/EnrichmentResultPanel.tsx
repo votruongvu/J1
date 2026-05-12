@@ -94,9 +94,15 @@ export function EnrichmentResultPanel({
     return loadPlan();
   }, [loadPlan]);
 
+  // STEP_STARTED is included because enrichment_result is persisted
+  // by a silent activity (no SSE event) between enrich's
+  // step.completed and the next stage's step.started. Without
+  // STEP_STARTED the overlay only fills on later step.completed
+  // events near terminal.
   useEffect(() => {
     if (!latestEvent) return;
     const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_STARTED,
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,

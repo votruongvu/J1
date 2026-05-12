@@ -167,7 +167,16 @@ export function AssessmentPlanPanel({
   // both timings without a polling loop.
   useEffect(() => {
     if (!latestEvent) return;
+    // Refresh on STEP_STARTED too — the NEXT stage's start event
+    // fires AFTER the previous stage's workflow-level silent persists
+    // complete (compile_strategy_report, compile_result_summary,
+    // post_compile_enrich_plan, enrichment_result are all persisted
+    // by separate activities that emit no progress signal of their
+    // own). Without STEP_STARTED here, each panel only sees its
+    // artifact land when the workflow eventually emits some later
+    // step.completed — they all populate at once near terminal.
     const refreshOn = new Set<string>([
+      EVENT_TYPES.STEP_STARTED,
       EVENT_TYPES.STEP_COMPLETED,
       EVENT_TYPES.STEP_FAILED,
       EVENT_TYPES.STEP_SKIPPED,
