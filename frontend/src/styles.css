@@ -3565,6 +3565,101 @@ pre.json .b {
   color: var(--text-subtle, var(--text-muted));
 }
 
+/* ---- Shared key-value (.kv) layout for run-detail panels ───────
+ *
+ * Used by AssessmentPlanPanel / CompileStrategyPanel /
+ * CompileResultPanel / EnrichPlanPanel / EnrichmentResultPanel and
+ * a few smaller surfaces. Renders a `<dl>` as a 2-column grid:
+ *
+ *   ┌────────────────────────┬─────────────────────────────────┐
+ *   │ Compiler adapter       │ raganything                     │
+ *   ├────────────────────────┼─────────────────────────────────┤
+ *   │ Parser                 │ raganything                     │
+ *   ├────────────────────────┼─────────────────────────────────┤
+ *   │ parse_method           │ auto                            │
+ *   └────────────────────────┴─────────────────────────────────┘
+ *
+ * The label column is a muted overline-style; the value column uses
+ * normal body text. A thin row separator gives the eye a stable
+ * scan line down the value column without being noisy. On narrow
+ * widths the grid collapses to a stacked layout for legibility.
+ */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  column-gap: 20px;
+  row-gap: 0;
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-body);
+}
+.kv > dt {
+  /* Label column. Muted, slightly smaller, uppercase-ish overline. */
+  padding: 8px 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+.kv > dd {
+  /* Value column. Body text, full color. */
+  margin: 0;
+  padding: 8px 0;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  word-break: break-word;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+/* First row has no top border — keeps the visual edge clean against
+ * the surrounding card body. */
+.kv > dt:first-of-type,
+.kv > dt:first-of-type + dd {
+  border-top: none;
+}
+/* Block-content values (lists, pre, nested layouts) override the
+ * flex baseline so they grow vertically inside the cell. */
+.kv > dd > ul,
+.kv > dd > ol,
+.kv > dd > pre,
+.kv > dd > .cap-pills,
+.kv > dd > dl {
+  width: 100%;
+}
+.kv > dd > pre {
+  margin: 0;
+  font-size: var(--text-xs);
+  background: var(--bg-sunken);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+/* Narrow viewport: stack label above value for legibility. */
+@media (max-width: 720px) {
+  .kv {
+    grid-template-columns: 1fr;
+    row-gap: 0;
+  }
+  .kv > dt {
+    padding-bottom: 0;
+    border-top: 1px solid var(--border);
+  }
+  .kv > dd {
+    padding-top: 2px;
+    border-top: none;
+  }
+  .kv > dt:first-of-type + dd {
+    border-top: none;
+  }
+}
+
 /* ---- Compile Strategy panel ----------------------------------- */
 
 /* Wrapper around the 4 inner cards (Banners, CompileStrategyCard,
@@ -3653,11 +3748,11 @@ pre.json .b {
 .assessment-plan-panel__escalation .muted {
   color: var(--text-muted);
 }
+/* Inherits the shared `.kv` two-column grid; this rule used to set
+ * its own grid + gap which fought the shared style. Keeping the
+ * selector around as a no-op so any future per-panel override has a
+ * targeted hook. */
 .assessment-plan-panel__kv {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 6px 14px;
-  font-size: 13px;
 }
 .assessment-plan-panel__caps {
   display: grid;
