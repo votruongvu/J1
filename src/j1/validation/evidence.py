@@ -39,6 +39,7 @@ prompt-size cap downstream, but we cut here too so the response's
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -77,15 +78,38 @@ _DEDUP_PREFIX_LEN = 200
 _COMPILED_TEXT_WINDOW_CHARS = 3000
 
 # Artifact kinds we deliberately skip when building evidence.
-# Pure-metadata kinds with no usable text body (their `hit.preview`
-# is just the artifact title). Note: `graph_json` and
-# `enriched.document_map` deliberately stayed OUT of this set —
-# the artifact-type policy below deprioritises graph_json instead
-# of skipping it, and `_extract_document_map_text` extracts prose
-# from document_map JSON so it can serve as textual evidence.
+#
+# Pure-metadata / non-textual kinds whose body would only confuse
+# the synthesizer (their `hit.preview` is just an artifact title or
+# a serialized JSON blob).
+#
+# ``graph_json`` is in this set on purpose: the LightRAG-produced
+# knowledge graph (entities + relationships + GraphML) is NOT a
+# textual evidence source. RAGAnything's own ``aquery(mode=…)``
+# pipeline is the supported graph-aware query path — it walks the
+# graph storage internally, retrieves entity/relation context, and
+# returns prose grounded in chunk text. Feeding raw graph_json JSON
+# blobs to our local synthesizer instead causes the model to
+# (a) waste context budget on serialized JSON and (b) confidently
+# claim "the evidence contains JSON blocks but not enough context
+# to identify entities" — the symptom the operator reported.
+#
+# Graph QA flow is:
+#   * for graph-typed questions the engine routes to
+#     ``RAGAnythingQueryProvider`` which calls
+#     ``rag.aquery(mode="hybrid")`` — the entity/relation
+#     traversal happens inside LightRAG, not here.
+#   * raw graph_json artifacts remain on disk as inspection /
+#     audit artifacts (loadable via the Knowledge Graph tab) but
+#     never reach the answer-synthesizer prompt.
+#
+# ``enriched.tables`` / ``enriched.visuals`` are skipped because
+# their bodies are pure metadata (cell coordinates, image
+# references); the synthesizer can't use them as prose.
 _SKIP_KINDS: frozenset[str] = frozenset({
     "enriched.tables",
     "enriched.visuals",
+    "graph_json",
 })
 
 
@@ -126,7 +150,11 @@ _KIND_PRIORITY: dict[str, int] = {
     # (preview-only) but should never let dominate. Spec rule:
     # "Do not let graph_json or formulas dominate normal retrieval
     # answers."
-    "graph_json": 50,
+    #
+    # NOTE: ``graph_json`` used to be deprioritised here; it is now
+    # in ``_SKIP_KINDS`` entirely — graph QA goes through
+    # ``RAGAnythingQueryProvider`` (which calls LightRAG's own
+    # ``aquery``), not through this synthesizer.
     "enriched.formulas": 50,
 }
 _DEFAULT_KIND_PRIORITY = 30  # unknown kinds — middle of pack
@@ -376,13 +404,22 @@ def _load_compiled_text_window(
         return None
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
-            return fh.read(_COMPILED_TEXT_WINDOW_CHARS)
+            raw = fh.read(_COMPILED_TEXT_WINDOW_CHARS)
     except Exception as exc:  # noqa: BLE001 — IO may fail on slow disks
         _log.warning(
             "compiled.text read failed for %s: %s",
             artifact_id, exc,
         )
         return None
+    # PDF compilers produce text with collapsed/duplicated whitespace
+    # and inserted soft-line-breaks (e.g. "Section\n  3.1  Scope" or
+    # "due\n  20  May  2026"). Without normalisation, the LLM sees
+    # the broken whitespace + sometimes misses obvious matches —
+    # one of the failure modes the latest validation report flagged
+    # ("expected_chunk_in_topk passes but synthesis still abstains").
+    # Collapse newlines + runs of spaces into single spaces. The
+    # token content is preserved.
+    return _normalise_pdf_whitespace(raw)
 
 
 # Max characters lifted out of one document_map artifact. Caps the
@@ -536,6 +573,20 @@ def _page_info(
     if record is None:
         return (None, None, None)
     return (record.page_start, record.page_end, record.section)
+
+
+# Whitespace runs (including newlines) → single space. Same shape as
+# ``judge._normalise_text`` and the generator's anti-hallucination
+# normaliser — keep them aligned so the LLM sees the same shape of
+# text the grounding judge will diff against.
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalise_pdf_whitespace(text: str) -> str:
+    """Collapse PDF-style whitespace artifacts. Preserves token
+    content; only flattens runs of whitespace into single spaces and
+    trims edges."""
+    return _WS_RE.sub(" ", text or "").strip()
 
 
 __all__ = ["PathResolver", "build_evidence_blocks"]

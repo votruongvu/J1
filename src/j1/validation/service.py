@@ -1035,17 +1035,35 @@ def _build_manual_query_debug(
         top_preview = first_text[:240]
 
     # Artifact-type policy debug: which kinds did the policy
-    # deprioritize? Useful when "graph_json dominated retrieval but
-    # the synthesizer ignored it" — the operator can see the policy
-    # at work instead of suspecting a bug.
-    from j1.validation.evidence import _KIND_PRIORITY, _DEFAULT_KIND_PRIORITY
+    # deprioritize or skip? Useful when "graph_json dominated
+    # retrieval but the synthesizer ignored it" — the operator can
+    # see the policy at work instead of suspecting a bug.
+    #
+    # Two buckets:
+    #   * ``deprioritized_kinds`` — present in retrieval, has a
+    #     low-priority slot in ``_KIND_PRIORITY``, but didn't make it
+    #     into evidence (budget exhausted, dedup, etc).
+    #   * ``skipped_kinds`` — present in retrieval, but
+    #     ``_SKIP_KINDS`` rejected them outright (e.g. ``graph_json``
+    #     is now handled by RAGAnything.aquery, not by the local
+    #     synthesizer's textual context).
+    from j1.validation.evidence import (
+        _DEFAULT_KIND_PRIORITY,
+        _KIND_PRIORITY,
+        _SKIP_KINDS,
+    )
     _LOW_PRIORITY_THRESHOLD = 40  # kinds at this priority or worse
     deprioritized_kinds = sorted({
         c.artifact_kind for c in retrieved
         if c.artifact_kind
+        and c.artifact_kind not in _SKIP_KINDS
         and _KIND_PRIORITY.get(c.artifact_kind, _DEFAULT_KIND_PRIORITY)
         >= _LOW_PRIORITY_THRESHOLD
         and c.artifact_kind not in types_after
+    })
+    skipped_kinds = sorted({
+        c.artifact_kind for c in retrieved
+        if c.artifact_kind and c.artifact_kind in _SKIP_KINDS
     })
 
     fallback_reason: str | None = None
@@ -1073,6 +1091,7 @@ def _build_manual_query_debug(
         "fallback_reason": fallback_reason,
         "top_evidence_preview": top_preview,
         "deprioritized_kinds": deprioritized_kinds,
+        "skipped_kinds": skipped_kinds,
     }
 
 

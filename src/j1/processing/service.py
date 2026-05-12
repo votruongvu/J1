@@ -1,9 +1,12 @@
 import hashlib
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+
+_log = logging.getLogger("j1.processing.service")
 
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactRegistry
@@ -46,6 +49,40 @@ TARGET_ARTIFACT_SET = "artifact_set"
 TARGET_QUERY = "query"
 
 CHECKSUM_PREFIX = "sha256:"
+
+
+# Artifact kinds that MUST carry ``metadata.run_id`` at registration.
+# Mirror of ``orchestration.activities.knowledge._LINEAGE_REQUIRED_KINDS``
+# — duplicated here (rather than imported) so the processing layer
+# stays free of orchestration coupling, and so a future producer
+# that bypasses orchestration still hits the same gate. Keep the
+# two lists in sync.
+_LINEAGE_REQUIRED_KINDS: frozenset[str] = frozenset({
+    "graph_json",
+    "chunk",
+    "compiled.text",
+    "compiled.json",
+    "parsed_content_manifest",
+    "enriched.tables",
+    "enriched.visuals",
+    "enriched.document_map",
+    "enriched.requirements",
+    "enriched.formulas",
+    "enriched.risks",
+    "enriched.consistency_findings",
+    "enriched.source_map",
+    "enriched.confidence_assessment",
+    "graph_corpus",
+    "report",
+})
+
+
+class LineageError(RuntimeError):
+    """Raised when a lineage-required artifact is registered without
+    ``metadata.run_id``. Mirrors
+    ``orchestration.activities.knowledge.LineageError`` so callers
+    can catch a single type regardless of which registration path
+    raised."""
 
 
 class ProcessingService:
@@ -895,6 +932,35 @@ class ProcessingService:
         merged_metadata = dict(draft.metadata)
         if run_id and "run_id" not in merged_metadata:
             merged_metadata["run_id"] = run_id
+
+        # Lineage telemetry for legacy callers that bypass
+        # orchestration. The orchestration path
+        # (``KnowledgeProcessingActivities._materialize_draft``)
+        # raises ``LineageError`` outright — that's the production
+        # write path and the strict gate. The legacy
+        # ``ProcessingService`` path predates the lineage contract
+        # and is still used by tests / direct adapter calls that
+        # legitimately register artifacts without a run scope. We
+        # log + tag rather than block here so:
+        #   * existing direct callers keep working,
+        #   * operators still see the WARNING in logs whenever a
+        #     lineage-required artifact lands without run_id,
+        #   * the project-wide
+        #     ``invalidate_lineage_missing_artifacts`` sweep can
+        #     clean up the resulting orphans on demand.
+        # Tag the metadata so the sweep recognises these as
+        # pre-existing orphans, not freshly-failed ones.
+        if draft.kind in _LINEAGE_REQUIRED_KINDS and not merged_metadata.get("run_id"):
+            _log.warning(
+                "legacy registration of lineage-required artifact "
+                "kind=%r without run_id; the orphan will be visible "
+                "to retrieval until /documents/{id}/repair (or "
+                "another sweep) runs. Prefer the orchestration path "
+                "(KnowledgeProcessingActivities) which enforces "
+                "lineage strictly.",
+                draft.kind,
+            )
+            merged_metadata.setdefault("lineage_origin", "legacy_processing_service")
 
         record = ArtifactRecord(
             artifact_id=artifact_id,

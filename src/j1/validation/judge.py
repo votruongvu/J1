@@ -257,6 +257,50 @@ _GROUNDING_PROMPT = (
     "Return an empty list when every claim is grounded.\n"
 )
 
+# Known fallback phrases the synthesizer is instructed to emit when
+# the retrieved evidence is insufficient to answer the question.
+# These are NOT factual claims about the document — they are explicit
+# admissions of insufficient evidence. The grounding judge previously
+# treated them as a single unsupported claim ("the answer says X
+# isn't in the evidence") and surfaced a moderate-severity warning,
+# which polluted the validation report with false positives.
+#
+# Comparison is case-insensitive on whitespace-normalised text so
+# the LLM's actual output ("Not in the retrieved evidence.\n",
+# "not in the retrieved evidence", etc.) all match. Substring match
+# is intentional — the LLM occasionally adds a hedge sentence after
+# the fallback (e.g. "Not in the retrieved evidence. The chunks
+# describe a different section."), and we still want to classify
+# the answer as a fallback, not pretend the hedge is a factual claim.
+_FALLBACK_PHRASES: tuple[str, ...] = (
+    "not in the retrieved evidence",
+    "not enough information",
+    "no relevant information",
+    "the evidence does not",
+    "the provided evidence does not",
+    "the retrieved evidence does not",
+    "the context does not contain",
+    "i don't have enough",
+    "i do not have enough",
+    "insufficient information",
+    "no information is provided",
+    "no information was provided",
+)
+
+
+def _is_fallback_answer(answer: str) -> bool:
+    """Return True when ``answer`` is one of the synthesizer's
+    canonical "I don't know" phrases. Whitespace-normalised,
+    case-insensitive, substring match. See ``_FALLBACK_PHRASES`` for
+    the catalogue."""
+    if not answer:
+        return False
+    normalised = _normalise_text(answer).lower()
+    if not normalised:
+        return False
+    return any(phrase in normalised for phrase in _FALLBACK_PHRASES)
+
+
 _FABRICATION_PROMPT = (
     "You are auditing the answer to an out-of-scope question. The "
     "answer should either abstain or only state facts that are in "
@@ -339,6 +383,23 @@ class DefaultLLMJudge:
     ) -> GroundingJudgement | None:
         if not (answer or "").strip():
             return None
+        # Fallback-phrase whitelist: when the synthesizer correctly
+        # emits a "I don't know" answer (e.g. "Not in the retrieved
+        # evidence."), there are NO factual claims to ground. The
+        # judge previously asked the LLM to extract claims from
+        # this fallback text and the LLM treated the admission of
+        # insufficient evidence itself as an unsupported claim,
+        # producing false-positive moderate-severity warnings on
+        # otherwise-honest answers. Short-circuit with an empty
+        # grounding judgement instead of round-tripping to the LLM.
+        if _is_fallback_answer(answer):
+            return GroundingJudgement(
+                unsupported_claims=[],
+                rationale=(
+                    "answer is a fallback phrase (insufficient-evidence "
+                    "admission) — no factual claims to ground"
+                ),
+            )
         # Normalise the answer + citation previews before they hit
         # the LLM. PDF compilers produce chunks with collapsed/
         # duplicated whitespace and inserted newlines (e.g.
@@ -387,6 +448,17 @@ class DefaultLLMJudge:
     ) -> FabricationJudgement | None:
         if not (answer or "").strip():
             return None
+        # Same short-circuit as ``judge_answer_grounded``: a
+        # fallback phrase IS the correct behaviour for an
+        # out-of-scope question. No fabrication to flag.
+        if _is_fallback_answer(answer):
+            return FabricationJudgement(
+                fabricated_claims=[],
+                rationale=(
+                    "answer is a fallback phrase (the model abstained "
+                    "as instructed) — no fabricated claims"
+                ),
+            )
         normalised_answer = _normalise_text(answer)
         rendered_citations = _render_citations(
             citations, normalise_preview=True,

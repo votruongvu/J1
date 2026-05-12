@@ -124,9 +124,14 @@ def test_unknown_kinds_fall_in_middle_of_pack():
     """A future artifact kind (e.g. `enriched.entities`) gets a
  middle-of-pack priority. Better than failing silently or
  deprioritizing to the bottom — at least the synthesizer can
- see it after the canonical textual kinds."""
+ see it after the canonical textual kinds.
+
+ ``enriched.formulas`` is the canonical low-priority textual kind
+ to compare against now that ``graph_json`` is in ``_SKIP_KINDS``
+ (and therefore deliberately absent from the priority map).
+ """
     assert _DEFAULT_KIND_PRIORITY > _kind_priority("chunk")
-    assert _DEFAULT_KIND_PRIORITY < _kind_priority("graph_json")
+    assert _DEFAULT_KIND_PRIORITY < _kind_priority("enriched.formulas")
     assert _kind_priority("totally_new_kind") == _DEFAULT_KIND_PRIORITY
 
 
@@ -302,18 +307,25 @@ def test_skip_kinds_still_excluded_entirely(tmp_path: Path, ctx):
 # ---- Debug surfaces -----------------------------------------------
 
 
-def test_debug_dict_surfaces_deprioritized_kinds():
-    """When graph_json is in the retrieval set but doesn't reach
- the evidence context, the operator should see it in
- `debug.deprioritized_kinds`. Without this hint they'd think
- the policy lost the graph, when actually it was deprioritized
- by design."""
+def test_debug_dict_surfaces_skipped_and_deprioritized_kinds():
+    """When ``graph_json`` is in the retrieval set but doesn't reach
+ the evidence context, the operator sees it in
+ ``debug.skipped_kinds`` (because ``graph_json`` is now in
+ ``_SKIP_KINDS`` — graph QA goes through RAGAnything.aquery,
+ not the local textual synthesizer).
+
+ ``enriched.formulas`` exercises the deprioritized bucket — same
+ mechanism but for kinds with a low-priority slot rather than a
+ skip rule.
+ """
     from j1.validation.dtos import EvidenceBlockDTO
     from j1.validation.service import _build_manual_query_debug
 
     debug = _build_manual_query_debug(
         retrieved=[
             _hit(artifact_id="art-graph", kind="graph_json", score=0.9),
+            _hit(artifact_id="art-formula", kind="enriched.formulas",
+                 score=0.8),
             _hit(artifact_id="art-chunk", kind="chunk",
                  chunk_id="c-1", score=0.5),
         ],
@@ -324,8 +336,14 @@ def test_debug_dict_surfaces_deprioritized_kinds():
         synthesized_answer="some answer",
         llm_trace=None,
     )
-    assert "graph_json" in debug["deprioritized_kinds"]
+    # graph_json → skipped outright by _SKIP_KINDS.
+    assert "graph_json" in debug["skipped_kinds"]
+    assert "graph_json" not in debug["deprioritized_kinds"]
+    # enriched.formulas → deprioritized but not skipped.
+    assert "enriched.formulas" in debug["deprioritized_kinds"]
+    # chunk made it into evidence — neither skipped nor deprioritized.
     assert "chunk" not in debug["deprioritized_kinds"]
+    assert "chunk" not in debug["skipped_kinds"]
 
 
 def test_debug_dict_omits_kinds_that_survived_the_filter():

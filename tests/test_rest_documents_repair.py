@@ -122,12 +122,23 @@ def test_repair_is_idempotent(client, artifact_registry, ctx):
     assert second.json()["data"]["invalidatedArtifactCount"] == 0
 
 
-def test_repair_only_touches_target_document(
+def test_repair_breaks_down_doc_scoped_and_project_wide_sweeps(
     client, artifact_registry, ctx,
 ):
-    """Orphans for OTHER documents must not be invalidated when we
- repair doc-1 — different documents, different reindex
- lifecycles."""
+    """The repair endpoint runs TWO sweeps and reports a per-sweep
+ breakdown:
+
+   * ``invalidatedDocumentScoped`` — orphans tied to ``doc-1`` via
+     ``source_document_ids``.
+   * ``invalidatedLineageOrphans`` — project-wide cleanup of
+     lineage-required-kind artifacts with no ``run_id``.
+
+ Both run because LightRAG-produced ``graph_json`` artifacts are
+ workspace-aggregate and often carry no ``source_document_ids``;
+ the document-scoped sweep would silently miss them. The
+ project-wide sweep is the cleanup hook the operator asked for
+ when 7 graph_json rows leaked into retrieval with ``run_id=None``.
+ """
     _seed_orphan_artifact(
         artifact_registry, ctx,
         artifact_id="orphan-1", document_id="doc-1",
@@ -139,9 +150,19 @@ def test_repair_only_touches_target_document(
 
     resp = client.post("/documents/doc-1/repair", headers=_headers(ctx))
 
-    assert resp.json()["data"]["invalidatedArtifactCount"] == 1
+    body = resp.json()["data"]
+    # Doc-scoped sweep catches orphan-1 (binds to doc-1). The
+    # second pass (project-wide) sees orphan-1 already invalidated
+    # and only flips other-1 — invalidated_lineage_orphans == 1.
+    assert body["invalidatedDocumentScoped"] == 1
+    assert body["invalidatedLineageOrphans"] == 1
+    assert body["invalidatedArtifactCount"] == 2
+    # Both rows now stamped invalid regardless of document binding —
+    # the cross-document orphan cleanup is the intended behaviour.
+    a_doc1 = artifact_registry.get(ctx, "orphan-1")
     a_other = artifact_registry.get(ctx, "other-1")
-    assert "search_state" not in a_other.metadata
+    assert a_doc1.metadata["search_state"] == SEARCH_STATE_INVALID
+    assert a_other.metadata["search_state"] == SEARCH_STATE_INVALID
 
 
 def test_repair_returns_zero_when_no_orphans(client, ctx):

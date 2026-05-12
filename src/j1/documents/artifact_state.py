@@ -49,6 +49,30 @@ SEARCH_STATE_SUPERSEDED = "superseded"
 SEARCH_STATE_INVALID = "invalid"
 
 
+# Lineage-required kinds — must carry ``metadata.run_id`` to be
+# routable to retrieval. Duplicated from
+# ``orchestration.activities.knowledge`` so this housekeeping
+# module stays orchestration-free (avoid the import cycle).
+_LINEAGE_REQUIRED_KINDS: frozenset[str] = frozenset({
+    "graph_json",
+    "chunk",
+    "compiled.text",
+    "compiled.json",
+    "parsed_content_manifest",
+    "enriched.tables",
+    "enriched.visuals",
+    "enriched.document_map",
+    "enriched.requirements",
+    "enriched.formulas",
+    "enriched.risks",
+    "enriched.consistency_findings",
+    "enriched.source_map",
+    "enriched.confidence_assessment",
+    "graph_corpus",
+    "report",
+})
+
+
 def supersede_previous_active_artifacts(
     *,
     ctx: ProjectContext,
@@ -179,6 +203,73 @@ def invalidate_orphan_artifacts(
     return stamped
 
 
+def invalidate_lineage_missing_artifacts(
+    *,
+    ctx: ProjectContext,
+    artifacts: ArtifactRegistry,
+    kinds: frozenset[str] = _LINEAGE_REQUIRED_KINDS,
+) -> int:
+    """Project-wide sweep: flip any lineage-required artifact with
+    no ``metadata.run_id`` to ``search_state=invalid``.
+
+    ``invalidate_orphan_artifacts`` is document-scoped — it only
+    catches orphans tied to a specific ``document_id`` via
+    ``source_document_ids``. Graph artifacts produced by LightRAG
+    (``kind=graph_json``) often have empty ``source_document_ids``
+    because the graph is a workspace-wide aggregate, so that sweep
+    misses them.
+
+    This function is the broader cleanup hook: it scans every
+    artifact in the project, ignores kinds outside
+    ``_LINEAGE_REQUIRED_KINDS`` (those legitimately may have no
+    run_id), and invalidates any required-kind row whose run_id is
+    missing or empty. Use this when the operator hits "graph_json
+    with run_id=None" in retrieval and we want to bulk-clean the
+    index before re-running validation.
+
+    Idempotent — already-invalid artifacts skip. Returns the count
+    of newly-invalidated rows.
+    """
+    update = getattr(artifacts, "update_metadata", None)
+    if not callable(update):
+        return 0
+
+    try:
+        records = artifacts.list_artifacts(ctx)
+    except Exception:  # noqa: BLE001
+        _log.warning(
+            "failed to list artifacts for project-wide lineage sweep",
+            exc_info=True,
+        )
+        return 0
+
+    stamped = 0
+    for artifact in records:
+        if artifact.kind not in kinds:
+            continue
+        meta = dict(getattr(artifact, "metadata", None) or {})
+        if meta.get("run_id"):
+            continue  # has a run_id — lineage intact
+        if meta.get("search_state") == SEARCH_STATE_INVALID:
+            continue  # already invalidated
+        meta["search_state"] = SEARCH_STATE_INVALID
+        meta["invalid_reason"] = "missing_run_id"
+        try:
+            update(ctx, artifact.artifact_id, meta)
+            stamped += 1
+            _log.info(
+                "invalidated lineage-orphan artifact %s "
+                "(kind=%s) — no run_id stamped",
+                artifact.artifact_id, artifact.kind,
+            )
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "failed to invalidate lineage-orphan artifact %s",
+                artifact.artifact_id, exc_info=True,
+            )
+    return stamped
+
+
 def _belongs_to(
     artifact: ArtifactRecord, *, document_id: str, run_id: str,
 ) -> bool:
@@ -200,6 +291,7 @@ __all__ = [
     "SEARCH_STATE_ACTIVE",
     "SEARCH_STATE_INVALID",
     "SEARCH_STATE_SUPERSEDED",
+    "invalidate_lineage_missing_artifacts",
     "invalidate_orphan_artifacts",
     "supersede_previous_active_artifacts",
 ]

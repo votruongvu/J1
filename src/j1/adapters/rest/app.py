@@ -2206,21 +2206,39 @@ def create_rest_api(
         # record itself is malformed. Returns 0 invalidated for
         # the no-op case, which is the right contract for an idempotent
         # repair tool.
-        from j1.documents.artifact_state import invalidate_orphan_artifacts
+        from j1.documents.artifact_state import (
+            invalidate_lineage_missing_artifacts,
+            invalidate_orphan_artifacts,
+        )
         registry = getattr(facade.retrieval, "_artifacts", None)
         if registry is None:
             raise HTTPException(
                 503, "artifact registry not configured for repair",
             )
-        invalidated = invalidate_orphan_artifacts(
+        # Document-scoped sweep: any artifact tied to this document
+        # via ``source_document_ids`` with no ``run_id``.
+        invalidated_doc = invalidate_orphan_artifacts(
             ctx=ctx,
             artifacts=registry,
             document_id=document_id,
         )
+        # Project-wide sweep: graph_json artifacts produced by
+        # LightRAG are workspace-aggregate and frequently have
+        # empty ``source_document_ids``, so the document-scoped
+        # sweep above misses them. This second pass catches
+        # lineage-required kinds project-wide. Runs after the
+        # per-doc sweep so the per-doc count stays meaningful in
+        # the response.
+        invalidated_lineage = invalidate_lineage_missing_artifacts(
+            ctx=ctx,
+            artifacts=registry,
+        )
         return envelope(
             {
                 "documentId": document_id,
-                "invalidatedArtifactCount": invalidated,
+                "invalidatedArtifactCount": invalidated_doc + invalidated_lineage,
+                "invalidatedDocumentScoped": invalidated_doc,
+                "invalidatedLineageOrphans": invalidated_lineage,
             },
             _req_id(request),
         )
