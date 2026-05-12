@@ -238,6 +238,26 @@ def _answer_preview(answer: str | None) -> str:
     return text[:_ANSWER_PREVIEW_CAP].rstrip() + "…"
 
 
+def _rewrite_check_as_skipped(
+    check: ValidationCheckDTO, *, skipped_reason: str,
+) -> ValidationCheckDTO:
+    """Return a copy of ``check`` flipped to the ``skipped`` state.
+
+    Used by the service when an upstream dispatcher outcome (e.g.
+    native unavailable + no fallback) makes a check N/A even
+    though the check itself can't see the dispatcher state. Lets
+    the Checks panel render a neutral skipped row instead of a
+    red ✗ for a deliberate dispatcher outcome.
+    """
+    from dataclasses import replace
+    return replace(
+        check,
+        skipped=True,
+        skipped_reason=skipped_reason,
+        passed=False,
+    )
+
+
 @dataclass(frozen=True)
 class _DispatchResult:
     """Outcome of one ``_dispatch_query`` call.
@@ -593,6 +613,29 @@ class IngestionValidationService:
             chunks_expected=chunks_expected,
         )
         validation_status = aggregate_status(checks)
+
+        # When native returned no answer AND the operator chose NOT
+        # to fall back to BM25, the response is "inconclusive" —
+        # the validation tab has nothing to verify, not a content
+        # failure. Without this override:
+        #   * the empty answer trips ``answer_non_empty`` →
+        #     "failed", suggesting the engine produced a bad
+        #     answer when in fact it intentionally produced none.
+        # We also rewrite that single check to ``skipped`` so the
+        # Checks panel doesn't show a red ✗ next to a row whose
+        # absence was a deliberate dispatcher outcome.
+        if dispatch.answer_provider == "native_unavailable":
+            checks = [
+                _rewrite_check_as_skipped(
+                    c,
+                    skipped_reason=(
+                        "engine intentionally produced no answer "
+                        "(native unavailable, BM25 fallback off)"
+                    ),
+                ) if c.name == "answer_non_empty" else c
+                for c in checks
+            ]
+            validation_status = "inconclusive"
 
         evidence_flags = {
             "graphUsed": bool(response.graph_paths),

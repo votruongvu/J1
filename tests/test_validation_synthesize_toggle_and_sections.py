@@ -450,3 +450,53 @@ def test_no_retrieval_debug_block_when_bm25_did_not_run(ctx):
     svc = _build(native=spy)
     response = _ask(svc, ctx)
     assert "retrieval_debug" not in response.debug
+
+
+# ---- G. Native unavailable → inconclusive, not failed --------------
+
+
+def test_native_unavailable_no_fallback_is_inconclusive_not_failed(ctx):
+    """Operator-flagged bug: when native fails AND BM25 fallback is
+    off, the validation tab was rendering "Failed" because
+    ``answer_non_empty`` tripped on the deliberately-empty
+    answer. The fix: override the aggregated status to
+    ``inconclusive`` and rewrite ``answer_non_empty`` to
+    ``skipped`` so the Checks panel shows a neutral row instead
+    of a red ✗ next to an answer the engine intentionally
+    didn't produce."""
+    spy = _NativeSpy(canned=QueryResult(
+        status=ResultStatus.FAILED, error="vendor offline",
+    ))
+    svc = _build(
+        native=spy,
+        engine_mode=QUERY_ENGINE_LIGHTRAG_NATIVE,
+        enable_bm25_fallback=False,
+    )
+    response = _ask(svc, ctx, synthesize=True)
+    assert response.validation_status == "inconclusive"
+    by_name = {c.name: c for c in response.checks}
+    ane = by_name["answer_non_empty"]
+    assert ane.skipped is True
+    assert ane.passed is False
+    assert "intentionally produced no answer" in (ane.skipped_reason or "")
+
+
+def test_native_unavailable_no_fallback_with_evidence_engine_also_inconclusive(
+    ctx,
+):
+    """Same outcome in ``lightrag_native_with_quality_evidence``:
+    native failed + fallback off → answer is empty by policy,
+    BM25 evidence may still be attached for inspection, overall
+    verdict is ``inconclusive`` rather than ``failed``."""
+    spy = _NativeSpy(canned=QueryResult(
+        status=ResultStatus.FAILED, error="vendor offline",
+    ))
+    svc = _build(
+        native=spy,
+        engine_mode=QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE,
+        enable_bm25_fallback=False,
+    )
+    response = _ask(svc, ctx, synthesize=True)
+    assert response.validation_status == "inconclusive"
+    by_name = {c.name: c for c in response.checks}
+    assert by_name["answer_non_empty"].skipped is True
