@@ -537,6 +537,18 @@ class ProcessingActivities:
         self._enrichment_llm_call_limiter = enrichment_llm_call_limiter
 
     def all_activities(self) -> list:
+        # This MUST list every `@activity.defn`-decorated method on the
+        # class. The Temporal worker registers only what's returned
+        # here; any decorated method missing from this list silently
+        # becomes a NotFoundError at activity-dispatch time, with two
+        # well-known consequences:
+        #   * `build_initial_execution_plan` missing → assessment block
+        #     raises → fail_open swallows it → bridge falls back to env
+        #     defaults → "No AssessmentPlan was attached" banner.
+        #   * `persist_compile_result_summary` missing → workflow fails
+        #     mid-compile when it tries to persist the artifact.
+        # Add new activities to BOTH the `@activity.defn` decorator AND
+        # this list when you add them — there's no automatic discovery.
         return [
             self.compile,
             self.enrich,
@@ -547,10 +559,16 @@ class ProcessingActivities:
             self.persist_validation_report,
             self.persist_final_summary,
             self.persist_compile_strategy_report,
+            self.persist_enrichment_result,
+            self.run_enrichment_stage,
+            self.persist_compile_result_summary,
+            self.build_initial_execution_plan,
+            self.persist_initial_execution_plan,
             self.persist_post_compile_enrich_plan,
             self.persist_final_ingestion_report,
             self.fast_llm_consult_enrich,
             self.validate_stage,
+            self.verify_compile_output,
         ]
 
     @activity.defn(name=ACTIVITY_COMPILE)
