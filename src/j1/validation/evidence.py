@@ -16,12 +16,16 @@ Rules (kept simple on purpose — easy to tune from operator feedback):
  * `kind=compiled.text`: read the file directly and use a leading
    window. Lower-priority — chunks are the granular ground truth
    and `compiled.text` is the whole document.
- * `kind=enriched.document_map` / `enriched.tables` / `enriched.visuals`:
-   skipped. JSON enrichment metadata confuses small local LLMs and
-   isn't useful for "why/how" question answering. The validation
-   surface can still surface them as evidence flags.
- * `kind=graph_json` / other: skipped for now (Cypher-style edges
-   are not text the LLM can reason about as prose).
+ * `kind=enriched.document_map`: extract the document outline
+   (sections + summaries + headings) as prose. Spec section 7
+   says document_map should be usable as textual evidence.
+ * `kind=enriched.tables` / `enriched.visuals`: skipped. Pure
+   metadata kinds with no usable text body (their `hit.preview`
+   is just the artifact title).
+ * `kind=graph_json` / other: appears only when textual evidence
+   doesn't fill the context budget (see `_KIND_PRIORITY` below);
+   the synthesizer's answer is textual, so graph blobs are
+   downranked rather than skipped.
 
 Dedup: tracks the first 200 chars of each block's text. A `compiled.text`
 window whose head matches an already-emitted chunk's body is dropped
@@ -74,13 +78,12 @@ _COMPILED_TEXT_WINDOW_CHARS = 3000
 
 # Artifact kinds we deliberately skip when building evidence.
 # Pure-metadata kinds with no usable text body (their `hit.preview`
-# is just the artifact title). Note: `graph_json` deliberately
-# stayed OUT of this set — the artifact-type policy below
-# deprioritises it instead of skipping it entirely, so it can
-# still appear in the evidence context when chunk/compiled.text
-# don't fill the budget.
+# is just the artifact title). Note: `graph_json` and
+# `enriched.document_map` deliberately stayed OUT of this set —
+# the artifact-type policy below deprioritises graph_json instead
+# of skipping it, and `_extract_document_map_text` extracts prose
+# from document_map JSON so it can serve as textual evidence.
 _SKIP_KINDS: frozenset[str] = frozenset({
-    "enriched.document_map",
     "enriched.tables",
     "enriched.visuals",
 })
@@ -106,6 +109,12 @@ _KIND_PRIORITY: dict[str, int] = {
     "chunk": 0,
     "compiled.text": 1,
     "parsed_content_manifest": 2,
+    # Document outline / map (sections + summaries + headings).
+    # Slightly lower priority than the canonical text kinds but
+    # still preferred over domain-extracted enrichments because
+    # an outline gives the LLM the document's structure even when
+    # specific chunks didn't match.
+    "enriched.document_map": 3,
     # Tier 2 — domain-extracted prose (operator-relevant
     # natural-language outputs).
     "enriched.requirements": 5,
@@ -281,6 +290,13 @@ def _resolve_text_for_hit(
             registry=registry,
             path_resolver=path_resolver,
         )
+    if kind == "enriched.document_map":
+        return _load_document_map_text(
+            ctx=ctx,
+            artifact_id=hit.artifact_id,
+            registry=registry,
+            path_resolver=path_resolver,
+        )
     # Unknown kinds: surface the hit's preview (typically the
     # artifact title). Better than nothing but a clear signal in the
     # UI that the body wasn't loadable.
@@ -367,6 +383,132 @@ def _load_compiled_text_window(
             artifact_id, exc,
         )
         return None
+
+
+# Max characters lifted out of one document_map artifact. Caps the
+# evidence-builder contribution so a document with hundreds of
+# sections can't flood the prompt budget.
+_DOCUMENT_MAP_TEXT_CAP = 1500
+
+
+def _load_document_map_text(
+    *,
+    ctx: ProjectContext,
+    artifact_id: str,
+    registry: ArtifactRegistry,
+    path_resolver: PathResolver,
+) -> str | None:
+    """Read an ``enriched.document_map`` JSON artifact and project
+    it into prose suitable for the synthesizer's context.
+
+    The on-disk schema isn't pinned (the enricher is allowed to
+    emit any shape the domain pack wants), so the extractor is
+    permissive: it looks for the common textual keys and skips
+    anything it can't reason about.
+
+    Recognised keys, ordered by usefulness for QA grounding:
+
+      * ``summary`` (top-level)       — one-paragraph document
+        summary, the highest-value text in the map.
+      * ``outline``                   — same idea, alternative name.
+      * ``sections[].title``          — section headings; gives
+        the LLM the document's structure.
+      * ``sections[].summary``        — per-section prose.
+      * ``headings[]``                — list of strings, used when
+        a flat outline is all that's available.
+      * ``chapters[]`` / ``toc[]``    — same-shape aliases the
+        enricher may use.
+
+    Returns ``None`` when the file is missing/unreadable/invalid
+    JSON, OR when none of the recognised keys yielded text — the
+    caller then falls back to the generic preview path.
+    """
+    try:
+        artifact = registry.get(ctx, artifact_id)
+    except ArtifactNotFoundError:
+        return None
+    try:
+        path = path_resolver(artifact)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "document_map path resolution failed for %s: %s",
+            artifact_id, exc,
+        )
+        return None
+    if not path.is_file():
+        return None
+    try:
+        import json as _json
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            data = _json.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "document_map JSON parse failed for %s: %s",
+            artifact_id, exc,
+        )
+        return None
+    return _document_map_to_prose(data)
+
+
+def _document_map_to_prose(data: object) -> str | None:
+    """Pure-function extractor. Walks a parsed document_map dict
+    and concatenates the recognised textual fields into a single
+    operator-readable string. Truncates to
+    ``_DOCUMENT_MAP_TEXT_CAP`` chars."""
+    if not isinstance(data, dict):
+        return None
+    parts: list[str] = []
+
+    # Top-level summary / outline — highest value.
+    for key in ("summary", "outline", "description"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+            break  # one is enough; aliases of the same concept
+
+    # Flat headings list — useful when there's no per-section prose.
+    # Skip non-string entries (a defensive enricher might emit a
+    # mixed list); we only want clean strings in the prose render.
+    for key in ("headings", "section_titles"):
+        value = data.get(key)
+        if isinstance(value, list):
+            headings = [
+                h.strip() for h in value
+                if isinstance(h, str) and h.strip()
+            ]
+            if headings:
+                parts.append("Headings: " + " · ".join(headings))
+                break
+
+    # Per-section data. Accepts a few shape aliases the enricher
+    # could choose (`sections` / `chapters` / `toc`); first non-
+    # empty wins.
+    for key in ("sections", "chapters", "toc"):
+        value = data.get(key)
+        if not isinstance(value, list):
+            continue
+        section_lines: list[str] = []
+        for section in value:
+            if not isinstance(section, dict):
+                continue
+            title = str(section.get("title") or "").strip()
+            summary = str(
+                section.get("summary") or section.get("description") or "",
+            ).strip()
+            if title and summary:
+                section_lines.append(f"- {title}: {summary}")
+            elif title:
+                section_lines.append(f"- {title}")
+        if section_lines:
+            parts.append("Sections:\n" + "\n".join(section_lines))
+            break
+
+    if not parts:
+        return None
+    text = "\n\n".join(parts)
+    if len(text) > _DOCUMENT_MAP_TEXT_CAP:
+        text = text[:_DOCUMENT_MAP_TEXT_CAP].rstrip() + "…"
+    return text
 
 
 def _page_info(

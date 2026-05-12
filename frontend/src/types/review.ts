@@ -646,6 +646,45 @@ export interface ManualTestQueryRequest {
   // Set false for fast retrieval-only debug runs (skips the LLM call
   // entirely, response carries `llm.called=false`, `synthesizedAnswer=null`).
   synthesize?: boolean;
+  // Validation scope. `"run"` (default) targets the run named in
+  // the URL — useful immediately after ingestion/reindex.
+  // `"active"` targets the document's currently-promoted run —
+  // useful for testing what users can actually search right now.
+  validationScope?: "run" | "active";
+}
+
+/**
+ * Lineage-hardening diagnostics surfaced on every manual-query
+ * response. Lets a tester answer "WHY did synthesis fall back?"
+ * without opening the raw payload drawer. All fields are
+ * server-computed; the FE just renders them.
+ */
+export interface ManualQueryDebug {
+  retrievedCount: number;
+  evidenceItemsBeforeFilter: number;
+  evidenceItemsAfterFilter: number;
+  artifactTypesBeforeFilter: string[];
+  artifactTypesAfterFilter: string[];
+  totalContextChars: number;
+  topEvidencePreview: string;
+  /**
+   * Categorical reason synthesis didn't produce an answer.
+   * `null` when synthesis succeeded.
+   */
+  fallbackReason:
+    | null
+    | "synthesis_disabled"  // request opted out OR no LLM wired
+    | "no_retrieval"         // retriever found nothing
+    | "no_evidence"          // hits found, but evidence builder filtered everything
+    | "llm_abstained"        // synthesizer ran but returned no answer
+    | "llm_error";           // synthesizer raised
+  /**
+   * Artifact kinds present in retrieval but excluded from the
+   * synthesizer's context because the artifact-type policy
+   * downranked them. Helps operators distinguish "policy at work"
+   * from "bug".
+   */
+  deprioritizedKinds: string[];
 }
 
 export interface LLMTrace {
@@ -695,6 +734,12 @@ export interface ManualTestQueryResponse {
   // The clean evidence (with real body text) actually sent to the
   // LLM. Empty array when synthesis was skipped.
   evidenceSentToLlm?: EvidenceBlock[];
+  /**
+   * Lineage-hardening debug fields. Optional — older deployments
+   * predate the field. The FE should render the debug panel
+   * conditionally on its presence.
+   */
+  debug?: ManualQueryDebug;
 }
 
 // ---- Validation sets and runs -------------------------

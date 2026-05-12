@@ -119,6 +119,14 @@ class ManualTestQueryRequest:
     citation_required: bool = False
     include_raw: bool = False
     synthesize: bool = True
+    # Validation scope (spec section 9). Default ``"run"`` matches
+    # the existing behavior: validate the specific run named in
+    # the URL — useful immediately after ingestion/reindex/resume.
+    # ``"active"`` validates the document's currently promoted
+    # run (its `active_run_id`) — useful for testing "what users
+    # can actually search right now." The two scopes are never
+    # mixed implicitly: the caller picks one per request.
+    validation_scope: Literal["run", "active"] = "run"
 
 
 @dataclass(frozen=True)

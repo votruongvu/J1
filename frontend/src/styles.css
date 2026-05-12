@@ -4504,3 +4504,85 @@ pre.json .b {
 .run-controls__advanced-note strong {
   color: var(--fg);
 }
+
+/* ─── Manual query debug panel (lineage hardening) ──────────────
+   Surfaces server-computed diagnostics for the synthesizer
+   fallback paths. Collapsed by default; the fallback-reason
+   badge stays visible even when collapsed so an operator
+   scanning the result spots the hint without expanding. */
+.manual-query-debug {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.manual-query-debug__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.fallback-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.fallback-badge--info {
+  background: rgba(70, 130, 220, 0.15);
+  color: #1f4e9a;
+}
+.fallback-badge--warn {
+  background: rgba(200, 140, 30, 0.18);
+  color: #8a5b00;
+}
+.fallback-badge--err {
+  background: rgba(220, 60, 60, 0.15);
+  color: #b04040;
+}
+.manual-query-debug__body {
+  margin-top: 12px;
+}
+.manual-query-debug__kv {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+.manual-query-debug__kv dt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.manual-query-debug__kv dd {
+  margin: 0;
+}
+.kind-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.kind-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.05));
+  font-family: var(--mono, monospace);
+}
+.kind-tag--warn {
+  background: rgba(200, 140, 30, 0.18);
+  color: #8a5b00;
+}
+.manual-query-debug__note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.manual-query-debug__preview {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  background: var(--bg-sunken);
+  padding: 6px 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -40,8 +40,44 @@ class RunScope:
     run_id: str
 
 
-QueryScope = Union[WorkspaceScope, RunScope]
-"""Public alias — accepts either of the concrete scope dataclasses."""
+@dataclass(frozen=True)
+class ActiveScope:
+    """Restrict retrieval to what a normal user can actually search.
+
+ Distinct from `RunScope` (which targets one specific attempt) —
+ `ActiveScope` answers "validate the knowledge state users see
+ today". Resolved by `j1.query.active_scope.resolve_to_concrete_scope`
+ into a concrete `RunScope(active_run_id)` BEFORE the query
+ dispatch, so the engine layer never has to grow registry
+ awareness.
+
+ The resolver's rules:
+
+   1. The document is ``knowledge_state=attached`` (operator hasn't
+      detached/removed it).
+   2. The document has a non-empty ``active_run_id`` (its
+      promotion hook fired on a successful run).
+
+ When either condition fails, the resolver yields a sentinel
+ `RunScope` that matches no artifact — the validation surface
+ then renders "no active knowledge to validate" rather than
+ raising.
+
+ Used by validation-against-active-knowledge: a tester clicking
+ "validate what users see right now" gets this scope, while
+ a tester clicking "validate THIS run's output" gets `RunScope`.
+ The two are never mixed implicitly — the caller picks one.
+
+ `document_id` is the only field — the resolver does the
+ lookup. Frozen so the dataclass is hashable and matches the
+ pattern of `RunScope`.
+ """
+
+    document_id: str
+
+
+QueryScope = Union[WorkspaceScope, RunScope, ActiveScope]
+"""Public alias — accepts any of the concrete scope dataclasses."""
 
 
 _DEFAULT_SCOPE = WorkspaceScope()

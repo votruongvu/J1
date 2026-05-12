@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from j1.intake.registry import SourceRegistry
 
 from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
@@ -29,7 +32,7 @@ from j1.processing.results import ARTIFACT_KIND_CHUNK
 from j1.projects.context import ProjectContext
 from j1.query.engine import HybridQueryEngine
 from j1.query.models import QueryMode, QueryRequest
-from j1.query.scope import RunScope
+from j1.query.scope import ActiveScope, QueryScope, RunScope
 from j1.runs.models import IngestionRun
 from j1.runs.store import IngestionRunStore
 from j1.validation.checks import aggregate_status, run_checks
@@ -113,6 +116,7 @@ class IngestionValidationService:
         judge: LLMJudge | None = None,
         answer_synthesizer: AnswerSynthesizer | None = None,
         domain_registry: DomainRegistry | None = None,
+        source_registry: "SourceRegistry | None" = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -137,6 +141,13 @@ class IngestionValidationService:
         # rubric (never as factual evidence). None = generation
         # always runs in generic mode.
         self._domain_registry = domain_registry
+        # Optional source registry. When wired, manual-query
+        # requests with `validation_scope="active"` resolve to the
+        # document's currently-promoted run via `ActiveScope`. When
+        # None, "active" silently falls back to "run" — the
+        # spec-compliant default for deployments that haven't
+        # adopted the document-centric flow.
+        self._source_registry = source_registry
 
     def run_manual_test_query(
         self,
@@ -166,11 +177,24 @@ class IngestionValidationService:
         top_k = max(1, min(request.top_k, _TOP_K_HARD_CAP))
         mode = _coerce_mode(request.mode)
 
+        # Resolve the validation scope (spec section 9). Default
+        # `"run"` keeps the existing behaviour — RunScope(this.run_id)
+        # — so legacy callers see no change. `"active"` redirects
+        # to the document's currently-promoted run, which can
+        # differ from `run_id` after a successful reindex. When the
+        # document has no active run (detached/removed/never
+        # ingested), the resolver returns a sentinel that matches
+        # zero artifacts, which is the correct "nothing to
+        # validate" answer.
+        engine_scope = self._resolve_query_scope(
+            ctx=ctx, run=run, validation_scope=request.validation_scope,
+        )
+
         query_request = QueryRequest(
             question=request.question,
             mode=mode,
             max_results=top_k,
-            scope=RunScope(run_id=run.run_id),
+            scope=engine_scope,
         )
 
         try:
@@ -260,6 +284,36 @@ class IngestionValidationService:
             evidence_sent_to_llm=evidence_blocks,
             debug=debug,
         )
+
+    def _resolve_query_scope(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        validation_scope: str,
+    ) -> "QueryScope":
+        """Map the request's `validation_scope` literal to a concrete
+        `QueryScope` for the engine.
+
+        * ``"run"``    — the existing default. RunScope(this run id).
+        * ``"active"`` — ActiveScope(document_id), resolved against
+          the source registry to the document's currently-promoted
+          run. Falls back to RunScope(this run id) when no source
+          registry is wired (legacy deployments).
+
+        Centralised here so the engine layer stays scope-agnostic
+        and the existing RunScope filter does all the heavy lifting
+        downstream.
+        """
+        if validation_scope == "active" and self._source_registry is not None:
+            from j1.query.active_scope import resolve_to_concrete_scope
+            active = ActiveScope(document_id=run.document_id)
+            return resolve_to_concrete_scope(
+                active, registry=self._source_registry, ctx=ctx,
+            )
+        # Default / fallback path. `"run"` (or `"active"` without a
+        # registry wired) → scope to this specific run id.
+        return RunScope(run_id=run.run_id)
 
     def _build_evidence_blocks_for_run(
         self,

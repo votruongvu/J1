@@ -410,6 +410,12 @@ class ManualTestQueryRequestRecord(CamelModel):
     citation_required: bool = False
     include_raw: bool = False
     synthesize: bool = True
+    # Validation scope (spec section 9). Default ``"run"`` keeps
+    # behaviour unchanged for legacy callers. ``"active"`` switches
+    # the engine to ``ActiveScope(document_id)`` — useful for
+    # testing what users can search RIGHT NOW (post-reindex
+    # promotion).
+    validation_scope: Literal["run", "active"] = "run"
 
 
 class ValidationCheckRecord(CamelModel):

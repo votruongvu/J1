@@ -19,6 +19,7 @@ import { validationStatusMeta } from "@/lib/display";
 import type {
   EvidenceBlock,
   LLMTrace,
+  ManualQueryDebug,
   ManualTestQueryResponse,
   ValidationCheck,
 } from "@/types/review";
@@ -37,6 +38,11 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
   // smoke (skips the LLM entirely so the response lands instantly
   // and isn't blocked on a slow local model).
   const [synthesize, setSynthesize] = useState(true);
+  // Validation scope — `run` matches the endpoint's URL run id
+  // (default); `active` redirects to the document's currently-
+  // promoted run. Useful for "test what users can search now"
+  // vs. "test this specific reindex's output".
+  const [scope, setScope] = useState<"run" | "active">("run");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<ManualTestQueryResponse | null>(
@@ -58,6 +64,7 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
         topK,
         citationRequired,
         synthesize,
+        validationScope: scope,
         // Always request raw — the drawer is gated on the toggle so
         // turning it on doesn't require re-querying.
         includeRaw: true,
@@ -74,7 +81,7 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
     } finally {
       setRunning(false);
     }
-  }, [client, runId, question, topK, citationRequired, synthesize]);
+  }, [client, runId, question, topK, citationRequired, synthesize, scope]);
 
   return (
     <div className="manual-query-console">
@@ -138,6 +145,23 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
                 disabled={running}
               />
               <span>Synthesize answer (LLM)</span>
+            </label>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
+              title="Scope: `run` targets this specific attempt; `active` targets the document's currently-promoted run (useful after reindex)."
+            >
+              <span>Scope</span>
+              <select
+                value={scope}
+                onChange={(e) =>
+                  setScope(e.target.value as "run" | "active")
+                }
+                disabled={running}
+                style={{ padding: "2px 4px" }}
+              >
+                <option value="run">This run</option>
+                <option value="active">Active knowledge</option>
+              </select>
             </label>
             <button
               type="button"
@@ -301,6 +325,8 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
             </ul>
           )}
         </section>
+
+        {response.debug && <DebugPanel debug={response.debug} />}
 
         <section>
           <button
@@ -554,3 +580,158 @@ function CheckRow({ check }: { check: ValidationCheck }) {
     </li>
   );
 }
+
+
+/**
+ * Validation debug panel. Surfaces the lineage-hardening counters
+ * server-side computes for every manual query — counts, kinds in
+ * play, the categorical fallback reason. Hidden behind a
+ * disclosure since most operators only need it when chasing
+ * "why did synthesis fall back?" bugs.
+ *
+ * Collapsed by default. The fallback-reason badge (when present)
+ * stays visible even when collapsed so an operator scanning
+ * results spots the diagnostic hint without expanding.
+ */
+function DebugPanel({ debug }: { debug: ManualQueryDebug }) {
+  const [open, setOpen] = useState(false);
+  const reasonKey = debug.fallbackReason ?? "none";
+  const reasonMeta =
+    _FALLBACK_REASON_META[reasonKey] ?? _FALLBACK_REASON_META.none!;
+  return (
+    <section className="manual-query-debug">
+      <div className="manual-query-debug__header">
+        <button
+          type="button"
+          className="btn btn--ghost btn--xs"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          data-testid="debug-toggle"
+        >
+          {open ? "Hide diagnostics" : "Show diagnostics"} {open ? "▴" : "▾"}
+        </button>
+        {debug.fallbackReason && (
+          <span
+            className={`fallback-badge fallback-badge--${reasonMeta.tone}`}
+            title={reasonMeta.tooltip}
+            data-testid="fallback-reason-badge"
+          >
+            {reasonMeta.label}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div className="manual-query-debug__body">
+          <dl className="kv manual-query-debug__kv">
+            <dt>Retrieved hits</dt>
+            <dd>{debug.retrievedCount}</dd>
+            <dt>Evidence (before filter)</dt>
+            <dd>{debug.evidenceItemsBeforeFilter}</dd>
+            <dt>Evidence (after filter)</dt>
+            <dd>{debug.evidenceItemsAfterFilter}</dd>
+            <dt>Context size</dt>
+            <dd>{debug.totalContextChars} chars</dd>
+            <dt>Kinds (before filter)</dt>
+            <dd>
+              {debug.artifactTypesBeforeFilter.length === 0 ? (
+                <span style={{ color: "var(--fg-muted)" }}>—</span>
+              ) : (
+                <KindList kinds={debug.artifactTypesBeforeFilter} />
+              )}
+            </dd>
+            <dt>Kinds (after filter)</dt>
+            <dd>
+              {debug.artifactTypesAfterFilter.length === 0 ? (
+                <span style={{ color: "var(--fg-muted)" }}>—</span>
+              ) : (
+                <KindList kinds={debug.artifactTypesAfterFilter} />
+              )}
+            </dd>
+            {debug.deprioritizedKinds.length > 0 && (
+              <>
+                <dt>Deprioritized</dt>
+                <dd>
+                  <KindList
+                    kinds={debug.deprioritizedKinds}
+                    variant="warn"
+                  />
+                  <p className="manual-query-debug__note">
+                    Present in retrieval but excluded from the LLM's
+                    context by the artifact-type policy (textual
+                    evidence wins the budget).
+                  </p>
+                </dd>
+              </>
+            )}
+            {debug.topEvidencePreview && (
+              <>
+                <dt>Top evidence preview</dt>
+                <dd className="manual-query-debug__preview">
+                  “{debug.topEvidencePreview}”
+                </dd>
+              </>
+            )}
+          </dl>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function KindList({
+  kinds, variant = "default",
+}: {
+  kinds: string[];
+  variant?: "default" | "warn";
+}) {
+  return (
+    <span className="kind-list">
+      {kinds.map((k) => (
+        <code
+          key={k}
+          className={`kind-tag kind-tag--${variant}`}
+        >
+          {k}
+        </code>
+      ))}
+    </span>
+  );
+}
+
+const _FALLBACK_REASON_META: Record<string, {
+  label: string;
+  tone: "info" | "warn" | "err";
+  tooltip: string;
+}> = {
+  none: { label: "OK", tone: "info", tooltip: "" },
+  synthesis_disabled: {
+    label: "Synthesis off",
+    tone: "info",
+    tooltip:
+      "Synthesis was opted out OR no LLM client is wired in this deployment.",
+  },
+  no_retrieval: {
+    label: "No retrieval hits",
+    tone: "warn",
+    tooltip:
+      "The retriever found zero artifacts for this question + scope.",
+  },
+  no_evidence: {
+    label: "No evidence",
+    tone: "warn",
+    tooltip:
+      "Retrieval found hits but the evidence builder filtered them all out (e.g. all were skip-kinds).",
+  },
+  llm_abstained: {
+    label: "LLM abstained",
+    tone: "warn",
+    tooltip:
+      "The synthesizer ran but returned no answer — the model decided the evidence didn't support a confident response.",
+  },
+  llm_error: {
+    label: "LLM error",
+    tone: "err",
+    tooltip:
+      "The synthesizer raised. Check `llm.error` for the underlying message.",
+  },
+};

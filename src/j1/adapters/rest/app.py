@@ -2180,6 +2180,51 @@ def create_rest_api(
             raise HTTPException(409, str(exc))
         return envelope(_doc_record_to_payload(updated), _req_id(request))
 
+    @app.post(
+        "/documents/{document_id}/repair",
+        tags=["documents"],
+        summary="Invalidate orphan artifacts (no run_id) for a document",
+        description=(
+            "Admin / debug helper. Sweeps the artifact registry for "
+            "artifacts tied to this document that have no `run_id` "
+            "stamped (orphans from before the lineage fail-fast guard "
+            "landed) and marks them `search_state=invalid` so "
+            "retrieval and validation stop surfacing them. Artifacts "
+            "stay on disk for audit. The reindex flow also runs this "
+            "sweep automatically; this endpoint exposes it on-demand "
+            "for corpora repair without dispatching a new run."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def post_document_repair(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        # No 404 on missing document — the sweep is purely an
+        # artifact-side operation and can run even if the document
+        # record itself is malformed. Returns 0 invalidated for
+        # the no-op case, which is the right contract for an idempotent
+        # repair tool.
+        from j1.documents.artifact_state import invalidate_orphan_artifacts
+        registry = getattr(facade.retrieval, "_artifacts", None)
+        if registry is None:
+            raise HTTPException(
+                503, "artifact registry not configured for repair",
+            )
+        invalidated = invalidate_orphan_artifacts(
+            ctx=ctx,
+            artifacts=registry,
+            document_id=document_id,
+        )
+        return envelope(
+            {
+                "documentId": document_id,
+                "invalidatedArtifactCount": invalidated,
+            },
+            _req_id(request),
+        )
+
     # ---- Document-centric re-index (Phase 4) -----------------------
     #
     # Document-centric replacement for `POST /ingestion-runs/{id}/
@@ -3080,6 +3125,7 @@ def create_rest_api(
             citation_required=body.citation_required,
             include_raw=body.include_raw,
             synthesize=body.synthesize,
+            validation_scope=body.validation_scope,
         )
         # `_load_run` inside the service raises `ReviewNotFound` on
         # cross-tenant / cross-project access — caught by the

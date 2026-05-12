@@ -334,6 +334,13 @@ def build_validation_service(workspace: WorkspaceResolver):
         # packs. None-able: when no registry is wired the generator
         # falls back to generic mode (no domain-driven negatives).
         domain_registry=_domain_registry_or_none(),
+        # Source registry — enables `validation_scope="active"` on
+        # the manual-query endpoint. The service uses it to resolve
+        # `ActiveScope(document_id)` → `RunScope(active_run_id)`
+        # before dispatching the query. Without it, "active" silently
+        # falls back to RunScope(this run id), which matches the
+        # spec's "if no scope explicit, behave as run-scoped".
+        source_registry=JsonSourceRegistry(workspace),
     )
 
 
