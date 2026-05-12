@@ -234,6 +234,37 @@ def test_assessment_plan_to_payload_carries_no_postcompile_fields():
 # ---- 3. Plan passed into compile unchanged ------------------------
 
 
+def test_assessor_tolerates_missing_extension():
+    """`DocumentProfile.extension` is typed `str` but a `None` can
+ sneak through when the dataclass round-trips through Temporal's
+ JSON data converter and a producer omitted the field. The planner
+ must produce a valid AssessmentPlan in that case — not crash with
+ `AttributeError: 'NoneType' object has no attribute 'lstrip'`,
+ which is the failure mode that hid behind the
+ `j1.processing.build_initial_execution_plan` NotFoundError before
+ the activity-registration fix landed."""
+    profile = DocumentProfile(
+        document_id="doc-noext",
+        extension=None,  # type: ignore[arg-type]
+    )
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.document_type == "unknown"
+    assert plan.mode is not None  # planner still produced a verdict
+
+
+def test_assessor_tolerates_empty_extension():
+    """Counter-test for the path above — empty extension is the
+ normal case the deterministic profiler emits for unrecognised
+ files. Both empty and None should map to the same fallback."""
+    profile = DocumentProfile(
+        document_id="doc-emptyext",
+        extension="",
+    )
+    plan = DefaultAssessmentPlanner().assess(profile)
+    assert plan.document_type == "unknown"
+    assert plan.mode is not None
+
+
 def test_assessment_plan_round_trips_through_payload_unchanged():
     """The workflow serialises the AssessmentPlan to a payload and the
  compile activity reconstructs it via `from_payload`. The round-

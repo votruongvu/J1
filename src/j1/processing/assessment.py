@@ -755,8 +755,18 @@ def _stamp_recommended_path(
 def _infer_document_type(profile: DocumentProfile) -> str:
     """Derive a coarse document_type from extension. Operators with a
  real classifier (LLM-based, mime-deep) wire their own
- `AssessmentPlanner` and call this only as a fallback."""
-    ext = profile.extension.lstrip(".")
+ `AssessmentPlanner` and call this only as a fallback.
+
+ Defensive: `profile.extension` is typed `str` on the dataclass but
+ a `None` can sneak through if the field round-trips through a
+ data converter that loses required-field defaults (Temporal's
+ JSON converter does this for some payload shapes). Treat any
+ non-string as the "no extension" case rather than crashing the
+ planner — empty extension already maps to `"unknown"`."""
+    raw = getattr(profile, "extension", None)
+    if not isinstance(raw, str):
+        return "unknown"
+    ext = raw.lstrip(".")
     if not ext:
         return "unknown"
     if ext in {"txt", "md", "markdown", "rst", "log"}:
