@@ -66,6 +66,15 @@ class ValidationCitationDTO:
     source_location: str | None = None
     chunk_id: str | None = None
     run_id: str | None = None
+    # Body excerpt the groundedness judge uses to verify claims
+    # against. When empty (legacy callers / no workspace), the
+    # judge sees lineage-only citations and over-flags claims as
+    # unsupported because it has nothing to compare against —
+    # exactly the validation-report failure mode operators saw
+    # (3 unsupported-claims warnings on otherwise-grounded
+    # answers). Populated by the runner via the evidence builder
+    # so the judge sees the same prose the synthesizer did.
+    preview: str | None = None
 
 
 @dataclass(frozen=True)

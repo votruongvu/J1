@@ -311,6 +311,19 @@ class DefaultValidationRunner:
 
         retrieved = _retrieved_chunks_from_response(response)
         citations = _citations_from_response(response)
+        # Populate citation previews from real artifact body text
+        # (chunk NDJSON, compiled.text files, document_map prose).
+        # The groundedness judge consumes ``citation.preview`` to
+        # compare against the answer's claims; without a non-empty
+        # preview the judge has nothing to verify against and
+        # over-flags every claim as "unsupported" — the false
+        # positive operators saw on otherwise-grounded answers.
+        # Mirrors the synthesizer's body-loading via
+        # ``build_evidence_blocks``; safe no-op when workspace
+        # isn't wired.
+        citations = self._enrich_citations_with_preview(
+            ctx=ctx, retrieved=retrieved, citations=citations,
+        )
 
         # Optional LLM synthesis on top of the engine's raw answer.
         # Positive cases benefit most — the engine returns a
@@ -481,6 +494,89 @@ class DefaultValidationRunner:
             error=result.error,
         )
         return (result.answer, trace)
+
+    def _enrich_citations_with_preview(
+        self,
+        *,
+        ctx: ProjectContext,
+        retrieved: list[RetrievedChunkRefDTO],
+        citations: list[ValidationCitationDTO],
+    ) -> list[ValidationCitationDTO]:
+        """Fill in ``ValidationCitationDTO.preview`` with the real
+        chunk body text via the shared evidence builder.
+
+        Why: the groundedness judge LLM compares answer claims
+        against citation previews. Empty previews mean the judge
+        has only ``[N] artifact_id @ location`` lines to verify
+        against — it can't, so it flags everything as unsupported.
+        The same body the synthesizer sees (chunk NDJSON,
+        compiled.text leading window, document_map prose) is what
+        the judge needs.
+
+        No-op when ``workspace`` isn't wired or ``retrieved`` is
+        empty. Per-citation match-up by ``artifact_id`` — handles
+        the case where retrieved hits and citations are in
+        different orders (or have different lengths after
+        deduplication / filtering).
+        """
+        if self._workspace is None or not retrieved or not citations:
+            return citations
+
+        from pathlib import Path, PurePosixPath
+
+        def _resolver(record):
+            location = record.location
+            parts = PurePosixPath(location).parts
+            if len(parts) < 2:
+                return Path(location)
+            area_name, *rest = parts
+            area = WorkspaceArea(area_name)
+            return self._workspace.area(  # type: ignore[union-attr]
+                ctx, area,
+            ).joinpath(*rest)
+
+        try:
+            evidence_blocks = build_evidence_blocks(
+                ctx=ctx,
+                retrieved=retrieved,
+                artifact_registry=self._artifacts,
+                path_resolver=_resolver,
+            )
+        except Exception:  # noqa: BLE001 — judge degrades gracefully
+            _log.warning(
+                "validation runner: failed to load citation body text "
+                "for groundedness check; judge will see lineage-only "
+                "citations and may over-flag claims.",
+                exc_info=True,
+            )
+            return citations
+
+        # Map artifact_id → first non-empty body. Multiple chunks
+        # from the same artifact pick the first one — the judge
+        # only needs a representative sample to verify claims.
+        body_by_artifact: dict[str, str] = {}
+        for block in evidence_blocks:
+            if block.artifact_id in body_by_artifact:
+                continue
+            text = (block.text or "").strip()
+            if text:
+                body_by_artifact[block.artifact_id] = text
+
+        if not body_by_artifact:
+            return citations
+
+        # Project the enriched body onto each citation matching by
+        # artifact_id. Use dataclass-replace so we don't mutate the
+        # frozen DTOs.
+        from dataclasses import replace
+        enriched: list[ValidationCitationDTO] = []
+        for citation in citations:
+            body = body_by_artifact.get(citation.artifact_id)
+            if body and not (citation.preview or "").strip():
+                enriched.append(replace(citation, preview=body))
+            else:
+                enriched.append(citation)
+        return enriched
 
     # ---- Internals -----------------------------------------------------
 

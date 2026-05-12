@@ -531,7 +531,18 @@ def _check_negative_no_fabrication(
 
 def _citation_to_dict(c: ValidationCitationDTO) -> dict:
     """Compact dict for the judge prompt. Mirrors the wire shape so
- the judge sees the same fields the FE renders."""
+ the judge sees the same fields the FE renders.
+
+ ``preview`` carries the actual body text the judge uses to
+ verify the answer's claims. Earlier this helper omitted it —
+ the judge then saw only ``[N] artifact_id @ location`` lineage
+ lines with nothing to verify against and over-flagged every
+ claim as unsupported. The runner now populates ``preview``
+ via the shared evidence builder, mirroring what the
+ synthesizer sees. The ``or ""`` keeps the judge prompt clean
+ when a citation has no body available (graph_json, formulas,
+ visuals — the judge degrades to lineage-only on those, same
+ as before this fix)."""
     return {
         "artifact_id": c.artifact_id,
         "artifact_type": c.artifact_type,
@@ -539,8 +550,7 @@ def _citation_to_dict(c: ValidationCitationDTO) -> dict:
         "source_location": c.source_location,
         "chunk_id": c.chunk_id,
         "run_id": c.run_id,
-        # `preview` not on the DTO today — leave it absent so the
-        # judge renderer surfaces "lineage only" lines.
+        "preview": c.preview or "",
     }
 
 
