@@ -27,34 +27,19 @@ from j1.errors.exceptions import ConfigError
 
 # ---- Env var names -----------------------------------------------------
 
-ENV_PLANNING_ENABLED = "J1_PLANNING_ENABLED"
-ENV_POST_COMPILE_PLANNING_ENABLED = "J1_POST_COMPILE_PLANNING_ENABLED"
 ENV_LLM_PLANNING_ENABLED = "J1_LLM_PLANNING_ENABLED"
 ENV_PLANNING_MODEL_PROFILE = "J1_PLANNING_MODEL_PROFILE"
 ENV_PLANNING_MAX_SAMPLE_BLOCKS = "J1_PLANNING_MAX_SAMPLE_BLOCKS"
 ENV_PLANNING_MAX_PREVIEW_CHARS = "J1_PLANNING_MAX_PREVIEW_CHARS"
-ENV_PLANNING_MAX_EARLY_PAGES = "J1_PLANNING_MAX_EARLY_PAGES"
-ENV_PLANNING_FAIL_OPEN = "J1_PLANNING_FAIL_OPEN"
-ENV_PLANNING_TRACE_ENABLED = "J1_PLANNING_TRACE_ENABLED"
-ENV_PLANNING_TRACE_BODY = "J1_PLANNING_TRACE_BODY"
-# Operator-facing plan mode. Maps to the legacy `*_planning_enabled`
-# flags below; carried as a single env so docs and dashboards have
-# one knob to point at.
+# Operator-facing plan mode. Maps to the legacy `llm_planning_enabled`
+# flag below; carried as a single env so docs and dashboards have one
+# knob to point at.
 #  rule_based → deterministic only (default; cheap + safe)
-#  llm → LLM-assisted; deterministic plan still ships as
-#  the rule_based comparison block
-#  hybrid → both run; LLM result wins on agreement, rule-based
-#  is the safety net on disagreement / failure
+#  llm        → LLM-assisted; deterministic plan still ships as the
+#                rule_based comparison block
+#  hybrid     → both run; LLM result wins on agreement, rule-based is
+#                the safety net on disagreement / failure
 ENV_INGEST_PLAN_MODE = "J1_INGEST_PLAN_MODE"
-
-# ---- Domain pack envs ------------------------------------------------
-
-ENV_DOMAIN_PACKS_ENABLED = "J1_DOMAIN_PACKS_ENABLED"
-ENV_DEFAULT_DOMAIN = "J1_DEFAULT_DOMAIN"
-ENV_DOMAIN_DETECTION_ENABLED = "J1_DOMAIN_DETECTION_ENABLED"
-ENV_DOMAIN_DETECTION_MIN_CONFIDENCE = "J1_DOMAIN_DETECTION_MIN_CONFIDENCE"
-ENV_ALLOWED_DOMAIN_OVERRIDES = "J1_ALLOWED_DOMAIN_OVERRIDES"
-ENV_WORKSPACE_DEFAULT_DOMAIN = "J1_WORKSPACE_DEFAULT_DOMAIN"
 
 
 PLAN_MODE_RULE_BASED = "rule_based"
@@ -68,23 +53,11 @@ ALLOWED_PLAN_MODES: frozenset[str] = frozenset({
 
 __all__ = [
     "ALLOWED_PLAN_MODES",
-    "ENV_ALLOWED_DOMAIN_OVERRIDES",
-    "ENV_DEFAULT_DOMAIN",
-    "ENV_DOMAIN_DETECTION_ENABLED",
-    "ENV_DOMAIN_DETECTION_MIN_CONFIDENCE",
-    "ENV_DOMAIN_PACKS_ENABLED",
     "ENV_INGEST_PLAN_MODE",
     "ENV_LLM_PLANNING_ENABLED",
-    "ENV_PLANNING_ENABLED",
-    "ENV_PLANNING_FAIL_OPEN",
-    "ENV_PLANNING_MAX_EARLY_PAGES",
     "ENV_PLANNING_MAX_PREVIEW_CHARS",
     "ENV_PLANNING_MAX_SAMPLE_BLOCKS",
     "ENV_PLANNING_MODEL_PROFILE",
-    "ENV_PLANNING_TRACE_BODY",
-    "ENV_PLANNING_TRACE_ENABLED",
-    "ENV_POST_COMPILE_PLANNING_ENABLED",
-    "ENV_WORKSPACE_DEFAULT_DOMAIN",
     "PLAN_MODE_HYBRID",
     "PLAN_MODE_LLM",
     "PLAN_MODE_RULE_BASED",
@@ -97,13 +70,8 @@ __all__ = [
 class PlanningSettings:
     """Resolved Planning Report settings.
 
- `enabled` controls whether the projection is produced at all. The
- audit-log `plan.generated` event still drives the workflow; this
- flag only affects whether the FE Planning Report tab is populated.
-
  `llm_planning_enabled` enables the optional LLM-assisted planning
- pass. Default OFF — rule-based planning (the legacy planning path)
- is the documented baseline.
+ pass. Default OFF — rule-based planning is the documented baseline.
 
  `model_profile` names the registered FAST/PREMIUM LLM role to use
  when `llm_planning_enabled=True`. Free-form string so deployments
@@ -111,57 +79,12 @@ class PlanningSettings:
 
  `max_sample_blocks` and `max_preview_chars` cap the digest fed to
  the LLM planner. Both are privacy boundaries: the planner must
- NEVER see the full raw document.
+ NEVER see the full raw document."""
 
- `fail_open=True` (default) means: if the LLM-assisted planning path
- fails (timeout, parse error, etc.), the rule-based decision still
- stands and the run continues. `fail_open=False` would surface the
- failure as a planning warning — reserved for deployments that
- treat planning as a hard gate."""
-
-    enabled: bool = True
-    # Master switch for the post-compile planning stage. The Planning
-    # Report tab can be enabled (`enabled=True`) without producing a
-    # post-compile artifact when this flag is false — useful for
-    # operators who only want the FE projection over the existing
-    # `plan.generated` audit entries.
-    post_compile_enabled: bool = True
     llm_planning_enabled: bool = False
     model_profile: str = "fast_planner"
     max_sample_blocks: int = 20
     max_preview_chars: int = 300
-    max_early_pages: int = 3
-    fail_open: bool = True
-    # Diagnostic toggles. Default off — production deployments
-    # should keep both flipped to avoid leaking planning context
-    # bodies into operator logs. `trace_body` requires
-    # `trace_enabled=True` to take effect.
-    trace_enabled: bool = False
-    trace_body: bool = False
-    # Operator-facing plan mode. Source of truth; the legacy
-    # `llm_planning_enabled` flag is derived from it. `rule_based`
-    # is the default — it's cheap, deterministic, and never spends
-    # LLM tokens on planning.
-    plan_mode: str = PLAN_MODE_RULE_BASED
-    # ---- Domain pack settings -----------------------------------
-    # Master switch for the domain-pack subsystem. Off → planner
-    # behaves as if no packs were registered (always selects
-    # `general`). The Planning Report still surfaces the empty
-    # domain_context block so the wire shape stays stable.
-    domain_packs_enabled: bool = True
-    # Default domain when no override / detection signal applies.
-    default_domain: str = "general"
-    # Auto-detection switch. Off → only operator overrides can
-    # select a non-generic domain.
-    domain_detection_enabled: bool = True
-    # Confidence floor for auto-detection. 0.65 matches the spec.
-    domain_detection_min_confidence: float = 0.65
-    # Allowlist of domain ids operators can request via override.
-    # Comma-separated env value; defaults cover what's bundled.
-    allowed_domain_overrides: tuple[str, ...] = ("general", "civil_engineering")
-    # Workspace / project default domain. Falls below user override
-    # but above auto-detection.
-    workspace_default_domain: str = "general"
 
 
 def load_planning_settings(
@@ -178,8 +101,7 @@ def load_planning_settings(
  supported for deployments that haven't migrated. Resolution rule:
  * `J1_INGEST_PLAN_MODE=llm` → llm_planning_enabled=True
  * `J1_INGEST_PLAN_MODE=hybrid` → llm_planning_enabled=True
- (rule-based runs first; LLM
- augments — same code path)
+   (rule-based runs first; LLM augments — same code path)
  * `J1_INGEST_PLAN_MODE=rule_based` (default) → llm_planning_enabled=False
  * unset → fall through to `J1_LLM_PLANNING_ENABLED` legacy default
  """
@@ -189,12 +111,7 @@ def load_planning_settings(
         llm_enabled_default = plan_mode in (PLAN_MODE_LLM, PLAN_MODE_HYBRID)
     else:
         llm_enabled_default = False
-        plan_mode = PLAN_MODE_RULE_BASED
     return PlanningSettings(
-        enabled=_bool(source, ENV_PLANNING_ENABLED, default=True),
-        post_compile_enabled=_bool(
-            source, ENV_POST_COMPILE_PLANNING_ENABLED, default=True,
-        ),
         llm_planning_enabled=_bool(
             source, ENV_LLM_PLANNING_ENABLED, default=llm_enabled_default,
         ),
@@ -207,36 +124,6 @@ def load_planning_settings(
         ),
         max_preview_chars=_positive_int(
             source, ENV_PLANNING_MAX_PREVIEW_CHARS, default=300,
-        ),
-        max_early_pages=_positive_int(
-            source, ENV_PLANNING_MAX_EARLY_PAGES, default=3,
-        ),
-        fail_open=_bool(source, ENV_PLANNING_FAIL_OPEN, default=True),
-        trace_enabled=_bool(
-            source, ENV_PLANNING_TRACE_ENABLED, default=False,
-        ),
-        trace_body=_bool(source, ENV_PLANNING_TRACE_BODY, default=False),
-        plan_mode=plan_mode,
-        domain_packs_enabled=_bool(
-            source, ENV_DOMAIN_PACKS_ENABLED, default=True,
-        ),
-        default_domain=(
-            source.get(ENV_DEFAULT_DOMAIN, "").strip().lower()
-            or "general"
-        ),
-        domain_detection_enabled=_bool(
-            source, ENV_DOMAIN_DETECTION_ENABLED, default=True,
-        ),
-        domain_detection_min_confidence=_float_in_unit_interval(
-            source, ENV_DOMAIN_DETECTION_MIN_CONFIDENCE, default=0.65,
-        ),
-        allowed_domain_overrides=_csv(
-            source, ENV_ALLOWED_DOMAIN_OVERRIDES,
-            default=("general", "civil_engineering"),
-        ),
-        workspace_default_domain=(
-            source.get(ENV_WORKSPACE_DEFAULT_DOMAIN, "").strip().lower()
-            or "general"
         ),
     )
 
@@ -276,35 +163,6 @@ def _positive_int(env: Mapping[str, str], key: str, *, default: int) -> int:
     if value <= 0:
         raise ConfigError(f"{key} must be > 0, got {value}")
     return value
-
-
-def _float_in_unit_interval(
-    env: Mapping[str, str], key: str, *, default: float,
-) -> float:
-    raw = env.get(key)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{key} must be a number, got {raw!r}") from exc
-    if not (0.0 <= value <= 1.0):
-        raise ConfigError(f"{key} must be in [0.0, 1.0], got {value}")
-    return value
-
-
-def _csv(
-    env: Mapping[str, str], key: str, *, default: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Parse a comma-separated list, lower-casing + stripping each
- entry. Empty value falls back to the default."""
-    raw = env.get(key)
-    if raw is None or not raw.strip():
-        return default
-    parts = tuple(
-        p.strip().lower() for p in raw.split(",") if p.strip()
-    )
-    return parts or default
 
 
 def _plan_mode(env: Mapping[str, str]) -> str | None:

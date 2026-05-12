@@ -69,7 +69,6 @@ def test_settings_default_values_are_dev_safe():
     assert s.retry_limit == DEV_SAFE_RETRY_LIMIT == 1
     assert s.require_enrichment_success is False
     assert s.default_model_tier == MODEL_TIER_FAST
-    assert s.dev_mode_conservative_limits is True
 
 
 def test_load_returns_defaults_when_env_is_empty():
@@ -93,7 +92,6 @@ def test_load_reads_each_env_var():
     assert s.retry_limit == 3
     assert s.require_enrichment_success is True
     assert s.default_model_tier == "premium"
-    assert s.dev_mode_conservative_limits is False
 
 
 def test_load_dev_mode_caps_concurrency_at_safe_ceiling():
@@ -105,11 +103,10 @@ def test_load_dev_mode_caps_concurrency_at_safe_ceiling():
         ENV_ENRICHMENT_TIMEOUT_SECONDS: "9999",
         ENV_ENRICHMENT_RETRY_LIMIT: "50",
     })
-    # dev_mode_conservative_limits default = True
+    # dev mode default = True (capping happens at load time)
     assert s.max_concurrent_llm_calls == DEV_SAFE_MAX_CONCURRENT_LLM_CALLS
     assert s.timeout_seconds == DEV_SAFE_TIMEOUT_SECONDS
     assert s.retry_limit == DEV_SAFE_RETRY_LIMIT
-    assert s.dev_mode_conservative_limits is True
 
 
 def test_load_production_mode_releases_cap():
@@ -281,7 +278,6 @@ def test_build_limiter_from_settings_mirrors_field_values():
         max_concurrent_llm_calls=3,
         timeout_seconds=45.0,
         retry_limit=2,
-        dev_mode_conservative_limits=False,
     )
     limiter = build_limiter_from_settings(s)
     assert limiter.max_concurrency == 3
@@ -295,7 +291,6 @@ def test_build_limiter_from_settings_mirrors_field_values():
 def _settings(default_tier: str = MODEL_TIER_FAST) -> EnrichmentConcurrencySettings:
     return EnrichmentConcurrencySettings(
         default_model_tier=default_tier,
-        dev_mode_conservative_limits=False,
     )
 
 

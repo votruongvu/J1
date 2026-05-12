@@ -204,16 +204,7 @@ def test_jwt_authenticator_rejects_non_bearer():
 
 def test_load_security_settings_defaults_to_disabled():
     settings = load_security_settings(env={})
-    assert settings.auth_required is False
     assert settings.api_keys == {}
-    assert settings.jwt_enabled is False
-    assert "/health" in settings.anonymous_paths
-    assert "/version" in settings.anonymous_paths
-
-
-def test_load_security_settings_reads_required_flag():
-    settings = load_security_settings(env={"J1_AUTH_REQUIRED": "true"})
-    assert settings.auth_required is True
 
 
 def test_load_security_settings_inline_keys():
@@ -263,26 +254,7 @@ def test_load_security_settings_rejects_missing_subject():
         load_security_settings(env={"J1_AUTH_API_KEYS": raw})
 
 
-def test_load_security_settings_anonymous_paths_override():
-    settings = load_security_settings(env={
-        "J1_AUTH_ANONYMOUS_PATHS": "/health,/openapi.json,/docs",
-    })
-    assert settings.anonymous_paths == frozenset({
-        "/health", "/openapi.json", "/docs",
-    })
-
-
-def test_load_security_settings_default_tenant_id():
-    settings = load_security_settings(env={"J1_AUTH_DEFAULT_TENANT_ID": "acme"})
-    assert settings.default_tenant_id == "acme"
-
-
-def test_load_security_settings_jwt_flag():
-    settings = load_security_settings(env={"J1_AUTH_JWT_ENABLED": "1"})
-    assert settings.jwt_enabled is True
-
-
 def test_security_settings_is_frozen():
     settings = SecuritySettings()
     with pytest.raises(Exception):
-        settings.auth_required = True
+        settings.api_keys = {}  # type: ignore[misc]

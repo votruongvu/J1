@@ -171,11 +171,6 @@ class EnrichmentConcurrencySettings:
     # policy nor the run override picks one. `vision` is gated
     # separately on whether image content exists.
     default_model_tier: str = MODEL_TIER_FAST
-    # When True, the loader caps every concurrency value at the
-    # `DEV_SAFE_*` ceiling regardless of what the env var says.
-    # Default True so a missing-env deployment is automatically
-    # dev-safe; production opt-out is explicit.
-    dev_mode_conservative_limits: bool = True
 
 
 # ---- Loader -------------------------------------------------------
@@ -235,7 +230,6 @@ def load_enrichment_settings(
         retry_limit=retry_limit,
         require_enrichment_success=require_success,
         default_model_tier=model_tier,
-        dev_mode_conservative_limits=dev_mode,
     )
 
 

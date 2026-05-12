@@ -7,16 +7,14 @@ from pathlib import Path
 from j1.errors.exceptions import ConfigError
 from j1.integration.security.authenticator import ApiKeyRecord
 
-ENV_AUTH_REQUIRED = "J1_AUTH_REQUIRED"
 ENV_AUTH_API_KEYS = "J1_AUTH_API_KEYS"
 ENV_AUTH_API_KEYS_FILE = "J1_AUTH_API_KEYS_FILE"
-ENV_AUTH_JWT_ENABLED = "J1_AUTH_JWT_ENABLED"
-ENV_AUTH_ANONYMOUS_PATHS = "J1_AUTH_ANONYMOUS_PATHS"
-ENV_AUTH_DEFAULT_TENANT_ID = "J1_AUTH_DEFAULT_TENANT_ID"
 
+# Public constant kept for downstream callers that want to share J1's
+# anonymous-path defaults. The REST adapter (`adapters/rest/app.py`)
+# has its own per-app override; this set is the framework-level
+# default.
 DEFAULT_ANONYMOUS_PATHS: frozenset[str] = frozenset({"/health", "/version"})
-
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 @dataclass(frozen=True)
@@ -28,37 +26,14 @@ class SecuritySettings:
  secrets-managed JSON file (or by injecting `api_keys` programmatically).
  """
 
-    auth_required: bool = False
     api_keys: Mapping[str, ApiKeyRecord] = field(default_factory=dict)
-    jwt_enabled: bool = False
-    anonymous_paths: frozenset[str] = field(default_factory=lambda: DEFAULT_ANONYMOUS_PATHS)
-    default_tenant_id: str | None = None
 
 
 def load_security_settings(
     env: Mapping[str, str] | None = None,
 ) -> SecuritySettings:
     source = env if env is not None else os.environ
-
-    auth_required = source.get(ENV_AUTH_REQUIRED, "").lower() in _TRUTHY
-    jwt_enabled = source.get(ENV_AUTH_JWT_ENABLED, "").lower() in _TRUTHY
-
-    anonymous_raw = source.get(ENV_AUTH_ANONYMOUS_PATHS, "")
-    anonymous_paths = (
-        frozenset(p.strip() for p in anonymous_raw.split(",") if p.strip())
-        if anonymous_raw
-        else DEFAULT_ANONYMOUS_PATHS
-    )
-
-    api_keys = _load_api_keys(source)
-
-    return SecuritySettings(
-        auth_required=auth_required,
-        api_keys=api_keys,
-        jwt_enabled=jwt_enabled,
-        anonymous_paths=anonymous_paths,
-        default_tenant_id=source.get(ENV_AUTH_DEFAULT_TENANT_ID) or None,
-    )
+    return SecuritySettings(api_keys=_load_api_keys(source))
 
 
 def _load_api_keys(source: Mapping[str, str]) -> Mapping[str, ApiKeyRecord]:
