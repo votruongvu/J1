@@ -79,6 +79,7 @@ from j1.adapters.rest.schemas import (
     JobStartRecord,
     JobStatusRecord,
     GenerateValidationSetRequestRecord,
+    LLMTraceRecord,
     ManualTestQueryRequestRecord,
     ManualTestQueryResponseRecord,
     StartValidationRunRequestRecord,
@@ -2483,6 +2484,7 @@ def create_rest_api(
             mode=body.mode,
             citation_required=body.citation_required,
             include_raw=body.include_raw,
+            synthesize=body.synthesize,
         )
         # `_load_run` inside the service raises `ReviewNotFound` on
         # cross-tenant / cross-project access — caught by the
@@ -2541,6 +2543,16 @@ def create_rest_api(
                 images_used=result.evidence_flags.get("imagesUsed", False),
             ),
             raw_response=result.raw_response,
+            synthesized_answer=result.synthesized_answer,
+            llm=LLMTraceRecord(
+                called=result.llm.called,
+                provider=result.llm.provider,
+                model=result.llm.model,
+                latency_ms=result.llm.latency_ms,
+                prompt_tokens=result.llm.prompt_tokens,
+                completion_tokens=result.llm.completion_tokens,
+                error=result.llm.error,
+            ) if result.llm is not None else None,
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 

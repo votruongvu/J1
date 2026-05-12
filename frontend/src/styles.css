@@ -1456,15 +1456,22 @@ pre,
 }
 
 /* ── Two-column body ──────────────────────────────────── */
+/* Equal-height columns: the grid row gets a fixed viewport-sized
+   height, both columns stretch to fill it, and overflowing content
+   scrolls inside its own column (LiveTimeline body on the left,
+   `.run-body__scroll` frame on the right). */
 .run-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 24px;
-  align-items: start;
+  height: calc(100vh - 220px);
+  min-height: 520px;
 }
 @media (max-width: 1080px) {
   .run-body {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
   }
 }
 .col {
@@ -1472,22 +1479,56 @@ pre,
   flex-direction: column;
   gap: 24px;
   min-width: 0;
+  min-height: 0;
 }
-/* Right-side stacked-artifact panels share one viewport-sized
-   scroll container so the long sequence (assess → compile strategy →
-   compile result → enrich plan → enrichment result) doesn't push
-   the page into a long vertical scroll. Height tracks the viewport
-   so it visually balances against the LiveTimeline column. */
+/* Right-side stacked-artifact panels share one bordered scroll
+   container so the long sequence (assess → compile strategy →
+   compile result → enrich plan → enrichment result) lives inside a
+   visible frame instead of fading into the page. The border stays
+   put while inner content scrolls — the user sees the boundary on
+   all four sides regardless of scroll position. */
 .run-body__scroll {
-  max-height: calc(100vh - 220px);
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding-right: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 12px);
+  background: var(--surface, #fff);
+  padding: 16px;
 }
 @media (max-width: 1080px) {
   .run-body__scroll {
-    max-height: none;
     overflow-y: visible;
-    padding-right: 0;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    background: none;
+    flex: initial;
+  }
+}
+/* LiveTimeline inside the new equal-height column: stretch the
+   card to fill the column height, and let its body scroll. The
+   component used to hard-code `maxHeight: 520` inline; we now drive
+   that from the column layout so the timeline visually matches the
+   right scroll container. */
+.run-body .col > .card.live-timeline-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-body .col > .card.live-timeline-card .card__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+@media (max-width: 1080px) {
+  .run-body .col > .card.live-timeline-card {
+    flex: initial;
+  }
+  .run-body .col > .card.live-timeline-card .card__body {
+    flex: initial;
+    max-height: 520px;
   }
 }
 

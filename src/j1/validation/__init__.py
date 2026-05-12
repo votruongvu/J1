@@ -19,6 +19,7 @@ specific store yet.
 from j1.validation.dtos import (
     ExecutionStatus,
     ExpectedBehavior,
+    LLMTraceDTO,
     ManualTestQueryRequest,
     ManualTestQueryResponseDTO,
     RetrievedChunkRefDTO,
@@ -54,6 +55,11 @@ from j1.validation.runner import (
     MAX_CASES_PER_RUN,
 )
 from j1.validation.service import IngestionValidationService
+from j1.validation.synthesis import (
+    AnswerSynthesizer,
+    DefaultAnswerSynthesizer,
+    SynthesisResult,
+)
 from j1.validation.store import (
     JsonlValidationRunStore,
     JsonlValidationSetStore,
@@ -62,7 +68,9 @@ from j1.validation.store import (
 )
 
 __all__ = [
+    "AnswerSynthesizer",
     "CoverageJudgement",
+    "DefaultAnswerSynthesizer",
     "DefaultLLMJudge",
     "DefaultTestCaseGenerator",
     "DefaultValidationRunner",
@@ -76,11 +84,13 @@ __all__ = [
     "JsonlValidationRunStore",
     "JsonlValidationSetStore",
     "LLMJudge",
+    "LLMTraceDTO",
     "MAX_CASES_PER_RUN",
     "coverage_threshold",
     "ManualTestQueryRequest",
     "ManualTestQueryResponseDTO",
     "RetrievedChunkRefDTO",
+    "SynthesisResult",
     "ValidationCheckDTO",
     "ValidationCitationDTO",
     "ValidationCoverageDTO",

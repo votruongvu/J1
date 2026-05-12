@@ -102,6 +102,15 @@ class ManualTestQueryRequest:
  `citation_required` toggles the conditional `citation_present`
  check — when False, the check is skipped (not run, not in
  `checks[]`), so it can't fail the validation.
+
+ `synthesize` opts into the LLM answer-synthesis step. When True
+ (default), the service runs the retrieved chunks through the
+ configured `TextLLMClient` and exposes the result as
+ `synthesized_answer` on the response. When False (or when no LLM
+ client is wired), the response carries `synthesized_answer=None`
+ and `llm.called=False`; the existing retrieval-snippet `answer`
+ field is unchanged. Determinism-sensitive batch runs do not flow
+ through this path.
  """
 
     question: str
@@ -109,6 +118,28 @@ class ManualTestQueryRequest:
     mode: str = "auto"
     citation_required: bool = False
     include_raw: bool = False
+    synthesize: bool = True
+
+
+@dataclass(frozen=True)
+class LLMTraceDTO:
+    """Per-call LLM trace attached to manual test query responses.
+
+ `called=False` means synthesis was disabled (request opt-out) or
+ unavailable (no client wired). When `called=True` the remaining
+ fields are populated best-effort; `error` is non-None iff the
+ client raised — in that case `provider`/`model` are still set so
+ the FE can show which client failed, but `latency_ms` /
+ token counts may be `None`.
+ """
+
+    called: bool
+    provider: str | None = None
+    model: str | None = None
+    latency_ms: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +150,12 @@ class ManualTestQueryResponseDTO:
  `j1.validation.checks._aggregate_status`. It is NOT the HTTP
  outcome — a 200 with `validation_status="failed"` is the
  canonical "the job ran but the answer didn't pass" case.
+
+ `answer` is the deterministic retrieval-preview snippet bundle
+ that's been here since day one — kept stable so existing checks
+ keep their semantics. `synthesized_answer` is the new LLM-
+ generated final answer; the FE renders it in a "Final Answer"
+ panel above the retrieval evidence.
  """
 
     request_id: str
@@ -132,6 +169,8 @@ class ManualTestQueryResponseDTO:
     validation_status: ValidationStatus
     evidence_flags: dict[str, bool] = field(default_factory=dict)
     raw_response: dict[str, Any] | None = None
+    synthesized_answer: str | None = None
+    llm: LLMTraceDTO | None = None
 
 
 # ---- validation sets, runs, summaries ---------------------

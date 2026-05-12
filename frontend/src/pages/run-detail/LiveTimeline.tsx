@@ -63,7 +63,7 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
   );
 
   return (
-    <div className="card">
+    <div className="card live-timeline-card">
       <div className="card__header">
         <div>
           <h3 className="card__title">Live timeline</h3>
@@ -73,7 +73,7 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
         </div>
         <StreamStatus status={streamStatus} />
       </div>
-      <div className="card__body" ref={scrollRef} style={{ maxHeight: 520, overflow: "auto" }}>
+      <div className="card__body" ref={scrollRef}>
         {visibleEvents.length === 0 ? (
           <div className="tl-empty">
             No events yet. They&apos;ll appear here as the run progresses.

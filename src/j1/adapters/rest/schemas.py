@@ -399,7 +399,9 @@ class ManualTestQueryRequestRecord(CamelModel):
  `topK` is hard-capped to 50 server-side; FastAPI clamps to the
  same cap to fail fast on out-of-range input. `citationRequired`
  flips the conditional `citation_present` deterministic check
- on/off.
+ on/off. `synthesize` opts into LLM-backed answer synthesis on
+ top of the retrieval preview (default on; set false for fast
+ retrieval-only debug runs).
  """
 
     question: str = Field(min_length=1)
@@ -407,6 +409,7 @@ class ManualTestQueryRequestRecord(CamelModel):
     mode: str = "auto"
     citation_required: bool = False
     include_raw: bool = False
+    synthesize: bool = True
 
 
 class ValidationCheckRecord(CamelModel):
@@ -458,6 +461,24 @@ class EvidenceFlagsRecord(CamelModel):
     images_used: bool = False
 
 
+class LLMTraceRecord(CamelModel):
+    """Per-call LLM trace attached to manual test query responses.
+
+ `called=False` means synthesis was skipped (opt-out OR no client
+ wired — `error` distinguishes). When `called=True` the remaining
+ fields are populated best-effort; `error` is non-None iff the
+ LLM client failed (`provider`/`model` are still set so the FE
+ can render which client failed)."""
+
+    called: bool
+    provider: str | None = None
+    model: str | None = None
+    latency_ms: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error: str | None = None
+
+
 class ManualTestQueryResponseRecord(CamelModel):
     """Body of the 200 response.
 
@@ -466,6 +487,11 @@ class ManualTestQueryResponseRecord(CamelModel):
  `checks[]`. Callers MUST not collapse the two — a 200 with
  `validationStatus="failed"` is the canonical 'job ran but the
  answer didn't pass' case.
+
+ `answer` is the deterministic retrieval preview (top chunks'
+ titles + snippets). `synthesizedAnswer` is the LLM's grounded
+ final answer when synthesis ran; `null` when synthesis was
+ skipped or failed (see `llm.error`).
  """
 
     request_id: str
@@ -479,6 +505,8 @@ class ManualTestQueryResponseRecord(CamelModel):
     validation_status: str
     evidence_flags: EvidenceFlagsRecord
     raw_response: dict[str, Any] | None = None
+    synthesized_answer: str | None = None
+    llm: LLMTraceRecord | None = None
 
 
 # ---- Validation sets / runs -------------------------------

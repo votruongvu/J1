@@ -242,6 +242,7 @@ def build_validation_service(workspace: WorkspaceResolver):
         ReportGenerator,
     )
     from j1.validation import (
+        DefaultAnswerSynthesizer,
         DefaultLLMJudge,
         DefaultTestCaseGenerator,
         IngestionValidationService,
@@ -293,6 +294,16 @@ def build_validation_service(workspace: WorkspaceResolver):
         DefaultLLMJudge(text_client=llm_client) if llm_client else None
     )
 
+    # Manual-query LLM answer synthesizer. Same client as the judge —
+    # we reuse rather than instantiating a second so concurrency
+    # limiters / token budgets in the LLM client apply uniformly to
+    # both surfaces. None → manual queries fall back to retrieval-
+    # only mode (the FE shows the retrieval preview and notes "LLM
+    # client not configured" in the trace strip).
+    synthesizer = (
+        DefaultAnswerSynthesizer(text_client=llm_client) if llm_client else None
+    )
+
     return IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=artifacts,
@@ -310,6 +321,7 @@ def build_validation_service(workspace: WorkspaceResolver):
         test_case_generator=DefaultTestCaseGenerator(text_client=llm_client),
         # optional. Off when no LLM client is wired.
         judge=judge,
+        answer_synthesizer=synthesizer,
     )
 
 

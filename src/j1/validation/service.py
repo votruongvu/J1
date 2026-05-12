@@ -32,6 +32,7 @@ from j1.runs.models import IngestionRun
 from j1.runs.store import IngestionRunStore
 from j1.validation.checks import aggregate_status, run_checks
 from j1.validation.dtos import (
+    LLMTraceDTO,
     ManualTestQueryRequest,
     ManualTestQueryResponseDTO,
     RetrievedChunkRefDTO,
@@ -46,6 +47,7 @@ from j1.validation.generator import (
     GenerationOptions,
 )
 from j1.validation.judge import LLMJudge
+from j1.validation.synthesis import AnswerSynthesizer
 from j1.validation.runner import (
     DefaultValidationRunner,
     MAX_CASES_PER_RUN,
@@ -105,6 +107,7 @@ class IngestionValidationService:
         validation_run_store: ValidationRunStore | None = None,
         test_case_generator: DefaultTestCaseGenerator | None = None,
         judge: LLMJudge | None = None,
+        answer_synthesizer: AnswerSynthesizer | None = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -118,6 +121,11 @@ class IngestionValidationService:
         # picks this up when it's configured; when None, optional
         # checks are simply omitted.
         self._judge = judge
+        # Optional LLM answer synthesizer for the manual-query path.
+        # When None, manual queries fall back to retrieval-only mode
+        # and the response reports `llm.called=False`. Batch validation
+        # runs do not consult this — they must stay deterministic.
+        self._synthesizer = answer_synthesizer
 
     def run_manual_test_query(
         self,
@@ -197,6 +205,11 @@ class IngestionValidationService:
             else None
         )
 
+        synthesized_answer, llm_trace = self._maybe_synthesize_answer(
+            request=request,
+            retrieved=retrieved,
+        )
+
         self._audit_manual_query(
             ctx=ctx,
             run=run,
@@ -220,6 +233,47 @@ class IngestionValidationService:
             validation_status=validation_status,
             evidence_flags=evidence_flags,
             raw_response=raw_response,
+            synthesized_answer=synthesized_answer,
+            llm=llm_trace,
+        )
+
+    def _maybe_synthesize_answer(
+        self,
+        *,
+        request: ManualTestQueryRequest,
+        retrieved: list[RetrievedChunkRefDTO],
+    ) -> tuple[str | None, LLMTraceDTO]:
+        """Run the LLM synthesizer when opted in AND wired.
+
+ Three branches on the LLMTraceDTO:
+   * `called=False, error=None`  — opt-out via request.synthesize=False
+   * `called=False, error="no LLM client configured"` — deployment
+     didn't pass `answer_synthesizer`. The FE shows an actionable
+     message instead of silently dropping to retrieval-only.
+   * `called=True`  — synthesis attempted; `answer` and `error`
+     reflect outcome (success / no-evidence / client failure).
+ """
+        if not request.synthesize:
+            return None, LLMTraceDTO(called=False)
+
+        if self._synthesizer is None:
+            return None, LLMTraceDTO(
+                called=False,
+                error="no LLM client configured",
+            )
+
+        result = self._synthesizer.synthesize(
+            question=request.question,
+            chunks=retrieved,
+        )
+        return result.answer, LLMTraceDTO(
+            called=True,
+            provider=result.provider,
+            model=result.model,
+            latency_ms=result.latency_ms,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            error=result.error,
         )
 
     # ---- validation sets ----------------------------------------

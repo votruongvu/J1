@@ -642,6 +642,20 @@ export interface ManualTestQueryRequest {
   mode?: string;
   citationRequired?: boolean;
   includeRaw?: boolean;
+  // Opt into LLM answer synthesis. Default true on the server.
+  // Set false for fast retrieval-only debug runs (skips the LLM call
+  // entirely, response carries `llm.called=false`, `synthesizedAnswer=null`).
+  synthesize?: boolean;
+}
+
+export interface LLMTrace {
+  called: boolean;
+  provider?: string | null;
+  model?: string | null;
+  latencyMs?: number | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  error?: string | null;
 }
 
 export interface ManualTestQueryResponse {
@@ -656,6 +670,11 @@ export interface ManualTestQueryResponse {
   validationStatus: ValidationStatus;
   evidenceFlags: ValidationEvidenceFlags;
   rawResponse?: Record<string, unknown> | null;
+  // LLM-synthesized final answer (when `synthesize=true` and a client
+  // is wired). `null` when synthesis was skipped or the LLM errored —
+  // check `llm.error` to distinguish.
+  synthesizedAnswer?: string | null;
+  llm?: LLMTrace | null;
 }
 
 // ---- Validation sets and runs -------------------------

@@ -17,6 +17,7 @@ import { useClient } from "@/lib/hooks/useClient";
 import { ApiError } from "@/lib/api/client";
 import { validationStatusMeta } from "@/lib/display";
 import type {
+  LLMTrace,
   ManualTestQueryResponse,
   ValidationCheck,
 } from "@/types/review";
@@ -30,6 +31,11 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
   const [question, setQuestion] = useState("");
   const [topK, setTopK] = useState(10);
   const [citationRequired, setCitationRequired] = useState(false);
+  // LLM answer synthesis is on by default — that's the "full RAG"
+  // flow tester usually want. Turn off for a fast retrieval-only
+  // smoke (skips the LLM entirely so the response lands instantly
+  // and isn't blocked on a slow local model).
+  const [synthesize, setSynthesize] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<ManualTestQueryResponse | null>(
@@ -50,6 +56,7 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
         question: trimmed,
         topK,
         citationRequired,
+        synthesize,
         // Always request raw — the drawer is gated on the toggle so
         // turning it on doesn't require re-querying.
         includeRaw: true,
@@ -66,7 +73,7 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
     } finally {
       setRunning(false);
     }
-  }, [client, runId, question, topK, citationRequired]);
+  }, [client, runId, question, topK, citationRequired, synthesize]);
 
   return (
     <div className="manual-query-console">
@@ -118,6 +125,18 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
                 disabled={running}
               />
               <span>Require citations</span>
+            </label>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
+              title="When on, the LLM synthesizes a final answer from the retrieved chunks. Turn off for retrieval-only debug."
+            >
+              <input
+                type="checkbox"
+                checked={synthesize}
+                onChange={(e) => setSynthesize(e.target.checked)}
+                disabled={running}
+              />
+              <span>Synthesize answer (LLM)</span>
             </label>
             <button
               type="button"
@@ -174,8 +193,17 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
         </div>
       </div>
       <div className="card__body" style={{ display: "grid", gap: 16 }}>
+        <FinalAnswerSection
+          synthesized={response.synthesizedAnswer ?? null}
+          llm={response.llm ?? null}
+        />
+
         <section>
-          <h4>Answer</h4>
+          <h4>Retrieval preview</h4>
+          <p style={{ color: "var(--fg-muted)", marginTop: -4, fontSize: 12 }}>
+            Deterministic snippet bundle from the retriever — used to drive
+            the checks below. Not the final answer.
+          </p>
           {response.answer ? (
             <pre
               style={{
@@ -295,6 +323,90 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
         </section>
       </div>
     </div>
+  );
+}
+
+interface FinalAnswerSectionProps {
+  synthesized: string | null;
+  llm: LLMTrace | null;
+}
+
+function FinalAnswerSection({ synthesized, llm }: FinalAnswerSectionProps) {
+  // Three render modes:
+  //  1. Synthesis ran and produced text  → show the answer.
+  //  2. Synthesis was skipped (opt-out)  → tell the user to flip the toggle.
+  //  3. Synthesis was attempted but errored (no client, no_evidence,
+  //     LLM raised) → show the error so they can diagnose without
+  //     digging into the raw payload.
+  const hasAnswer = typeof synthesized === "string" && synthesized.length > 0;
+  const errorText = llm?.error ?? null;
+  const wasCalled = llm?.called === true;
+
+  return (
+    <section>
+      <h4 style={{ marginBottom: 4 }}>Final Answer</h4>
+      <p style={{ color: "var(--fg-muted)", marginTop: 0, fontSize: 12 }}>
+        LLM-synthesized answer grounded in the retrieved chunks below.
+      </p>
+      {hasAnswer ? (
+        <pre
+          style={{
+            whiteSpace: "pre-wrap",
+            background: "var(--accent-soft, #eef4ff)",
+            padding: 12,
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            fontSize: 14,
+            fontFamily: "inherit",
+          }}
+        >
+          {synthesized}
+        </pre>
+      ) : !wasCalled ? (
+        <p style={{ fontStyle: "italic", color: "var(--fg-muted)" }}>
+          {errorText
+            ? `LLM disabled: ${errorText}.`
+            : "LLM synthesis is off — flip the “Synthesize answer (LLM)” toggle to enable."}
+        </p>
+      ) : errorText ? (
+        <p style={{ color: "var(--err, #b04040)", fontFamily: "var(--font-mono)" }}>
+          LLM error: {errorText}
+        </p>
+      ) : (
+        <p style={{ fontStyle: "italic", color: "var(--fg-muted)" }}>
+          (no synthesized answer returned)
+        </p>
+      )}
+      {llm && <LLMTraceStrip llm={llm} />}
+    </section>
+  );
+}
+
+function LLMTraceStrip({ llm }: { llm: LLMTrace }) {
+  const parts: string[] = [];
+  if (llm.provider) parts.push(llm.provider);
+  if (llm.model) parts.push(llm.model);
+  if (llm.latencyMs != null) parts.push(`${llm.latencyMs} ms`);
+  if (llm.promptTokens != null || llm.completionTokens != null) {
+    const p = llm.promptTokens ?? 0;
+    const c = llm.completionTokens ?? 0;
+    parts.push(`${p} in / ${c} out tok`);
+  }
+  if (!llm.called && parts.length === 0) {
+    return null;
+  }
+  return (
+    <p
+      style={{
+        marginTop: 6,
+        fontSize: 11,
+        color: "var(--fg-muted)",
+        fontFamily: "var(--font-mono)",
+      }}
+    >
+      {llm.called ? "LLM" : "LLM (skipped)"}
+      {parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}
+    </p>
   );
 }
 
