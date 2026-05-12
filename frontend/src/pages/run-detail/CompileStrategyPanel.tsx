@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { Typewriter } from "@/components/Typewriter";
 import { useClient } from "@/lib/hooks/useClient";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ProgressEvent } from "@/types/ingestion";
@@ -300,7 +301,9 @@ function Banners({ report }: { report: CompileStrategyReport }) {
           className={`banner banner--${b.kind}`}
           data-testid={b.testid}
         >
-          {b.message}
+          {i === 0 ? (
+            <Typewriter text={b.message} speed={140} cursor />
+          ) : b.message}
         </div>
       ))}
     </div>

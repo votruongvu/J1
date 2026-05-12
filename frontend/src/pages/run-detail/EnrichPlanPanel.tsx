@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { Typewriter } from "@/components/Typewriter";
 import { useClient } from "@/lib/hooks/useClient";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ProgressEvent } from "@/types/ingestion";
@@ -171,7 +172,13 @@ function EnrichPlanContent({ plan }: { plan: PostCompileEnrichPlanPayload }) {
           <dd>
             {plan.reasons.length === 0 ? "—" : (
               <ul className="bullet-list">
-                {plan.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                {plan.reasons.map((r, i) => (
+                  <li key={i}>
+                    {i === 0 ? (
+                      <Typewriter text={r} speed={140} cursor />
+                    ) : r}
+                  </li>
+                ))}
               </ul>
             )}
           </dd>

@@ -1547,28 +1547,31 @@ pre,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px;
+  padding: 8px 18px 18px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
   scroll-behavior: smooth;
+  /* CSS counter for auto-numbered stage dividers (01, 02, …). The
+     counter resets per body so re-mounting the panel restarts at 01.
+     Each panel's first <h3> increments it via the rule below. */
+  counter-reset: pipeline-stage;
 }
-/* Flatten the nested `.card` chrome from each child panel so the
-   five panels read as ONE stream of message blocks, not five
-   separate cards-in-a-card. Each child still uses `.card` so its
-   internal structure (`card__header`, `card__body`) is untouched —
-   we just suppress the outer chrome, drop the shadow, and give
-   each block a subtle left rail to signal "section". */
+/* Flatten the nested `.card` chrome into a single continuous
+   transcript. The five panels still render their own `.card`
+   wrapper for testability, but visually we strip ALL of it — no
+   border, no background, no padding — so the right column reads as
+   ONE flowing message thread instead of five stacked boxes. */
 .pipeline-stream__body > .card {
-  border: 1px solid var(--border-subtle, #e5e7eb);
-  border-left: 3px solid var(--accent, #5b8def);
-  border-radius: 8px;
+  border: none;
+  border-radius: 0;
   box-shadow: none;
-  background: var(--bg-sunken, #fafafa);
+  background: transparent;
   margin: 0;
-  /* Subtle slide-in so a new stage appearing feels chat-like
-     instead of "the page just changed". Cheap CSS-only animation;
-     no layout thrash. */
+  padding: 0;
+  /* Subtle slide-in when a new stage's data lands. Keeps the
+     "something just streamed in" feel even without the boxy
+     chrome. */
   animation: pipelineBlockIn 0.32s var(--ease-out, ease-out);
 }
 @keyframes pipelineBlockIn {
@@ -1581,14 +1584,112 @@ pre,
     transform: translateY(0);
   }
 }
+/* Suppress the card header — the per-panel <h3> below becomes the
+   stage divider and supplies the header role. */
 .pipeline-stream__body > .card > .card__header {
-  padding: 10px 14px;
-  background: transparent;
-  border-bottom: 1px solid var(--border-subtle, #e5e7eb);
+  display: none;
 }
 .pipeline-stream__body > .card > .card__body {
-  padding: 12px 14px;
+  padding: 4px 0 22px;
   background: transparent;
+  border-bottom: 1px dashed var(--border-subtle, #e5e7eb);
+  margin-bottom: 22px;
+}
+.pipeline-stream__body > .card:last-child > .card__body {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+/* Restyle each panel's first <h3> as the stage divider — auto-
+   numbered via the body counter. Looks like "── 01 · Assessment
+   Plan ──────" rather than a boxy card title. Visually anchors
+   the start of each section in the transcript. */
+.pipeline-stream__body > .card > .card__body > h3:first-child {
+  counter-increment: pipeline-stage;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent, #5b8def);
+  margin: 4px 0 14px;
+  padding: 0 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+}
+.pipeline-stream__body > .card > .card__body > h3:first-child::before {
+  content: counter(pipeline-stage, decimal-leading-zero);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--fg-muted, #6b7280);
+  background: var(--bg-sunken, #f3f4f6);
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+}
+.pipeline-stream__body > .card > .card__body > h3:first-child::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    var(--border-subtle, #e5e7eb),
+    transparent
+  );
+}
+
+/* Per-line stagger reveal — gives a "content streaming in" feel
+   without touching any panel component. Direct children of a
+   panel's `.card__body` (headings, paragraphs, tables, sub-cards)
+   fade in one after another with a small stepped delay. The
+   animation only runs ONCE per DOM node — React reuses the same
+   element on subsequent re-renders, so updating numbers inside an
+   already-revealed block doesn't restart the typewriter feel. */
+.pipeline-stream__body > .card > .card__body > * {
+  opacity: 0;
+  transform: translateY(4px);
+  animation: pipelineLineIn 0.36s var(--ease-out, ease-out) forwards;
+  animation-delay: var(--line-delay, 0ms);
+}
+.pipeline-stream__body > .card > .card__body > *:nth-child(1) { --line-delay: 0ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(2) { --line-delay: 70ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(3) { --line-delay: 140ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(4) { --line-delay: 210ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(5) { --line-delay: 280ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(6) { --line-delay: 350ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(7) { --line-delay: 420ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(8) { --line-delay: 490ms; }
+.pipeline-stream__body > .card > .card__body > *:nth-child(n+9) {
+  --line-delay: 560ms;
+}
+@keyframes pipelineLineIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* Blinking caret for the optional `<Typewriter cursor>` mode. */
+@keyframes typewriterBlink {
+  to {
+    opacity: 0;
+  }
+}
+/* Operator preference: users on `prefers-reduced-motion: reduce`
+   get the final state instantly. Same accessibility hygiene as the
+   rest of the app's animations. */
+@media (prefers-reduced-motion: reduce) {
+  .pipeline-stream__body > .card,
+  .pipeline-stream__body > .card > .card__body > * {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }
 @media (max-width: 1080px) {
   .pipeline-stream {

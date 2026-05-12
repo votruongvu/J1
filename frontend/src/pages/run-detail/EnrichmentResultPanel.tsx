@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Typewriter } from "@/components/Typewriter";
 
 import { useClient } from "@/lib/hooks/useClient";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
@@ -176,7 +177,11 @@ function EnrichmentResultContent({
         data-testid="enrichment-result-banner"
       >
         <strong>Domain enrichment: {statusLabel(status)}</strong>
-        {plan.reason ? <span> — {plan.reason}</span> : null}
+        {plan.reason ? (
+          <span>
+            {" "}— <Typewriter text={plan.reason} speed={140} cursor />
+          </span>
+        ) : null}
       </div>
 
       <div className="card" data-testid="enrichment-result-card">
@@ -188,9 +193,11 @@ function EnrichmentResultContent({
             style={{ color: "var(--text-muted)" }}
             data-testid="enrichment-result-skipped-explainer"
           >
-            Domain enrichment was skipped for this run. The base
-            compile output is unchanged and remains the source of
-            truth for downstream consumers.
+            <Typewriter
+              text="Domain enrichment was skipped for this run. The base compile output is unchanged and remains the source of truth for downstream consumers."
+              speed={140}
+              cursor
+            />
           </p>
         ) : null}
 

@@ -30,6 +30,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { Typewriter } from "@/components/Typewriter";
 import { useClient } from "@/lib/hooks/useClient";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ProgressEvent } from "@/types/ingestion";
@@ -294,7 +295,11 @@ function AssessmentPlanContent({
           {recommendedPathLabel(recommendedPath)}
         </span>
         <div className="assessment-plan-panel__hint">
-          {recommendedPathDescription(recommendedPath)}
+          <Typewriter
+            text={recommendedPathDescription(recommendedPath)}
+            speed={120}
+            cursor
+          />
         </div>
       </div>
 
