@@ -760,14 +760,27 @@ class IngestionValidationService:
             chunks_expected=chunks_expected,
         )
         # Operator-readable retrieval breakdown. Helps confirm
-        # whether failures are "FTS only returned N rows" vs
-        # "FTS returned plenty but reranker / selection
-        # filtered". Logged once per request.
+        # whether the empty-result outcome was "engine never asked
+        # BM25" (pure native engine, ``bm25_query_used=False``) vs
+        # "BM25 asked but returned nothing" (broken index / wrong
+        # workspace). The ``engine`` + ``answer_provider`` +
+        # ``bm25_query_used`` + ``native_query_failed_reason``
+        # fields self-document the line so an operator reading
+        # the log can answer "what just happened?" without
+        # opening the response payload.
         _log.info(
-            "manual_query retrieval: run_id=%s requested_top_k=%d "
-            "candidate_top_k_used=%d fts_returned=%d evidence_max=%d "
-            "selected_evidence=%d",
-            run.run_id, requested_top_k, candidate_top_k,
+            "manual_query retrieval: run_id=%s engine=%s "
+            "answer_provider=%s bm25_query_used=%s "
+            "native_query_used=%s native_failed_reason=%s "
+            "requested_top_k=%d candidate_top_k_used=%d "
+            "fts_returned=%d evidence_max=%d selected_evidence=%d",
+            run.run_id,
+            self._query_engine_mode,
+            dispatch.answer_provider,
+            dispatch.debug_extras.get("bm25_query_used"),
+            dispatch.debug_extras.get("native_query_used"),
+            dispatch.debug_extras.get("native_query_failed_reason"),
+            requested_top_k, candidate_top_k,
             len(retrieved), self._validation_evidence_max_blocks,
             len(evidence_blocks),
         )
