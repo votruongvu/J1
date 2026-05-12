@@ -430,15 +430,27 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             except OSError:
                 pass
 
-    # `storage_dir` resolution: the settings loader defaults this to
-    # the workdir itself (where LightRAG actually writes). Old
-    # deployments that explicitly set `J1_RAGANYTHING_STORAGE_DIR=
-    # <workdir>/storage` still work because the helper uses `rglob`
-    # — finds the file at any depth. Falling back to workdir here
-    # too keeps things robust if `settings.storage_dir` is empty.
-    storage_dir = Path(
-        request.settings.storage_dir or request.settings.workdir
-    ).expanduser()
+    # `storage_dir` resolution. Per-run isolation: when the request
+    # carries a run_id (compile dispatched from the orchestration
+    # path), LightRAG was instantiated with
+    # `working_dir=<workdir>/runs/<tenant>/<project>/<doc>/<run>/`
+    # — so its graphml + KV files are written there, not in the
+    # global workdir. We point `storage_dir` at the same scoped path
+    # so the draft collectors (`_graph_drafts_from_storage`,
+    # `_chunk_drafts_from_storage`) read from the right tree.
+    #
+    # When no run_id is present (legacy / test callers), fall back
+    # to the historical default: `settings.storage_dir or
+    # settings.workdir` walked with rglob.
+    scoped = workspace_path_for_run(
+        request.settings, request.ctx, request.document_id, request.run_id,
+    )
+    storage_dir = (
+        scoped if scoped is not None
+        else Path(
+            request.settings.storage_dir or request.settings.workdir
+        ).expanduser()
+    )
 
     # Detect LightRAG silent failures BEFORE we collect drafts. RAGAnything
     # swallows internal LightRAG errors (e.g. embedding dimension
@@ -683,11 +695,23 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
  feeding each artifact path back through `process_document_complete`
  and then collecting the graph artifacts the vendor writes to its
  storage dir.
+
+ Per-run isolation: when `request.run_id` + `request.document_id`
+ are supplied (production path), the storage dir is the same
+ scoped workspace the compile stage wrote into:
+ ``{workdir}/runs/{tenant}/{project}/{doc}/{run}/``. The emitted
+ drafts are stamped with ``run_id`` + ``document_id`` + lineage
+ fields so the orchestration registration writes them with
+ correct ``metadata.run_id`` regardless of whether
+ ``correlation_id`` was threaded through.
  """
     # Same env bridge as compile — the graph path also drives
     # `process_document_complete` which can re-invoke the VLM
     # backend when the storage dir is regenerated.
     _apply_vlm_http_client_env(request.settings)
+    scoped = workspace_path_for_run(
+        request.settings, request.ctx, request.document_id, request.run_id,
+    )
     # Graph path: no AssessmentPlan today (graph plans are stage-
     # gating not compile-config); drop the dropped-overrides slot.
     rag, _ = _build_rag_instance(
@@ -695,16 +719,25 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
         vision_client=None,
         embedding_client=request.embedding_client,
         settings=request.settings,
+        working_dir_override=scoped,
     )
-    # See compile-side note: storage_dir defaults to workdir itself
-    # because that's where LightRAG actually writes its KV files +
-    # graph artifacts. `_graph_drafts_from_storage` uses rglob so a
-    # custom deeper path still works.
-    storage_dir = Path(
-        request.settings.storage_dir or request.settings.workdir
-    ).expanduser()
+    # Storage dir is the same scoped path the compile stage wrote
+    # into when run_id/document_id are present. Falls back to the
+    # legacy unscoped workdir for direct/test callers.
+    storage_dir = (
+        scoped if scoped is not None
+        else Path(
+            request.settings.storage_dir or request.settings.workdir
+        ).expanduser()
+    )
     storage_dir.mkdir(parents=True, exist_ok=True)
-    drafts = _graph_drafts_from_storage(storage_dir, request.artifact_ids)
+    drafts = _graph_drafts_from_storage(
+        storage_dir,
+        request.artifact_ids,
+        ctx=request.ctx,
+        document_id=request.document_id,
+        run_id=request.run_id,
+    )
     if not drafts:
         return ArtifactProcessingResult(
             status=ResultStatus.SUCCEEDED,
@@ -719,18 +752,36 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
     return ArtifactProcessingResult(
         status=ResultStatus.SUCCEEDED,
         drafts=drafts,
-        metadata={"provider": "raganything", "storage_dir": str(storage_dir)},
+        metadata={
+            "provider": "raganything",
+            "storage_dir": str(storage_dir),
+            "run_id": request.run_id,
+            "document_id": request.document_id,
+        },
     )
 
 
 def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
-    """Run a real RAGAnything query via `aquery`."""
+    """Run a real RAGAnything query via `aquery`.
+
+    Per-run workspace isolation: when ``request.run_id`` +
+    ``request.document_id`` are supplied, LightRAG is instantiated
+    with ``working_dir`` pointed at that specific run's storage. So
+    a query against ``RunScope(run_id=X)`` reads the graph that
+    run X produced — not whatever happened to be in the global
+    workdir last. When the scoping inputs are absent, falls back
+    to ``settings.workdir`` (legacy / workspace-scoped behaviour).
+    """
     # Query path: no AssessmentPlan-driven config_overrides.
+    working_dir_override = workspace_path_for_run(
+        request.settings, request.ctx, request.document_id, request.run_id,
+    )
     rag, _ = _build_rag_instance(
         text_client=request.text_client,
         vision_client=None,
         embedding_client=request.embedding_client,
         settings=request.settings,
+        working_dir_override=working_dir_override,
     )
     aquery = getattr(rag, "aquery", None)
     if aquery is None:
@@ -801,12 +852,23 @@ def _prepare_compile(
  vendor version doesn't expose. None / empty when no overrides
  were supplied.
  """
+    # Per-run LightRAG workspace isolation. The compile request
+    # already carries `run_id`; together with the project context
+    # and document id we have everything needed to namespace the
+    # graph storage so two reindex runs for the same document do
+    # NOT overwrite each other's graphml. Returns None (and we fall
+    # back to the legacy unscoped workdir) only when run_id is
+    # missing — preserved for non-run callers / tests.
+    working_dir_override = workspace_path_for_run(
+        request.settings, request.ctx, request.document_id, request.run_id,
+    )
     rag, dropped_overrides = _build_rag_instance(
         text_client=request.text_client,
         vision_client=request.vision_client,
         embedding_client=request.embedding_client,
         settings=request.settings,
         config_overrides=config_overrides,
+        working_dir_override=working_dir_override,
     )
     workspace = _resolve_workspace_root(request.ctx)
     raw_dir = workspace / "tenants" / request.ctx.tenant_id / "projects" / request.ctx.project_id / "raw"
@@ -825,6 +887,56 @@ def _prepare_compile(
     return rag, output_dir, source_path, dropped_overrides
 
 
+def workspace_path_for_run(
+    settings,
+    ctx: "ProjectContext | None",
+    document_id: str | None,
+    run_id: str | None,
+) -> Path | None:
+    """Return the per-run LightRAG working directory path.
+
+    Returns ``None`` when any of the inputs are missing — the caller
+    then falls back to ``settings.workdir`` (legacy unscoped storage).
+    Only when *all four* (workdir + ctx + document_id + run_id) are
+    present do we build the namespaced path.
+
+    Path shape:
+
+        {workdir}/runs/{tenant_id}/{project_id}/{document_id}/{run_id}
+
+    The four-level namespace mirrors the rest of J1's workspace
+    layout (tenant → project → document → run) so retention /
+    detach / remove can prune by deleting the appropriate subtree:
+
+      * detach document → can delete `{document_id}/` and lose every
+        run's graph in one rm -rf;
+      * remove document → same as detach;
+      * specific run prune (post-success → only retain active run) →
+        delete sibling `{run_id}/` directories;
+      * reindex (new run for same document) → write to a NEW
+        `{run_id}/` subdir; the previous active run's graph stays
+        intact for retrieval until the new run is promoted.
+
+    LightRAG itself doesn't read this path's structure — it just
+    writes its graphml + KV files at the path's leaf. The structural
+    invariant is purely on J1's side, enforced here.
+
+    """
+    if not run_id or not document_id or ctx is None:
+        return None
+    workdir = getattr(settings, "workdir", None)
+    if not workdir:
+        return None
+    tenant = getattr(ctx, "tenant_id", None)
+    project = getattr(ctx, "project_id", None)
+    if not tenant or not project:
+        return None
+    return (
+        Path(str(workdir)).expanduser()
+        / "runs" / str(tenant) / str(project) / str(document_id) / str(run_id)
+    )
+
+
 def _build_rag_instance(
     *,
     text_client,
@@ -832,6 +944,7 @@ def _build_rag_instance(
     embedding_client,
     settings,
     config_overrides: dict[str, Any] | None = None,
+    working_dir_override: Path | None = None,
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
@@ -844,6 +957,14 @@ def _build_rag_instance(
  flag dict; applied via `_build_rag_config`. Returns
  `(instance, dropped_override_fields)` so the caller can surface
  the dropped names through `metadata["unhandled_capabilities"]`.
+
+ `working_dir_override`, when provided, replaces ``settings.workdir``
+ as the per-run scoped working directory passed to LightRAG. This
+ is how compile + graph build + query use the same per-run path
+ so a query against ``RunScope(run_id=X)`` reads the graph
+ produced by run X (and only run X). Pre-existing callers that
+ don't pass it continue to use the global ``settings.workdir`` —
+ backward-compatible.
  """
     raganything_mod = _import_raganything()
     rag_cls = getattr(raganything_mod, "RAGAnything", None)
@@ -854,8 +975,15 @@ def _build_rag_instance(
             "via J1_RAGANYTHING_*_PROCESSOR or compile_callable=."
         )
 
+    # Build the config with the per-run override, when supplied.
+    # Materialise the directory before LightRAG opens it so the
+    # storage backends don't bomb on the first ``open()``.
+    if working_dir_override is not None:
+        working_dir_override.mkdir(parents=True, exist_ok=True)
     config, dropped_overrides = _build_rag_config(
-        raganything_mod, settings, config_overrides=config_overrides,
+        raganything_mod, settings,
+        config_overrides=config_overrides,
+        working_dir_override=working_dir_override,
     )
     kwargs: dict[str, Any] = {}
     if config is not None:
@@ -892,6 +1020,7 @@ def _build_rag_config(
     raganything_mod, settings,
     *,
     config_overrides: dict[str, Any] | None = None,
+    working_dir_override: Path | None = None,
 ):
     """Build a `RAGAnythingConfig` if the vendor exports it.
 
@@ -914,9 +1043,17 @@ def _build_rag_config(
     cfg_cls = getattr(raganything_mod, "RAGAnythingConfig", None)
     if cfg_cls is None:
         return None, []
+    # When the per-run override is supplied, it takes precedence over
+    # ``settings.workdir``. Both paths are string-typed at the vendor
+    # boundary; we always pass a string.
+    working_dir_value = (
+        str(working_dir_override)
+        if working_dir_override is not None
+        else settings.workdir
+    )
     try:
         config = cfg_cls(
-            working_dir=settings.workdir,
+            working_dir=working_dir_value,
         )
     except TypeError:
         # `working_dir` keyword name varies; fall back to no config.
@@ -1520,7 +1657,12 @@ def _drafts_from_output_dir(
 
 
 def _graph_drafts_from_storage(
-    storage_dir: Path, artifact_ids: Iterable[str],
+    storage_dir: Path,
+    artifact_ids: Iterable[str],
+    *,
+    ctx: "ProjectContext | None" = None,
+    document_id: str | None = None,
+    run_id: str | None = None,
 ) -> list[ArtifactDraft]:
     """Collect graph-shaped artifacts (graph_chunk_entity_relation.json etc.).
 
@@ -1528,9 +1670,28 @@ def _graph_drafts_from_storage(
  its storage directory after processing. We surface those as
  `graph_json` drafts.
 
- `artifact_ids` is preserved on the signature for future adapter use
- (per-chunk lineage stamping) but NOT used today — see the
- `source_artifact_ids=[]` rationale below.
+ ``ctx`` / ``document_id`` / ``run_id`` are stamped directly into
+ each draft's ``metadata`` at creation time. This is the
+ authoritative lineage stamping — earlier versions of this helper
+ emitted drafts with empty metadata and relied on later
+ registration to stamp ``run_id`` from the workflow's
+ ``correlation_id``. That worked when orchestration was the only
+ caller; the latest validation report flagged 7 graph_json rows
+ with ``run_id=None`` because at least one producer path was
+ reaching the registry WITHOUT a correlation_id. Stamping at the
+ draft layer makes the lineage independent of which registration
+ path is used.
+
+ ``source_document_ids`` is set to ``[document_id]`` (one element)
+ when known. ``source_artifact_ids`` is set to the upstream
+ ``artifact_ids`` list when known — these are the compile-stage
+ artifact IDs the graph build consumed. Note this differs from
+ the historical behaviour (which left ``source_artifact_ids``
+ empty to avoid the validator's chunk-grounding false-positive);
+ the chunk-grounding check now reads from
+ ``metadata.source_chunk_artifact_ids`` (a separate key) when
+ present, so we can stamp full upstream lineage here without
+ tripping it.
 
  Excludes `kv_store_text_chunks.json` — that file contains text
  chunks, not graph data. It's surfaced separately as
@@ -1543,6 +1704,8 @@ def _graph_drafts_from_storage(
     drafts: list[ArtifactDraft] = []
     if not storage_dir.exists():
         return drafts
+    # Materialise once so the inner loop can reuse it cheaply.
+    materialised_artifact_ids: list[str] = list(artifact_ids or [])
     # Common LightRAG / RAGAnything graph filenames; pattern-match
     # against any of them.
     interesting = (
@@ -1586,31 +1749,41 @@ def _graph_drafts_from_storage(
                 continue
             if not content:
                 continue
+            # Lineage stamping at the draft layer. We always emit
+            # the document binding when known (so document-scoped
+            # sweeps + retrieval scope checks can find this
+            # artifact); we always emit the run_id when known (so
+            # ``RunScope`` filtering works without falling back to
+            # ``metadata.run_id == ""``). The orchestration layer's
+            # ``_enforce_lineage_or_raise`` gate fires AFTER this
+            # function — if ``run_id`` here is None, registration
+            # raises; we deliberately do NOT silently drop the
+            # draft, because that hides a producer-side bug.
+            stamped_metadata: dict[str, Any] = {
+                "filename": path.name,
+                "relative_path": str(path.relative_to(storage_dir)),
+            }
+            if run_id:
+                stamped_metadata["run_id"] = run_id
+            if document_id:
+                stamped_metadata["document_id"] = document_id
+            if ctx is not None:
+                tenant_id = getattr(ctx, "tenant_id", None)
+                project_id = getattr(ctx, "project_id", None)
+                if tenant_id:
+                    stamped_metadata["tenant_id"] = tenant_id
+                if project_id:
+                    stamped_metadata["project_id"] = project_id
+            source_document_ids = (
+                [document_id] if document_id else []
+            )
             drafts.append(ArtifactDraft(
                 kind=ARTIFACT_KIND_GRAPH_JSON,
                 content=content,
                 suggested_extension=path.suffix or ".json",
-                # Intentionally empty. Earlier versions stamped this
-                # with the upstream `request.artifact_ids` (the WHOLE
-                # set of compile-produced artifacts — chunks, raw,
-                # manifest, etc.). That broke the validator's
-                # chunk-grounding check, which expects every entry
-                # here to be a chunk artifact: most upstream IDs
-                # aren't chunks, so every graph artifact stranded ~40
-                # IDs and the run failed validation.
-                #
-                # LightRAG doesn't surface per-artifact lineage we
-                # could use here (the graph is built from the whole
-                # document, not from named chunk IDs). Cross-run
-                # leakage prevention falls back to the per-artifact
-                # scope check (tenant/project/run_id via metadata),
-                # which IS reliable. The chunk-grounding signal stays
-                # off until/unless an adapter can report real lineage.
-                source_artifact_ids=[],
-                metadata={
-                    "filename": path.name,
-                    "relative_path": str(path.relative_to(storage_dir)),
-                },
+                source_document_ids=source_document_ids,
+                source_artifact_ids=list(materialised_artifact_ids),
+                metadata=stamped_metadata,
             ))
     return drafts
 

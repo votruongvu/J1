@@ -19,12 +19,33 @@ from j1.providers.raganything.settings import RAGAnythingSettings
 
 @dataclass(frozen=True)
 class RAGAnythingQueryRequest:
+    """Graph-aware query request.
+
+    ``document_id`` + ``run_id`` are the per-run scoping inputs the
+    bridge uses to select which LightRAG workspace to query.
+    Per-run isolation means:
+
+      * ``RunScope(run_id=X)`` validation queries → read from
+        ``{workdir}/runs/{tenant}/{project}/{doc}/X/``.
+      * ``ActiveScope(document_id=D)`` queries → the engine resolves
+        ``active_run_id`` from the document registry and passes it
+        as ``run_id``; same routing as above.
+      * ``WorkspaceScope`` (project-wide) → no per-run override;
+        falls back to ``settings.workdir`` (the legacy unscoped
+        graph). This case is rare for graph QA but kept for
+        backward-compatibility.
+
+    Both fields are optional — direct test callers can omit them
+    and the bridge uses the legacy unscoped workdir.
+    """
     ctx: ProjectContext
     question: str
     max_results: int | None
     settings: RAGAnythingSettings
     text_client: Any
     embedding_client: Any | None
+    document_id: str | None = None
+    run_id: str | None = None
 
 
 QueryCallable = Callable[[RAGAnythingQueryRequest], QueryResult]
@@ -69,6 +90,8 @@ class RAGAnythingQueryProvider:
         question: str,
         *,
         max_results: int | None = None,
+        document_id: str | None = None,
+        run_id: str | None = None,
     ) -> QueryResult:
         request = RAGAnythingQueryRequest(
             ctx=ctx,
@@ -77,6 +100,8 @@ class RAGAnythingQueryProvider:
             settings=self._settings,
             text_client=self._llm_registry.text(),
             embedding_client=self._llm_registry.try_embedding(),
+            document_id=document_id,
+            run_id=run_id,
         )
         try:
             return self._query_callable(request)

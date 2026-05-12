@@ -18,11 +18,25 @@ from j1.providers.raganything.settings import RAGAnythingSettings
 
 @dataclass(frozen=True)
 class RAGAnythingGraphRequest:
+    """Graph-build request.
+
+    ``document_id`` + ``run_id`` are the per-run scoping inputs the
+    bridge needs to (a) point LightRAG at the right ``working_dir``,
+    and (b) stamp every emitted ``graph_json`` draft with the
+    document/run lineage so retrieval and validation can scope
+    correctly without falling back to ``run_id=None``. Both are
+    optional — legacy callers / direct tests can omit them, in which
+    case the bridge uses the historical unscoped workdir AND emits
+    drafts with empty ``run_id`` (caught by the orchestration-layer
+    fail-fast gate). Production callers ALWAYS pass them.
+    """
     ctx: ProjectContext
     artifact_ids: list[str]
     settings: RAGAnythingSettings
     text_client: Any
     embedding_client: Any | None
+    document_id: str | None = None
+    run_id: str | None = None
 
 
 GraphCallable = Callable[[RAGAnythingGraphRequest], ArtifactProcessingResult]
@@ -62,7 +76,12 @@ class RAGAnythingGraphBuilder:
         )
 
     def build(
-        self, ctx: ProjectContext, artifact_ids: list[str],
+        self,
+        ctx: ProjectContext,
+        artifact_ids: list[str],
+        *,
+        document_id: str | None = None,
+        run_id: str | None = None,
     ) -> ArtifactProcessingResult:
         request = RAGAnythingGraphRequest(
             ctx=ctx,
@@ -70,6 +89,8 @@ class RAGAnythingGraphBuilder:
             settings=self._settings,
             text_client=self._llm_registry.text(),
             embedding_client=self._llm_registry.try_embedding(),
+            document_id=document_id,
+            run_id=run_id,
         )
         try:
             return self._graph_callable(request)

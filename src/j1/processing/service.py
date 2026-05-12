@@ -933,24 +933,47 @@ class ProcessingService:
         if run_id and "run_id" not in merged_metadata:
             merged_metadata["run_id"] = run_id
 
-        # Lineage telemetry for legacy callers that bypass
-        # orchestration. The orchestration path
+        # Lineage guard for legacy callers that bypass orchestration.
+        #
+        # Two policies, by kind:
+        #
+        # 1. ``graph_json`` — **fail-fast**. Graph artifacts are the
+        #    production failure mode operators hit (the latest
+        #    validation report flagged 7 graph_json rows with
+        #    run_id=None). The draft-layer stamping in
+        #    ``_graph_drafts_from_storage`` now propagates run_id
+        #    end-to-end; if it didn't, that's a producer bug we
+        #    want surfaced loudly, not silently accumulated. Raises
+        #    ``LineageError`` (subclass of ``RuntimeError``) — the
+        #    Temporal layer treats this as non-retryable.
+        #
+        # 2. All other lineage-required kinds — **soft guard**. They
+        #    still emit a WARNING and tag
+        #    ``lineage_origin=legacy_processing_service`` so the
+        #    project-wide ``invalidate_lineage_missing_artifacts``
+        #    sweep can clean up retroactively. Test fixtures and
+        #    legacy direct callers that legitimately register
+        #    without a run scope keep working unchanged.
+        #
+        # The orchestration path
         # (``KnowledgeProcessingActivities._materialize_draft``)
-        # raises ``LineageError`` outright — that's the production
-        # write path and the strict gate. The legacy
-        # ``ProcessingService`` path predates the lineage contract
-        # and is still used by tests / direct adapter calls that
-        # legitimately register artifacts without a run scope. We
-        # log + tag rather than block here so:
-        #   * existing direct callers keep working,
-        #   * operators still see the WARNING in logs whenever a
-        #     lineage-required artifact lands without run_id,
-        #   * the project-wide
-        #     ``invalidate_lineage_missing_artifacts`` sweep can
-        #     clean up the resulting orphans on demand.
-        # Tag the metadata so the sweep recognises these as
-        # pre-existing orphans, not freshly-failed ones.
+        # raises ``LineageError`` for EVERY lineage-required kind —
+        # that's the strict production write path; this method is
+        # the looser legacy alternative.
         if draft.kind in _LINEAGE_REQUIRED_KINDS and not merged_metadata.get("run_id"):
+            if draft.kind == "graph_json":
+                raise LineageError(
+                    f"refusing to register artifact of kind {draft.kind!r}: "
+                    "no run_id in metadata. graph_json artifacts MUST "
+                    "carry run_id so retrieval and validation can scope "
+                    "correctly. The producer "
+                    "(_graph_drafts_from_storage) stamps it at the "
+                    "draft layer — if you hit this, the producer was "
+                    "called without ctx/document_id/run_id. Pass them "
+                    "explicitly, or use the orchestration path "
+                    "(KnowledgeProcessingActivities) which threads "
+                    "correlation_id through."
+                )
             _log.warning(
                 "legacy registration of lineage-required artifact "
                 "kind=%r without run_id; the orphan will be visible "

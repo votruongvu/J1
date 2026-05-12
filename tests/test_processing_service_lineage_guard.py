@@ -1,19 +1,27 @@
-"""Tests for the lineage telemetry guard inside
+"""Tests for the lineage guard inside
 ``j1.processing.service.ProcessingService._register_draft``.
 
-The orchestration ``_materialize_draft`` path enforces
-``metadata.run_id`` strictly for lineage-required kinds (raises
-``LineageError`` outright). The legacy ``ProcessingService`` path
-predates that contract and is still used by tests / direct adapter
-calls that legitimately register artifacts without a run scope —
-so blocking there would break existing flows.
+The legacy ProcessingService path now uses a **two-policy** guard
+(by kind):
 
-Instead the legacy path logs a WARNING and tags the metadata with
-``lineage_origin=legacy_processing_service`` so the project-wide
-``invalidate_lineage_missing_artifacts`` sweep can clean up the
-resulting orphans on demand.
+  * ``graph_json`` — **fail-fast**. Graph artifacts are the
+    production failure mode the latest validation report flagged
+    (7 graph_json rows with ``run_id=None`` leaking into the
+    index). Producers MUST stamp run_id at the draft layer
+    (``_graph_drafts_from_storage``). Missing run_id raises
+    ``LineageError`` so the bug surfaces immediately.
 
-These tests pin the catalogue + the soft-guard contract.
+  * All other lineage-required kinds (``chunk``, ``compiled.text``,
+    ``enriched.*``, ``parsed_content_manifest``, …) — **soft
+    guard**. Emits a WARNING and tags
+    ``lineage_origin=legacy_processing_service`` so the
+    project-wide cleanup sweep can find them. Legacy test fixtures
+    and direct adapter callers that legitimately bypass
+    orchestration keep working.
+
+The orchestration path (``_materialize_draft``) remains the strict
+gate for ALL lineage-required kinds — it raises ``LineageError``
+regardless of kind. This module's tests target the legacy path.
 """
 
 from __future__ import annotations
@@ -46,30 +54,24 @@ def test_lineage_error_is_runtime_error_subclass():
     assert issubclass(LineageError, RuntimeError)
 
 
-def test_legacy_path_logs_warning_on_missing_run_id(caplog):
-    """Direct ``_register_draft`` callers without ``run_id`` see a
-    WARNING in logs (and the artifact lands with a tagged metadata
-    field so the cleanup sweep can find it later). This is the soft
-    guard for legacy/test paths — the orchestration path remains the
-    strict gate."""
+def _build_svc(artifacts=None):
+    """Build a minimal ProcessingService — only the registration
+    plumbing matters; everything else is mocked."""
     from datetime import datetime, timezone
     from pathlib import Path
     from unittest.mock import MagicMock
 
-    from j1.processing.results import ArtifactDraft
     from j1.processing.service import ProcessingService
-    from j1.workspace.layout import WorkspaceArea
 
-    # Minimal ProcessingService — only the registration plumbing
-    # matters for this test. Use MagicMock for everything else.
-    artifacts = MagicMock()
-    artifacts.add = MagicMock()
+    artifacts = artifacts or MagicMock()
+    if not hasattr(artifacts, "add"):
+        artifacts.add = MagicMock()
     workspace = MagicMock()
     tmp_area = Path("/tmp/_test_proc_svc_lineage")
     tmp_area.mkdir(parents=True, exist_ok=True)
     workspace.area.return_value = tmp_area
 
-    svc = ProcessingService(
+    return ProcessingService(
         workspace=workspace,
         artifact_registry=artifacts,
         audit=MagicMock(),
@@ -78,6 +80,19 @@ def test_legacy_path_logs_warning_on_missing_run_id(caplog):
         id_factory=lambda: "test-art-id",
     )
 
+
+def test_graph_json_without_run_id_raises_lineage_error():
+    """The headline regression: ``graph_json`` registration MUST
+    fail-fast when run_id is missing. This is the production failure
+    mode operators hit (7 graph_json rows with run_id=None leaking
+    into the index)."""
+    from unittest.mock import MagicMock
+
+    from j1.processing.results import ArtifactDraft
+    from j1.processing.service import LineageError
+    from j1.workspace.layout import WorkspaceArea
+
+    svc = _build_svc()
     draft = ArtifactDraft(
         kind="graph_json",
         suggested_extension=".json",
@@ -88,8 +103,10 @@ def test_legacy_path_logs_warning_on_missing_run_id(caplog):
         review_required=False,
     )
 
-    with caplog.at_level(logging.WARNING, logger="j1.processing.service"):
-        record = svc._register_draft(  # noqa: SLF001 — exercising private path on purpose
+    import pytest
+
+    with pytest.raises(LineageError) as exc_info:
+        svc._register_draft(  # noqa: SLF001
             ctx=MagicMock(),
             draft=draft,
             area=WorkspaceArea.GRAPH,
@@ -97,11 +114,73 @@ def test_legacy_path_logs_warning_on_missing_run_id(caplog):
             fallback_source_artifacts=[],
             run_id=None,
         )
+    # Error message must point the operator at the producer.
+    assert "graph_json" in str(exc_info.value)
+    assert "run_id" in str(exc_info.value)
 
-    # The WARNING fired, the artifact still landed, and the metadata
-    # carries the tag the cleanup sweep can match on.
-    assert any(
-        "without run_id" in r.message for r in caplog.records
+
+def test_graph_json_with_run_id_succeeds():
+    """Counter-example: stamping run_id (either explicitly via the
+    correlation_id parameter OR in ``draft.metadata`` directly) is
+    sufficient. The new ``_graph_drafts_from_storage`` always
+    stamps the metadata key, so this is the happy path."""
+    from unittest.mock import MagicMock
+
+    from j1.processing.results import ArtifactDraft
+    from j1.workspace.layout import WorkspaceArea
+
+    svc = _build_svc()
+    draft = ArtifactDraft(
+        kind="graph_json",
+        suggested_extension=".json",
+        content=b'{"entities": []}',
+        source_document_ids=[],
+        source_artifact_ids=[],
+        metadata={"run_id": "run-x"},  # stamped at draft layer
+        review_required=False,
     )
+
+    record = svc._register_draft(  # noqa: SLF001
+        ctx=MagicMock(),
+        draft=draft,
+        area=WorkspaceArea.GRAPH,
+        fallback_source_documents=[],
+        fallback_source_artifacts=[],
+        run_id=None,  # not passed at registration; draft already has it
+    )
+    assert record.metadata["run_id"] == "run-x"
+
+
+def test_legacy_path_logs_warning_for_non_graph_kind_missing_run_id(caplog):
+    """Non-graph_json kinds (chunk, compiled.text, enriched.*) keep
+    the soft-guard behaviour — WARNING + tag instead of raise. This
+    preserves the legacy test fixtures and direct adapter callers
+    that legitimately bypass orchestration."""
+    from unittest.mock import MagicMock
+
+    from j1.processing.results import ArtifactDraft
+    from j1.workspace.layout import WorkspaceArea
+
+    svc = _build_svc()
+    draft = ArtifactDraft(
+        kind="chunk",  # lineage-required but NOT graph_json
+        suggested_extension=".ndjson",
+        content=b'{"chunk_id":"c1","body":"x"}\n',
+        source_document_ids=[],
+        source_artifact_ids=[],
+        metadata={},
+        review_required=False,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="j1.processing.service"):
+        record = svc._register_draft(  # noqa: SLF001
+            ctx=MagicMock(),
+            draft=draft,
+            area=WorkspaceArea.COMPILED,
+            fallback_source_documents=[],
+            fallback_source_artifacts=[],
+            run_id=None,
+        )
+
+    assert any("without run_id" in r.message for r in caplog.records)
     assert record.metadata.get("lineage_origin") == "legacy_processing_service"
-    assert artifacts.add.called

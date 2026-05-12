@@ -643,6 +643,14 @@ class GraphBuildInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Per-run + per-document scoping. When present, the graph
+    # builder routes LightRAG's working_dir to
+    # ``{workdir}/runs/{tenant}/{project}/{document_id}/{correlation_id}/``
+    # so two reindex attempts for the same document don't overwrite
+    # each other's graphml. Optional for backward compatibility —
+    # legacy callers without document context fall back to the
+    # global workdir.
+    document_id: str | None = None
 
 
 @dataclass(frozen=True)

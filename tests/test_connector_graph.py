@@ -554,12 +554,30 @@ def test_builder_corpus_writes_one_file_per_artifact(
 def test_builder_can_be_used_via_processing_service(
     workspace, artifact_registry, processing_service, default_profile, ctx
 ):
+    """End-to-end: the external graph builder produces a graph_json
+    draft that the legacy ``ProcessingService.build_graph`` path
+    successfully registers.
+
+    Must pass a ``correlation_id`` — graph_json carries a strict
+    lineage guard at the legacy path now (the latest validation
+    report flagged 7 graph_json rows with ``run_id=None``).
+    Without the correlation_id this test would fail with
+    ``LineageError`` — see
+    ``test_processing_service_lineage_guard.py`` for that
+    regression.
+    """
     _stage_artifact(workspace, ctx, artifact_registry, artifact_id="a-1")
     builder = _make_builder(workspace, artifact_registry, default_profile)
-    result = processing_service.build_graph(ctx, builder, ["a-1"])
+    result = processing_service.build_graph(
+        ctx, builder, ["a-1"], correlation_id="run-test-1",
+    )
     assert result.status is ResultStatus.SUCCEEDED
     kinds = {r.kind for r in result.artifacts}
     assert ARTIFACT_KIND_GRAPH_JSON in kinds
     assert ARTIFACT_KIND_GRAPH_REPORT in kinds
     for record in result.artifacts:
         assert record.location.startswith("graph/")
+        if record.kind == ARTIFACT_KIND_GRAPH_JSON:
+            # graph_json must carry run_id — the production failure
+            # mode operators hit was graph_json without lineage.
+            assert record.metadata.get("run_id") == "run-test-1"

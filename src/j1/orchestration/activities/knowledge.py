@@ -364,8 +364,27 @@ class KnowledgeProcessingActivities:
             self._graph_builders, input.processor_kind, "graph_builder"
         )
         target_id = _set_target(input.artifact_ids)
+        # Thread document_id + correlation_id (= run_id) through if
+        # the concrete builder accepts them. Mirrors the pattern in
+        # ``ProcessingService.compile`` for ``assessment_plan`` —
+        # legacy / mock builders without these kwargs stay working
+        # unchanged. New builders (RAGAnythingGraphBuilder) use
+        # them to scope LightRAG's working_dir per-run AND stamp
+        # ``metadata.run_id`` on every emitted graph_json draft.
+        build_kwargs: dict[str, str | None] = {}
         try:
-            result = builder.build(ctx, list(input.artifact_ids))
+            import inspect
+            sig = inspect.signature(builder.build)
+            if "document_id" in sig.parameters and input.document_id:
+                build_kwargs["document_id"] = input.document_id
+            if "run_id" in sig.parameters and input.correlation_id:
+                build_kwargs["run_id"] = input.correlation_id
+        except (TypeError, ValueError):
+            pass
+        try:
+            result = builder.build(
+                ctx, list(input.artifact_ids), **build_kwargs,
+            )
         except Exception as exc:
             self._audit.record(
                 ctx,
