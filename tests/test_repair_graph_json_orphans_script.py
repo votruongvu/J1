@@ -33,11 +33,20 @@ def ctx() -> ProjectContext:
     return ProjectContext(tenant_id="t1", project_id="p1")
 
 
-def test_known_orphan_id_catalogue_is_seven():
-    """The script lists exactly the seven IDs from the report — no
-    accidental additions or deletions."""
-    assert len(KNOWN_ORPHAN_IDS) == 7
-    assert set(KNOWN_ORPHAN_IDS) == {
+def test_known_orphan_id_catalogue_is_fourteen():
+    """The script catalogues the IDs from BOTH validation reports
+    — round 1 (7 IDs, 2026-05-12) and round 2 (7 NEW IDs,
+    2026-05-13). The registry-level guard in
+    ``JsonArtifactRegistry`` now prevents round 3, so the
+    catalogue should not grow."""
+    from scripts.repair_graph_json_orphans import (
+        KNOWN_ORPHAN_IDS_ROUND_1,
+        KNOWN_ORPHAN_IDS_ROUND_2,
+    )
+    assert len(KNOWN_ORPHAN_IDS_ROUND_1) == 7
+    assert len(KNOWN_ORPHAN_IDS_ROUND_2) == 7
+    assert len(KNOWN_ORPHAN_IDS) == 14
+    assert set(KNOWN_ORPHAN_IDS_ROUND_1) == {
         "4e18439367214ebba1e574381c865dc5",
         "58e0330105004ed09e0b324471c77b12",
         "7cd322a9f6914f18b0f5c39d53d28540",
@@ -46,6 +55,20 @@ def test_known_orphan_id_catalogue_is_seven():
         "726c1ac859e741f393cd705b3aa5358c",
         "f791e6a61a0b429088ac83b348f1f568",
     }
+    assert set(KNOWN_ORPHAN_IDS_ROUND_2) == {
+        "ba061715712844efb1256e4347cd118e",
+        "bf2c86a67f7e40bf97b4f6330ab5ed89",
+        "da95e3c404b845b8a95e6e9eda1120e9",
+        "6cf640b617e548b7966e63e281a56631",
+        "ff72913f5c824bb886e42ec2661549d1",
+        "009e5de5a0ed40ccb5394b33b8ee55a5",
+        "87c0c75376434633892d05de9faae152",
+    }
+    # No overlap between the two rounds — round 2 is genuinely
+    # new orphans created via a code path round 1 didn't cover.
+    assert not (
+        set(KNOWN_ORPHAN_IDS_ROUND_1) & set(KNOWN_ORPHAN_IDS_ROUND_2)
+    )
 
 
 class _Registry:
@@ -92,8 +115,8 @@ def _orphan_record(artifact_id, ctx):
 
 def test_targeted_invalidation_path_exercises_known_ids(ctx):
     """The targeted path uses ``registry.get`` + ``update_metadata``
-    for each known orphan ID. Build a registry containing all 7 IDs
-    and verify they all get flipped."""
+    for each known orphan ID. Build a registry containing all 14
+    IDs (both rounds) and verify they all get flipped."""
     records = [_orphan_record(aid, ctx) for aid in KNOWN_ORPHAN_IDS]
     registry = _Registry(records)
 
@@ -109,7 +132,7 @@ def test_targeted_invalidation_path_exercises_known_ids(ctx):
             registry.update_metadata(ctx, artifact_id, meta)
             flipped += 1
 
-    assert flipped == 7
+    assert flipped == 14
     for artifact_id in KNOWN_ORPHAN_IDS:
         rec = registry.get(ctx, artifact_id)
         assert rec.metadata["search_state"] == SEARCH_STATE_INVALID

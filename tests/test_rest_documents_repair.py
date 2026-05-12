@@ -60,8 +60,14 @@ def _seed_orphan_artifact(
     *, artifact_id: str, document_id: str,
 ) -> None:
     """Stage an artifact with NO `run_id` in metadata — the exact
- orphan the repair sweep targets."""
-    artifact_registry.add(ArtifactRecord(
+ orphan the repair sweep targets.
+
+ Uses ``JsonArtifactRegistry._raw_add`` because the public
+ ``add`` now refuses graph_json without run_id (the registry-
+ level lineage guard). This test seeds the broken state on
+ purpose so the sweep has something to clean up — the bypass
+ is documented as "test/migration only" on the registry."""
+    artifact_registry._raw_add(ArtifactRecord(  # noqa: SLF001 — test seed
         artifact_id=artifact_id,
         project=ctx,
         kind="graph_json",

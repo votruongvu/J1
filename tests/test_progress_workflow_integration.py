@@ -111,7 +111,10 @@ class _StubProcessing:
     def enrich(self, ctx, processor, artifact, *, actor, correlation_id):
         return self.enrich_result
 
-    def build_graph(self, ctx, builder, artifact_ids, *, actor, correlation_id):
+    def build_graph(
+        self, ctx, builder, artifact_ids,
+        *, actor, correlation_id, document_id=None,
+    ):
         return self.build_graph_result
 
     def index(self, ctx, indexer, artifact_ids, *, actor, correlation_id):

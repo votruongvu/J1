@@ -3448,6 +3448,14 @@ class ProjectProcessingWorkflow:
                         processor_kind=request.graph_builder_kind,
                         actor=request.actor,
                         correlation_id=request.correlation_id,
+                        # Per-run LightRAG workspace + draft-layer
+                        # lineage stamping both need the document
+                        # id. Without it the bridge can't compute
+                        # the scoped working_dir and the producer
+                        # emits drafts that lack ``metadata.run_id``
+                        # — which then trips the registry-level
+                        # ``RegistryLineageError`` guard.
+                        document_id=document_id,
                     ),
                     start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=HEARTBEAT_TIMEOUT,

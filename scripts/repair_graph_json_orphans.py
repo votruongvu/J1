@@ -1,25 +1,42 @@
 """One-off repair tool for graph_json orphans flagged in the
-validation report from 2026-05-12.
+validation reports from 2026-05-12 and 2026-05-13.
 
 Background
 ----------
 
-The validation report listed 7 ``graph_json`` artifacts in the
-retrieval index with ``run_id=None``:
+Two validation passes uncovered TWO disjoint batches of
+``graph_json`` orphans (``metadata.run_id`` missing or empty):
 
-  4e18439367214ebba1e574381c865dc5
-  58e0330105004ed09e0b324471c77b12
-  7cd322a9f6914f18b0f5c39d53d28540
-  864f007845524b3ea86e54eb8a28154f
-  e128fb3299b04fbf8310b8663502c650
-  726c1ac859e741f393cd705b3aa5358c
-  f791e6a61a0b429088ac83b348f1f568
+  Round 1 (initial report, 7 IDs):
+    4e18439367214ebba1e574381c865dc5
+    58e0330105004ed09e0b324471c77b12
+    7cd322a9f6914f18b0f5c39d53d28540
+    864f007845524b3ea86e54eb8a28154f
+    e128fb3299b04fbf8310b8663502c650
+    726c1ac859e741f393cd705b3aa5358c
+    f791e6a61a0b429088ac83b348f1f568
 
-These predate the producer-layer lineage stamping in
-``_graph_drafts_from_storage``. The producer fix prevents NEW
-orphans; this script cleans up the existing ones so retrieval +
-validation stop surfacing them while the affected runs are
-reindexed.
+  Round 2 (after the producer-layer fix, 7 NEW IDs):
+    ba061715712844efb1256e4347cd118e
+    bf2c86a67f7e40bf97b4f6330ab5ed89
+    da95e3c404b845b8a95e6e9eda1120e9
+    6cf640b617e548b7966e63e281a56631
+    ff72913f5c824bb886e42ec2661549d1
+    009e5de5a0ed40ccb5394b33b8ee55a5
+    87c0c75376434633892d05de9faae152
+
+The round-2 orphans came from the **legacy ProcessingService graph
+build path** — ``ProcessingActivities.build_graph`` →
+``ProcessingService.build_graph`` → ``builder.build(ctx,
+artifact_ids)`` without forwarding ``run_id`` /
+``document_id``. The producer (``_graph_drafts_from_storage``)
+therefore couldn't stamp ``metadata.run_id``. Registration's
+``correlation_id`` stamping would normally have caught it, but the
+production workflow drove that path without a non-empty
+``correlation_id`` for some calls. This release adds a registry-
+level lineage guard (``JsonArtifactRegistry.add`` raises
+``RegistryLineageError`` when ``metadata.run_id`` is missing on a
+``graph_json`` write) so no further round-3 orphans are possible.
 
 Behaviour
 ---------
@@ -55,11 +72,13 @@ import argparse
 import logging
 import sys
 
-# The 7 orphan IDs from the 2026-05-12 validation report. If a
+# All known orphan IDs across the two validation rounds. If a
 # future report lists new IDs, append them here OR rely on the
-# project-wide sweep — the targeted list is a belt-and-braces
-# layer for the exact bugs we know about, not the only signal.
-KNOWN_ORPHAN_IDS = (
+# project-wide sweep — the targeted list is a belt-and-braces layer
+# for the exact bugs we know about, not the only signal. The
+# registry-level guard (``JsonArtifactRegistry.add``) now prevents
+# new orphans, so the list should not grow.
+KNOWN_ORPHAN_IDS_ROUND_1 = (
     "4e18439367214ebba1e574381c865dc5",
     "58e0330105004ed09e0b324471c77b12",
     "7cd322a9f6914f18b0f5c39d53d28540",
@@ -68,6 +87,16 @@ KNOWN_ORPHAN_IDS = (
     "726c1ac859e741f393cd705b3aa5358c",
     "f791e6a61a0b429088ac83b348f1f568",
 )
+KNOWN_ORPHAN_IDS_ROUND_2 = (
+    "ba061715712844efb1256e4347cd118e",
+    "bf2c86a67f7e40bf97b4f6330ab5ed89",
+    "da95e3c404b845b8a95e6e9eda1120e9",
+    "6cf640b617e548b7966e63e281a56631",
+    "ff72913f5c824bb886e42ec2661549d1",
+    "009e5de5a0ed40ccb5394b33b8ee55a5",
+    "87c0c75376434633892d05de9faae152",
+)
+KNOWN_ORPHAN_IDS = KNOWN_ORPHAN_IDS_ROUND_1 + KNOWN_ORPHAN_IDS_ROUND_2
 
 
 def repair(*, tenant: str, project: str) -> int:

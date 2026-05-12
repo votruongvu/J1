@@ -908,6 +908,10 @@ def _seed_graph_run(
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             source_document_ids=["doc-A"],
+            # Registry-level lineage guard requires graph_json to
+            # carry ``metadata.run_id``. Tag with the same run_id
+            # the test fixture's ``_make_run`` produces.
+            metadata={"run_id": run_id},
         ))
     if relations_payload is not None:
         full = workspace.area(ctx, WorkspaceArea.GRAPH) / "vdb_relationships.json"
@@ -926,6 +930,7 @@ def _seed_graph_run(
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             source_document_ids=["doc-A"],
+            metadata={"run_id": run_id},
         ))
 
 

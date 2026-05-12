@@ -80,6 +80,13 @@ def _make_artifact(
     metadata: dict | None = None,
 ) -> ArtifactRecord:
     now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    # Do NOT auto-stamp run_id; callers decide. Tests using the
+    # tagged path pass ``metadata={"run_id": "run-1"}`` explicitly.
+    # Tests using the legacy lineage-walk path (no run_id tag) seed
+    # via ``artifact_registry._raw_add`` to bypass the registry-level
+    # lineage guard, since the guard is a write-time invariant the
+    # legacy-mode tests intentionally violate.
+    final_metadata = dict(metadata or {})
     return ArtifactRecord(
         artifact_id=artifact_id,
         project=ctx,
@@ -94,7 +101,7 @@ def _make_artifact(
         updated_at=now,
         source_document_ids=source_document_ids or [],
         source_artifact_ids=source_artifact_ids or [],
-        metadata=metadata or {},
+        metadata=final_metadata,
     )
 
 
@@ -196,8 +203,10 @@ def test_summarize_run_lineage_walks_source_artifact_ids(
     ))
     # Graph artifact — has ONLY source_artifact_ids pointing at the
     # compile artifact above. This is exactly what the RAGAnything
-    # bridge writes via `_graph_drafts_from_storage`.
-    artifact_registry.add(_make_artifact(
+    # bridge USED to write via `_graph_drafts_from_storage` before
+    # draft-layer run_id stamping. Use ``_raw_add`` to seed the
+    # legacy shape this lineage-walk test was designed around.
+    artifact_registry._raw_add(_make_artifact(  # noqa: SLF001
         ctx, artifact_id="graph-1", kind="graph_json",
         source_artifact_ids=["compile-1"],
     ))
@@ -212,7 +221,11 @@ def test_summarize_run_lineage_walks_source_artifact_ids(
         ctx, artifact_id="other-compile", kind="compile",
         source_document_ids=["doc-other"],
     ))
-    artifact_registry.add(_make_artifact(
+    # Legacy untagged graph_json fixture — uses ``_raw_add`` to
+    # bypass the registry-level lineage guard (the guard is a
+    # write-time invariant; this test exercises the lineage-walk
+    # fallback for runs that DON'T have tagged artifacts).
+    artifact_registry._raw_add(_make_artifact(  # noqa: SLF001
         ctx, artifact_id="other-graph", kind="graph_json",
         source_artifact_ids=["other-compile"],
     ))
@@ -241,7 +254,10 @@ def test_summarize_run_lineage_walk_handles_two_hop_chains(
         ctx, artifact_id="compile-1", kind="compile",
         source_document_ids=["doc-A"],
     ))
-    artifact_registry.add(_make_artifact(
+    # Legacy-shape graph_json (untagged) — uses ``_raw_add`` to
+    # bypass the registry-level lineage guard; the test specifically
+    # exercises the lineage-walk fallback for untagged runs.
+    artifact_registry._raw_add(_make_artifact(  # noqa: SLF001
         ctx, artifact_id="graph-1", kind="graph_json",
         source_artifact_ids=["compile-1"],
     ))
@@ -1461,6 +1477,13 @@ def _register_graph_artifact(
     metadata: dict | None = None,
 ):
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Registry-level lineage guard requires graph_json to carry
+    # ``metadata.run_id``. Default to the suite's default run id
+    # ("run-1") so the run-scoped graph projector still finds the
+    # artifact; tests that specifically supply ``metadata`` win
+    # on key merge.
+    final_metadata = dict(metadata or {})
+    final_metadata.setdefault("run_id", "run-1")
     artifact_registry.add(ArtifactRecord(
         artifact_id=artifact_id,
         project=ctx,
@@ -1473,7 +1496,7 @@ def _register_graph_artifact(
         version=1,
         created_at=now, updated_at=now,
         source_document_ids=source_document_ids,
-        metadata=metadata or {},
+        metadata=final_metadata,
     ))
 
 

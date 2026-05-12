@@ -753,9 +753,34 @@ class ProcessingService:
         *,
         actor: str = "system",
         correlation_id: str | None = None,
+        document_id: str | None = None,
     ) -> ArtifactProcessingResult:
+        # Thread document_id + run_id (= correlation_id) into the
+        # builder when the concrete implementation accepts them.
+        # Mirrors the inspect-based passthrough used by
+        # ``compile``. Concrete adapters (e.g.
+        # ``RAGAnythingGraphBuilder``) use these to:
+        #   1. Scope LightRAG's working_dir per-run, so a reindex
+        #      reads the right scoped graph storage rather than
+        #      the global workdir.
+        #   2. Stamp ``metadata.run_id`` + ``metadata.document_id``
+        #      onto every emitted graph_json draft at the producer
+        #      layer, so the registry-level lineage guard at
+        #      ``JsonArtifactRegistry.add()`` doesn't reject them.
+        # Legacy / mock builders without the kwargs keep working
+        # unchanged.
+        build_kwargs: dict[str, str | None] = {}
         try:
-            output = builder.build(ctx, list(artifact_ids))
+            import inspect
+            sig = inspect.signature(builder.build)
+            if "document_id" in sig.parameters and document_id:
+                build_kwargs["document_id"] = document_id
+            if "run_id" in sig.parameters and correlation_id:
+                build_kwargs["run_id"] = correlation_id
+        except (TypeError, ValueError):
+            pass
+        try:
+            output = builder.build(ctx, list(artifact_ids), **build_kwargs)
         except Exception as exc:
             return self._fail_artifact(
                 ctx,

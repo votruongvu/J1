@@ -139,6 +139,98 @@ def _check_retrieved_chunks_present(ctx_: _CheckContext) -> ValidationCheckDTO:
     )
 
 
+# Artifact kinds that count as "textual evidence available" for the
+# evidence-present-but-answer-fallback check. The synthesizer's
+# fallback ("Not in the retrieved evidence") is only acceptable
+# when retrieval surfaced ZERO usable textual chunks. If chunk /
+# compiled.text / parsed_content_manifest / enriched.document_map
+# came back, the LLM had material to ground on — abstaining is a
+# quality regression, not a successful out-of-scope response.
+_TEXTUAL_EVIDENCE_KINDS: frozenset[str] = frozenset({
+    "chunk",
+    "compiled.text",
+    "parsed_content_manifest",
+    "enriched.document_map",
+})
+
+
+def _check_evidence_present_but_answer_fallback(
+    ctx_: _CheckContext,
+) -> ValidationCheckDTO | None:
+    """Flag the failure mode the latest validation report flagged:
+    answer is a fallback phrase ("Not in the retrieved evidence")
+    while retrieval DID return usable textual chunks.
+
+    Three signals must all hold for this check to FAIL:
+
+      1. The answer matches one of the synthesizer's canonical
+         fallback phrases (uses ``synthesis._is_fallback_text``,
+         which is the SAME catalogue the synthesizer is instructed
+         to emit — keeps producer + check in lock-step). The
+         legacy ``_is_abstain_response`` regex misses
+         "Not in the retrieved evidence" (it expects "not in the
+         document"), which is why the previous version of this
+         check silently passed the exact failure mode it was
+         supposed to catch.
+      2. At least one retrieved chunk has ``artifact_kind`` in
+         ``_TEXTUAL_EVIDENCE_KINDS`` — i.e. the LLM had real text to
+         ground on.
+      3. The chunk's preview / body is non-empty.
+
+    When all three hold, the synthesizer abstained despite having
+    material — a quality regression operators care about. The check
+    is ``severity="required"`` so it shows up as a hard failure in
+    the validation report.
+
+    Returns ``None`` (skipped — not added to ``checks[]``) when no
+    retrieval happened at all OR the answer wasn't a fallback. The
+    other failure modes are covered by the existing
+    ``answer_non_empty`` / ``retrieved_chunks_present`` checks.
+    """
+    if not ctx_.retrieved_chunks:
+        return None
+    # Use the synthesizer's canonical fallback-phrase detector,
+    # OR the local abstain regex — either signal is sufficient.
+    # ``_is_fallback_text`` catches the synthesizer's exact
+    # vocabulary ("not in the retrieved evidence", "the evidence
+    # does not"); ``_is_abstain_response`` catches the broader
+    # "I don't know" family ("the document doesn't contain X").
+    from j1.validation.synthesis import _is_fallback_text
+    if not (
+        _is_fallback_text(ctx_.answer or "")
+        or _is_abstain_response(ctx_.answer)
+    ):
+        return None
+    textual_hits = [
+        c for c in ctx_.retrieved_chunks
+        if (c.artifact_kind or "") in _TEXTUAL_EVIDENCE_KINDS
+        and (c.preview or "").strip()
+    ]
+    if not textual_hits:
+        # No textual chunks — abstaining is legitimate (the LLM
+        # only got graph_json / formulas / tables which carry no
+        # prose).
+        return None
+    sample = textual_hits[0]
+    return ValidationCheckDTO(
+        name="evidence_present_but_answer_fallback",
+        severity="required",
+        passed=False,
+        detail=(
+            f"answer abstained ('Not in the retrieved evidence' or "
+            f"equivalent) despite {len(textual_hits)} textual "
+            f"evidence hit(s); sample: artifact_id="
+            f"{sample.artifact_id!r} kind={sample.artifact_kind!r} "
+            f"preview={(sample.preview or '')[:120]!r}"
+        ),
+        expected=(
+            "synthesized answer grounded in the retrieved textual "
+            "evidence"
+        ),
+        actual=(ctx_.answer or "")[:240],
+    )
+
+
 def _check_citation_present(ctx_: _CheckContext) -> ValidationCheckDTO | None:
     """Conditional check.
 
@@ -513,6 +605,14 @@ def run_checks(
         citation_check = _check_citation_present(check_ctx)
         if citation_check is not None:
             checks.append(citation_check)
+        # New check: fail the case when the synthesizer abstained
+        # despite having usable textual evidence. Prevents the
+        # "retrieval passed, expected_chunk_in_topk passed, but
+        # answer is 'Not in the retrieved evidence'" pseudo-pass
+        # operators flagged in the latest validation report.
+        fallback_check = _check_evidence_present_but_answer_fallback(check_ctx)
+        if fallback_check is not None:
+            checks.append(fallback_check)
 
     checks.append(_check_retrieved_chunks_belong_to_run(check_ctx))
     checks.append(_check_citations_belong_to_run(check_ctx))

@@ -61,6 +61,15 @@ class GraphActivityInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Per-run + per-document scoping for the production graph build
+    # path. When supplied, the bridge points LightRAG's working_dir
+    # at the run's scoped subdir AND stamps each emitted graph_json
+    # draft with ``metadata.run_id`` + ``metadata.document_id``.
+    # Optional for backward compatibility — legacy callers fall back
+    # to the global workdir, and the registry-level lineage guard
+    # at ``JsonArtifactRegistry.add()`` catches any draft that still
+    # arrives without ``run_id``.
+    document_id: str | None = None
 
 
 @dataclass(frozen=True)

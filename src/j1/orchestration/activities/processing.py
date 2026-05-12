@@ -853,6 +853,7 @@ class ProcessingActivities:
                     list(input.artifact_ids),
                     actor=input.actor,
                     correlation_id=input.correlation_id,
+                    document_id=input.document_id,
                 )
         except Exception as exc:
             self._report_step_failure(

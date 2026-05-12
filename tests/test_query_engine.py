@@ -220,12 +220,16 @@ def test_knowledge_provider_empty_index(search_indexer, ctx):
 # ---- GraphQueryProvider -----------------------------------------------
 
 
-def _stage_graph(workspace, ctx, artifact_registry, *, edges):
+def _stage_graph(workspace, ctx, artifact_registry, *, edges, artifact_id="g-1"):
     payload = json.dumps({"nodes": [], "edges": edges}).encode("utf-8")
     return _stage_artifact(
         workspace, ctx, artifact_registry,
-        artifact_id="g-1", kind="graph_json", content=payload,
+        artifact_id=artifact_id, kind="graph_json", content=payload,
         area=WorkspaceArea.GRAPH, suffix=".json",
+        # Registry-level lineage guard requires graph_json to carry
+        # ``metadata.run_id``. Tests opt into a placeholder value so
+        # the guard doesn't reject the seed.
+        metadata_extras={"run_id": "test-run-1"},
     )
 
 
@@ -286,6 +290,7 @@ def test_graph_provider_parses_lightrag_shape(workspace, ctx, artifact_registry)
         workspace, ctx, artifact_registry,
         artifact_id="g-lr", kind="graph_json", content=payload,
         area=WorkspaceArea.GRAPH, suffix=".json",
+        metadata_extras={"run_id": "test-run-1"},
     )
     provider = GraphQueryProvider(artifact_registry, workspace)
     response = provider.query(ctx, QueryRequest(question="dependencies"))
@@ -307,6 +312,7 @@ def test_graph_provider_surfaces_parse_failure_in_answer(
         workspace, ctx, artifact_registry,
         artifact_id="g-bad", kind="graph_json", content=payload,
         area=WorkspaceArea.GRAPH, suffix=".json",
+        metadata_extras={"run_id": "test-run-1"},
     )
     provider = GraphQueryProvider(artifact_registry, workspace)
     response = provider.query(ctx, QueryRequest(question="anything"))
