@@ -188,6 +188,50 @@ class LLMTraceDTO:
 
 
 @dataclass(frozen=True)
+class NativeDebugQueryResponseDTO:
+    """Outbound shape for ``POST /ingestion-runs/{run_id}/native-debug-query``.
+
+    The native-debug surface is the audit-driven diagnostic: it calls
+    LightRAG ``aquery`` directly, scoped to this run's workspace, with
+    **no BM25 involvement at all**. Operators use it to answer
+    "is the index actually working for this run?" without the
+    confounding effect of the BM25 + reranker + coverage selection
+    that the regular ``test-query`` endpoint layers on top.
+
+    Fields:
+      * ``request_id`` — server-issued id; mirrored in the audit row.
+      * ``run_id`` / ``document_id`` — the scope this query ran against.
+      * ``question`` — echoed input.
+      * ``answer`` — native answer or empty string when native failed.
+      * ``workspace_path`` — absolute path to the per-run LightRAG
+        workspace the call read from. ``None`` when not derivable
+        (legacy unscoped storage / native provider not wired).
+      * ``workspace_id`` — namespace identifier
+        (``{tenant}/{project}/{document}/{run}``) or empty string.
+      * ``native_query_used`` — true when the call SUCCEEDED.
+      * ``native_query_failed_reason`` — short error tag when the
+        call did not produce an answer.
+      * ``native_latency_ms`` — wall-clock duration of the call
+        (populated even on failure).
+      * ``provider_wired`` — whether a native provider was wired
+        into the service at construction time; false means the
+        endpoint reported failure without ever attempting a call.
+    """
+
+    request_id: str
+    run_id: str
+    document_id: str | None
+    question: str
+    answer: str
+    workspace_path: str | None
+    workspace_id: str
+    native_query_used: bool
+    native_query_failed_reason: str | None
+    native_latency_ms: int
+    provider_wired: bool
+
+
+@dataclass(frozen=True)
 class ManualTestQueryResponseDTO:
     """Outbound shape. Body of the 200 response.
 

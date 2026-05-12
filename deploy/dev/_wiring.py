@@ -319,14 +319,23 @@ def build_validation_service(workspace: WorkspaceResolver):
     # misconfiguration is visible.
     native_query_provider = _build_native_query_provider_or_none()
 
-    # Env-driven retrieval knobs. ``J1_QUERY_PROVIDER_MODE``
-    # controls which dispatch path validation uses; the other
-    # three are the candidate-pool / final-cap / native-timeout
-    # tuning operators may need. See ``.env.example`` for the
-    # canonical names and defaults.
-    query_provider_mode = os.environ.get(
-        "J1_QUERY_PROVIDER_MODE", "bm25_primary",
-    ).strip() or "bm25_primary"
+    # Env-driven retrieval knobs.
+    #
+    # ``J1_QUERY_ENGINE`` is the canonical post-audit name; the
+    # legacy ``J1_QUERY_PROVIDER_MODE`` is still accepted for one
+    # release while existing deployments migrate. When both are
+    # set the canonical name wins.
+    #
+    # Default is ``lightrag_native`` (pure native, no BM25). This
+    # is the audit-driven default — BM25 involvement now requires
+    # an explicit opt-in via ``J1_ENABLE_BM25_EVIDENCE`` or
+    # ``J1_ENABLE_BM25_FALLBACK``. See ``.env.example`` for
+    # the canonical mode catalogue.
+    query_engine_env = (
+        os.environ.get("J1_QUERY_ENGINE", "").strip()
+        or os.environ.get("J1_QUERY_PROVIDER_MODE", "").strip()
+        or "lightrag_native"
+    )
     validation_candidate_top_k = _env_int(
         "J1_VALIDATION_CANDIDATE_TOP_K", default=20,
     )
@@ -336,9 +345,22 @@ def build_validation_service(workspace: WorkspaceResolver):
     native_query_timeout_seconds = _env_float(
         "J1_RAG_NATIVE_QUERY_TIMEOUT_SECONDS", default=30.0,
     )
-    native_query_fallback_to_bm25 = _env_bool(
-        "J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25", default=True,
+    enable_bm25_evidence = _env_bool(
+        "J1_ENABLE_BM25_EVIDENCE", default=False,
     )
+    enable_bm25_fallback = _env_bool(
+        "J1_ENABLE_BM25_FALLBACK", default=False,
+    )
+    # Legacy fallback flag — when explicitly set, overrides the
+    # new canonical ``J1_ENABLE_BM25_FALLBACK`` so existing
+    # deployments don't silently switch behaviour. ``None`` means
+    # "unset" so the service falls through to the new flag.
+    if "J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25" in os.environ:
+        native_query_fallback_to_bm25 = _env_bool(
+            "J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25", default=False,
+        )
+    else:
+        native_query_fallback_to_bm25 = None
 
     return IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
@@ -375,12 +397,15 @@ def build_validation_service(workspace: WorkspaceResolver):
         # Retrieval quality knobs (env-driven).
         validation_candidate_top_k=validation_candidate_top_k,
         validation_evidence_max_blocks=validation_evidence_max_blocks,
-        # Native-query provider. Production default
-        # (``bm25_primary``) leaves this unused; operators opt
-        # into native by setting J1_QUERY_PROVIDER_MODE.
+        # Native-query provider. Post-audit default
+        # (``lightrag_native``) drives this for every query;
+        # operators opt out of native by setting
+        # ``J1_QUERY_ENGINE=bm25_debug``.
         native_query_provider=native_query_provider,
-        query_provider_mode=query_provider_mode,
+        query_engine_mode=query_engine_env,
         native_query_timeout_seconds=native_query_timeout_seconds,
+        enable_bm25_evidence=enable_bm25_evidence,
+        enable_bm25_fallback=enable_bm25_fallback,
         native_query_fallback_to_bm25=native_query_fallback_to_bm25,
     )
 

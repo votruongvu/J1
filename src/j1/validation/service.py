@@ -43,6 +43,7 @@ from j1.validation.dtos import (
     LLMTraceDTO,
     ManualTestQueryRequest,
     ManualTestQueryResponseDTO,
+    NativeDebugQueryResponseDTO,
     RetrievedChunkRefDTO,
     ValidationCheckDTO,
     ValidationCitationDTO,
@@ -106,39 +107,108 @@ _DEFAULT_VALIDATION_CANDIDATE_TOP_K = 20
 # ``rerank.RerankConfig.evidence_max_blocks``.
 _DEFAULT_VALIDATION_EVIDENCE_MAX_BLOCKS = 5
 
-# Query-provider mode catalogue. The validation surface dispatches
-# the manual-query request through one of these:
+# Query-engine mode catalogue.
 #
-#   * ``bm25_primary``    — current behaviour. Calls
-#     ``HybridQueryEngine`` (BM25 over J1 artifacts + the
-#     downstream reranker / coverage selector). This is the
-#     safe default while ``rag_native_primary`` is being
-#     evaluated in dev.
-#   * ``rag_native_primary`` — calls ``RAGAnythingQueryProvider``
-#     (LightRAG's native ``aquery`` against the per-run
-#     workspace). When native query fails / times out / has no
-#     workspace, falls back to BM25 if
-#     ``J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25`` is true.
-#     Native produces only an answer string (no citations); the
-#     BM25 path is invoked in parallel to augment citations /
-#     evidence — debug field
-#     ``citation_augmentation_used`` records this.
-#   * ``hybrid_ab``       — runs BOTH paths. Returns the BM25
-#     response as the stable answer; surfaces the native
-#     answer + latency in the debug payload so operators can
-#     A/B-compare in dev without changing user-facing
-#     behaviour. Pure observability.
+# RATIONALE (post-audit + role-clarification): the prior catalogue
+# had ``rag_native_primary``, which despite its name **always**
+# ran BM25 alongside native to provide citations AND let BM25
+# drive the answer text when native failed. The role-clarification
+# refactor pins BM25 to an AUXILIARY DATA-QUALITY role only —
+# BM25 may surface chunks/citations/metadata-quality diagnostics
+# but MUST NOT participate in the answer-generation path unless
+# an explicit fallback mode is selected.
 #
-# Constants are stable strings (mirrored in ``.env.example`` so
-# operators can toggle without reading code).
-QUERY_PROVIDER_MODE_BM25 = "bm25_primary"
-QUERY_PROVIDER_MODE_NATIVE = "rag_native_primary"
-QUERY_PROVIDER_MODE_HYBRID_AB = "hybrid_ab"
-_VALID_QUERY_PROVIDER_MODES: frozenset[str] = frozenset({
-    QUERY_PROVIDER_MODE_BM25,
-    QUERY_PROVIDER_MODE_NATIVE,
-    QUERY_PROVIDER_MODE_HYBRID_AB,
+# Canonical engines:
+#
+#   * ``lightrag_native``
+#         Pure LightRAG ``aquery`` for the answer. No BM25 in any
+#         role. The new DEFAULT.
+#
+#   * ``lightrag_native_with_quality_evidence``
+#         LightRAG ``aquery`` for the answer; BM25 runs in
+#         parallel ONLY to populate the data-quality / evidence
+#         inspection section (auxiliary). BM25's text never
+#         drives the final answer. ``bm25_participated_in_answer``
+#         stays ``false``. ``bm25_purpose`` is
+#         ``"data_quality_evidence_inspection"``.
+#
+#   * ``bm25_quality_debug``
+#         BM25-only lexical retrieval — explicitly NOT a
+#         user-facing answer engine. Used to inspect whether
+#         indexed chunks/artifacts carry the expected
+#         (run_id, document_id, artifact_id) metadata and whether
+#         the lexical content is searchable at all. The
+#         ``bm25_participated_in_answer`` flag is ``true`` here
+#         because the engine is intentionally "BM25 produced
+#         this text"; the engine name + the
+#         ``"lexical_debug_answer"`` purpose tell operators not
+#         to treat it as a real answer.
+#
+#   * ``hybrid_ab``
+#         BM25 is the stable answer + native runs for
+#         observability comparison. Operators who want to A/B
+#         the two paths use this. ``bm25_participated_in_answer``
+#         is ``true``; ``bm25_purpose`` is
+#         ``"observability_answer"`` so it can't be confused
+#         with the production native-driven flow.
+#
+# Fallback is a FLAG (``enable_bm25_fallback``), NOT an engine.
+# When set, native-driven engines may use BM25 as the answer if
+# native fails. The response records this with
+# ``bm25_participated_in_answer=true`` +
+# ``bm25_purpose="fallback_answer"`` so it's obvious in audit.
+#
+# LEGACY ALIASES — every prior name still works as input but is
+# mapped to the new canonical vocabulary on construction:
+#     bm25_primary                       → bm25_quality_debug
+#     bm25_debug                         → bm25_quality_debug
+#     rag_native_primary                 → lightrag_native_with_quality_evidence
+#     lightrag_native_with_bm25_evidence → lightrag_native_with_quality_evidence
+QUERY_ENGINE_LIGHTRAG_NATIVE = "lightrag_native"
+QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE = (
+    "lightrag_native_with_quality_evidence"
+)
+QUERY_ENGINE_BM25_QUALITY_DEBUG = "bm25_quality_debug"
+QUERY_ENGINE_HYBRID_AB = "hybrid_ab"
+
+_VALID_QUERY_ENGINES: frozenset[str] = frozenset({
+    QUERY_ENGINE_LIGHTRAG_NATIVE,
+    QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE,
+    QUERY_ENGINE_BM25_QUALITY_DEBUG,
+    QUERY_ENGINE_HYBRID_AB,
 })
+
+# Legacy → canonical alias map. Two generations of names map
+# through: V1 (bm25_primary / rag_native_primary) and V2
+# (bm25_debug / lightrag_native_with_bm25_evidence).
+_QUERY_ENGINE_ALIASES: dict[str, str] = {
+    "bm25_primary": QUERY_ENGINE_BM25_QUALITY_DEBUG,
+    "bm25_debug": QUERY_ENGINE_BM25_QUALITY_DEBUG,
+    "rag_native_primary": QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE,
+    "lightrag_native_with_bm25_evidence": (
+        QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+    ),
+}
+
+# Backward-compat constant aliases for existing imports / test
+# assertions. All point at the new canonical strings.
+QUERY_ENGINE_BM25_DEBUG = QUERY_ENGINE_BM25_QUALITY_DEBUG
+QUERY_ENGINE_LIGHTRAG_WITH_BM25_EVIDENCE = (
+    QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+)
+QUERY_PROVIDER_MODE_BM25 = QUERY_ENGINE_BM25_QUALITY_DEBUG
+QUERY_PROVIDER_MODE_NATIVE = QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+QUERY_PROVIDER_MODE_HYBRID_AB = QUERY_ENGINE_HYBRID_AB
+_VALID_QUERY_PROVIDER_MODES: frozenset[str] = _VALID_QUERY_ENGINES
+
+# BM25 purpose vocabulary stamped on every debug payload.
+# ``null`` means BM25 did not run. The other values record
+# exactly WHY BM25 ran so an auditor can answer "did BM25 affect
+# this answer?" at a glance:
+BM25_PURPOSE_DATA_QUALITY = "data_quality_evidence_inspection"
+BM25_PURPOSE_FALLBACK_ANSWER = "fallback_answer"
+BM25_PURPOSE_LEXICAL_DEBUG = "lexical_debug_answer"
+BM25_PURPOSE_OBSERVABILITY = "observability_answer"
 
 # Default native-query timeout (seconds). Bounds the
 # ``rag.aquery`` call so a stuck vendor request can't hang a
@@ -182,11 +252,29 @@ class _DispatchResult:
 
     ``answer_provider`` records which provider produced the
     final user-visible answer text:
-      * ``"native"``         — native LightRAG answer.
-      * ``"bm25"``           — BM25 engine + local LLM
-                               synthesizer (the historical path).
-      * ``"bm25_fallback"``  — native attempted but failed; BM25
-                               was used as the fallback.
+      * ``"native"``              — native LightRAG answer.
+      * ``"bm25"``                — BM25 + local LLM synthesizer
+                                    (only valid in the
+                                    ``bm25_quality_debug`` /
+                                    ``hybrid_ab`` engines and
+                                    on the explicit fallback
+                                    path).
+      * ``"bm25_fallback"``       — native attempted but failed;
+                                    BM25 was used as the
+                                    fallback because the
+                                    operator opted in.
+      * ``"native_unavailable"``  — native failed AND fallback is
+                                    off. Answer surface is empty;
+                                    BM25 (if it ran) is still
+                                    available as auxiliary
+                                    evidence.
+
+    ``suppress_synthesis`` tells ``run_manual_test_query`` to
+    NOT invoke the local LLM synthesizer. Used by engines /
+    paths where BM25 evidence might exist for inspection but
+    must NOT be allowed to drive the answer text — preserving
+    the post-clarification rule that BM25 is auxiliary-only
+    unless an explicit fallback / debug engine is selected.
     """
 
     response: Any  # j1.query.models.QueryResponse — typed Any to
@@ -196,6 +284,7 @@ class _DispatchResult:
     native_latency_ms: int | None
     debug_extras: dict[str, Any]
     answer_provider: str = "bm25"
+    suppress_synthesis: bool = False
 
 # Preview length for retrieved-chunk excerpts on the response. Mirrors
 # the chunk projector's value so the UI layer renders consistent
@@ -232,17 +321,37 @@ class IngestionValidationService:
         validation_evidence_max_blocks: int = (
             _DEFAULT_VALIDATION_EVIDENCE_MAX_BLOCKS
         ),
-        # Native-query plumbing. All four are optional so legacy
-        # callers / tests don't have to change. When
-        # ``native_query_provider`` is ``None`` OR the mode is
-        # ``bm25_primary``, the service skips the native path
+        # Native-query plumbing. All optional so legacy callers
+        # / tests don't have to change. When
+        # ``native_query_provider`` is ``None`` OR the engine is
+        # ``bm25_debug``, the service skips the native path
         # entirely.
         native_query_provider: Any | None = None,
-        query_provider_mode: str = QUERY_PROVIDER_MODE_BM25,
+        # ``query_engine_mode`` is the canonical knob;
+        # ``query_provider_mode`` remains accepted as a legacy alias
+        # when callers haven't migrated yet. The constructor
+        # normalises both, then alias-maps legacy strings
+        # (``bm25_primary`` / ``rag_native_primary``) into the new
+        # vocabulary. DEFAULT IS NOW ``lightrag_native`` — per the
+        # audit, the production query path should hit LightRAG
+        # native first and **not** silently couple in BM25.
+        # (``query_engine_mode`` rather than ``query_engine``
+        # because the dependency-injected ``HybridQueryEngine``
+        # already owns that kwarg name above.)
+        query_engine_mode: str | None = None,
+        query_provider_mode: str | None = None,
         native_query_timeout_seconds: float = (
             _DEFAULT_NATIVE_QUERY_TIMEOUT_SECONDS
         ),
-        native_query_fallback_to_bm25: bool = True,
+        # New canonical flags. Both default to False so the
+        # native path stays pure unless an operator explicitly
+        # opts in to BM25 involvement.
+        enable_bm25_evidence: bool = False,
+        enable_bm25_fallback: bool = False,
+        # Legacy back-compat: the previous flag name. When
+        # supplied (truthy), it sets ``enable_bm25_fallback``.
+        # The default ``None`` means "respect the new flag."
+        native_query_fallback_to_bm25: bool | None = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -295,34 +404,89 @@ class IngestionValidationService:
             1, int(validation_evidence_max_blocks),
         )
 
-        # Native-query dispatch state. The mode strings are
+        # Native-query dispatch state. The engine string is
         # validated here once so a misconfigured env var becomes
-        # an obvious server-side log instead of a silent fallthrough.
-        # Modes that name native-query are demoted to
-        # ``bm25_primary`` if the native provider isn't wired —
-        # operators get the warning, and the path stays predictable.
+        # an obvious server-side log instead of a silent
+        # fallthrough. Engines that name native-query are
+        # demoted to ``bm25_debug`` if the native provider isn't
+        # wired — operators get the warning, and the path stays
+        # predictable.
         self._native_query_provider = native_query_provider
-        mode = (query_provider_mode or "").strip() or QUERY_PROVIDER_MODE_BM25
-        if mode not in _VALID_QUERY_PROVIDER_MODES:
+        # Prefer the new canonical kwarg; fall back to legacy.
+        raw_engine = (query_engine_mode or query_provider_mode or "").strip()
+        # Empty string → new default (pure LightRAG native).
+        if not raw_engine:
+            engine = QUERY_ENGINE_LIGHTRAG_NATIVE
+        else:
+            # Apply legacy alias before validation so old env
+            # strings (``bm25_primary`` / ``rag_native_primary``)
+            # land on the new canonical vocabulary.
+            engine = _QUERY_ENGINE_ALIASES.get(raw_engine, raw_engine)
+            if engine != raw_engine:
+                _log.debug(
+                    "query_engine alias %r → %r", raw_engine, engine,
+                )
+        if engine not in _VALID_QUERY_ENGINES:
             _log.warning(
-                "unknown query_provider_mode=%r; falling back to %r",
-                mode, QUERY_PROVIDER_MODE_BM25,
+                "unknown query_engine=%r; falling back to %r",
+                engine, QUERY_ENGINE_LIGHTRAG_NATIVE,
             )
-            mode = QUERY_PROVIDER_MODE_BM25
-        if mode != QUERY_PROVIDER_MODE_BM25 and native_query_provider is None:
+            engine = QUERY_ENGINE_LIGHTRAG_NATIVE
+        # If the operator asked for a native-driven engine but
+        # didn't wire a native provider, demote to
+        # ``bm25_quality_debug`` with a clear warning. Preserves
+        # the "things still work" contract for deployments that
+        # haven't installed RAGAnything.
+        needs_native = engine in {
+            QUERY_ENGINE_LIGHTRAG_NATIVE,
+            QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE,
+            QUERY_ENGINE_HYBRID_AB,
+        }
+        if needs_native and native_query_provider is None:
             _log.warning(
-                "query_provider_mode=%r requested but no "
-                "native_query_provider wired; falling back to %r",
-                mode, QUERY_PROVIDER_MODE_BM25,
+                "query_engine=%r requested but no native_query_provider "
+                "wired; falling back to %r",
+                engine, QUERY_ENGINE_BM25_QUALITY_DEBUG,
             )
-            mode = QUERY_PROVIDER_MODE_BM25
-        self._query_provider_mode = mode
+            engine = QUERY_ENGINE_BM25_QUALITY_DEBUG
+        self._query_engine_mode = engine
+        # Backward-compat attribute: prior tests / call sites read
+        # ``_query_provider_mode``. Same value as the new
+        # ``_query_engine_mode``.
+        self._query_provider_mode = engine
         self._native_query_timeout_seconds = max(
             1.0, float(native_query_timeout_seconds),
         )
-        self._native_query_fallback_to_bm25 = bool(
-            native_query_fallback_to_bm25,
-        )
+        # Fallback flag resolution:
+        #   * legacy ``native_query_fallback_to_bm25`` when supplied
+        #     (truthy True/False) wins for backward compat;
+        #   * otherwise use the canonical ``enable_bm25_fallback``.
+        if native_query_fallback_to_bm25 is not None:
+            self._enable_bm25_fallback = bool(
+                native_query_fallback_to_bm25,
+            )
+        else:
+            self._enable_bm25_fallback = bool(enable_bm25_fallback)
+        self._enable_bm25_evidence = bool(enable_bm25_evidence)
+        # Convenience: if the operator selected pure
+        # ``lightrag_native`` AND set ``enable_bm25_evidence=True``,
+        # promote to the explicit "with evidence" engine. Avoids
+        # the trap where "I want native answer but also need
+        # citations" silently behaves as pure native.
+        if (
+            self._query_engine_mode == QUERY_ENGINE_LIGHTRAG_NATIVE
+            and self._enable_bm25_evidence
+        ):
+            _log.debug(
+                "enable_bm25_evidence=True with engine=%r → promoting "
+                "to %r",
+                self._query_engine_mode,
+                QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE,
+            )
+            self._query_engine_mode = (
+                QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+            )
+            self._query_provider_mode = self._query_engine_mode
 
     def run_manual_test_query(
         self,
@@ -434,16 +598,29 @@ class IngestionValidationService:
             retrieved=retrieved,
             response=response,
         )
-        synthesized_answer, llm_trace = self._maybe_synthesize_answer(
-            request=request,
-            evidence=evidence_blocks,
-        )
+        # Synthesis is suppressed by the dispatcher when BM25
+        # evidence may exist (for inspection) but must NOT be
+        # allowed to drive the answer text — the post-clarification
+        # rule that BM25 is auxiliary-only outside the explicit
+        # ``bm25_quality_debug`` / fallback paths. In that case we
+        # also drop the evidence blocks from ``evidence_sent_to_llm``
+        # so the FE doesn't render them as "the LLM saw this when
+        # answering" (the LLM didn't run).
+        if dispatch.suppress_synthesis:
+            synthesized_answer = None
+            llm_trace = None
+            evidence_blocks = []
+        else:
+            synthesized_answer, llm_trace = self._maybe_synthesize_answer(
+                request=request,
+                evidence=evidence_blocks,
+            )
 
-        # In ``rag_native_primary`` mode the native LightRAG aquery
-        # produced its own prose answer. We prefer that over the
-        # local synthesizer's answer — it was generated from the
-        # full graph + vector context LightRAG has, whereas the
-        # local synthesizer only saw the BM25-augmented evidence
+        # When the native LightRAG ``aquery`` produced its own
+        # prose answer, we prefer that over the local
+        # synthesizer's answer — it was generated from the full
+        # graph + vector context LightRAG has, whereas the local
+        # synthesizer only saw the BM25-augmented evidence
         # blocks. The local synthesizer's trace is preserved in
         # ``llm`` so operators can still see what it would have
         # said for comparison. Citation augmentation is recorded
@@ -500,6 +677,17 @@ class IngestionValidationService:
         debug["answer_provider"] = dispatch.answer_provider
         debug["evidence_provider"] = "bm25"
         debug["citation_provider"] = "bm25"
+        # Canonical metadata surface (audit follow-up). Older
+        # keys are retained above for one release while callers
+        # migrate; the new names are the ones the FE / external
+        # debug consumers should standardise on.
+        self._stamp_canonical_metadata(
+            debug=debug,
+            ctx=ctx,
+            run=run,
+            dispatch=dispatch,
+            retrieved=retrieved,
+        )
         # Operator-readable retrieval breakdown. Helps confirm
         # whether failures are "FTS only returned N rows" vs
         # "FTS returned plenty but reranker / selection
@@ -528,6 +716,129 @@ class IngestionValidationService:
             llm=llm_trace,
             evidence_sent_to_llm=evidence_blocks,
             debug=debug,
+        )
+
+    def run_native_debug_query(
+        self,
+        ctx: ProjectContext,
+        run_id: str,
+        question: str,
+        *,
+        actor: str = "system",
+    ) -> NativeDebugQueryResponseDTO:
+        """Direct LightRAG-native diagnostic call. **No BM25**, no
+        reranking, no coverage selection — pure ``rag.aquery``
+        against this run's workspace.
+
+        Use this when the regular ``test-query`` endpoint isn't
+        enough to isolate whether retrieval problems originate in
+        native indexing or in BM25 / evidence-building layers. The
+        response surfaces the resolved workspace path so the
+        operator can visually confirm "yes, the call hit the
+        per-run directory I expected" without inferring it from
+        debug logs.
+
+        ``actor`` is recorded in the audit row alongside the
+        request_id for traceability.
+
+        Raises ``ReviewNotFound`` (→ 404) when the run doesn't
+        exist in ``(ctx.tenant_id, ctx.project_id)``.
+        """
+        run = self._load_run(ctx, run_id)
+        request_id = f"nd-{uuid.uuid4().hex[:12]}"
+
+        tenant = getattr(ctx, "tenant_id", None) or ""
+        project = getattr(ctx, "project_id", None) or ""
+        workspace_id = (
+            f"{tenant}/{project}/{run.document_id}/{run.run_id}"
+            if tenant and project and run.document_id and run.run_id
+            else ""
+        )
+        workspace_path: str | None = None
+        if self._native_query_provider is not None:
+            try:
+                workspace_path = (
+                    self._native_query_provider.workspace_path_for(
+                        ctx, run.document_id, run.run_id,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — debug only
+                _log.debug(
+                    "workspace_path_for failed for run=%s: %s",
+                    run.run_id, exc,
+                )
+
+        provider_wired = self._native_query_provider is not None
+        if not provider_wired:
+            # Honest failure shape — no native call attempted.
+            return NativeDebugQueryResponseDTO(
+                request_id=request_id,
+                run_id=run.run_id,
+                document_id=run.document_id,
+                question=question,
+                answer="",
+                workspace_path=workspace_path,
+                workspace_id=workspace_id,
+                native_query_used=False,
+                native_query_failed_reason="native_provider_not_wired",
+                native_latency_ms=0,
+                provider_wired=False,
+            )
+
+        # Synthesize a minimal QueryRequest so the existing
+        # ``_run_native_query`` helper can be reused. ``mode`` /
+        # ``scope`` are not consulted by the native path — the
+        # provider keys off ``ctx`` + ``run_id`` + ``document_id``
+        # only.
+        query_request = QueryRequest(
+            question=question,
+            mode="hybrid",
+            max_results=self._validation_candidate_top_k,
+            scope=RunScope(run_id=run.run_id),
+        )
+        native_answer, native_latency, native_error = self._run_native_query(
+            ctx=ctx, run=run, query_request=query_request,
+        )
+
+        # Audit the call so native-debug usage is observable in
+        # the same row format the manual-query path uses. The
+        # action tag is distinct so dashboards can isolate
+        # diagnostic traffic from regular validation traffic.
+        try:
+            self._audit.record(
+                actor=actor,
+                action="j1.validation.native_debug_query.completed",
+                target_kind=_TARGET_KIND_RUN,
+                target_id=run.run_id,
+                tenant_id=ctx.tenant_id,
+                project_id=ctx.project_id,
+                metadata={
+                    "request_id": request_id,
+                    "document_id": run.document_id,
+                    "workspace_id": workspace_id,
+                    "native_query_used": native_answer is not None,
+                    "native_query_failed_reason": native_error,
+                    "native_latency_ms": native_latency,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — audit must never break
+            _log.warning(
+                "native-debug audit record failed run=%s: %s",
+                run.run_id, exc,
+            )
+
+        return NativeDebugQueryResponseDTO(
+            request_id=request_id,
+            run_id=run.run_id,
+            document_id=run.document_id,
+            question=question,
+            answer=native_answer or "",
+            workspace_path=workspace_path,
+            workspace_id=workspace_id,
+            native_query_used=native_answer is not None,
+            native_query_failed_reason=native_error,
+            native_latency_ms=native_latency,
+            provider_wired=True,
         )
 
     def _resolve_query_scope(
@@ -590,33 +901,46 @@ class IngestionValidationService:
           * ``native_latency_ms``  — wall-clock duration of the
             native call (None when native didn't run).
 
-        Mode behaviours:
+        Engine behaviours:
 
-          ``bm25_primary`` (default)
+          ``bm25_debug`` (legacy ``bm25_primary``)
             Single BM25 call. Native provider untouched.
+            Renamed to ``bm25_debug`` to reflect its post-audit
+            role: a lexical / debug retriever, not the
+            "AI answer" path.
 
-          ``rag_native_primary``
-            Native call first. If it succeeds, the answer is held
-            for synthesized_answer override AND we ALSO call BM25
-            (so citations / retrieved_chunks / evidence blocks
-            exist on the response — native doesn't expose
-            citation metadata in J1's shape). Debug records
-            ``citation_augmentation_used=True``. If native fails
-            or times out AND ``native_query_fallback_to_bm25``,
-            we fall back to BM25-only — the local synthesizer
-            then produces the LLM answer as usual.
+          ``lightrag_native``
+            PURE native. ``rag.aquery`` runs against the per-run
+            workspace. **No BM25** unless
+            ``enable_bm25_fallback`` is set AND native failed.
+            Citations are populated from native if available; in
+            practice LightRAG doesn't return citation metadata
+            in J1's shape, so citations come back empty and
+            ``citation_source`` is reported as
+            ``"none_or_native_unavailable"``. This is honest —
+            operators see the gap rather than a silent BM25
+            substitution. Use this engine for the audit-driven
+            "is the index actually working?" diagnosis.
+
+          ``lightrag_native_with_bm25_evidence``
+            (legacy ``rag_native_primary``). Native call first.
+            BM25 is also called to populate citations / evidence
+            blocks (LightRAG doesn't expose them natively).
+            Debug records ``citation_augmentation_used=True``.
+            If native fails AND ``enable_bm25_fallback``, falls
+            back to BM25 for the answer too. Renamed for honesty
+            — the BM25 augmentation is now obvious from the name.
 
           ``hybrid_ab``
-            BM25 is always the stable answer path. Native runs
+            BM25 is always the stable answer. Native runs
             best-effort for observability; its answer + latency
             land in ``debug_extras`` so operators can compare. A
-            native failure is recorded but never affects the
-            response.
+            native failure never affects the response.
         """
-        mode = self._query_provider_mode
+        mode = self._query_engine_mode
         engine_query = self._query_engine.query  # bound method, cheap to alias
 
-        if mode == QUERY_PROVIDER_MODE_BM25:
+        if mode == QUERY_ENGINE_BM25_QUALITY_DEBUG:
             bm25_start = time.monotonic()
             response = engine_query(ctx, query_request)
             bm25_latency = int((time.monotonic() - bm25_start) * 1000)
@@ -637,25 +961,37 @@ class IngestionValidationService:
                     "citation_augmentation_used": False,
                     "bm25_answer_preview": _answer_preview(response.answer),
                     "native_answer_preview": None,
+                    # BM25 IS the answer here — by design. The
+                    # engine name makes it explicit, and
+                    # ``bm25_purpose`` records it so a downstream
+                    # auditor reading only the JSON can tell.
+                    "bm25_participated_in_answer": True,
+                    "bm25_purpose": BM25_PURPOSE_LEXICAL_DEBUG,
                 },
             )
 
-        if mode == QUERY_PROVIDER_MODE_NATIVE:
-            return self._dispatch_native_primary(
+        if mode == QUERY_ENGINE_LIGHTRAG_NATIVE:
+            return self._dispatch_lightrag_native(
                 ctx=ctx, run=run, query_request=query_request,
             )
 
-        if mode == QUERY_PROVIDER_MODE_HYBRID_AB:
+        if mode == QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE:
+            return self._dispatch_lightrag_with_quality_evidence(
+                ctx=ctx, run=run, query_request=query_request,
+            )
+
+        if mode == QUERY_ENGINE_HYBRID_AB:
             return self._dispatch_hybrid_ab(
                 ctx=ctx, run=run, query_request=query_request,
             )
 
         # Defensive — constructor validates mode, but a future
         # refactor that adds a new mode without updating dispatch
-        # falls through to BM25 with a warning rather than 500ing.
+        # falls through to bm25_quality_debug with a warning
+        # rather than 500ing.
         _log.warning(
-            "unhandled query_provider_mode=%r in dispatcher; "
-            "falling back to bm25_primary",
+            "unhandled query_engine=%r in dispatcher; "
+            "falling back to bm25_quality_debug",
             mode,
         )
         response = engine_query(ctx, query_request)
@@ -665,7 +1001,7 @@ class IngestionValidationService:
             native_latency_ms=None,
             answer_provider="bm25",
             debug_extras={
-                "query_provider_mode": QUERY_PROVIDER_MODE_BM25,
+                "query_provider_mode": QUERY_ENGINE_BM25_QUALITY_DEBUG,
                 "native_query_enabled": (
                     self._native_query_provider is not None
                 ),
@@ -676,6 +1012,8 @@ class IngestionValidationService:
                 "citation_augmentation_used": False,
                 "bm25_answer_preview": _answer_preview(response.answer),
                 "native_answer_preview": None,
+                "bm25_participated_in_answer": True,
+                "bm25_purpose": BM25_PURPOSE_LEXICAL_DEBUG,
             },
         )
 
@@ -771,24 +1109,187 @@ class IngestionValidationService:
             return (None, latency_ms, "native_query_empty_answer")
         return (answer, latency_ms, None)
 
-    def _dispatch_native_primary(
+    def _dispatch_lightrag_native(
         self,
         *,
         ctx: ProjectContext,
         run: IngestionRun,
         query_request: "QueryRequest",
     ) -> "_DispatchResult":
-        """``rag_native_primary`` dispatch: native first, BM25 for
-        citations / fallback."""
+        """``lightrag_native`` dispatch: pure native, NO BM25 unless
+        fallback is explicitly enabled.
+
+        This is the audit-driven path. We call ``rag.aquery`` and
+        return its answer. Citations come from native if available;
+        in practice LightRAG doesn't return citation metadata in
+        J1's shape, so the response carries empty citations and the
+        debug payload reports ``citation_source=
+        "none_or_native_unavailable"``. The required
+        ``retrieved_chunks_present`` validation check will FAIL in
+        this engine — that's intentional and operator-visible: it
+        cleanly separates "native answered the question" from
+        "we can produce evidence for it." Use
+        ``lightrag_native_with_bm25_evidence`` when you need both.
+
+        BM25 fallback only fires when ``enable_bm25_fallback=True``
+        AND native didn't produce an answer (failure / timeout /
+        empty). The fallback case is recorded in
+        ``fallback_used=True`` so the operator sees the path.
+        """
         native_answer, native_latency, native_error = self._run_native_query(
             ctx=ctx, run=run, query_request=query_request,
         )
 
-        # Always run BM25 too — even when native succeeds, we need
-        # its citations / retrieved_chunks / evidence pack so the
-        # response contract (run-scope checks, citation lineage)
-        # stays intact. Operators who specifically want to avoid
-        # the BM25 cost can set the mode back to bm25_primary.
+        if native_answer is not None:
+            # Happy path. Build a minimal QueryResponse so the
+            # downstream pipeline (run_checks, evidence builder)
+            # operates on the same shape it always has. Sources
+            # are empty — that's the honest report when native
+            # doesn't expose them.
+            response = self._build_native_only_response(native_answer)
+            return _DispatchResult(
+                response=response,
+                native_answer=native_answer,
+                native_latency_ms=native_latency,
+                answer_provider="native",
+                debug_extras={
+                    "query_provider_mode": QUERY_ENGINE_LIGHTRAG_NATIVE,
+                    "native_query_enabled": True,
+                    "native_query_used": True,
+                    "bm25_query_used": False,
+                    "native_query_failed_reason": None,
+                    "native_latency_ms": native_latency,
+                    "bm25_latency_ms": 0,
+                    "fallback_used": False,
+                    "citation_augmentation_used": False,
+                    "bm25_answer_preview": None,
+                    "native_answer_preview": _answer_preview(native_answer),
+                    "bm25_participated_in_answer": False,
+                    "bm25_purpose": None,
+                },
+            )
+
+        # Native failed / timed out / not wired. Fallback only if
+        # explicitly enabled — pure-native operators wanted to see
+        # the failure, not a silent BM25 substitution.
+        if self._enable_bm25_fallback:
+            bm25_start = time.monotonic()
+            bm25_response = self._query_engine.query(ctx, query_request)
+            bm25_latency = int((time.monotonic() - bm25_start) * 1000)
+            return _DispatchResult(
+                response=bm25_response,
+                native_answer=None,
+                native_latency_ms=native_latency,
+                answer_provider="bm25_fallback",
+                debug_extras={
+                    "query_provider_mode": QUERY_ENGINE_LIGHTRAG_NATIVE,
+                    "native_query_enabled": True,
+                    "native_query_used": False,
+                    "bm25_query_used": True,
+                    "native_query_failed_reason": native_error,
+                    "native_latency_ms": native_latency,
+                    "bm25_latency_ms": bm25_latency,
+                    "fallback_used": True,
+                    "citation_augmentation_used": False,
+                    "bm25_answer_preview": _answer_preview(
+                        bm25_response.answer,
+                    ),
+                    "native_answer_preview": None,
+                    # Explicit opt-in fallback — BM25 IS the answer
+                    # text. Audit trail records the
+                    # ``fallback_answer`` purpose.
+                    "bm25_participated_in_answer": True,
+                    "bm25_purpose": BM25_PURPOSE_FALLBACK_ANSWER,
+                },
+            )
+
+        # No fallback — surface the native failure honestly. We
+        # still need SOME response object so the rest of the
+        # service contract holds; build an empty native-only
+        # response. ``run_checks`` will flag missing retrieval /
+        # missing answer; that's the desired outcome.
+        empty_response = self._build_native_only_response("")
+        return _DispatchResult(
+            response=empty_response,
+            native_answer=None,
+            native_latency_ms=native_latency,
+            answer_provider="native_unavailable",
+            # Suppress synthesis: no BM25 evidence exists here
+            # (BM25 didn't run) and the local synthesizer would
+            # otherwise just emit a vacuous no-evidence stub. Be
+            # explicit: when native fails and BM25 hasn't been
+            # asked to help, the answer surface is empty.
+            suppress_synthesis=True,
+            debug_extras={
+                "query_provider_mode": QUERY_ENGINE_LIGHTRAG_NATIVE,
+                "native_query_enabled": True,
+                "native_query_used": False,
+                "bm25_query_used": False,
+                "native_query_failed_reason": native_error,
+                "native_latency_ms": native_latency,
+                "bm25_latency_ms": 0,
+                "fallback_used": False,
+                "citation_augmentation_used": False,
+                "bm25_answer_preview": None,
+                "native_answer_preview": None,
+                "bm25_participated_in_answer": False,
+                "bm25_purpose": None,
+            },
+        )
+
+    def _build_native_only_response(self, answer: str):
+        """Construct a ``QueryResponse`` from a native answer string,
+        with no sources / graph paths. Used by ``lightrag_native``
+        so the downstream pipeline operates on the same shape as
+        the BM25 path but the empty source list makes the
+        "no citations from native" reality observable in the
+        response."""
+        from j1.query.models import QueryResponse
+        return QueryResponse(
+            answer=answer,
+            mode_used="lightrag_native",
+            sources=[],
+            graph_paths=[],
+        )
+
+    def _dispatch_lightrag_with_quality_evidence(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        query_request: "QueryRequest",
+    ) -> "_DispatchResult":
+        """``lightrag_native_with_quality_evidence`` dispatch.
+
+        Native ``aquery`` is the answer source. BM25 runs in
+        parallel ONLY to populate the auxiliary data-quality /
+        evidence inspection surface — its answer text never
+        drives the user-visible answer. On native failure, the
+        behaviour depends on the explicit ``enable_bm25_fallback``
+        flag:
+
+          * fallback ON  → BM25 answer becomes the user answer;
+                           ``bm25_participated_in_answer=True``;
+                           ``bm25_purpose=fallback_answer``.
+          * fallback OFF → answer surface is EMPTY (native
+                           failed and BM25 is auxiliary-only by
+                           policy). Synthesis is suppressed so
+                           the local LLM can't sneak the BM25
+                           evidence into a generated answer.
+                           BM25 evidence stays on the response
+                           shell for inspection.
+
+        The legacy alias ``rag_native_primary`` resolves to
+        this engine.
+        """
+        native_answer, native_latency, native_error = self._run_native_query(
+            ctx=ctx, run=run, query_request=query_request,
+        )
+
+        # Always run BM25 — even when native succeeds. Its
+        # output drives the AUXILIARY data-quality / citation
+        # surface; the response contract (run-scope checks,
+        # citation lineage) stays intact across all modes.
         bm25_start = time.monotonic()
         bm25_response = self._query_engine.query(ctx, query_request)
         bm25_latency = int((time.monotonic() - bm25_start) * 1000)
@@ -796,17 +1297,19 @@ class IngestionValidationService:
         bm25_preview = _answer_preview(bm25_response.answer)
 
         if native_answer is None:
-            # Native failed / timed out / not wired. Fall back to
-            # pure BM25 if configured, else surface the failure
-            # in debug so the operator can see WHY.
-            if self._native_query_fallback_to_bm25:
+            # Native failed / timed out / not wired.
+            if self._enable_bm25_fallback:
+                # Explicit operator opt-in: use BM25 as the
+                # answer source. Audited as ``fallback_answer``.
                 return _DispatchResult(
                     response=bm25_response,
                     native_answer=None,
                     native_latency_ms=native_latency,
                     answer_provider="bm25_fallback",
                     debug_extras={
-                        "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
+                        "query_provider_mode": (
+                            QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+                        ),
                         "native_query_enabled": True,
                         "native_query_used": False,
                         "bm25_query_used": True,
@@ -817,17 +1320,34 @@ class IngestionValidationService:
                         "citation_augmentation_used": False,
                         "bm25_answer_preview": bm25_preview,
                         "native_answer_preview": None,
+                        "bm25_participated_in_answer": True,
+                        "bm25_purpose": BM25_PURPOSE_FALLBACK_ANSWER,
                     },
                 )
-            # Fallback disabled. Return BM25 anyway (we need SOME
-            # response) but tag the failure prominently.
+            # Fallback disabled. Policy: BM25 must NOT supply
+            # the answer text. Return a response with an empty
+            # answer but BM25's sources attached so the
+            # data-quality / citation inspection surface still
+            # works. Synthesis is suppressed so the local LLM
+            # can't grab the BM25 evidence and synthesise a
+            # near-BM25 answer behind the operator's back.
+            from j1.query.models import QueryResponse
+            empty_with_evidence = QueryResponse(
+                answer="",
+                mode_used="lightrag_native_with_quality_evidence",
+                sources=list(bm25_response.sources),
+                graph_paths=list(bm25_response.graph_paths),
+            )
             return _DispatchResult(
-                response=bm25_response,
+                response=empty_with_evidence,
                 native_answer=None,
                 native_latency_ms=native_latency,
-                answer_provider="bm25",
+                answer_provider="native_unavailable",
+                suppress_synthesis=True,
                 debug_extras={
-                    "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
+                    "query_provider_mode": (
+                        QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+                    ),
                     "native_query_enabled": True,
                     "native_query_used": False,
                     "bm25_query_used": True,
@@ -838,21 +1358,29 @@ class IngestionValidationService:
                     "citation_augmentation_used": False,
                     "bm25_answer_preview": bm25_preview,
                     "native_answer_preview": None,
+                    # BM25 ran, but ONLY to populate the
+                    # data-quality / citation surface. It did
+                    # NOT supply the answer text.
+                    "bm25_participated_in_answer": False,
+                    "bm25_purpose": BM25_PURPOSE_DATA_QUALITY,
                 },
             )
 
-        # Native succeeded. Use the native answer as the
-        # synthesized answer; BM25 provides citations / evidence.
-        # Mark citation_augmentation_used so debug callers know
-        # the answer text and citations came from DIFFERENT
-        # query paths.
+        # Native succeeded. Native answer drives the user-
+        # visible response; BM25 ran solely to populate
+        # citations / evidence (data-quality inspection).
+        # ``citation_augmentation_used=True`` tells callers
+        # that the citation list comes from a different source
+        # than the answer text.
         return _DispatchResult(
             response=bm25_response,
             native_answer=native_answer,
             native_latency_ms=native_latency,
             answer_provider="native",
             debug_extras={
-                "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
+                "query_provider_mode": (
+                    QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE
+                ),
                 "native_query_enabled": True,
                 "native_query_used": True,
                 "bm25_query_used": True,
@@ -863,6 +1391,8 @@ class IngestionValidationService:
                 "citation_augmentation_used": True,
                 "bm25_answer_preview": bm25_preview,
                 "native_answer_preview": _answer_preview(native_answer),
+                "bm25_participated_in_answer": False,
+                "bm25_purpose": BM25_PURPOSE_DATA_QUALITY,
             },
         )
 
@@ -901,7 +1431,7 @@ class IngestionValidationService:
             native_latency_ms=native_latency,
             answer_provider="bm25",
             debug_extras={
-                "query_provider_mode": QUERY_PROVIDER_MODE_HYBRID_AB,
+                "query_provider_mode": QUERY_ENGINE_HYBRID_AB,
                 "native_query_enabled": True,
                 # We DID call native — it just doesn't drive the
                 # response. ``native_query_used`` records whether
@@ -919,8 +1449,214 @@ class IngestionValidationService:
                 # Legacy aliases retained for one release.
                 "hybrid_ab_native_answer_preview": native_preview or "",
                 "hybrid_ab_bm25_answer_preview": bm25_preview,
+                # hybrid_ab is the observability engine; BM25 is
+                # the stable answer by design — flag it so a
+                # downstream auditor reading the JSON can tell.
+                "bm25_participated_in_answer": True,
+                "bm25_purpose": BM25_PURPOSE_OBSERVABILITY,
             },
         )
+
+    def _stamp_canonical_metadata(
+        self,
+        *,
+        debug: dict[str, Any],
+        ctx: ProjectContext,
+        run: IngestionRun,
+        dispatch: "_DispatchResult",
+        retrieved: list[RetrievedChunkRefDTO],
+    ) -> None:
+        """Stamp the canonical query metadata onto ``debug`` in place.
+
+        Vocabulary used by FE / external debug consumers:
+
+          * ``query_engine``                — canonical engine name.
+          * ``answer_source`` /             — same value; the
+            ``final_answer_source``           explicit "what
+                                              produced the user-
+                                              visible answer text"
+                                              answer.
+          * ``citation_source`` /           — same value; the
+            ``evidence_source``               provider behind the
+                                              citation / evidence
+                                              list. One of
+                                              ``"native"``,
+                                              ``"bm25"``,
+                                              ``"bm25_augmentation"``,
+                                              ``"none_or_native_unavailable"``.
+          * ``bm25_used``                   — did BM25 run at all.
+          * ``bm25_participated_in_answer`` — did BM25 produce
+                                              answer text. False
+                                              in the production
+                                              path; True only on
+                                              the explicit
+                                              fallback / debug /
+                                              observability
+                                              engines.
+          * ``bm25_purpose``                — null when BM25 was
+                                              not used; otherwise
+                                              one of
+                                              ``data_quality_evidence_inspection``,
+                                              ``fallback_answer``,
+                                              ``lexical_debug_answer``,
+                                              ``observability_answer``.
+          * ``workspace_id`` /              — per-run LightRAG
+            ``workspace_path``                workspace identifier
+                                              + absolute path.
+          * ``run_id`` / ``document_id``    — explicit identifiers
+                                              so the FE doesn't
+                                              have to thread them
+                                              through.
+          * ``data_quality_evidence``       — auxiliary BM25
+                                              section (chunk
+                                              count + per-field
+                                              metadata-quality
+                                              flags). Present
+                                              only when BM25 ran.
+          * ``warnings``                    — list of operator-
+                                              facing advisories.
+        """
+        extras = dispatch.debug_extras
+        bm25_used = bool(extras.get("bm25_query_used"))
+        citation_aug = bool(extras.get("citation_augmentation_used"))
+        fallback_used = bool(extras.get("fallback_used"))
+        answer_source = dispatch.answer_provider
+        bm25_participated = bool(
+            extras.get("bm25_participated_in_answer", False),
+        )
+        bm25_purpose = extras.get("bm25_purpose")
+
+        if citation_aug:
+            citation_source = "bm25_augmentation"
+        elif answer_source == "native_unavailable" and not bm25_used:
+            citation_source = "none_or_native_unavailable"
+        elif answer_source == "native" and not bm25_used:
+            citation_source = "none_or_native_unavailable"
+        elif bm25_used:
+            # BM25 supplied citations; whether it also supplied
+            # the answer is captured separately via
+            # ``bm25_participated_in_answer``.
+            citation_source = "bm25"
+        else:
+            citation_source = "none_or_native_unavailable"
+
+        workspace_path: str | None = None
+        if self._native_query_provider is not None:
+            try:
+                workspace_path = (
+                    self._native_query_provider.workspace_path_for(
+                        ctx, run.document_id, run.run_id,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — debug only
+                _log.debug(
+                    "workspace_path_for failed for run=%s: %s",
+                    run.run_id, exc,
+                )
+                workspace_path = None
+        tenant = getattr(ctx, "tenant_id", None) or ""
+        project = getattr(ctx, "project_id", None) or ""
+        if tenant and project and run.document_id and run.run_id:
+            workspace_id = (
+                f"{tenant}/{project}/{run.document_id}/{run.run_id}"
+            )
+        else:
+            workspace_id = ""
+
+        warnings: list[str] = []
+        if answer_source == "native_unavailable":
+            warnings.append("native_unavailable_no_fallback")
+        if fallback_used:
+            warnings.append("native_failed_fallback_to_bm25")
+        if citation_aug:
+            warnings.append("citations_from_bm25_not_native")
+        if (
+            self._query_engine_mode
+            in {
+                QUERY_ENGINE_LIGHTRAG_NATIVE,
+                QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE,
+                QUERY_ENGINE_HYBRID_AB,
+            }
+            and self._native_query_provider is None
+        ):
+            warnings.append("native_provider_not_wired")
+
+        debug["query_engine"] = self._query_engine_mode
+        debug["answer_source"] = answer_source
+        # ``final_answer_source`` is the post-clarification
+        # canonical name; ``answer_source`` is kept as a same-value
+        # alias for one release while callers migrate.
+        debug["final_answer_source"] = answer_source
+        debug["citation_source"] = citation_source
+        debug["evidence_source"] = citation_source
+        debug["bm25_used"] = bm25_used
+        debug["bm25_participated_in_answer"] = bm25_participated
+        debug["bm25_purpose"] = bm25_purpose
+        debug["workspace_id"] = workspace_id
+        debug["workspace_path"] = workspace_path
+        debug["run_id"] = run.run_id
+        debug["document_id"] = run.document_id
+        debug["warnings"] = warnings
+
+        # Auxiliary data-quality / evidence inspection section.
+        # Present only when BM25 ran. The point of this section
+        # is to make it visually clear in the response that the
+        # BM25 contribution is SEPARATE from the answer — the FE
+        # validation tab renders it under "Auxiliary Evidence /
+        # Data Quality" rather than mixed into the answer panel.
+        if bm25_used:
+            debug["data_quality_evidence"] = self._build_data_quality_section(
+                retrieved=retrieved,
+                purpose=bm25_purpose or BM25_PURPOSE_DATA_QUALITY,
+            )
+
+    @staticmethod
+    def _build_data_quality_section(
+        *,
+        retrieved: list[RetrievedChunkRefDTO],
+        purpose: str,
+    ) -> dict[str, Any]:
+        """Aggregate BM25-derived chunks into a small, FE-renderable
+        data-quality report.
+
+        The ``metadata_quality`` block reports whether every
+        retrieved chunk has the four identifiers it should
+        carry. A ``false`` here points at a STORAGE / REGISTRATION
+        bug — BM25 only surfaces what was registered, so missing
+        metadata is upstream-of-BM25 by definition.
+        """
+        count = len(retrieved)
+        if count == 0:
+            metadata_quality = {
+                "run_id_present": True,
+                "document_id_present": True,
+                "artifact_id_present": True,
+            }
+        else:
+            metadata_quality = {
+                "run_id_present": all(bool(r.run_id) for r in retrieved),
+                "document_id_present": all(
+                    bool(r.document_id) for r in retrieved
+                ),
+                "artifact_id_present": all(
+                    bool(r.artifact_id) for r in retrieved
+                ),
+            }
+        warnings: list[str] = []
+        for field_name, present in metadata_quality.items():
+            if not present:
+                # E.g. ``run_id_missing_on_some_chunks``. The label
+                # tells the operator the issue is in the storage /
+                # registration layer, not in the query path.
+                key = field_name.replace("_present", "")
+                warnings.append(f"{key}_missing_on_some_chunks")
+        return {
+            "source": "bm25",
+            "purpose": purpose,
+            "match_count": count,
+            "metadata_quality": metadata_quality,
+            "warnings": warnings,
+        }
 
     def _build_evidence_blocks_for_run(
         self,

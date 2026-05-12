@@ -395,3 +395,67 @@ def test_include_raw_attaches_raw_response(
     ).json()["data"]
     assert on["rawResponse"] is not None
     assert off["rawResponse"] is None
+
+
+# ---- Native-debug-query endpoint ------------------------------------
+
+
+def test_native_debug_query_returns_provider_not_wired_when_unwired(
+    client, run_store, ctx,
+):
+    """Default REST fixture wires the validation service without a
+    native provider → the endpoint returns 200 with a
+    ``providerWired=false`` shape rather than 5xx-ing. Operators
+    must be able to call the diagnostic surface even when native
+    isn't installed."""
+    run_store.upsert(ctx, _make_run(run_id="run-A"))
+    resp = client.post(
+        "/ingestion-runs/run-A/native-debug-query",
+        json={"question": "is the index alive?"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["runId"] == "run-A"
+    assert data["documentId"] == "doc-1"
+    assert data["question"] == "is the index alive?"
+    assert data["answer"] == ""
+    assert data["providerWired"] is False
+    assert data["nativeQueryUsed"] is False
+    assert data["nativeQueryFailedReason"] == "native_provider_not_wired"
+
+
+def test_native_debug_query_404_for_missing_run(client):
+    """Missing run → uniform 404."""
+    resp = client.post(
+        "/ingestion-runs/missing/native-debug-query",
+        json={"question": "anything"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 404
+
+
+def test_native_debug_query_503_when_service_not_configured(
+    client_no_validation, run_store, ctx,
+):
+    """Validation service not wired → 503, same as the regular
+    test-query endpoint."""
+    run_store.upsert(ctx, _make_run(run_id="run-A"))
+    resp = client_no_validation.post(
+        "/ingestion-runs/run-A/native-debug-query",
+        json={"question": "diagnostic?"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 503
+
+
+def test_native_debug_query_empty_question_rejected(client, run_store, ctx):
+    """Empty question is invalid input — Pydantic rejects with 422
+    before the handler sees it."""
+    run_store.upsert(ctx, _make_run(run_id="run-A"))
+    resp = client.post(
+        "/ingestion-runs/run-A/native-debug-query",
+        json={"question": ""},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 422

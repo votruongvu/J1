@@ -115,6 +115,25 @@ class RAGAnythingQueryProvider:
                 metadata={"provider": PROVIDER_NAME},
             )
 
+    def workspace_path_for(
+        self,
+        ctx: ProjectContext,
+        document_id: str | None,
+        run_id: str | None,
+    ) -> str | None:
+        """Return the per-run LightRAG workspace path as a string, or
+        ``None`` when the inputs can't form a scoped path.
+
+        Exposed so the validation surface can stamp the resolved
+        workspace into debug payloads — operators need to see WHICH
+        directory native answered against without inferring it.
+        """
+        from j1.providers.raganything._bridge import workspace_path_for_run
+        path = workspace_path_for_run(
+            self._settings, ctx, document_id, run_id,
+        )
+        return str(path) if path is not None else None
+
 
 def _build_default_query_callable() -> QueryCallable:
     """Real default boundary — drives RAGAnything's `aquery`.

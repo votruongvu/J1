@@ -83,6 +83,8 @@ from j1.adapters.rest.schemas import (
     LLMTraceRecord,
     ManualTestQueryRequestRecord,
     ManualTestQueryResponseRecord,
+    NativeDebugQueryRequestRecord,
+    NativeDebugQueryResponseRecord,
     StartValidationRunRequestRecord,
     TesterVerdictRequestRecord,
     ProgressEventRecord,
@@ -3227,6 +3229,56 @@ def create_rest_api(
                 for b in result.evidence_sent_to_llm
             ],
             debug=dict(getattr(result, "debug", None) or {}),
+        )
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/ingestion-runs/{run_id}/native-debug-query",
+        tags=["ingestion-runs"],
+        summary=(
+            "Direct LightRAG-native diagnostic query against this run"
+        ),
+        description=(
+            "Calls LightRAG `aquery` against this run's workspace "
+            "directly, with **no BM25 involvement** at any layer. "
+            "Operators use it to isolate native indexing problems "
+            "without the confounding effects of the BM25 + "
+            "reranker + coverage pipeline used by the regular "
+            "test-query endpoint. The response includes the "
+            "resolved per-run workspace path so the operator can "
+            "confirm scoping at a glance.\n\n"
+            "Returns 200 even when the native call fails — "
+            "`nativeQueryUsed=false` + `nativeQueryFailedReason` "
+            "report the outcome. 404 if the run does not exist in "
+            "the caller's tenant/project; 503 if the validation "
+            "service isn't configured."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_ingestion_run_native_debug_query(
+        request: Request,
+        run_id: str,
+        body: NativeDebugQueryRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        result = service.run_native_debug_query(
+            ctx, run_id, body.question,
+            actor=security.subject,
+        )
+        record = NativeDebugQueryResponseRecord(
+            request_id=result.request_id,
+            run_id=result.run_id,
+            document_id=result.document_id,
+            question=result.question,
+            answer=result.answer,
+            workspace_path=result.workspace_path,
+            workspace_id=result.workspace_id,
+            native_query_used=result.native_query_used,
+            native_query_failed_reason=result.native_query_failed_reason,
+            native_latency_ms=result.native_latency_ms,
+            provider_wired=result.provider_wired,
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 

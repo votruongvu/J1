@@ -145,20 +145,25 @@ def test_1_default_mode_is_bm25_primary_and_native_unused(ctx):
 
 def test_1_unknown_mode_falls_back_to_bm25_with_warning(caplog, ctx):
     """A misconfigured mode env var → constructor warns and demotes
-    to bm25_primary. No surprises."""
+    to the post-audit default (``lightrag_native``) when a native
+    provider is wired; further demotes to ``bm25_debug`` when it
+    isn't."""
     import logging
+    from j1.validation.service import QUERY_ENGINE_LIGHTRAG_NATIVE
     spy = _NativeProviderSpy(canned_result=QueryResult(
         status=ResultStatus.SUCCEEDED, answer="(native)",
     ))
     with caplog.at_level(logging.WARNING, logger="j1.validation"):
         svc = _build_service(native=spy, mode="not_a_real_mode")
-    # Mode internally demoted to bm25_primary.
-    assert svc._query_provider_mode == QUERY_PROVIDER_MODE_BM25  # noqa: SLF001
-    assert any("unknown query_provider_mode" in r.message for r in caplog.records)
+    # With native wired, fallback lands on the new default.
+    assert svc._query_provider_mode == QUERY_ENGINE_LIGHTRAG_NATIVE  # noqa: SLF001
+    assert any("unknown query_engine" in r.message for r in caplog.records)
 
 
 def test_1_native_mode_without_provider_falls_back_to_bm25(caplog, ctx):
-    """Mode says native but provider isn't wired → warn + demote."""
+    """Mode says native but provider isn't wired → warn + demote to
+    ``bm25_debug``. Preserves the "still works" contract for
+    deployments that don't ship RAGAnything."""
     import logging
     with caplog.at_level(logging.WARNING, logger="j1.validation"):
         svc = _build_service(native=None, mode=QUERY_PROVIDER_MODE_NATIVE)

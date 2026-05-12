@@ -545,6 +545,42 @@ class ManualTestQueryResponseRecord(CamelModel):
     debug: dict[str, Any] = Field(default_factory=dict)
 
 
+class NativeDebugQueryRequestRecord(CamelModel):
+    """Body for POST /ingestion-runs/{run_id}/native-debug-query.
+
+    The native-debug endpoint takes a single ``question`` and calls
+    LightRAG ``aquery`` directly against this run's per-run
+    workspace. There are no BM25 / reranker knobs because the
+    point of the endpoint is to bypass them entirely.
+    """
+
+    question: str = Field(min_length=1)
+
+
+class NativeDebugQueryResponseRecord(CamelModel):
+    """Body of the 200 response from native-debug-query.
+
+    The HTTP 200 indicates the request was accepted (run scoped /
+    audited). Whether native actually answered is reported by
+    ``nativeQueryUsed`` + ``nativeQueryFailedReason``. The 200 +
+    ``nativeQueryUsed=false`` shape is the canonical "native
+    couldn't answer; here's why" outcome and is intentional —
+    callers must inspect the body, not the HTTP code.
+    """
+
+    request_id: str
+    run_id: str
+    document_id: str | None = None
+    question: str
+    answer: str
+    workspace_path: str | None = None
+    workspace_id: str = ""
+    native_query_used: bool
+    native_query_failed_reason: str | None = None
+    native_latency_ms: int = 0
+    provider_wired: bool
+
+
 # ---- Validation sets / runs -------------------------------
 
 
