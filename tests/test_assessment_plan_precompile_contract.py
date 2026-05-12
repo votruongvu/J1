@@ -234,6 +234,80 @@ def test_assessment_plan_to_payload_carries_no_postcompile_fields():
 # ---- 3. Plan passed into compile unchanged ------------------------
 
 
+def test_document_profile_from_payload_round_trips_through_dict():
+    """Temporal's data converter serialises dataclasses to JSON; the
+ receiving activity reconstructs only the top-level input, leaving
+ nested dataclass fields (`BuildInitialExecutionPlanInput.profile`)
+ as `dict`. The activity must coerce the dict back to
+ `DocumentProfile` before passing it to the planner — otherwise
+ `profile.extension` raises `AttributeError: 'dict' object has
+ no attribute 'extension'`. This was the failure mode `attempt: 5`
+ hit on the SBOM run."""
+    original = DocumentProfile(
+        document_id="doc-1",
+        extension=".pdf",
+        file_size_bytes=10_000,
+        page_count=5,
+        has_images=True,
+        warnings=("low confidence",),
+    )
+    # Simulate the JSON round-trip Temporal does.
+    serialised = {
+        "document_id": original.document_id,
+        "extension": original.extension,
+        "file_size_bytes": original.file_size_bytes,
+        "page_count": original.page_count,
+        "has_images": original.has_images,
+        "warnings": list(original.warnings),  # JSON has no tuple
+    }
+    reconstructed = DocumentProfile.from_payload(serialised)
+    assert isinstance(reconstructed, DocumentProfile)
+    assert reconstructed.document_id == "doc-1"
+    assert reconstructed.extension == ".pdf"
+    assert reconstructed.file_size_bytes == 10_000
+    assert reconstructed.page_count == 5
+    assert reconstructed.has_images is True
+    assert reconstructed.warnings == ("low confidence",)
+
+
+def test_document_profile_from_payload_handles_none_and_garbage():
+    """Defensive cases — neither should raise. `None` happens when a
+ dict-typed field arrives empty; non-dict garbage shouldn't crash
+ the activity either."""
+    p1 = DocumentProfile.from_payload(None)
+    assert isinstance(p1, DocumentProfile)
+    assert p1.extension == ""
+    p2 = DocumentProfile.from_payload("not a dict")  # type: ignore[arg-type]
+    assert isinstance(p2, DocumentProfile)
+
+
+def test_document_profile_from_payload_filters_unknown_keys():
+    """Producers may add new fields ahead of receivers. Unknown keys
+ in the payload must be filtered out, not passed through to the
+ dataclass constructor (which would raise `TypeError: __init__()
+ got an unexpected keyword argument`)."""
+    payload = {
+        "document_id": "doc-1",
+        "extension": ".txt",
+        "future_field": "from a newer producer",
+    }
+    p = DocumentProfile.from_payload(payload)
+    assert p.document_id == "doc-1"
+    assert p.extension == ".txt"
+
+
+def test_document_profile_from_payload_is_idempotent():
+    """When the converter DOES preserve the dataclass type, the
+ helper must be a no-op — not re-wrap it in another constructor
+ call that would lose tuple semantics on `warnings`."""
+    original = DocumentProfile(
+        document_id="doc-1", extension=".pdf",
+        warnings=("a", "b"),
+    )
+    again = DocumentProfile.from_payload(original)
+    assert again is original
+
+
 def test_assessor_tolerates_missing_extension():
     """`DocumentProfile.extension` is typed `str` but a `None` can
  sneak through when the dataclass round-trips through Temporal's

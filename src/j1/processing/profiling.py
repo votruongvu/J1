@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Protocol
 
@@ -130,6 +130,57 @@ class DocumentProfile:
     # surface per-image data; the planner falls back to the coarse
     # `requires_vision` doc-level decision.
     images: tuple[dict[str, object], ...] | None = None
+
+    @classmethod
+    def from_payload(
+        cls, payload: "DocumentProfile | dict | None",
+    ) -> "DocumentProfile":
+        """Reconstruct a `DocumentProfile` from a dict, an existing
+ `DocumentProfile`, or `None`.
+
+ Temporal's data converter serialises dataclasses to JSON and on
+ the receiving side reconstructs only the top-level activity
+ input — NESTED dataclass fields land as dicts. Activities that
+ receive a `DocumentProfile` via a workflow→activity payload
+ therefore see `input.profile` as `dict`, not the typed class.
+ Use this helper at the activity boundary to coerce back to the
+ dataclass before handing the profile to anything that expects
+ attribute access (`profile.extension`, `.has_images`, etc.).
+
+ Tolerates:
+ * already-typed `DocumentProfile` (no-op)
+ * `None` (returns an empty profile with `extension=""`)
+ * unknown extra keys (filtered out so producers can evolve the
+   shape forward without breaking deserialisation)
+ * lists where the dataclass declares tuples (JSON has no tuple)
+ """
+        if isinstance(payload, cls):
+            return payload
+        if payload is None:
+            return cls(document_id="", extension="")
+        if not isinstance(payload, dict):
+            return cls(document_id="", extension="")
+
+        # Whitelist known fields so producers can add new keys
+        # without crashing deserialisation here.
+        known_fields = {f.name for f in fields(cls)}
+        cleaned: dict = {
+            k: v for k, v in payload.items() if k in known_fields
+        }
+
+        # Coerce sequence shapes JSON can't preserve.
+        warnings = cleaned.get("warnings")
+        if isinstance(warnings, list):
+            cleaned["warnings"] = tuple(warnings)
+        images = cleaned.get("images")
+        if isinstance(images, list):
+            cleaned["images"] = tuple(images)
+
+        # Required fields — supply documented fallbacks if the producer
+        # left them out so the dataclass constructor doesn't raise.
+        cleaned.setdefault("document_id", "")
+        cleaned.setdefault("extension", "")
+        return cls(**cleaned)
 
 
 class DocumentProfiler(Protocol):

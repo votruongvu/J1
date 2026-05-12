@@ -1393,8 +1393,18 @@ class ProcessingActivities:
         from j1.processing.initial_execution_plan import (
             build_initial_execution_plan as _build_plan,
         )
+        from j1.processing.profiling import DocumentProfile
 
         ctx = input.scope.to_context()
+
+        # Coerce the profile to a `DocumentProfile`. Temporal's data
+        # converter reconstructs the top-level `BuildInitialExecutionPlanInput`
+        # dataclass but leaves nested fields typed `Any` as dicts —
+        # `input.profile` therefore arrives as `dict`, not the typed
+        # class, and downstream attribute access (`profile.extension`)
+        # would raise `AttributeError`. `from_payload` accepts either
+        # shape and round-trips cleanly.
+        profile = DocumentProfile.from_payload(input.profile)
 
         registry = default_registry()
         allowed = (
@@ -1416,7 +1426,7 @@ class ProcessingActivities:
         )
         pack = registry.get(domain_context.selected_domain)
         plan = _build_plan(
-            input.profile,
+            profile,
             domain_pack=pack,
             resource_hints=dict(input.resource_hints) or None,
         )
