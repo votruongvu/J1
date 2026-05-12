@@ -168,13 +168,19 @@ class KnowledgeQueryProvider:
 
     @staticmethod
     def _compose_answer(hits: list[SearchHit], question: str) -> str:
+        # Does NOT echo ``question`` for the same reason
+        # ``GraphQueryProvider._compose_answer`` doesn't — the
+        # groundedness judge would otherwise flag the echoed
+        # question text as an unsupported factual claim. The
+        # validation report carries the question alongside the
+        # answer; echoing adds nothing.
         if not hits:
-            return f"No knowledge results for: {question}"
+            return "No knowledge results."
         snippets = []
         for hit in hits[:3]:
             snippet = hit.extracted_text[:_SNIPPET_MAX_CHARS].strip()
             snippets.append(f"- {hit.title}: {snippet}" if snippet else f"- {hit.title}")
-        return f"Knowledge results for: {question}\n\n" + "\n".join(snippets)
+        return "Knowledge results:\n\n" + "\n".join(snippets)
 
 
 class GraphQueryProvider:
@@ -216,7 +222,6 @@ class GraphQueryProvider:
         return QueryResponse(
             answer=self._compose_answer(
                 paths,
-                request.question,
                 parse_failures=parse_failures,
                 graph_count=len(graphs),
             ),
@@ -275,20 +280,25 @@ class GraphQueryProvider:
     @staticmethod
     def _compose_answer(
         paths: list[GraphPath],
-        question: str,
         *,
         parse_failures: list[str] | None = None,
         graph_count: int = 0,
     ) -> str:
+        # The ``question`` argument used to be threaded through here
+        # so the answer could open with "Graph relationships for:
+        # <question>\n\n". That preamble caused the groundedness
+        # judge to flag the echoed question as an unsupported
+        # factual claim in the answer. Removed — the question is
+        # already present in the validation report alongside the
+        # answer; echoing it adds no information and creates a
+        # judge false-positive. Parameter dropped to keep the
+        # signature honest about what the function actually uses.
         if paths:
             rendered = [
                 f"- {p.nodes[0]} → {p.nodes[1]} ({p.edges[0] if p.edges else ''})"
                 for p in paths
             ]
-            return (
-                f"Graph relationships for: {question}\n\n"
-                + "\n".join(rendered)
-            )
+            return "Graph relationships:\n\n" + "\n".join(rendered)
         # No paths. Distinguish "no graph artifacts in run" (operator
         # may need to enable graph extraction) from "artifacts exist
         # but format wasn't recognised" (actionable parser bug).
@@ -299,7 +309,7 @@ class GraphQueryProvider:
                 f"parsed into entities/relationships: "
                 f"{', '.join(parse_failures[:3])}"
             )
-        return f"No graph relationships found for: {question}"
+        return "No graph relationships found."
 
 
 class EvidenceProvider:

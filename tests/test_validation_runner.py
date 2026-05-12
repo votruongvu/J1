@@ -624,9 +624,12 @@ def test_runner_replaces_raw_answer_with_synthesized_answer(
 
     result = vrun.results[0]
     assert result.answer == "Due 20 May 2026."
-    # Raw engine answer preserved for debug/diff.
+    # Raw engine answer preserved for debug/diff. Template was
+    # "Knowledge results for: <question>" — now "Knowledge
+    # results:" (question echo dropped to stop the groundedness
+    # judge false-positive).
     assert result.raw_answer is not None
-    assert "Knowledge results for" in result.raw_answer
+    assert "Knowledge results" in result.raw_answer
     # LLM trace surfaces provider/model/latency/tokens so the FE
     # can render its trace strip.
     assert result.llm is not None
@@ -660,9 +663,13 @@ def test_runner_without_synthesizer_uses_raw_engine_answer(
     vrun = runner.run(ctx, _make_set(test_cases=cases))
     result = vrun.results[0]
     # Backward-compat: the engine's raw composed answer comes
-    # through unchanged (either "Knowledge results for…" when hits
-    # land, or "No knowledge results for…" when retrieval misses).
-    assert "knowledge results for" in result.answer.lower()
+    # through unchanged. The exact preamble is "Knowledge results:"
+    # (or "No knowledge results." when retrieval misses) — the
+    # earlier templates echoed the question text, which caused the
+    # groundedness judge to flag the question as an unsupported
+    # claim. Those echoes were dropped; the assertion now matches
+    # the question-free form.
+    assert "knowledge results" in result.answer.lower()
     assert result.raw_answer is None
     assert result.llm is None
 

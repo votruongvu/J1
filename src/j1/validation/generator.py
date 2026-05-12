@@ -897,24 +897,109 @@ def _heuristic_questions_for_chunk(
     chunk: _ChunkRecord, *, budget: int,
 ) -> list[dict[str, Any]]:
     """Deterministic question producer for the no-LLM / LLM-failed
- path. Picks the chunk's first sentence and asks the trivial
- 'what does the document say about <first sentence>?' question.
- Crude but sufficient as a smoke baseline — the test still
- checks that the right chunk is retrieved, which is the actual
- contract."""
+ path. Tries (in order) section heading → clean first sentence →
+ page reference → generic summarization fallback.
+
+ The previous version always asked "what does the document say
+ about: <first 140 chars of body>?" — but for documents whose
+ first chunk starts with a header line ("J1 Platform - One Page
+ Test Brief | Document ID: J1-TEXT-001 | Version: 1.0 | …"),
+ the question included the entire metadata block as a topic.
+ The synthesizer LLM then abstained because the malformed
+ question can't be grounded against any single fact in the
+ evidence. The latest validation report flagged exactly this
+ case as a required failure via the new
+ ``evidence_present_but_answer_fallback`` check.
+
+ Spec section 5 rule: "Do not use raw truncated document text
+ as the question." This producer now respects that rule.
+ """
     body = (chunk.body or "").strip()
     if not body:
         return []
+
+    # Preferred 1: section heading. Cheapest readable form when the
+    # chunk projector recorded one. Caps at 80 chars so a runaway
+    # heading doesn't bloat the question.
+    section = (getattr(chunk, "section", None) or "").strip()
+    if section and 0 < len(section) <= 80:
+        return [{
+            "question": f"What does the document say in section '{section}'?",
+            "type": "retrieval",
+            "expected_answer_points": [],
+        }][:budget]
+
+    # Preferred 2: first sentence — but only if it LOOKS like a
+    # sentence (sufficient words, not pipe-separated metadata, no
+    # giveaway header markers). Quoted so the LLM treats it as a
+    # topic excerpt rather than a question fragment.
     sentence = _first_sentence(body, max_chars=140)
-    if not sentence:
-        return []
+    if sentence and _is_clean_sentence(sentence):
+        return [{
+            "question": f"What does the document say about \"{sentence}\"?",
+            "type": "retrieval",
+            "expected_answer_points": [],
+        }][:budget]
+
+    # Preferred 3: page reference. The check still verifies
+    # `expected_chunk_in_topk` against the right chunk, so the
+    # question doesn't need to embed body text at all.
+    if chunk.page_start is not None:
+        return [{
+            "question": (
+                f"What information is on page {chunk.page_start} of the "
+                "document?"
+            ),
+            "type": "retrieval",
+            "expected_answer_points": [],
+        }][:budget]
+
+    # Last resort: a clean generic question. Still testable via
+    # `expected_chunk_in_topk`; the LLM is asked to summarise
+    # rather than to ground on a malformed topic.
     return [{
         "question": (
-            f"What does the document say about: {sentence}?"
+            "Summarize the key information in this section of the document."
         ),
         "type": "retrieval",
         "expected_answer_points": [],
     }][:budget]
+
+
+# Cheap regex set for the heuristic-question cleanliness check.
+# Matches the shapes of document-header metadata blocks that make
+# bad questions: "Doc ID: X | Version: 1.0 | Date: …" style.
+_METADATA_BLOCK_HINTS: tuple[str, ...] = (
+    "Document ID",
+    "Version:",
+    "Date:",
+    "Purpose:",
+)
+
+
+def _is_clean_sentence(s: str) -> bool:
+    """Return True when ``s`` looks like a natural-language sentence
+    suitable as a question topic. False for metadata-block lines
+    (pipe-separated headers, colon-heavy ID strings, header-style
+    capitalised IDs).
+
+    The check is intentionally conservative: false negatives (a
+    real sentence rejected) fall through to page-reference /
+    generic questions, which are still testable. False positives
+    (a metadata block treated as a sentence) reproduce the original
+    bug — costlier than over-rejection."""
+    s = (s or "").strip()
+    if not s or len(s.split()) < 3:
+        return False
+    # Pipe-separated metadata or colon-heavy ID strings.
+    if s.count("|") >= 2:
+        return False
+    if s.count(":") >= 3:
+        return False
+    # Header-block markers anywhere in the candidate.
+    if any(hint in s for hint in _METADATA_BLOCK_HINTS):
+        return False
+    return True
 
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
