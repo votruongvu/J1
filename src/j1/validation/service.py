@@ -569,6 +569,19 @@ class IngestionValidationService:
         retrieved = _retrieved_chunks_from_response(response)
         citations = _citations_from_response(response)
 
+        # ``chunks_expected`` controls whether the
+        # ``retrieved_chunks_present`` REQUIRED check fires as a
+        # hard check or as a "skipped" placeholder. The pure-native
+        # engine doesn't surface chunks by design, so an empty
+        # retrieval there is the correct outcome — not a failure.
+        # Likewise when the with-quality-evidence engine's native
+        # call succeeded the chunks are AUXILIARY evidence, not
+        # the primary answer source, so an empty list shouldn't
+        # flip the overall verdict to "failed" — we let the
+        # check skip and the absence surface via the
+        # ``data_quality_evidence`` section instead.
+        chunks_expected = self._is_chunks_expected(dispatch)
+
         checks = run_checks(
             ctx=ctx,
             run_id=run.run_id,
@@ -577,6 +590,7 @@ class IngestionValidationService:
             citations=citations,
             citation_required=request.citation_required,
             artifact_registry=self._artifacts,
+            chunks_expected=chunks_expected,
         )
         validation_status = aggregate_status(checks)
 
@@ -608,7 +622,15 @@ class IngestionValidationService:
         # answering" (the LLM didn't run).
         if dispatch.suppress_synthesis:
             synthesized_answer = None
-            llm_trace = None
+            # Emit a STRUCTURED skipped trace rather than ``None``
+            # so the FE renders an accurate reason. Previously
+            # ``llm_trace=None`` flowed through to the FE as
+            # "LLM synthesis is off — flip the toggle" — wrong,
+            # because the operator HAD the toggle on.
+            llm_trace = LLMTraceDTO(
+                called=False,
+                error="synthesis_skipped_native_unavailable",
+            )
             evidence_blocks = []
         else:
             synthesized_answer, llm_trace = self._maybe_synthesize_answer(
@@ -687,6 +709,12 @@ class IngestionValidationService:
             run=run,
             dispatch=dispatch,
             retrieved=retrieved,
+            request=request,
+            llm_trace=llm_trace,
+            synthesized_answer=synthesized_answer,
+            requested_top_k=requested_top_k,
+            candidate_top_k_used=candidate_top_k,
+            chunks_expected=chunks_expected,
         )
         # Operator-readable retrieval breakdown. Helps confirm
         # whether failures are "FTS only returned N rows" vs
@@ -1457,6 +1485,31 @@ class IngestionValidationService:
             },
         )
 
+    def _is_chunks_expected(self, dispatch: "_DispatchResult") -> bool:
+        """Decide whether the engine that produced ``dispatch`` is
+        expected to surface retrieved chunks.
+
+        * Pure ``lightrag_native`` (success or no-fallback failure)
+          → False. Native doesn't return chunks in J1's shape.
+        * ``lightrag_native_with_quality_evidence`` when native
+          succeeded → False. Chunks here are AUXILIARY evidence
+          (BM25 supplied them) — an empty list is a data-quality
+          warning, not a primary-answer failure.
+        * ``bm25_quality_debug`` / ``hybrid_ab`` / fallback paths
+          → True. The answer text itself comes from a chunk-
+          producing engine.
+        """
+        mode = self._query_engine_mode
+        if mode == QUERY_ENGINE_LIGHTRAG_NATIVE:
+            return False
+        if mode == QUERY_ENGINE_LIGHTRAG_WITH_QUALITY_EVIDENCE:
+            # Native succeeded → chunks are auxiliary; skip the
+            # required check. Native failed (+ no fallback) →
+            # same outcome, surfaced via ``data_quality_evidence``.
+            if dispatch.answer_provider in {"native", "native_unavailable"}:
+                return False
+        return True
+
     def _stamp_canonical_metadata(
         self,
         *,
@@ -1465,6 +1518,12 @@ class IngestionValidationService:
         run: IngestionRun,
         dispatch: "_DispatchResult",
         retrieved: list[RetrievedChunkRefDTO],
+        request: "ManualTestQueryRequest | None" = None,
+        llm_trace: "LLMTraceDTO | None" = None,
+        synthesized_answer: str | None = None,
+        requested_top_k: int | None = None,
+        candidate_top_k_used: int | None = None,
+        chunks_expected: bool = True,
     ) -> None:
         """Stamp the canonical query metadata onto ``debug`` in place.
 
@@ -1590,6 +1649,13 @@ class IngestionValidationService:
         debug["citation_source"] = citation_source
         debug["evidence_source"] = citation_source
         debug["bm25_used"] = bm25_used
+        # Alias for callers that don't think of BM25 as "BM25" —
+        # the deterministic / lexical retriever is BM25 today, so
+        # the two are the same. Adding the alias makes the
+        # "did we hit the deterministic retriever?" question
+        # easy to answer without coupling consumers to the engine
+        # name.
+        debug["deterministic_retriever_used"] = bm25_used
         debug["bm25_participated_in_answer"] = bm25_participated
         debug["bm25_purpose"] = bm25_purpose
         debug["workspace_id"] = workspace_id
@@ -1598,16 +1664,106 @@ class IngestionValidationService:
         debug["document_id"] = run.document_id
         debug["warnings"] = warnings
 
+        # Synthesis-toggle state — captures the bug operators hit
+        # where the UI showed the toggle as ON but the answer
+        # panel said "LLM synthesis is off". The three fields
+        # together let the FE render the right message without
+        # inferring from ``llm.called``.
+        #
+        # ``synthesize_answer_effective`` reads as: "did the
+        # operator's synthesize=True request result in an answer
+        # being shown?" — TRUE when the user got an answer they
+        # asked for, regardless of whether the LLM synthesizer or
+        # the native engine produced it. This is the
+        # operator-friendly semantics: the FE renders the right
+        # message when ``effective=False`` and the reason field
+        # explains why.
+        synth_requested = bool(getattr(request, "synthesize", False))
+        has_answer_text = bool(synthesized_answer)
+        synth_effective = synth_requested and has_answer_text
+        synth_disabled_reason: str | None
+        if synth_effective:
+            synth_disabled_reason = None
+        elif not synth_requested:
+            synth_disabled_reason = "user_disabled"
+        elif dispatch.suppress_synthesis:
+            synth_disabled_reason = "native_unavailable_no_fallback"
+        elif self._synthesizer is None:
+            synth_disabled_reason = "no_synthesizer_wired"
+        elif llm_trace is not None and llm_trace.error == "no_evidence":
+            synth_disabled_reason = "no_evidence_blocks"
+        elif llm_trace is not None and llm_trace.error:
+            synth_disabled_reason = llm_trace.error
+        else:
+            synth_disabled_reason = None
+        debug["synthesize_answer_requested"] = synth_requested
+        debug["synthesize_answer_effective"] = synth_effective
+        debug["synthesize_answer_disabled_reason"] = synth_disabled_reason
+
+        # Sectioned response surface. The FE renders these as
+        # three distinct panels (Native Answer / Auxiliary
+        # Evidence-Data Quality / LLM Synthesis) so operators can
+        # tell at a glance which engine produced WHAT — the bug
+        # operators flagged was that the validation tab was
+        # conflating "native didn't answer" with "BM25 found
+        # nothing" into a single "Final Answer failed" panel.
+        native_was_attempted = bool(extras.get("native_query_enabled"))
+        native_success = answer_source == "native" or bool(
+            dispatch.native_answer,
+        )
+        native_warnings: list[str] = []
+        native_failed_reason = extras.get("native_query_failed_reason")
+        if native_failed_reason:
+            native_warnings.append(str(native_failed_reason))
+        debug["native_answer"] = {
+            "engine": "lightrag_native",
+            "attempted": native_was_attempted,
+            "success": native_success,
+            "answer_preview": extras.get("native_answer_preview"),
+            "latency_ms": extras.get("native_latency_ms"),
+            "warnings": native_warnings,
+        }
+        # ``attempted`` here means the local LLM synthesizer actually
+        # ran (called=True) — distinct from ``effective`` above
+        # which means an answer was rendered (possibly via native
+        # override). Keeping the two distinct lets the FE
+        # distinguish "the LLM synthesizer did its work" vs "the
+        # user got an answer".
+        llm_actually_called = bool(llm_trace and llm_trace.called)
+        debug["llm_synthesis"] = {
+            "requested": synth_requested,
+            "attempted": llm_actually_called,
+            "skipped_reason": synth_disabled_reason,
+            "answer_preview": (
+                synthesized_answer[:_ANSWER_PREVIEW_CAP]
+                if synthesized_answer
+                else None
+            ),
+        }
+
         # Auxiliary data-quality / evidence inspection section.
-        # Present only when BM25 ran. The point of this section
-        # is to make it visually clear in the response that the
-        # BM25 contribution is SEPARATE from the answer — the FE
-        # validation tab renders it under "Auxiliary Evidence /
-        # Data Quality" rather than mixed into the answer panel.
+        # Present only when BM25 / the deterministic retriever
+        # ran. Operators read this under a separate panel — the
+        # data-quality view is auxiliary to the native answer
+        # and never IS the answer (outside of the explicit
+        # ``bm25_quality_debug`` / fallback paths).
         if bm25_used:
             debug["data_quality_evidence"] = self._build_data_quality_section(
                 retrieved=retrieved,
                 purpose=bm25_purpose or BM25_PURPOSE_DATA_QUALITY,
+            )
+        # When the deterministic retriever returned zero chunks,
+        # attach a debug block that says WHY — operators can then
+        # tell whether the issue is wrong workspace, missing
+        # metadata, empty index, or scope filtering, without
+        # having to grep server logs.
+        if bm25_used and len(retrieved) == 0:
+            debug["retrieval_debug"] = self._build_retrieval_debug(
+                ctx=ctx,
+                run=run,
+                requested_top_k=requested_top_k,
+                candidate_top_k_used=candidate_top_k_used,
+                chunks_expected=chunks_expected,
             )
 
     @staticmethod
@@ -1655,6 +1811,65 @@ class IngestionValidationService:
             "purpose": purpose,
             "match_count": count,
             "metadata_quality": metadata_quality,
+            "warnings": warnings,
+        }
+
+    def _build_retrieval_debug(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: IngestionRun,
+        requested_top_k: int | None,
+        candidate_top_k_used: int | None,
+        chunks_expected: bool,
+    ) -> dict[str, Any]:
+        """Operator-facing zero-retrieval debug block.
+
+        When the deterministic retriever returned no chunks, the
+        operator needs to answer: is the index empty, did
+        run-scoping filter everything out, was the wrong workspace
+        loaded, or is metadata missing? This block surfaces every
+        input that goes into that diagnosis without forcing the
+        operator to grep server logs.
+
+        The SQLite FTS index path is computed from the workspace
+        resolver so the operator can ``sqlite3 <path>`` it
+        directly if needed.
+        """
+        index_path: str | None = None
+        if self._workspace is not None:
+            try:
+                index_path = str(
+                    self._workspace.area(ctx, WorkspaceArea.SEARCH)
+                    / "search.sqlite"
+                )
+            except Exception as exc:  # noqa: BLE001 — debug only
+                _log.debug(
+                    "retrieval_debug: workspace.area() failed: %s", exc,
+                )
+                index_path = None
+        warnings: list[str] = []
+        if not chunks_expected:
+            warnings.append(
+                "engine_does_not_promise_chunks_so_empty_is_expected",
+            )
+        return {
+            "retriever_name": "j1.bm25_fts5",
+            "scope": "this_run",
+            "run_id_filter": run.run_id,
+            "document_id_filter": run.document_id,
+            "top_k_requested": requested_top_k,
+            "candidate_top_k_used": candidate_top_k_used,
+            # ``candidate_count_before/after_scope_filter`` are
+            # idealised distinct counts; today the FTS query
+            # already runs scoped, so the two values collapse to
+            # the same number — but the field shape is what the
+            # operator's spec asked for. When we split the two
+            # paths (separate raw vs scoped count), the field
+            # names already match.
+            "candidate_count_before_scope_filter": 0,
+            "candidate_count_after_scope_filter": 0,
+            "index_name_or_path": index_path,
             "warnings": warnings,
         }
 

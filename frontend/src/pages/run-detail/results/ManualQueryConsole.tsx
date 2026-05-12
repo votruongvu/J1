@@ -221,6 +221,7 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
         <FinalAnswerSection
           synthesized={response.synthesizedAnswer ?? null}
           llm={response.llm ?? null}
+          debug={response.debug ?? null}
         />
 
         <EvidenceSentToLLMSection
@@ -360,18 +361,56 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
 interface FinalAnswerSectionProps {
   synthesized: string | null;
   llm: LLMTrace | null;
+  debug: Record<string, unknown> | null;
 }
 
-function FinalAnswerSection({ synthesized, llm }: FinalAnswerSectionProps) {
-  // Three render modes:
-  //  1. Synthesis ran and produced text  → show the answer.
-  //  2. Synthesis was skipped (opt-out)  → tell the user to flip the toggle.
-  //  3. Synthesis was attempted but errored (no client, no_evidence,
-  //     LLM raised) → show the error so they can diagnose without
-  //     digging into the raw payload.
+// Map server-side skip reasons to operator-readable copy. The
+// canonical reason set is stamped in
+// ``IngestionValidationService._stamp_canonical_metadata`` —
+// keep the keys here in sync.
+const SYNTHESIS_SKIP_MESSAGES: Record<string, string> = {
+  user_disabled:
+    "LLM synthesis is off — flip the “Synthesize answer (LLM)” toggle to enable.",
+  no_synthesizer_wired:
+    "LLM synthesis requested, but no LLM client is configured on this deployment.",
+  native_unavailable_no_fallback:
+    "LLM synthesis was requested, but skipped because the LightRAG native answer failed and BM25 fallback is off.",
+  no_evidence_blocks:
+    "LLM synthesis was requested, but skipped because no evidence blocks were retrieved.",
+};
+
+function FinalAnswerSection({
+  synthesized,
+  llm,
+  debug,
+}: FinalAnswerSectionProps) {
+  // Render mode is driven by the server-stamped
+  // ``synthesize_answer_disabled_reason`` — the FE no longer
+  // infers from ``llm.called`` alone, which previously made the
+  // "toggle is off" message appear even when the operator had
+  // the toggle ON.
   const hasAnswer = typeof synthesized === "string" && synthesized.length > 0;
   const errorText = llm?.error ?? null;
   const wasCalled = llm?.called === true;
+  const disabledReason =
+    (debug?.synthesize_answer_disabled_reason as string | null | undefined) ??
+    null;
+
+  let skipMessage: string | null = null;
+  if (!hasAnswer && !wasCalled) {
+    if (disabledReason && SYNTHESIS_SKIP_MESSAGES[disabledReason]) {
+      skipMessage = SYNTHESIS_SKIP_MESSAGES[disabledReason];
+    } else if (disabledReason) {
+      // Forward-compat: unknown reason → surface it verbatim
+      // rather than the misleading legacy "flip the toggle"
+      // copy.
+      skipMessage = `LLM synthesis skipped (${disabledReason}).`;
+    } else if (errorText) {
+      skipMessage = `LLM disabled: ${errorText}.`;
+    } else {
+      skipMessage = SYNTHESIS_SKIP_MESSAGES.user_disabled;
+    }
+  }
 
   return (
     <section>
@@ -393,11 +432,9 @@ function FinalAnswerSection({ synthesized, llm }: FinalAnswerSectionProps) {
         >
           {synthesized}
         </pre>
-      ) : !wasCalled ? (
+      ) : skipMessage ? (
         <p style={{ fontStyle: "italic", color: "var(--fg-muted)" }}>
-          {errorText
-            ? `LLM disabled: ${errorText}.`
-            : "LLM synthesis is off — flip the “Synthesize answer (LLM)” toggle to enable."}
+          {skipMessage}
         </p>
       ) : errorText ? (
         <p style={{ color: "var(--err, #b04040)", fontFamily: "var(--font-mono)" }}>
@@ -560,21 +597,29 @@ function EvidenceBlockRow({
 }
 
 function CheckRow({ check }: { check: ValidationCheck }) {
-  const icon = check.passed ? "✓" : "✗";
-  const label = check.passed ? "passed" : "failed";
-  const cls = check.passed
-    ? "validation-check--ok"
-    : check.severity === "required"
-      ? "validation-check--fail"
-      : "validation-check--warn";
+  // Skipped checks render in a neutral state — neither green
+  // ✓ nor red ✗. Previously a "no chunks to check" outcome
+  // rendered as green, which made the Validation tab look
+  // like everything passed when in fact nothing was checked.
+  const skipped = check.skipped === true;
+  const icon = skipped ? "–" : check.passed ? "✓" : "✗";
+  const label = skipped ? "skipped" : check.passed ? "passed" : "failed";
+  const cls = skipped
+    ? "validation-check--skip"
+    : check.passed
+      ? "validation-check--ok"
+      : check.severity === "required"
+        ? "validation-check--fail"
+        : "validation-check--warn";
+  const subtext = skipped ? check.skippedReason ?? check.detail : check.detail;
   return (
     <li className={`validation-check ${cls}`}>
       <span aria-hidden="true">{icon}</span>{" "}
       <strong>{check.name}</strong>{" "}
       <small>({check.severity}, {label})</small>
-      {check.detail ? (
+      {subtext ? (
         <span style={{ display: "block", marginLeft: 24, color: "var(--fg-muted)" }}>
-          {check.detail}
+          {subtext}
         </span>
       ) : null}
     </li>

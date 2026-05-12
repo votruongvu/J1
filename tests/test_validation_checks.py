@@ -231,18 +231,24 @@ def test_retrieved_chunks_belong_to_run_fails_on_leaked_run(
     assert "run-OTHER" in (c.detail or "")
 
 
-def test_retrieved_chunks_belong_to_run_passes_when_no_chunks(
+def test_retrieved_chunks_belong_to_run_skipped_when_no_chunks(
     workspace, ctx, artifact_registry,
 ):
-    """Empty retrieval is already covered by `retrieved_chunks_present`
- — this check passes vacuously so we don't double-report."""
+    """Empty retrieval is now SKIPPED rather than fake-passing. The
+ previous "vacuous pass" rendered as a green check in the
+ Validation tab next to an empty chunks list — misleading. The
+ skipped state surfaces "this check did not run because there
+ was nothing to check" and is excluded from
+ ``aggregate_status``."""
     checks = run_checks(
         ctx=ctx, run_id="run-A",
         answer="x" * 10, retrieved_chunks=[], citations=[],
         citation_required=False, artifact_registry=artifact_registry,
     )
     c = next(x for x in checks if x.name == "retrieved_chunks_belong_to_run")
-    assert c.passed is True
+    assert c.skipped is True
+    assert c.passed is False
+    assert c.skipped_reason == "no retrieved chunks to check"
 
 
 # ---- citations_belong_to_run --------------------------------------------

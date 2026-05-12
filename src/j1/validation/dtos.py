@@ -39,6 +39,16 @@ class ValidationCheckDTO:
  of them flips `validationStatus` to `failed`). `optional` is
  reserved so future judge / heuristic checks can downgrade to
  `warning` instead of failing the whole result.
+
+ ``skipped=True`` means "this check did not run because its
+ precondition wasn't met" (e.g. zero retrieved chunks for the
+ chunks-belong-to-run check). Skipped checks NEVER count
+ towards pass or fail in ``aggregate_status`` — that prevents
+ the misleading "passed because there was nothing to check"
+ outcome the operator flagged on the Validation tab. When
+ ``skipped=True``, ``passed`` is forced to ``False`` so a UI
+ that only reads ``passed`` doesn't render a green check; the
+ ``skipped`` field is the authoritative renderer signal.
  """
 
     name: str
@@ -47,6 +57,8 @@ class ValidationCheckDTO:
     detail: str | None = None
     expected: Any | None = None
     actual: Any | None = None
+    skipped: bool = False
+    skipped_reason: str | None = None
 
 
 @dataclass(frozen=True)

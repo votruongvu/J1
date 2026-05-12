@@ -3194,6 +3194,8 @@ def create_rest_api(
                     detail=chk.detail,
                     expected=chk.expected,
                     actual=chk.actual,
+                    skipped=chk.skipped,
+                    skipped_reason=chk.skipped_reason,
                 )
                 for chk in result.checks
             ],
@@ -5914,6 +5916,8 @@ def _run_to_record(vrun) -> ValidationRunRecord:
                         detail=chk.detail,
                         expected=chk.expected,
                         actual=chk.actual,
+                        skipped=chk.skipped,
+                        skipped_reason=chk.skipped_reason,
                     )
                     for chk in r.checks
                 ],

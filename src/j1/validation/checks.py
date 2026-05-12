@@ -54,6 +54,13 @@ class _CheckContext:
  Kept in one struct so `run_checks` doesn't grow a 10-arg
  signature, and so unit tests can construct a context directly
  without going through the full service.
+
+ ``chunks_expected`` tells the chunk-presence check whether the
+ engine that produced this response actually returns retrieved
+ chunks. The pure-native engine (``lightrag_native``) does NOT
+ — by design — so a missing chunks list there is the correct
+ outcome, not a failure. Defaults to True (the legacy BM25 /
+ with-quality-evidence path).
  """
 
     ctx: ProjectContext
@@ -63,6 +70,7 @@ class _CheckContext:
     citations: list[ValidationCitationDTO]
     citation_required: bool
     artifact_registry: ArtifactRegistry
+    chunks_expected: bool = True
 
 
 # ---- abstain regex ---------------------------------------------
@@ -128,6 +136,24 @@ def _check_answer_non_empty(ctx_: _CheckContext) -> ValidationCheckDTO:
 
 def _check_retrieved_chunks_present(ctx_: _CheckContext) -> ValidationCheckDTO:
     count = len(ctx_.retrieved_chunks)
+    if not ctx_.chunks_expected:
+        # Pure-native engine doesn't return chunks by design. The
+        # check is N/A — skip it so the validation status doesn't
+        # report a misleading "failed" when the engine never
+        # promised chunks in the first place.
+        return ValidationCheckDTO(
+            name="retrieved_chunks_present",
+            severity="required",
+            passed=False,
+            skipped=True,
+            skipped_reason=(
+                "engine does not surface retrieved chunks "
+                "(pure-native answer path)"
+            ),
+            detail=None,
+            expected="N/A (pure-native engine)",
+            actual=count,
+        )
     passed = count >= 1
     return ValidationCheckDTO(
         name="retrieved_chunks_present",
@@ -267,11 +293,20 @@ def _check_retrieved_chunks_belong_to_run(
  will already have failed in that case so we don't double-count.
  """
     if not ctx_.retrieved_chunks:
+        # Skip rather than fake-pass. A "passed" verdict here is
+        # misleading because there's nothing to verify; the
+        # validation tab was rendering a green check next to a
+        # row that had zero chunks. The pure-native /
+        # candidate-empty cases are surfaced separately
+        # (``retrieved_chunks_present`` or the engine's
+        # ``answer_provider`` field).
         return ValidationCheckDTO(
             name="retrieved_chunks_belong_to_run",
             severity="required",
-            passed=True,
-            detail="no retrieved chunks to check (covered by retrieved_chunks_present)",
+            passed=False,
+            skipped=True,
+            skipped_reason="no retrieved chunks to check",
+            detail=None,
             expected=ctx_.run_id,
             actual=None,
         )
@@ -302,11 +337,15 @@ def _check_citations_belong_to_run(
  citation with `run_id is None` counts as a fail — every citation
  that survived the FTS run-scope filter MUST carry the run id."""
     if not ctx_.citations:
+        # Skip rather than fake-pass — same rationale as the
+        # retrieved-chunks-belong-to-run check above.
         return ValidationCheckDTO(
             name="citations_belong_to_run",
             severity="required",
-            passed=True,
-            detail="no citations to check",
+            passed=False,
+            skipped=True,
+            skipped_reason="no citations to check",
+            detail=None,
             expected=ctx_.run_id,
             actual=None,
         )
@@ -570,6 +609,7 @@ def run_checks(
     expected_answer_points: list[str] | None = None,
     question: str | None = None,
     judge: LLMJudge | None = None,
+    chunks_expected: bool = True,
 ) -> list[ValidationCheckDTO]:
     """Run the deterministic check suite + optional judge checks.
 
@@ -600,6 +640,7 @@ def run_checks(
         citations=citations,
         citation_required=citation_required,
         artifact_registry=artifact_registry,
+        chunks_expected=chunks_expected,
     )
     checks: list[ValidationCheckDTO] = []
 
@@ -661,6 +702,9 @@ def aggregate_status(checks: list[ValidationCheckDTO]) -> ValidationStatus:
     """Roll up per-check outcomes into the single `validationStatus`
  field on the response.
 
+ Skipped checks (``check.skipped=True``) never count towards pass
+ or fail — they didn't run, so they can't contribute either way.
+
  ships only `required` checks, so the aggregation reduces
  to "any required failed → failed; else passed". The
  `passed_with_warnings` branch exists for forward-compat with
@@ -669,12 +713,14 @@ def aggregate_status(checks: list[ValidationCheckDTO]) -> ValidationStatus:
  directly when an exception bubbles out of the query call).
  """
     has_required_fail = any(
-        not c.passed and c.severity == "required" for c in checks
+        not c.skipped and not c.passed and c.severity == "required"
+        for c in checks
     )
     if has_required_fail:
         return "failed"
     has_optional_fail = any(
-        not c.passed and c.severity == "optional" for c in checks
+        not c.skipped and not c.passed and c.severity == "optional"
+        for c in checks
     )
     if has_optional_fail:
         return "passed_with_warnings"

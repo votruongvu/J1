@@ -596,6 +596,11 @@ export interface ValidationCheck {
   detail?: string | null;
   expected?: unknown;
   actual?: unknown;
+  // ``skipped=true`` means the check's precondition wasn't met
+  // (e.g. zero retrieved chunks for chunks-belong-to-run). FE
+  // renders this as a neutral "N/A" rather than green ✓.
+  skipped?: boolean;
+  skippedReason?: string | null;
 }
 
 export interface ValidationCitation {

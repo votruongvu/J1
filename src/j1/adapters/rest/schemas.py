@@ -425,6 +425,12 @@ class ValidationCheckRecord(CamelModel):
  `validationStatus` to `failed`. `severity=optional` failures
  flip it to `passed_with_warnings`. `severity` and
  `passed` together are the canonical badge inputs.
+
+ ``skipped=true`` means "this check did not run because its
+ precondition wasn't met" (e.g. zero retrieved chunks for the
+ chunks-belong-to-run check). FE should render a neutral
+ "N/A" / "skipped" badge — not a green check. ``skipped`` checks
+ never affect ``validationStatus``.
  """
 
     name: str
@@ -433,6 +439,8 @@ class ValidationCheckRecord(CamelModel):
     detail: str | None = None
     expected: Any | None = None
     actual: Any | None = None
+    skipped: bool = False
+    skipped_reason: str | None = None
 
 
 class RetrievedChunkRefRecord(CamelModel):
