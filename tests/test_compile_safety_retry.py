@@ -30,7 +30,6 @@ from j1.orchestration.activities.payloads import (
     CompileActivityInput,
     PersistCompileStrategyReportInput,
     ProjectScope,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from j1.orchestration.workflows.project_processing import (
@@ -327,11 +326,6 @@ def test_standard_compile_with_zero_chunks_retries_to_deep(monkeypatch):
                     "chunks_count": 1, "extracted_text_chars": 5000,
                 },
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("persist_compile_strategy_report"):
             strategy_report_payload.update(payload.payload)
             return ArtifactActivityResult(
@@ -342,7 +336,7 @@ def test_standard_compile_with_zero_chunks_retries_to_deep(monkeypatch):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r-1"], kinds=("validation_report",),
             )
@@ -457,11 +451,6 @@ def test_standard_compile_with_low_text_and_ocr_required_retries_to_deep(
                     "chunks_count": 4, "extracted_text_chars": 12000,
                 },
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("persist_compile_strategy_report"):
             strategy_payload.update(payload.payload)
             return ArtifactActivityResult(
@@ -472,7 +461,7 @@ def test_standard_compile_with_low_text_and_ocr_required_retries_to_deep(
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r"],
                 kinds=("validation_report",),
@@ -559,11 +548,6 @@ def test_deep_failure_does_not_retry_endlessly(monkeypatch):
                     "chunks_count": 0, "extracted_text_chars": 0,
                 },
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("persist_compile_strategy_report"):
             strategy_payload.update(payload.payload)
             return ArtifactActivityResult(
@@ -574,7 +558,7 @@ def test_deep_failure_does_not_retry_endlessly(monkeypatch):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r"],
                 kinds=("validation_report",),
@@ -630,11 +614,6 @@ def test_max_attempts_respected(monkeypatch):
                 kinds=("chunk",),
                 compile_metrics={"chunks_count": 0, "extracted_text_chars": 0},
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("persist_compile_strategy_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["sr"],
@@ -644,7 +623,7 @@ def test_max_attempts_respected(monkeypatch):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r"],
                 kinds=("validation_report",),
@@ -689,11 +668,6 @@ def test_retry_disabled_skips_evaluator_entirely(monkeypatch):
                 kinds=("chunk",),
                 compile_metrics={"chunks_count": 0, "extracted_text_chars": 0},
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("persist_compile_strategy_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["sr"],
@@ -703,7 +677,7 @@ def test_retry_disabled_skips_evaluator_entirely(monkeypatch):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r"],
                 kinds=("validation_report",),
@@ -759,11 +733,6 @@ def test_retry_does_not_double_write_chunks(monkeypatch):
                 kinds=("chunk",),
                 compile_metrics={"chunks_count": 1, "extracted_text_chars": 5000},
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("persist_compile_strategy_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["sr"],
@@ -773,7 +742,7 @@ def test_retry_does_not_double_write_chunks(monkeypatch):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r"],
                 kinds=("validation_report",),

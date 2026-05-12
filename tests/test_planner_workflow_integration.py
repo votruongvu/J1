@@ -36,7 +36,6 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     ProcessingActivityResult,
     ProjectScope,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from j1.orchestration.workflows.project_processing import (
@@ -141,15 +140,8 @@ def _full_pipeline_handler(*, profile: DocumentProfile | None = None):
             return None
         if name.endswith("report_step_lifecycle"):
             return None
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed",
-                passed=True,
-            )
         if (
-            name.endswith("persist_validation_report")
-            or name.endswith("persist_final_summary")
+            name.endswith("persist_final_summary")
             or name.endswith("persist_error_report")
             or name.endswith("persist_compile_strategy_report")
             or name.endswith("persist_post_compile_enrich_plan")
@@ -373,7 +365,6 @@ def test_profile_document_failure_under_fail_closed_surfaces_as_workflow_failure
             return None
         if (
             name.endswith("persist_error_report")
-            or name.endswith("persist_validation_report")
             or name.endswith("persist_final_summary")
         ):
             return ArtifactActivityResult(
@@ -425,15 +416,8 @@ def test_profile_document_failure_under_fail_open_continues_with_settings(
             return None
         if name.endswith("report_step_lifecycle"):
             return None
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed",
-                passed=True,
-            )
         if (
-            name.endswith("persist_validation_report")
-            or name.endswith("persist_final_summary")
+            name.endswith("persist_final_summary")
             or name.endswith("persist_compile_strategy_report")
             or name.endswith("persist_post_compile_enrich_plan")
         ):

@@ -24,7 +24,7 @@ from j1.orchestration.workflows.project_processing import (
     ProjectProcessingWorkflow,
     WorkflowState,
 )
-from j1.processing.stage_validators import verify_compile_output_health
+from j1.processing.compile_verification import verify_compile_output_health
 from j1.runs.models import (
     FAILURE_CODE_CHUNK_FAILED,
     FAILURE_CODE_INDEX_FAILED,

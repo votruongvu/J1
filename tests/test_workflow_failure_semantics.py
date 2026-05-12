@@ -32,7 +32,6 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     ProcessingActivityResult,
     ProjectScope,
-    StageValidationActivityResult,
     ValidateContextResult,
     VerifyCompileActivityResult,
 )
@@ -379,15 +378,6 @@ def _run_with_finalize_raise(monkeypatch, *, finalize_exc: Exception):
         if name.endswith("verify_compile_output"):
             return VerifyCompileActivityResult(
                 passed=True, chunk_count=1, artifact_count=1,
-            )
-        if name.endswith("validate_stage"):
-            # `passed=True` lets the workflow record the stage as
-            # successfully validated so we reach `_finalize`.
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed",
-                passed=True,
-                check_count=1,
             )
         if name.endswith(".finalize"):
             raise finalize_exc

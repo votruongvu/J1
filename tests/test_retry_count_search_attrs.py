@@ -25,7 +25,6 @@ from j1.orchestration.activities.payloads import (
     ProcessingActivityResult,
     ProjectScope,
     RunEnrichmentStageResult,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from j1.orchestration.workflows import project_processing as workflow_mod
@@ -118,12 +117,6 @@ def _handler(*, enrichment_retry_count: int = 0):
                     "chunks_count": 1,
                     "extracted_text_chars": 15_000,
                 },
-            )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=getattr(payload, "stage_name", "compile"),
-                validation_status="passed",
-                passed=True,
             )
         if name.endswith("run_enrichment_stage"):
             return RunEnrichmentStageResult(

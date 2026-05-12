@@ -199,74 +199,6 @@ class ProcessingService:
             f"failed to persist error_report artifact for run {run_id!r}"
         )
 
-    def persist_validation_report(
-        self,
-        ctx: ProjectContext,
-        *,
-        run_id: str,
-        document_id: str | None,
-        passed: bool,
-        errors: list[str],
-        rules_evaluated: list[str] | None = None,
-        actor: str = "system",
-    ) -> ArtifactRecord:
-        """Write a `validation_report.json` artifact summarising the
- outcome of `_validate_completion`.
-
- Persisted on every terminal transition (success OR failure),
- so operators can see WHICH rules ran and WHICH ones tripped
- without re-running validation. Backs the `validation_report`
- kind in the artifact contract."""
-        import json as _json
-        from j1.processing.results import (
-            ARTIFACT_KIND_VALIDATION_REPORT,
-            ArtifactDraft,
-            ArtifactProcessingResult,
-            ResultStatus,
-        )
-        from j1.workspace.layout import WorkspaceArea
-        # action + target_kind constants live at module top of this file
-
-        payload = {
-            "schema_version": "1",
-            "run_id": run_id,
-            "document_id": document_id,
-            "passed": passed,
-            "errors": list(errors or []),
-            "rules_evaluated": list(rules_evaluated or []),
-            "created_at": self._clock().isoformat(),
-        }
-        draft = ArtifactDraft(
-            kind=ARTIFACT_KIND_VALIDATION_REPORT,
-            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            suggested_extension=".json",
-            source_document_ids=[document_id] if document_id else [],
-            metadata={
-                "filename": f"validation_report_{run_id}.json",
-                "passed": passed,
-                "error_count": len(errors or []),
-            },
-        )
-        result = ArtifactProcessingResult(
-            status=ResultStatus.SUCCEEDED, drafts=[draft],
-        )
-        registered = self._handle_artifact_output(
-            ctx, result,
-            area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
-            target_kind=TARGET_DOCUMENT,
-            target_id=document_id or run_id,
-            actor=actor,
-            correlation_id=run_id,
-            processor_kind=None,
-            source_document_ids=[document_id] if document_id else [],
-        )
-        if registered.artifacts:
-            return registered.artifacts[0]
-        raise RuntimeError(
-            f"failed to persist validation_report artifact for run {run_id!r}"
-        )
-
     def persist_compile_strategy_report(
         self,
         ctx: ProjectContext,
@@ -278,9 +210,9 @@ class ProcessingService:
     ) -> ArtifactRecord:
         """Write a `compile_strategy_report` artifact summarising the
  AssessmentPlan + CompileConfig + per-attempt timeline + final
- quality verdict for one document's compile stage. Mirrors
- `persist_validation_report`'s shape so the FE artifact-listing
- surface picks it up uniformly.
+ quality verdict for one document's compile stage. Uses the same
+ artifact registration helper as the other per-run reports so the
+ FE artifact-listing surface picks it up uniformly.
 
  `payload` is the JSON-serialisable dict the workflow builds
  — the service doesn't import the assessment / retry
@@ -655,81 +587,6 @@ class ProcessingService:
         raise RuntimeError(
             "failed to persist initial_execution_plan artifact for "
             f"run {run_id!r}"
-        )
-
-    def persist_stage_validation_report(
-        self,
-        ctx: ProjectContext,
-        *,
-        run_id: str,
-        document_id: str | None,
-        stage_name: str,
-        attempt: int,
-        payload: dict,
-        actor: str = "system",
-    ) -> ArtifactRecord:
-        """Write a `stage_validation_report` artifact for a single
- ingestion stage. Mirrors `persist_validation_report` but
- scoped to one stage (vs. the whole-run summary).
-
- `payload` is the JSON-serialisable shape returned by
- `StageValidationResult.to_payload` — the service layer
- doesn't import the dataclass to keep the module dependency
- tree minimal; the activity caller serialises before
- invoking. Filename includes the stage name and attempt so
- re-validation (e.g. on resume) doesn't overwrite the prior
- attempt's report. The artifact is registered under the same
- run_id correlation as everything else the run produces, so
- `_resolve_run_artifacts` finds it without lineage walks."""
-        import json as _json
-        from j1.processing.results import (
-            ARTIFACT_KIND_STAGE_VALIDATION_REPORT,
-            ArtifactDraft,
-            ArtifactProcessingResult,
-            ResultStatus,
-        )
-        from j1.workspace.layout import WorkspaceArea
-        # action + target_kind constants live at module top of this file
-
-        validation_status = str(payload.get("validation_status") or "unknown")
-        check_count = len(payload.get("checks") or [])
-        error_count = len(payload.get("errors") or [])
-        warning_count = len(payload.get("warnings") or [])
-        draft = ArtifactDraft(
-            kind=ARTIFACT_KIND_STAGE_VALIDATION_REPORT,
-            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            suggested_extension=".json",
-            source_document_ids=[document_id] if document_id else [],
-            metadata={
-                "filename":
-                    f"stage_validation_{stage_name}_{run_id}_{attempt}.json",
-                "stage_name": stage_name,
-                "attempt": attempt,
-                "validation_status": validation_status,
-                "check_count": check_count,
-                "error_count": error_count,
-                "warning_count": warning_count,
-            },
-        )
-        result = ArtifactProcessingResult(
-            status=ResultStatus.SUCCEEDED, drafts=[draft],
-        )
-        registered = self._handle_artifact_output(
-            ctx, result,
-            area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
-            target_kind=TARGET_DOCUMENT,
-            target_id=document_id or run_id,
-            actor=actor,
-            correlation_id=run_id,
-            processor_kind=None,
-            source_document_ids=[document_id] if document_id else [],
-        )
-        if registered.artifacts:
-            return registered.artifacts[0]
-        raise RuntimeError(
-            "failed to persist stage_validation_report artifact for "
-            f"run {run_id!r} stage {stage_name!r}"
         )
 
     def persist_final_summary(

@@ -29,7 +29,6 @@ from j1.orchestration.activities.payloads import (
     CompileActivityInput,
     ProcessingActivityResult,
     ProjectScope,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from j1.orchestration.workflows.project_processing import (
@@ -361,16 +360,11 @@ def test_fail_open_lets_workflow_complete_when_assessment_planner_raises(
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["a-1"], kinds=("chunk",),
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("set_document_status"):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r-1"], kinds=("validation_report",),
             )
@@ -431,7 +425,7 @@ def test_fail_closed_marks_compile_failed_when_assessment_planner_raises(
                 status="succeeded", artifact_ids=["err-1"],
                 kinds=("error_report",),
             )
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary"):
+        if name.endswith("persist_final_summary"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r-1"],
                 kinds=("validation_report",),

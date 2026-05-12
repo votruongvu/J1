@@ -83,22 +83,6 @@ class QueryActivityInput:
 
 
 @dataclass(frozen=True)
-class PersistValidationReportInput:
-    """Workflow → activity payload for the `validation_report`
- artifact. Persisted before the COMPLETED transition (or by the
- failure handler when validation itself triggered the failure)
- so operators can see WHICH rules ran and which ones tripped."""
-
-    scope: ProjectScope
-    run_id: str
-    document_id: str | None
-    passed: bool
-    errors: list[str] = field(default_factory=list)
-    rules_evaluated: list[str] = field(default_factory=list)
-    actor: str = "system"
-
-
-@dataclass(frozen=True)
 class PersistFinalSummaryInput:
     """Workflow → activity payload for the `final_summary` artifact.
  Carries the at-a-glance run outcome at terminal state."""
@@ -370,51 +354,6 @@ class FastLLMConsultEnrichResult:
     recommendation: str | None = None  # never "skip" — the activity drops it
     add_reasons: list[str] = field(default_factory=list)
     add_recommended_tasks: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ValidateStageInput:
-    """Workflow → activity payload for `validate_stage`. Carries the
- stage name + the artifacts the stage produced + the scope keys
- the validator uses for cross-checks. The activity reads the
- artifact files back from disk, runs the per-stage validator,
- persists a `stage_validation_report` artifact, and returns the
- result so the workflow can decide between `_record_step(COMPLETED)`
- and `_record_step(FAILED)`."""
-
-    scope: ProjectScope
-    run_id: str
-    document_id: str | None
-    stage_name: str  # one of STAGE_COMPILE / GENERATE_CHUNKS / ENRICH / GRAPH
-    output_artifact_ids: list[str] = field(default_factory=list)
-    # Optional flags for stages whose validator's behaviour depends
-    # on the run's plan. `enrich_required` / `graph_required` come
-    # from the workflow's `_stage_enabled` decision.
-    enrich_required: bool = False
-    graph_required: bool = False
-    # For graph: the chunk artifact ids the graph should be grounded
-    # in. Empty when the workflow doesn't track them (legacy).
-    chunk_artifact_ids: list[str] = field(default_factory=list)
-    attempt: int = 1
-    actor: str = "system"
-
-
-@dataclass(frozen=True)
-class StageValidationActivityResult:
-    """Workflow → activity return for `validate_stage`. Mirrors the
- `StageValidationResult` shape but as a Temporal-data-converter
- friendly dataclass. The workflow inspects `passed` to gate the
- COMPLETED transition; full payload is also persisted as the
- `stage_validation_report` artifact."""
-
-    stage_name: str
-    validation_status: str
-    passed: bool
-    error_count: int = 0
-    warning_count: int = 0
-    check_count: int = 0
-    artifact_id: str | None = None
-    errors: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

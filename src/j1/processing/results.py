@@ -41,13 +41,6 @@ ARTIFACT_KIND_PLANNING_RESULT = "planning_result"
 # message, last-known stage / step, and the per-step status table
 # at the moment of failure.
 ARTIFACT_KIND_ERROR_REPORT = "error_report"
-# Pre-finalize validation snapshot. Persisted by the workflow's
-# COMPLETED transition (or by the FAILED handler when validation
-# itself triggered the failure). Carries the list of validation
-# errors (empty when validation passed) plus the rules that ran,
-# so operators can see WHY the run was marked succeeded /
-# completed_with_warnings / failed without re-running validation.
-ARTIFACT_KIND_VALIDATION_REPORT = "validation_report"
 # Final-summary artifact written at terminal state — succeeded OR
 # failed. Carries the at-a-glance run outcome: final_status,
 # document_id, planner mode, executed-stage tally, artifact tally
@@ -55,13 +48,6 @@ ARTIFACT_KIND_VALIDATION_REPORT = "validation_report"
 # this run?" overview without forcing the FE to assemble it from
 # separate endpoints.
 ARTIFACT_KIND_FINAL_SUMMARY = "final_summary"
-# Per-stage validation report. One artifact per durable stage per
-# run (compile / generate_chunks / enrich / graph). Carries the
-# `StageValidationResult` payload so operators can audit which
-# checks ran and which tripped. Distinct from the run-level
-# `validation_report` (which aggregates the per-stage outcomes
-# at terminal transition).
-ARTIFACT_KIND_STAGE_VALIDATION_REPORT = "stage_validation_report"
 # Compile-strategy + safety-retry summary. One artifact per
 # compile-stage execution (or sequence of retries) carrying the
 # AssessmentPlan, the resolved CompileConfig, the per-attempt
@@ -121,8 +107,6 @@ __all__ = [
     "ARTIFACT_KIND_PLANNING_RESULT",
     "ARTIFACT_KIND_POST_COMPILE_ENRICH_PLAN",
     "ARTIFACT_KIND_COMPILE_STRATEGY_REPORT",
-    "ARTIFACT_KIND_STAGE_VALIDATION_REPORT",
-    "ARTIFACT_KIND_VALIDATION_REPORT",
     "ArtifactDraft",
     "ArtifactProcessingResult",
     "CostBreakdown",

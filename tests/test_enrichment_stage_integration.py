@@ -32,7 +32,6 @@ from j1.orchestration.activities.payloads import (
     ProcessingActivityResult,
     ProjectScope,
     RunEnrichmentStageResult,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from j1.orchestration.workflows import project_processing as workflow_mod
@@ -130,12 +129,6 @@ def _build_handler(
                     "extracted_text_chars": 15_000,
                 },
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=getattr(payload, "stage_name", "compile"),
-                validation_status="passed",
-                passed=True,
-            )
         if name.endswith("run_enrichment_stage"):
             if enrichment_result is not None:
                 return enrichment_result
@@ -152,8 +145,7 @@ def _build_handler(
         if name.endswith("fast_llm_consult_enrich"):
             return ArtifactActivityResult(status="succeeded", artifact_ids=[])
         if (
-            name.endswith("persist_validation_report")
-            or name.endswith("persist_final_summary")
+            name.endswith("persist_final_summary")
             or name.endswith("persist_error_report")
             or name.endswith("persist_compile_strategy_report")
             or name.endswith("persist_post_compile_enrich_plan")

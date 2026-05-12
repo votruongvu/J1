@@ -287,9 +287,6 @@ def test_log_step_uses_safe_fields_only(monkeypatch):
     monkeypatch.setattr(workflow, "logger", _StubLogger())
 
     def _handler(method, payload, kwargs):
-        from j1.orchestration.activities.payloads import (
-            StageValidationActivityResult,
-        )
         name = _activity_name(method)
         if name.endswith("validate_context"):
             return ValidateContextResult(valid=True)
@@ -301,11 +298,6 @@ def test_log_step_uses_safe_fields_only(monkeypatch):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-1"],
                 kinds=("chunk",),
-            )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
             )
         return None
 

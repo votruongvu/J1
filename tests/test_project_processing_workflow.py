@@ -398,158 +398,6 @@ def test_rebuild_index_only_rejects_when_no_indexer_kind(monkeypatch):
     assert "indexer_kind" in str(excinfo.value)
 
 
-def test_stage_validation_failure_blocks_completed_status(monkeypatch):
-    from j1.processing.status import StepStatus
-
-    """When `validate_stage` returns `passed=False`, the workflow MUST
- NOT mark the stage COMPLETED. Instead it records FAILED + raises
- ApplicationError so Temporal sees the workflow as Failed.
-
- This is the core "never mark succeeded just because a function
- returned" rule. The compile activity returns succeeded; the
- validator (mocked here) says output is invalid; the workflow
- must block the COMPLETED transition."""
-    from j1.orchestration.activities.payloads import (
-        StageValidationActivityResult,
-    )
-    def handler(method, payload, kwargs):
-        name = _activity_name(method)
-        if name.endswith("validate_context"):
-            return ValidateContextResult(valid=True)
-        if name.endswith("list_pending_documents"):
-            return ["doc-1"]
-        if name.endswith("compile"):
-            # Compile activity returns "succeeded" — but the
-            # validator below disagrees.
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["c-1"],
-                kinds=("chunk",),
-            )
-        if name.endswith("validate_stage"):
-            # Validator says: output is unreadable / scope wrong /
-            # zero chunks / etc. Workflow MUST treat this as a
-            # stage failure.
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="failed",
-                passed=False,
-                error_count=1,
-                check_count=1,
-                errors=["chunk artifact storage missing"],
-            )
-        if name.endswith("set_document_status"):
-            return None
-        if name.endswith("finalize"):
-            return None
-        if name.endswith("persist_error_report"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["err-1"],
-                kinds=("error_report",),
-            )
-        if name.endswith("persist_validation_report"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["vr-1"],
-                kinds=("validation_report",),
-            )
-        if name.endswith("persist_final_summary"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["fs-1"],
-                kinds=("final_summary",),
-            )
-        return None
-
-    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
-    wf = ProjectProcessingWorkflow()
-    request = ProjectProcessingRequest(
-        scope=_scope(),
-        compiler_kind="c",
-        # correlation_id required for the validation gate to engage.
-        correlation_id="run-validation-fail-1",
-    )
-    with pytest.raises(ApplicationError) as excinfo:
-        asyncio.run(wf.run(request))
-    assert excinfo.value.type == ERROR_TYPE_REQUIRED_STEP_FAILED
-    # The compile step is recorded as FAILED with the validator's
-    # error message in the reason — auditable trail of WHY the
-    # stage was rejected.
-    compile_failures = [
-        r for r in wf._step_results
-        if r.step == "compile" and r.status == StepStatus.FAILED
-    ]
-    assert len(compile_failures) == 1
-    assert "storage missing" in (compile_failures[0].reason or "")
-    # And critically: NO COMPLETED entry for compile. The workflow
-    # state shouldn't carry a misleading "compile succeeded" record
-    # when the validator rejected it.
-    compile_completed = [
-        r for r in wf._step_results
-        if r.step == "compile" and r.status == StepStatus.COMPLETED
-    ]
-    assert compile_completed == []
-
-
-def test_aggregator_blocks_succeeded_when_durable_stage_skips_validation(monkeypatch):
-    """The `_validate_completion` aggregator must reject SUCCEEDED
- when a durable stage was recorded COMPLETED but no
- `stage_validation_report` was persisted. Defense against a
- future code path bypassing the per-stage gate.
-
- Setup: the test handler returns successful compile + skips the
- `validate_stage` activity entirely (returns None) — simulating
- a bug where the gate is missing from the workflow."""
-    def handler(method, payload, kwargs):
-        name = _activity_name(method)
-        if name.endswith("validate_context"):
-            return ValidateContextResult(valid=True)
-        if name.endswith("list_pending_documents"):
-            return ["doc-1"]
-        if name.endswith("compile"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["c-1"],
-                kinds=("chunk",),
-            )
-        if name.endswith("validate_stage"):
-            # Simulate the gate not running (returns None — not a
-            # real StageValidationActivityResult). Triggers the
-            # aggregator's "no validation report persisted" rule.
-            return None
-        if name.endswith("set_document_status"):
-            return None
-        if name.endswith("finalize"):
-            return None
-        if name.endswith("persist_error_report"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["err-1"],
-                kinds=("error_report",),
-            )
-        if name.endswith("persist_validation_report"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["vr-1"],
-                kinds=("validation_report",),
-            )
-        if name.endswith("persist_final_summary"):
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["fs-1"],
-                kinds=("final_summary",),
-            )
-        return None
-
-    _patch_workflow_runtime(monkeypatch, exec_handler=handler)
-    wf = ProjectProcessingWorkflow()
-    request = ProjectProcessingRequest(
-        scope=_scope(),
-        compiler_kind="c",
-        correlation_id="run-aggregator-1",
-    )
-    # The workflow's `_validate_stage_output` returns a synthetic
-    # FAILED result when the activity returns None (because the
-    # `result.passed` access raises AttributeError → except clause
-    # fires). So the gate trips during compile, before the aggregator
-    # ever runs. Either way, no SUCCEEDED.
-    with pytest.raises(ApplicationError):
-        asyncio.run(wf.run(request))
-
-
 def test_resume_skips_enrich_and_graph_when_listed_in_resume_context(monkeypatch):
     """When `resume_completed_steps` lists enrich + graph, the workflow
  must NOT dispatch the corresponding activities — it should record
@@ -1706,16 +1554,6 @@ def test_failed_run_persists_error_report_artifact(monkeypatch):
                 status="succeeded", artifact_ids=["err-1"],
                 kinds=("error_report",),
             )
-        if name.endswith("validate_stage"):
-            # Stage-validation gate: pass through. This test exercises
-            # the FAIL path on graph (build_graph activity returns
-            # status="failed" upstream); compile's validation gate
-            # must NOT block. Return a passed result so the workflow
-            # records compile COMPLETED + reaches the build_graph
-            # failure that this test is asserting on.
-            from j1.orchestration.activities.payloads import (
-                StageValidationActivityResult,
-            )
             return StageValidationActivityResult(
                 stage_name=payload.stage_name,
                 validation_status="passed",
@@ -1753,16 +1591,12 @@ def test_failed_run_persists_error_report_artifact(monkeypatch):
     assert "graph" in step_names
 
 
-def test_completed_run_persists_validation_report_and_final_summary(monkeypatch):
-    """A successful run must persist BOTH `validation_report` and
- `final_summary` artifacts at the COMPLETED transition. They land
- via the standard artifact-listing surface so the FE / operators
- have a single canonical run-outcome artifact to read.
-
- The validation report carries the rules that ran + an empty
- error list (validation passed). The final summary carries the
- final_status + executed-step tally + artifact-kind counts."""
-    seen_validation: list = []
+def test_completed_run_persists_final_summary(monkeypatch):
+    """A successful run must persist a `final_summary` artifact at the
+ COMPLETED transition. Lands via the standard artifact-listing
+ surface so the FE / operators have a single canonical
+ run-outcome artifact to read. Carries the final_status +
+ executed-step tally + artifact-kind counts."""
     seen_final_summary: list = []
 
     def handler(method, payload, kwargs):
@@ -1780,31 +1614,11 @@ def test_completed_run_persists_validation_report_and_final_summary(monkeypatch)
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report"):
-            seen_validation.append(payload)
-            return ArtifactActivityResult(
-                status="succeeded", artifact_ids=["vr-1"],
-                kinds=("validation_report",),
-            )
         if name.endswith("persist_final_summary"):
             seen_final_summary.append(payload)
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["fs-1"],
                 kinds=("final_summary",),
-            )
-        if name.endswith("validate_stage"):
-            # Stage-validation gate: pass through. The workflow's
-            # aggregator rule requires every COMPLETED durable stage
-            # to have a recorded validation; without this branch
-            # `_validate_completion` would block the SUCCEEDED
-            # transition with "no stage_validation_report" errors.
-            from j1.orchestration.activities.payloads import (
-                StageValidationActivityResult,
-            )
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed",
-                passed=True,
             )
         return None  # other reporter activities
 
@@ -1820,14 +1634,6 @@ def test_completed_run_persists_validation_report_and_final_summary(monkeypatch)
     result = asyncio.run(wf.run(request))
 
     assert result.state == WorkflowState.COMPLETED.value
-
-    # Validation report fired exactly once with passed=True.
-    assert len(seen_validation) == 1
-    vr = seen_validation[0]
-    assert vr.passed is True
-    assert vr.errors == []
-    assert "at_least_one_artifact_produced" in vr.rules_evaluated
-
     # Final summary fired exactly once with the success status +
     # the executed-step tally including the compile step.
     assert len(seen_final_summary) == 1

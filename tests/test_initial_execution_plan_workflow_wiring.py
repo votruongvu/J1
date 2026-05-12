@@ -30,7 +30,6 @@ from j1.orchestration.activities.payloads import (
     BuildInitialExecutionPlanResult,
     ProjectScope,
     ProcessingActivityResult,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from temporalio import workflow as temporal_workflow_mod
@@ -128,11 +127,6 @@ def _make_handler(
                     "chunks_count": 3, "extracted_text_chars": 200,
                 },
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=getattr(payload, "stage_name", "compile"),
-                validation_status="passed", passed=True,
-            )
         if name.endswith("index"):
             return ProcessingActivityResult(status="succeeded")
         if name.endswith("finalize"):
@@ -146,8 +140,7 @@ def _make_handler(
         if name.endswith("report_terminal"):
             return None
         if (
-            name.endswith("persist_validation_report")
-            or name.endswith("persist_final_summary")
+            name.endswith("persist_final_summary")
             or name.endswith("persist_error_report")
             or name.endswith("persist_compile_strategy_report")
             or name.endswith("persist_post_compile_enrich_plan")
@@ -299,11 +292,6 @@ def test_workflow_falls_back_when_build_activity_returns_none(monkeypatch):
                 compile_metrics={
                     "chunks_count": 3, "extracted_text_chars": 200,
                 },
-            )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=getattr(payload, "stage_name", "compile"),
-                validation_status="passed", passed=True,
             )
         if name.endswith("index"):
             return ProcessingActivityResult(status="succeeded")

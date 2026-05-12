@@ -29,7 +29,6 @@ from j1.orchestration.activities.payloads import (
     CompileActivityInput,
     ProcessingActivityResult,
     ProjectScope,
-    StageValidationActivityResult,
     ValidateContextResult,
 )
 from j1.orchestration.workflows.project_processing import (
@@ -112,16 +111,11 @@ def test_workflow_threads_assessment_plan_payload_into_compile_activity(
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["art-1"], kinds=("chunk",),
             )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed", passed=True,
-            )
         if name.endswith("set_document_status"):
             return None
         if name.endswith("finalize"):
             return None
-        if name.endswith("persist_validation_report") or name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
+        if name.endswith("persist_final_summary") or name.endswith("persist_error_report"):
             return ArtifactActivityResult(
                 status="succeeded", artifact_ids=["r-1"], kinds=("validation_report",),
             )

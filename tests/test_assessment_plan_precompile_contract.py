@@ -33,7 +33,6 @@ from j1.orchestration.activities.payloads import (
     ArtifactActivityResult,
     BuildInitialExecutionPlanResult,
     ProjectScope,
-    StageValidationActivityResult,
     ValidateContextResult,
     VerifyCompileActivityResult,
 )
@@ -134,13 +133,6 @@ def test_initial_execution_plan_persisted_before_compile_invocation(
         if name.endswith("verify_compile_output"):
             return VerifyCompileActivityResult(
                 passed=True, chunk_count=1, artifact_count=1,
-            )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed",
-                passed=True,
-                check_count=1,
             )
         return None
 
@@ -400,13 +392,6 @@ def test_workflow_threads_built_assessment_plan_into_compile(monkeypatch):
         if name.endswith("verify_compile_output"):
             return VerifyCompileActivityResult(
                 passed=True, chunk_count=1, artifact_count=1,
-            )
-        if name.endswith("validate_stage"):
-            return StageValidationActivityResult(
-                stage_name=payload.stage_name,
-                validation_status="passed",
-                passed=True,
-                check_count=1,
             )
         return None
 
