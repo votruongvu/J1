@@ -148,6 +148,26 @@ _VALID_QUERY_PROVIDER_MODES: frozenset[str] = frozenset({
 _DEFAULT_NATIVE_QUERY_TIMEOUT_SECONDS = 30.0
 
 
+# Preview-length cap for the ``bm25_answer_preview`` /
+# ``native_answer_preview`` debug fields. The FE renders these
+# as one-line summaries in the Final Answer / debug panels; 240
+# matches the existing ``_PREVIEW_MAX_CHARS`` on retrieved-chunk
+# previews so all preview widths look consistent.
+_ANSWER_PREVIEW_CAP = 240
+
+
+def _answer_preview(answer: str | None) -> str:
+    """Truncate an answer to a stable preview length. Used by the
+    debug payload so operators can compare native vs BM25
+    outputs side-by-side without scrolling the full response."""
+    if not answer:
+        return ""
+    text = str(answer).strip()
+    if len(text) <= _ANSWER_PREVIEW_CAP:
+        return text
+    return text[:_ANSWER_PREVIEW_CAP].rstrip() + "…"
+
+
 @dataclass(frozen=True)
 class _DispatchResult:
     """Outcome of one ``_dispatch_query`` call.
@@ -159,6 +179,14 @@ class _DispatchResult:
     answer; ``None`` means "use the local synthesizer's output."
     ``debug_extras`` carries mode-specific telemetry that gets
     merged into the manual-query debug payload.
+
+    ``answer_provider`` records which provider produced the
+    final user-visible answer text:
+      * ``"native"``         — native LightRAG answer.
+      * ``"bm25"``           — BM25 engine + local LLM
+                               synthesizer (the historical path).
+      * ``"bm25_fallback"``  — native attempted but failed; BM25
+                               was used as the fallback.
     """
 
     response: Any  # j1.query.models.QueryResponse — typed Any to
@@ -167,6 +195,7 @@ class _DispatchResult:
     native_answer: str | None
     native_latency_ms: int | None
     debug_extras: dict[str, Any]
+    answer_provider: str = "bm25"
 
 # Preview length for retrieved-chunk excerpts on the response. Mirrors
 # the chunk projector's value so the UI layer renders consistent
@@ -452,13 +481,25 @@ class IngestionValidationService:
             candidate_top_k_used=candidate_top_k,
             evidence_max_blocks=self._validation_evidence_max_blocks,
             scope_run_id=run.run_id,
+            question=request.question,
         )
         # Merge the dispatcher's mode-specific debug. ``debug_extras``
         # carries query_provider_mode / native_query_used /
-        # native_query_failed_reason / native_latency_ms /
-        # bm25_latency_ms / citation_augmentation_used /
-        # fallback_used — populated by ``_dispatch_query``.
+        # bm25_query_used / native_query_failed_reason /
+        # native_latency_ms / bm25_latency_ms /
+        # citation_augmentation_used / fallback_used /
+        # bm25_answer_preview / native_answer_preview /
+        # answer_provider — populated by ``_dispatch_query``.
         debug.update(dispatch.debug_extras)
+        # Provider-role surface. ``evidence_provider`` and
+        # ``citation_provider`` are constants today — BM25 is the
+        # only path that produces structured citations / evidence
+        # blocks. They're stamped explicitly so debug consumers
+        # don't have to infer "where did this come from" from
+        # other fields.
+        debug["answer_provider"] = dispatch.answer_provider
+        debug["evidence_provider"] = "bm25"
+        debug["citation_provider"] = "bm25"
         # Operator-readable retrieval breakdown. Helps confirm
         # whether failures are "FTS only returned N rows" vs
         # "FTS returned plenty but reranker / selection
@@ -583,15 +624,19 @@ class IngestionValidationService:
                 response=response,
                 native_answer=None,
                 native_latency_ms=None,
+                answer_provider="bm25",
                 debug_extras={
                     "query_provider_mode": mode,
                     "native_query_enabled": (
                         self._native_query_provider is not None
                     ),
                     "native_query_used": False,
+                    "bm25_query_used": True,
                     "bm25_latency_ms": bm25_latency,
                     "fallback_used": False,
                     "citation_augmentation_used": False,
+                    "bm25_answer_preview": _answer_preview(response.answer),
+                    "native_answer_preview": None,
                 },
             )
 
@@ -618,15 +663,19 @@ class IngestionValidationService:
             response=response,
             native_answer=None,
             native_latency_ms=None,
+            answer_provider="bm25",
             debug_extras={
                 "query_provider_mode": QUERY_PROVIDER_MODE_BM25,
                 "native_query_enabled": (
                     self._native_query_provider is not None
                 ),
                 "native_query_used": False,
+                "bm25_query_used": True,
                 "bm25_latency_ms": 0,
                 "fallback_used": False,
                 "citation_augmentation_used": False,
+                "bm25_answer_preview": _answer_preview(response.answer),
+                "native_answer_preview": None,
             },
         )
 
@@ -744,6 +793,8 @@ class IngestionValidationService:
         bm25_response = self._query_engine.query(ctx, query_request)
         bm25_latency = int((time.monotonic() - bm25_start) * 1000)
 
+        bm25_preview = _answer_preview(bm25_response.answer)
+
         if native_answer is None:
             # Native failed / timed out / not wired. Fall back to
             # pure BM25 if configured, else surface the failure
@@ -753,15 +804,19 @@ class IngestionValidationService:
                     response=bm25_response,
                     native_answer=None,
                     native_latency_ms=native_latency,
+                    answer_provider="bm25_fallback",
                     debug_extras={
                         "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
                         "native_query_enabled": True,
                         "native_query_used": False,
+                        "bm25_query_used": True,
                         "native_query_failed_reason": native_error,
                         "native_latency_ms": native_latency,
                         "bm25_latency_ms": bm25_latency,
                         "fallback_used": True,
                         "citation_augmentation_used": False,
+                        "bm25_answer_preview": bm25_preview,
+                        "native_answer_preview": None,
                     },
                 )
             # Fallback disabled. Return BM25 anyway (we need SOME
@@ -770,15 +825,19 @@ class IngestionValidationService:
                 response=bm25_response,
                 native_answer=None,
                 native_latency_ms=native_latency,
+                answer_provider="bm25",
                 debug_extras={
                     "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
                     "native_query_enabled": True,
                     "native_query_used": False,
+                    "bm25_query_used": True,
                     "native_query_failed_reason": native_error,
                     "native_latency_ms": native_latency,
                     "bm25_latency_ms": bm25_latency,
                     "fallback_used": False,
                     "citation_augmentation_used": False,
+                    "bm25_answer_preview": bm25_preview,
+                    "native_answer_preview": None,
                 },
             )
 
@@ -791,15 +850,19 @@ class IngestionValidationService:
             response=bm25_response,
             native_answer=native_answer,
             native_latency_ms=native_latency,
+            answer_provider="native",
             debug_extras={
                 "query_provider_mode": QUERY_PROVIDER_MODE_NATIVE,
                 "native_query_enabled": True,
                 "native_query_used": True,
+                "bm25_query_used": True,
                 "native_query_failed_reason": None,
                 "native_latency_ms": native_latency,
                 "bm25_latency_ms": bm25_latency,
                 "fallback_used": False,
                 "citation_augmentation_used": True,
+                "bm25_answer_preview": bm25_preview,
+                "native_answer_preview": _answer_preview(native_answer),
             },
         )
 
@@ -821,17 +884,22 @@ class IngestionValidationService:
             ctx=ctx, run=run, query_request=query_request,
         )
 
-        # Preview slices keep debug payloads bounded. 240 chars is
-        # the same cap the FE applies to ``preview`` fields, so
-        # operators see "what the model said in roughly one line."
-        _PREVIEW_CAP = 240
-        bm25_preview = (bm25_response.answer or "")[:_PREVIEW_CAP]
-        native_preview = (native_answer or "")[:_PREVIEW_CAP]
+        # Preview slices keep debug payloads bounded. The previews
+        # are top-level fields (``bm25_answer_preview`` /
+        # ``native_answer_preview``) in every mode so the FE can
+        # render them uniformly. The legacy ``hybrid_ab_*`` keys
+        # are kept as aliases for one release while existing
+        # callers migrate.
+        bm25_preview = _answer_preview(bm25_response.answer)
+        native_preview = (
+            _answer_preview(native_answer) if native_answer else None
+        )
 
         return _DispatchResult(
             response=bm25_response,
             native_answer=None,  # never overrides synthesized_answer
             native_latency_ms=native_latency,
+            answer_provider="bm25",
             debug_extras={
                 "query_provider_mode": QUERY_PROVIDER_MODE_HYBRID_AB,
                 "native_query_enabled": True,
@@ -840,12 +908,16 @@ class IngestionValidationService:
                 # the call SUCCEEDED, not whether it influenced
                 # output.
                 "native_query_used": native_answer is not None,
+                "bm25_query_used": True,
                 "native_query_failed_reason": native_error,
                 "native_latency_ms": native_latency,
                 "bm25_latency_ms": bm25_latency,
                 "fallback_used": False,
                 "citation_augmentation_used": False,
-                "hybrid_ab_native_answer_preview": native_preview,
+                "bm25_answer_preview": bm25_preview,
+                "native_answer_preview": native_preview,
+                # Legacy aliases retained for one release.
+                "hybrid_ab_native_answer_preview": native_preview or "",
                 "hybrid_ab_bm25_answer_preview": bm25_preview,
             },
         )
@@ -1603,6 +1675,7 @@ def _build_manual_query_debug(
     candidate_top_k_used: int | None = None,
     evidence_max_blocks: int | None = None,
     scope_run_id: str | None = None,
+    question: str | None = None,
 ) -> dict[str, Any]:
     """Build the debug-info dict surfaced on the response.
 
@@ -1788,13 +1861,75 @@ def _build_manual_query_debug(
         # field names also show up verbatim.
         "requested_top_k": requested_top_k,
         "candidate_top_k_used": candidate_top_k_used,
+        # ``raw_candidate_count`` is the operator-spec name for
+        # the count of rows returned by the engine before any
+        # filtering / reranking. Same value as
+        # ``fts_returned_count`` (kept for backward compat) —
+        # exposing under both names so debug consumers built
+        # against either contract keep working.
         "fts_returned_count": len(retrieved),
+        "raw_candidate_count": len(retrieved),
         "evidence_max_blocks": evidence_max_blocks,
         "selected_evidence_count": len(evidence_blocks),
         "raw_candidate_kinds": types_before,
         "selected_evidence_kinds": types_after,
+        # Top-block preview alias. Same content as
+        # ``top_evidence_preview`` (kept for backward compat)
+        # but exposed under the spec-listed name so debug
+        # consumers can grep for either.
+        "selected_evidence_preview": top_preview,
+        # Query-anchor coverage: does the selected evidence text
+        # contain ANY of the question's content tokens? Boolean,
+        # not a score — operators use it as a "does any query
+        # term land in the evidence at all" gate. Particularly
+        # useful in ``rag_native_primary`` where the answer comes
+        # from native but evidence comes from BM25 — if this is
+        # False, the augmented citations may not actually support
+        # the native answer's claims.
+        "query_anchors_in_evidence": _query_anchors_in_evidence(
+            evidence_blocks=evidence_blocks, question=question,
+        ),
         "scope_run_id": scope_run_id,
     }
+
+
+def _query_anchors_in_evidence(
+    *,
+    evidence_blocks: list[EvidenceBlockDTO],
+    question: str | None,
+) -> bool:
+    """Return True iff the selected evidence contains at least one
+    of the question's content tokens.
+
+    Reuses the reranker's term extractor (``extract_query_terms``)
+    so the anchor vocabulary matches what the reranker already
+    scores on. ``False`` is the operator-actionable signal — it
+    means BM25 selected blocks whose text doesn't surface any
+    question keyword, which is a strong hint that either:
+
+      * the FTS LIMIT was too tight and the right chunk wasn't in
+        the candidate pool,
+      * the reranker preferred a non-textual / off-topic chunk
+        based on other signals, or
+      * the question itself doesn't have indexable anchors (rare
+        for natural-language queries).
+
+    Empty inputs return ``False`` — there's no evidence to check.
+    """
+    if not evidence_blocks or not question:
+        return False
+    from j1.validation.rerank import extract_query_terms
+    terms = extract_query_terms(question)
+    if not terms:
+        return False
+    for block in evidence_blocks:
+        text = (block.text or "").lower()
+        if not text:
+            continue
+        for term in terms:
+            if term in text:
+                return True
+    return False
 
 
 def _evidence_blocks_from_chunks(
