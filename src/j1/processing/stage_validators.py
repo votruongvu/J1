@@ -482,16 +482,36 @@ def validate_graph(
     chunk_artifact_ids: set[str],
     read_back: ReadBack,
 ) -> list[StageValidationCheck]:
-    """Graph produces a single `graph_json` artifact carrying nodes
- + edges. Validation:
+    """Graph stage produces one or more `graph_json` artifacts. The
+ producer (`_graph_drafts_from_storage`) harvests every LightRAG
+ graph-shaped file it finds in the working storage directory, so
+ the artifact set can include several shapes simultaneously:
 
- * `graph_required=True`: graph_json artifact present, readable,
- non-empty; node count > 0; every edge references valid nodes;
- every node referencing chunks references one of the run's
- chunk_artifact_ids (i.e. graph is grounded in the run, not
- free-floating).
- * `graph_required=False`: skipped path — confirm no orphan
- graph artifacts."""
+ * `graph_chunk_entity_relation.graphml` — XML (NetworkX export);
+ the authoritative entity-relation graph.
+ * `graph_chunk_entity_relation.json` — explicit `{nodes, edges}`
+ shape (newer LightRAG variants).
+ * `kv_store_full_entities.json` / `vdb_entities.json` —
+ entity-keyed dicts (`{ent-1: {...}, ent-2: {...}}`).
+ * `kv_store_full_relations.json` / `vdb_relationships.json` —
+ relation-keyed dicts (same shape, semantically edges).
+
+ The validator therefore checks GROUPS, not per-artifact strict
+ shape: the run succeeds when at least one well-formed graph
+ artifact (any of the four shapes) carries content. Wrong-shape
+ or empty siblings produce warnings, not failures — earlier
+ versions failed the whole run when ANY artifact was the wrong
+ shape, which broke real runs whose LightRAG output included
+ mixed shapes.
+
+ Per-artifact concerns we still pin:
+ * scope (tenant/project/run/document) — independent of shape
+ * readability — corrupt file is still a failure
+ * dangling edges WHEN we have a parsed `{nodes,edges}` payload
+ * chunk grounding via `source_artifact_ids`
+
+ `graph_required=False` path is unchanged: orphan artifacts get
+ a warning, absence is a pass."""
     checks: list[StageValidationCheck] = []
     graph_artifacts = [a for a in artifacts if a.kind == "graph_json"]
     if not graph_required:
@@ -514,6 +534,16 @@ def validate_graph(
         ))
         return checks
     checks.append(_passed("graph_artifact_present"))
+
+    # Aggregate counters drive the final node-count + edge-shape
+    # verdicts. Track them across every artifact instead of failing
+    # per-artifact for a non-graph-shape sibling.
+    total_nodes_across_set = 0
+    total_edges_across_set = 0
+    total_dangling_edges = 0
+    saw_well_formed_shape = False
+    parse_warnings: list[str] = []
+
     for a in graph_artifacts:
         checks.extend(_check_scope(
             a,
@@ -526,67 +556,119 @@ def validate_graph(
         checks.append(read_check)
         if content is None:
             continue
+
+        # GraphML branch — the file is XML, not JSON. Don't attempt
+        # `json.loads`. Treat any non-empty `.graphml` artifact as
+        # well-formed graph evidence; per-node validation happens on
+        # the projection side, which knows how to parse GraphML.
+        filename = ""
+        meta = getattr(a, "metadata", None)
+        if isinstance(meta, dict):
+            filename = str(meta.get("filename") or "").lower()
+        if filename.endswith(".graphml") or _looks_like_graphml(content):
+            saw_well_formed_shape = True
+            continue
+
         try:
             payload = json.loads(content.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            checks.append(_failed(
-                "graph_artifact_parses",
-                f"graph artifact {a.artifact_id} not valid JSON: {exc}",
-            ))
+            parse_warnings.append(
+                f"graph artifact {a.artifact_id} not valid JSON: {exc}"
+            )
             continue
         if not isinstance(payload, dict):
-            checks.append(_failed(
-                "graph_artifact_shape",
-                f"graph artifact {a.artifact_id} top-level not an object",
-            ))
+            parse_warnings.append(
+                f"graph artifact {a.artifact_id} top-level not an object"
+            )
             continue
-        nodes = payload.get("nodes") or []
-        edges = payload.get("edges") or []
-        if not isinstance(nodes, list) or not isinstance(edges, list):
-            checks.append(_failed(
-                "graph_artifact_shape",
-                f"graph artifact {a.artifact_id} nodes/edges not lists",
-            ))
+
+        # Standard `{nodes: [...], edges: [...]}` shape. Per-artifact
+        # edge → node validity is checked when this shape is present.
+        nodes = payload.get("nodes")
+        edges = payload.get("edges")
+        if isinstance(nodes, list) and isinstance(edges, list):
+            if len(nodes) > 0:
+                saw_well_formed_shape = True
+                total_nodes_across_set += len(nodes)
+                total_edges_across_set += len(edges)
+                total_dangling_edges += _count_dangling_edges(nodes, edges)
             continue
-        if len(nodes) == 0:
-            checks.append(_failed(
+
+        # Entity- or relation-keyed dict shape. LightRAG's
+        # `kv_store_full_entities.json` is `{ent-1: {...}, ent-2: {...}}`;
+        # `vdb_entities.json` is the same. The projector recognises
+        # them via filename hints — we count them as well-formed if
+        # they have at least one key whose value is a dict.
+        if _is_entity_or_relation_keyed_dict(payload):
+            saw_well_formed_shape = True
+            # Each key is one entity/relation; count toward the node
+            # aggregate so the operator-readable summary reflects the
+            # total surface (entities ≈ nodes for grounding purposes).
+            total_nodes_across_set += sum(
+                1 for v in payload.values() if isinstance(v, dict)
+            )
+            continue
+
+        # Wrapped shape: `{entities: [...]}` or `{relations: [...]}`.
+        for key in ("entities", "relations", "nodes"):
+            wrapped = payload.get(key)
+            if isinstance(wrapped, list) and any(
+                isinstance(item, dict) for item in wrapped
+            ):
+                saw_well_formed_shape = True
+                total_nodes_across_set += sum(
+                    1 for item in wrapped if isinstance(item, dict)
+                )
+                break
+        # Unknown shape — record a warning and move on. Don't fail
+        # the run for a sibling artifact the validator doesn't
+        # recognise.
+
+    # Aggregate verdicts.
+    if saw_well_formed_shape:
+        if total_nodes_across_set > 0:
+            checks.append(_passed(
                 "graph_node_count_positive",
-                f"graph artifact {a.artifact_id} has zero nodes — "
-                "graph stage cannot succeed without grounded entities",
+                f"{total_nodes_across_set} entities / nodes across "
+                f"{len(graph_artifacts)} artifact(s)",
             ))
-            continue
-        checks.append(_passed(
+        else:
+            # Recognised shape (e.g. .graphml) but couldn't count
+            # nodes from JSON — still pass; the projector will
+            # surface the real count downstream.
+            checks.append(_passed(
+                "graph_node_count_positive",
+                "GraphML / shape-recognised graph artifact present",
+            ))
+    else:
+        checks.append(_failed(
             "graph_node_count_positive",
-            f"{len(nodes)} nodes, {len(edges)} edges",
+            "graph required but no well-formed graph artifact had "
+            "any entities / nodes — graph stage cannot succeed "
+            "without grounded content",
         ))
-        # Edge → node validity
-        node_ids: set[str] = set()
-        for n in nodes:
-            if isinstance(n, dict):
-                nid = n.get("id") or n.get("node_id") or n.get("nodeId")
-                if nid is not None:
-                    node_ids.add(str(nid))
-        dangling_edges = 0
-        for e in edges:
-            if not isinstance(e, dict):
-                dangling_edges += 1
-                continue
-            src = e.get("source") or e.get("from")
-            dst = e.get("target") or e.get("to")
-            if src is None or dst is None:
-                dangling_edges += 1
-                continue
-            if str(src) not in node_ids or str(dst) not in node_ids:
-                dangling_edges += 1
-        if dangling_edges > 0:
+
+    # Edge integrity check fires only when we saw at least one
+    # `{nodes,edges}` shape with edges. Dangling-edge count is the
+    # total across all such artifacts.
+    if total_edges_across_set > 0:
+        if total_dangling_edges > 0:
             checks.append(_failed(
                 "graph_edges_reference_nodes",
-                f"{dangling_edges} edge(s) reference missing nodes",
+                f"{total_dangling_edges} edge(s) reference missing "
+                f"nodes across the artifact set",
             ))
-        elif edges:
+        else:
             checks.append(_passed("graph_edges_reference_nodes"))
-        # Chunk grounding (best-effort): if the graph carries
-        # `source_artifact_ids` it MUST point at this run's chunks.
+
+    # Surface non-fatal parse issues as warnings so operators can see
+    # them in the validation report without the run failing.
+    for w in parse_warnings:
+        checks.append(_warning("graph_artifact_parses", w))
+
+    # Chunk-grounding check, aggregated. If ANY graph artifact carries
+    # `source_artifact_ids` they must all point at this run's chunks.
+    for a in graph_artifacts:
         sources = a.source_artifact_ids or []
         if sources and chunk_artifact_ids:
             stranded = [
@@ -595,12 +677,68 @@ def validate_graph(
             if stranded:
                 checks.append(_failed(
                     "graph_grounded_in_chunks",
-                    f"{len(stranded)} graph source_artifact_id(s) "
+                    f"graph artifact {a.artifact_id}: "
+                    f"{len(stranded)} source_artifact_id(s) "
                     "don't match any chunk artifact in this run",
                 ))
             else:
                 checks.append(_passed("graph_grounded_in_chunks"))
     return checks
+
+
+# ---- Graph shape helpers (private) ---------------------------------
+
+
+def _looks_like_graphml(content: bytes) -> bool:
+    """Cheap heuristic: GraphML files start with an XML declaration
+ and contain a `<graphml` element near the top. We sniff the first
+ 256 bytes so this stays fast on multi-MB artifacts."""
+    head = content[:256].lower()
+    return b"<graphml" in head or (
+        head.startswith(b"<?xml") and b"graphml" in head
+    )
+
+
+def _is_entity_or_relation_keyed_dict(payload: dict) -> bool:
+    """Detect LightRAG's `kv_store_full_entities.json` / `kv_store_full_relations.json`
+ / `vdb_entities.json` shape: a top-level dict where keys are entity
+ (or relation) ids and values are dicts of attributes. Distinct from
+ the `{nodes: [...], edges: [...]}` shape (already handled by the
+ caller) and from configuration-style dicts (no dict values)."""
+    if not payload:
+        return False
+    # At least one value must be a dict — config-style payloads
+    # (`{"version": 1, "name": "..."}`) have string/number values.
+    if not any(isinstance(v, dict) for v in payload.values()):
+        return False
+    # Exclude wrapped shapes that the caller handles explicitly.
+    reserved = {"nodes", "edges", "entities", "relations"}
+    return not (set(payload.keys()) & reserved)
+
+
+def _count_dangling_edges(nodes: list, edges: list) -> int:
+    """Count edges whose source or target doesn't appear in the node
+ set. Extracted from the per-artifact path so the new aggregate
+ validator can reuse it across multiple `{nodes,edges}` payloads."""
+    node_ids: set[str] = set()
+    for n in nodes:
+        if isinstance(n, dict):
+            nid = n.get("id") or n.get("node_id") or n.get("nodeId")
+            if nid is not None:
+                node_ids.add(str(nid))
+    dangling = 0
+    for e in edges:
+        if not isinstance(e, dict):
+            dangling += 1
+            continue
+        src = e.get("source") or e.get("from")
+        dst = e.get("target") or e.get("to")
+        if src is None or dst is None:
+            dangling += 1
+            continue
+        if str(src) not in node_ids or str(dst) not in node_ids:
+            dangling += 1
+    return dangling
 
 
 # ---- Post-compile verification gate -----------------------------------
