@@ -244,6 +244,7 @@ class IngestionValidationService:
             ctx=ctx,
             request=request,
             retrieved=retrieved,
+            response=response,
         )
         synthesized_answer, llm_trace = self._maybe_synthesize_answer(
             request=request,
@@ -321,15 +322,30 @@ class IngestionValidationService:
         ctx: ProjectContext,
         request: ManualTestQueryRequest,
         retrieved: list[RetrievedChunkRefDTO],
+        response: Any | None = None,
     ) -> list[EvidenceBlockDTO]:
         """Materialise the clean evidence blocks the synthesizer will
  actually see. Returns `[]` when synthesis is opted out (saves
  the file IO) or when the workspace isn't wired (legacy paths).
  The same list is echoed back on the response so the FE can
- render "Evidence Sent to LLM"."""
+ render "Evidence Sent to LLM".
+
+ Graph-only fallback: when textual evidence is empty BUT the
+ engine returned graph paths (the case operators reported as
+ "Retrieval preview shows graph relationships but
+ 'Evidence Sent to LLM (0) / no_evidence'"), this method
+ synthesises a single ``artifact_type='graph_paths'``
+ evidence block rendering the paths as a bullet list so the
+ synthesizer has something to ground on. Prevents the
+ false-empty case where retrieval succeeded but evidence
+ building dropped every source via ``_SKIP_KINDS``
+ (graph_json is intentionally skipped by the textual path
+ because the synthesizer is text-only — but the parsed
+ paths ARE valid prose).
+ """
         if not request.synthesize or self._synthesizer is None:
             return []
-        if self._workspace is None or not retrieved:
+        if self._workspace is None:
             return []
 
         def _resolver(record):
@@ -342,12 +358,35 @@ class IngestionValidationService:
             area = WorkspaceArea(area_name)
             return self._workspace.area(ctx, area).joinpath(*rest)  # type: ignore[union-attr]
 
-        return build_evidence_blocks(
-            ctx=ctx,
-            retrieved=retrieved,
-            artifact_registry=self._artifacts,
-            path_resolver=_resolver,
-        )
+        textual_blocks: list[EvidenceBlockDTO] = []
+        if retrieved:
+            textual_blocks = build_evidence_blocks(
+                ctx=ctx,
+                retrieved=retrieved,
+                artifact_registry=self._artifacts,
+                path_resolver=_resolver,
+            )
+
+        # Graph-paths fallback. Fires when:
+        #   * the engine returned graph paths (e.g. graph-typed
+        #     question routed to GraphQueryProvider), AND
+        #   * the textual evidence path produced nothing usable —
+        #     usually because every retrieved source was
+        #     ``graph_json`` (which ``_SKIP_KINDS`` correctly drops
+        #     from the textual prompt).
+        # Without this fallback the synthesizer gets ``evidence=[]``
+        # and emits ``no_evidence`` despite real graph relationships
+        # being visible in the retrieval preview.
+        if not textual_blocks and response is not None:
+            graph_paths = getattr(response, "graph_paths", None) or []
+            sources = getattr(response, "sources", None) or []
+            if graph_paths:
+                from j1.validation.evidence import build_graph_path_evidence
+                return build_graph_path_evidence(
+                    graph_paths, sources=sources,
+                )
+
+        return textual_blocks
 
     def _maybe_synthesize_answer(
         self,
@@ -1073,18 +1112,90 @@ def _build_manual_query_debug(
         if c.artifact_kind and c.artifact_kind in _SKIP_KINDS
     })
 
+    # Per-reason drop counter: maps reason → count of retrieved
+    # items that didn't reach the LLM. Lets the operator see "X
+    # results dropped as graph_json, Y dropped as enriched.tables"
+    # instead of just a single all-or-nothing fallback_reason.
+    dropped_result_reasons: dict[str, int] = {}
+    for c in retrieved:
+        kind = c.artifact_kind or "unknown"
+        if kind in _SKIP_KINDS:
+            dropped_result_reasons[f"skipped:{kind}"] = (
+                dropped_result_reasons.get(f"skipped:{kind}", 0) + 1
+            )
+        elif kind not in types_after and kind != "":
+            # In retrieval but didn't make it into evidence — most
+            # likely budget-cap or dedup. Bucket as the kind so the
+            # operator sees which kinds are repeatedly losing the
+            # filter race.
+            dropped_result_reasons[f"deprioritized_or_dedup:{kind}"] = (
+                dropped_result_reasons.get(
+                    f"deprioritized_or_dedup:{kind}", 0,
+                ) + 1
+            )
+
+    # Modality counters — call these out explicitly so the FE can
+    # render "retrieval found 7 graph results + 0 text chunks" as
+    # an actionable hint when synthesis hits the graph-only path.
+    graph_result_count = sum(
+        1 for c in retrieved if (c.artifact_kind or "") == "graph_json"
+    )
+    text_chunk_result_count = sum(
+        1 for c in retrieved if (c.artifact_kind or "") == "chunk"
+    )
+    # Did the graph-paths fallback fire? If evidence is non-empty
+    # AND its only block is the synthetic ``graph_paths`` type, the
+    # synthesizer was driven by the fallback path rather than by
+    # textual retrieval. Useful for "why is the answer phrased
+    # like graph edges?" troubleshooting.
+    graph_paths_fallback_used = (
+        len(evidence_blocks) >= 1
+        and all(
+            (b.artifact_type or "") == "graph_paths" for b in evidence_blocks
+        )
+    )
+
     fallback_reason: str | None = None
     if not synthesized_answer:
-        # Categorise WHY synthesis didn't produce an answer. Ordered
-        # most-specific-first so the FE can render a tailored hint.
+        # Categorise WHY synthesis didn't produce an answer.
+        # Ordered most-specific-first. Critical: check the
+        # synthesizer's reported error value BEFORE falling through
+        # to the generic ``llm_error`` bucket, because the
+        # synthesizer itself emits structured error codes (
+        # ``"no_evidence"`` when evidence list was empty,
+        # ``"llm_abstained"`` when the model emitted a canonical
+        # fallback phrase). Earlier this method bucketed every
+        # truthy ``llm_trace.error`` as ``llm_error`` — operators
+        # then saw "llm_error" for the trivially-empty-evidence
+        # case which is misleading.
+        trace_error = (
+            llm_trace.error if llm_trace is not None else None
+        )
         if llm_trace is None or not llm_trace.called:
             fallback_reason = "synthesis_disabled"
-        elif llm_trace.error:
+        elif trace_error == "no_evidence":
+            # Synthesizer's own no-evidence guard fired.
+            # Disambiguate by upstream cause for the operator.
+            if not retrieved:
+                fallback_reason = "no_retrieval"
+            elif skipped_kinds and not types_after:
+                fallback_reason = "all_sources_skipped_no_graph_paths"
+            else:
+                fallback_reason = "no_evidence"
+        elif trace_error == "llm_abstained":
+            fallback_reason = "llm_abstained"
+        elif trace_error:
+            # Genuine LLM client failure (timeout, transport, 5xx)
+            # — the synthesizer's try/except set this to
+            # ``"<ExceptionType>: <message>"``.
             fallback_reason = "llm_error"
         elif not retrieved:
             fallback_reason = "no_retrieval"
         elif not evidence_blocks:
-            fallback_reason = "no_evidence"
+            if skipped_kinds and not types_after:
+                fallback_reason = "all_sources_skipped_no_graph_paths"
+            else:
+                fallback_reason = "no_evidence"
         else:
             fallback_reason = "llm_abstained"
 
@@ -1099,6 +1210,11 @@ def _build_manual_query_debug(
         "top_evidence_preview": top_preview,
         "deprioritized_kinds": deprioritized_kinds,
         "skipped_kinds": skipped_kinds,
+        # Finer-grained debug per the operator's section-2 request.
+        "graph_result_count": graph_result_count,
+        "text_chunk_result_count": text_chunk_result_count,
+        "graph_paths_fallback_used": graph_paths_fallback_used,
+        "dropped_result_reasons": dropped_result_reasons,
     }
 
 

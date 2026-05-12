@@ -589,4 +589,100 @@ def _normalise_pdf_whitespace(text: str) -> str:
     return _WS_RE.sub(" ", text or "").strip()
 
 
-__all__ = ["PathResolver", "build_evidence_blocks"]
+# Cap on the synthesised graph-paths evidence block. Keeps the
+# fallback evidence bounded so a giant graph doesn't blow the
+# prompt budget all by itself. ~600 chars is comfortably under the
+# 1500-char per-block cap with room for header text.
+_GRAPH_PATHS_TEXT_CAP = 600
+
+
+def build_graph_path_evidence(
+    graph_paths,
+    *,
+    sources=None,
+    max_lines: int = 8,
+) -> list[EvidenceBlockDTO]:
+    """Render ``QueryResponse.graph_paths`` as one synthetic evidence
+    block the synthesizer can ground on.
+
+    Background: graph-only retrieval (where the engine returns a
+    list of entity→relation paths and no textual chunks) used to
+    produce ``error="no_evidence"`` at the synthesizer. The path
+    sources are all ``kind="graph_json"`` and ``_SKIP_KINDS``
+    rightly excludes them from the textual evidence prompt — but
+    the engine ALSO surfaces the parsed paths via
+    ``response.graph_paths``, which IS usable as prose. This
+    function bridges the gap: it converts each ``GraphPath`` into
+    a one-line bullet ("J1 Platform → MinerU (related_to)") and
+    bundles them into a single ``EvidenceBlockDTO`` of
+    ``artifact_type='graph_paths'``.
+
+    Returns ``[]`` when ``graph_paths`` is empty — the caller still
+    falls through to "no_evidence" when there is genuinely
+    nothing retrieved, which is the correct contract.
+
+    ``sources`` (optional) — when provided, the first graph_json
+    source's ``artifact_id`` is used to anchor the synthetic
+    block's citation lineage so the grounding judge can match the
+    evidence back to a real artifact. Falls back to a synthetic id
+    when no graph source is present.
+
+    Args:
+      graph_paths: ``Sequence[GraphPath]`` from
+        ``QueryResponse.graph_paths``. Each path's ``nodes``,
+        ``edges`` and (optional) ``description`` are rendered.
+      sources: ``Sequence[SourceReference]``; the first
+        graph_json among them anchors the synthetic block's
+        ``artifact_id``.
+      max_lines: bound on rendered bullets; the rest are dropped
+        rather than overflow the text cap.
+    """
+    if not graph_paths:
+        return []
+    bullets: list[str] = []
+    for path in graph_paths[:max_lines]:
+        nodes = list(getattr(path, "nodes", []) or [])
+        edges = list(getattr(path, "edges", []) or [])
+        if len(nodes) < 2:
+            continue
+        # Two-node path: "A → B (edge)". Multi-hop: "A → B → C
+        # (edge1, edge2)". Descriptions, when present, override
+        # the default rendering.
+        if getattr(path, "description", None):
+            bullets.append(f"- {path.description}")
+            continue
+        arrow_chain = " → ".join(nodes)
+        edge_suffix = f" ({', '.join(edges)})" if edges else ""
+        bullets.append(f"- {arrow_chain}{edge_suffix}")
+    if not bullets:
+        return []
+    text = "Graph relationships in this document:\n" + "\n".join(bullets)
+    if len(text) > _GRAPH_PATHS_TEXT_CAP:
+        text = text[:_GRAPH_PATHS_TEXT_CAP].rstrip() + "…"
+
+    # Anchor to the first graph_json source so the grounding judge
+    # can see lineage back to a real artifact in the registry.
+    anchor_artifact_id = ""
+    if sources:
+        for src in sources:
+            if (getattr(src, "artifact_type", "") or "") == "graph_json":
+                anchor_artifact_id = getattr(src, "artifact_id", "") or ""
+                if anchor_artifact_id:
+                    break
+    if not anchor_artifact_id:
+        anchor_artifact_id = "graph_paths:synthetic"
+
+    return [EvidenceBlockDTO(
+        artifact_id=anchor_artifact_id,
+        artifact_type="graph_paths",
+        text=text,
+        chunk_id=None,
+        score=0.0,
+    )]
+
+
+__all__ = [
+    "PathResolver",
+    "build_evidence_blocks",
+    "build_graph_path_evidence",
+]
