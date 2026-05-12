@@ -31,10 +31,6 @@ export const RUN_STATUS = {
   // the compile retry loop depending on whether the worker writes
   // canonical or legacy values.
   COMPILING: "COMPILING",
-  // Post-compile health gate. The verify_compile_output activity is
-  // checking chunk count / index manifest. Transient — typically a
-  // single second between compile end and the next stage.
-  VERIFYING: "VERIFYING",
   PAUSED: "PAUSED",
   CANCELLING: "CANCELLING",
   COMPLETED: "COMPLETED",
@@ -111,7 +107,6 @@ export const CANCELLABLE_STATUSES: ReadonlySet<RunStatus> = new Set([
   RUN_STATUS.ASSESSMENT_READY,
   RUN_STATUS.WAITING_FOR_CONFIRMATION,
   RUN_STATUS.COMPILE_PENDING,
-  RUN_STATUS.VERIFYING,
 ]);
 
 // Active = workflow is still doing work or could resume. The backend
@@ -127,7 +122,6 @@ export const ACTIVE_STATUSES: ReadonlySet<RunStatus> = new Set([
   RUN_STATUS.ASSESSMENT_READY,
   RUN_STATUS.WAITING_FOR_CONFIRMATION,
   RUN_STATUS.COMPILE_PENDING,
-  RUN_STATUS.VERIFYING,
   RUN_STATUS.CREATED,
   RUN_STATUS.RECEIVED,
 ]);
@@ -143,7 +137,6 @@ export const LIST_STATUSES: readonly RunStatus[] = [
   RUN_STATUS.WAITING_FOR_CONFIRMATION,
   RUN_STATUS.COMPILE_PENDING,
   RUN_STATUS.RUNNING,
-  RUN_STATUS.VERIFYING,
   RUN_STATUS.SUCCEEDED,
   RUN_STATUS.SUCCEEDED_WITH_WARNINGS,
   RUN_STATUS.FAILED,

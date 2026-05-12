@@ -51,14 +51,6 @@ describe("classifyMacroStage", () => {
     expect(classifyMacroStage(event)).toBe("COMPILE");
   });
 
-  it("classifies verify_compile step as VERIFY", () => {
-    const event = _event({
-      event: EVENT_TYPES.STEP_COMPLETED,
-      data: { stage: "VERIFY", step: "verify_compile" },
-    });
-    expect(classifyMacroStage(event)).toBe("VERIFY");
-  });
-
   it("is case-insensitive on the stage field", () => {
     const event = _event({
       event: EVENT_TYPES.STEP_STARTED,
@@ -126,26 +118,6 @@ describe("deriveMacroEventType", () => {
       data: { stage: "COMPILE", step: "compile" },
     });
     expect(deriveMacroEventType(event)).toBe(EVENT_TYPES.COMPILE_FAILED);
-  });
-
-  it("projects verify_compile lifecycle onto verification.*", () => {
-    const started = _event({
-      event: EVENT_TYPES.STEP_STARTED,
-      data: { stage: "VERIFY", step: "verify_compile" },
-    });
-    const completed = _event({
-      event: EVENT_TYPES.STEP_COMPLETED,
-      data: { stage: "VERIFY", step: "verify_compile" },
-    });
-    const failed = _event({
-      event: EVENT_TYPES.STEP_FAILED,
-      data: { stage: "VERIFY", step: "verify_compile" },
-    });
-    expect(deriveMacroEventType(started)).toBe(EVENT_TYPES.VERIFICATION_STARTED);
-    expect(deriveMacroEventType(completed)).toBe(
-      EVENT_TYPES.VERIFICATION_COMPLETED,
-    );
-    expect(deriveMacroEventType(failed)).toBe(EVENT_TYPES.VERIFICATION_FAILED);
   });
 
   it("returns null for step.progress / step.warning even on macro stages", () => {
@@ -288,37 +260,6 @@ describe("groupTimelineByMacroStage", () => {
     expect(sections[1]?.macro).toBe("COMPILE");
     expect(sections[2]?.macro).toBeNull();
     expect(sections[2]?.status).toBe("completed");
-  });
-
-  it("groups a verify section after a compile section", () => {
-    const events: ProgressEvent[] = [
-      _event({
-        eventId: "c1",
-        event: EVENT_TYPES.STEP_STARTED,
-        data: { stage: "COMPILE", step: "compile", document_id: "doc-1" },
-      }),
-      _event({
-        eventId: "c2",
-        event: EVENT_TYPES.STEP_COMPLETED,
-        data: { stage: "COMPILE", step: "compile", document_id: "doc-1" },
-      }),
-      _event({
-        eventId: "v1",
-        event: EVENT_TYPES.STEP_STARTED,
-        data: { stage: "VERIFY", step: "verify_compile", document_id: "doc-1" },
-      }),
-      _event({
-        eventId: "v2",
-        event: EVENT_TYPES.STEP_FAILED,
-        data: { stage: "VERIFY", step: "verify_compile", document_id: "doc-1" },
-      }),
-    ];
-    const sections = groupTimelineByMacroStage(events);
-    expect(sections).toHaveLength(2);
-    expect(sections[0]?.macro).toBe("COMPILE");
-    expect(sections[0]?.status).toBe("completed");
-    expect(sections[1]?.macro).toBe("VERIFY");
-    expect(sections[1]?.status).toBe("failed");
   });
 
   it("reports running status when only started events have arrived", () => {

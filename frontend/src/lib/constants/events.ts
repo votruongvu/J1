@@ -33,9 +33,6 @@ export const EVENT_TYPES = {
   COMPILE_STARTED: "compile.started",
   COMPILE_COMPLETED: "compile.completed",
   COMPILE_FAILED: "compile.failed",
-  VERIFICATION_STARTED: "verification.started",
-  VERIFICATION_COMPLETED: "verification.completed",
-  VERIFICATION_FAILED: "verification.failed",
   // post-compile assessment + enrichment macro events.
   // Mirrors `PROGRESS_EVENT_ASSESS_ENRICHMENT_*` /
   // `PROGRESS_EVENT_ENRICH_*` in `j1/runs/reporter.py`. Derived

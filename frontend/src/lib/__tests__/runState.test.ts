@@ -213,11 +213,6 @@ describe("projectUiState — in-flight branches", () => {
     expect(projectUiState(r).uiState).toBe(UI_STATE.RUNNING);
   });
 
-  it("VERIFYING projects to RUNNING", () => {
-    const r = makeRun({ status: RUN_STATUS.VERIFYING });
-    expect(projectUiState(r).uiState).toBe(UI_STATE.RUNNING);
-  });
-
   it("RUNNING projects to RUNNING", () => {
     const r = makeRun({ status: RUN_STATUS.RUNNING });
     expect(projectUiState(r).uiState).toBe(UI_STATE.RUNNING);

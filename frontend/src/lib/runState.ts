@@ -272,17 +272,6 @@ export function projectUiState(
     };
   }
 
-  if (status === RUN_STATUS.VERIFYING) {
-    return {
-      uiState: UI_STATE.RUNNING,
-      severity: "info",
-      headline: "verifying compile output",
-      primaryArtifact: null,
-      recommendedAction: "none",
-      underlyingFinalStatus: null,
-    };
-  }
-
   if (RUNNING_STATUSES.has(status)) {
     return {
       uiState: UI_STATE.RUNNING,

@@ -3,9 +3,7 @@
  *
  * The backend emits flat `step.*` events tagged with `stage` and
  * `step` fields; today there's no server-emitted macro-stage event
- * vocabulary. This module derives the canonical macro names
- * (`compile.started` / `compile.completed` / `verification.*`)
- * client-side so the timeline can render macro section headers
+ * vocabulary. This module derives the canonical macro names * client-side so the timeline can render macro section headers
  * around the operator-detail step rows.
  *
  * Pure / deterministic: the helpers take an event in and return a
@@ -24,19 +22,16 @@ import type { ProgressEvent } from "@/types/ingestion";
  */
 export type MacroStage =
   | "COMPILE"
-  | "VERIFY"
   | "ASSESS_ENRICHMENT"
   | "ENRICH"
   | null;
 
 /** Stage strings the backend emits — uppercase, snake_cased. */
 const STAGE_COMPILE = "COMPILE";
-const STAGE_VERIFY = "VERIFY";
 const STAGE_ASSESS_ENRICHMENT = "ASSESS_ENRICHMENT";
 const STAGE_ENRICH = "ENRICH";
 
 const COMPILE_STEPS = new Set(["compile"]);
-const VERIFY_STEPS = new Set(["verify_compile"]);
 const ASSESS_ENRICHMENT_STEPS = new Set(["assess_enrichment"]);
 const ENRICH_STEPS = new Set(["enrich_stage"]);
 
@@ -52,9 +47,6 @@ export function classifyMacroStage(event: ProgressEvent): MacroStage {
   const stageUpper = stage.toUpperCase();
   if (stageUpper === STAGE_COMPILE && COMPILE_STEPS.has(step)) {
     return "COMPILE";
-  }
-  if (stageUpper === STAGE_VERIFY && VERIFY_STEPS.has(step)) {
-    return "VERIFY";
   }
   if (stageUpper === STAGE_ASSESS_ENRICHMENT && ASSESS_ENRICHMENT_STEPS.has(step)) {
     return "ASSESS_ENRICHMENT";
@@ -89,11 +81,6 @@ export function deriveMacroEventType(event: ProgressEvent): string | null {
     if (t === EVENT_TYPES.STEP_STARTED) return EVENT_TYPES.COMPILE_STARTED;
     if (t === EVENT_TYPES.STEP_COMPLETED) return EVENT_TYPES.COMPILE_COMPLETED;
     if (t === EVENT_TYPES.STEP_FAILED) return EVENT_TYPES.COMPILE_FAILED;
-  }
-  if (macro === "VERIFY") {
-    if (t === EVENT_TYPES.STEP_STARTED) return EVENT_TYPES.VERIFICATION_STARTED;
-    if (t === EVENT_TYPES.STEP_COMPLETED) return EVENT_TYPES.VERIFICATION_COMPLETED;
-    if (t === EVENT_TYPES.STEP_FAILED) return EVENT_TYPES.VERIFICATION_FAILED;
   }
   if (macro === "ASSESS_ENRICHMENT") {
     if (t === EVENT_TYPES.STEP_STARTED) {
@@ -140,7 +127,6 @@ export interface TimelineSection {
 
 const MACRO_TITLE: Record<NonNullable<MacroStage>, string> = {
   COMPILE: "Compile",
-  VERIFY: "Verification",
   ASSESS_ENRICHMENT: "Enrichment Assessment",
   ENRICH: "Enrichment",
 };
