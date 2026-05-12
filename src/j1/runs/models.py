@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 __all__ = [
     "EXECUTION_DECISION_CONDITIONAL",
@@ -204,6 +205,27 @@ def status_aliases(value: str | RunStatus) -> tuple[str, ...]:
     return tuple(aliases)
 
 
+# ---- Run-type literal --------------------------------------------
+#
+# Classifies why this attempt was created. Drives the FE's
+# document-centric run-history grouping ("Run #5 — reindex,
+# completed") and the runner's behaviour:
+#
+#  * ``initial``    — first ingestion of this document/version.
+#  * ``reindex``    — operator asked to rebuild knowledge for the
+#    same document. Starts from the beginning of the pipeline.
+#  * ``resume``     — operator continued from a previous run's
+#    compile checkpoint after a later-stage failure.
+#  * ``retry``      — automated retry on transient failure
+#    (currently unused; reserved for the retry policy work).
+#  * ``validation`` — a validation-set execution run (kept
+#    separate from main ingestion attempts so the FE can filter).
+#
+# All existing runs persisted before this refactor are deserialised
+# with the safe default ``"initial"`` — see `_run_from_payload`.
+RunType = Literal["initial", "reindex", "resume", "retry", "validation"]
+
+
 @dataclass
 class IngestionRun:
     """One ingestion attempt of one document.
@@ -216,7 +238,19 @@ class IngestionRun:
  record is updated as the run progresses (status, current_stage,
  current_step, progress_percent, etc.) and the JSONL store
  appends a fresh snapshot on each update. Readers reconstruct the
- latest state by replaying the log."""
+ latest state by replaying the log.
+
+ New document-centric fields are optional with safe defaults so
+ every legacy on-disk snapshot deserialises cleanly:
+
+ * ``run_type``               — see ``RunType`` literal above.
+ * ``document_version_id``    — pointer to the specific
+   ``DocumentVersion`` that was processed. ``None`` for
+   legacy runs (the backfill stamps these where it can).
+ * ``parent_run_id``          — when ``run_type`` is ``resume``
+   or ``retry``, the run this attempt branched from. ``None``
+   for ``initial`` and ``reindex``.
+ """
 
     run_id: str
     document_id: str
@@ -234,6 +268,10 @@ class IngestionRun:
     failure_message: str | None = None
     warning_count: int = 0
     metadata: dict[str, object] = field(default_factory=dict)
+    # ---- New document-centric fields (defaulted) ----
+    run_type: RunType = "initial"
+    document_version_id: str | None = None
+    parent_run_id: str | None = None
 
     def is_terminal(self) -> bool:
         return self.status in (

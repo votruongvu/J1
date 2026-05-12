@@ -11,7 +11,14 @@ from j1.projects.context import ProjectContext
 from j1.workspace.resolver import WorkspaceResolver
 
 REGISTRY_FILENAME = "documents.json"
-REGISTRY_VERSION = 1
+# Bumped from 1 → 2 on the document-centric refactor. v2 records
+# carry `knowledge_state`, `active_run_id`, `latest_version_id`,
+# `removed_at`, `updated_at`. The deserializer below remains
+# tolerant of v1 records: missing fields fall back to safe defaults
+# (knowledge_state="attached") so existing project workspaces keep
+# working without any explicit migration step. Bumping the version
+# is a write-side signal only — readers still accept both.
+REGISTRY_VERSION = 2
 
 
 class SourceRegistry(Protocol):
@@ -121,6 +128,21 @@ def _record_from_dict(d: dict) -> DocumentRecord:
         project_id=project_data["project_id"],
         profile=project_data.get("profile"),
     )
+    # New v2 fields default safely when absent — legacy v1 documents
+    # on disk parse without modification. `knowledge_state` defaults
+    # to "attached" so retrieval treats pre-refactor documents
+    # exactly as before.
+    raw_state = d.get("knowledge_state") or "attached"
+    if raw_state not in ("attached", "detached", "removed"):
+        raw_state = "attached"
+    removed_at = (
+        datetime.fromisoformat(d["removed_at"])
+        if d.get("removed_at") else None
+    )
+    updated_at = (
+        datetime.fromisoformat(d["updated_at"])
+        if d.get("updated_at") else None
+    )
     return DocumentRecord(
         document_id=d["document_id"],
         project=project,
@@ -131,4 +153,9 @@ def _record_from_dict(d: dict) -> DocumentRecord:
         checksum=d["checksum"],
         status=ProcessingStatus(d["status"]),
         created_at=datetime.fromisoformat(d["created_at"]),
+        knowledge_state=raw_state,  # type: ignore[arg-type]
+        active_run_id=d.get("active_run_id"),
+        latest_version_id=d.get("latest_version_id"),
+        removed_at=removed_at,
+        updated_at=updated_at,
     )

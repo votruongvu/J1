@@ -1823,6 +1823,16 @@ class IngestionResultReviewService:
                     and a.metadata.get("deleted_at")
                 )
             ]
+            # Document-centric gate: drop artifacts whose source
+            # document was detached or removed from the knowledge
+            # layer. No-op by default (every artifact's
+            # `metadata.knowledge_state` is absent → treated as
+            # attached) until Phase 3 lands the detach/remove
+            # actions that stamp the field. Centralised in
+            # `j1.documents.lifecycle` so the run-detail surface and
+            # the query providers share the same rule.
+            from j1.documents.lifecycle import filter_to_attached_artifacts
+            all_artifacts = filter_to_attached_artifacts(all_artifacts)
 
         target_doc_ids = set(_document_ids(run))
 

@@ -197,6 +197,18 @@ def _run_from_payload(payload: dict) -> IngestionRun:
         status = RunStatus(raw_status)
     except ValueError:
         status = RunStatus.CREATED
+    # Document-centric fields (run_type / document_version_id /
+    # parent_run_id) added in the document-centric refactor. They're
+    # optional with safe defaults so every legacy on-disk run
+    # snapshot deserialises without modification. `run_type` defaults
+    # to "initial" so existing runs (which predate the
+    # classification) show up under the right history bucket without
+    # an explicit backfill pass.
+    raw_run_type = payload.get("run_type") or "initial"
+    if raw_run_type not in (
+        "initial", "reindex", "resume", "retry", "validation",
+    ):
+        raw_run_type = "initial"
     return IngestionRun(
         run_id=str(payload["run_id"]),
         document_id=str(payload["document_id"]),
@@ -214,4 +226,7 @@ def _run_from_payload(payload: dict) -> IngestionRun:
         failure_message=payload.get("failure_message"),
         warning_count=int(payload.get("warning_count") or 0),
         metadata=dict(payload.get("metadata") or {}),
+        run_type=raw_run_type,  # type: ignore[arg-type]
+        document_version_id=payload.get("document_version_id"),
+        parent_run_id=payload.get("parent_run_id"),
     )

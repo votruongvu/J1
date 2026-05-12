@@ -27,14 +27,24 @@ from j1.workspace.resolver import WorkspaceResolver
 def _filter_by_scope(
     records: list[ArtifactRecord], request: QueryRequest,
 ) -> list[ArtifactRecord]:
-    """Apply `RunScope` to a list of artifacts loaded straight from
- the registry (graph / consistency / report providers don't go
- through the FTS index, so they need their own filter).
+    """Apply `RunScope` + the knowledge-state gate to a list of
+ artifacts loaded straight from the registry (graph / consistency
+ / report providers don't go through the FTS index, so they need
+ their own filter).
 
- Default `WorkspaceScope` is the no-op — returns the list
- unchanged. `RunScope` keeps only artifacts whose
- `metadata.run_id` matches.
+ Default `WorkspaceScope` is the no-op for RUN scope, but the
+ knowledge-state gate ALWAYS applies — detached/removed documents
+ must never reach retrieval regardless of scope. `RunScope`
+ additionally keeps only artifacts whose ``metadata.run_id``
+ matches.
  """
+    # Document-centric gate: drop artifacts tied to detached or
+    # removed documents. Centralised in `j1.documents.lifecycle` so
+    # this rule lives in exactly one place. No-op by default —
+    # pre-refactor records have no `metadata.knowledge_state` and
+    # default to "attached".
+    from j1.documents.lifecycle import filter_to_attached_artifacts
+    records = filter_to_attached_artifacts(records)
     if isinstance(request.scope, RunScope):
         run_id = request.scope.run_id
         return [
