@@ -360,11 +360,24 @@ class IngestionValidationService:
 
         textual_blocks: list[EvidenceBlockDTO] = []
         if retrieved:
+            # Pass the question through so build_evidence_blocks
+            # runs the general-purpose reranker
+            # (j1.validation.rerank) over the candidate set
+            # instead of relying solely on raw retriever topK
+            # order. The reranker scores each candidate on
+            # source-trust / lexical-coverage / phrase / numeric
+            # / structural / intent signals, then selects the
+            # final evidence by greedy coverage of query
+            # aspects. This is the "decouple final-evidence
+            # quality from raw topK" change operators asked for
+            # — increasing K helps recall, but final block
+            # selection is now driven by evidence quality.
             textual_blocks = build_evidence_blocks(
                 ctx=ctx,
                 retrieved=retrieved,
                 artifact_registry=self._artifacts,
                 path_resolver=_resolver,
+                query=request.question,
             )
 
         # Graph-paths fallback. Fires when:

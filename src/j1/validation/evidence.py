@@ -189,17 +189,33 @@ def build_evidence_blocks(
     path_resolver: PathResolver,
     max_blocks: int = 5,
     total_budget_chars: int = _TOTAL_BUDGET_CHARS,
+    query: str | None = None,
+    rerank_config: "RerankConfig | None" = None,
 ) -> list[EvidenceBlockDTO]:
     """Materialise clean evidence blocks from the engine's retrieval
  projection.
 
- Walks `retrieved` in given order (engine emits them score-
- sorted), pulls each hit's real text, applies kind rules,
- dedups, and caps cumulative characters at `total_budget_chars`.
+ When ``query`` is supplied AND ``rerank_config.enabled`` is True
+ (default), runs the general-purpose reranker
+ (``j1.validation.rerank``) on the loaded candidate set: scores
+ each candidate by source-trust / lexical-coverage / phrase /
+ numeric / structural / intent-compat / interpretive-penalty,
+ then selects the final ``max_blocks`` greedily by query-aspect
+ coverage. This decouples final evidence quality from raw topK
+ ordering — increasing the retriever's K helps recall, but the
+ actual blocks that reach the LLM are chosen by evidence-quality
+ signals downstream.
 
- `max_blocks` is an additional safety bound so a flood of small
- chunks can't crowd out one well-placed long chunk. Defaults
- land us at ~3-5 blocks for typical local-LLM contexts.
+ Without ``query`` (legacy callers / batch validation paths that
+ want deterministic, single-signal ranking), falls back to the
+ historical priority-by-kind sort. The fallback preserves
+ backwards-compatibility and the existing test surface.
+
+ In both modes: kind filtering (``_SKIP_KINDS``), per-block
+ character cap, dedup by leading prefix, and cumulative
+ character budget all apply unchanged. Run/project isolation
+ checks are unaffected — this module only orders what the
+ caller has already supplied.
 
  Returns an empty list when retrieval was empty — the synthesizer
  short-circuits to "no_evidence" downstream.
@@ -213,6 +229,112 @@ def build_evidence_blocks(
     chunk_cache: dict[str, dict[str, _ChunkRecord]] = {}
     projector = ChunkProjector(path_resolver=path_resolver)
 
+    # If a query is provided AND reranking is on, load every
+    # eligible candidate's body up-front, score it, and select
+    # by coverage. Otherwise fall through to the legacy
+    # priority-sort + first-fit-budget flow.
+    from j1.validation.rerank import (
+        RerankConfig as _RerankConfig,
+        rerank_and_select,
+    )
+    effective_config = rerank_config or _RerankConfig()
+    use_rerank = bool(query) and effective_config.enabled
+
+    if use_rerank:
+        # Stage 1: load body text for every retrieved candidate
+        # eligible by kind. Skip-kinds drop early so the reranker
+        # doesn't waste cycles scoring them.
+        prepared: list[tuple[RetrievedChunkRefDTO, str]] = []
+        kinds: list[str] = []
+        raws: list[float] = []
+        sections: list[str | None] = []
+        for hit in retrieved:
+            kind = (hit.artifact_kind or "").strip()
+            if kind in _SKIP_KINDS:
+                continue
+            text = _resolve_text_for_hit(
+                ctx=ctx, hit=hit, kind=kind,
+                registry=artifact_registry, path_resolver=path_resolver,
+                projector=projector, chunk_cache=chunk_cache,
+            )
+            if text is None:
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            if len(text) > _PER_BLOCK_CHAR_CAP:
+                text = text[:_PER_BLOCK_CHAR_CAP].rstrip() + "…"
+            # Pre-fetch section so the reranker can score
+            # section-match without re-walking the chunk cache.
+            page_start, page_end, section = _page_info(
+                ctx=ctx, hit=hit, kind=kind,
+                registry=artifact_registry, projector=projector,
+                chunk_cache=chunk_cache, path_resolver=path_resolver,
+            )
+            prepared.append((hit, text))
+            kinds.append(kind)
+            raws.append(float(hit.score or 0.0))
+            sections.append(section)
+
+        # Stage 2: rerank + coverage-select.
+        selected_payloads, selected_scores, intents, query_terms = (
+            rerank_and_select(
+                bodies=prepared,
+                raw_scores=raws,
+                sections=sections,
+                artifact_kinds=kinds,
+                query=query,
+                config=effective_config,
+            )
+        )
+
+        # Stage 3: project the winners into EvidenceBlockDTOs,
+        # applying the per-call total-budget cap (the rerank
+        # module's budget cap is per-selection; this is the
+        # real prompt-budget enforcement).
+        prepared_by_payload = {id(p[0]): p[1] for p in prepared}
+        for hit in selected_payloads:
+            if len(blocks) >= max_blocks:
+                break
+            if used_chars >= total_budget_chars:
+                break
+            text = prepared_by_payload.get(id(hit), "")
+            if not text:
+                continue
+            prefix_key = text[:_DEDUP_PREFIX_LEN]
+            if prefix_key in seen_prefixes:
+                continue
+            seen_prefixes.add(prefix_key)
+            remaining = total_budget_chars - used_chars
+            if len(text) > remaining:
+                text = text[:remaining].rstrip() + "…"
+            used_chars += len(text)
+            kind = (hit.artifact_kind or "").strip()
+            page_start, page_end, section = _page_info(
+                ctx=ctx, hit=hit, kind=kind,
+                registry=artifact_registry, projector=projector,
+                chunk_cache=chunk_cache, path_resolver=path_resolver,
+            )
+            blocks.append(EvidenceBlockDTO(
+                artifact_id=hit.artifact_id,
+                artifact_type=kind or hit.artifact_kind or "",
+                text=text,
+                chunk_id=hit.chunk_id,
+                score=hit.score,
+                page_start=page_start,
+                page_end=page_end,
+                section=section,
+                source_location=hit.source_location,
+            ))
+        _log.debug(
+            "rerank selected %d/%d blocks "
+            "(query_terms=%d intents=%s)",
+            len(blocks), len(prepared), len(query_terms),
+            sorted(i.value for i in intents),
+        )
+        return blocks
+
+    # ---- Legacy priority-sort path (no query supplied) -------------
     # Artifact-type policy: re-order hits so textual kinds fill the
     # evidence budget first. Python's `sorted` is stable, so within
     # each priority tier the engine's score order is preserved —
