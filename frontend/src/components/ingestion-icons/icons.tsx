@@ -130,7 +130,7 @@ const C = {
 // ── 1. ParseIcon ────────────────────────────────
 export function ParseIcon(props: IngestionIconProps) {
   return (
-    <IconFrame {...props} svgClass="pix-ic-parse" ariaLabel={props.ariaLabel ?? "Parse Source Content"}>
+    <IconFrame {...props} svgClass="pix-ic-parse" ariaLabel={props.ariaLabel ?? "Compile"}>
       <svg viewBox="0 0 32 32" className="pix-ic-parse">
         <rect x="9" y="6" width="14" height="22" fill={C.papsh} />
         <rect x="8" y="5" width="14" height="22" fill={C.paper} />

@@ -18,13 +18,16 @@ import {
 
 describe("processing-steps", () => {
   describe("PROCESSING_STEPS canonical list", () => {
-    it("contains the eight user-facing steps in compile-first order", () => {
+    it("contains the six macro-phase steps in compile-first order", () => {
+      // Post-split-mode pipeline: assess → compile (sealed) →
+      // assess enrichment → enrich → graph → finalize. The earlier
+      // split-mode-era IDs (parse_source_content,
+      // build_content_inventory, generate_knowledge_chunks) all fold
+      // onto the single "compile" step now.
       expect(PROCESSING_STEPS.map((s) => s.id)).toEqual([
         "assess_compile_strategy",
-        "parse_source_content",
-        "build_content_inventory",
+        "compile",
         "assess_enrichment",
-        "generate_knowledge_chunks",
         "enrich_extracted_content",
         "build_knowledge_graph",
         "finalize_ingestion",
@@ -45,25 +48,43 @@ describe("processing-steps", () => {
       expect(labels).not.toMatch(/raganything/i);
       expect(labels).not.toMatch(/mineru/i);
     });
+
+    it("no leftover split-mode step ids remain", () => {
+      const ids = PROCESSING_STEP_IDS as readonly string[];
+      expect(ids).not.toContain("parse_source_content");
+      expect(ids).not.toContain("build_content_inventory");
+      expect(ids).not.toContain("generate_knowledge_chunks");
+    });
   });
 
   describe("internalStepToUserFacing()", () => {
-    it("maps compile / parse / parser to parse_source_content", () => {
-      expect(internalStepToUserFacing("compile")).toBe("parse_source_content");
-      expect(internalStepToUserFacing("parse")).toBe("parse_source_content");
-      expect(internalStepToUserFacing("parser")).toBe("parse_source_content");
-      expect(internalStepToUserFacing("raganything_compile")).toBe(
-        "parse_source_content",
-      );
+    it("maps compile / parse / parser to the canonical compile id", () => {
+      expect(internalStepToUserFacing("compile")).toBe("compile");
+      expect(internalStepToUserFacing("parse")).toBe("compile");
+      expect(internalStepToUserFacing("parser")).toBe("compile");
+      expect(internalStepToUserFacing("raganything_compile")).toBe("compile");
     });
 
-    it("maps parsed-content/content list to build_content_inventory", () => {
+    it("folds legacy split-mode aliases onto compile", () => {
+      // parse_source_content / build_content_inventory /
+      // generate_knowledge_chunks were the user-facing ids in the
+      // split-mode era. Historic runs may still carry them in the
+      // audit log; they MUST project to the unified compile step
+      // rather than fall through to the raw-capitalised fallback.
+      expect(internalStepToUserFacing("parse_source_content")).toBe("compile");
+      expect(internalStepToUserFacing("build_content_inventory")).toBe(
+        "compile",
+      );
+      expect(internalStepToUserFacing("generate_knowledge_chunks")).toBe(
+        "compile",
+      );
       expect(internalStepToUserFacing("parsed_content_manifest")).toBe(
-        "build_content_inventory",
+        "compile",
       );
-      expect(internalStepToUserFacing("content_inventory")).toBe(
-        "build_content_inventory",
-      );
+      expect(internalStepToUserFacing("content_inventory")).toBe("compile");
+      expect(internalStepToUserFacing("chunk")).toBe("compile");
+      expect(internalStepToUserFacing("chunks")).toBe("compile");
+      expect(internalStepToUserFacing("chunking")).toBe("compile");
     });
 
     it("maps profile / assessment events to assess_compile_strategy", () => {
@@ -97,24 +118,10 @@ describe("processing-steps", () => {
     });
 
     it("legacy plan.* events no longer map (workflow does not emit them)", () => {
-      // The old IngestPlanner is gone; plan.generated/plan.revised are
-      // dead. They must NOT mislabel onto a real step.
       expect(internalStepToUserFacing("plan")).toBeNull();
       expect(internalStepToUserFacing("planning")).toBeNull();
       expect(internalStepToUserFacing("plan.revised")).toBeNull();
       expect(internalStepToUserFacing("initial_plan")).toBeNull();
-    });
-
-    it("maps chunks to generate_knowledge_chunks", () => {
-      expect(internalStepToUserFacing("chunk")).toBe(
-        "generate_knowledge_chunks",
-      );
-      expect(internalStepToUserFacing("chunking")).toBe(
-        "generate_knowledge_chunks",
-      );
-      expect(internalStepToUserFacing("chunk_task")).toBe(
-        "generate_knowledge_chunks",
-      );
     });
 
     it("maps enrich variants to enrich_extracted_content", () => {
@@ -122,6 +129,9 @@ describe("processing-steps", () => {
         "enrich_extracted_content",
       );
       expect(internalStepToUserFacing("enrichment")).toBe(
+        "enrich_extracted_content",
+      );
+      expect(internalStepToUserFacing("enrich_stage")).toBe(
         "enrich_extracted_content",
       );
       expect(internalStepToUserFacing("multimodal_enrich")).toBe(
@@ -156,7 +166,7 @@ describe("processing-steps", () => {
     });
 
     it("is case-insensitive", () => {
-      expect(internalStepToUserFacing("COMPILE")).toBe("parse_source_content");
+      expect(internalStepToUserFacing("COMPILE")).toBe("compile");
       expect(internalStepToUserFacing("Enrich")).toBe(
         "enrich_extracted_content",
       );
@@ -171,7 +181,7 @@ describe("processing-steps", () => {
 
   describe("userFacingStepLabel()", () => {
     it("returns the canonical label for known steps", () => {
-      expect(userFacingStepLabel("compile")).toBe("Parse Source Content");
+      expect(userFacingStepLabel("compile")).toBe("Compile");
       expect(userFacingStepLabel("profile_document")).toBe(
         "Assess Compile Strategy",
       );
@@ -179,6 +189,9 @@ describe("processing-steps", () => {
         "Assess Enrichment",
       );
       expect(userFacingStepLabel("graph")).toBe("Build Knowledge Graph");
+      // Legacy split-mode aliases produce "Compile" too.
+      expect(userFacingStepLabel("parse_source_content")).toBe("Compile");
+      expect(userFacingStepLabel("generate_knowledge_chunks")).toBe("Compile");
     });
 
     it("preserves the raw string for unrecognised names (capitalised)", () => {

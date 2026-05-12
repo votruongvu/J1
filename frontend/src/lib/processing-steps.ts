@@ -6,16 +6,21 @@
  * for the operator-facing Run Detail page. This module owns the
  * single mapping from internal names → user-facing labels:
  *
- * profile / assessment / assess_compile_strategy
- * → "Assess Compile Strategy" (pre-compile)
- * compile / parse / parser → "Parse Source Content"
- * parsed_content_manifest → "Build Content Inventory" (synthetic)
- * post_compile_assess /
- * enrich_assessment → "Assess Enrichment" (post-compile)
- * chunking / chunks → "Generate Knowledge Chunks" (synthetic)
- * enrich / enrichment → "Enrich Extracted Content"
- * graph / build_graph → "Build Knowledge Graph"
- * index / finalize / complete → "Finalize Ingestion"
+ *   profile / assessment / assess_compile_strategy
+ *                                  → "Assess Compile Strategy" (pre-compile)
+ *   compile / parse / parser /
+ *   chunk / chunks / chunking /
+ *   build_content_inventory /
+ *   generate_knowledge_chunks      → "Compile" (the sealed RAGAnything stage)
+ *   post_compile_assess /
+ *   enrich_assessment              → "Assess Enrichment" (post-compile)
+ *   enrich / enrichment            → "Enrich Extracted Content"
+ *   graph / build_graph            → "Build Knowledge Graph"
+ *   index / finalize / complete    → "Finalize Ingestion"
+ *
+ * The canonical step list is six items — one per macro phase of the
+ * post-split-mode pipeline. The mapping table tolerates legacy
+ * synonyms so old runs in history still project to the right label.
  *
  * Use the helper functions everywhere a step name reaches the user
  * — Timeline, PrimaryStatusPanel, tab labels — so a backend rename
@@ -24,10 +29,8 @@
 
 export const PROCESSING_STEP_IDS = [
   "assess_compile_strategy",
-  "parse_source_content",
-  "build_content_inventory",
+  "compile",
   "assess_enrichment",
-  "generate_knowledge_chunks",
   "enrich_extracted_content",
   "build_knowledge_graph",
   "finalize_ingestion",
@@ -43,58 +46,54 @@ export interface ProcessingStepDef {
 
 /**
  * User-facing steps in canonical order. The compile-first journey:
- * profile + assess → compile → synthetic content inventory →
- * post-compile enrich assessment → synthetic chunks → enrich →
- * graph → finalize. Every emitted step.* event projects onto one
- * of these ids via `internalStepToUserFacing`.
+ *   assess compile strategy → compile (sealed black-box, includes
+ *   parse + chunk + index inside the adapter) → assess enrichment
+ *   → enrich → graph → finalize.
+ *
+ * Earlier versions of this list included `parse_source_content`,
+ * `build_content_inventory`, and `generate_knowledge_chunks` as
+ * separate steps — they were split-mode artifacts back when J1 ran
+ * compile as multiple activities. The pipeline now runs compile as
+ * one indivisible activity (`process_document_complete`), so all
+ * three fold into the single "Compile" step.
  */
 export const PROCESSING_STEPS: readonly ProcessingStepDef[] = [
   {
     id: "assess_compile_strategy",
     label: "Assess Compile Strategy",
     description:
-      "Profile the document and build the AssessmentPlan that drives " +
-      "compile config (parse method, capability toggles).",
+      "Profile the document and build the AssessmentPlan that drives "
+      + "compile config (parse method, capability toggles).",
   },
   {
-    id: "parse_source_content",
-    label: "Parse Source Content",
+    id: "compile",
+    label: "Compile",
     description:
-      "Read and parse the uploaded file using the configured parser.",
-  },
-  {
-    id: "build_content_inventory",
-    label: "Build Content Inventory",
-    description:
-      "Convert the parsed output into an inventory of text blocks, " +
-      "tables, images, and headings.",
+      "Run the sealed RAGAnything compile stage — parse the source, "
+      + "produce the parsed-content manifest, generate knowledge "
+      + "chunks, and index. One indivisible activity; the FE Content "
+      + "Inventory + Chunks tabs unlock when this completes.",
   },
   {
     id: "assess_enrichment",
     label: "Assess Enrichment",
     description:
-      "Rule-based assessment of compile output to decide which " +
-      "enrichment tasks should run downstream.",
-  },
-  {
-    id: "generate_knowledge_chunks",
-    label: "Generate Knowledge Chunks",
-    description:
-      "Generate searchable knowledge chunks from the parsed content.",
+      "Rule-based assessment of compile output to decide which "
+      + "enrichment tasks should run downstream.",
   },
   {
     id: "enrich_extracted_content",
     label: "Enrich Extracted Content",
     description:
-      "Run optional enrichment (image understanding, table " +
-      "interpretation, domain-specific extraction).",
+      "Run optional enrichment (image understanding, table "
+      + "interpretation, domain-specific extraction).",
   },
   {
     id: "build_knowledge_graph",
     label: "Build Knowledge Graph",
     description:
-      "Build entity / relationship graph from compile output and " +
-      "enriched chunks.",
+      "Build entity / relationship graph from compile output and "
+      + "enriched chunks.",
   },
   {
     id: "finalize_ingestion",
@@ -121,7 +120,7 @@ export function processingStepById(
  * Map an internal step / stage / activity string to the canonical
  * user-facing step id. Tolerant to synonyms — the same id can be
  * reached from a stage label (`COMPILE`), an activity name
- * (`compile_doc`), or a user-spec id (`generate_knowledge_chunks`).
+ * (`compile_doc`), or a legacy split-mode id (`parse_source_content`).
  *
  * Returns `null` for strings the mapping doesn't recognise so
  * callers can fall back to the raw label rather than misattribute.
@@ -138,78 +137,87 @@ export function internalStepToUserFacing(
     return key as ProcessingStepId;
   }
 
-  // Internal stage labels (uppercase) and activity / step names.
+  // Pre-compile assessment.
   if (
-    key === "assess_compile_strategy" ||
-    key === "assessment" ||
-    key === "assessment.created" ||
-    key === "ingestion.assessment.created" ||
-    key === "profile" ||
-    key === "profile_document" ||
-    key === "assessment_plan"
+    key === "assess_compile_strategy"
+    || key === "assessment"
+    || key === "assessment.created"
+    || key === "ingestion.assessment.created"
+    || key === "profile"
+    || key === "profile_document"
+    || key === "assessment_plan"
   ) {
     return "assess_compile_strategy";
   }
+
+  // Compile — the sealed black-box stage. Folds the retired
+  // split-mode sub-steps (parse + build inventory + chunks) onto
+  // a single canonical id.
   if (
-    key === "compile" ||
-    key === "parse" ||
-    key === "parser" ||
-    key === "compile_parse" ||
-    key === "raganything_compile"
+    key === "compile"
+    || key === "parse"
+    || key === "parser"
+    || key === "compile_parse"
+    || key === "raganything_compile"
+    // Legacy split-mode aliases — kept so historical runs still
+    // project to "Compile" instead of falling through to the raw
+    // capitalised label.
+    || key === "parse_source_content"
+    || key === "parsed_content_manifest"
+    || key === "content_inventory"
+    || key === "content_list"
+    || key === "parsed_content_list"
+    || key === "build_content_inventory"
+    || key === "chunk"
+    || key === "chunks"
+    || key === "chunking"
+    || key === "chunk_task"
+    || key === "compile_chunks"
+    || key === "generate_knowledge_chunks"
   ) {
-    return "parse_source_content";
+    return "compile";
   }
+
+  // Post-compile enrichment assessment.
   if (
-    key === "parsed_content_manifest" ||
-    key === "content_inventory" ||
-    key === "content_list" ||
-    key === "parsed_content_list" ||
-    key === "build_content_inventory"
-  ) {
-    return "build_content_inventory";
-  }
-  if (
-    key === "assess_enrichment" ||
-    key === "post_compile_assess" ||
-    key === "enrich_assessment" ||
-    key === "post_compile_enrich_plan" ||
-    key === "ingestion.post_compile.enrich_assessment"
+    key === "assess_enrichment"
+    || key === "post_compile_assess"
+    || key === "enrich_assessment"
+    || key === "post_compile_enrich_plan"
+    || key === "ingestion.post_compile.enrich_assessment"
   ) {
     return "assess_enrichment";
   }
+
+  // Domain enrichment.
   if (
-    key === "chunk" ||
-    key === "chunks" ||
-    key === "chunking" ||
-    key === "chunk_task" ||
-    key === "compile_chunks" ||
-    key === "generate_knowledge_chunks"
-  ) {
-    return "generate_knowledge_chunks";
-  }
-  if (
-    key === "enrich" ||
-    key === "enrichment" ||
-    key === "llm_enrich" ||
-    key === "multimodal_enrich"
+    key === "enrich"
+    || key === "enrichment"
+    || key === "enrich_stage"
+    || key === "llm_enrich"
+    || key === "multimodal_enrich"
   ) {
     return "enrich_extracted_content";
   }
+
+  // Graph build.
   if (
-    key === "graph" ||
-    key === "graph_build" ||
-    key === "build_graph" ||
-    key === "graph_adapter" ||
-    key === "knowledge_graph"
+    key === "graph"
+    || key === "graph_build"
+    || key === "build_graph"
+    || key === "graph_adapter"
+    || key === "knowledge_graph"
   ) {
     return "build_knowledge_graph";
   }
+
+  // Terminal — index + finalize collapse onto the same surface.
   if (
-    key === "complete" ||
-    key === "finalize" ||
-    key === "index" ||
-    key === "indexing" ||
-    key === "run.completed"
+    key === "complete"
+    || key === "finalize"
+    || key === "index"
+    || key === "indexing"
+    || key === "run.completed"
   ) {
     return "finalize_ingestion";
   }
@@ -226,8 +234,7 @@ export function userFacingStepLabel(raw: string | null | undefined): string {
   const id = internalStepToUserFacing(raw);
   if (id) return PROCESSING_STEPS_BY_ID[id].label;
   // Unknown internal name — preserve as-is rather than silently
-  // mislabel. The Timeline already shows the raw stage badge for
-  // diagnostic context.
+  // mislabel.
   const trimmed = raw.trim();
   if (trimmed.length === 0) return "—";
   const first = trimmed.charAt(0);
@@ -237,12 +244,12 @@ export function userFacingStepLabel(raw: string | null | undefined): string {
 /**
  * Derived per-step status used across the run-detail surfaces.
  *
- * `pending` — the run hasn't reached this step yet
- * `running` — the most recent event for this step is `step.started`
- * `completed` — the most recent event for this step is `step.completed`,
- * OR the matching artifact is present in the summary
- * `skipped` — `step.skipped` event OR the run summary records skipped
- * `failed` — `step.failed` event
+ *   `pending`   — the run hasn't reached this step yet
+ *   `running`   — the most recent event for this step is `step.started`
+ *   `completed` — the most recent event for this step is `step.completed`,
+ *                 OR the matching artifact is present in the summary
+ *   `skipped`   — `step.skipped` event OR the run summary records skipped
+ *   `failed`    — `step.failed` event
  *
  * Centralised here so the timeline, status badges, and the
  * Execution Plan tab all classify status the same way.

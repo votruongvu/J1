@@ -3,16 +3,16 @@
  * place the J1 UI shows an ingestion step's progress.
  *
  * <IngestionStepIcon
- * step="parse_source_content"
+ * step="compile"
  * status="running"
  * size="md"
  * />
  *
  * The `step` prop accepts the canonical user-facing id
- * (`parse_source_content`, …) or any internal synonym that
- * `internalStepToUserFacing` knows how to fold (`compile`,
- * `plan.revised`, `chunks`, etc.). Unknown ids fall back to a
- * neutral pixel-frame with a status badge so the UI never breaks.
+ * (`compile`, `enrich_extracted_content`, …) or any internal
+ * synonym that `internalStepToUserFacing` knows how to fold (`parse`,
+ * `chunks`, `parsed_content_manifest`, etc.). Unknown ids fall back
+ * to a neutral pixel-frame with a status badge so the UI never breaks.
  *
  * Status drives both the per-icon animation and the frame's tint
  * + corner badge:
@@ -29,13 +29,11 @@ import {
   type ProcessingStepId,
 } from "@/lib/processing-steps";
 import {
-  ChunkIcon,
   EnrichIcon,
   FinalizeIcon,
   GraphIcon,
   type IconState,
   type IngestionIconProps,
-  InventoryIcon,
   ParseIcon,
   PlanIcon,
 } from "./icons";
@@ -54,12 +52,14 @@ export const INGESTION_STEP_ICONS: Record<
   // Pre-compile assessment stage — reuses the planning glyph since
   // the AssessmentPlan IS what used to be called the plan.
   assess_compile_strategy: PlanIcon,
-  parse_source_content: ParseIcon,
-  build_content_inventory: InventoryIcon,
+  // Sealed compile stage (parse + chunk + index inside the
+  // adapter). The parse glyph is the canonical icon for this row;
+  // the InventoryIcon / ChunkIcon used to represent the split-mode
+  // sub-steps that no longer exist.
+  compile: ParseIcon,
   // Post-compile rule-based enrich assessment — reuses the planning
   // glyph for visual continuity with the pre-compile assessment.
   assess_enrichment: PlanIcon,
-  generate_knowledge_chunks: ChunkIcon,
   enrich_extracted_content: EnrichIcon,
   build_knowledge_graph: GraphIcon,
   finalize_ingestion: FinalizeIcon,
@@ -76,9 +76,9 @@ export type StepStatus =
 
 interface IngestionStepIconProps {
   /**
- * Canonical id (e.g. `parse_source_content`) OR any internal
- * synonym (e.g. `compile`, `plan.revised`, `chunks`). The
- * normaliser folds synonyms; unknown strings fall back to a
+ * Canonical id (e.g. `compile`, `enrich_extracted_content`) OR any
+ * internal synonym (e.g. `parse`, `chunks`, `parsed_content_manifest`).
+ * The normaliser folds synonyms; unknown strings fall back to a
  * neutral frame.
  */
   step: string | ProcessingStepId | null | undefined;

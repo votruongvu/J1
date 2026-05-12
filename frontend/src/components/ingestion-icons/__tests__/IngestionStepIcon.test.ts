@@ -28,19 +28,16 @@ describe("INGESTION_STEP_ICONS mapping", () => {
     }
   });
 
-  it("has exactly eight entries (matching the user-facing flow)", () => {
-    expect(Object.keys(INGESTION_STEP_ICONS)).toHaveLength(8);
+  it("has exactly six entries — one per macro phase of the post-split-mode pipeline", () => {
+    expect(Object.keys(INGESTION_STEP_ICONS)).toHaveLength(6);
   });
 });
 
 describe("<IngestionStepIcon /> rendering", () => {
-  it("renders the parse icon for parse_source_content / running", () => {
-    const html = render({
-      step: "parse_source_content",
-      status: "running",
-    });
-    // Parse icon's SVG carries the `pix-ic-parse` class — pinned
-    // so a refactor that swaps class names breaks loudly.
+  it("renders the parse icon for compile / running", () => {
+    const html = render({ step: "compile", status: "running" });
+    // Compile uses the parse glyph — pinned so a refactor that
+    // swaps class names breaks loudly.
     expect(html).toContain("pix-ic-parse");
     expect(html).toContain("state-running");
     // Running state has no badge.
@@ -48,14 +45,11 @@ describe("<IngestionStepIcon /> rendering", () => {
   });
 
   it("renders completed badge + paused state for completed", () => {
-    const html = render({
-      step: "build_content_inventory",
-      status: "completed",
-    });
-    expect(html).toContain("pix-ic-inv");
+    const html = render({ step: "compile", status: "completed" });
+    expect(html).toContain("pix-ic-parse");
     expect(html).toContain("state-completed");
     expect(html).toContain("pix-state-badge");
-    // Completed badge does NOT carry the.warn class.
+    // Completed badge does NOT carry the .warn class.
     expect(html).not.toContain("pix-state-badge warn");
   });
 
@@ -79,9 +73,9 @@ describe("<IngestionStepIcon /> rendering", () => {
     expect(html).not.toContain("pix-state-badge");
   });
 
-  it("normalises internal step names to user-facing ids", () => {
-    // `compile` → parse_source_content → ParseIcon
-    expect(render({ step: "compile", status: "running" })).toContain(
+  it("normalises internal step names + legacy split-mode aliases to user-facing ids", () => {
+    // `parse` → compile → ParseIcon
+    expect(render({ step: "parse", status: "running" })).toContain(
       "pix-ic-parse",
     );
     // `profile_document` → assess_compile_strategy → PlanIcon
@@ -92,10 +86,19 @@ describe("<IngestionStepIcon /> rendering", () => {
     expect(
       render({ step: "post_compile_assess", status: "completed" }),
     ).toContain("pix-ic-plan");
-    // `chunks` → generate_knowledge_chunks → ChunkIcon
+    // Legacy split-mode synonyms still fold onto `compile`.
+    // `chunks` → compile → ParseIcon
     expect(render({ step: "chunks", status: "running" })).toContain(
-      "pix-ic-chunk",
+      "pix-ic-parse",
     );
+    // `parse_source_content` → compile → ParseIcon
+    expect(
+      render({ step: "parse_source_content", status: "completed" }),
+    ).toContain("pix-ic-parse");
+    // `build_content_inventory` → compile → ParseIcon
+    expect(
+      render({ step: "build_content_inventory", status: "completed" }),
+    ).toContain("pix-ic-parse");
     // `graph_build` → build_knowledge_graph → GraphIcon
     expect(render({ step: "graph_build", status: "running" })).toContain(
       "pix-ic-graph",
@@ -113,7 +116,7 @@ describe("<IngestionStepIcon /> rendering", () => {
 
   it("respects the `flat` prop", () => {
     const html = render({
-      step: "parse_source_content",
+      step: "compile",
       status: "running",
       flat: true,
     });
@@ -122,19 +125,19 @@ describe("<IngestionStepIcon /> rendering", () => {
 
   it("size prop controls the size class (sm/md/lg/xs)", () => {
     expect(
-      render({ step: "parse_source_content", status: "running", size: "xs" }),
+      render({ step: "compile", status: "running", size: "xs" }),
     ).toContain("size-xs");
     expect(
-      render({ step: "parse_source_content", status: "running", size: "sm" }),
+      render({ step: "compile", status: "running", size: "sm" }),
     ).toContain("size-sm");
     expect(
-      render({ step: "parse_source_content", status: "running", size: "lg" }),
+      render({ step: "compile", status: "running", size: "lg" }),
     ).toContain("size-lg");
   });
 
   it("numeric size sets a CSS variable instead of a size class", () => {
     const html = render({
-      step: "parse_source_content",
+      step: "compile",
       status: "running",
       size: 64,
     });
@@ -143,25 +146,25 @@ describe("<IngestionStepIcon /> rendering", () => {
   });
 
   it("status defaults to pending and renders the muted frame", () => {
-    const html = render({ step: "parse_source_content" });
+    const html = render({ step: "compile" });
     expect(html).toContain("state-pending");
     expect(html).not.toContain("pix-state-badge");
   });
 
   it("provides an aria-label for accessibility", () => {
     const html = render({
-      step: "parse_source_content",
+      step: "compile",
       status: "running",
-      ariaLabel: "Parsing source",
+      ariaLabel: "Compiling document",
     });
-    expect(html).toContain('aria-label="Parsing source"');
+    expect(html).toContain('aria-label="Compiling document"');
   });
 
   it("derives a default aria-label when none is provided", () => {
     const html = render({
-      step: "parse_source_content",
+      step: "compile",
       status: "running",
     });
-    expect(html).toContain('aria-label="Parse Source Content"');
+    expect(html).toContain('aria-label="Compile"');
   });
 });

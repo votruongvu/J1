@@ -361,7 +361,7 @@ def test_rebuild_index_only_skips_documents_loop_and_runs_only_index(
         if r.status.value == "skipped"
         and "rebuild index only" in (r.reason or "")
     }
-    assert {"compile", "generate_knowledge_chunks", "enrich", "graph"} <= skipped
+    assert {"compile", "enrich", "graph"} <= skipped
     # Index step recorded as COMPLETED.
     assert any(
         r.step == "index" and r.status.value == "completed"

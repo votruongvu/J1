@@ -931,10 +931,7 @@ class ProjectProcessingWorkflow:
                     f"rebuild index only — chunks reused from "
                     f"{request.resume_from_run_id or 'prior run'}"
                 )
-                for skipped_step in (
-                    "compile", "build_content_inventory",
-                    "generate_knowledge_chunks", "enrich", "graph",
-                ):
+                for skipped_step in ("compile", "enrich", "graph"):
                     self._record_step(
                         step=skipped_step,
                         status=StepStatus.SKIPPED,
@@ -1523,21 +1520,6 @@ class ProjectProcessingWorkflow:
                     "graph step recorded as completed but no "
                     "`graph_json` artifact was produced"
                 )
-            elif r.step == "generate_knowledge_chunks" and "chunk" not in kinds:
-                # Compile bundles parse + chunk in one shot, so the
-                # chunks step is recorded as a synthetic step
-                # (metadata.synthetic=True). The check honours that
-                # escape hatch so we don't false-flag the synthetic
-                # step.
-                synthetic = bool(
-                    isinstance(r.metadata, dict)
-                    and r.metadata.get("synthetic")
-                )
-                if not synthetic:
-                    errors.append(
-                        "generate_knowledge_chunks step recorded as "
-                        "completed but no `chunk` artifact was produced"
-                    )
         return errors
 
     def _step_summary_payload(self) -> tuple[StepSummaryEntry, ...]:
@@ -2468,12 +2450,9 @@ class ProjectProcessingWorkflow:
     ) -> None:
         """Synthesise a `step.started` / `step.completed` event for
  a user-facing sub-step that doesn't run as a standalone
- activity.
-
- Used for `build_content_inventory` and `generate_knowledge_chunks`
- — both happen inside the compile activity but the FE
- renders them as separate steps. Best-effort like every
- emit helper; failure never blocks the workflow."""
+ activity (the assessment + post-compile-assessment phases).
+ Best-effort like every emit helper; failure never blocks the
+ workflow."""
         if not request.correlation_id:
             return
         try:
@@ -3255,38 +3234,6 @@ class ProjectProcessingWorkflow:
                 initial_plan_payload=initial_plan_payload,
             )
 
-        # ── Synthetic step: Build Content Inventory ──────────────
-        # The compile activity bundles parse + chunk in one shot
-        # (RAGAnything's `process_document_complete` is one call),
-        # but the user-facing flow lists Build Content Inventory as
-        # an independent step. We synthesise its lifecycle events
-        # here — immediately after compile.completed — so the
-        # timeline shows the right ordering even though the work
-        # was actually done inside compile. The Content Inventory
-        # tab unlocks on the underlying parsed-content manifest
-        # artifact (which is already present at this point).
-        await self._emit_step_lifecycle(
-            request, stage="BUILD_CONTENT_INVENTORY",
-            step="build_content_inventory", action="started",
-        )
-        self._record_step(
-            step="build_content_inventory",
-            status=StepStatus.COMPLETED,
-            required=True,
-            source=StepSource.CALLER,
-            artifact_count=len(compile_result.artifact_ids),
-            metadata={
-                "document_id": document_id,
-                "synthetic": True,
-                "synthesised_from": "compile",
-            },
-        )
-        await self._emit_step_lifecycle(
-            request, stage="BUILD_CONTENT_INVENTORY",
-            step="build_content_inventory", action="completed",
-            artifact_count=len(compile_result.artifact_ids),
-        )
-
         # Compile-result-driven search attributes. Both flags are
         # derived ONLY from compile evidence + the post-compile
         # enrich plan — never from pre-compile guesses.
@@ -3306,36 +3253,6 @@ class ProjectProcessingWorkflow:
         self._set_search_attribute(
             SEARCH_ATTR_REQUIRES_PREMIUM_LLM,
             "true" if _enrich_plan_needs_premium_llm(enrich_plan) else "false",
-        )
-
-        # ── Generate Knowledge Chunks ────────────────────────────
-        # Compile already produced chunk artifacts (J1 runs RAGAnything
-        # via `process_document_complete`, which parses + chunks +
-        # indexes in one activity). Emit synthetic step.* events so the
-        # user-facing timeline reads "Compile → Chunks" even though
-        # chunks landed at compile-time. The Chunks tab has been
-        # unlocked since compile.completed; these events only set the
-        # timeline ordering.
-        await self._emit_step_lifecycle(
-            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
-            step="generate_knowledge_chunks", action="started",
-        )
-        self._record_step(
-            step="generate_knowledge_chunks",
-            status=StepStatus.COMPLETED,
-            required=True,
-            source=StepSource.CALLER,
-            artifact_count=len(compile_result.artifact_ids),
-            metadata={
-                "document_id": document_id,
-                "synthetic": True,
-                "synthesised_from": "compile",
-            },
-        )
-        await self._emit_step_lifecycle(
-            request, stage="GENERATE_KNOWLEDGE_CHUNKS",
-            step="generate_knowledge_chunks", action="completed",
-            artifact_count=len(compile_result.artifact_ids),
         )
 
         await self._maybe_review(request, GATE_AFTER_COMPILE)
