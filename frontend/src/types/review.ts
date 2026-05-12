@@ -690,6 +690,12 @@ export interface ManualQueryDebug {
    * from "bug".
    */
   deprioritizedKinds: string[];
+  // Free-form server-stamped fields. The validation service emits
+  // additional debug keys with snake_case names (matching the
+  // backend's free-form dict shape) so the FE can render
+  // synthesize-toggle state, sectioned response, retrieval-debug
+  // block, etc. without forcing every key into a strict type.
+  [key: string]: unknown;
 }
 
 export interface LLMTrace {

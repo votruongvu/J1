@@ -361,7 +361,7 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
 interface FinalAnswerSectionProps {
   synthesized: string | null;
   llm: LLMTrace | null;
-  debug: Record<string, unknown> | null;
+  debug: ManualQueryDebug | null;
 }
 
 // Map server-side skip reasons to operator-readable copy. The
@@ -398,8 +398,11 @@ function FinalAnswerSection({
 
   let skipMessage: string | null = null;
   if (!hasAnswer && !wasCalled) {
-    if (disabledReason && SYNTHESIS_SKIP_MESSAGES[disabledReason]) {
-      skipMessage = SYNTHESIS_SKIP_MESSAGES[disabledReason];
+    const mapped = disabledReason
+      ? SYNTHESIS_SKIP_MESSAGES[disabledReason]
+      : undefined;
+    if (mapped) {
+      skipMessage = mapped;
     } else if (disabledReason) {
       // Forward-compat: unknown reason → surface it verbatim
       // rather than the misleading legacy "flip the toggle"
@@ -408,7 +411,7 @@ function FinalAnswerSection({
     } else if (errorText) {
       skipMessage = `LLM disabled: ${errorText}.`;
     } else {
-      skipMessage = SYNTHESIS_SKIP_MESSAGES.user_disabled;
+      skipMessage = SYNTHESIS_SKIP_MESSAGES.user_disabled ?? null;
     }
   }
 
