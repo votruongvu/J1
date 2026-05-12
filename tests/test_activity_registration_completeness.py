@@ -17,10 +17,11 @@ diff against the methods returned from `all_activities()`.
 
 from __future__ import annotations
 
-import pytest
+import importlib
+import inspect
+import re
 
-from j1.audit.recorder import AuditRecorder
-from j1.workspace.resolver import WorkspaceResolver
+import pytest
 
 
 def _decorated_activity_methods(cls: type) -> set[str]:
@@ -39,99 +40,63 @@ def _decorated_activity_methods(cls: type) -> set[str]:
     return out
 
 
-def _registered_activity_names(activity_obj) -> set[str]:
-    """Names registered via `obj.all_activities()`. We compare unbound
- method names by reading `.__func__.__name__` (bound) or
- `.__name__` (function)."""
-    out: set[str] = set()
-    for method in activity_obj.all_activities():
-        fn = getattr(method, "__func__", None) or method
-        out.add(fn.__name__)
-    return out
+def _registry_method_references(cls: type) -> set[str] | None:
+    """Find the class's `all_activities()`-style registry method and
+ return the set of `self.<name>` references inside it. Returns
+ None if the class doesn't declare a registry. Source-inspection
+ avoids needing to instantiate activity classes with their
+ specific dependencies."""
+    for name in ("all_activities", "activities", "list_activities"):
+        if hasattr(cls, name) and callable(getattr(cls, name)):
+            method = getattr(cls, name)
+            try:
+                src = inspect.getsource(method)
+            except (OSError, TypeError):
+                return None
+            return set(re.findall(r"self\.([a-zA-Z_][a-zA-Z0-9_]*)", src))
+    return None
 
 
-# ---- ProcessingActivities -----------------------------------------
-
-
-def test_processing_activities_registry_includes_every_decorated_method(
-    tmp_path,
-):
-    """Every `@activity.defn`-decorated method on `ProcessingActivities`
- must appear in `all_activities()`. Pin against the historical
- drift that left six activities missing — including the
- `build_initial_execution_plan` activity (whose silent failure
- produced the "No AssessmentPlan was attached" banner) and
- `persist_compile_result_summary` (a NotFoundError mid-run)."""
-    from j1.orchestration.activities.processing import ProcessingActivities
-
-    decorated = _decorated_activity_methods(ProcessingActivities)
-    # Construct a real instance so `all_activities()` returns bound
-    # methods we can name-match against the decorated set.
-    workspace = WorkspaceResolver(tmp_path)
-    activities = ProcessingActivities(
-        workspace=workspace,
-        audit=AuditRecorder(workspace),
-    )
-    registered = _registered_activity_names(activities)
-    missing = sorted(decorated - registered)
-    assert missing == [], (
-        f"ProcessingActivities.all_activities() is missing decorated "
-        f"methods: {missing}. The Temporal worker won't register them, "
-        f"so workflows that call them will fail with NotFoundError."
-    )
-
-
-# ---- Sister activity classes (defence-in-depth) -------------------
-
-
-@pytest.mark.parametrize("module_path,class_name", [
+_ACTIVITY_CLASSES = [
+    ("j1.orchestration.activities.processing", "ProcessingActivities"),
     ("j1.orchestration.activities.accounting", "AccountingActivities"),
-    ("j1.orchestration.activities.lifecycle", "LifecycleActivities"),
+    ("j1.orchestration.activities.lifecycle", "ProjectLifecycleActivities"),
     ("j1.orchestration.activities.profiling", "ProfilingActivities"),
     ("j1.orchestration.activities.project", "ProjectActivities"),
     ("j1.orchestration.activities.review", "ReviewActivities"),
     ("j1.orchestration.activities.runs", "RunsActivities"),
     ("j1.orchestration.activities.search", "SearchActivities"),
     ("j1.orchestration.activities.knowledge", "KnowledgeProcessingActivities"),
-])
-def test_activity_class_decorated_methods_are_in_registry(
+]
+
+
+@pytest.mark.parametrize("module_path,class_name", _ACTIVITY_CLASSES)
+def test_activity_class_registry_includes_every_decorated_method(
     module_path, class_name,
 ):
-    """Same invariant for the sister activity classes — check the set
- of decorated method names against the class's registry method
- without actually constructing instances. We don't need bound
- methods for the name check; the class-level walk is enough."""
-    import importlib
+    """Every `@activity.defn`-decorated method on an activity class
+ must appear in that class's `all_activities()` registry. The
+ Temporal worker registers activities only from what this method
+ returns; any decorated method missing from the list silently
+ becomes a `NotFoundError: Activity function ... is not registered
+ on this worker` at activity-dispatch time.
+
+ Pin against the historical drift on `ProcessingActivities` that
+ left six activities missing — including
+ `build_initial_execution_plan` (whose silent NotFoundError
+ produced the "No AssessmentPlan was attached" banner) and
+ `persist_compile_result_summary` (a NotFoundError mid-compile)."""
     module = importlib.import_module(module_path)
     cls = getattr(module, class_name)
     decorated = _decorated_activity_methods(cls)
     if not decorated:
         pytest.skip(f"{class_name} declares no activities")
-
-    # Find the registry method by name. Different classes use
-    # different conventions (`all_activities`, etc.) — accept any
-    # method whose name suggests "activity registry".
-    candidate_names = ("all_activities", "activities", "list_activities")
-    registry_method = None
-    for name in candidate_names:
-        if hasattr(cls, name) and callable(getattr(cls, name)):
-            registry_method = getattr(cls, name)
-            break
-    if registry_method is None:
+    referenced = _registry_method_references(cls)
+    if referenced is None:
         pytest.skip(f"{class_name} has no all_activities()-style registry")
-
-    # Read the source to find which `self.<method>` references the
-    # registry returns. Avoids needing to construct the class with its
-    # specific dependencies.
-    import inspect
-    try:
-        src = inspect.getsource(registry_method)
-    except (OSError, TypeError):
-        pytest.skip(f"can't read source of {class_name}.{registry_method.__name__}")
-    import re
-    referenced = set(re.findall(r"self\.([a-zA-Z_][a-zA-Z0-9_]*)", src))
     missing = sorted(decorated - referenced)
     assert missing == [], (
-        f"{class_name}.{registry_method.__name__} is missing decorated "
-        f"methods: {missing}"
+        f"{class_name}.all_activities() is missing decorated methods: "
+        f"{missing}. The Temporal worker won't register them, so "
+        f"workflows that call them will fail with NotFoundError."
     )
