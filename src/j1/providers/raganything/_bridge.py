@@ -1528,6 +1528,10 @@ def _graph_drafts_from_storage(
  its storage directory after processing. We surface those as
  `graph_json` drafts.
 
+ `artifact_ids` is preserved on the signature for future adapter use
+ (per-chunk lineage stamping) but NOT used today — see the
+ `source_artifact_ids=[]` rationale below.
+
  Excludes `kv_store_text_chunks.json` — that file contains text
  chunks, not graph data. It's surfaced separately as
  `kind="chunk"` artifacts via `_chunk_drafts_from_storage` so the
@@ -1586,7 +1590,23 @@ def _graph_drafts_from_storage(
                 kind=ARTIFACT_KIND_GRAPH_JSON,
                 content=content,
                 suggested_extension=path.suffix or ".json",
-                source_artifact_ids=list(artifact_ids),
+                # Intentionally empty. Earlier versions stamped this
+                # with the upstream `request.artifact_ids` (the WHOLE
+                # set of compile-produced artifacts — chunks, raw,
+                # manifest, etc.). That broke the validator's
+                # chunk-grounding check, which expects every entry
+                # here to be a chunk artifact: most upstream IDs
+                # aren't chunks, so every graph artifact stranded ~40
+                # IDs and the run failed validation.
+                #
+                # LightRAG doesn't surface per-artifact lineage we
+                # could use here (the graph is built from the whole
+                # document, not from named chunk IDs). Cross-run
+                # leakage prevention falls back to the per-artifact
+                # scope check (tenant/project/run_id via metadata),
+                # which IS reliable. The chunk-grounding signal stays
+                # off until/unless an adapter can report real lineage.
+                source_artifact_ids=[],
                 metadata={
                     "filename": path.name,
                     "relative_path": str(path.relative_to(storage_dir)),

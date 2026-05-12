@@ -227,3 +227,36 @@ def test_graph_drafts_excludes_non_graph_kv_stores(tmp_path):
     assert "vdb_entities.json" in filenames
     assert "kv_store_full_entities.json" in filenames
     assert "kv_store_full_relations.json" in filenames
+
+
+def test_graph_drafts_do_not_stamp_source_artifact_ids(tmp_path):
+    """The producer must NOT stamp upstream artifact ids onto
+ `source_artifact_ids` on graph drafts. Earlier versions stamped
+ the full `request.artifact_ids` list (chunks + manifest + raw +
+ everything compile produced), and the validator's
+ chunk-grounding check then flagged 41+ "stranded" ids on every
+ graph artifact because most upstream ids weren't chunks. Cross-
+ run leakage is prevented by the per-artifact scope check
+ (tenant/project/run_id) instead."""
+    _write(tmp_path / "graph_chunk_entity_relation.json", {
+        "nodes": [{"id": "n1"}], "edges": [],
+    })
+
+    # Pass a realistic upstream-artifact-list that mixes chunks with
+    # non-chunk artifacts (parsed manifest, raw, etc.) — exactly the
+    # shape that broke the older code.
+    graph_drafts = _graph_drafts_from_storage(
+        tmp_path,
+        artifact_ids=[
+            "chunk-1", "chunk-2", "chunk-3",
+            "parsed-manifest-1", "raw-compile-1", "compile-summary-1",
+        ],
+    )
+
+    assert graph_drafts, "expected at least one graph draft"
+    for d in graph_drafts:
+        assert d.source_artifact_ids == [], (
+            f"graph draft for {d.metadata.get('filename')!r} stamped "
+            f"source_artifact_ids={d.source_artifact_ids!r} — must be "
+            "empty to satisfy the chunk-grounding validator"
+        )
