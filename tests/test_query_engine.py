@@ -267,6 +267,56 @@ def test_graph_provider_response_does_not_expose_paths(
     assert ".json" not in rendered.split("\n")[0]
 
 
+def test_graph_provider_parses_lightrag_shape(workspace, ctx, artifact_registry):
+    """Regression for Patch 2: graph artifacts written in LightRAG's
+ `{entities, relationships}` shape must be parsed via the
+ normalizer instead of silently returning empty paths. Previously
+ the provider only knew the canonical `{nodes, edges}` shape and
+ would emit "No graph relationships found" for everything else."""
+    payload = json.dumps({
+        "entities": [
+            {"entity_name": "Alice"},
+            {"entity_name": "Bob"},
+        ],
+        "relationships": [
+            {"src_id": "Alice", "tgt_id": "Bob", "predicate": "knows"},
+        ],
+    }).encode("utf-8")
+    _stage_artifact(
+        workspace, ctx, artifact_registry,
+        artifact_id="g-lr", kind="graph_json", content=payload,
+        area=WorkspaceArea.GRAPH, suffix=".json",
+    )
+    provider = GraphQueryProvider(artifact_registry, workspace)
+    response = provider.query(ctx, QueryRequest(question="dependencies"))
+    assert len(response.graph_paths) == 1
+    assert response.graph_paths[0].nodes == ["Alice", "Bob"]
+    assert response.graph_paths[0].edges == ["knows"]
+
+
+def test_graph_provider_surfaces_parse_failure_in_answer(
+    workspace, ctx, artifact_registry
+):
+    """When a graph artifact exists but its format isn't recognised,
+ the answer must say so explicitly — "format X not recognised"
+ is actionable; "No graph relationships found" is misleading
+ because it implies the run didn't produce graph artifacts at
+ all."""
+    payload = json.dumps({"foo": "bar"}).encode("utf-8")  # unknown shape
+    _stage_artifact(
+        workspace, ctx, artifact_registry,
+        artifact_id="g-bad", kind="graph_json", content=payload,
+        area=WorkspaceArea.GRAPH, suffix=".json",
+    )
+    provider = GraphQueryProvider(artifact_registry, workspace)
+    response = provider.query(ctx, QueryRequest(question="anything"))
+    assert response.graph_paths == []
+    # The actionable error appears in both the answer and warnings.
+    assert "could not be parsed" in response.answer
+    assert "g-bad" in response.answer
+    assert any("could not be parsed" in w for w in response.warnings)
+
+
 # ---- EvidenceProvider --------------------------------------------------
 
 

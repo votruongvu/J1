@@ -362,6 +362,67 @@ def test_register_compiled_artifacts_writes_and_registers(
     assert stored.read_bytes() == b"hello"
 
 
+def test_register_graph_artifact_stamps_run_id_from_correlation_id(
+    knowledge_activities, artifact_registry, ctx
+):
+    """Regression test for the root cause of validation set
+ vrun-b42ec7453865's 3/6 failures: graph artifacts produced by
+ the orchestration activity weren't getting `run_id` stamped, so
+ every validation check that scoped on `metadata.run_id == run_id`
+ failed downstream. The activity must propagate
+ `input.correlation_id` (= the ingestion run id) into the
+ registered artifact's metadata."""
+    drafts = [
+        DraftPayload(
+            kind="graph_json",
+            content=b'{"nodes": [], "edges": []}',
+            suggested_extension=".json",
+        )
+    ]
+    result = knowledge_activities.register_graph_artifacts_activity(
+        RegisterArtifactsInput(
+            scope=ProjectScope.from_context(ctx),
+            drafts=drafts,
+            source_document_ids=["doc-1"],
+            correlation_id="run-deadbeef",
+        )
+    )
+    assert result.status == "succeeded"
+    record = artifact_registry.get(ctx, result.artifact_ids[0])
+    assert record.metadata.get("run_id") == "run-deadbeef", (
+        "graph_json artifact missing run_id stamp — validation set "
+        "checks like retrieved_chunks_belong_to_run will fail because "
+        "the citation's run_id is None"
+    )
+
+
+def test_register_artifact_preserves_producer_supplied_run_id(
+    knowledge_activities, artifact_registry, ctx
+):
+    """Producer-supplied `metadata.run_id` on the draft wins over the
+ activity's correlation_id stamp. Lets a producer that already
+ knows the run id (e.g. a back-fill path) opt out of the
+ default behaviour."""
+    drafts = [
+        DraftPayload(
+            kind="graph_json",
+            content=b'{"nodes": [], "edges": []}',
+            suggested_extension=".json",
+            metadata={"run_id": "run-explicit"},
+        )
+    ]
+    result = knowledge_activities.register_graph_artifacts_activity(
+        RegisterArtifactsInput(
+            scope=ProjectScope.from_context(ctx),
+            drafts=drafts,
+            source_document_ids=["doc-1"],
+            correlation_id="run-default",
+        )
+    )
+    record = artifact_registry.get(ctx, result.artifact_ids[0])
+    assert record.metadata.get("run_id") == "run-explicit"
+
+
 def test_register_compiled_artifacts_is_idempotent(knowledge_activities, ctx):
     drafts = [
         DraftPayload(

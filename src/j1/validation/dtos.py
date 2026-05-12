@@ -451,6 +451,16 @@ class ValidationResultDTO:
     failure_reason: str | None = None
     tester_verdict: Literal["pass", "warning", "fail"] | None = None
     tester_notes: str | None = None
+    # The provider's deterministic composed answer (e.g. "Knowledge
+    # results for: ..."). Preserved alongside `answer` when the
+    # runner replaces `answer` with an LLM-synthesized version so a
+    # tester can compare what the LLM produced vs. what the engine
+    # returned raw. None when no synthesis happened (raw answer is
+    # still in `answer`).
+    raw_answer: str | None = None
+    # LLM trace for the synthesis call. None when no synthesizer was
+    # wired or the synthesizer was opted out per-run.
+    llm: LLMTraceDTO | None = None
 
 
 @dataclass(frozen=True)

@@ -306,10 +306,22 @@ class DefaultTestCaseGenerator:
             if len(cases) >= opts.max_cases:
                 break
             cases.append(_image_case(visual, domain_id=domain_id))
-        for graph in (graph_artifacts or [])[:opts.max_graph_cases]:
+        # Graph cases — deduplicated per-run. Earlier versions
+        # emitted one identical "What are the main entities…" case
+        # per graph artifact (3 artifacts → 3 identical questions).
+        # The deduper coalesces artifacts that name the same top
+        # entities into ONE case carrying all matching artifact ids
+        # as `expected_artifacts`. Per-artifact entity hints, when
+        # present, generate entity-specific questions instead of
+        # the boilerplate.
+        for case in _graph_cases_deduped(
+            graph_artifacts or [],
+            limit=opts.max_graph_cases,
+            domain_id=domain_id,
+        ):
             if len(cases) >= opts.max_cases:
                 break
-            cases.append(_graph_case(graph, domain_id=domain_id))
+            cases.append(case)
 
         # Whole-document LLM generation. One call with the full
         # evidence list + domain guidance instead of N per-chunk
@@ -669,6 +681,108 @@ def _graph_case(
         source_artifact_id=artifact.artifact_id,
         source_artifact_type=artifact.kind,
         domain_id=domain_id,
+    )
+
+
+def _graph_cases_deduped(
+    graph_artifacts: list[ArtifactRecord],
+    *,
+    limit: int,
+    domain_id: str | None,
+) -> list[ValidationTestCaseDTO]:
+    """Produce at most `limit` graph cases, deduplicated by the set
+ of expected entity ids the artifacts surface.
+
+ Strategy:
+   1. Bucket artifacts by `tuple(sorted(top_entities))` — empty
+      tuple is its own bucket (the "no entity hint" case).
+   2. Each bucket produces exactly ONE case. Multiple artifacts
+      naming the same entities coalesce so the FE doesn't show
+      "What are the main entities…?" three times in a row.
+   3. When the bucket carries explicit entities, the question
+      becomes entity-specific ("What is the relationship between
+      <a> and <b>…?") and `expected_answer` is pre-populated. Bare
+      buckets keep the generic boilerplate question.
+   4. Buckets are emitted in their first artifact's order so
+      reproducible across regenerations.
+
+ `limit` caps total cases per call so a run with many graph
+ artifacts can't crowd out other modalities or grounded LLM
+ cases.
+ """
+    if limit <= 0 or not graph_artifacts:
+        return []
+    buckets: dict[tuple[str, ...], list[ArtifactRecord]] = {}
+    bucket_order: list[tuple[str, ...]] = []
+    for artifact in graph_artifacts:
+        entities = tuple(_expected_graph_nodes_from_artifact(artifact))
+        if entities not in buckets:
+            buckets[entities] = []
+            bucket_order.append(entities)
+        buckets[entities].append(artifact)
+
+    cases: list[ValidationTestCaseDTO] = []
+    for entities in bucket_order:
+        if len(cases) >= limit:
+            break
+        artifacts = buckets[entities]
+        cases.append(_graph_case_from_bucket(
+            artifacts=artifacts,
+            entities=list(entities),
+            domain_id=domain_id,
+        ))
+    return cases
+
+
+def _graph_case_from_bucket(
+    *,
+    artifacts: list[ArtifactRecord],
+    entities: list[str],
+    domain_id: str | None,
+) -> ValidationTestCaseDTO:
+    """Build one graph case for a bucket of artifacts that share the
+ same expected entities. When `entities` has 2+ items we phrase
+ the question as a relationship lookup between the top two —
+ grades the answer for specific entity mentions rather than
+ the generic "what are the entities" boilerplate. When the
+ bucket has no entity hints we fall back to the boilerplate."""
+    first = artifacts[0]
+    artifact_ids = [a.artifact_id for a in artifacts]
+    if len(entities) >= 2:
+        a, b = entities[0], entities[1]
+        question = (
+            f"What is the relationship between {a} and {b} in this document?"
+        )
+        expected_answer = (
+            f"The document describes a relationship between {a} and {b}."
+        )
+    else:
+        question = (
+            "What are the main entities and relationships described "
+            "in this document?"
+        )
+        expected_answer = None
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-graph-{uuid.uuid4().hex[:8]}",
+        question=question,
+        type="graph",
+        priority="normal",
+        expected_behavior="validate_relationship",
+        expected_artifacts=artifact_ids,
+        expected_graph_nodes=list(entities),
+        citation_required=True,
+        source_traceability=list(artifact_ids),
+        metadata={
+            "graph": True,
+            "artifact_id": first.artifact_id,
+            "deduped_artifact_count": len(artifacts),
+        },
+        question_type="reasoning_from_context",
+        validation_scope="generic",
+        source_artifact_id=first.artifact_id,
+        source_artifact_type=first.kind,
+        domain_id=domain_id,
+        expected_answer=expected_answer,
     )
 
 

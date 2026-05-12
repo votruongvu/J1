@@ -565,3 +565,161 @@ def test_runner_summary_main_issues_caps_at_three(
 
     assert len(vrun.summary.main_issues) <= 3
     assert vrun.summary.failed == 5
+
+
+# ---- LLM synthesis in batch runs (Patch 3) ------------------------
+
+
+class _StubSynthesizer:
+    """In-process stub for `AnswerSynthesizer`. Records the question
+ + evidence it received and returns a canned answer + trace."""
+
+    def __init__(self, *, answer: str = "synthesized text", error: str | None = None):
+        self.calls: list[dict] = []
+        self._answer = answer
+        self._error = error
+
+    def synthesize(self, *, question, evidence):
+        from j1.validation.synthesis import SynthesisResult
+        self.calls.append({
+            "question": question,
+            "evidence": list(evidence),
+        })
+        return SynthesisResult(
+            answer=None if self._error else self._answer,
+            provider="stub",
+            model="stub-model",
+            latency_ms=42,
+            prompt_tokens=100,
+            completion_tokens=20,
+            error=self._error,
+        )
+
+
+def test_runner_replaces_raw_answer_with_synthesized_answer(
+    query_engine, artifact_registry, ctx, workspace, indexer,
+):
+    """When a synthesizer is wired, the runner stores the synthesized
+ answer in `result.answer` and preserves the raw engine answer
+ under `result.raw_answer` so the FE can show both."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="art-1",
+        content=b"The proposal is due 20 May 2026.",
+        run_id="run-1",
+        chunk_id="c-1",
+    )
+    stub = _StubSynthesizer(answer="Due 20 May 2026.")
+    runner = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+        answer_synthesizer=stub,
+    )
+
+    cases = [_case(
+        question="When is the proposal due?",
+        expected_chunks=["c-1"],
+    )]
+    vrun = runner.run(ctx, _make_set(test_cases=cases))
+
+    result = vrun.results[0]
+    assert result.answer == "Due 20 May 2026."
+    # Raw engine answer preserved for debug/diff.
+    assert result.raw_answer is not None
+    assert "Knowledge results for" in result.raw_answer
+    # LLM trace surfaces provider/model/latency/tokens so the FE
+    # can render its trace strip.
+    assert result.llm is not None
+    assert result.llm.called is True
+    assert result.llm.provider == "stub"
+    assert result.llm.latency_ms == 42
+    # The synthesizer saw the actual retrieved chunks as evidence,
+    # not just metadata refs.
+    assert len(stub.calls) == 1
+    evidence = stub.calls[0]["evidence"]
+    assert evidence and evidence[0].artifact_id == "art-1"
+
+
+def test_runner_without_synthesizer_uses_raw_engine_answer(
+    query_engine, artifact_registry, ctx, workspace, indexer,
+):
+    """No synthesizer wired → runner returns the engine's deterministic
+ composed answer. `result.raw_answer` is None (no replacement
+ happened) and `result.llm` is None (no LLM trace)."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="art-1", content=b"Body.",
+        run_id="run-1", chunk_id="c-1",
+    )
+    runner = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+    )
+
+    cases = [_case(question="anything", expected_chunks=["c-1"])]
+    vrun = runner.run(ctx, _make_set(test_cases=cases))
+    result = vrun.results[0]
+    # Backward-compat: the engine's raw composed answer comes
+    # through unchanged (either "Knowledge results for…" when hits
+    # land, or "No knowledge results for…" when retrieval misses).
+    assert "knowledge results for" in result.answer.lower()
+    assert result.raw_answer is None
+    assert result.llm is None
+
+
+def test_runner_skips_synthesis_for_negative_cases(
+    query_engine, artifact_registry, ctx, workspace, indexer,
+):
+    """Negative cases need the engine's verbatim abstention text for
+ the deterministic abstain check. The synthesizer must NOT
+ replace it — replacing the answer with grounded LLM prose
+ would defeat the "did the engine abstain?" check."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="art-1", content=b"Body.",
+        run_id="run-1", chunk_id="c-1",
+    )
+    stub = _StubSynthesizer(answer="I would never say this.")
+    runner = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+        answer_synthesizer=stub,
+    )
+
+    neg_case = ValidationTestCaseDTO(
+        test_case_id="tc-neg",
+        question="Who won the World Cup?",
+        type="negative",
+        priority="normal",
+        expected_behavior="abstain",
+    )
+    vrun = runner.run(ctx, _make_set(test_cases=[neg_case]))
+    # Synthesizer must NOT have been called for the negative case.
+    assert stub.calls == []
+    assert vrun.results[0].llm is None
+
+
+def test_runner_opted_out_synthesis_returns_raw_answer(
+    query_engine, artifact_registry, ctx, workspace, indexer,
+):
+    """`synthesize_answers=False` makes the runner reproducible —
+ even with a synthesizer wired, the raw engine answer ships
+ unchanged. Lets CI/regression replay runs avoid the LLM."""
+    _stage_chunk(
+        workspace, ctx, artifact_registry, indexer,
+        artifact_id="art-1", content=b"Body.",
+        run_id="run-1", chunk_id="c-1",
+    )
+    stub = _StubSynthesizer(answer="never returned")
+    runner = DefaultValidationRunner(
+        query_engine=query_engine,
+        artifact_registry=artifact_registry,
+        answer_synthesizer=stub,
+        synthesize_answers=False,
+    )
+
+    cases = [_case(question="anything", expected_chunks=["c-1"])]
+    vrun = runner.run(ctx, _make_set(test_cases=cases))
+    assert stub.calls == []
+    assert vrun.results[0].raw_answer is None
+    assert vrun.results[0].llm is None

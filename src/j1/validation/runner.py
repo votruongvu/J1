@@ -35,6 +35,8 @@ from j1.query.models import QueryMode, QueryRequest
 from j1.query.scope import RunScope
 from j1.validation.checks import aggregate_status, run_checks
 from j1.validation.dtos import (
+    EvidenceBlockDTO,
+    LLMTraceDTO,
     RetrievedChunkRefDTO,
     ValidationCheckDTO,
     ValidationCitationDTO,
@@ -47,6 +49,7 @@ from j1.validation.dtos import (
     ValidationTestCaseDTO,
 )
 from j1.validation.judge import LLMJudge
+from j1.validation.synthesis import AnswerSynthesizer
 
 _log = logging.getLogger("j1.validation.runner")
 
@@ -117,6 +120,8 @@ class DefaultValidationRunner:
         artifact_registry: ArtifactRegistry,
         lifecycle_callback: Callable[[ValidationRunDTO], None] | None = None,
         judge: LLMJudge | None = None,
+        answer_synthesizer: AnswerSynthesizer | None = None,
+        synthesize_answers: bool = True,
     ) -> None:
         self._query_engine = query_engine
         self._artifacts = artifact_registry
@@ -126,6 +131,15 @@ class DefaultValidationRunner:
         # checks engine returns nothing for them, which leaves the
         # result accounting deterministic.
         self._judge = judge
+        # Optional LLM answer synthesizer. When wired AND
+        # `synthesize_answers=True`, the runner replaces the
+        # provider's raw composed answer (e.g. "Knowledge results
+        # for: <q>\n- title: preview…") with a grounded LLM answer
+        # before persisting the result. When None or opt-out, the
+        # runner returns the engine's raw answer — preserving the
+        # deterministic-replay path for CI / regression runs.
+        self._synthesizer = answer_synthesizer
+        self._synthesize_answers = synthesize_answers
 
     def run(
         self,
@@ -288,6 +302,18 @@ class DefaultValidationRunner:
         retrieved = _retrieved_chunks_from_response(response)
         citations = _citations_from_response(response)
 
+        # Optional LLM synthesis on top of the engine's raw answer.
+        # Positive cases benefit most — the engine returns a
+        # debug-style "Knowledge results for: <q>\n- title: …"
+        # string that's useless for graded answer-coverage checks.
+        # Negative cases skip synthesis (the engine's abstention
+        # text is already what the runner wants to grade).
+        synthesized_answer, llm_trace = self._maybe_synthesize_for_case(
+            case=case,
+            retrieved=retrieved,
+        )
+        final_answer = synthesized_answer or response.answer
+
         #  + deterministic and judge-driven checks.
         # Run-checks branches internally on `case_type` to swap
         # required positive-case checks for the negative abstain
@@ -296,7 +322,7 @@ class DefaultValidationRunner:
         checks = run_checks(
             ctx=ctx,
             run_id=run_id,
-            answer=response.answer,
+            answer=final_answer,
             retrieved_chunks=retrieved,
             citations=citations,
             citation_required=case.citation_required,
@@ -335,12 +361,75 @@ class DefaultValidationRunner:
             test_case_id=case.test_case_id,
             status=result_status,
             question=case.question,
-            answer=response.answer,
+            answer=final_answer,
             retrieved_chunks=retrieved,
             citations=citations,
             checks=checks,
             failure_reason=failure_reason,
+            raw_answer=response.answer if synthesized_answer else None,
+            llm=llm_trace,
         )
+
+    def _maybe_synthesize_for_case(
+        self,
+        *,
+        case: ValidationTestCaseDTO,
+        retrieved: list[RetrievedChunkRefDTO],
+    ) -> tuple[str | None, LLMTraceDTO | None]:
+        """Run the LLM synthesizer for this case when wired + enabled.
+
+ Returns `(synthesized_answer, trace)`. Both `None` when:
+   * the runner wasn't constructed with a synthesizer
+   * `synthesize_answers=False` was set on the runner
+   * the case type is `negative` (the runner needs the engine's
+     abstention text verbatim for the abstain check to grade)
+   * no chunks were retrieved (no evidence to ground on)
+
+ The synthesizer's internal failure modes (LLM raise, empty
+ answer) surface on the trace via `error`; the caller falls
+ back to the raw engine answer in that case.
+ """
+        if self._synthesizer is None or not self._synthesize_answers:
+            return (None, None)
+        if case.type == "negative":
+            return (None, None)
+        if not retrieved:
+            return (None, None)
+
+        # Project the retrieved chunks straight into evidence blocks.
+        # The runner doesn't have access to artifact-body files at
+        # this layer (the engine returned only refs), so we use the
+        # `preview` text the retrieval engine already surfaced —
+        # same trade-off the manual-query service's evidence builder
+        # falls back to for non-chunk kinds. Good enough for a
+        # one-paragraph answer; tests can stub the synthesizer.
+        evidence = [
+            EvidenceBlockDTO(
+                artifact_id=r.artifact_id,
+                artifact_type=r.artifact_kind or "chunk",
+                text=r.preview or "",
+                chunk_id=r.chunk_id,
+                score=r.score,
+            )
+            for r in retrieved
+            if (r.preview or "").strip()
+        ]
+        if not evidence:
+            return (None, None)
+        result = self._synthesizer.synthesize(
+            question=case.question,
+            evidence=evidence,
+        )
+        trace = LLMTraceDTO(
+            called=True,
+            provider=result.provider,
+            model=result.model,
+            latency_ms=result.latency_ms,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            error=result.error,
+        )
+        return (result.answer, trace)
 
     # ---- Internals -----------------------------------------------------
 

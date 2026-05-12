@@ -661,3 +661,120 @@ def test_generator_short_circuits_llm_when_no_evidence_supplied():
     # The heuristic case still references the chunk content.
     non_smoke = [c for c in vset.test_cases if c.priority != "smoke"]
     assert non_smoke and "widgets" in non_smoke[0].question.lower()
+
+
+# ---- Graph case dedup + entity-aware questions (Patch 5) ----------
+
+
+def _graph_artifact(*, artifact_id: str, top_entities: list[str] | None = None):
+    """Test helper: build a minimal `ArtifactRecord` with the metadata
+ the generator's graph case factory reads (`top_entities`)."""
+    from datetime import datetime, timezone
+    from j1.artifacts.models import ArtifactRecord
+    from j1.jobs.status import ProcessingStatus, ReviewStatus
+    from j1.projects.context import ProjectContext
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    metadata: dict = {"run_id": "run-1"}
+    if top_entities:
+        metadata["top_entities"] = top_entities
+    return ArtifactRecord(
+        artifact_id=artifact_id,
+        project=ProjectContext(tenant_id="t", project_id="p"),
+        kind="graph_json",
+        location=f"graph/{artifact_id}.json",
+        content_hash=f"sha:{artifact_id}",
+        byte_size=10,
+        status=ProcessingStatus.SUCCEEDED,
+        review_status=ReviewStatus.NOT_REQUIRED,
+        version=1,
+        created_at=now,
+        updated_at=now,
+        source_document_ids=[],
+        source_artifact_ids=[],
+        metadata=metadata,
+    )
+
+
+def test_graph_cases_dedupe_artifacts_with_same_top_entities():
+    """Regression: previously three graph artifacts that all named
+ the SAME top entities produced THREE identical "What are the
+ main entities…" cases. The dedup must coalesce them into ONE
+ case carrying all matching artifact_ids as `expected_artifacts`."""
+    gen = DefaultTestCaseGenerator()
+    artifacts = [
+        _graph_artifact(artifact_id="g-1", top_entities=["Alice", "Bob"]),
+        _graph_artifact(artifact_id="g-2", top_entities=["Alice", "Bob"]),
+        _graph_artifact(artifact_id="g-3", top_entities=["Alice", "Bob"]),
+    ]
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=[],
+        graph_artifacts=artifacts,
+    )
+    graph_cases = [c for c in vset.test_cases if c.type == "graph"]
+    assert len(graph_cases) == 1
+    # All three artifact ids are listed as expected (so the runner's
+    # retrieval check can pass when ANY of them comes back).
+    assert set(graph_cases[0].expected_artifacts) == {"g-1", "g-2", "g-3"}
+    # Metadata records the dedupe so an operator scanning the set
+    # can see "this case covers 3 graph artifacts".
+    assert graph_cases[0].metadata.get("deduped_artifact_count") == 3
+
+
+def test_graph_case_with_entities_emits_entity_specific_question():
+    """When the graph artifact carries `top_entities`, the question
+ should mention them explicitly rather than the generic
+ "What are the main entities…" boilerplate. Pre-populates
+ `expected_answer` so the FE has a "Final Answer" anchor."""
+    gen = DefaultTestCaseGenerator()
+    artifact = _graph_artifact(
+        artifact_id="g-1", top_entities=["Alice", "Bob"],
+    )
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=[],
+        graph_artifacts=[artifact],
+    )
+    graph_case = next(c for c in vset.test_cases if c.type == "graph")
+    assert "Alice" in graph_case.question
+    assert "Bob" in graph_case.question
+    assert "main entities and relationships" not in graph_case.question
+    assert graph_case.expected_answer is not None
+    assert "Alice" in graph_case.expected_answer
+    assert "Bob" in graph_case.expected_answer
+
+
+def test_graph_case_without_entities_keeps_generic_question():
+    """Backward compat: graph artifacts that don't surface
+ `top_entities` (older runs, simpler producers) still get a
+ case — just with the generic boilerplate question and no
+ `expected_answer`. The runner's behavior on these is
+ unchanged."""
+    gen = DefaultTestCaseGenerator()
+    artifact = _graph_artifact(artifact_id="g-1")
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=[],
+        graph_artifacts=[artifact],
+    )
+    graph_case = next(c for c in vset.test_cases if c.type == "graph")
+    assert "main entities and relationships" in graph_case.question
+    assert graph_case.expected_answer is None
+    assert graph_case.expected_artifacts == ["g-1"]
+
+
+def test_graph_cases_distinct_entities_produce_distinct_cases():
+    """Two graph artifacts naming DIFFERENT entity sets should produce
+ TWO cases — only same-set artifacts coalesce."""
+    gen = DefaultTestCaseGenerator()
+    artifacts = [
+        _graph_artifact(artifact_id="g-1", top_entities=["Alice", "Bob"]),
+        _graph_artifact(artifact_id="g-2", top_entities=["Charlie", "Diana"]),
+    ]
+    vset = gen.generate(
+        run_id="r", document_ids=[], chunks=[],
+        graph_artifacts=artifacts,
+    )
+    graph_cases = [c for c in vset.test_cases if c.type == "graph"]
+    assert len(graph_cases) == 2
+    questions = [c.question for c in graph_cases]
+    assert any("Alice" in q and "Bob" in q for q in questions)
+    assert any("Charlie" in q and "Diana" in q for q in questions)

@@ -248,6 +248,12 @@ _GROUNDING_PROMPT = (
     "  - `moderate`: a specific claim that should have a citation;\n"
     "  - `high`: a clearly fabricated fact contradicting or "
     "absent from the citations.\n"
+    "Whitespace and line breaks are normalized — treat runs of "
+    "spaces, tabs, and newlines as equivalent to a single space "
+    "when matching answer text against citation text. Do not flag "
+    "a claim as unsupported solely because of formatting "
+    "differences (extra spaces, hyphenation across line breaks, "
+    "missing/added punctuation).\n"
     "Return an empty list when every claim is grounded.\n"
 )
 
@@ -333,11 +339,21 @@ class DefaultLLMJudge:
     ) -> GroundingJudgement | None:
         if not (answer or "").strip():
             return None
-        rendered_citations = _render_citations(citations)
+        # Normalise the answer + citation previews before they hit
+        # the LLM. PDF compilers produce chunks with collapsed/
+        # duplicated whitespace and inserted newlines (e.g.
+        # "due\n  20  May 2026"); without normalisation the judge
+        # flags answers like "due 20 May 2026" as unsupported on
+        # purely cosmetic grounds. The normaliser preserves token
+        # content, just collapses whitespace runs to a single space.
+        normalised_answer = _normalise_text(answer)
+        rendered_citations = _render_citations(
+            citations, normalise_preview=True,
+        )
         prompt = (
             f"{_GROUNDING_PROMPT}\n"
             f"Question: {question}\n\n"
-            f"Answer:\n---\n{answer}\n---\n\n"
+            f"Answer:\n---\n{normalised_answer}\n---\n\n"
             f"Citations:\n---\n{rendered_citations}\n---"
         )
         parsed = self._extract(prompt, _GROUNDING_SCHEMA)
@@ -371,11 +387,14 @@ class DefaultLLMJudge:
     ) -> FabricationJudgement | None:
         if not (answer or "").strip():
             return None
-        rendered_citations = _render_citations(citations)
+        normalised_answer = _normalise_text(answer)
+        rendered_citations = _render_citations(
+            citations, normalise_preview=True,
+        )
         prompt = (
             f"{_FABRICATION_PROMPT}\n"
             f"Question: {question}\n\n"
-            f"Answer:\n---\n{answer}\n---\n\n"
+            f"Answer:\n---\n{normalised_answer}\n---\n\n"
             f"Citations:\n---\n{rendered_citations}\n---"
         )
         parsed = self._extract(prompt, _FABRICATION_SCHEMA)
@@ -431,7 +450,11 @@ def coverage_threshold() -> float:
     return _COVERAGE_THRESHOLD
 
 
-def _render_citations(citations: list[dict[str, Any]]) -> str:
+def _render_citations(
+    citations: list[dict[str, Any]],
+    *,
+    normalise_preview: bool = False,
+) -> str:
     """Compact, judge-friendly rendering of the citation list.
 
  Each citation gets one line: `[i] artifact_id @ source_location:
@@ -439,6 +462,10 @@ def _render_citations(citations: list[dict[str, Any]]) -> str:
  field when present; otherwise the line is just the lineage.
  Truncation cap defends against pathological inputs that would
  blow the LLM's context window.
+
+ `normalise_preview=True` collapses whitespace runs in the
+ preview before rendering so the judge's grounding / fabrication
+ checks compare apples-to-apples with the normalised answer text.
  """
     if not citations:
         return "(no citations)"
@@ -448,9 +475,24 @@ def _render_citations(citations: list[dict[str, Any]]) -> str:
         location = c.get("source_location") or c.get("sourceLocation") or ""
         preview = c.get("preview") or ""
         body = str(preview)[:_MAX_CITATION_CHARS]
+        if normalise_preview and body:
+            body = _normalise_text(body)
         suffix = f" — {body}" if body else ""
         lines.append(f"[{i + 1}] {artifact} @ {location}{suffix}")
     return "\n".join(lines)
+
+
+# Whitespace runs (including newlines) collapse to a single space.
+# Same normalisation the generator's anti-hallucination quote check
+# uses (`generator._normalise_for_match`); the judge now applies it
+# too so groundedness checks don't false-positive on PDF-extracted
+# text that contains "due\n  20  May 2026" vs "due 20 May 2026".
+import re as _re  # noqa: E402 — local re-import so the helper is self-contained
+_WS_RE = _re.compile(r"\s+")
+
+
+def _normalise_text(text: str) -> str:
+    return _WS_RE.sub(" ", text or "").strip()
 
 
 def _str_or_none(value: Any) -> str | None:

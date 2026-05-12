@@ -217,6 +217,45 @@ def test_grounding_returns_none_on_llm_failure():
     )
 
 
+def test_grounding_normalises_whitespace_in_answer_and_citations():
+    """Regression: PDF-compiled chunks often arrive with collapsed/
+ duplicated whitespace ("Due\n  20  May 2026") while the answer
+ says "Due 20 May 2026.". Without normalisation the judge
+ flagged the answer as unsupported on formatting grounds alone.
+ The judge must now hand normalised text to the LLM."""
+    stub = _StubLLM(responses=[{"unsupported_claims": []}])
+    judge = DefaultLLMJudge(text_client=stub)
+    judge.judge_answer_grounded(
+        question="When is the proposal due?",
+        answer="The proposal is due 20 May 2026.",
+        citations=[{
+            "artifact_id": "art-1",
+            "source_location": "page 1",
+            "preview": "The   proposal\n\n  is  due\n  20  May 2026.",
+        }],
+    )
+    # The captured prompt should contain neither tabs nor multi-
+    # space runs in either the Answer or Citations sections (both
+    # normalised before rendering).
+    prompt = stub.calls[0][0]
+    assert "  " not in prompt.split("Answer:")[1].split("Citations:")[0]
+    assert "  " not in prompt.split("Citations:")[1]
+    # Original characters survive — only whitespace runs collapsed.
+    assert "20 May 2026" in prompt
+
+
+def test_grounding_prompt_instructs_judge_to_ignore_formatting_diffs():
+    """The system prompt must explicitly tell the judge to treat
+ whitespace/newlines as equivalent. Locks in the wording so a
+ future prompt rewrite doesn't silently regress the fix."""
+    stub = _StubLLM(responses=[{"unsupported_claims": []}])
+    judge = DefaultLLMJudge(text_client=stub)
+    judge.judge_answer_grounded(question="Q", answer="A", citations=[])
+    prompt = stub.calls[0][0]
+    assert "Whitespace and line breaks are normalized" in prompt
+    assert "formatting differences" in prompt
+
+
 # ---- judge_negative_abstain ---------------------------------------
 
 

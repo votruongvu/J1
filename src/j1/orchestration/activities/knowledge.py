@@ -379,6 +379,16 @@ class KnowledgeProcessingActivities:
                 area=area,
                 source_document_ids=list(input.source_document_ids),
                 source_artifact_ids=list(input.source_artifact_ids),
+                # Thread the workflow's correlation_id (= the
+                # ingestion run id) into the artifact's metadata so
+                # downstream consumers (validation, search indexer,
+                # graph QA) can answer "what did THIS run produce?"
+                # by direct lookup. Mirrors the merge done by
+                # `processing/service.py:_register_draft`. Without
+                # this the registered artifact carries no run_id,
+                # which is the root cause of graph_json artifacts
+                # appearing with run_id=None during validation.
+                run_id=input.correlation_id,
             )
             new_ids.append(record.artifact_id)
 
@@ -410,6 +420,7 @@ class KnowledgeProcessingActivities:
         area: WorkspaceArea,
         source_document_ids: list[str],
         source_artifact_ids: list[str],
+        run_id: str | None = None,
     ) -> ArtifactRecord:
         artifact_id = self._id_factory()
         ext = draft.suggested_extension
@@ -426,6 +437,13 @@ class KnowledgeProcessingActivities:
             f"{hashlib.sha256(draft.content).hexdigest()}"
         )
         now = self._clock()
+        # Producer-supplied `draft.metadata` wins on key conflict —
+        # explicit producer intent is authoritative. Otherwise we
+        # stamp `run_id` so the validation surface + search indexer
+        # can scope artifacts to a specific run.
+        merged_metadata = dict(draft.metadata)
+        if run_id and "run_id" not in merged_metadata:
+            merged_metadata["run_id"] = run_id
         record = ArtifactRecord(
             artifact_id=artifact_id,
             project=ctx,
@@ -440,7 +458,7 @@ class KnowledgeProcessingActivities:
             updated_at=now,
             source_document_ids=list(draft.source_document_ids or source_document_ids),
             source_artifact_ids=list(draft.source_artifact_ids or source_artifact_ids),
-            metadata=dict(draft.metadata),
+            metadata=merged_metadata,
         )
         try:
             self._artifacts.add(record)

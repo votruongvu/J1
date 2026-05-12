@@ -486,6 +486,12 @@ class IngestionValidationService:
             artifact_registry=self._artifacts,
             lifecycle_callback=lambda v: self._run_store_v.upsert(ctx, v),  # type: ignore[union-attr]
             judge=self._judge,
+            # Reuse the manual-query synthesizer here so batch
+            # validation runs also get grounded LLM answers instead
+            # of the engine's raw "Knowledge results for: …" debug
+            # strings. None-safe — runner falls back to the raw
+            # engine answer when no synthesizer is wired.
+            answer_synthesizer=self._synthesizer,
         )
         vrun = runner.run(ctx, vset, actor=actor)
         self._audit_run_completed(ctx, run_id, vrun, actor)

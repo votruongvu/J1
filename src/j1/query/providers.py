@@ -1,9 +1,11 @@
 import json
+import logging
 from typing import Any
 
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactRegistry
 from j1.connectors.graph.config import ARTIFACT_KIND_GRAPH_JSON
+from j1.graph import NormalizedGraph, normalize_graph_bytes
 from j1.enrichers import ARTIFACT_TYPE_CONSISTENCY_FINDINGS
 from j1.errors.exceptions import DocumentNotFoundError
 from j1.intake.registry import SourceRegistry
@@ -41,6 +43,8 @@ def _filter_by_scope(
         ]
     return records
 
+_log = logging.getLogger("j1.query.providers")
+
 GRAPH_JSON_KIND = ARTIFACT_KIND_GRAPH_JSON
 DEFAULT_REPORT_TEMPLATE_NAME = "default"
 PROVIDER_KIND_PREFIX = "query"
@@ -49,6 +53,25 @@ REVIEW_STATUS_PENDING = "pending"
 
 _SNIPPET_MAX_CHARS = 240
 _GRAPH_PATH_LIMIT = 5
+
+
+def _paths_from_normalized(
+    graphs: list[NormalizedGraph],
+) -> list[GraphPath]:
+    """Flatten normalised graphs into the `QueryResponse.graph_paths`
+ list the runner's `_check_expected_graph_evidence` reads. Capped
+ at `_GRAPH_PATH_LIMIT` to keep response payloads bounded."""
+    paths: list[GraphPath] = []
+    for graph in graphs:
+        for rel in graph.relationships:
+            paths.append(GraphPath(
+                nodes=[rel.from_id, rel.to_id],
+                edges=[rel.kind or "related_to"],
+                description=rel.label,
+            ))
+            if len(paths) >= _GRAPH_PATH_LIMIT:
+                return paths
+    return paths
 _GRAPH_FILE_LIMIT = 3
 
 
@@ -145,15 +168,32 @@ class GraphQueryProvider:
         records = _filter_by_scope(records, request)
         sources = [_record_to_source(r) for r in records]
         related = [r.artifact_id for r in records]
-        paths = self._extract_paths(ctx, records, request.question)
+        # Parse via the normalizer so we recognise canonical /
+        # LightRAG / GraphML shapes uniformly. `parse_failures`
+        # tracks artifacts that EXIST but couldn't be parsed — those
+        # produce a more actionable warning than "no paths found".
+        graphs, parse_failures = self._normalize_records(ctx, records)
+        paths = _paths_from_normalized(graphs)
         warnings: list[str] = []
         categories: list[WarningCategory] = []
-        if not paths:
+        if parse_failures:
+            warnings.append(
+                f"{len(parse_failures)} graph artifact(s) could not be "
+                f"parsed (unrecognised shape): "
+                f"{', '.join(parse_failures[:3])}"
+            )
+            categories.append(WarningCategory.INFORMATIONAL)
+        if not paths and not parse_failures:
             warnings.append("No graph paths found for the question.")
             categories.append(WarningCategory.INFORMATIONAL)
         confidence = 0.5 if paths else 0.1
         return QueryResponse(
-            answer=self._compose_answer(paths, request.question),
+            answer=self._compose_answer(
+                paths,
+                request.question,
+                parse_failures=parse_failures,
+                graph_count=len(graphs),
+            ),
             mode_used=self.mode.value,
             sources=sources,
             related_artifacts=related,
@@ -163,54 +203,77 @@ class GraphQueryProvider:
             warning_categories=categories,
         )
 
-    def _extract_paths(
+    def _normalize_records(
         self,
         ctx: ProjectContext,
         records: list[ArtifactRecord],
-        question: str,
-    ) -> list[GraphPath]:
-        paths: list[GraphPath] = []
+    ) -> tuple[list[NormalizedGraph], list[str]]:
+        """Read each graph artifact's bytes and normalise into the
+ unified schema. Returns `(parsed, parse_failures)` where
+ `parse_failures` is the list of artifact_ids whose files existed
+ but didn't match any known graph format — surfaces in the
+ warning + answer so the operator knows the artifact reached
+ retrieval but couldn't be reasoned about."""
+        parsed: list[NormalizedGraph] = []
+        parse_failures: list[str] = []
         for record in records[:_GRAPH_FILE_LIMIT]:
-            data = self._read_graph(ctx, record)
-            if not data:
-                continue
-            for edge in data.get("edges", []):
-                paths.append(
-                    GraphPath(
-                        nodes=[
-                            str(edge.get("from", "")),
-                            str(edge.get("to", "")),
-                        ],
-                        edges=[str(edge.get("type", "related_to"))],
-                        description=edge.get("label"),
-                    )
+            try:
+                path = self._workspace.project_root(ctx) / record.location
+            except Exception as exc:  # noqa: BLE001 — defensive
+                _log.warning(
+                    "graph artifact %s: path resolution failed: %s",
+                    record.artifact_id, exc,
                 )
-                if len(paths) >= _GRAPH_PATH_LIMIT:
-                    return paths
-        return paths
-
-    def _read_graph(
-        self, ctx: ProjectContext, record: ArtifactRecord
-    ) -> dict[str, Any] | None:
-        try:
-            path = self._workspace.project_root(ctx) / record.location
+                continue
             if not path.is_file():
-                return None
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
+                continue
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                _log.warning(
+                    "graph artifact %s: read failed: %s",
+                    record.artifact_id, exc,
+                )
+                continue
+            graph = normalize_graph_bytes(
+                content,
+                source_artifact_id=record.artifact_id,
+                run_id=record.metadata.get("run_id") if record.metadata else None,
+            )
+            if graph is None:
+                parse_failures.append(record.artifact_id)
+                continue
+            parsed.append(graph)
+        return parsed, parse_failures
 
     @staticmethod
-    def _compose_answer(paths: list[GraphPath], question: str) -> str:
-        if not paths:
-            return f"No graph relationships found for: {question}"
-        rendered = [
-            f"- {p.nodes[0]} → {p.nodes[1]} ({p.edges[0] if p.edges else ''})"
-            for p in paths
-        ]
-        return (
-            f"Graph relationships for: {question}\n\n" + "\n".join(rendered)
-        )
+    def _compose_answer(
+        paths: list[GraphPath],
+        question: str,
+        *,
+        parse_failures: list[str] | None = None,
+        graph_count: int = 0,
+    ) -> str:
+        if paths:
+            rendered = [
+                f"- {p.nodes[0]} → {p.nodes[1]} ({p.edges[0] if p.edges else ''})"
+                for p in paths
+            ]
+            return (
+                f"Graph relationships for: {question}\n\n"
+                + "\n".join(rendered)
+            )
+        # No paths. Distinguish "no graph artifacts in run" (operator
+        # may need to enable graph extraction) from "artifacts exist
+        # but format wasn't recognised" (actionable parser bug).
+        if parse_failures:
+            return (
+                f"Found {graph_count + len(parse_failures)} graph "
+                f"artifact(s) but {len(parse_failures)} could not be "
+                f"parsed into entities/relationships: "
+                f"{', '.join(parse_failures[:3])}"
+            )
+        return f"No graph relationships found for: {question}"
 
 
 class EvidenceProvider:
