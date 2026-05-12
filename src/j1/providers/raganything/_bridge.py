@@ -1682,16 +1682,18 @@ def _graph_drafts_from_storage(
  draft layer makes the lineage independent of which registration
  path is used.
 
- ``source_document_ids`` is set to ``[document_id]`` (one element)
- when known. ``source_artifact_ids`` is set to the upstream
- ``artifact_ids`` list when known — these are the compile-stage
- artifact IDs the graph build consumed. Note this differs from
- the historical behaviour (which left ``source_artifact_ids``
- empty to avoid the validator's chunk-grounding false-positive);
- the chunk-grounding check now reads from
- ``metadata.source_chunk_artifact_ids`` (a separate key) when
- present, so we can stamp full upstream lineage here without
- tripping it.
+ ``source_document_ids`` is set to ``[document_id]`` when known —
+ that's the document binding the document-scoped invalidation
+ sweep matches on. ``source_artifact_ids`` is intentionally LEFT
+ EMPTY: earlier versions stamped the full upstream
+ ``request.artifact_ids`` list (chunks + manifest + raw +
+ everything compile produced), which broke the validator's
+ chunk-grounding check (most upstream ids aren't chunks, so
+ every graph artifact stranded ~40 ids and the run failed
+ validation). The cross-run leakage prevention that
+ ``source_artifact_ids`` would have provided is now handled by
+ the per-artifact run scope check (``metadata.run_id``), which
+ is more reliable.
 
  Excludes `kv_store_text_chunks.json` — that file contains text
  chunks, not graph data. It's surfaced separately as
@@ -1704,8 +1706,10 @@ def _graph_drafts_from_storage(
     drafts: list[ArtifactDraft] = []
     if not storage_dir.exists():
         return drafts
-    # Materialise once so the inner loop can reuse it cheaply.
-    materialised_artifact_ids: list[str] = list(artifact_ids or [])
+    # `artifact_ids` is kept on the signature for adapter-future
+    # use (per-chunk lineage stamping) but not used today — see the
+    # ``source_artifact_ids=[]`` rationale below.
+    _ = artifact_ids
     # Common LightRAG / RAGAnything graph filenames; pattern-match
     # against any of them.
     interesting = (
@@ -1782,7 +1786,13 @@ def _graph_drafts_from_storage(
                 content=content,
                 suggested_extension=path.suffix or ".json",
                 source_document_ids=source_document_ids,
-                source_artifact_ids=list(materialised_artifact_ids),
+                # Intentionally empty — see docstring. The
+                # chunk-grounding validator iterates this list and
+                # expects every entry to be a chunk artifact; mixing
+                # chunk + non-chunk ids strands them. Cross-run
+                # leakage prevention falls back to the
+                # ``metadata.run_id`` scope check (set just above).
+                source_artifact_ids=[],
                 metadata=stamped_metadata,
             ))
     return drafts

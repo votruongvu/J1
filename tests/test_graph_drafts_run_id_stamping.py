@@ -60,8 +60,10 @@ def test_full_lineage_stamped_when_all_inputs_present(tmp_path: Path, ctx):
     assert d.metadata["project_id"] == "p1"
     # Document binding for the document-scoped sweep.
     assert d.source_document_ids == ["doc-a"]
-    # Upstream artifact lineage preserved.
-    assert d.source_artifact_ids == ["chunk-1", "chunk-2"]
+    # ``source_artifact_ids`` stays empty — the chunk-grounding
+    # validator would strand non-chunk ids in this list. Run-scope
+    # safety is provided by metadata.run_id instead.
+    assert d.source_artifact_ids == []
 
 
 def test_filename_and_relative_path_preserved_in_metadata(tmp_path: Path, ctx):
