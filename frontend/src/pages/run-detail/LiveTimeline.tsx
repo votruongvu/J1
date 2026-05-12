@@ -247,29 +247,15 @@ function TimelineEventItem({ event, onClick }: TimelineEventItemProps) {
       <div className="tl-item__head">
         <span className="tl-item__type">{eventTypeLabel(t)}</span>
         {event.data?.step ? (
-          // User-facing step label first; the original internal
-          // step badge stays visible (mono / outline) for operator
-          // traceability when the user-facing label differs.
+          // Single inline stage tag. Earlier rows carried three
+          // overlapping tags (user-facing label + internal step
+          // name + internal stage label); the internal pair was
+          // diagnostic noise once macro grouping landed, so the
+          // timeline now shows just the operator-facing label.
           <span className="badge">
             {userFacingStepLabel(event.data.step as string)}
           </span>
         ) : null}
-        {event.data?.step && (
-          <span
-            className="badge badge--outline mono"
-            title="Internal step name"
-          >
-            {event.data.step}
-          </span>
-        )}
-        {event.data?.stage && (
-          <span
-            className="badge badge--outline mono"
-            title="Internal stage label"
-          >
-            {event.data.stage}
-          </span>
-        )}
         <span className="tl-item__time">{formatTimeShort(event.ts)}</span>
       </div>
       <div className="tl-item__msg">{event.data?.message}</div>
