@@ -208,9 +208,9 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
         </span>
       </div>
 
-      {/* Hero: recommended path is the headline. Mode + confidence
- are subordinate context — operators read intent first,
- adapter detail second. */}
+      {/* Hero: recommended path is the headline. Always shown — it's
+ computed from the compile report even when no AssessmentPlan
+ was attached, so this stays meaningful in the fallback case. */}
       <div
         className="assessment-plan-panel__recommendation"
         data-testid="assessment-plan-recommendation"
@@ -227,39 +227,60 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
         </div>
       </div>
 
-      {/* Hero: mode + confidence side by side */}
-      <div className="assessment-plan-panel__hero">
-        <div className="assessment-plan-panel__hero-item">
-          <div className="assessment-plan-panel__label">Selected mode</div>
-          <span
-            className={`badge mode-badge mode-badge--lg mode-badge--${plan.mode ?? "unknown"}`}
-            data-testid="assessment-plan-mode"
-          >
-            {plan.mode ?? "—"}
-          </span>
-          <div
-            className="assessment-plan-panel__hint"
-            data-testid="assessment-plan-mode-description"
-          >
-            {modeDescription(plan.mode)}
-          </div>
+      {/* Selected mode + confidence + profile signals + capabilities
+ only render when an AssessmentPlan was actually attached.
+ In the fallback case all these fields would be em dashes, so
+ we skip the whole block and show the operator a clean "no
+ planner data" message instead. The recommended path above
+ and the extraction evidence below remain visible because both
+ are derived from the compile report (not the missing plan). */}
+      {fallback ? (
+        <div
+          className="assessment-plan-panel__fallback-note"
+          data-testid="assessment-plan-fallback-note"
+        >
+          No AssessmentPlan was attached to this run — compile ran
+          with the default mapping. Profile signals, capabilities, and
+          confidence are not available; the recommended path above is
+          derived from the compile result.
         </div>
-        <div className="assessment-plan-panel__hero-item">
-          <div className="assessment-plan-panel__label">Confidence</div>
-          <span
-            className={`badge confidence-badge confidence-badge--${confBucket}`}
-            data-testid="assessment-plan-confidence"
-          >
-            {formatConfidence(plan.confidence)}
-          </span>
-          <div className="assessment-plan-panel__hint">
-            {confBucket === "low" && "Operator review recommended."}
-            {confBucket === "medium" && "Some signals were ambiguous."}
-            {confBucket === "high" && "Strong signals; planner is confident."}
-            {confBucket === "unknown" && "Confidence not reported."}
+      ) : (
+        <>
+          {/* Hero: mode + confidence side by side */}
+          <div className="assessment-plan-panel__hero">
+            <div className="assessment-plan-panel__hero-item">
+              <div className="assessment-plan-panel__label">Selected mode</div>
+              <span
+                className={`badge mode-badge mode-badge--lg mode-badge--${plan.mode ?? "unknown"}`}
+                data-testid="assessment-plan-mode"
+              >
+                {plan.mode ?? "—"}
+              </span>
+              <div
+                className="assessment-plan-panel__hint"
+                data-testid="assessment-plan-mode-description"
+              >
+                {modeDescription(plan.mode)}
+              </div>
+            </div>
+            <div className="assessment-plan-panel__hero-item">
+              <div className="assessment-plan-panel__label">Confidence</div>
+              <span
+                className={`badge confidence-badge confidence-badge--${confBucket}`}
+                data-testid="assessment-plan-confidence"
+              >
+                {formatConfidence(plan.confidence)}
+              </span>
+              <div className="assessment-plan-panel__hint">
+                {confBucket === "low" && "Operator review recommended."}
+                {confBucket === "medium" && "Some signals were ambiguous."}
+                {confBucket === "high" && "Strong signals; planner is confident."}
+                {confBucket === "unknown" && "Confidence not reported."}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
       {escalated && (
         <div
@@ -278,57 +299,63 @@ function AssessmentPlanContent({ report }: { report: CompileStrategyReport }) {
         </div>
       )}
 
-      {/* Profile signals the assessor used */}
-      <dl className="kv assessment-plan-panel__kv">
-        <dt>Document type</dt>
-        <dd>{plan.document_type ?? "—"}</dd>
-        <dt>Complexity</dt>
-        <dd>{plan.complexity ?? "—"}</dd>
-        <dt>Fallback policy</dt>
-        <dd className="mono">{plan.fallback_policy ?? "—"}</dd>
-        <dt>Reason</dt>
-        <dd data-testid="assessment-plan-reason">
-          {plan.reason || "—"}
-        </dd>
-      </dl>
+      {/* Profile signals + capabilities + risk flags are all derived
+ from the AssessmentPlan. Skip the whole group in the fallback
+ case (otherwise every value is an em dash). The extraction
+ evidence and resolved-config blocks below DO render in fallback
+ because they come from the compile result, not the missing plan. */}
+      {!fallback && (
+        <>
+          <dl className="kv assessment-plan-panel__kv">
+            <dt>Document type</dt>
+            <dd>{plan.document_type ?? "—"}</dd>
+            <dt>Complexity</dt>
+            <dd>{plan.complexity ?? "—"}</dd>
+            <dt>Fallback policy</dt>
+            <dd className="mono">{plan.fallback_policy ?? "—"}</dd>
+            <dt>Reason</dt>
+            <dd data-testid="assessment-plan-reason">
+              {plan.reason || "—"}
+            </dd>
+          </dl>
 
-      {/* Capabilities */}
-      <div className="assessment-plan-panel__caps">
-        <div>
-          <div className="assessment-plan-panel__label">
-            Required capabilities ({required.length})
+          <div className="assessment-plan-panel__caps">
+            <div>
+              <div className="assessment-plan-panel__label">
+                Required capabilities ({required.length})
+              </div>
+              {required.length === 0 ? (
+                <span className="muted">—</span>
+              ) : (
+                <CapabilityPills caps={required} variant="required" />
+              )}
+            </div>
+            <div>
+              <div className="assessment-plan-panel__label">
+                Optional capabilities ({optional.length})
+              </div>
+              {optional.length === 0 ? (
+                <span className="muted">—</span>
+              ) : (
+                <CapabilityPills caps={optional} variant="optional" />
+              )}
+            </div>
           </div>
-          {required.length === 0 ? (
-            <span className="muted">—</span>
-          ) : (
-            <CapabilityPills caps={required} variant="required" />
-          )}
-        </div>
-        <div>
-          <div className="assessment-plan-panel__label">
-            Optional capabilities ({optional.length})
-          </div>
-          {optional.length === 0 ? (
-            <span className="muted">—</span>
-          ) : (
-            <CapabilityPills caps={optional} variant="optional" />
-          )}
-        </div>
-      </div>
 
-      {/* Risk flags */}
-      {risk.length > 0 && (
-        <div
-          className="assessment-plan-panel__risks"
-          data-testid="assessment-plan-risks"
-        >
-          <div className="assessment-plan-panel__label">
-            Risk flags ({risk.length})
-          </div>
-          <ul className="bullet-list">
-            {risk.map((r, i) => <li key={i}>{capabilityLabel(r)}</li>)}
-          </ul>
-        </div>
+          {risk.length > 0 && (
+            <div
+              className="assessment-plan-panel__risks"
+              data-testid="assessment-plan-risks"
+            >
+              <div className="assessment-plan-panel__label">
+                Risk flags ({risk.length})
+              </div>
+              <ul className="bullet-list">
+                {risk.map((r, i) => <li key={i}>{capabilityLabel(r)}</li>)}
+              </ul>
+            </div>
+          )}
+        </>
       )}
 
       {/* Extraction evidence — what the parser ACTUALLY extracted.
