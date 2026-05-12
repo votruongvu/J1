@@ -564,3 +564,189 @@ def test_graph_happy_path_passes():
         read_back=_read_from_map({"g1": payload}),
     )
     assert not any(c.status == CHECK_STATUS_FAILED for c in checks)
+
+
+# ---- validate_graph: LightRAG-shape coverage ----------------------
+#
+# The producer (`_graph_drafts_from_storage`) harvests every LightRAG
+# graph-shaped file from the working dir, so a real run's artifact
+# set typically contains a mix of:
+#
+#   * graph_chunk_entity_relation.graphml  (NetworkX XML export)
+#   * graph_chunk_entity_relation.json     ({nodes, edges})
+#   * kv_store_full_entities.json          (entity-keyed dict)
+#   * kv_store_full_relations.json         (relation-keyed dict)
+#   * vdb_entities.json / vdb_relationships.json (same shape)
+#
+# Earlier validator versions hardcoded the {nodes, edges} expectation
+# and FAILED the run whenever any sibling artifact carried a different
+# (but legitimate) shape. The fix: shape-aware aggregate validation.
+
+
+def _artifact_with_filename(
+    *, artifact_id: str, filename: str,
+    source_artifact_ids: list[str] | None = None,
+):
+    """Like `_artifact` but stamps the filename metadata the producer
+ sets on real `graph_json` artifacts. The validator's GraphML
+ detection reads this metadata."""
+    record = _artifact(
+        artifact_id=artifact_id, kind="graph_json",
+        source_artifact_ids=source_artifact_ids,
+    )
+    record.metadata.update({"filename": filename})
+    return record
+
+
+def test_graph_graphml_artifact_passes_without_json_parse():
+    """`.graphml` files are XML, not JSON. Trying to `json.loads` them
+ produced 'not valid JSON' failures that killed real runs. The
+ validator must recognise the GraphML shape via filename metadata
+ (or content sniff) and accept it as graph evidence without
+ attempting JSON parse."""
+    a = _artifact_with_filename(
+        artifact_id="g1",
+        filename="graph_chunk_entity_relation.graphml",
+    )
+    content = (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<graphml xmlns="http://graphml.graphdrawing.org/xmlns">'
+        b'<graph><node id="n1"/></graph></graphml>'
+    )
+    checks = validate_graph(
+        artifacts=[a],
+        expected_tenant="acme", expected_project="alpha",
+        expected_run_id="run-1", expected_document_id="doc-1",
+        graph_required=True, chunk_artifact_ids=set(),
+        read_back=_read_from_map({"g1": content}),
+    )
+    assert not any(c.status == CHECK_STATUS_FAILED for c in checks)
+    # GraphML satisfies the node-count check via shape recognition.
+    assert any(
+        c.status == CHECK_STATUS_PASSED
+        and c.name == "graph_node_count_positive"
+        for c in checks
+    )
+
+
+def test_graph_entity_keyed_dict_passes():
+    """LightRAG's `kv_store_full_entities.json` is a top-level dict
+ keyed by entity id: `{"ent-1": {...}, "ent-2": {...}}`. This is
+ NOT the `{nodes: [...]}` shape but it IS graph data — the
+ projector handles it. The validator must recognise it as
+ well-formed."""
+    a = _artifact_with_filename(
+        artifact_id="g1",
+        filename="kv_store_full_entities.json",
+    )
+    content = (
+        b'{"ent-1": {"name": "Acme Corp", "type": "ORG"}, '
+        b'"ent-2": {"name": "Jane Doe", "type": "PERSON"}}'
+    )
+    checks = validate_graph(
+        artifacts=[a],
+        expected_tenant="acme", expected_project="alpha",
+        expected_run_id="run-1", expected_document_id="doc-1",
+        graph_required=True, chunk_artifact_ids=set(),
+        read_back=_read_from_map({"g1": content}),
+    )
+    assert not any(c.status == CHECK_STATUS_FAILED for c in checks)
+
+
+def test_graph_wrapped_entities_list_passes():
+    """Wrapped shape: `{"entities": [...]}`. Some LightRAG versions
+ emit this. Validator must accept it."""
+    a = _artifact_with_filename(
+        artifact_id="g1", filename="kv_store_full_entities.json",
+    )
+    content = b'{"entities": [{"id": "ent-1"}, {"id": "ent-2"}]}'
+    checks = validate_graph(
+        artifacts=[a],
+        expected_tenant="acme", expected_project="alpha",
+        expected_run_id="run-1", expected_document_id="doc-1",
+        graph_required=True, chunk_artifact_ids=set(),
+        read_back=_read_from_map({"g1": content}),
+    )
+    assert not any(c.status == CHECK_STATUS_FAILED for c in checks)
+
+
+def test_graph_mixed_shapes_in_one_run_passes():
+    """A real run's artifact set contains MULTIPLE shapes at once.
+ Previously the validator failed the run when any single artifact
+ was wrong-shape; now it succeeds when at least one is well-formed."""
+    graphml = _artifact_with_filename(
+        artifact_id="g-graphml",
+        filename="graph_chunk_entity_relation.graphml",
+    )
+    entities = _artifact_with_filename(
+        artifact_id="g-entities",
+        filename="kv_store_full_entities.json",
+    )
+    relations = _artifact_with_filename(
+        artifact_id="g-relations",
+        filename="kv_store_full_relations.json",
+    )
+    checks = validate_graph(
+        artifacts=[graphml, entities, relations],
+        expected_tenant="acme", expected_project="alpha",
+        expected_run_id="run-1", expected_document_id="doc-1",
+        graph_required=True, chunk_artifact_ids=set(),
+        read_back=_read_from_map({
+            "g-graphml": (
+                b'<?xml version="1.0"?>'
+                b'<graphml><graph><node id="n1"/></graph></graphml>'
+            ),
+            "g-entities": b'{"ent-1": {"name": "A"}, "ent-2": {"name": "B"}}',
+            "g-relations": b'{"rel-1": {"source": "ent-1", "target": "ent-2"}}',
+        }),
+    )
+    assert not any(c.status == CHECK_STATUS_FAILED for c in checks)
+
+
+def test_graph_unparseable_sibling_emits_warning_not_failure():
+    """If one artifact is corrupt JSON but a sibling is well-formed,
+ the run must succeed — the corrupt one becomes a warning, not a
+ failure. Earlier validator versions failed the whole run."""
+    good = _artifact_with_filename(
+        artifact_id="g-good", filename="graph_chunk_entity_relation.json",
+    )
+    bad = _artifact_with_filename(
+        artifact_id="g-bad", filename="kv_store_llm_response_cache.json",
+    )
+    checks = validate_graph(
+        artifacts=[good, bad],
+        expected_tenant="acme", expected_project="alpha",
+        expected_run_id="run-1", expected_document_id="doc-1",
+        graph_required=True, chunk_artifact_ids=set(),
+        read_back=_read_from_map({
+            "g-good": b'{"nodes": [{"id": "n1"}], "edges": []}',
+            "g-bad": b"not json at all",
+        }),
+    )
+    assert not any(c.status == CHECK_STATUS_FAILED for c in checks)
+    # The corrupt one surfaces as a warning so operators see it.
+    assert any(
+        c.status == CHECK_STATUS_WARNING
+        and c.name == "graph_artifact_parses"
+        for c in checks
+    )
+
+
+def test_graph_all_artifacts_empty_still_fails():
+    """Counter-test: when no artifact in the set has graph content, the
+ run still fails. The aggregate rule isn't a free pass."""
+    empty = _artifact_with_filename(
+        artifact_id="g1", filename="graph_chunk_entity_relation.json",
+    )
+    checks = validate_graph(
+        artifacts=[empty],
+        expected_tenant="acme", expected_project="alpha",
+        expected_run_id="run-1", expected_document_id="doc-1",
+        graph_required=True, chunk_artifact_ids=set(),
+        read_back=_read_from_map({"g1": b'{"nodes": [], "edges": []}'}),
+    )
+    assert any(
+        c.status == CHECK_STATUS_FAILED
+        and c.name == "graph_node_count_positive"
+        for c in checks
+    )

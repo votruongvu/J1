@@ -167,19 +167,31 @@ def test_chunks_found_at_legacy_storage_subdir(tmp_path):
     assert "legacy layout" in json.loads(drafts[0].content)["body"]
 
 
-def test_graph_drafts_excludes_chunks_file(tmp_path):
-    """The `_graph_drafts_from_storage` helper used to surface
- `kv_store_text_chunks.json` as a `graph_json` artifact (it
- matched the `kv_store*.json` pattern). Now that chunks have
- their own kind, the graph extractor must skip that file —
- otherwise the FE sees the chunks twice (once under graph,
- once under chunks).
+def test_graph_drafts_excludes_non_graph_kv_stores(tmp_path):
+    """The `_graph_drafts_from_storage` helper used to surface every
+ file matching `kv_store*.json` as a `graph_json` artifact. Most
+ of LightRAG's KV stores are NOT graph data — surfacing them
+ produced "not valid JSON" and "zero nodes" failures on the
+ graph stage validator + confused the Knowledge Graph tab.
 
- Also excludes `kv_store_doc_status.json` — it's a per-document
- state machine + duplicate-detection record store, not graph
- data. Surfacing it under graph put `[DUPLICATE] Original
- document:...` rows in the Knowledge Graph tab for runs that
- re-uploaded the same checksum."""
+ The producer now excludes these substring-matched filenames
+ (aligned with the FE projector's `_INTERNAL_KV_PATTERNS`):
+
+   * kv_store_text_chunk*   — chunk text (own `kind="chunk"`)
+   * kv_store_doc_status*   — per-document state + dup-detection
+   * kv_store_full_doc*     — full document store
+   * kv_store_llm*          — LLM response cache
+   * kv_store_chunk_entity* — internal aggregation bookkeeping
+
+ Files that DO carry graph data still surface:
+
+   * graph_*.json           — explicit {nodes, edges} shape
+   * graph_*.graphml        — NetworkX GraphML XML
+   * vdb_entit*.json        — entity vector DB
+   * vdb_relat*.json        — relation vector DB
+   * kv_store_full_entit*.json / kv_store_full_relat*.json
+                            — entity-/relation-keyed dicts"""
+    # Excluded — non-graph kv_stores
     _write(tmp_path / "kv_store_text_chunks.json", {"ch": {"content": "x"}})
     _write(tmp_path / "kv_store_doc_status.json", {
         "d0d59aaf": {"status": "processed", "content": ""},
@@ -189,7 +201,14 @@ def test_graph_drafts_excludes_chunks_file(tmp_path):
         },
     })
     _write(tmp_path / "kv_store_full_docs.json", {"d": {"id": "d"}})
+    _write(tmp_path / "kv_store_llm_response_cache.json", {"k": {"v": "x"}})
+    _write(tmp_path / "kv_store_chunk_entity_relation.json", {"k": {"v": "x"}})
+    # Included — actual graph data
     _write(tmp_path / "vdb_entities.json", {"e1": {"__id__": "e1"}})
+    _write(tmp_path / "kv_store_full_entities.json", {"e1": {"name": "A"}})
+    _write(tmp_path / "kv_store_full_relations.json", {
+        "r1": {"src": "e1", "dst": "e2"},
+    })
 
     graph_drafts = _graph_drafts_from_storage(
         tmp_path, artifact_ids=["compile-1"],
@@ -198,9 +217,13 @@ def test_graph_drafts_excludes_chunks_file(tmp_path):
     filenames = {
         d.metadata.get("filename") for d in graph_drafts if d.kind == "graph_json"
     }
-    # Chunks + doc_status files are excluded; other KV files + entities
-    # surface as graph_json.
+    # Excluded
     assert "kv_store_text_chunks.json" not in filenames
     assert "kv_store_doc_status.json" not in filenames
-    assert "kv_store_full_docs.json" in filenames
+    assert "kv_store_full_docs.json" not in filenames
+    assert "kv_store_llm_response_cache.json" not in filenames
+    assert "kv_store_chunk_entity_relation.json" not in filenames
+    # Included
     assert "vdb_entities.json" in filenames
+    assert "kv_store_full_entities.json" in filenames
+    assert "kv_store_full_relations.json" in filenames
