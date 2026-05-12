@@ -1506,6 +1506,100 @@ pre,
     flex: initial;
   }
 }
+
+/* ── Pipeline output (Claude-Code-style stream) ─────────────────
+   One unified panel replacing the five separate artifact cards on
+   the right side of the run-detail page. Single header at the top,
+   single scrollable body underneath. Each stage's content lands as
+   a "message block" in pipeline order; auto-scroll keeps the
+   newest in view (handled by `PipelineOutputPanel.tsx`). */
+.pipeline-stream {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 12px);
+  background: var(--surface, #fff);
+  overflow: hidden;
+}
+.pipeline-stream__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken, #fafafa);
+  flex: 0 0 auto;
+}
+.pipeline-stream__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.pipeline-stream__subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted, #6b7280);
+}
+.pipeline-stream__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-behavior: smooth;
+}
+/* Flatten the nested `.card` chrome from each child panel so the
+   five panels read as ONE stream of message blocks, not five
+   separate cards-in-a-card. Each child still uses `.card` so its
+   internal structure (`card__header`, `card__body`) is untouched —
+   we just suppress the outer chrome, drop the shadow, and give
+   each block a subtle left rail to signal "section". */
+.pipeline-stream__body > .card {
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-left: 3px solid var(--accent, #5b8def);
+  border-radius: 8px;
+  box-shadow: none;
+  background: var(--bg-sunken, #fafafa);
+  margin: 0;
+  /* Subtle slide-in so a new stage appearing feels chat-like
+     instead of "the page just changed". Cheap CSS-only animation;
+     no layout thrash. */
+  animation: pipelineBlockIn 0.32s var(--ease-out, ease-out);
+}
+@keyframes pipelineBlockIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.pipeline-stream__body > .card > .card__header {
+  padding: 10px 14px;
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle, #e5e7eb);
+}
+.pipeline-stream__body > .card > .card__body {
+  padding: 12px 14px;
+  background: transparent;
+}
+@media (max-width: 1080px) {
+  .pipeline-stream {
+    flex: initial;
+    overflow: visible;
+  }
+  .pipeline-stream__body {
+    overflow-y: visible;
+    max-height: none;
+  }
+}
 /* LiveTimeline inside the new equal-height column: stretch the
    card to fill the column height, and let its body scroll. The
    component used to hard-code `maxHeight: 520` inline; we now drive
@@ -2990,13 +3084,21 @@ pre.json .b {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  /* Wider floor (220px) so common artifact kinds like
+     `post_compile_enrich_plan` and `enriched.consistency_findings`
+     fit on a single line without truncating. Long-tail labels still
+     truncate (see __count-kind below) so the count never overlaps. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 6px;
 }
 .results-overview__counts li {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* Explicit gap so the count is always visually separated from the
+     kind label even when the label fills the pill. Without this,
+     `space-between` left the count touching long labels. */
+  gap: 12px;
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -3006,9 +3108,23 @@ pre.json .b {
   font-family: var(--mono, monospace);
   font-size: 12px;
   color: var(--text-muted);
+  /* Allow the kind label to shrink and truncate inside the flex row
+     so a label longer than the pill collapses to "…" instead of
+     overflowing past the count. `min-width: 0` is the standard
+     escape hatch that lets a flex child shrink below its content
+     size. Title attribute on the span surfaces the full name on
+     hover. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
 }
 .results-overview__count-num {
   font-weight: 600;
+  /* Lock the count's space — never compresses, never wraps. The
+     label is the only thing that can shrink. */
+  flex: 0 0 auto;
 }
 
 .results-overview__warnings,

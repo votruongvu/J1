@@ -98,7 +98,12 @@ export function OverviewTab({ summary, loading, error }: OverviewTabProps) {
           <ul className="results-overview__counts">
             {Object.entries(summary.artifactCounts).map(([kind, count]) => (
               <li key={kind}>
-                <span className="results-overview__count-kind">{kind}</span>
+                <span
+                  className="results-overview__count-kind"
+                  title={kind}
+                >
+                  {kind}
+                </span>
                 <span className="results-overview__count-num">{count}</span>
               </li>
             ))}

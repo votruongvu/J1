@@ -24,11 +24,7 @@ import { LiveTimeline } from "./run-detail/LiveTimeline";
 import { PrimaryStatusPanel } from "./run-detail/PrimaryStatusPanel";
 import { ResultsSection } from "./run-detail/results";
 import { TechDrawer } from "./run-detail/TechDrawer";
-import { AssessmentPlanPanel } from "./run-detail/AssessmentPlanPanel";
-import { CompileStrategyPanel } from "./run-detail/CompileStrategyPanel";
-import { CompileResultPanel } from "./run-detail/CompileResultPanel";
-import { EnrichPlanPanel } from "./run-detail/EnrichPlanPanel";
-import { EnrichmentResultPanel } from "./run-detail/EnrichmentResultPanel";
+import { PipelineOutputPanel } from "./run-detail/PipelineOutputPanel";
 import type {
   EnrichmentResultPayload,
   FinalIngestionReportPayload,
@@ -386,26 +382,11 @@ export function RunDetailPage({ runId, ctx, onBack, pushToast }: RunDetailPagePr
             onSelectEvent={onSelectEvent}
           />
         </div>
-        <div className="col run-body__scroll">
-          <AssessmentPlanPanel
+        <div className="col">
+          <PipelineOutputPanel
             runId={runId}
-            latestEvent={events.length > 0 ? events[events.length - 1] : null}
-          />
-          <CompileStrategyPanel
-            runId={runId}
-            latestEvent={events.length > 0 ? events[events.length - 1] : null}
-          />
-          <CompileResultPanel
-            runId={runId}
-            latestEvent={events.length > 0 ? events[events.length - 1] : null}
-          />
-          <EnrichPlanPanel
-            runId={runId}
-            latestEvent={events.length > 0 ? events[events.length - 1] : null}
-          />
-          <EnrichmentResultPanel
-            runId={runId}
-            latestEvent={events.length > 0 ? events[events.length - 1] : null}
+            events={events}
+            streamStatus={streamStatus}
           />
         </div>
       </div>
