@@ -771,14 +771,44 @@ def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
     run X produced — not whatever happened to be in the global
     workdir last. When the scoping inputs are absent, falls back
     to ``settings.workdir`` (legacy / workspace-scoped behaviour).
+
+    LightRAG bootstrap: RAGAnything only auto-creates its inner
+    ``LightRAG`` sub-instance during ``process_document_complete``
+    — the query path never calls that, so we explicitly build a
+    LightRAG with the per-run ``working_dir`` and pass it to
+    RAGAnything's constructor via the ``lightrag=`` kwarg. Without
+    this step ``aquery`` raises "No LightRAG instance available.
+    Please process documents first or provide a pre-initialized
+    LightRAG instance." regardless of what's on disk.
     """
     # Query path: no AssessmentPlan-driven config_overrides.
     working_dir_override = workspace_path_for_run(
         request.settings, request.ctx, request.document_id, request.run_id,
     )
-    rag, _ = _build_rag_instance(
+
+    # Pre-flight workspace check. LightRAG's ``aquery`` is happy to
+    # produce a vacuous "I don't know" answer (or raise an opaque
+    # vendor error) when its storage dir is missing or empty.
+    # Failing fast here with a SPECIFIC reason saves operators
+    # from re-running the same query while LightRAG churns through
+    # an empty index.
+    preflight_error = _native_query_preflight(working_dir_override)
+    if preflight_error is not None:
+        return QueryResult(
+            status=ResultStatus.FAILED,
+            error=preflight_error,
+            metadata={
+                "provider": "raganything",
+                "working_dir": (
+                    str(working_dir_override)
+                    if working_dir_override is not None
+                    else None
+                ),
+            },
+        )
+
+    rag = _build_rag_instance_with_lightrag_for_query(
         text_client=request.text_client,
-        vision_client=None,
         embedding_client=request.embedding_client,
         settings=request.settings,
         working_dir_override=working_dir_override,
@@ -807,8 +837,182 @@ def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
     return QueryResult(
         status=ResultStatus.SUCCEEDED,
         answer=str(answer) if answer is not None else "",
-        metadata={"provider": "raganything", "mode": "hybrid"},
+        metadata={
+            "provider": "raganything",
+            "mode": "hybrid",
+            "working_dir": (
+                str(working_dir_override)
+                if working_dir_override is not None
+                else None
+            ),
+        },
     )
+
+
+def _build_rag_instance_with_lightrag_for_query(
+    *,
+    text_client,
+    embedding_client,
+    settings,
+    working_dir_override: "Path | None",
+):
+    """Construct a query-ready ``RAGAnything`` with a pre-initialized
+    ``LightRAG`` attached.
+
+    Used only by the query path. Compile / graph paths drive
+    LightRAG through ``process_document_complete`` which builds
+    its own internal instance; the query path NEVER calls that and
+    so must supply ``lightrag=...`` explicitly via the constructor
+    or ``aquery`` raises with:
+
+        "No LightRAG instance available. Please process documents
+        first or provide a pre-initialized LightRAG instance."
+
+    The LightRAG is built fresh per query (cheap — it just opens
+    the storage files on disk; no LLM warmup). ``initialize_storages``
+    is dispatched on the persistent loop because LightRAG's
+    module-level locks bind to whichever loop first touched them.
+    """
+    try:
+        from lightrag import LightRAG
+    except ImportError as exc:
+        raise ProviderUnavailable(
+            "LightRAG package not installed but RAGAnything query path "
+            "requires it. Install with: pip install lightrag-hku   "
+            "(or: pip install j1[raganything])"
+        ) from exc
+
+    raganything_mod = _import_raganything()
+    rag_cls = getattr(raganything_mod, "RAGAnything", None)
+    if rag_cls is None:
+        raise ProviderUnavailable(
+            "Installed `raganything` package has no `RAGAnything` class "
+            "at the top level."
+        )
+
+    working_dir_value = (
+        str(working_dir_override)
+        if working_dir_override is not None
+        else settings.workdir
+    )
+    if working_dir_override is not None:
+        working_dir_override.mkdir(parents=True, exist_ok=True)
+
+    llm_func = _make_text_callable(text_client)
+    embedding_func = (
+        _make_embedding_func(embedding_client)
+        if embedding_client is not None
+        else None
+    )
+
+    try:
+        lightrag_instance = LightRAG(
+            working_dir=working_dir_value,
+            llm_model_func=llm_func,
+            embedding_func=embedding_func,
+        )
+    except Exception as exc:
+        raise ProviderUnavailable(
+            f"LightRAG instantiation failed for working_dir="
+            f"{working_dir_value!r}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    # LightRAG's storage backends defer their open() until
+    # ``initialize_storages`` runs. Drive it on the persistent loop
+    # so any module-level locks LightRAG caches bind to the same
+    # loop the subsequent ``aquery`` will run on.
+    from j1.providers.raganything._persistent_loop import get_persistent_loop
+    loop = get_persistent_loop()
+    try:
+        loop.run_coroutine(lightrag_instance.initialize_storages())
+    except Exception as exc:
+        raise ProviderUnavailable(
+            f"LightRAG initialize_storages failed for working_dir="
+            f"{working_dir_value!r}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    # Build the RAGAnything wrapper around the pre-initialized
+    # LightRAG. The wrapper relays ``aquery`` straight to the
+    # inner instance.
+    config, _ = _build_rag_config(
+        raganything_mod, settings,
+        working_dir_override=working_dir_override,
+    )
+    kwargs: dict[str, Any] = {"lightrag": lightrag_instance}
+    if config is not None:
+        kwargs["config"] = config
+    kwargs["llm_model_func"] = llm_func
+    if embedding_func is not None:
+        kwargs["embedding_func"] = embedding_func
+
+    try:
+        return rag_cls(**kwargs)
+    except TypeError as exc:
+        raise ProviderUnavailable(
+            f"Could not instantiate RAGAnything with a pre-initialized "
+            f"LightRAG: {exc}"
+        ) from exc
+
+
+# LightRAG's minimum-viable file set inside a working_dir. When the
+# whole set is absent we can be confident the compile never wrote
+# here (or wrote to a different path). When the dir exists but
+# these files are missing, the index is broken / partially built.
+_LIGHTRAG_CORE_FILES: tuple[str, ...] = (
+    "graph_chunk_entity_relation.graphml",
+    "kv_store_text_chunks.json",
+    "kv_store_full_docs.json",
+)
+
+
+def _native_query_preflight(
+    working_dir: "Path | None",
+) -> str | None:
+    """Return a short failure-reason string when the working dir
+    can't possibly answer a query, ``None`` otherwise.
+
+    Reasons surface verbatim in the validation tab's "Native
+    failure" field so operators can diagnose without grepping
+    server logs.
+
+    ``working_dir=None`` means the caller didn't pass scoping
+    fields (legacy unscoped path / direct test callers); the
+    preflight is a no-op for that case — vendor handles the
+    legacy workdir directly.
+    """
+    if working_dir is None:
+        return None
+    if not working_dir.exists():
+        return (
+            f"native_workspace_missing: path does not exist: {working_dir}"
+            " — compile probably never ran for this run, or it wrote to "
+            "a different workspace path. Verify the run's compile stage "
+            "succeeded."
+        )
+    if not working_dir.is_dir():
+        return (
+            f"native_workspace_not_a_directory: {working_dir} exists but "
+            "is not a directory"
+        )
+    # Look for ANY of the core files. A path with zero of them is
+    # not a viable LightRAG storage dir. Partial sets get through
+    # — LightRAG will surface its own error which we relay below.
+    found = [
+        name for name in _LIGHTRAG_CORE_FILES
+        if (working_dir / name).exists()
+    ]
+    if not found:
+        try:
+            entries = sorted(p.name for p in working_dir.iterdir())[:8]
+        except OSError:
+            entries = []
+        return (
+            f"native_workspace_empty: no LightRAG storage files in "
+            f"{working_dir} (looked for {list(_LIGHTRAG_CORE_FILES)!r}). "
+            f"Directory contents: {entries!r}. The graph stage probably "
+            f"didn't run or wrote to a different path."
+        )
+    return None
 
 
 # ---- Vendor-instance construction -----------------------------------
