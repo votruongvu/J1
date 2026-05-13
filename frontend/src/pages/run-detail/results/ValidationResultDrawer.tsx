@@ -93,7 +93,7 @@ export function ValidationResultDrawer({
 
   return (
     <div
-      className="drawer drawer--open"
+      className="drawer is-open"
       role="dialog"
       aria-label="Validation result detail"
     >

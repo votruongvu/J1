@@ -76,16 +76,32 @@ export function GeneratedTestCasesTable({
         </div>
       ) : null}
       <div className="card__body" style={{ overflowX: "auto" }}>
-        <table className="data-table" style={{ width: "100%" }}>
+        <table
+          className="data-table"
+          style={{ width: "100%", tableLayout: "fixed" }}
+        >
+          {/* Fixed widths keep narrow metadata columns from
+              sprawling across a wide viewport — without this the
+              ~10% per-column default left the table stretched
+              with empty whitespace between values. */}
+          <colgroup>
+            <col />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 110 }} />
+            <col style={{ width: 100 }} />
+            <col style={{ width: 160 }} />
+            <col style={{ width: 110 }} />
+            <col style={{ width: 80 }} />
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ width: "38%" }}>Question</th>
+              <th>Question</th>
               <th>Scope</th>
               <th>Type</th>
               <th>Priority</th>
               <th>Evidence</th>
               <th>Last result</th>
-              <th></th>
+              <th style={{ textAlign: "right" }}></th>
             </tr>
           </thead>
           <tbody>
@@ -224,17 +240,21 @@ function Row({ testCase, result, hasRun, onSelect }: RowProps) {
             <span style={{ color: "var(--fg-muted)" }}>not run</span>
           )}
         </td>
-        <td>
-          {result && (
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={onSelect}
-              aria-label={`View detail for ${testCase.testCaseId}`}
-            >
-              View
-            </button>
-          )}
+        <td style={{ textAlign: "right" }}>
+          {/* ``View`` is always available — when a result exists it
+              opens the answer/checks/citations drawer; when the
+              case hasn't been run yet it opens the test-case
+              detail drawer (question + expected answer + evidence
+              quote). The tester needs to inspect the generated
+              case BEFORE running, not only after. */}
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={onSelect}
+            aria-label={`View detail for ${testCase.testCaseId}`}
+          >
+            View
+          </button>
         </td>
       </tr>
       {testCase.evidenceQuote ? (

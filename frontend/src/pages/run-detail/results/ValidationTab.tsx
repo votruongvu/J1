@@ -29,6 +29,7 @@ import type {
 import { GeneratedTestCasesTable } from "./GeneratedTestCasesTable";
 import { KnowledgeReadinessCard } from "./KnowledgeReadinessCard";
 import { ManualQueryConsole } from "./ManualQueryConsole";
+import { TestCaseDetailDrawer } from "./TestCaseDetailDrawer";
 import { ValidationResultDrawer } from "./ValidationResultDrawer";
 
 interface ValidationTabProps {
@@ -52,6 +53,13 @@ export function ValidationTab({ runId }: ValidationTabProps) {
   const [error, setError] = useState<string | null>(null);
   // Drawer state for inspecting a single result.
   const [drawerResultId, setDrawerResultId] = useState<string | null>(null);
+  // Drawer state for inspecting a test case that hasn't been run
+  // yet. Distinct from ``drawerResultId`` so the drawer can show
+  // case metadata (question / expected answer / evidence quote)
+  // without trying to render a non-existent run result.
+  const [drawerTestCaseId, setDrawerTestCaseId] = useState<string | null>(
+    null,
+  );
 
   // Refresh: fetch latest set + run together so the page reflects
   // the latest server state. Called after every mutation.
@@ -144,13 +152,31 @@ export function ValidationTab({ runId }: ValidationTabProps) {
   }, [client, runId, setItem, refresh]);
 
   const onSelectResult = (testCaseId: string) => {
-    if (!latestRun) return;
-    const result = latestRun.results.find((r) => r.testCaseId === testCaseId);
-    if (result) setDrawerResultId(result.resultId);
+    // Prefer the run-result drawer when a result exists for this
+    // test case — that's the richer view (answer + checks +
+    // citations + tester verdict). Fall back to the case-detail
+    // drawer when the case hasn't been run yet so the tester can
+    // still inspect the generated question + expected answer +
+    // evidence quote before clicking Run.
+    const result = latestRun?.results.find(
+      (r) => r.testCaseId === testCaseId,
+    );
+    if (result) {
+      setDrawerResultId(result.resultId);
+      setDrawerTestCaseId(null);
+    } else {
+      setDrawerTestCaseId(testCaseId);
+      setDrawerResultId(null);
+    }
   };
 
   const drawerResult = drawerResultId
     ? latestRun?.results.find((r) => r.resultId === drawerResultId) ?? null
+    : null;
+  const drawerTestCase = drawerTestCaseId
+    ? setDetail?.testCases.find(
+        (tc) => tc.testCaseId === drawerTestCaseId,
+      ) ?? null
     : null;
 
   return (
@@ -204,6 +230,11 @@ export function ValidationTab({ runId }: ValidationTabProps) {
         // verdict POST returns the updated snapshot, so a single
         // refetch is enough.
         onVerdictRecorded={() => void refresh()}
+      />
+      <TestCaseDetailDrawer
+        open={drawerTestCase !== null}
+        testCase={drawerTestCase}
+        onClose={() => setDrawerTestCaseId(null)}
       />
     </div>
   );
