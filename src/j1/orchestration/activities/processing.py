@@ -597,6 +597,30 @@ class ProcessingActivities:
                 message="reused from processing-result cache",
             )
 
+        # ---- Refresh-enrich compile reuse -----------------------------
+        # Refresh-enrich runs (``run_type="refresh_enrich"``) carry
+        # ``metadata.reused_compile_from_run_id`` pointing at the
+        # previous active run whose compile output should be reused.
+        # When present, we clone the source run's compile artifacts
+        # under the new run_id rather than re-running MinerU — that's
+        # the load-bearing user-visible value of refresh-enrich
+        # (skip the expensive parse, re-run cheap enrichment).
+        #
+        # Behaviour falls through to the normal compile path when:
+        #   * run_store isn't wired (legacy / tests);
+        #   * the run record isn't found by correlation_id;
+        #   * the source run has no compile artifacts;
+        #   * the metadata key is missing or empty.
+        reused = self._maybe_reuse_compile_artifacts(ctx, input)
+        if reused is not None:
+            _safe_heartbeat({
+                "stage": "compile",
+                "document_id": input.document_id,
+                "status": "succeeded",
+                "cache": "refresh_enrich_reuse",
+            })
+            return reused
+
         # Write a `processing` marker BEFORE the processor call. Two
         # reasons: (1) operators inspecting the cache file see the
         # row immediately ("this document is being parsed RIGHT
@@ -721,6 +745,108 @@ class ProcessingActivities:
                     ),
                 )
         return _artifact_result(result)
+
+    def _maybe_reuse_compile_artifacts(
+        self,
+        ctx,
+        input: CompileActivityInput,
+    ) -> "ArtifactActivityResult | None":
+        """Short-circuit compile when the run is a refresh-enrich.
+
+        Reads ``metadata.reused_compile_from_run_id`` off the run
+        record (looked up by ``correlation_id``). When present,
+        clones every compile-stage artifact from the source run
+        under the new run_id and returns SUCCESS — skipping the
+        expensive MinerU / raganything parse entirely.
+
+        Returns ``None`` when:
+          * the run-store collaborator isn't wired;
+          * the run record isn't found by correlation_id;
+          * the metadata key is missing/empty;
+          * the source run has no compile artifacts to clone.
+
+        In every ``None`` case the caller falls through to the
+        regular compile path — so a misconfigured refresh-enrich
+        degrades safely to "full reindex" rather than to a failure.
+        """
+        if self._run_store is None:
+            return None
+        run_id = input.correlation_id
+        if not run_id:
+            return None
+        try:
+            run = self._run_store.get(ctx, run_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if run is None:
+            return None
+        meta = dict(run.metadata or {})
+        source_run_id = str(meta.get("reused_compile_from_run_id") or "")
+        if not source_run_id:
+            return None
+        # Collect compile-stage artifacts from the source run. The
+        # compile stage's primary outputs are ``compiled.text`` and
+        # any ``chunk`` artifacts produced from the same parse —
+        # both carry ``metadata.run_id == source_run_id``. We clone
+        # records whose ``kind`` starts with ``compiled.`` OR is
+        # exactly ``chunk`` (the broad set the downstream stages
+        # consume).
+        try:
+            all_records = self._artifacts.list_artifacts(ctx)
+        except Exception:  # noqa: BLE001
+            return None
+        source_records = [
+            r for r in all_records
+            if str(r.metadata.get("run_id", "")) == source_run_id
+            and r.source_document_ids
+            and input.document_id in r.source_document_ids
+            and (r.kind.startswith("compiled.") or r.kind == "chunk")
+        ]
+        if not source_records:
+            return None
+        # Clone each source artifact under the new run_id. The file
+        # bytes are shared (same ``location``) — the registry entry
+        # is duplicated with a fresh ``artifact_id`` and ``run_id``
+        # stamped in metadata. Downstream stages filter by run_id
+        # so the new run's enrichment / graph / index see ONLY
+        # these clones, not the original source rows.
+        from dataclasses import replace as _replace
+        from datetime import datetime, timezone
+        new_artifact_ids: list[str] = []
+        now = datetime.now(timezone.utc)
+        for r in source_records:
+            new_id = f"{run_id}-{r.artifact_id}"
+            new_metadata = dict(r.metadata or {})
+            new_metadata["run_id"] = run_id
+            new_metadata["reused_from_artifact_id"] = r.artifact_id
+            new_metadata["reused_from_run_id"] = source_run_id
+            clone = _replace(
+                r,
+                artifact_id=new_id,
+                metadata=new_metadata,
+                created_at=now,
+                updated_at=now,
+            )
+            try:
+                # ``_raw_add`` bypasses the lineage guard (which
+                # rejects ``chunk`` artifacts without ``run_id``);
+                # ours have the new run_id stamped above so the
+                # bypass is purely to skip an already-passed check.
+                self._artifacts._raw_add(clone)
+                new_artifact_ids.append(new_id)
+            except Exception:  # noqa: BLE001
+                # One failed clone makes the whole reuse path
+                # unreliable — fall back to a full parse rather
+                # than ship a partial set.
+                return None
+        return ArtifactActivityResult(
+            status="succeeded",
+            artifact_ids=new_artifact_ids,
+            message=(
+                f"reused {len(new_artifact_ids)} compile artifact(s) "
+                f"from run {source_run_id} (refresh-enrich)"
+            ),
+        )
 
     def _record_cache_processing(
         self,
