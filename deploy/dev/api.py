@@ -304,7 +304,6 @@ def _build_app():
         event_publisher=facade.event_publisher,
         job_status=job_status,
         search=facade.search,
-        answer=facade.answer,
         project_admin=facade.project_admin,
         job_control=job_control,
         cost_summary=facade.cost_summary,
