@@ -346,19 +346,29 @@ def build_smart_query_orchestrator(
 
     def _llm_callable(req):
         """Adapt the registry's text client into the orchestrator's
-        ``LLMCallable`` shape. The text client returns a structured
-        completion; the synthesizer just wants the text answer."""
+        ``LLMCallable`` shape.
+
+        The text client (``OpenAICompatTextLLMClient`` and
+        compatible adapters) exposes
+        ``generate(prompt, *, system_prompt=...)`` and returns
+        ``(text, usage)``. The orchestrator wants a single answer
+        string. Failures are caught + folded into the answer
+        string so the AnswerQualityGate sees them as a refusal
+        rather than crashing the orchestrator.
+        """
         try_text = getattr(llm_registry, "try_text", None)
         if try_text is None:
             return ""
         client = try_text()
         if client is None:
             return ""
-        full_prompt = f"{req.system_prompt}\n\n{req.user_prompt}"
         try:
-            response = client.complete(full_prompt)
-            return getattr(response, "text", "") or str(response)
-        except Exception as exc:  # noqa: BLE001
+            text, _usage = client.generate(
+                req.user_prompt,
+                system_prompt=req.system_prompt,
+            )
+            return text or ""
+        except Exception as exc:  # noqa: BLE001 — surface to gate
             return f"[llm error: {type(exc).__name__}: {exc}]"
 
     return SmartQueryOrchestrator.from_components(
