@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from j1.query.domain_profile import DomainProfile, GENERIC_PROFILE
+from j1.query.field_tokens import field_tokens
 from j1.query.query_plan import (
     AnswerShape,
     EvidenceBlock,
@@ -36,6 +37,18 @@ from j1.query.query_plan import (
     QueryPlan,
     SynthesisMode,
 )
+
+# Per-block truncation in the user prompt. Chunked evidence is
+# capped to a moderate length (the LLM doesn't need 4KB of prose to
+# decide a fact). The native-answer block — RAGAnything's already-
+# synthesized prose — is given a much larger window because the
+# local synthesizer's job is to PASS that content through, not to
+# re-summarise it. Truncating the native answer to 1200 chars
+# regularly cut off the very sentence that named the requested field.
+_BLOCK_CHAR_CAP_DEFAULT = 1200
+_BLOCK_CHAR_CAP_NATIVE_ANSWER = 6000
+
+_RAGANYTHING_NATIVE_ANSWER_KIND = "raganything.native_answer"
 
 
 # ---- Synthesis request / output -------------------------------
@@ -124,11 +137,19 @@ class AnswerSynthesizer:
         # synthesizer extracts those and treats them as the cited-
         # set.
         used = _extract_used_indices(raw, len(blocks))
-        return SynthesisOutput(
+        output = SynthesisOutput(
             answer=raw.strip(),
             used_block_indices=used,
             raw_llm_output=raw,
         )
+        # Native-answer pass-through fallback. If the local
+        # synthesizer dropped requested-field content that the
+        # RAGAnything native answer DOES contain, swap in the
+        # native answer. Without this, the synthesizer's tendency
+        # to over-summarise can omit content RAGAnything already
+        # surfaced — operators see "answer missing requested
+        # fields" even though the upstream answer had them.
+        return _apply_native_answer_fallback(plan, output, blocks)
 
 
 # ---- Prompt assembly -----------------------------------------
@@ -214,6 +235,11 @@ def _user_prompt(
         lines.append(
             "Requested fields: " + ", ".join(plan.requested_fields)
         )
+        lines.append(
+            "Your answer MUST address every Requested Field that is "
+            "supported by the evidence below. Do not omit a field "
+            "when an evidence block mentions it."
+        )
     if plan.anchors:
         lines.append("Anchors: " + ", ".join(plan.anchors))
     lines.append("")
@@ -225,9 +251,82 @@ def _user_prompt(
             f"[#{i}] (kind={kind}, source={loc}, "
             f"group={block.group or 'general'})"
         )
-        lines.append(block.body.strip()[:1200])
+        cap = (
+            _BLOCK_CHAR_CAP_NATIVE_ANSWER
+            if kind == _RAGANYTHING_NATIVE_ANSWER_KIND
+            else _BLOCK_CHAR_CAP_DEFAULT
+        )
+        lines.append(block.body.strip()[:cap])
         lines.append("")
     return "\n".join(lines).strip()
+
+
+# ---- Native-answer fallback ----------------------------------
+
+
+def _apply_native_answer_fallback(
+    plan: QueryPlan,
+    output: SynthesisOutput,
+    blocks: tuple[EvidenceBlock, ...],
+) -> SynthesisOutput:
+    """When the local synthesizer's answer is missing a requested-
+    field token that a ``raganything.native_answer`` block already
+    contains, swap in the native answer. Returns ``output``
+    unchanged when the swap doesn't apply.
+
+    Why a swap and not an inline merge: the native answer is itself
+    a fully-formed RAGAnything answer (LightRAG ran retrieval +
+    LLM synthesis upstream). Re-summarising it loses content. When
+    the local synthesizer demonstrably dropped content the native
+    answer had, the safest correction is to use the native answer
+    verbatim and cite the native-answer block."""
+    if not plan.requested_fields:
+        return output
+    answer_lower = (output.answer or "").lower()
+    # Which fields did the synthesizer drop?
+    missing: list[str] = []
+    for f in plan.requested_fields:
+        tokens = field_tokens(f)
+        if not tokens:
+            continue
+        if not all(t in answer_lower for t in tokens):
+            missing.append(f)
+    if not missing:
+        return output
+    # Find a native-answer block whose body covers every missing
+    # field's tokens. The block is allowed to be substantially
+    # longer than the synthesizer's answer — that's the point.
+    fallback_idx: int | None = None
+    fallback_body: str = ""
+    for i, block in enumerate(blocks):
+        if block.candidate.artifact_kind != _RAGANYTHING_NATIVE_ANSWER_KIND:
+            continue
+        body = (block.body or "").strip()
+        if not body:
+            continue
+        body_l = body.lower()
+        if all(
+            all(t in body_l for t in field_tokens(f))
+            for f in missing
+        ):
+            fallback_idx = i
+            fallback_body = body
+            break
+    if fallback_idx is None:
+        return output
+    # Swap. The new ``used_block_indices`` cites ONLY the native-
+    # answer block — citation binder + answer-quality gate work on
+    # the new answer text alone.
+    note = (
+        "<native_answer_fallback: synthesizer dropped fields "
+        f"{missing!r}; using raganything.native_answer block "
+        f"#{fallback_idx + 1}>"
+    )
+    return SynthesisOutput(
+        answer=fallback_body,
+        used_block_indices=(fallback_idx,),
+        raw_llm_output=(output.raw_llm_output or "") + "\n" + note,
+    )
 
 
 def _extract_used_indices(

@@ -378,6 +378,72 @@ def test_unrelated_chunks_do_not_dominate_selected_evidence(ctx):
 # ---- 6. Trace shape ------------------------------------------
 
 
+def test_native_answer_fallback_recovers_dropped_fields(ctx):
+    """When the local synthesizer drops a requested-field token that
+    a ``raganything.native_answer`` block does contain, the answer
+    should swap to the native answer text instead of failing the
+    quality gate.
+
+    This locks in the behaviour reported as "the answer of
+    RAGAnything has the fields but the final answer excludes them" —
+    upstream answer is good, local synth is over-summarising. The
+    fallback uses the native answer verbatim and cites that block."""
+    question = "What modules are involved in the integration pipeline?"
+
+    # Native-answer block. Notice it carries the literal word
+    # "modules" — which is the head noun of the requested field
+    # "modules involved" the classifier will extract.
+    native_body = (
+        "The integration pipeline involves three modules: "
+        "ingest, compile, and enrich. Each module runs in sequence."
+    )
+
+    class _NativeRoute:
+        kind = RetrievalRouteKind.RAGANYTHING
+
+        def execute(self, job, context):
+            return [EvidenceCandidate(
+                route=self.kind,
+                artifact_id="raganything.native_answer",
+                artifact_kind="raganything.native_answer",
+                chunk_id=None,
+                text_preview=native_body[:120],
+                score=0.5,
+                matched_anchors=(),
+                run_id="run-1",
+                document_id="doc-1",
+                project_id="p",
+                extra={
+                    "body": native_body,
+                    "raganything_native_answer": True,
+                },
+            )]
+
+    # The local synthesizer is a stub that omits "modules" entirely
+    # — simulating the over-summarisation we saw in production.
+    def _summarising_llm(req: SynthesisRequest) -> str:
+        return "The pipeline has three stages that run in sequence."
+
+    orch = SmartQueryOrchestrator.from_components(
+        routes={RetrievalRouteKind.RAGANYTHING: _NativeRoute()},
+        llm=_summarising_llm,
+    )
+    result = orch.run(OrchestratorRequest(
+        ctx=ctx, question=question,
+        scope=RunScope(run_id="run-1"), run_id="run-1",
+    ))
+    # The final answer is the native answer (not the summariser
+    # output) and contains the requested-field head noun.
+    assert "modules" in result.answer.lower()
+    assert "ingest, compile, and enrich" in result.answer
+    # Citations point to the native-answer block.
+    assert len(result.citations) == 1
+    assert (
+        result.citations[0].candidate.artifact_kind
+        == "raganything.native_answer"
+    )
+
+
 def test_trace_carries_everything_for_the_manual_view(ctx):
     orch = SmartQueryOrchestrator.from_components(
         routes={

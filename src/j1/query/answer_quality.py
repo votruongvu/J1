@@ -28,6 +28,7 @@ import re
 from enum import StrEnum
 
 from j1.query.answer_synthesizer import SynthesisOutput
+from j1.query.field_tokens import field_tokens
 from j1.query.query_plan import (
     AnswerShape,
     EvidenceBlock,
@@ -123,35 +124,6 @@ def _shape_matches(answer: str, shape: AnswerShape) -> bool:
 # ---- Required-fields check -----------------------------------
 
 
-_FIELD_STOPWORDS: frozenset[str] = frozenset({
-    # Generic English filler that the classifier sometimes pulls
-    # into a requested field (e.g. "modules involved", "scope of",
-    # "the deliverables"). Stripping these means a field like
-    # "modules involved" passes when the answer talks about
-    # "modules" without using the literal phrase.
-    "a", "an", "the",
-    "of", "for", "to", "from", "in", "on", "at", "by", "with",
-    "and", "or", "vs", "vs.",
-    "is", "are", "was", "were", "be", "being", "been",
-    "involved", "involve", "involves",
-    "associated", "related", "applicable",
-    "any", "all", "each", "every", "some",
-})
-
-
-def _field_tokens(field: str) -> list[str]:
-    """Split a requested-field label into content tokens. Empty
-    list means "no signal" — the gate treats that field as
-    trivially satisfied rather than spuriously failing."""
-    tokens: list[str] = []
-    for raw in re.split(r"[\s\-_/]+", (field or "").lower()):
-        t = re.sub(r"[^a-z0-9]+", "", raw)
-        if not t or t in _FIELD_STOPWORDS or len(t) <= 1:
-            continue
-        tokens.append(t)
-    return tokens
-
-
 def _fields_covered(
     answer: str, fields: tuple[str, ...],
 ) -> tuple[bool, list[str]]:
@@ -165,7 +137,7 @@ def _fields_covered(
     a = (answer or "").lower()
     missing: list[str] = []
     for f in fields:
-        tokens = _field_tokens(f)
+        tokens = field_tokens(f)
         if not tokens:
             # Field reduced to nothing after stopword removal — no
             # content to check, treat as satisfied so we don't fail
