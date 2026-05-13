@@ -32,8 +32,6 @@ from j1.ingestion_review.exceptions import ReviewNotFound
 from j1.ingestion_review.projectors.chunks import ChunkProjector, _ChunkRecord
 from j1.processing.results import ARTIFACT_KIND_CHUNK
 from j1.projects.context import ProjectContext
-from j1.query.engine import HybridQueryEngine
-from j1.query.models import QueryMode, QueryRequest
 from j1.query.scope import ActiveScope, QueryScope, RunScope
 from j1.runs.models import IngestionRun
 from j1.runs.store import IngestionRunStore
@@ -259,7 +257,10 @@ class IngestionValidationService:
         *,
         run_store: IngestionRunStore,
         artifact_registry: ArtifactRegistry,
-        query_engine: HybridQueryEngine,
+        # ``query_engine`` parameter removed in 2026-05 cleanup;
+        # the legacy ``HybridQueryEngine`` was deleted along with
+        # the rest of the pre-orchestrator query stack. The
+        # SmartQueryOrchestrator now owns every query path.
         audit: AuditRecorder | None = None,
         workspace: WorkspaceResolver | None = None,
         validation_set_store: ValidationSetStore | None = None,
@@ -317,7 +318,6 @@ class IngestionValidationService:
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
-        self._query_engine = query_engine
         self._audit = audit
         self._workspace = workspace
         self._set_store = validation_set_store
@@ -1019,7 +1019,6 @@ class IngestionValidationService:
 
         runner = DefaultValidationRunner(
             smart_query_orchestrator=self._smart_query_orchestrator,
-            query_engine=self._query_engine,
             artifact_registry=self._artifacts,
             lifecycle_callback=lambda v: self._run_store_v.upsert(ctx, v),  # type: ignore[union-attr]
             judge=self._judge,

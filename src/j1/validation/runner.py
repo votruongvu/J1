@@ -30,8 +30,6 @@ from typing import Any
 
 from j1.artifacts.registry import ArtifactRegistry
 from j1.projects.context import ProjectContext
-from j1.query.engine import HybridQueryEngine
-from j1.query.models import QueryMode, QueryRequest
 from j1.query.scope import RunScope
 # Legacy ``run_checks`` / ``aggregate_status`` removed — every per-
 # case decision now flows through SmartQueryOrchestrator's
@@ -305,13 +303,6 @@ class DefaultValidationRunner:
         judge: LLMJudge | None = None,
         workspace: WorkspaceResolver | None = None,
         audit: "Any | None" = None,
-        # Deprecated; ignored. Kept temporarily so legacy callers
-        # don't break on import — production already passes
-        # ``smart_query_orchestrator``. Will be removed entirely
-        # after one release.
-        query_engine: "Any | None" = None,
-        answer_synthesizer: "Any | None" = None,
-        synthesize_answers: bool = True,
     ) -> None:
         if smart_query_orchestrator is None:
             raise ValueError(
@@ -341,15 +332,9 @@ class DefaultValidationRunner:
         # checks engine returns nothing for them, which leaves the
         # result accounting deterministic.
         self._judge = judge
-        # Optional LLM answer synthesizer. When wired AND
-        # `synthesize_answers=True`, the runner replaces the
-        # provider's raw composed answer (e.g. "Knowledge results
-        # for: <q>\n- title: preview…") with a grounded LLM answer
-        # before persisting the result. When None or opt-out, the
-        # runner returns the engine's raw answer — preserving the
-        # deterministic-replay path for CI / regression runs.
-        self._synthesizer = answer_synthesizer
-        self._synthesize_answers = synthesize_answers
+        # ``answer_synthesizer`` / ``synthesize_answers`` parameters
+        # removed when the orchestrator path took over — the
+        # synthesizer now lives inside SmartQueryOrchestrator.
 
     def run(
         self,

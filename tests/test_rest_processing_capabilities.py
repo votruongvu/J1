@@ -36,7 +36,6 @@ from j1.integration import (
     capabilities_from_bootstrap,
 )
 from j1.integration.dto import (
-    AnswerDTO,
     DocumentDTO,
     EventDTO,
     FeedbackResultDTO,

@@ -23,7 +23,6 @@ from temporalio.exceptions import ApplicationError
 
 from j1.adapters.rest.envelope import envelope, error_envelope, error_response
 from j1.adapters.rest.events import (
-    publish_answer_generated,
     publish_document_ingestion_started,
     publish_document_uploaded,
     publish_query_completed,
@@ -34,18 +33,8 @@ from j1.adapters.rest.security import (
     authenticate_request,
     require_scope as _require_scope,
 )
-from j1.adapters.rest.sse import SSE_CONTENT_TYPE, SSE_HEADERS, format_sse
-from j1.integration.streaming import (
-    AnswerStreamingService,
-    BufferingStreamHandler,
-    STREAM_EVENT_ANSWER_COMPLETED,
-    STREAM_EVENT_ANSWER_FAILED,
-    STREAM_EVENT_ANSWER_STARTED,
-    STREAM_EVENT_RETRIEVAL_STARTED,
-)
+from j1.adapters.rest.sse import SSE_CONTENT_TYPE, SSE_HEADERS
 from j1.adapters.rest.schemas import (
-    AnswerRecord,
-    AnswerRequest,
     ArtifactListRecord,
     ArtifactRecord,
     BulkImportFailureRow,
@@ -158,7 +147,6 @@ from j1.ingestion_review.audit_actions import (
     TARGET_KIND_INGESTION_RUN,
 )
 from j1.integration.dto import (
-    AnswerRequestDTO,
     EventDTO,
     FeedbackDTO,
     ProcessingCapabilities,
@@ -864,11 +852,6 @@ def create_rest_api(
         if facade.search is None:
             raise HTTPException(503, "search capability not configured")
         return facade.search
-
-    def require_answer():
-        if facade.answer is None:
-            raise HTTPException(503, "answer capability not configured")
-        return facade.answer
 
     def require_job_status():
         if facade.job_status is None:
@@ -4924,78 +4907,6 @@ def create_rest_api(
         record = RetrieveResultRecord(query=body.query, blocks=blocks)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
-    @app.post(
-        "/answer",
-        tags=["answer"],
-        summary="Generate an answer with citations",
-        description=(
-            "Returns a single JSON envelope by default. Pass "
-            "`?stream=true` for an SSE (`text/event-stream`) stream of "
-            "incremental events. Authentication, scope requirements, "
-            "validation, and tenant scoping are identical in both modes."
-        ),
-        dependencies=[Depends(scope_required(SCOPE_ANSWER))],
-    )
-    async def post_answer(
-        request: Request,
-        body: AnswerRequest,
-        stream: bool = Query(False, description="Stream SSE events instead of one JSON response"),
-        ctx: ProjectContext = Depends(get_ctx),
-        answer_port=Depends(require_answer),
-        security: SecurityContext = Depends(get_security),
-    ):
-        dto_request = AnswerRequestDTO(
-            question=body.question,
-            mode=body.mode,
-            max_results=body.max_results,
-            artifact_types=list(body.artifact_types),
-        )
-        if stream:
-            return _build_answer_stream_response(
-                request=request, body=body, ctx=ctx,
-                answer_port=answer_port, security=security,
-                dto_request=dto_request,
-            )
-
-        dto = answer_port.answer(ctx, dto_request)
-        publish_answer_generated(
-            event_bus, security=security, request_id=_req_id(request),
-            tenant_id=ctx.tenant_id, question=body.question,
-            mode_used=dto.mode_used, citation_count=len(dto.sources),
-            confidence=dto.confidence, review_required=dto.review_required,
-        )
-        record = AnswerRecord(
-            question=body.question,
-            answer=dto.answer,
-            mode_used=dto.mode_used,
-            citations=[
-                CitationRecord(
-                    artifact_id=c.artifact_id,
-                    artifact_type=c.artifact_type,
-                    source_document_id=c.source_document_id,
-                    source_location=c.source_location,
-                    chunk_id=c.chunk_id,
-                    run_id=c.run_id,
-                )
-                for c in dto.sources
-            ],
-            related_artifacts=list(dto.related_artifacts),
-            graph_paths=[
-                GraphPathRecord(
-                    nodes=list(p.nodes),
-                    edges=list(p.edges),
-                    description=p.description,
-                )
-                for p in dto.graph_paths
-            ],
-            confidence=dto.confidence,
-            confidence_level=dto.confidence_level,
-            review_required=dto.review_required,
-            warnings=list(dto.warnings),
-            warning_categories=list(dto.warning_categories),
-        )
-        return envelope(record.model_dump(by_alias=True), _req_id(request))
-
     # ---- Citations / sources ----------------------------------------
 
     @app.get(
@@ -5441,11 +5352,6 @@ def create_rest_api(
                 description="POST /search",
             ),
             CapabilityRecord(
-                name="answer",
-                available=facade.answer is not None,
-                description="POST /answer",
-            ),
-            CapabilityRecord(
                 name="job_status",
                 available=facade.job_status is not None,
                 description="GET /ingestion-jobs/{id}",
@@ -5510,71 +5416,6 @@ def create_rest_api(
 
 def _req_id(request: Request) -> str:
     return getattr(request.state, "request_id", uuid.uuid4().hex)
-
-
-def _build_answer_stream_response(
-    *,
-    request: Request,
-    body,
-    ctx: ProjectContext,
-    answer_port,
-    security: SecurityContext,
-    dto_request: AnswerRequestDTO,
-) -> StreamingResponse:
-    """Drive `AnswerStreamingService` and surface its events as SSE.
-
- Auth/scope/tenant resolution have already happened by the time we
- reach this function — they're enforced by FastAPI dependencies on
- the route. So no extra security checks here, but no bypass either:
- the same `Depends(scope_required(SCOPE_ANSWER))` covers both modes.
- """
-    request_id = _req_id(request)
-    streaming_service = AnswerStreamingService(answer_port)
-
-    async def event_iter():
-        # Drain into a buffering handler synchronously, then stream the
-        # collected SSE bytes. Today's `AnswerService.answer` is
-        # synchronous and not cancellable mid-flight; once a
-        # token-streaming `ModelProvider` is wired in, this loop becomes
-        # a true async generator emitting bytes as deltas arrive. The
-        # adapter contract (event types + payload shape) doesn't change.
-        buffer = BufferingStreamHandler()
-        try:
-            streaming_service.stream(
-                ctx, dto_request,
-                request_id=request_id,
-                handler=buffer,
-                security=security,
-            )
-        except Exception:
-            # AnswerStreamingService.stream already masks failures into
-            # an `answer.failed` event; this branch is defence in depth
-            # against an unexpected error in the service itself.
-            from j1.integration.streaming import (
-                AnswerStreamEvent,
-                SAFE_GENERATION_FAILED_PAYLOAD,
-            )
-            yield format_sse(AnswerStreamEvent(
-                request_id=request_id,
-                event=STREAM_EVENT_ANSWER_FAILED,
-                data=dict(SAFE_GENERATION_FAILED_PAYLOAD),
-            ))
-            return
-
-        for ev in buffer.events:
-            # Stop emitting if the client has disconnected — Starlette
-            # exposes this even though the underlying call has already
-            # completed (limitation: we can't cancel the synchronous
-            # answer call mid-flight).
-            if await request.is_disconnected():
-                return
-            yield format_sse(ev)
-
-    return StreamingResponse(
-        event_iter(),
-        media_type=SSE_CONTENT_TYPE,
-        headers=SSE_HEADERS,
-    )
 
 
 def _bulk_result_record(result) -> BulkImportResultRecord:

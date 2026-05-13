@@ -101,7 +101,6 @@ def _good_orchestrator() -> SmartQueryOrchestrator:
 @pytest.fixture
 def runner_with_orchestrator(workspace, artifact_registry):
     return DefaultValidationRunner(
-        query_engine=_AssertingEngine(),
         artifact_registry=artifact_registry,
         smart_query_orchestrator=_good_orchestrator(),
         workspace=workspace,
@@ -172,7 +171,6 @@ def test_runner_negative_case_passes_when_orchestrator_abstains(
         routes=routes, llm=_llm,
     )
     runner = DefaultValidationRunner(
-        query_engine=_AssertingEngine(),
         artifact_registry=artifact_registry,
         smart_query_orchestrator=orch,
         workspace=workspace,
@@ -210,7 +208,6 @@ def test_runner_evidence_insufficient_maps_to_failed(
         routes=sparse, llm=_llm,
     )
     runner = DefaultValidationRunner(
-        query_engine=_AssertingEngine(),
         artifact_registry=artifact_registry,
         smart_query_orchestrator=orch,
         workspace=workspace,

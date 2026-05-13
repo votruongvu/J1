@@ -14,8 +14,6 @@ from j1.errors.exceptions import (
     InvalidIdentifierError,
 )
 from j1.integration.dto import (
-    AnswerDTO,
-    AnswerRequestDTO,
     ArtifactDTO,
     CitationDTO,
     CostSummaryDTO,
@@ -24,7 +22,6 @@ from j1.integration.dto import (
     EventResultDTO,
     FeedbackDTO,
     FeedbackResultDTO,
-    GraphPathDTO,
     JobActionResultDTO,
     JobStatusDTO,
     ProjectCreateRequestDTO,
@@ -54,8 +51,6 @@ from j1.orchestration.workflows.project_processing import (
     SIGNAL_RESUME,
 )
 from j1.projects.context import ProjectContext
-from j1.query.engine import HybridQueryEngine
-from j1.query.models import QueryMode, QueryRequest
 from j1.review.models import ReviewItem
 from j1.review.queue import ReviewQueue
 from j1.search.indexer import SearchHit, SqliteSearchIndexer
@@ -238,59 +233,6 @@ class RetrievalService:
     ) -> list[ArtifactDTO]:
         records = self._artifacts.list_artifacts(ctx, kind=kind)
         return [_artifact_to_dto(r) for r in records]
-
-
-class AnswerService:
-    def __init__(self, query_engine: HybridQueryEngine) -> None:
-        self._engine = query_engine
-
-    def answer(
-        self,
-        ctx: ProjectContext,
-        request: AnswerRequestDTO,
-    ) -> AnswerDTO:
-        try:
-            mode = QueryMode(request.mode)
-        except ValueError as exc:
-            raise ValueError(f"unknown query mode: {request.mode!r}") from exc
-        response = self._engine.query(
-            ctx,
-            QueryRequest(
-                question=request.question,
-                mode=mode,
-                max_results=request.max_results,
-                artifact_types=list(request.artifact_types),
-            ),
-        )
-        return AnswerDTO(
-            answer=response.answer,
-            mode_used=response.mode_used,
-            sources=[
-                CitationDTO(
-                    artifact_id=s.artifact_id,
-                    artifact_type=s.artifact_type,
-                    source_document_id=s.source_document_id,
-                    source_location=s.source_location,
-                    chunk_id=s.chunk_id,
-                    run_id=s.run_id,
-                )
-                for s in response.sources
-            ],
-            related_artifacts=list(response.related_artifacts),
-            graph_paths=[
-                GraphPathDTO(
-                    nodes=list(p.nodes),
-                    edges=list(p.edges),
-                    description=p.description,
-                )
-                for p in response.graph_paths
-            ],
-            confidence=response.confidence,
-            confidence_level=response.confidence_level.value,
-            review_required=response.review_required,
-            warnings=list(response.warnings),
-            warning_categories=[c.value for c in response.warning_categories],
-        )
 
 
 class CitationLookupService:
@@ -665,7 +607,6 @@ class ApplicationFacade:
     event_publisher: EventPublisherService
     job_status: TemporalJobStatusService | None = None
     search: SearchService | None = None
-    answer: AnswerService | None = None
     project_admin: ProjectAdminService | None = None
     job_control: TemporalJobControlService | None = None
     cost_summary: CostSummaryService | None = None

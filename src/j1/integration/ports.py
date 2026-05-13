@@ -1,8 +1,6 @@
 from typing import BinaryIO, Protocol
 
 from j1.integration.dto import (
-    AnswerDTO,
-    AnswerRequestDTO,
     ArtifactDTO,
     CitationDTO,
     CostSummaryDTO,
@@ -73,16 +71,6 @@ class RetrievalPort(Protocol):
         *,
         kind: str | None = None,
     ) -> list[ArtifactDTO]: ...
-
-
-class AnswerPort(Protocol):
-    """Generate an answer for a project-scoped question."""
-
-    def answer(
-        self,
-        ctx: ProjectContext,
-        request: AnswerRequestDTO,
-    ) -> AnswerDTO: ...
 
 
 class CitationLookupPort(Protocol):

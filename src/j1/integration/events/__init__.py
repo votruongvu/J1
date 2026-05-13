@@ -1,6 +1,5 @@
 from j1.integration.events.bus import ApplicationEventBus, EventSubscriber
 from j1.integration.events.channels import (
-    CHANNEL_ANSWER,
     CHANNEL_AUDIT,
     CHANNEL_CITATION,
     CHANNEL_DOCUMENTS,
@@ -53,7 +52,6 @@ from j1.integration.events.delivery import (
 )
 from j1.integration.events.event import (
     DEFAULT_EVENT_SOURCE,
-    EVENT_ANSWER_GENERATED,
     EVENT_CITATION_VALIDATION_FAILED,
     EVENT_DOCUMENT_INDEXING_COMPLETED,
     EVENT_DOCUMENT_INDEXING_STARTED,
@@ -94,7 +92,6 @@ __all__ = [
     "ApplicationEvent",
     "ApplicationEventBus",
     "BusEventPublisher",
-    "CHANNEL_ANSWER",
     "CHANNEL_AUDIT",
     "CHANNEL_CITATION",
     "CHANNEL_DOCUMENTS",
@@ -122,7 +119,6 @@ __all__ = [
     "DELIVERY_STATUS_RETRYING",
     "DELIVERY_STATUS_SKIPPED",
     "DELIVERY_STATUS_SUCCEEDED",
-    "EVENT_ANSWER_GENERATED",
     "EVENT_CITATION_VALIDATION_FAILED",
     "EVENT_DOCUMENT_INDEXING_COMPLETED",
     "EVENT_DOCUMENT_INDEXING_STARTED",

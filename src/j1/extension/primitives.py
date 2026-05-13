@@ -31,12 +31,12 @@ from j1.processing.results import (  # noqa: F401
 )
 from j1.processing.status import ResultStatus  # noqa: F401
 from j1.projects.context import ProjectContext  # noqa: F401
-from j1.query.models import (  # noqa: F401
-    GraphPath,
-    QueryRequest,
-    QueryResponse,
-    SourceReference,
-)
+
+# Legacy ``j1.query.models`` (QueryRequest / QueryResponse /
+# GraphPath / SourceReference) was removed when the
+# SmartQueryOrchestrator rolled out. Extension connectors that
+# previously imported those types should migrate to the
+# orchestrator's ``OrchestratorRequest`` / ``QueryTrace`` shapes.
 
 
 # ---- Source-side primitives -----------------------------------------

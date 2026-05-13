@@ -18,7 +18,6 @@ from j1.cost.aggregator import CostAggregator
 from j1.cost.breakdown import CostBreakdown
 from j1.documents.models import DocumentRecord
 from j1.integration import (
-    AnswerService,
     ApplicationFacade,
     CitationLookupService,
     CostSummaryService,
@@ -35,15 +34,6 @@ from j1.integration import (
 )
 from j1.jobs.status import ProcessingStatus, ReviewStatus
 from j1.profiles import DEFAULT_PROFILE_ID, ProfileLoader
-from j1.query.classifier import QueryIntentClassifier
-from j1.query.engine import HybridQueryEngine
-from j1.query.providers import (
-    ConsistencyProvider,
-    EvidenceProvider,
-    GraphQueryProvider,
-    KnowledgeQueryProvider,
-    ReportGenerator,
-)
 from j1.review.models import ReviewItem
 from j1.search.indexer import SqliteSearchIndexer
 from j1.workspace.layout import WorkspaceArea
@@ -59,21 +49,6 @@ def _now() -> datetime:
 @pytest.fixture
 def search_indexer(workspace, artifact_registry, registry):
     return SqliteSearchIndexer(workspace, artifact_registry, registry)
-
-
-@pytest.fixture
-def query_engine(workspace, artifact_registry, registry, search_indexer):
-    profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
-    return HybridQueryEngine(
-        classifier=QueryIntentClassifier(),
-        knowledge_provider=KnowledgeQueryProvider(search_indexer),
-        graph_provider=GraphQueryProvider(artifact_registry, workspace),
-        evidence_provider=EvidenceProvider(search_indexer, registry),
-        consistency_provider=ConsistencyProvider(artifact_registry, workspace),
-        report_generator=ReportGenerator(search_indexer, profile),
-    )
-
-
 @pytest.fixture
 def feedback_store(workspace) -> JsonlFeedbackStore:
     return JsonlFeedbackStore(workspace)
@@ -114,7 +89,6 @@ def application_facade(
     artifact_registry,
     registry,
     search_indexer,
-    query_engine,
     feedback_store,
     audit_recorder,
     workspace,
@@ -131,7 +105,6 @@ def application_facade(
         feedback=FeedbackService(feedback_store, audit_recorder),
         event_publisher=EventPublisherService(audit_recorder),
         search=SearchService(search_indexer),
-        answer=AnswerService(query_engine),
         project_admin=ProjectAdminService(workspace),
         job_control=TemporalJobControlService(
             client_provider=lambda: mock_temporal,
@@ -518,37 +491,12 @@ def test_retrieve_is_distinct_from_search_response_shape(
     assert "blocks" in r["data"] and "hits" not in r["data"]
 
 
-def test_post_answer_returns_full_answer_record(
-    client, ctx, artifact_registry, search_indexer, workspace
-):
-    _stage_artifact(
-        workspace, ctx, artifact_registry,
-        artifact_id="a-1", content=b"the schedule is firm",
-    )
-    search_indexer.index(ctx, ["a-1"])
-    response = client.post(
-        "/answer",
-        json={"question": "schedule"},
-        headers=_headers(),
-    )
-    assert response.status_code == 200
-    data = _assert_success_envelope(response.json())
-    assert data["question"] == "schedule"
-    assert "answer" in data and "modeUsed" in data
-    assert "citations" in data and "warnings" in data
-    assert "warningCategories" in data
-    assert "confidenceLevel" in data
-
-
-def test_answer_invalid_mode_returns_app_error(client):
-    response = client.post(
-        "/answer",
-        json={"question": "x", "mode": "bogus"},
-        headers=_headers(),
-    )
-    # AnswerService.answer raises ValueError → handled by HTTPException via
-    # the exception handler chain. Either 400 (translated) or 500.
-    assert response.status_code in (400, 500)
+# NOTE: tests for POST /answer were removed when the legacy
+# HybridQueryEngine + AnswerService stack was deleted. Query
+# answers now flow through SmartQueryOrchestrator and the new
+# /test-query + /dev/query-trace surfaces; see
+# ``test_query_orchestrator.py`` and
+# ``test_rest_dev_query_trace.py`` for the replacement coverage.
 
 
 # ---- Citations / sources -------------------------------------------
@@ -717,7 +665,6 @@ def test_get_capabilities(client):
         "documents.upload",
         "documents.ingest",
         "search",
-        "answer",
         "job_status",
         "job_events",
         "feedback",
@@ -729,10 +676,12 @@ def test_get_capabilities(client):
         "reviews",
     }
     assert expected.issubset(names)
+    # /answer was deleted with the legacy AnswerService — the
+    # "answer" capability is no longer advertised.
+    assert "answer" not in names
     by_name = {c["name"]: c for c in data["capabilities"]}
     assert by_name["documents.ingest"]["available"] is True
     assert by_name["search"]["available"] is True
-    assert by_name["answer"]["available"] is True
     assert by_name["job_status"]["available"] is False  # no Temporal in tests
     assert by_name["job_events"]["available"] is True   # workspace wired
     assert by_name["projects.create"]["available"] is True
@@ -765,7 +714,6 @@ def test_openapi_spec_lists_all_endpoints(client):
         "/artifacts/{artifact_id}",
         "/search",
         "/retrieve",
-        "/answer",
         "/citations/{citation_id}",
         "/sources/{source_id}",
         "/cost",
@@ -1098,23 +1046,6 @@ def test_apply_review_decision_missing_review_returns_404(client):
 
 
 # ---- Answer / graph_paths ------------------------------------------
-
-
-def test_answer_response_includes_graph_paths_field(
-    client, ctx, artifact_registry, search_indexer, workspace
-):
-    _stage_artifact(
-        workspace, ctx, artifact_registry,
-        artifact_id="a-1", content=b"the schedule is firm",
-    )
-    search_indexer.index(ctx, ["a-1"])
-    response = client.post(
-        "/answer", json={"question": "schedule"}, headers=_headers()
-    )
-    data = _assert_success_envelope(response.json())
-    # Field must always be present (even if empty) so consumers can rely on it.
-    assert "graphPaths" in data
-    assert isinstance(data["graphPaths"], list)
 
 
 # ---- OpenAPI / Swagger UI surface ---------------------------------

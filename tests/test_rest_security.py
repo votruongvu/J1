@@ -27,7 +27,6 @@ from j1.adapters.rest import (
 )
 from j1.documents.models import DocumentRecord
 from j1.integration import (
-    AnswerService,
     ApiKeyAuthenticator,
     ApiKeyRecord,
     ApplicationFacade,
@@ -49,15 +48,6 @@ from j1.integration import (
 )
 from j1.jobs.status import ProcessingStatus
 from j1.profiles import DEFAULT_PROFILE_ID, ProfileLoader
-from j1.query.classifier import QueryIntentClassifier
-from j1.query.engine import HybridQueryEngine
-from j1.query.providers import (
-    ConsistencyProvider,
-    EvidenceProvider,
-    GraphQueryProvider,
-    KnowledgeQueryProvider,
-    ReportGenerator,
-)
 from j1.search.indexer import SqliteSearchIndexer
 
 
@@ -71,21 +61,6 @@ def _now() -> datetime:
 @pytest.fixture
 def search_indexer(workspace, artifact_registry, registry):
     return SqliteSearchIndexer(workspace, artifact_registry, registry)
-
-
-@pytest.fixture
-def query_engine(workspace, artifact_registry, registry, search_indexer):
-    profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
-    return HybridQueryEngine(
-        classifier=QueryIntentClassifier(),
-        knowledge_provider=KnowledgeQueryProvider(search_indexer),
-        graph_provider=GraphQueryProvider(artifact_registry, workspace),
-        evidence_provider=EvidenceProvider(search_indexer, registry),
-        consistency_provider=ConsistencyProvider(artifact_registry, workspace),
-        report_generator=ReportGenerator(search_indexer, profile),
-    )
-
-
 @pytest.fixture
 def feedback_store(workspace) -> JsonlFeedbackStore:
     return JsonlFeedbackStore(workspace)
@@ -94,7 +69,7 @@ def feedback_store(workspace) -> JsonlFeedbackStore:
 @pytest.fixture
 def application_facade(
     intake_service, artifact_registry, registry, search_indexer,
-    query_engine, feedback_store, audit_recorder,
+    feedback_store, audit_recorder,
 ) -> ApplicationFacade:
     return ApplicationFacade(
         ingestion=DocumentIngestionService(intake_service),
@@ -104,7 +79,6 @@ def application_facade(
         feedback=FeedbackService(feedback_store, audit_recorder),
         event_publisher=EventPublisherService(audit_recorder),
         search=SearchService(search_indexer),
-        answer=AnswerService(query_engine),
     )
 
 
@@ -291,14 +265,9 @@ def test_search_endpoint_requires_kb_search(secure_client):
     assert err["details"]["required_scope"] == SCOPE_SEARCH
 
 
-def test_answer_endpoint_requires_kb_answer(secure_client):
-    response = secure_client.post(
-        "/answer", json={"question": "x"},
-        headers=_headers(token="tok-readonly"),  # no kb:answer
-    )
-    assert response.status_code == 403
-    err = _assert_error_envelope(response.json())
-    assert err["details"]["required_scope"] == SCOPE_ANSWER
+# /answer endpoint removed with the legacy AnswerService; scope
+# coverage for query surfaces now lives in the orchestrator-path
+# tests.
 
 
 def test_feedback_requires_kb_feedback(secure_client):

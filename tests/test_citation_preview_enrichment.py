@@ -147,7 +147,6 @@ def test_runner_enriches_citation_preview_with_chunk_body(
 
     runner = DefaultValidationRunner(
         smart_query_orchestrator=_minimal_orch(),
-        query_engine=MagicMock(),
         artifact_registry=registry,
         workspace=workspace,
     )
@@ -185,7 +184,6 @@ def test_runner_preserves_existing_preview_if_set(ctx, tmp_path: Path):
 
     runner = DefaultValidationRunner(
         smart_query_orchestrator=_minimal_orch(),
-        query_engine=MagicMock(),
         artifact_registry=_StubRegistry([]),
         workspace=workspace,
     )
@@ -219,7 +217,6 @@ def test_runner_noops_when_workspace_not_wired(ctx):
 
     runner = DefaultValidationRunner(
         smart_query_orchestrator=_minimal_orch(),
-        query_engine=MagicMock(),
         artifact_registry=_StubRegistry([]),
         # NO workspace
     )

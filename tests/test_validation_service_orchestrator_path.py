@@ -107,7 +107,6 @@ def _make_service(
     return IngestionValidationService(
         run_store=run_store,
         artifact_registry=artifacts,
-        query_engine=_NoopEngine(),
         audit=audit,
         workspace=workspace,
         smart_query_orchestrator=orchestrator,
@@ -243,7 +242,6 @@ def test_manual_query_without_orchestrator_raises(
     service = IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=JsonArtifactRegistry(workspace),
-        query_engine=None,
         audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
         workspace=workspace,
     )

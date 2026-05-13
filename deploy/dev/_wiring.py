@@ -15,24 +15,19 @@ from j1.intake.service import (
 )
 from j1 import (
     AccountingActivities,
-    AnswerService,
     ApiKeyAuthenticator,
     ApplicationFacade,
     BulkExportService,
     BulkImportService,
     CitationLookupService,
-    ConsistencyProvider,
     CostAggregator,
     CostSummaryService,
     DefaultAuditRecorder,
     DefaultCostRecorder,
     DocumentIngestionService,
     DocumentIntakeService,
-    EvidenceProvider,
     EventPublisherService,
     FeedbackService,
-    GraphQueryProvider,
-    HybridQueryEngine,
     JsonArtifactRegistry,
     JsonReviewQueue,
     JsonSourceRegistry,
@@ -40,7 +35,6 @@ from j1 import (
     JsonlCostSink,
     JsonlFeedbackStore,
     KnowledgeProcessingActivities,
-    KnowledgeQueryProvider,
     ProcessingActivities,
     ProcessingService,
     ProfileLoader,
@@ -49,8 +43,6 @@ from j1 import (
     ProjectLifecycleActivities,
     ProjectProcessingWorkflow,
     DocumentProcessingWorkflow,
-    QueryIntentClassifier,
-    ReportGenerator,
     RetrievalService,
     ReviewActivities,
     ReviewService,
@@ -154,23 +146,6 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     )
     indexer = SqliteSearchIndexer(workspace, artifacts, sources)
 
-    profile = None
-    try:
-        profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
-    except Exception:
-        profile = None
-
-    query_engine = None
-    if profile is not None:
-        query_engine = HybridQueryEngine(
-            classifier=QueryIntentClassifier(),
-            knowledge_provider=KnowledgeQueryProvider(indexer, sources),
-            graph_provider=GraphQueryProvider(artifacts, workspace, sources),
-            evidence_provider=EvidenceProvider(indexer, sources),
-            consistency_provider=ConsistencyProvider(artifacts, workspace, sources),
-            report_generator=ReportGenerator(indexer, profile, sources),
-        )
-
     review_activities = ReviewActivities(review_queue=reviews, audit=audit_recorder)
 
     return ApplicationFacade(
@@ -181,7 +156,6 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
         feedback=FeedbackService(feedback_store, audit_recorder),
         event_publisher=EventPublisherService(audit_recorder),
         search=SearchService(indexer),
-        answer=AnswerService(query_engine) if query_engine else None,
         project_admin=ProjectAdminService(workspace),
         cost_summary=CostSummaryService(CostAggregator(workspace)),
         review=ReviewService(reviews, review_activities),
@@ -464,15 +438,6 @@ def build_validation_service(workspace: WorkspaceResolver):
     from j1.audit.sink import JsonlAuditSink
     from j1.compose import bootstrap_from_env
     from j1.profiles.loader import ProfileLoader
-    from j1.query.classifier import QueryIntentClassifier
-    from j1.query.engine import HybridQueryEngine
-    from j1.query.providers import (
-        ConsistencyProvider,
-        EvidenceProvider,
-        GraphQueryProvider,
-        KnowledgeQueryProvider,
-        ReportGenerator,
-    )
     from j1.validation import (
         DefaultAnswerSynthesizer,
         DefaultLLMJudge,
@@ -490,15 +455,6 @@ def build_validation_service(workspace: WorkspaceResolver):
     sources = JsonSourceRegistry(workspace)
     artifacts = JsonArtifactRegistry(workspace)
     indexer = SqliteSearchIndexer(workspace, artifacts, sources)
-
-    query_engine = HybridQueryEngine(
-        classifier=QueryIntentClassifier(),
-        knowledge_provider=KnowledgeQueryProvider(indexer, sources),
-        graph_provider=GraphQueryProvider(artifacts, workspace, sources),
-        evidence_provider=EvidenceProvider(indexer, sources),
-        consistency_provider=ConsistencyProvider(artifacts, workspace, sources),
-        report_generator=ReportGenerator(indexer, profile, sources),
-    )
 
     # Best-effort LLM client for the test-case generator. Prefer
     # FAST role (cheap structured output) and fall back to text;
@@ -624,7 +580,6 @@ def build_validation_service(workspace: WorkspaceResolver):
     return IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=artifacts,
-        query_engine=query_engine,
         # Audit recorder writes one `j1.validation.manual_query.completed`
         # event per call — same JSONL stream the `/events` endpoint
         # tails, so manual queries show up in the live timeline.

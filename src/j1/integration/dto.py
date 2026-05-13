@@ -95,34 +95,6 @@ class CitationDTO:
     run_id: str | None = None
 
 
-@dataclass(frozen=True)
-class AnswerRequestDTO:
-    question: str
-    mode: str = "auto"
-    max_results: int = 10
-    artifact_types: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class GraphPathDTO:
-    nodes: list[str] = field(default_factory=list)
-    edges: list[str] = field(default_factory=list)
-    description: str | None = None
-
-
-@dataclass(frozen=True)
-class AnswerDTO:
-    answer: str
-    mode_used: str
-    sources: list[CitationDTO] = field(default_factory=list)
-    related_artifacts: list[str] = field(default_factory=list)
-    graph_paths: list[GraphPathDTO] = field(default_factory=list)
-    confidence: float = 0.0
-    confidence_level: str = "ambiguous"
-    review_required: bool = False
-    warnings: list[str] = field(default_factory=list)
-    warning_categories: list[str] = field(default_factory=list)
-
 
 # ---- Feedback / event DTOs -----------------------------------------------
 

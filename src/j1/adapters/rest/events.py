@@ -26,7 +26,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from j1.integration.events import (
-    EVENT_ANSWER_GENERATED,
     EVENT_DOCUMENT_INGESTION_STARTED,
     EVENT_DOCUMENT_UPLOADED,
     EVENT_QUERY_COMPLETED,
@@ -164,30 +163,3 @@ def publish_query_completed(
     )
 
 
-def publish_answer_generated(
-    bus: ApplicationEventBus | None,
-    *,
-    security: SecurityContext,
-    request_id: str | None,
-    tenant_id: str,
-    question: str,
-    mode_used: str,
-    citation_count: int,
-    confidence: float,
-    review_required: bool,
-) -> None:
-    publish_event(
-        bus,
-        event_type=EVENT_ANSWER_GENERATED,
-        security=security,
-        request_id=request_id,
-        tenant_id=tenant_id,
-        subject=None,
-        data={
-            "question": question,
-            "modeUsed": mode_used,
-            "citationCount": citation_count,
-            "confidence": confidence,
-            "reviewRequired": review_required,
-        },
-    )

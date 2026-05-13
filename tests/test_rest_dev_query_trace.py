@@ -36,7 +36,6 @@ def application_facade() -> ApplicationFacade:
         feedback=None,
         event_publisher=None,
         search=None,
-        answer=None,
     )
 
 
