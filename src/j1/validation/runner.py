@@ -57,6 +57,142 @@ from j1.workspace.resolver import WorkspaceResolver
 _log = logging.getLogger("j1.validation.runner")
 
 
+# ---- Unmistakable live-path markers -------------------------------
+#
+# Two structured logs that fire at the exact entry and exit points
+# of the live retrieval-quality pipeline. Operators chasing
+# "did the new code path run for this query?" search the audit log
+# for these stable event names — separate from the planner's per-
+# stage ``j1.retrieval.*`` events so they're easy to grep even when
+# the broader retrieval stream is voluminous.
+EVENT_LIVE_PATH_ENTERED = "j1.retrieval.live_path.entered"
+EVENT_LIVE_PATH_EVIDENCE_SENT = "j1.retrieval.live_path.evidence_sent"
+
+
+def _emit_live_path_entered(
+    *,
+    audit,
+    ctx,
+    endpoint: str,
+    handler: str,
+    run_id: str | None,
+    document_id: str | None,
+    query: str,
+    retrieval_mode: str,
+) -> None:
+    """Always-safe live-path entry log. Best-effort: any failure is
+    logged at WARNING and ignored."""
+    if audit is None:
+        # Still emit a Python log line so a developer tailing the
+        # service log can see the path was hit even without audit
+        # wiring.
+        _log.info(
+            "%s endpoint=%s handler=%s run_id=%s document_id=%s "
+            "retrieval_mode=%s query_chars=%d",
+            EVENT_LIVE_PATH_ENTERED, endpoint, handler,
+            run_id, document_id, retrieval_mode,
+            len(query or ""),
+        )
+        return
+    try:
+        audit.record(
+            ctx,
+            actor="system",
+            action=EVENT_LIVE_PATH_ENTERED,
+            target_kind="retrieval_query",
+            target_id=run_id or "no-run",
+            payload={
+                "endpoint": endpoint,
+                "handler": handler,
+                "run_id": run_id,
+                "document_id": document_id,
+                "retrieval_mode": retrieval_mode,
+                "query_chars": len(query or ""),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning(
+            "live_path.entered audit emit failed", exc_info=True,
+        )
+
+
+def _emit_live_path_evidence_sent(
+    *,
+    audit,
+    ctx,
+    endpoint: str,
+    handler: str,
+    run_id: str | None,
+    document_id: str | None,
+    evidence,
+    snapshot,
+) -> None:
+    """Always-safe pre-LLM marker. Carries:
+      * evidence ids + artifact_types + section_paths
+      * intent (from snapshot)
+      * planner_used flag (True iff a structured intent fired)
+      * fallback_triggered (from snapshot)
+    """
+    finalized = getattr(snapshot, "finalized_summary", {}) or {}
+    intent = getattr(snapshot, "intent", None)
+    structured_intents = frozenset({
+        "responsibility_mapping", "dependency_mapping",
+        "stage_progression", "deliverable_mapping",
+        "issue_risk_mapping", "decision_trace",
+        "list_extraction",
+    })
+    planner_used = intent in structured_intents
+    payload = {
+        "endpoint": endpoint,
+        "handler": handler,
+        "run_id": run_id,
+        "document_id": document_id,
+        "intent": intent,
+        "planner_used": planner_used,
+        "fallback_triggered": finalized.get("fallback_triggered"),
+        "fallback_succeeded": finalized.get("fallback_succeeded"),
+        "evidence": [
+            {
+                "artifact_id": b.artifact_id,
+                "artifact_type": b.artifact_type,
+                "section_path": (
+                    getattr(b, "section", None)
+                    or getattr(b, "source_location", None)
+                ),
+            }
+            for b in (evidence or [])
+        ],
+        "evidence_count": len(evidence or []),
+        "check_failures": finalized.get("check_failures") or [],
+        "check_failures_before_fallback": (
+            finalized.get("check_failures_before_fallback") or []
+        ),
+    }
+    if audit is None:
+        _log.info(
+            "%s endpoint=%s handler=%s run_id=%s intent=%s "
+            "planner_used=%s fallback_triggered=%s evidence_count=%d",
+            EVENT_LIVE_PATH_EVIDENCE_SENT, endpoint, handler,
+            run_id, intent, planner_used,
+            finalized.get("fallback_triggered"),
+            len(evidence or []),
+        )
+        return
+    try:
+        audit.record(
+            ctx,
+            actor="system",
+            action=EVENT_LIVE_PATH_EVIDENCE_SENT,
+            target_kind="retrieval_query",
+            target_id=run_id or "no-run",
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning(
+            "live_path.evidence_sent audit emit failed", exc_info=True,
+        )
+
+
 #  check augmentations layered on top of 's six.
 # They run as `required` checks when the case carries the
 # corresponding expected_* field; absent expected lists make the
@@ -126,6 +262,7 @@ class DefaultValidationRunner:
         answer_synthesizer: AnswerSynthesizer | None = None,
         synthesize_answers: bool = True,
         workspace: WorkspaceResolver | None = None,
+        audit: "Any | None" = None,
     ) -> None:
         self._query_engine = query_engine
         self._artifacts = artifact_registry
@@ -135,6 +272,13 @@ class DefaultValidationRunner:
         # broken behaviour as before, but at least non-crashing.
         # Production wiring MUST pass it.
         self._workspace = workspace
+        # Audit recorder for the retrieval-quality diagnostic event
+        # stream. When None, the runner still uses the planner-
+        # driven path but stops short of emitting
+        # ``j1.retrieval.*`` events. Production wiring SHOULD pass
+        # this so the validation tab's audit timeline carries the
+        # new events.
+        self._audit = audit
         self._on_lifecycle = lifecycle_callback or (lambda _vrun: None)
         # Optional LLM judge for semantic checks. When None
         # the runner skips the optional checks entirely — the
@@ -157,6 +301,7 @@ class DefaultValidationRunner:
         vset: ValidationSetDTO,
         *,
         actor: str = "system",
+        active_document_id: str | None = None,
     ) -> ValidationRunDTO:
         """Execute every case in the set and return the terminal
  snapshot. Callers persist as they see fit — the lifecycle
@@ -202,7 +347,9 @@ class DefaultValidationRunner:
         try:
             results = [
                 self._execute_case(
-                    ctx, vset.run_id, case, available_kinds=available_kinds,
+                    ctx, vset.run_id, case,
+                    available_kinds=available_kinds,
+                    active_document_id=active_document_id,
                 )
                 for case in self._ordered_cases(vset.test_cases)
             ]
@@ -246,6 +393,7 @@ class DefaultValidationRunner:
         case: ValidationTestCaseDTO,
         *,
         available_kinds: frozenset[str] = frozenset(),
+        active_document_id: str | None = None,
     ) -> ValidationResultDTO:
         """Drive one test case end-to-end. Always returns a result —
  an engine exception becomes a `failed` result with the
@@ -258,6 +406,21 @@ class DefaultValidationRunner:
  validation set onto a text-only run isn't punished for
  modalities the run doesn't have.
  """
+        # Unmistakable live-path entry marker. Operators looking
+        # for "did the new retrieval pipeline run for this query?"
+        # search the audit log for this event. Fires before any
+        # short-circuit (skip / engine error) so a missing event
+        # means the case never reached this handler at all.
+        _emit_live_path_entered(
+            audit=self._audit, ctx=ctx,
+            endpoint="validation.set.run",
+            handler="DefaultValidationRunner._execute_case",
+            run_id=run_id,
+            document_id=active_document_id,
+            query=case.question,
+            retrieval_mode="planner_first" if active_document_id else "legacy",
+        )
+
         # Skip-applicability gate ( defense-in-depth — the
         # generator already gates upstream).
         skip_reason = _modality_skip_reason(case, available_kinds)
@@ -335,6 +498,8 @@ class DefaultValidationRunner:
             ctx=ctx,
             case=case,
             retrieved=retrieved,
+            run_id=run_id,
+            active_document_id=active_document_id,
         )
         final_answer = synthesized_answer or response.answer
 
@@ -400,6 +565,8 @@ class DefaultValidationRunner:
         ctx: ProjectContext,
         case: ValidationTestCaseDTO,
         retrieved: list[RetrievedChunkRefDTO],
+        run_id: str | None = None,
+        active_document_id: str | None = None,
     ) -> tuple[str | None, LLMTraceDTO | None]:
         """Run the LLM synthesizer for this case when wired + enabled.
 
@@ -454,11 +621,41 @@ class DefaultValidationRunner:
                     ctx, area,
                 ).joinpath(*rest)
 
+            # Build the retrieval-quality diagnostic collector for
+            # THIS case. Carries the active scope (doc+run) so
+            # ``build_evidence_blocks`` enables the planner-first
+            # path, boilerplate demotion, source grounding, and
+            # quality_check / fallback pipeline. ``audit`` may be
+            # None — events still record in-memory, just no audit
+            # emit. ``query`` from the case so the intent router
+            # can classify.
+            from j1.retrieval.diagnostics import RetrievalDiagnostics
+            diag = RetrievalDiagnostics(
+                audit=self._audit, ctx=ctx,
+                run_id=run_id, document_id=active_document_id,
+                query=case.question,
+            )
             evidence = build_evidence_blocks(
                 ctx=ctx,
                 retrieved=retrieved,
                 artifact_registry=self._artifacts,
                 path_resolver=_resolver,
+                query=case.question,
+                active_document_id=active_document_id,
+                active_run_id=run_id,
+                diagnostics=diag,
+            )
+            # Unmistakable pre-LLM marker so an operator inspecting
+            # the audit log knows EXACTLY what evidence reached
+            # the synthesizer for this case.
+            _emit_live_path_evidence_sent(
+                audit=self._audit, ctx=ctx,
+                endpoint="validation.set.run",
+                handler="DefaultValidationRunner._maybe_synthesize_for_case",
+                run_id=run_id,
+                document_id=active_document_id,
+                evidence=evidence,
+                snapshot=diag.snapshot(),
             )
         else:
             _log.warning(

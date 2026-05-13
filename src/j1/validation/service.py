@@ -656,6 +656,21 @@ class IngestionValidationService:
         # ``retrieval_trace`` so the FE can render the per-
         # candidate decisions.
         from j1.retrieval.diagnostics import RetrievalDiagnostics
+        from j1.validation.runner import (
+            _emit_live_path_entered, _emit_live_path_evidence_sent,
+        )
+        # Unmistakable live-path entry marker — manual-query side.
+        _emit_live_path_entered(
+            audit=self._audit, ctx=ctx,
+            endpoint="POST /ingestion-runs/{run_id}/test-query",
+            handler="IngestionValidationService.run_manual_test_query",
+            run_id=run.run_id,
+            document_id=run.document_id,
+            query=request.question,
+            retrieval_mode=(
+                "planner_first" if run.document_id else "legacy"
+            ),
+        )
         retrieval_diag = RetrievalDiagnostics(
             audit=self._audit,
             ctx=ctx,
@@ -671,6 +686,15 @@ class IngestionValidationService:
             active_document_id=run.document_id,
             active_run_id=run.run_id,
             diagnostics=retrieval_diag,
+        )
+        _emit_live_path_evidence_sent(
+            audit=self._audit, ctx=ctx,
+            endpoint="POST /ingestion-runs/{run_id}/test-query",
+            handler="IngestionValidationService.run_manual_test_query",
+            run_id=run.run_id,
+            document_id=run.document_id,
+            evidence=evidence_blocks,
+            snapshot=retrieval_diag.snapshot(),
         )
         # Synthesis is suppressed by the dispatcher when BM25
         # evidence may exist (for inspection) but must NOT be
@@ -2297,8 +2321,29 @@ class IngestionValidationService:
             # LLM correctly says "Not in the retrieved evidence."
             # since titles don't answer questions.
             workspace=self._workspace,
+            # Audit recorder for the retrieval-quality diagnostic
+            # event stream (``j1.retrieval.*``). Wired here so each
+            # set-execution case lights up the planner / scope /
+            # boilerplate / fallback audit trail.
+            audit=self._audit,
         )
-        vrun = runner.run(ctx, vset, actor=actor)
+        # Look up the document_id from the run record so the
+        # runner can enforce active-document scope on every case's
+        # evidence build. ``run_store`` is wired in production;
+        # absent in some tests — the runner gracefully falls back
+        # to the legacy unscoped path when document_id is None.
+        active_document_id: str | None = None
+        try:
+            run_record = self._run_store.get(ctx, run_id)
+            active_document_id = getattr(
+                run_record, "document_id", None,
+            )
+        except Exception:  # noqa: BLE001 — defensive
+            active_document_id = None
+        vrun = runner.run(
+            ctx, vset, actor=actor,
+            active_document_id=active_document_id,
+        )
         self._audit_run_completed(ctx, run_id, vrun, actor)
         return vrun
 
