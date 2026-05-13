@@ -282,6 +282,11 @@ def test_unknown_plan_still_returns_pack_with_ungrouped_blocks():
     ]
     pack = builder.build(plan, cands, scope_run_id=None)
     assert len(pack.blocks) == 1
-    # The block's group is None (ungrouped) — the sufficiency gate
-    # will decide if that's acceptable for the intent.
-    assert pack.blocks[0].group is None
+    # The default "answer" group has no anchors — it's a catch-all
+    # bucket, so the candidate is assigned to it rather than left
+    # ungrouped. This is the behaviour the synthesizer relies on
+    # when retrieval surfaces a single RAGAnything native answer
+    # that doesn't contain the literal string "answer".
+    assert pack.blocks[0].group == "answer"
+    assert "answer" in pack.groups_covered
+    assert pack.groups_missing == ()

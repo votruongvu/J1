@@ -321,8 +321,18 @@ class EvidencePackBuilder:
             body_l = _full_body(c).lower()
             matched_any = False
             for g in groups:
-                anchors = g.anchors or (g.name,)
-                if any(a.lower() in body_l for a in anchors if a):
+                # A group with no anchors is a catch-all bucket
+                # (e.g. the default "answer" group for intents that
+                # don't carve structural groups). Every non-boilerplate
+                # candidate is admissible — substring-matching the
+                # group's own name would falsely exclude e.g. a
+                # RAGAnything native answer that doesn't contain the
+                # literal word "answer".
+                if not g.anchors:
+                    grouped[g.name].append(c)
+                    matched_any = True
+                    continue
+                if any(a.lower() in body_l for a in g.anchors if a):
                     grouped[g.name].append(c)
                     matched_any = True
             if not matched_any:
