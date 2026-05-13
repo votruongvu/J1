@@ -181,6 +181,7 @@ class RunsActivities:
         source_registry: "SourceRegistry | None" = None,
         artifact_registry: "ArtifactRegistry | None" = None,
         cleanup_service: "DocumentCleanupService | None" = None,
+        diagnostic_recorder: "DiagnosticRecorder | None" = None,
     ) -> None:
         # `progress_reporter` writes the audit-log progress events
         # the FE's SSE timeline reads. `run_store` updates the
@@ -215,6 +216,12 @@ class RunsActivities:
         # workspace; Remove flow chains through it to wipe an
         # entire document.
         self._cleanup_service = cleanup_service
+        # Phase-1 ingestion diagnostics recorder. Persists the per-
+        # run timing + LLM + enrichment summary as a
+        # ``compiled.ingestion_diagnostic_report`` artifact at
+        # terminal time. Optional — None preserves legacy
+        # behaviour.
+        self._diagnostics = diagnostic_recorder
 
     def all_activities(self) -> list:
         return [
@@ -459,6 +466,26 @@ class RunsActivities:
         # successful run" true: the previous active_run_id stays
         # pointing at the prior good run.
         self._maybe_promote_to_active(ctx, run)
+
+        # Phase-1 ingestion diagnostics. Materialise the in-memory
+        # collector into a ``compiled.ingestion_diagnostic_report``
+        # artifact alongside the existing strategy / enrich-plan
+        # reports. Always emitted at every terminal — including
+        # failures — so operators can see WHERE the run spent its
+        # time even when it didn't finish cleanly. No-op when the
+        # recorder isn't wired.
+        if self._diagnostics is not None:
+            try:
+                self._diagnostics.write_report(
+                    ctx=ctx,
+                    run_id=run.run_id,
+                    document_id=run.document_id,
+                    filename=None,
+                )
+            except Exception:  # noqa: BLE001
+                # Recorder already logs internally; never let a
+                # diagnostic IO failure break the terminal path.
+                pass
 
     def _maybe_promote_to_active(self, ctx, run) -> None:
         """CAS-promote ``document.active_run_id`` to this run when

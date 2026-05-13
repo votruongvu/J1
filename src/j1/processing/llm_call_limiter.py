@@ -143,37 +143,78 @@ class LLMCallLimiter:
         self,
         fn: Callable[..., T],
         *args: Any,
+        purpose: str | None = None,
         **kwargs: Any,
     ) -> tuple[T, LimiterCallStats]:
         """Like `run` but also returns `LimiterCallStats` so the
  caller can populate `ModelUsageRecord.duration_ms` without
- timing the call separately."""
+ timing the call separately.
+
+ ``purpose`` (Phase-1 ingestion diagnostics, optional kwarg)
+ tags this call with a coarse label like ``"chunk_metadata"``,
+ ``"assessment_consult"``, ``"enrichment.images"``. When the
+ ambient :func:`j1.processing.diagnostics.current_run_context`
+ is set (the activity wrapper binds it on entry) the limiter
+ emits a structured ``j1.ingestion.llm_call.completed`` audit
+ event after each call. Default ``None`` (unlabelled) keeps
+ every existing call site working unchanged.
+ """
         attempts = 0
         last_exc: BaseException | None = None
         started_total = time.perf_counter()
-        for attempt in range(1 + self._retry_limit):
-            attempts = attempt + 1
-            try:
-                value = self._run_once(fn, args, kwargs)
-            except NonRetryableError as exc:
-                cause = exc.__cause__ if exc.__cause__ else exc
-                raise cause from None
-            except LLMCallTimeout:
-                raise
-            except Exception as exc:  # noqa: BLE001 — retry candidate
-                last_exc = exc
-                if attempt >= self._retry_limit:
+        last_error: str | None = None
+        try:
+            for attempt in range(1 + self._retry_limit):
+                attempts = attempt + 1
+                try:
+                    value = self._run_once(fn, args, kwargs)
+                except NonRetryableError as exc:
+                    cause = exc.__cause__ if exc.__cause__ else exc
+                    last_error = type(cause).__name__
+                    raise cause from None
+                except LLMCallTimeout as exc:
+                    last_error = type(exc).__name__
                     raise
-                # Exponential-ish backoff before the next attempt.
-                time.sleep(self._retry_backoff_seconds * (attempt + 1))
-                continue
+                except Exception as exc:  # noqa: BLE001 — retry candidate
+                    last_exc = exc
+                    last_error = type(exc).__name__
+                    if attempt >= self._retry_limit:
+                        raise
+                    # Exponential-ish backoff before the next attempt.
+                    time.sleep(self._retry_backoff_seconds * (attempt + 1))
+                    continue
+                duration_ms = int(
+                    (time.perf_counter() - started_total) * 1000
+                )
+                stats = LimiterCallStats(
+                    attempts=attempts, duration_ms=duration_ms,
+                    retried=attempts > 1,
+                )
+                _emit_diag_llm_call(
+                    fn=fn,
+                    purpose=purpose,
+                    stats=stats,
+                    error=None,
+                )
+                return value, stats
+        except BaseException:
+            # Failure paths: report the call (the exception is
+            # already being re-raised) so the diagnostic report
+            # counts retries + errored calls.
             duration_ms = int(
                 (time.perf_counter() - started_total) * 1000
             )
-            return value, LimiterCallStats(
-                attempts=attempts, duration_ms=duration_ms,
-                retried=attempts > 1,
+            _emit_diag_llm_call(
+                fn=fn,
+                purpose=purpose,
+                stats=LimiterCallStats(
+                    attempts=attempts or 1,
+                    duration_ms=duration_ms,
+                    retried=(attempts or 1) > 1,
+                ),
+                error=last_error or "Exception",
             )
+            raise
         # The retry loop exhausted; the final exception was already
         # raised in the loop. This line keeps mypy / pyright quiet
         # — execution doesn't reach it in practice.
@@ -265,3 +306,58 @@ def build_limiter_from_settings(settings) -> LLMCallLimiter:
         timeout_seconds=settings.timeout_seconds,
         retry_limit=settings.retry_limit,
     )
+
+
+def _emit_diag_llm_call(
+    *,
+    fn,
+    purpose: str | None,
+    stats: LimiterCallStats,
+    error: str | None,
+) -> None:
+    """Forward a limiter call to the ambient diagnostic recorder.
+
+    Reads the ``RunContext`` set by the activity wrapper from a
+    ``contextvars.ContextVar`` — so we can attribute deep-stack
+    LLM calls (chunk metadata, enrichment, refinement) to the
+    active run without threading the recorder through every call
+    site. Best-effort: any failure inside is swallowed (already
+    logged inside the recorder).
+
+    ``fn`` is the wrapped callable; we look for ``provider`` and
+    ``model`` attributes on its ``__self__`` (typical for bound
+    methods on LLM client instances) so the report can break
+    down by provider/model without the caller spelling them out.
+    """
+    try:
+        from j1.processing.diagnostics import current_run_context
+    except Exception:  # noqa: BLE001 — circular-import defensive
+        return
+    rc = current_run_context()
+    if rc is None:
+        return
+    provider = None
+    model = None
+    try:
+        bound = getattr(fn, "__self__", None)
+        if bound is not None:
+            provider = getattr(bound, "provider", None)
+            model = getattr(bound, "model", None)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rc.recorder.record_llm_call(
+            ctx=rc.ctx,
+            run_id=rc.run_id,
+            stage=rc.stage,
+            purpose=purpose or "unspecified",
+            provider=provider,
+            model=model,
+            duration_ms=stats.duration_ms,
+            attempts=stats.attempts,
+            retried=stats.retried,
+            error=error,
+            document_id=rc.document_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass

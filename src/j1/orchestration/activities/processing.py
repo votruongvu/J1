@@ -1,12 +1,14 @@
 import contextlib
 import contextvars
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from j1.processing.diagnostics import DiagnosticRecorder
     from j1.processing.enrich_assessment import (
         FastLLMConsultPrompt,
         FastLLMRefinement,
@@ -478,6 +480,7 @@ class ProcessingActivities:
         enrichment_text_client: object | None = None,
         enrichment_vision_client: object | None = None,
         enrichment_llm_call_limiter: object | None = None,
+        diagnostic_recorder: "DiagnosticRecorder | None" = None,
     ) -> None:
         self._processing = processing
         self._sources = sources
@@ -527,6 +530,12 @@ class ProcessingActivities:
         self._enrichment_text_client = enrichment_text_client
         self._enrichment_vision_client = enrichment_vision_client
         self._enrichment_llm_call_limiter = enrichment_llm_call_limiter
+        # Phase-1 ingestion diagnostics. Optional collaborator —
+        # when None the activities run unchanged. When wired, each
+        # stage entry/exit emits a structured ``j1.ingestion.stage.*``
+        # audit event and accumulates into the per-run report that
+        # lands at terminal time.
+        self._diagnostics = diagnostic_recorder
 
     def all_activities(self) -> list:
         # This MUST list every `@activity.defn`-decorated method on the
@@ -563,6 +572,26 @@ class ProcessingActivities:
     @activity.defn(name=ACTIVITY_COMPILE)
     def compile(self, input: CompileActivityInput) -> ArtifactActivityResult:
         ctx = input.scope.to_context()
+        # Phase-1 diagnostic stage wrap. No-op when recorder is
+        # None. The wrap binds the active RunContext so LLM calls
+        # invoked deep in the bridge stack get attributed to this
+        # run (via the limiter's contextvar lookup), and records
+        # stage start/end timing + counters built up by
+        # ``_compile_impl`` as it discovers them.
+        counters: dict[str, int] = {}
+        with self._diag_stage_wrap(
+            ctx, input.correlation_id, input.document_id,
+            stage_name="compile",
+            counters=counters,
+        ):
+            return self._compile_impl(input, ctx, counters)
+
+    def _compile_impl(
+        self,
+        input: CompileActivityInput,
+        ctx,
+        diag_counters: dict[str, int],
+    ) -> ArtifactActivityResult:
         compiler = self._lookup(self._compilers, input.processor_kind, "compiler")
         document = self._sources.get(ctx, input.document_id)
 
@@ -744,7 +773,72 @@ class ProcessingActivities:
                         error_message=(result.error or result.message or "")[:512] or None,
                     ),
                 )
-        return _artifact_result(result)
+        # Stamp counters the diagnostic stage wrapper will surface.
+        # ``compile_metrics`` keys mirror what existing tests assert
+        # against (chunk_count, extracted_text_chars, etc.) — we
+        # forward them as-is so the diagnostic report carries the
+        # same numbers the runtime already computed.
+        out = _artifact_result(result)
+        try:
+            # Pull diagnostic counters straight from the activity
+            # result. ``out.compile_metrics`` is the typed shape
+            # ``_artifact_result`` produces; ``result.metadata`` is
+            # the raw bridge payload — we check both because
+            # different code paths (mock compilers, the bridge,
+            # tests) populate one or the other.
+            metric_sources: list[dict[str, Any]] = []
+            cm = getattr(out, "compile_metrics", None)
+            if isinstance(cm, dict):
+                metric_sources.append(cm)
+            if isinstance(result.metadata, dict):
+                metric_sources.append(result.metadata)
+            for src in metric_sources:
+                for key, target in (
+                    ("chunks_count", "chunk_count"),
+                    ("chunk_count", "chunk_count"),
+                    ("extracted_text_chars", "extracted_text_chars"),
+                    ("page_count", "page_count"),
+                    ("image_count", "image_count"),
+                    ("table_count", "table_count"),
+                ):
+                    val = src.get(key)
+                    if isinstance(val, (int, float)) and target not in diag_counters:
+                        diag_counters[target] = int(val)
+            diag_counters["artifact_count"] = len(out.artifact_ids or [])
+            # Record the MinerU parse phase as its own stage event
+            # when the bridge surfaced its wall-clock — otherwise
+            # the operator can't tell whether time was spent in
+            # MinerU itself vs. before/after.
+            parse_elapsed_ms = None
+            for src in metric_sources:
+                v = src.get("parse_elapsed_ms")
+                if isinstance(v, (int, float)):
+                    parse_elapsed_ms = int(v)
+                    break
+            if (
+                parse_elapsed_ms is not None
+                and self._diagnostics is not None
+                and input.correlation_id is not None
+            ):
+                parse_counters: dict[str, int] = {}
+                for k in (
+                    "chunk_count", "extracted_text_chars",
+                    "page_count", "image_count", "table_count",
+                ):
+                    if k in diag_counters:
+                        parse_counters[k] = diag_counters[k]
+                self._diagnostics.record_stage_event(
+                    ctx=ctx,
+                    run_id=input.correlation_id,
+                    stage_name="parse",
+                    document_id=input.document_id,
+                    duration_ms=parse_elapsed_ms,
+                    success=True,
+                    counters=parse_counters,
+                )
+        except Exception:  # noqa: BLE001 — diagnostics must not break compile
+            pass
+        return out
 
     def _maybe_reuse_compile_artifacts(
         self,
@@ -928,104 +1022,119 @@ class ProcessingActivities:
     @activity.defn(name=ACTIVITY_ENRICH)
     def enrich(self, input: EnrichActivityInput) -> ArtifactActivityResult:
         ctx = input.scope.to_context()
-        processor = self._lookup(self._enrichers, input.processor_kind, "enricher")
-        artifact = self._artifacts.get(ctx, input.artifact_id)
-        self._report_step_start(
-            ctx, input, stage="ENRICH", step="enrich",
-            engine=input.processor_kind,
-        )
-        try:
-            with _heartbeating({
-                "stage": "enrich",
-                "artifact_id": input.artifact_id,
-                "processor_kind": input.processor_kind,
-            }):
-                result = self._processing.enrich(
-                    ctx,
-                    processor,
-                    artifact,
-                    actor=input.actor,
-                    correlation_id=input.correlation_id,
-                )
-        except Exception as exc:
-            self._report_step_failure(
-                ctx, input, stage="ENRICH", step="enrich", exc=exc,
+        with self._diag_stage_wrap(
+            ctx, input.correlation_id, None,
+            stage_name="enrich",
+            counters={},
+        ):
+            processor = self._lookup(self._enrichers, input.processor_kind, "enricher")
+            artifact = self._artifacts.get(ctx, input.artifact_id)
+            self._report_step_start(
+                ctx, input, stage="ENRICH", step="enrich",
+                engine=input.processor_kind,
             )
-            raise
-        self._report_step_outcome(
-            ctx, input, stage="ENRICH", step="enrich", result=result,
-        )
-        return _artifact_result(result)
+            try:
+                with _heartbeating({
+                    "stage": "enrich",
+                    "artifact_id": input.artifact_id,
+                    "processor_kind": input.processor_kind,
+                }):
+                    result = self._processing.enrich(
+                        ctx,
+                        processor,
+                        artifact,
+                        actor=input.actor,
+                        correlation_id=input.correlation_id,
+                    )
+            except Exception as exc:
+                self._report_step_failure(
+                    ctx, input, stage="ENRICH", step="enrich", exc=exc,
+                )
+                raise
+            self._report_step_outcome(
+                ctx, input, stage="ENRICH", step="enrich", result=result,
+            )
+            return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_BUILD_GRAPH)
     def build_graph(self, input: GraphActivityInput) -> ArtifactActivityResult:
         ctx = input.scope.to_context()
-        builder = self._lookup(
-            self._graph_builders, input.processor_kind, "graph_builder"
-        )
-        self._report_step_start(
-            ctx, input, stage="GRAPH", step="build_graph",
-            engine=input.processor_kind,
-        )
-        try:
-            with _heartbeating({
+        with self._diag_stage_wrap(
+            ctx, input.correlation_id, input.document_id,
+            stage_name="build_graph",
+            counters={"input_artifact_count": len(input.artifact_ids or [])},
+        ):
+            builder = self._lookup(
+                self._graph_builders, input.processor_kind, "graph_builder"
+            )
+            self._report_step_start(
+                ctx, input, stage="GRAPH", step="build_graph",
+                engine=input.processor_kind,
+            )
+            try:
+                with _heartbeating({
+                    "stage": "build_graph",
+                    "artifact_count": len(input.artifact_ids),
+                    "processor_kind": input.processor_kind,
+                }):
+                    result = self._processing.build_graph(
+                        ctx,
+                        builder,
+                        list(input.artifact_ids),
+                        actor=input.actor,
+                        correlation_id=input.correlation_id,
+                        document_id=input.document_id,
+                    )
+            except Exception as exc:
+                self._report_step_failure(
+                    ctx, input, stage="GRAPH", step="build_graph", exc=exc,
+                )
+                raise
+            _safe_heartbeat({
                 "stage": "build_graph",
                 "artifact_count": len(input.artifact_ids),
-                "processor_kind": input.processor_kind,
-            }):
-                result = self._processing.build_graph(
-                    ctx,
-                    builder,
-                    list(input.artifact_ids),
-                    actor=input.actor,
-                    correlation_id=input.correlation_id,
-                    document_id=input.document_id,
-                )
-        except Exception as exc:
-            self._report_step_failure(
-                ctx, input, stage="GRAPH", step="build_graph", exc=exc,
+                "status": result.status.value,
+            })
+            self._report_step_outcome(
+                ctx, input, stage="GRAPH", step="build_graph", result=result,
             )
-            raise
-        _safe_heartbeat({
-            "stage": "build_graph",
-            "artifact_count": len(input.artifact_ids),
-            "status": result.status.value,
-        })
-        self._report_step_outcome(
-            ctx, input, stage="GRAPH", step="build_graph", result=result,
-        )
-        return _artifact_result(result)
+            return _artifact_result(result)
 
     @activity.defn(name=ACTIVITY_INDEX)
     def index(self, input: IndexActivityInput) -> ProcessingActivityResult:
         ctx = input.scope.to_context()
-        indexer = self._lookup(self._indexers, input.processor_kind, "indexer")
-        self._report_step_start(
-            ctx, input, stage="INDEX", step="index",
-            engine=input.processor_kind,
-        )
-        try:
-            with _heartbeating({
-                "stage": "index",
-                "artifact_count": len(input.artifact_ids),
-                "processor_kind": input.processor_kind,
-            }):
-                result = self._processing.index(
-                    ctx,
-                    indexer,
-                    list(input.artifact_ids),
-                    actor=input.actor,
-                    correlation_id=input.correlation_id,
-                )
-        except Exception as exc:
-            self._report_step_failure(
-                ctx, input, stage="INDEX", step="index", exc=exc,
+        with self._diag_stage_wrap(
+            ctx, input.correlation_id, None,
+            stage_name="index",
+            counters={"input_artifact_count": len(input.artifact_ids or [])},
+        ):
+            indexer = self._lookup(self._indexers, input.processor_kind, "indexer")
+            self._report_step_start(
+                ctx, input, stage="INDEX", step="index",
+                engine=input.processor_kind,
             )
-            raise
-        self._report_step_outcome(
-            ctx, input, stage="INDEX", step="index", result=result,
-        )
-        return _processing_result(result)
+            try:
+                with _heartbeating({
+                    "stage": "index",
+                    "artifact_count": len(input.artifact_ids),
+                    "processor_kind": input.processor_kind,
+                }):
+                    result = self._processing.index(
+                        ctx,
+                        indexer,
+                        list(input.artifact_ids),
+                        actor=input.actor,
+                        correlation_id=input.correlation_id,
+                    )
+            except Exception as exc:
+                self._report_step_failure(
+                    ctx, input, stage="INDEX", step="index", exc=exc,
+                )
+                raise
+            self._report_step_outcome(
+                ctx, input, stage="INDEX", step="index", result=result,
+            )
+            return _processing_result(result)
 
     @activity.defn(name=ACTIVITY_QUERY)
     def query(self, input: QueryActivityInput) -> QueryActivityResult:
@@ -1788,6 +1897,74 @@ class ProcessingActivities:
             add_recommended_tasks=list(refinement.add_recommended_tasks),
         )
 
+    # ---- Diagnostic recorder integration ----------------------
+
+    @contextlib.contextmanager
+    def _diag_stage_wrap(
+        self,
+        ctx,
+        run_id: str | None,
+        document_id: str | None,
+        *,
+        stage_name: str,
+        counters: dict[str, int],
+    ):
+        """Combined stage wrap: binds the ambient :class:`RunContext`
+        for LLM-call attribution AND records stage timing on exit.
+
+        ``counters`` is a live dict the activity body can mutate as
+        new numbers become known (e.g. ``compile`` learns
+        ``chunk_count`` only after MinerU returns). The values at
+        ``finally`` time are what land on the stage event.
+
+        No-op (just runs the body) when the diagnostic recorder
+        isn't wired or ``run_id`` is missing — the wrap stays
+        backward-compatible with deployments that don't opt in.
+        """
+        if self._diagnostics is None or not run_id:
+            yield
+            return
+        # Lazy import to keep the diagnostics module out of every
+        # processing.py import path; the activity module is
+        # imported during worker bootstrap which we want fast.
+        from j1.processing.diagnostics import (
+            RunContext, set_current_run_context,
+        )
+        rc = RunContext(
+            run_id=run_id,
+            document_id=document_id,
+            stage=stage_name,
+            recorder=self._diagnostics,
+            ctx=ctx,
+        )
+        started = time.perf_counter()
+        success = True
+        error: str | None = None
+        with set_current_run_context(rc):
+            try:
+                yield
+            except Exception as exc:
+                success = False
+                error = type(exc).__name__
+                raise
+            finally:
+                try:
+                    self._diagnostics.record_stage_event(
+                        ctx=ctx,
+                        run_id=run_id,
+                        stage_name=stage_name,
+                        document_id=document_id,
+                        duration_ms=int(
+                            (time.perf_counter() - started) * 1000,
+                        ),
+                        success=success,
+                        error=error,
+                        counters=dict(counters),
+                    )
+                except Exception:  # noqa: BLE001
+                    # Diagnostic failures must not surface.
+                    pass
+
     # ---- Progress-reporter integration -------------------------
 
     def _report_step_start(
@@ -2176,6 +2353,12 @@ def _artifact_result(result: ArtifactProcessingResult) -> ArtifactActivityResult
             "plan_warnings",
             "unhandled_capabilities",
             "assessment_mode",
+            # Phase-1 ingestion-diagnostics signals from the
+            # RAGAnything/MinerU bridge. Optional — the recorder
+            # handles missing keys via dict.get(), and legacy
+            # bridges that don't surface them still work.
+            "parse_elapsed_ms",
+            "parse_method",
         ):
             if key in result.metadata:
                 compile_metrics[key] = result.metadata[key]

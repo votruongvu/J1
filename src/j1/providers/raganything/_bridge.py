@@ -508,6 +508,14 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     metadata: dict[str, Any] = {
         "provider": "raganything",
         "output_dir": str(output_dir),
+        # Phase-1 ingestion diagnostics: surface MinerU's wall-clock
+        # parse duration alongside the parse_method so the activity
+        # finally-block can record them on the diagnostic report
+        # without the bridge needing a recorder reference. The keys
+        # are picked up by ``_artifact_result``'s metadata-forward
+        # pass into ``compile_metrics``.
+        "parse_elapsed_ms": parse_elapsed_ms,
+        "parse_method": getattr(request.settings, "parse_method", None),
     }
     metadata.update(manifest)
 

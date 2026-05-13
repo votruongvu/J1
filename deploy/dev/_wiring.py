@@ -208,6 +208,35 @@ def build_document_lifecycle_service(workspace: WorkspaceResolver):
     )
 
 
+def build_diagnostic_recorder(
+    *,
+    workspace: WorkspaceResolver,
+    audit=None,
+):
+    """Build the per-worker ``DiagnosticRecorder`` for Phase-1
+    ingestion diagnostics.
+
+    Same JSONL-backed audit recorder + artifact registry the other
+    services already use — the diagnostic report lands as a
+    ``compiled.ingestion_diagnostic_report`` artifact in the
+    project's compiled area, next to the strategy report.
+
+    Audit recorder is optional: when omitted, the recorder still
+    builds an in-memory aggregate and writes the final artifact,
+    but the per-step ``j1.ingestion.*`` audit events are skipped
+    (operator can't tail them in real time)."""
+    from j1.audit.recorder import DefaultAuditRecorder
+    from j1.audit.sink import JsonlAuditSink
+    from j1.processing.diagnostics import DiagnosticRecorder
+    if audit is None:
+        audit = DefaultAuditRecorder(JsonlAuditSink(workspace))
+    return DiagnosticRecorder(
+        audit=audit,
+        artifact_registry=JsonArtifactRegistry(workspace),
+        workspace=workspace,
+    )
+
+
 def build_document_cleanup_service(workspace: WorkspaceResolver):
     """Build the ``DocumentCleanupService`` for Remove + CAS-orphan
     cleanup.
@@ -719,6 +748,15 @@ def build_worker_spec(
     progress_reporter = AuditProgressReporter(audit_recorder)
 
     activities: list = []
+    # Phase-1 ingestion diagnostics recorder. One instance per
+    # worker process; passed to both ``RunsActivities`` (for the
+    # terminal report-write hook) and ``ProcessingActivities`` (for
+    # stage timing + LLM-call attribution). Optional collaborator
+    # in every consumer — wiring it here turns diagnostics ON
+    # globally for this worker.
+    diagnostic_recorder = build_diagnostic_recorder(
+        workspace=workspace, audit=audit_recorder,
+    )
     activities += RunsActivities(
         progress_reporter=progress_reporter,
         # Without `run_store` wired here, the workflow would emit a
@@ -751,6 +789,7 @@ def build_worker_spec(
         # artifacts / FTS rows / workspace dirs get dropped here
         # rather than left as queryable phantom evidence.
         cleanup_service=build_document_cleanup_service(workspace),
+        diagnostic_recorder=diagnostic_recorder,
     ).all_activities()
     # Profiling activity (`j1.ingestion.profile_document`). Required
     # whenever `planner_enabled=True` flows through the workflow —
@@ -979,6 +1018,12 @@ def build_worker_spec(
         enrichment_text_client=enrichment_text_client,
         enrichment_vision_client=enrichment_vision_client,
         enrichment_llm_call_limiter=llm_call_limiter,
+        # Phase-1 ingestion diagnostics. Same instance as the
+        # RunsActivities pass above — single recorder per worker
+        # so the per-run aggregate sees signals from BOTH the
+        # processing activities (stage timing + LLM calls) and
+        # the terminal hook (report-write).
+        diagnostic_recorder=diagnostic_recorder,
     ).all_activities()
     activities += KnowledgeProcessingActivities(
         workspace=workspace,
