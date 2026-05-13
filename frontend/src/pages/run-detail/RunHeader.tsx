@@ -43,7 +43,6 @@ interface RunHeaderProps {
 
 function originLabel(origin: RunOrigin | undefined): string {
   if (origin?.name === "document") return "Document";
-  if (origin?.name === "list") return "All runs";
   return "Documents";
 }
 

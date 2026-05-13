@@ -25,8 +25,10 @@ src/
 │ └── icons.tsx SVG icon set
 ├── pages/
 │ ├── UploadPage.tsx
-│ ├── AllRunsPage.tsx
+│ ├── DocumentsPage.tsx
+│ ├── DocumentDetailPage.tsx
 │ ├── RunDetailPage.tsx (orchestrator)
+│ ├── documents/ document badges, lifecycle confirmation dialogs
 │ └── run-detail/ header, plan card, live timeline, primary status panel, tech drawer
 ├── lib/
 │ ├── api/ IngestionClient interface, mock client, live (REST + fetch-based SSE) client, translator

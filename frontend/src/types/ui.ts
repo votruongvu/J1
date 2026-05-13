@@ -34,24 +34,21 @@ export interface Toast {
   body?: string;
 }
 
-/** Routing state. Five top-level views — runs (legacy) + documents
- * (the new document-centric surface from the Phase 7 refactor) +
- * upload. The two list views coexist during the migration so
- * operators can switch between them via the main nav tab.
+/** Routing state. Four top-level views — documents (the
+ * document-centric surface), document detail, upload, and the
+ * shared run detail page.
  *
  * The `origin` field on the `run` route records where the operator
  * arrived from so the back link can return them to the same page
- * (document-detail vs all-runs list) rather than always dropping
- * them on the documents list.
+ * (documents list vs. a specific document's detail) rather than
+ * always dropping them on the documents list.
  */
 export type Route =
-  | { name: "list" }                                   // legacy: runs list
   | { name: "upload" }
   | { name: "run"; runId: string; origin?: RunOrigin }
-  | { name: "documents" }                              // new: documents list
-  | { name: "document"; documentId: string };          // new: document detail
+  | { name: "documents" }                              // documents list
+  | { name: "document"; documentId: string };          // document detail
 
 export type RunOrigin =
-  | { name: "list" }
   | { name: "documents" }
   | { name: "document"; documentId: string };

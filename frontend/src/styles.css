@@ -4215,43 +4215,10 @@ pre.json .b {
   cursor: help;
 }
 
-/* ─── Document-centric surface (Phase 7) ──────────────────────────────
-   New top-level nav, document list rows, detail page, lifecycle
-   confirmation modals. Visual language matches the existing run
-   list so the two surfaces feel cohesive during the migration. */
-
-.main-nav {
-  display: flex;
-  gap: 4px;
-  padding: 8px 24px 0 24px;
-  border-bottom: 1px solid var(--border);
-}
-.main-nav__tab {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.main-nav__tab--active {
-  color: var(--fg);
-  border-bottom-color: var(--accent, #5b8def);
-  font-weight: 600;
-}
-.main-nav__legacy {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: var(--surface-soft, rgba(0, 0, 0, 0.05));
-  padding: 2px 6px;
-  border-radius: 999px;
-  color: var(--text-muted);
-}
+/* ─── Document-centric surface ────────────────────────────────────────
+   Document list rows, detail page, lifecycle confirmation modals.
+   The legacy run-list and the cross-surface main-nav switcher were
+   retired once this surface reached parity. */
 
 .documents-page {
   padding: 24px;

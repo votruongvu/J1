@@ -4,7 +4,7 @@
  * Owns:
  * - persisted user preferences (tenant / project / auth / theme)
  * - the active `IngestionClient`, shared via context
- * - the route state machine (`list` | `upload` | `run`)
+ * - the route state machine (`documents` | `document` | `upload` | `run`)
  * - the toast queue
  *
  * Page components consume the client via `useClient` so routing
@@ -20,7 +20,6 @@ import { ContextBar } from "@/components/ContextBar";
 import { AuthModal } from "@/components/AuthModal";
 import { LLMHealthBanner } from "@/components/LLMHealthBanner";
 import { ToastHost } from "@/components/Toast";
-import { AllRunsPage } from "@/pages/AllRunsPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
 import { DocumentDetailPage } from "@/pages/DocumentDetailPage";
 import { UploadPage } from "@/pages/UploadPage";
@@ -49,10 +48,8 @@ export function App() {
   const [theme, setTheme] = useLocalStorage<Theme>(LS_KEYS.theme, "light");
 
   const [authOpen, setAuthOpen] = useState(false);
-  // Default to the document-centric list as part of Phase 7. The
-  // legacy run list stays accessible via the nav switcher for the
-  // duration of the migration so operators can compare the two
-  // surfaces side-by-side.
+  // Document-centric surface is the only top-level list now; the
+  // legacy run list was retired once Phase 7 reached parity.
   const [route, setRoute] = useState<Route>({ name: "documents" });
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -110,38 +107,6 @@ export function App() {
 
         <LLMHealthBanner />
 
-        {/* Top-level switcher between the document-centric surface
-            and the legacy run-list. Hidden on the run-detail page
-            since `← Back` already takes the operator back to the
-            list they came from. */}
-        {(route.name === "documents" || route.name === "list") && (
-          <nav className="main-nav" aria-label="Main view">
-            <button
-              type="button"
-              className={
-                "main-nav__tab" +
-                (route.name === "documents" ? " main-nav__tab--active" : "")
-              }
-              onClick={() => setRoute({ name: "documents" })}
-              data-testid="nav-documents"
-            >
-              Documents
-            </button>
-            <button
-              type="button"
-              className={
-                "main-nav__tab" +
-                (route.name === "list" ? " main-nav__tab--active" : "")
-              }
-              onClick={() => setRoute({ name: "list" })}
-              data-testid="nav-runs"
-            >
-              Runs
-              <span className="main-nav__legacy">legacy</span>
-            </button>
-          </nav>
-        )}
-
         <main className="main">
           {route.name === "documents" && (
             <DocumentsPage
@@ -168,16 +133,6 @@ export function App() {
               pushToast={pushToast}
             />
           )}
-          {route.name === "list" && (
-            <AllRunsPage
-              ctx={ctx}
-              onOpenRun={(runId) =>
-                setRoute({ name: "run", runId, origin: { name: "list" } })
-              }
-              onNewRun={() => setRoute({ name: "upload" })}
-              pushToast={pushToast}
-            />
-          )}
           {route.name === "upload" && (
             <UploadPage
               ctx={ctx}
@@ -194,8 +149,6 @@ export function App() {
                 const o = route.origin;
                 if (o?.name === "document") {
                   setRoute({ name: "document", documentId: o.documentId });
-                } else if (o?.name === "list") {
-                  setRoute({ name: "list" });
                 } else {
                   setRoute({ name: "documents" });
                 }
