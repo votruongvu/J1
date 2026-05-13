@@ -2139,6 +2139,15 @@ class IngestionValidationService:
         tables, visuals, graphs = self._modality_artifacts_for_run(
             ctx, run.run_id,
         )
+        # Enriched-stage artifacts (document_map / summary) carry
+        # the structured context (entities, sections, doc purpose)
+        # the question generator mines for high-signal question
+        # seeds. Optional: when the run skipped enrichment the
+        # generator falls back to chunk-only context.
+        enriched = self._enriched_artifacts_for_run(ctx, run.run_id)
+        # Final ingestion report carries doc title / page count /
+        # compile summary. Optional: legacy runs don't have one.
+        final_report = self._final_report_for_run(ctx, run.run_id)
 
         # Generate first so we can compute the artifacts hash off
         # the sampled chunks. Cheap — no LLM call yet on the empty
@@ -2159,6 +2168,8 @@ class IngestionValidationService:
             evidence_blocks=evidence_blocks,
             domain_guidance=domain_guidance,
             domain_id=domain_id,
+            enriched_artifacts=enriched,
+            final_report=final_report,
         )
 
         # Idempotency: scan existing sets for a hash match. Force
@@ -2494,6 +2505,73 @@ class IngestionValidationService:
             elif record.kind == ARTIFACT_KIND_GRAPH_JSON:
                 graphs.append(record)
         return tables, visuals, graphs
+
+    def _enriched_artifacts_for_run(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> list:
+        """Collect the enrichment-stage artifacts that carry
+        structured context for question generation
+        (``enriched.document_map``, ``enriched.summary``).
+
+        These are NOT modality artifacts — they're the rich
+        denormalised views that the question-context builder
+        mines for entities, sections, and a doc purpose. The
+        generator gracefully degrades when none are registered
+        (chunk-only context still produces document-specific
+        questions; just fewer of them)."""
+        out: list = []
+        for record in self._artifacts.list_artifacts(ctx):
+            if record.metadata.get("run_id") != run_id:
+                continue
+            if record.kind in {
+                "enriched.document_map", "enriched.summary",
+            }:
+                out.append(record)
+        return out
+
+    def _final_report_for_run(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> dict[str, Any] | None:
+        """Decode the ``final_ingestion_report`` artifact (when the
+        run produced one) into a plain dict the generator's
+        context builder consumes.
+
+        Returns ``None`` quietly on any failure path: the artifact
+        may not exist (legacy runs), may be unreadable, or its
+        body may not be JSON. Question generation degrades to
+        chunk-only context — never raises."""
+        from j1.processing.results import (
+            ARTIFACT_KIND_FINAL_INGESTION_REPORT,
+        )
+        candidates = [
+            r for r in self._artifacts.list_artifacts(ctx)
+            if r.kind == ARTIFACT_KIND_FINAL_INGESTION_REPORT
+            and r.metadata.get("run_id") == run_id
+        ]
+        if not candidates:
+            return None
+        # Newest wins when multiple exist (regenerated runs).
+        candidates.sort(key=lambda r: r.updated_at, reverse=True)
+        artifact = candidates[0]
+        if self._workspace is None:
+            return None
+        try:
+            from pathlib import PurePosixPath
+            from j1.workspace.layout import WorkspaceArea as _WA
+            import json as _json
+            parts = PurePosixPath(artifact.location).parts
+            if len(parts) < 2:
+                return None
+            area_name, *rest = parts
+            area = _WA(area_name)
+            path = self._workspace.area(ctx, area).joinpath(*rest)
+            return _json.loads(path.read_text("utf-8"))
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "final_ingestion_report decode failed for run=%s: %s",
+                run_id, exc,
+            )
+            return None
 
     def _resolve_domain_for_run(
         self, ctx: ProjectContext, run: IngestionRun,

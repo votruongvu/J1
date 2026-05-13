@@ -168,9 +168,35 @@ function Row({ testCase, result, hasRun, onSelect }: RowProps) {
               <strong>Expected:</strong> {testCase.expectedAnswer}
             </div>
           ) : null}
+          {testCase.reason ? (
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 11,
+                color: "var(--fg-muted)",
+                fontStyle: "italic",
+              }}
+              title={testCase.reason}
+            >
+              {testCase.reason}
+            </div>
+          ) : null}
         </td>
         <td>
           <ScopeBadge scope={testCase.validationScope ?? "generic"} />
+          {testCase.generatedFrom ? (
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 10,
+                color: "var(--fg-muted)",
+                textTransform: "uppercase",
+                letterSpacing: 0.04,
+              }}
+            >
+              from {testCase.generatedFrom}
+            </div>
+          ) : null}
         </td>
         <td>
           <div>{testCase.type}</div>
@@ -180,7 +206,14 @@ function Row({ testCase, result, hasRun, onSelect }: RowProps) {
             </div>
           ) : null}
         </td>
-        <td>{testCase.priority}</td>
+        <td>
+          <div>{testCase.priority}</div>
+          {typeof testCase.confidence === "number" ? (
+            <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+              conf {testCase.confidence.toFixed(2)}
+            </div>
+          ) : null}
+        </td>
         <td>{_evidenceSummary(testCase)}</td>
         <td>
           {status ? (
@@ -250,6 +283,16 @@ const _SCOPE_META: Record<ValidationScope, { label: string; bg: string; fg: stri
     bg: "var(--badge-info-bg, #e6efff)",
     fg: "var(--badge-info-fg, #1f4e9a)",
   },
+  document: {
+    label: "Document",
+    bg: "var(--badge-info-bg, #e6efff)",
+    fg: "var(--badge-info-fg, #1f4e9a)",
+  },
+  domain: {
+    label: "Domain",
+    bg: "var(--badge-ok-bg, #e6f4ea)",
+    fg: "var(--badge-ok-fg, #1e6f35)",
+  },
   domain_evidence: {
     label: "Domain-aware",
     bg: "var(--badge-ok-bg, #e6f4ea)",
@@ -259,6 +302,31 @@ const _SCOPE_META: Record<ValidationScope, { label: string; bg: string; fg: stri
     label: "Domain enrichment",
     bg: "var(--badge-accent-bg, #ede5ff)",
     fg: "var(--badge-accent-fg, #4a2db3)",
+  },
+  graph: {
+    label: "Graph",
+    bg: "var(--badge-accent-bg, #ede5ff)",
+    fg: "var(--badge-accent-fg, #4a2db3)",
+  },
+  retrieval: {
+    label: "Retrieval",
+    bg: "var(--badge-info-bg, #e6efff)",
+    fg: "var(--badge-info-fg, #1f4e9a)",
+  },
+  workflow: {
+    label: "Workflow",
+    bg: "var(--badge-info-bg, #e6efff)",
+    fg: "var(--badge-info-fg, #1f4e9a)",
+  },
+  evidence: {
+    label: "Evidence",
+    bg: "var(--badge-ok-bg, #e6f4ea)",
+    fg: "var(--badge-ok-fg, #1e6f35)",
+  },
+  guardrail: {
+    label: "Guardrail",
+    bg: "var(--badge-warn-bg, #fff4d6)",
+    fg: "var(--badge-warn-fg, #8a5b00)",
   },
   negative_check: {
     label: "Negative check",
@@ -289,6 +357,12 @@ function ScopeBadge({ scope }: { scope: ValidationScope }) {
 
 function _evidenceSummary(tc: ValidationTestCase): string {
   // Compact "what does this case expect to find?" hint.
+  // ``expectedEvidence`` (post-refactor) is a tester-readable
+  // pointer like "page 3, section 'Risk Register'" — use it
+  // when present; fall back to the structured chunk/page list.
+  if (tc.expectedEvidence) {
+    return tc.expectedEvidence;
+  }
   const parts: string[] = [];
   if (tc.expectedChunks.length) {
     parts.push(`${tc.expectedChunks.length} chunk${tc.expectedChunks.length === 1 ? "" : "s"}`);

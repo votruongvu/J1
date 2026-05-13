@@ -764,7 +764,12 @@ export type ValidationTestType =
   | "image"
   | "graph";
 
-export type ValidationPriority = "smoke" | "normal" | "deep";
+export type ValidationPriority =
+  | "smoke"
+  | "normal"
+  | "critical"
+  | "edge"
+  | "deep";
 
 export type ExpectedBehavior =
   | "answer_with_citations"
@@ -797,10 +802,22 @@ export type ValidationQuestionType =
 
 // Scope tag the FE uses to badge generated cases. Mirrors the
 // server's `ValidationScope` literal.
+// Scope tag the FE renders as a badge. The expanded vocabulary
+// (post question-context refactor) lets testers filter by the
+// VALIDATION CATEGORY each case tests — document, domain,
+// graph, retrieval, workflow, evidence, guardrail — instead of
+// the prior "everything is generic" bucket.
 export type ValidationScope =
   | "generic"
+  | "document"
+  | "domain"
   | "domain_evidence"
   | "domain_enrichment"
+  | "graph"
+  | "retrieval"
+  | "workflow"
+  | "evidence"
+  | "guardrail"
   | "negative_check";
 
 export interface ValidationTestCase {
@@ -827,6 +844,14 @@ export interface ValidationTestCase {
   validationScope?: ValidationScope;
   difficulty?: string | null;
   domainId?: string | null;
+  // Post-refactor provenance + UX-facing fields. The FE renders
+  // ``generatedFrom`` as a small chip and ``reason`` as a
+  // tooltip so testers can audit "why was this question useful?"
+  // without expanding the row.
+  generatedFrom?: string | null;
+  confidence?: number | null;
+  reason?: string | null;
+  expectedEvidence?: string | null;
 }
 
 export interface ValidationSet {

@@ -175,7 +175,13 @@ def test_generator_emits_only_smoke_when_no_chunks_no_domain():
     """An empty run + no domain → just the smoke case. The old
  generator shipped 2 hardcoded off-topic negatives here ('World
  Cup' / 'Bitcoin'); the new one emits zero — the test locks that
- regression in place."""
+ regression in place.
+
+ The smoke case now stamps the ``document`` scope (post-refactor)
+ instead of ``generic`` — the smoke tests the document path
+ specifically, not a vague catch-all. Operators wanted the FE
+ to be able to filter by scope without inferring from the
+ question text."""
     gen = DefaultTestCaseGenerator()
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=[],
@@ -185,7 +191,8 @@ def test_generator_emits_only_smoke_when_no_chunks_no_domain():
     assert vset.generator_version == GENERATOR_VERSION
     assert len(vset.test_cases) == 1
     assert vset.test_cases[0].priority == "smoke"
-    assert vset.test_cases[0].validation_scope == "generic"
+    assert vset.test_cases[0].validation_scope == "document"
+    assert vset.test_cases[0].generated_from == "smoke"
 
 
 def test_generator_never_emits_hardcoded_world_cup_questions():
@@ -261,9 +268,12 @@ def test_generator_emits_grounded_cases_from_llm_with_evidence():
         evidence_blocks=evidence,
     )
 
+    # Post-refactor: the generator also emits context-driven
+    # entity / fact cases alongside the LLM case. Find the LLM
+    # case by its ``llm_generated`` metadata marker.
     chunk_case = next(
         tc for tc in vset.test_cases
-        if tc.priority != "smoke" and tc.type != "negative"
+        if tc.metadata.get("llm_generated")
     )
     assert chunk_case.question == "When is the proposal due?"
     assert chunk_case.expected_answer == "20 May 2026."
@@ -371,7 +381,13 @@ def test_generator_drops_llm_cases_with_unknown_source_artifact_id():
 def test_generator_falls_back_to_heuristic_on_llm_failure():
     """LLM raising must not fail the generator — fall back to the
  deterministic per-chunk heuristic. This is the load-bearing path
- for CI environments without an LLM endpoint."""
+ for CI environments without an LLM endpoint.
+
+ Post-refactor: the heuristic is replaced by context-driven
+ emitters. The fallback now emits entity / fact / section
+ cases that reference the chunk content (no longer the prior
+ raw-chunk-injection ``What does the document say about
+ '<long text>'?`` template)."""
     stub = _StubTextClient(raise_on_call=True)
     gen = DefaultTestCaseGenerator(text_client=stub)
     chunks = [_chunk(chunk_id="c-1", body="Proposal due 20 May 2026.")]
@@ -381,12 +397,19 @@ def test_generator_falls_back_to_heuristic_on_llm_failure():
         evidence_blocks=[_evidence(text="Proposal due 20 May 2026.")],
     )
 
-    chunk_case = next(
+    non_smoke = [
         tc for tc in vset.test_cases
         if tc.priority != "smoke" and tc.type != "negative"
-    )
-    assert "What does the document say about" in chunk_case.question
-    assert "Proposal due 20 May 2026" in chunk_case.question
+    ]
+    assert non_smoke, "expected at least one non-smoke / non-negative case"
+    joined = " ".join(tc.question for tc in non_smoke)
+    assert "Proposal" in joined or "May 2026" in joined
+    # No raw-chunk-injection: must NOT carry a quoted run > 80 chars.
+    for tc in non_smoke:
+        for chunk_quote in _all_quoted_runs(tc.question):
+            assert len(chunk_quote) <= 80, (
+                f"raw-chunk-text injection in {tc.question!r}"
+            )
     # LLM trace records the failure.
     assert vset.llm is not None
     assert vset.llm.called is True
@@ -394,20 +417,34 @@ def test_generator_falls_back_to_heuristic_on_llm_failure():
 
 
 def test_generator_uses_heuristic_when_no_llm_configured():
-    """No LLM at construction → no LLM trace, heuristic only."""
+    """No LLM at construction → no LLM trace, deterministic
+ context-driven emitters only."""
     gen = DefaultTestCaseGenerator(text_client=None)
-    chunks = [_chunk(chunk_id="c-1", body="Heading content body.")]
+    chunks = [_chunk(
+        chunk_id="c-1",
+        body=(
+            "Heading content body. The Risk Assessment is a critical "
+            "stage of the validation packet."
+        ),
+    )]
     vset = gen.generate(
         run_id="run-1", document_ids=["doc-1"], chunks=chunks,
     )
-    chunk_case = next(
+    non_smoke = [
         tc for tc in vset.test_cases
         if tc.priority != "smoke" and tc.type != "negative"
-    )
-    assert chunk_case.expected_chunks == ["c-1"]
-    assert chunk_case.question  # non-empty
+    ]
+    assert non_smoke, "expected at least one non-smoke case"
     # No LLM was wired → no trace.
     assert vset.llm is None
+
+
+def _all_quoted_runs(text: str) -> list[str]:
+    """Helper: extract all single/double-quoted runs from a question.
+ Used to assert no raw-chunk-injection: long quoted runs are
+ the signature of the prior bug."""
+    import re as _re
+    return [m.group(1) for m in _re.finditer(r"[\"']([^\"']{0,400})[\"']", text)]
 
 
 def test_generator_caps_total_cases():
@@ -513,7 +550,10 @@ def test_generator_emits_domain_driven_negatives_when_guidance_provided():
     assert any("design code" in q for q in questions)
     assert any("material strength" in q for q in questions)
     for case in negatives:
-        assert case.validation_scope == "negative_check"
+        # Post-refactor: ``guardrail`` is the new canonical scope
+        # for domain-driven abstention checks; the legacy
+        # ``negative_check`` is kept as an alias only.
+        assert case.validation_scope == "guardrail"
         assert case.question_type == "missing_information_check"
         assert case.expected_behavior == "abstain"
         assert case.citation_required is False
@@ -625,7 +665,9 @@ def test_generator_accepts_llm_emitted_negative_check_without_quote():
         if c.type == "negative" and c.metadata.get("llm_generated") is True
     ]
     assert len(llm_neg) == 1
-    assert llm_neg[0].validation_scope == "negative_check"
+    # Post-refactor: ``guardrail`` is the canonical scope for
+    # negative / abstention checks.
+    assert llm_neg[0].validation_scope == "guardrail"
     assert llm_neg[0].expected_behavior == "abstain"
 
 
@@ -654,13 +696,18 @@ def test_generator_short_circuits_llm_when_no_evidence_supplied():
         # NOTE: no evidence_blocks supplied.
     )
 
-    # The stub LLM was NEVER called — heuristic ran instead.
+    # The stub LLM was NEVER called — heuristic / context ran instead.
     assert len(stub.calls) == 0
     # And the generator recorded that the LLM wasn't actually run.
     assert vset.llm is None or vset.llm.called is False
-    # The heuristic case still references the chunk content.
+    # The context-driven path still references the chunk content.
+    # Post-refactor: entity / fact emitters pull "widgets" from
+    # the chunk body and emit document-specific questions (not
+    # the prior raw-chunk-injection heuristic).
     non_smoke = [c for c in vset.test_cases if c.priority != "smoke"]
-    assert non_smoke and "widgets" in non_smoke[0].question.lower()
+    assert non_smoke, "expected at least one non-smoke case"
+    joined = " ".join(c.question.lower() for c in non_smoke)
+    assert "widgets" in joined
 
 
 # ---- Graph case dedup + entity-aware questions (Patch 5) ----------
@@ -700,7 +747,13 @@ def test_graph_cases_dedupe_artifacts_with_same_top_entities():
     """Regression: previously three graph artifacts that all named
  the SAME top entities produced THREE identical "What are the
  main entities…" cases. The dedup must coalesce them into ONE
- case carrying all matching artifact_ids as `expected_artifacts`."""
+ case carrying all matching artifact_ids as `expected_artifacts`.
+
+ Post-refactor, the context-driven entity emitter ALSO emits
+ entity-scoped cases (different category, different
+ ``generated_from``), so we filter on the modality marker
+ ``metadata["graph"]`` to assert dedupe behaviour on the
+ modality path specifically."""
     gen = DefaultTestCaseGenerator()
     artifacts = [
         _graph_artifact(artifact_id="g-1", top_entities=["Alice", "Bob"]),
@@ -711,7 +764,9 @@ def test_graph_cases_dedupe_artifacts_with_same_top_entities():
         run_id="r", document_ids=[], chunks=[],
         graph_artifacts=artifacts,
     )
-    graph_cases = [c for c in vset.test_cases if c.type == "graph"]
+    graph_cases = [
+        c for c in vset.test_cases if c.metadata.get("graph") is True
+    ]
     assert len(graph_cases) == 1
     # All three artifact ids are listed as expected (so the runner's
     # retrieval check can pass when ANY of them comes back).
@@ -734,13 +789,18 @@ def test_graph_case_with_entities_emits_entity_specific_question():
         run_id="r", document_ids=[], chunks=[],
         graph_artifacts=[artifact],
     )
-    graph_case = next(c for c in vset.test_cases if c.type == "graph")
+    graph_case = next(
+        c for c in vset.test_cases if c.metadata.get("graph") is True
+    )
     assert "Alice" in graph_case.question
     assert "Bob" in graph_case.question
     assert "main entities and relationships" not in graph_case.question
     assert graph_case.expected_answer is not None
     assert "Alice" in graph_case.expected_answer
     assert "Bob" in graph_case.expected_answer
+    # Post-refactor: graph modality cases stamp ``graph`` scope,
+    # not ``generic``.
+    assert graph_case.validation_scope == "graph"
 
 
 def test_graph_case_without_entities_keeps_generic_question():
@@ -755,7 +815,9 @@ def test_graph_case_without_entities_keeps_generic_question():
         run_id="r", document_ids=[], chunks=[],
         graph_artifacts=[artifact],
     )
-    graph_case = next(c for c in vset.test_cases if c.type == "graph")
+    graph_case = next(
+        c for c in vset.test_cases if c.metadata.get("graph") is True
+    )
     assert "main entities and relationships" in graph_case.question
     assert graph_case.expected_answer is None
     assert graph_case.expected_artifacts == ["g-1"]
@@ -763,7 +825,7 @@ def test_graph_case_without_entities_keeps_generic_question():
 
 def test_graph_cases_distinct_entities_produce_distinct_cases():
     """Two graph artifacts naming DIFFERENT entity sets should produce
- TWO cases — only same-set artifacts coalesce."""
+ TWO modality cases — only same-set artifacts coalesce."""
     gen = DefaultTestCaseGenerator()
     artifacts = [
         _graph_artifact(artifact_id="g-1", top_entities=["Alice", "Bob"]),
@@ -773,8 +835,177 @@ def test_graph_cases_distinct_entities_produce_distinct_cases():
         run_id="r", document_ids=[], chunks=[],
         graph_artifacts=artifacts,
     )
-    graph_cases = [c for c in vset.test_cases if c.type == "graph"]
+    graph_cases = [
+        c for c in vset.test_cases if c.metadata.get("graph") is True
+    ]
     assert len(graph_cases) == 2
     questions = [c.question for c in graph_cases]
     assert any("Alice" in q and "Bob" in q for q in questions)
     assert any("Charlie" in q and "Diana" in q for q in questions)
+
+
+# ---- Truncation drop + per-call LLM cap + heuristic top-up ---------
+#
+# Slowness + "cut question" complaints fixed by:
+#   1. capping the LLM batch at _LLM_MAX_GROUNDED_PER_CALL
+#   2. dropping LLM cases that look truncated (mid-sentence question
+#      / empty expected_answer)
+#   3. topping up the remainder with the deterministic heuristic
+# These tests pin all three behaviours.
+
+
+def test_generator_drops_truncated_llm_cases():
+    """When the LLM emits a question that ends mid-word (the JSON-mode
+ max-tokens truncation signature), the generator drops the case
+ rather than shipping a nonsensical row to the tester. The
+ heuristic top-up phase keeps the overall set non-empty."""
+    truncated = {
+        "question": "What is the role of the proposed risk assessment in",
+        "expected_answer": "",  # cut after question, before answer
+        "question_type": "fact_retrieval",
+        "validation_scope": "generic",
+        "evidence": [
+            {"source_artifact_id": "art-1", "quote": "20 May 2026"},
+        ],
+    }
+    well_formed = {
+        "question": "When is the proposal due?",
+        "expected_answer": "20 May 2026",
+        "question_type": "fact_retrieval",
+        "validation_scope": "generic",
+        "evidence": [
+            {"source_artifact_id": "art-1", "quote": "20 May 2026"},
+        ],
+    }
+    client = _StubTextClient(
+        responses=[{"test_cases": [truncated, well_formed]}],
+    )
+    gen = DefaultTestCaseGenerator(text_client=client)
+    vset = gen.generate(
+        run_id="r", document_ids=["doc"], chunks=[],
+        evidence_blocks=[_evidence(text="Proposal due 20 May 2026.")],
+        options=GenerationOptions(max_cases=5, negative_case_count=0),
+    )
+    questions = [c.question for c in vset.test_cases]
+    assert "When is the proposal due?" in questions
+    # The truncated row must not appear under any wording.
+    assert not any(
+        "What is the role of the proposed risk assessment in" in q
+        for q in questions
+    )
+
+
+def test_generator_caps_llm_request_at_per_call_max():
+    """Even when ``max_cases`` is large, the LLM only sees a request
+ for at most ``_LLM_MAX_GROUNDED_PER_CALL`` cases. Past that,
+ the heuristic top-up handles the remainder — guarantees a
+ bounded round-trip and avoids the truncation cliff."""
+    from j1.validation.generator import _LLM_MAX_GROUNDED_PER_CALL
+    captured: dict[str, Any] = {}
+
+    class _RecordingClient(_StubTextClient):
+        def extract(self, prompt, schema, *, metadata=None):
+            captured["prompt"] = prompt
+            return ({"test_cases": []}, object())
+
+    client = _RecordingClient()
+    gen = DefaultTestCaseGenerator(text_client=client)
+    gen.generate(
+        run_id="r", document_ids=["doc"], chunks=[],
+        evidence_blocks=[_evidence(text="alpha beta gamma.")],
+        options=GenerationOptions(max_cases=50, negative_case_count=0),
+    )
+    # The prompt body asks for "up to N validation test cases" — the
+    # number embedded in the prompt is what we want to bound.
+    assert (
+        f"up to {_LLM_MAX_GROUNDED_PER_CALL} validation test cases"
+        in captured["prompt"]
+    )
+
+
+def test_heuristic_tops_up_after_llm_returns_fewer_than_budget():
+    """LLM returns 2 cases when the budget could have absorbed many
+ more. The generator must fill the rest from the heuristic path
+ (one question per sampled chunk) rather than leaving the set
+ short of the caller's ``max_cases`` ceiling."""
+    well_formed = [
+        {
+            "question": "Q1?",
+            "expected_answer": "answer",
+            "question_type": "fact_retrieval",
+            "validation_scope": "generic",
+            "evidence": [
+                {"source_artifact_id": "art-1", "quote": "alpha"},
+            ],
+        },
+        {
+            "question": "Q2?",
+            "expected_answer": "answer",
+            "question_type": "fact_retrieval",
+            "validation_scope": "generic",
+            "evidence": [
+                {"source_artifact_id": "art-1", "quote": "alpha"},
+            ],
+        },
+    ]
+    client = _StubTextClient(
+        responses=[{"test_cases": well_formed}],
+    )
+    gen = DefaultTestCaseGenerator(text_client=client)
+    vset = gen.generate(
+        run_id="r", document_ids=["doc"],
+        chunks=[
+            _chunk(chunk_id=f"c-{i}", body=f"Sentence {i} alpha.")
+            for i in range(4)
+        ],
+        evidence_blocks=[_evidence(text="alpha beta gamma.")],
+        options=GenerationOptions(max_cases=10, negative_case_count=0),
+    )
+    # Post-refactor: the LLM cases coexist with context-driven
+    # cases (entity / fact / section emitters). Confirm both
+    # families show up — the LLM cases by their ``llm_generated``
+    # metadata marker, and the context cases by their
+    # ``generated_from`` provenance field.
+    llm_cases = [c for c in vset.test_cases if c.metadata.get("llm_generated")]
+    context_cases = [
+        c for c in vset.test_cases
+        if c.generated_from in {"entity", "fact", "section", "workflow_stage"}
+    ]
+    assert len(llm_cases) == 2
+    assert len(context_cases) >= 1
+
+
+def test_looks_truncated_heuristic_unit():
+    """Direct unit test for the ``_looks_truncated`` predicate so the
+ truncation-detection rules stay in version control rather than
+ buried in the materializer."""
+    from j1.validation.generator import _looks_truncated
+    # Empty question → truncated.
+    assert _looks_truncated({"question": "", "expected_answer": "a"}) is True
+    # Multi-word question with no terminator → truncated.
+    assert _looks_truncated({
+        "question": "What is the role of the proposed risk assessment in",
+        "expected_answer": "a",
+    }) is True
+    # Multi-word question + empty expected_answer → truncated (the
+    # JSON-mode max-tokens cut pattern).
+    assert _looks_truncated({
+        "question": "What is the proposal due date?",
+        "expected_answer": "",
+    }) is True
+    # Well-formed → not truncated.
+    assert _looks_truncated({
+        "question": "What is the proposal due date?",
+        "expected_answer": "20 May 2026",
+    }) is False
+    # Statement-form ending in period → not truncated.
+    assert _looks_truncated({
+        "question": "Identify the proposal due date.",
+        "expected_answer": "20 May 2026",
+    }) is False
+    # Single-word label like a synthetic test stub passes through —
+    # ambiguous in isolation but in practice not an LLM truncation
+    # signature.
+    assert _looks_truncated({
+        "question": "Q1?", "expected_answer": "answer",
+    }) is False

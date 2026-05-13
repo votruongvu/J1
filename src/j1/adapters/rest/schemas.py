@@ -623,6 +623,17 @@ class ValidationTestCaseRecord(CamelModel):
     validation_scope: str = "generic"
     difficulty: str | None = None
     domain_id: str | None = None
+    # Post-refactor provenance + UX-facing fields. ``generated_from``
+    # is a single tag (``fact``, ``entity``, ``smoke``, etc.) the FE
+    # shows as a small chip. ``confidence`` drives a confidence
+    # badge. ``reason`` is the one-sentence "why was this question
+    # useful?" tooltip. ``expected_evidence`` is a tester-readable
+    # pointer ("page 3, section 'Risk Register'") distinct from the
+    # internal ``source_artifact_id``.
+    generated_from: str | None = None
+    confidence: float | None = None
+    reason: str | None = None
+    expected_evidence: str | None = None
 
 
 class ValidationSetRecord(CamelModel):

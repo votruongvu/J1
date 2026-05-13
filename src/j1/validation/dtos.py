@@ -331,25 +331,65 @@ ValidationQuestionType = Literal[
 ]
 
 
-# Scope tag the FE uses to badge generated cases. `generic` =
-# evidence-only question (no domain lens applied). `domain_evidence`
-# = generated under domain guidance AND answer is grounded in the
-# document. `domain_enrichment` = checks the enrichment-pipeline
-# output rather than the source document. `negative_check` = the
-# domain-checklist field is missing from the evidence; the answer
-# must be the abstention sentence.
+# Scope tag the FE uses to badge generated cases. The vocabulary
+# was expanded in the question-context refactor: scopes now record
+# the CATEGORY of validation each case tests, not just "domain or
+# not".
+#
+#   document       — fact lookup against the document body
+#                    (replaces the prior fully-generic catch-all
+#                    when document context is available).
+#   domain         — uses domain pack guidance as the testing
+#                    lens (previously ``domain_evidence``).
+#   domain_enrichment — checks the enrichment-pipeline output
+#                       (preserved).
+#   graph          — entity / relationship retrieval against the
+#                    LightRAG / graph-builder output.
+#   retrieval      — retrieval-path smoke: "does the index
+#                    surface anything relevant?"
+#   workflow       — section / stage / process structure of the
+#                    document.
+#   evidence       — answer-grounding contract: response must
+#                    cite specific evidence.
+#   guardrail      — negative / off-topic / domain-trivia. The
+#                    answer must abstain rather than fabricate.
+#                    Replaces ``negative_check`` going forward;
+#                    the old value is still emitted for
+#                    backward-compat by the legacy modality cases.
+#   generic        — no document context AND no other category
+#                    applies. Should be the EXCEPTION, not the
+#                    default — testers reading a set of all-
+#                    generic questions is the bug operators
+#                    flagged for domain-specific document
+#                    validation packets.
+#   domain_evidence  — legacy alias of ``domain``. Kept so
+#                      existing test sets in the store still
+#                      validate.
+#   negative_check   — legacy alias of ``guardrail``. Same.
 ValidationScope = Literal[
     "generic",
+    "document",
+    "domain",
     "domain_evidence",
     "domain_enrichment",
+    "graph",
+    "retrieval",
+    "workflow",
+    "evidence",
+    "guardrail",
     "negative_check",
 ]
 
 
-# Test priority. `smoke` runs first, are guaranteed to be fast, and
-# fail loudly on regressions. `normal` is the bulk. `deep` is the
-# expensive long-tail (modality-aware checks, semantic judging).
-ValidationPriority = Literal["smoke", "normal", "deep"]
+# Test priority. ``smoke`` runs first and must pass to claim basic
+# index health. ``normal`` is the bulk coverage. ``critical`` are
+# tied to core document facts / known failure surfaces (e.g. the
+# planner produced specific stage names — the document had better
+# answer questions about those). ``edge`` is for guardrail /
+# negative cases — failures here flag fabrication risk.
+# ``deep`` is reserved for expensive long-tail checks (judge-
+# driven, modality-aware).
+ValidationPriority = Literal["smoke", "normal", "critical", "edge", "deep"]
 
 
 # Expected behaviour the test asserts. The runner picks which
@@ -435,6 +475,28 @@ class ValidationTestCaseDTO:
     # The domain pack id that was active when this case was
     # generated. None for domain-agnostic generation.
     domain_id: str | None = None
+    # Operator-facing provenance: which seed material did this
+    # case come from? Drives FE rendering of "Generated from"
+    # badge so a tester can audit a suspicious case quickly.
+    # Values: ``fact`` (clean chunk-derived fact), ``entity``,
+    # ``relationship``, ``section``, ``workflow_stage``,
+    # ``domain_rule``, ``modality_table`` / ``modality_image`` /
+    # ``modality_graph``, ``smoke``, ``fallback``, ``llm``.
+    generated_from: str | None = None
+    # Confidence (0-1). For LLM cases, mirrors the model's
+    # self-rated difficulty inverted. For heuristic cases, a
+    # fixed prior based on how strong the seed material was
+    # (entity from graph: high; chunk-derived noun-run: medium).
+    confidence: float | None = None
+    # Why was this question generated — a single line a tester
+    # can read without expanding the row. E.g. "Targets the
+    # 'Stage 1 Risk Assessment' entity from the document graph."
+    reason: str | None = None
+    # FE-renderable evidence pointer hints. Independent of the
+    # internal ``source_artifact_id`` plumbing: this is a short
+    # human string ("page 3, section 'Risk Register'") that the
+    # tester sees in the case row.
+    expected_evidence: str | None = None
 
 
 @dataclass(frozen=True)

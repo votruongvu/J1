@@ -228,7 +228,13 @@ def test_generator_emits_image_and_graph_cases():
     )
 
     image_cases = [c for c in vset.test_cases if c.type == "image"]
-    graph_cases = [c for c in vset.test_cases if c.type == "graph"]
+    # Post-refactor: filter the modality graph case by its
+    # ``metadata["graph"]`` marker — the context-driven entity
+    # emitter also stamps ``type="graph"`` for graph-sourced
+    # entities and would otherwise be counted here.
+    graph_cases = [
+        c for c in vset.test_cases if c.metadata.get("graph") is True
+    ]
     assert len(image_cases) == 1
     assert image_cases[0].expected_artifacts == ["art-img-1"]
     assert len(graph_cases) == 1

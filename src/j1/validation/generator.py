@@ -36,6 +36,13 @@ from typing import Any
 from j1.artifacts.models import ArtifactRecord
 from j1.domains.models import DomainValidationGuidance
 from j1.ingestion_review.projectors.chunks import _ChunkRecord
+from j1.validation.context import (
+    ContextEntity,
+    ContextFact,
+    ContextSection,
+    ValidationQuestionContext,
+    build_question_context,
+)
 from j1.validation.dtos import (
     EvidenceBlockDTO,
     LLMTraceDTO,
@@ -72,17 +79,29 @@ _DEFAULT_NEGATIVE_COUNT = 2
 # Per-evidence-block character cap in the LLM prompt. Pairs with
 # the upstream evidence builder (which already truncates each block);
 # the second cap is a defensive bound so a long block can't crowd out
-# the rest.
-_MAX_EVIDENCE_BLOCK_CHARS = 1500
+# the rest. Reduced from 1500 → 800 after operators reported slow
+# generation — at 1500 chars × 8 blocks the prompt approaches the
+# context window on small local LLMs even before the schema is
+# added, which slows the round-trip without improving grounding.
+_MAX_EVIDENCE_BLOCK_CHARS = 800
 
 # Cumulative-evidence cap. Bigger than the synthesizer's because
 # question generation needs a wider view of the document — the
 # whole-document call is what stops the LLM from inventing topics.
-_MAX_EVIDENCE_TOTAL_CHARS = 8000
+# Reduced from 8000 → 5000 along with the per-block cap; 5000 chars
+# of evidence is still plenty for the LLM to choose useful angles
+# from.
+_MAX_EVIDENCE_TOTAL_CHARS = 5000
 
-# Max completion tokens for the whole-document generation call.
-# Enough for 8 grounded cases × ~80 tokens each.
-_MAX_OUTPUT_TOKENS = 1024
+# Cap on grounded cases requested from the LLM in a single call.
+# Local LLMs misbehave above ~10 cases: output tokens grow past the
+# typical 1024-2048 ``max_tokens`` setting, the last case's question
+# / expected_answer gets truncated mid-string, and total wall-clock
+# stretches past 30 seconds. When the operator's ``max_cases``
+# budget is bigger than this cap, the remainder is filled with the
+# fast deterministic heuristic — much better than emitting a
+# nonsensical truncated case.
+_LLM_MAX_GROUNDED_PER_CALL = 8
 
 # Allowed question-type tags. Mirrors `ValidationQuestionType` —
 # kept here so the JSON schema validator rejects out-of-vocabulary
@@ -188,7 +207,20 @@ class GenerationOptions:
  REST request → service → generator chain doesn't grow a six-arg
  function signature."""
 
-    max_cases: int = 25
+    # Default tuned for small/medium documents: 1 smoke + ~3
+    # modality + ~3 workflow/entity + ~5 fact + ~2 domain + 2
+    # negative = ~16 cases. Lower than the prior default of 25
+    # because the per-call LLM cap is 8 and the heuristic
+    # top-up was producing low-signal cases. Operators who want
+    # more coverage can bump ``max_cases`` per request.
+    max_cases: int = 15
+    # Lower bound: drop below this only when the run produced
+    # genuinely no context (no chunks AND no enriched
+    # artifacts AND no domain pack). The service's caller can
+    # set ``max_cases`` below this to short-circuit, but the
+    # default flow targets at least ``min_cases`` whenever
+    # enough context exists.
+    min_cases: int = 10
     citation_required: bool = False
     # Chunk-id force-include list. When non-empty, the generator
     # ensures these chunks show up in the sample (if they exist).
@@ -253,17 +285,30 @@ class DefaultTestCaseGenerator:
         table_artifacts: list[ArtifactRecord] | None = None,
         visual_artifacts: list[ArtifactRecord] | None = None,
         graph_artifacts: list[ArtifactRecord] | None = None,
-        # NEW: real evidence blocks (chunk bodies + compiled.text
-        # windows) the service built via `build_evidence_blocks`.
+        # Real evidence blocks (chunk bodies + compiled.text
+        # windows) the service built via ``build_evidence_blocks``.
         # When supplied, the LLM gets a single whole-document call
         # instead of N per-chunk calls — this is what stops the
         # generator from emitting off-topic questions.
         evidence_blocks: list[EvidenceBlockDTO] | None = None,
-        # NEW: domain guidance loaded from `domain.yaml`'s
-        # `validation:` block. Used purely as a testing-lens
+        # Domain guidance loaded from ``domain.yaml``'s
+        # ``validation:`` block. Used purely as a testing-lens
         # rubric — never as factual evidence. None = generic mode.
         domain_guidance: DomainValidationGuidance | None = None,
         domain_id: str | None = None,
+        # Enriched-pipeline artifacts (``enriched.document_map``,
+        # ``enriched.summary``, etc.). When the registry exposed
+        # them the context builder mines them for entities,
+        # relationships, and a doc purpose string — richer seed
+        # material than chunks alone. Optional; the generator
+        # gracefully degrades to chunk-only context when they're
+        # absent.
+        enriched_artifacts: list[ArtifactRecord] | None = None,
+        # The ``final_ingestion_report`` artifact, decoded. Carries
+        # ``document_name`` / ``document_id`` / ``page_count`` /
+        # ``compile_summary`` which the context uses for titles +
+        # page references. Optional.
+        final_report: dict[str, Any] | None = None,
     ) -> ValidationSetDTO:
         """Build a validation set from the run's chunks + modality
  artifacts + (when wired) one whole-document LLM call grounded
@@ -287,8 +332,27 @@ class DefaultTestCaseGenerator:
             must_include_ids=opts.must_include_chunk_ids,
         )
 
+        # Build the structured ValidationQuestionContext from
+        # everything the registry exposed. This is the seed pool
+        # the question generators read from. Building it up front
+        # — even when chunks are empty — lets the smoke / graph /
+        # modality emitters reference doc-specific names instead
+        # of the prior hardcoded "What is this document about?"
+        # boilerplate.
+        context = build_question_context(
+            chunks=chunks,
+            table_artifacts=table_artifacts,
+            visual_artifacts=visual_artifacts,
+            graph_artifacts=graph_artifacts,
+            enriched_artifacts=enriched_artifacts,
+            final_report=final_report,
+            domain_id=domain_id,
+            domain_guidance=domain_guidance,
+        )
+
         cases: list[ValidationTestCaseDTO] = [
-            _smoke_case(
+            _smoke_case_from_context(
+                context=context,
                 citation_required=opts.citation_required,
                 domain_id=domain_id,
             ),
@@ -306,22 +370,35 @@ class DefaultTestCaseGenerator:
             if len(cases) >= opts.max_cases:
                 break
             cases.append(_image_case(visual, domain_id=domain_id))
-        # Graph cases — deduplicated per-run. Earlier versions
-        # emitted one identical "What are the main entities…" case
-        # per graph artifact (3 artifacts → 3 identical questions).
-        # The deduper coalesces artifacts that name the same top
-        # entities into ONE case carrying all matching artifact ids
-        # as `expected_artifacts`. Per-artifact entity hints, when
-        # present, generate entity-specific questions instead of
-        # the boilerplate.
+        # Graph cases — context-aware. When the registry surfaced
+        # graph artifacts we coalesce them by top-entity sets so
+        # three identical "main entities…" cases collapse to one.
+        # When the context also has entity / relationship seeds,
+        # subsequent emitters add entity-specific questions
+        # tagged with the ``graph`` scope.
         for case in _graph_cases_deduped(
             graph_artifacts or [],
             limit=opts.max_graph_cases,
             domain_id=domain_id,
+            context=context,
         ):
             if len(cases) >= opts.max_cases:
                 break
             cases.append(case)
+
+        # Context-driven category emitters. Each emits 0-N cases
+        # depending on what the context surfaced. The output here
+        # is what fixes the "all Generic / 3 questions" complaint
+        # for domain-specific validation packets: entity, section,
+        # workflow-stage, and fact emitters each contribute
+        # document-specific questions with proper scopes.
+        category_cases = _emit_context_cases(
+            context=context,
+            budget=max(0, opts.max_cases - len(cases)),
+            citation_required=opts.citation_required,
+            domain_id=domain_id,
+        )
+        cases.extend(category_cases)
 
         # Whole-document LLM generation. One call with the full
         # evidence list + domain guidance instead of N per-chunk
@@ -338,18 +415,29 @@ class DefaultTestCaseGenerator:
         )
         positive_budget = max(0, budget - negative_slots)
 
+        # Cap what we ask the LLM for in one call. Above ~8 cases
+        # local LLMs tend to truncate mid-string (output exceeds
+        # ``max_tokens``), producing nonsensical "cut" questions
+        # the operator can't act on. Anything left in the
+        # positive_budget after the LLM call is filled by the
+        # deterministic heuristic — fast (no round-trip) and
+        # guaranteed not to be truncated.
+        llm_budget = min(positive_budget, _LLM_MAX_GROUNDED_PER_CALL)
         llm_cases, llm_trace = self._llm_generate_grounded_cases(
             evidence_blocks=evidence_blocks or [],
             domain_guidance=domain_guidance,
             domain_id=domain_id,
-            budget=positive_budget,
+            budget=llm_budget,
             citation_required=opts.citation_required,
         )
-        if llm_cases:
-            cases.extend(llm_cases)
-        elif sampled and positive_budget > 0:
-            # Fallback path: heuristic (no LLM / LLM failure).
-            # Generates one generic-form question per sampled chunk.
+        cases.extend(llm_cases)
+        # Top up with heuristic cases when the LLM (a) didn't run,
+        # (b) returned fewer than asked, or (c) the caller's
+        # max_cases budget is bigger than what we're willing to ask
+        # the LLM for in one call. The heuristic produces deterministic
+        # generic-form questions and is bounded by sampled chunks.
+        heuristic_needed = (opts.max_cases - negative_slots) - len(cases)
+        if heuristic_needed > 0 and sampled:
             for chunk in sampled:
                 if len(cases) >= opts.max_cases - negative_slots:
                     break
@@ -379,6 +467,14 @@ class DefaultTestCaseGenerator:
             if len(cases) >= opts.max_cases:
                 break
             cases.append(neg)
+
+        # Post-emit quality pass: drop cases that look generic /
+        # raw-chunk-text-injected, dedupe near-duplicates by
+        # normalised question text. Spec section 12 enumerates
+        # the reject criteria — the smoke case is exempt so the
+        # set always has at least the "is the index alive?"
+        # baseline regardless of how aggressive the filter is.
+        cases = _filter_and_dedupe_cases(cases, context=context)
 
         artifacts_hash = _hash_chunks(sampled)
         context_summary = _build_context_summary(
@@ -490,7 +586,15 @@ class DefaultTestCaseGenerator:
         cases: list[ValidationTestCaseDTO] = []
         evidence_by_id = {b.artifact_id: b for b in evidence_blocks}
         evidence_full_text = " ".join(b.text or "" for b in evidence_blocks)
+        truncated_dropped = 0
         for raw in raw_cases[:budget]:
+            # Defensive: when the LLM hit max_tokens mid-output the
+            # JSON-mode response can still parse but the last
+            # question / expected_answer ends abruptly. Drop those
+            # so testers don't see nonsensical "what is the…" rows.
+            if _looks_truncated(raw):
+                truncated_dropped += 1
+                continue
             case = _materialize_llm_case(
                 raw=raw,
                 evidence_by_id=evidence_by_id,
@@ -500,6 +604,23 @@ class DefaultTestCaseGenerator:
             )
             if case is not None:
                 cases.append(case)
+
+        if truncated_dropped:
+            _log.warning(
+                "validation generator dropped %d truncated LLM "
+                "case(s) (provider=%s model=%s latency_ms=%d "
+                "budget=%d returned=%d); consider raising the LLM's "
+                "max_output_tokens or lowering the per-call grounded "
+                "cap (_LLM_MAX_GROUNDED_PER_CALL)",
+                truncated_dropped, provider, model, latency_ms,
+                budget, len(raw_cases),
+            )
+        _log.info(
+            "validation generator LLM call: provider=%s model=%s "
+            "latency_ms=%d budget=%d raw=%d emitted=%d dropped_truncated=%d",
+            provider, model, latency_ms, budget, len(raw_cases),
+            len(cases), truncated_dropped,
+        )
 
         trace = LLMTraceDTO(
             called=True,
@@ -513,29 +634,6 @@ class DefaultTestCaseGenerator:
 
 
 # ---- Module-level helpers (unit-testable in isolation) -------------
-
-
-def _smoke_case(
-    *, citation_required: bool, domain_id: str | None = None,
-) -> ValidationTestCaseDTO:
-    """The canonical 'is the index alive?' smoke case. Shows up in
- every generated set so a tester always has a fast pass/fail
- signal even if the rest of the set is slow or fails."""
-    return ValidationTestCaseDTO(
-        test_case_id=f"tc-smoke-{uuid.uuid4().hex[:8]}",
-        question="What is this document about?",
-        type="retrieval",
-        priority="smoke",
-        expected_behavior="answer_with_citations",
-        expected_answer_points=[],
-        expected_chunks=[],
-        citation_required=citation_required,
-        source_traceability=[],
-        metadata={"smoke": True},
-        question_type="summary",
-        validation_scope="generic",
-        domain_id=domain_id,
-    )
 
 
 def _negative_case(
@@ -560,7 +658,7 @@ def _negative_case(
         test_case_id=f"tc-neg-{uuid.uuid4().hex[:8]}",
         question=question,
         type="negative",
-        priority="normal",
+        priority="edge",
         expected_behavior="abstain",
         expected_answer_points=[],
         expected_chunks=[],
@@ -578,8 +676,16 @@ def _negative_case(
         source_artifact_id=None,
         source_artifact_type=None,
         question_type="missing_information_check",
-        validation_scope="negative_check",
+        validation_scope="guardrail",
         domain_id=domain_id,
+        generated_from="domain_rule",
+        confidence=0.75,
+        reason=(
+            f"Guardrail: domain pack flagged {field_label!r} as a "
+            f"field the document may not cover; engine must abstain."
+            if field_label
+            else "Guardrail: off-topic question; engine must abstain."
+        ),
     )
 
 
@@ -614,10 +720,19 @@ def _table_case(
         source_traceability=[artifact.artifact_id],
         metadata={"table": True, "artifact_id": artifact.artifact_id},
         question_type="table_extraction",
-        validation_scope="generic",
+        validation_scope="evidence",
         source_artifact_id=artifact.artifact_id,
         source_artifact_type=artifact.kind,
         domain_id=domain_id,
+        generated_from="modality_table",
+        confidence=0.75,
+        reason=(
+            f"Targets the extracted-table artifact "
+            f"{artifact.artifact_id!r}."
+        ),
+        expected_evidence=(
+            f"table on {page_hint}" if page_hint else f"table {label}"
+        ),
     )
 
 
@@ -643,10 +758,19 @@ def _image_case(
         source_traceability=[artifact.artifact_id],
         metadata={"image": True, "artifact_id": artifact.artifact_id},
         question_type="fact_retrieval",
-        validation_scope="generic",
+        validation_scope="evidence",
         source_artifact_id=artifact.artifact_id,
         source_artifact_type=artifact.kind,
         domain_id=domain_id,
+        generated_from="modality_image",
+        confidence=0.7,
+        reason=(
+            f"Targets the visual-content artifact "
+            f"{artifact.artifact_id!r}."
+        ),
+        expected_evidence=(
+            f"image on {page_hint}" if page_hint else f"image {label}"
+        ),
     )
 
 
@@ -689,6 +813,7 @@ def _graph_cases_deduped(
     *,
     limit: int,
     domain_id: str | None,
+    context: ValidationQuestionContext | None = None,
 ) -> list[ValidationTestCaseDTO]:
     """Produce at most `limit` graph cases, deduplicated by the set
  of expected entity ids the artifacts surface.
@@ -730,6 +855,7 @@ def _graph_cases_deduped(
             artifacts=artifacts,
             entities=list(entities),
             domain_id=domain_id,
+            context=context,
         ))
     return cases
 
@@ -739,22 +865,52 @@ def _graph_case_from_bucket(
     artifacts: list[ArtifactRecord],
     entities: list[str],
     domain_id: str | None,
+    context: ValidationQuestionContext | None = None,
 ) -> ValidationTestCaseDTO:
     """Build one graph case for a bucket of artifacts that share the
- same expected entities. When `entities` has 2+ items we phrase
+ same expected entities. When ``entities`` has 2+ items we phrase
  the question as a relationship lookup between the top two —
  grades the answer for specific entity mentions rather than
  the generic "what are the entities" boilerplate. When the
- bucket has no entity hints we fall back to the boilerplate."""
+ bucket has no entity hints AND the context surfaced ANY
+ entities at all, we fall back to context-derived ones so the
+ graph emitter never lands on the prior all-generic boilerplate.
+ """
     first = artifacts[0]
     artifact_ids = [a.artifact_id for a in artifacts]
-    if len(entities) >= 2:
-        a, b = entities[0], entities[1]
+    # When the artifact lacks per-row entity hints, lean on the
+    # context's top entities. The graph emitter is supposed to be
+    # the most ENTITY-AWARE path; falling back to the generic
+    # "what are the entities" boilerplate was the bug operators
+    # hit for domain-specific validation packets.
+    effective_entities = entities
+    if not effective_entities and context is not None:
+        effective_entities = [
+            e.name for e in context.entities[:3]
+        ]
+    if len(effective_entities) >= 2:
+        a, b = effective_entities[0], effective_entities[1]
         question = (
             f"What is the relationship between {a} and {b} in this document?"
         )
         expected_answer = (
             f"The document describes a relationship between {a} and {b}."
+        )
+        reason = (
+            f"Targets the relationship between two top entities "
+            f"({a!r}, {b!r}) surfaced by the graph artifact."
+        )
+    elif len(effective_entities) == 1:
+        only = effective_entities[0]
+        question = (
+            f"What does the document say about {only}?"
+        )
+        expected_answer = (
+            f"The document discusses {only}."
+        )
+        reason = (
+            f"Targets the top entity {only!r} surfaced by the "
+            f"graph artifact."
         )
     else:
         question = (
@@ -762,6 +918,11 @@ def _graph_case_from_bucket(
             "in this document?"
         )
         expected_answer = None
+        reason = (
+            "Graph artifact present but no per-row entity hints "
+            "and the context didn't surface any entities — falling "
+            "back to the entity-discovery boilerplate."
+        )
     return ValidationTestCaseDTO(
         test_case_id=f"tc-graph-{uuid.uuid4().hex[:8]}",
         question=question,
@@ -769,7 +930,7 @@ def _graph_case_from_bucket(
         priority="normal",
         expected_behavior="validate_relationship",
         expected_artifacts=artifact_ids,
-        expected_graph_nodes=list(entities),
+        expected_graph_nodes=list(effective_entities),
         citation_required=True,
         source_traceability=list(artifact_ids),
         metadata={
@@ -778,23 +939,554 @@ def _graph_case_from_bucket(
             "deduped_artifact_count": len(artifacts),
         },
         question_type="reasoning_from_context",
-        validation_scope="generic",
+        # ``graph`` is the post-refactor scope for these cases —
+        # previously ``generic`` which gave testers no way to
+        # filter graph-path questions in the Validation tab.
+        validation_scope="graph",
         source_artifact_id=first.artifact_id,
         source_artifact_type=first.kind,
         domain_id=domain_id,
         expected_answer=expected_answer,
+        generated_from="modality_graph",
+        confidence=0.85 if len(effective_entities) >= 2 else 0.6,
+        reason=reason,
     )
+
+
+# ---- Context-driven emitters (post-refactor) ------------------------
+#
+# These emitters are what stops the generator from emitting
+# all-generic / 3-question sets for documents with rich context.
+# Each consumes the ``ValidationQuestionContext`` and produces
+# 0-N cases depending on what the document actually carries.
+# Scope / type / priority / generated_from / reason fields are
+# stamped at emission time so the FE can group + audit cases
+# without inferring from question text.
+
+
+def _smoke_case_from_context(
+    *,
+    context: ValidationQuestionContext,
+    citation_required: bool,
+    domain_id: str | None = None,
+) -> ValidationTestCaseDTO:
+    """Document-aware smoke case. Uses the title (when known) so
+    the smoke isn't the same "What is this document about?"
+    sentence for every run. The smoke remains required-to-pass —
+    a working index should always be able to surface a topical
+    summary for a document it ingested.
+    """
+    title = (context.document_title or "").strip()
+    if title:
+        question = f"What is the {title} document about?"
+        reason = (
+            f"Smoke test: confirm the index can summarise the "
+            f"document whose title is {title!r}."
+        )
+    else:
+        question = "What is this document about?"
+        reason = "Smoke test: confirm the index produces ANY answer."
+    expected_evidence: str | None = None
+    if context.page_count:
+        expected_evidence = (
+            f"document has {context.page_count} pages — answer "
+            f"should reference some of them"
+        )
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-smoke-{uuid.uuid4().hex[:8]}",
+        question=question,
+        type="retrieval",
+        priority="smoke",
+        expected_behavior="answer_with_citations",
+        expected_answer_points=[],
+        expected_chunks=[],
+        citation_required=citation_required,
+        source_traceability=[],
+        metadata={"smoke": True, "context_title": title or None},
+        question_type="summary",
+        # ``document`` is the post-refactor scope: the smoke
+        # case tests the document path specifically, not a
+        # vague "generic" bucket.
+        validation_scope="document",
+        domain_id=domain_id,
+        generated_from="smoke",
+        confidence=0.95,
+        reason=reason,
+        expected_evidence=expected_evidence,
+    )
+
+
+def _emit_context_cases(
+    *,
+    context: ValidationQuestionContext,
+    budget: int,
+    citation_required: bool,
+    domain_id: str | None,
+) -> list[ValidationTestCaseDTO]:
+    """Emit context-driven cases across the user-spec categories.
+
+    Order is deterministic per call: workflow → entities →
+    sections → facts → domain → guardrail. Each category is
+    bounded by per-category caps so a doc rich in entities
+    doesn't crowd out facts and vice versa. Stops once ``budget``
+    is exhausted.
+
+    The output here is what gives a domain-rich validation
+    packet its ~12-15 questions across multiple scopes —
+    operators see workflow stages, entity questions, section
+    walks, and fact lookups instead of three generic boilerplate
+    rows.
+    """
+    if budget <= 0 or not context.has_any_facts():
+        return []
+    out: list[ValidationTestCaseDTO] = []
+    remaining = lambda: max(0, budget - len(out))  # noqa: E731
+
+    # 1. Workflow stages — high signal when present (process-
+    #    heavy documents, validation packets, runbooks).
+    #    Bounded to 3 to leave room for the other categories.
+    for stage in context.workflow_stages[: min(3, remaining())]:
+        out.append(_workflow_case(
+            stage=stage, context=context, domain_id=domain_id,
+            citation_required=citation_required,
+        ))
+        if not remaining():
+            return out
+
+    # 2. Entity questions — pick the top entities not already
+    #    covered by graph cases. Cap at 4.
+    for entity in context.entities[: min(4, remaining())]:
+        out.append(_entity_case(
+            entity=entity, context=context, domain_id=domain_id,
+            citation_required=citation_required,
+        ))
+        if not remaining():
+            return out
+
+    # 3. Section / structure questions — cap at 2 so a deeply
+    #    sectioned doc doesn't fill the set with structure-only.
+    for section in context.sections[: min(2, remaining())]:
+        out.append(_section_case(
+            section=section, context=context, domain_id=domain_id,
+            citation_required=citation_required,
+        ))
+        if not remaining():
+            return out
+
+    # 4. Fact retrieval — the bulk. Cap at 5 so the set retains
+    #    diversity. Each fact pins a question against a specific
+    #    chunk + page so the runner can verify retrieval surfaced
+    #    the right chunk.
+    for fact in context.facts[: min(5, remaining())]:
+        out.append(_fact_case(
+            fact=fact, context=context, domain_id=domain_id,
+            citation_required=citation_required,
+        ))
+        if not remaining():
+            return out
+
+    # 5. Domain context — when a domain pack is wired AND
+    #    important_fields are declared, emit one question per
+    #    field that the document might cover. Distinct from the
+    #    domain-negative emitter (which fires when fields are
+    #    NOT covered). Capped at 2.
+    if context.domain_guidance is not None and context.domain_guidance.enabled:
+        for field_name in (
+            context.domain_guidance.important_fields[: min(2, remaining())]
+        ):
+            out.append(_domain_case(
+                field_name=field_name, context=context,
+                domain_id=domain_id,
+                citation_required=citation_required,
+            ))
+            if not remaining():
+                return out
+
+    return out
+
+
+def _entity_case(
+    *,
+    entity: ContextEntity,
+    context: ValidationQuestionContext,
+    domain_id: str | None,
+    citation_required: bool,
+) -> ValidationTestCaseDTO:
+    name = entity.name
+    if entity.source == "graph":
+        question = f"What does the document graph say about {name}?"
+        scope: ValidationScope = "graph"
+        case_type: ValidationTestType = "graph"
+        confidence = 0.85
+    elif entity.source == "document_map":
+        question = f"What does the document say about {name}?"
+        scope = "document"
+        case_type = "retrieval"
+        confidence = 0.8
+    else:
+        question = f"What is the role of {name} in the document?"
+        scope = "retrieval"
+        case_type = "retrieval"
+        confidence = 0.65
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-ent-{uuid.uuid4().hex[:8]}",
+        question=question,
+        type=case_type,
+        priority="normal",
+        expected_behavior="answer_with_citations",
+        expected_answer_points=[name],
+        expected_chunks=[],
+        citation_required=citation_required,
+        source_traceability=[],
+        metadata={"entity": name, "entity_source": entity.source},
+        question_type="fact_retrieval",
+        validation_scope=scope,
+        domain_id=domain_id,
+        generated_from="entity",
+        confidence=confidence,
+        reason=(
+            f"Targets the {entity.source}-surfaced entity {name!r} "
+            f"(occurrences={entity.occurrences})."
+        ),
+    )
+
+
+def _section_case(
+    *,
+    section: ContextSection,
+    context: ValidationQuestionContext,
+    domain_id: str | None,
+    citation_required: bool,
+) -> ValidationTestCaseDTO:
+    page_hint = (
+        f" on page {section.page}" if section.page is not None else ""
+    )
+    question = f"What does the section {section.title!r}{page_hint} cover?"
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-sec-{uuid.uuid4().hex[:8]}",
+        question=question,
+        type="retrieval",
+        priority="normal",
+        expected_behavior="answer_with_citations",
+        expected_answer_points=[],
+        expected_chunks=[],
+        expected_pages=[section.page] if section.page is not None else [],
+        citation_required=citation_required,
+        source_traceability=[],
+        metadata={"section": section.title, "page": section.page},
+        question_type="summary",
+        validation_scope="workflow",
+        domain_id=domain_id,
+        generated_from="section",
+        confidence=0.7,
+        reason=(
+            f"Targets the section heading {section.title!r}"
+            + (f" (page {section.page})" if section.page else "")
+            + "."
+        ),
+        expected_evidence=(
+            f"section: {section.title}"
+            + (f", page {section.page}" if section.page else "")
+        ),
+    )
+
+
+def _workflow_case(
+    *,
+    stage: str,
+    context: ValidationQuestionContext,
+    domain_id: str | None,
+    citation_required: bool,
+) -> ValidationTestCaseDTO:
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-wf-{uuid.uuid4().hex[:8]}",
+        question=f"What does the document say about {stage}?",
+        type="retrieval",
+        priority="critical",
+        expected_behavior="answer_with_citations",
+        expected_answer_points=[stage],
+        expected_chunks=[],
+        citation_required=citation_required,
+        source_traceability=[],
+        metadata={"workflow_stage": stage},
+        question_type="fact_retrieval",
+        validation_scope="workflow",
+        domain_id=domain_id,
+        generated_from="workflow_stage",
+        confidence=0.85,
+        reason=f"Targets the workflow stage {stage!r}.",
+    )
+
+
+def _fact_case(
+    *,
+    fact: ContextFact,
+    context: ValidationQuestionContext,
+    domain_id: str | None,
+    citation_required: bool,
+) -> ValidationTestCaseDTO:
+    """A fact-grounded retrieval case. The question is phrased
+    AROUND the fact's topic — never quoting the fact body
+    verbatim in the question string (the section-3 rule)."""
+    topic = _topic_from_fact(fact.text)
+    if topic:
+        question = f"What does the document say about {topic}?"
+    else:
+        # No clean topic extractable; emit a section/page question
+        # rather than dump the fact body into the prompt.
+        if fact.section:
+            question = f"What does the section {fact.section!r} say?"
+        elif fact.page is not None:
+            question = f"What does page {fact.page} of the document say?"
+        else:
+            return _smoke_followup_case(
+                fact=fact, context=context, domain_id=domain_id,
+                citation_required=citation_required,
+            )
+    expected_evidence = None
+    if fact.page is not None and fact.section:
+        expected_evidence = f"page {fact.page}, section {fact.section!r}"
+    elif fact.page is not None:
+        expected_evidence = f"page {fact.page}"
+    elif fact.section:
+        expected_evidence = f"section {fact.section!r}"
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-fact-{uuid.uuid4().hex[:8]}",
+        question=question,
+        type="retrieval",
+        priority="normal",
+        expected_behavior="answer_with_citations",
+        expected_answer_points=[topic] if topic else [],
+        expected_chunks=[fact.chunk_id] if fact.chunk_id else [],
+        expected_pages=[fact.page] if fact.page is not None else [],
+        citation_required=citation_required,
+        source_traceability=[fact.chunk_id] if fact.chunk_id else [],
+        metadata={
+            "fact_chunk_id": fact.chunk_id,
+            "fact_page": fact.page,
+        },
+        question_type="fact_retrieval",
+        validation_scope="evidence",
+        source_artifact_id=fact.artifact_id,
+        domain_id=domain_id,
+        generated_from="fact",
+        confidence=0.75,
+        reason=(
+            f"Targets a fact extracted from "
+            f"{'page ' + str(fact.page) if fact.page else 'a chunk'}."
+        ),
+        expected_evidence=expected_evidence,
+    )
+
+
+def _smoke_followup_case(
+    *,
+    fact: ContextFact,
+    context: ValidationQuestionContext,
+    domain_id: str | None,
+    citation_required: bool,
+) -> ValidationTestCaseDTO:
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-rtr-{uuid.uuid4().hex[:8]}",
+        question="Find a chunk that mentions the document's core topic.",
+        type="retrieval",
+        priority="smoke",
+        expected_behavior="retrieve_evidence",
+        expected_answer_points=[],
+        expected_chunks=[fact.chunk_id] if fact.chunk_id else [],
+        citation_required=False,
+        source_traceability=[fact.chunk_id] if fact.chunk_id else [],
+        metadata={"retrieval_followup": True},
+        question_type="fact_retrieval",
+        validation_scope="retrieval",
+        domain_id=domain_id,
+        generated_from="fallback",
+        confidence=0.4,
+        reason="No clean topic in fact body; retrieval-only check.",
+    )
+
+
+def _domain_case(
+    *,
+    field_name: str,
+    context: ValidationQuestionContext,
+    domain_id: str | None,
+    citation_required: bool,
+) -> ValidationTestCaseDTO:
+    """One question per domain ``important_field``. Phrased as a
+    direct lookup so the runner can verify the answer mentions
+    the field's value — if the document covers it. The negative
+    counterpart (``domain_negative_cases``) handles the
+    "field is missing" branch."""
+    label = field_name.replace("_", " ")
+    return ValidationTestCaseDTO(
+        test_case_id=f"tc-dom-{uuid.uuid4().hex[:8]}",
+        question=f"What does the document say about {label}?",
+        type="domain",
+        priority="normal",
+        expected_behavior="answer_with_citations",
+        expected_answer_points=[label],
+        expected_chunks=[],
+        citation_required=citation_required,
+        source_traceability=[],
+        metadata={"domain_field": field_name},
+        question_type="domain_enrichment_check",
+        validation_scope="domain",
+        domain_id=domain_id,
+        generated_from="domain_rule",
+        confidence=0.7,
+        reason=(
+            f"Domain pack flagged {field_name!r} as an important "
+            f"field for this domain."
+        ),
+    )
+
+
+# ---- Quality filter + dedup ----------------------------------------
+
+
+def _filter_and_dedupe_cases(
+    cases: list[ValidationTestCaseDTO],
+    *,
+    context: ValidationQuestionContext,
+) -> list[ValidationTestCaseDTO]:
+    """Two passes over the emitted cases:
+
+      1. Drop cases that fail quality (raw-chunk-injection, vague
+         "this document" phrasing without a topic anchor, generic
+         domain trivia without grounding, etc.). Smoke + negative
+         cases are exempt — they have legitimate reasons to be
+         short / generic / topic-free.
+      2. Dedupe by normalised question text. Earlier-emitted
+         cases win — preserves the smoke + modality order.
+
+    Returns a new list; never mutates the input.
+    """
+    kept: list[ValidationTestCaseDTO] = []
+    seen_normalised: set[str] = set()
+    for case in cases:
+        if not _passes_quality(case, context=context):
+            continue
+        key = _normalise_question_for_dedup(case.question)
+        if key in seen_normalised:
+            continue
+        seen_normalised.add(key)
+        kept.append(case)
+    return kept
+
+
+def _passes_quality(
+    case: ValidationTestCaseDTO,
+    *,
+    context: ValidationQuestionContext,
+) -> bool:
+    """Reject low-value cases. The spec section-12 criteria are
+    encoded as a series of predicates so the rules are auditable
+    and individually testable.
+
+    The smoke case is exempt — its job is to be the "is the index
+    alive?" baseline regardless of how aggressive the filter
+    becomes."""
+    if case.metadata.get("smoke"):
+        return True
+    if case.validation_scope in {"negative_check", "guardrail"}:
+        return True
+    question = (case.question or "").strip()
+    if not question:
+        return False
+    # Raw-chunk-text injection signature: a quoted run over 80
+    # chars OR pipe-separated metadata. The previous heuristic
+    # emitted these and that's the spec's section-3 bug.
+    if _contains_raw_chunk_quote(question):
+        return False
+    # "What does the document say about 'this document'?" type
+    # cycles. Vague phrasings without a real topic anchor.
+    lowered = question.lower()
+    vague_phrases = (
+        "about this document", "in this document",
+        "in the document only",  # negative-check-coded phrasing
+    )
+    # Allow "in this document" when the question references a
+    # concrete entity / section. Reject only when the question
+    # is ENTIRELY about the document-as-vague-topic.
+    if (
+        "this document" in lowered
+        and len(question) < 50
+        and not any(s in lowered for s in (":", "?", "stage", "section"))
+    ):
+        return False
+    if any(p in lowered for p in vague_phrases) and len(question) < 45:
+        return False
+    return True
+
+
+def _contains_raw_chunk_quote(question: str) -> bool:
+    """A question is considered raw-chunk-injection if it carries
+    a quoted run longer than 80 characters (chunk-title injection
+    signature) OR the quoted run contains pipe-separated metadata.
+
+    The threshold is conservative — legitimate quoted-section
+    references like ``the section 'Risk Register' on page 3``
+    pass because they're under 30 chars."""
+    # Find quoted runs delimited by ``"…"`` or ``'…'``.
+    for match in re.finditer(r"[\"']([^\"']{0,400})[\"']", question):
+        body = match.group(1)
+        if len(body) > 80:
+            return True
+        if body.count("|") >= 2:
+            return True
+    return False
+
+
+def _normalise_question_for_dedup(question: str) -> str:
+    """Lowercase, collapse whitespace, strip punctuation. Lets us
+    dedupe near-duplicates that differ only in punctuation /
+    case (e.g. "What is this document about?" vs "what is this
+    document about")."""
+    return _FACT_NORMALISE_RE.sub(" ", (question or "").strip().lower()).strip()
+
+
+_FACT_NORMALISE_RE = re.compile(r"[\s\.,;:!?\"'()\[\]{}]+")
+
+
+def _topic_from_fact(text: str) -> str | None:
+    """Extract a short noun-phrase topic from a fact sentence.
+
+    Heuristic: walk the first capitalised noun-run; reject when
+    nothing emerges or the run is overly long (we'd be injecting
+    a near-verbatim fact body — exactly the bug we're fixing).
+    """
+    if not text:
+        return None
+    # Look for the first capitalised noun-run of 1-5 words.
+    match = re.search(
+        r"\b([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,4})\b",
+        text,
+    )
+    if match is None:
+        return None
+    topic = match.group(1).strip()
+    if len(topic) > 60 or len(topic) < 3:
+        return None
+    return topic
 
 
 def _label_for_artifact(artifact: ArtifactRecord) -> str:
     """Short human-readable label for use inside generated questions.
  Prefers an explicit `title` from the artifact metadata, falls
  back to the kind/id pair so questions never reference an
- empty placeholder."""
+ empty placeholder.
+
+ The id is included in full (not the prior ``[:8]`` truncation)
+ because that truncation made labels collide across sibling
+ artifacts whose ids share a prefix — e.g. ``art-table-0`` and
+ ``art-table-1`` both produced ``enriched.tables/art-tabl``,
+ which the new dedup correctly killed as duplicates. Using the
+ full id keeps each modality case's question unique."""
     title = artifact.metadata.get("title")
     if isinstance(title, str) and title.strip():
         return title.strip()[:80]
-    return f"{artifact.kind}/{artifact.artifact_id[:8]}"
+    return f"{artifact.kind}/{artifact.artifact_id}"
 
 
 def _page_hint(artifact: ArtifactRecord) -> str:
@@ -1206,7 +1898,7 @@ def _materialize_llm_case(
             test_case_id=f"tc-{uuid.uuid4().hex[:10]}",
             question=question,
             type="negative",
-            priority="normal",
+            priority="edge",
             expected_behavior="abstain",
             expected_answer_points=[],
             expected_chunks=[],
@@ -1218,9 +1910,15 @@ def _materialize_llm_case(
             source_artifact_id=None,
             source_artifact_type=None,
             question_type=question_type or "missing_information_check",
-            validation_scope="negative_check",
+            validation_scope="guardrail",
             difficulty=difficulty,
             domain_id=domain_id,
+            generated_from="llm",
+            confidence=0.7,
+            reason=(
+                "LLM emitted a missing-information-check question "
+                "for a field the evidence didn't cover."
+            ),
         )
 
     if quote is None or source_artifact_id is None:
@@ -1250,7 +1948,61 @@ def _materialize_llm_case(
         validation_scope=scope,
         difficulty=difficulty,
         domain_id=domain_id,
+        generated_from="llm",
+        confidence=0.85,
+        reason=(
+            f"LLM-grounded against evidence in artifact "
+            f"{source_artifact_id!r}."
+        ),
     )
+
+
+def _looks_truncated(raw: Any) -> bool:
+    """Heuristic: did the LLM emit this case while running into the
+    output-token ceiling?
+
+    JSON-mode responses produce syntactically-valid JSON even when
+    the model hits ``max_tokens`` mid-string, but the last
+    string-typed value gets cut without proper punctuation. The
+    operator then sees a row like:
+
+        Q: "What is the role of the proposed risk assessment in"
+        A: ""
+
+    which is worse than no row at all. Two strong signals:
+
+      * ``question`` ends mid-word — no sentence terminator AND
+        the question has whitespace (i.e. it's a real sentence
+        someone started writing, not a single label). Local LLMs
+        almost always emit ``?`` when the question is complete.
+      * ``expected_answer`` is empty WHEN the question has more
+        than a few words. JSON-mode collapses the cut field to
+        ``""``; pairing that with a long question is the
+        truncation signature.
+
+    Single-token "Q1?" labels and similar pass through — we want
+    to drop nonsensical cuts, not synthetically-short cases.
+    """
+    if not isinstance(raw, dict):
+        return False
+    question = str(raw.get("question") or "").strip()
+    expected = str(raw.get("expected_answer") or "").strip()
+    if not question:
+        return True
+    # Allow ``.``, ``?``, ``!``, ``"``, ``)``, ``…`` as terminators.
+    # Anything else trailing strongly suggests the model was
+    # mid-word when it ran out of tokens — but ONLY when the
+    # question is long enough to be a real sentence. Short
+    # tokens like "Q1" or "smoke" pass through.
+    has_terminator = question[-1] in '.?!"”)…'
+    has_words = " " in question
+    if has_words and not has_terminator:
+        return True
+    if has_words and not expected:
+        # Long-form question without an answer is the JSON-mode
+        # max-tokens cut pattern.
+        return True
+    return False
 
 
 # Normalisation regex for quote-in-evidence matching. Collapses
@@ -1291,9 +2043,13 @@ def _heuristic_case_from_question(
     citation_required: bool,
     domain_id: str | None,
 ) -> ValidationTestCaseDTO:
-    """Wrap one heuristic-question dict into a typed DTO. Mirrors the
- old `_cases_for_chunk` shape so existing tests that exercised
- the heuristic fallback path keep passing."""
+    """Wrap one heuristic-question dict into a typed DTO. The
+ heuristic path is the no-LLM / no-context fallback; the
+ context-driven emitters cover most cases now but this is the
+ safety net for genuinely sparse documents. Provenance is
+ stamped (``generated_from=fallback``) so a tester reading the
+ set can tell at a glance the case came from the
+ deterministic template path rather than the LLM."""
     return ValidationTestCaseDTO(
         test_case_id=f"tc-{uuid.uuid4().hex[:10]}",
         question=question["question"],
@@ -1311,10 +2067,18 @@ def _heuristic_case_from_question(
             "heuristic": True,
         },
         question_type="fact_retrieval",
-        validation_scope="generic",
+        validation_scope="retrieval",
         source_artifact_id=chunk.source_artifact_id,
         source_artifact_type="chunk",
         domain_id=domain_id,
+        generated_from="fallback",
+        confidence=0.5,
+        reason=(
+            f"Deterministic fallback case from chunk "
+            f"{chunk.chunk_id!r}"
+            + (f" (section {chunk.section!r})" if chunk.section else "")
+            + "."
+        ),
     )
 
 

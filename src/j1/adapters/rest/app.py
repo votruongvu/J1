@@ -5831,6 +5831,10 @@ def _set_to_record(vset) -> ValidationSetRecord:
                 validation_scope=tc.validation_scope,
                 difficulty=tc.difficulty,
                 domain_id=tc.domain_id,
+                generated_from=tc.generated_from,
+                confidence=tc.confidence,
+                reason=tc.reason,
+                expected_evidence=tc.expected_evidence,
             )
             for tc in vset.test_cases
         ],
