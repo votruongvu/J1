@@ -61,6 +61,50 @@ _STOPWORDS: frozenset[str] = frozenset(
 )
 
 
+# Question-noise stop-list. These are words that get incidentally
+# capitalised in technical documents (file types, structural
+# pointers, generic UI labels) but make terrible question targets.
+# Operators flagged questions like:
+#   "What is the role of PDF in the document?"
+#   "What is the role of Expected in the document?"
+#   "What does the document say about The?"
+# Every one came from this set leaking through the entity / topic
+# extractor. We reject these as candidate entities AND as question
+# topics — they're never specific enough to anchor a useful test.
+NOISE_TERMS: frozenset[str] = frozenset(
+    {
+        # File types / common artefact words.
+        "pdf", "doc", "docx", "txt", "csv", "json", "xml", "html",
+        "yaml", "yml", "markdown", "md", "rst",
+        # Structural pointers.
+        "document", "page", "section", "appendix", "table",
+        "image", "figure", "exhibit", "chapter", "header",
+        "footer", "footnote",
+        # Validation / testing terminology.
+        "test", "tests", "testing", "validation", "validations",
+        "question", "questions", "answer", "answers", "expected",
+        "actual", "verify", "verified",
+        # Generic pronouns / determiners (capitalised at
+        # sentence start they slip past the stop-words).
+        "the", "a", "an", "this", "that", "these", "those",
+        "it", "its", "his", "her", "their", "our", "your",
+        "some", "any", "all", "each", "every",
+        # Common short tokens that look like entities but
+        # carry no semantic anchor.
+        "id", "no", "ref", "fig", "vol", "pp", "para",
+        "yes", "ok", "n/a", "tbd",
+    }
+)
+
+
+# Words that must NEVER appear as the bare topic of a question.
+# Stricter than ``NOISE_TERMS`` because some legitimate entities
+# could in theory survive the noise check (e.g. "Page 7" — page is
+# noise but pairing with a number is not). Used by the topic
+# extractor and the post-emit quality filter.
+TOPIC_FORBIDDEN: frozenset[str] = NOISE_TERMS
+
+
 # Entity-candidate regex: a run of capitalised words (optionally
 # followed by a numeric suffix like ``Stage 1``, ``DOT-2024``),
 # optionally joined by ``and`` / ``of`` / ``&`` / ``-``. Catches
@@ -568,29 +612,48 @@ def _split_sentences(body: str, *, max_sentences: int) -> list[str]:
 
 def _is_useful_sentence(sentence: str) -> bool:
     """Reject obvious non-sentence material (metadata blocks, code,
-    overly-long paragraph dumps)."""
+    overly-long paragraph dumps). The thresholds are tuned to
+    accept short-but-useful sentences like "The proposal is due
+    20 May 2026." while rejecting one-word fragments, pure
+    numbers, and metadata pipe-tables."""
     s = sentence.strip()
-    if len(s) < 25 or len(s) > 220:
+    if len(s) < 18 or len(s) > 220:
         return False
     if "|" in s and s.count("|") >= 2:
         # "Doc ID: X | Version: Y | …" metadata blocks.
         return False
     if s.startswith(("- ", "* ", "• ", "  ")):
         return False
-    # Must contain at least one alphabetic word + at least one
-    # non-stopword. Rules out "page 1", "[]", number-only lines.
+    # Must contain at least one alphabetic word + at least two
+    # non-stopwords. Rules out "page 1", "[]", number-only lines
+    # without rejecting short legitimate sentences.
     words = [
         w for w in re.findall(r"[A-Za-z]+", s)
         if w.lower() not in _STOPWORDS
     ]
-    if len(words) < 4:
+    if len(words) < 2:
         return False
     return True
 
 
 def _clean_entity_name(name: str) -> str | None:
-    """Normalise + reject obvious noise (stopwords-only, single
-    letters, pure numbers)."""
+    """Normalise the candidate and reject anything that would produce
+    a low-value question. The previous filter was too permissive —
+    it let through file-type words ("PDF"), determiners ("The"),
+    UI labels ("Expected"), and identifier-style strings like
+    "J1-CE-TEST-0426" that are answers, not topics.
+
+    Rejection rules (post operator feedback):
+
+      * empty / too long
+      * all stopwords or all noise terms
+      * single bare word matching ``NOISE_TERMS`` (PDF, The, …)
+      * single word ≤ 3 chars (no semantic anchor)
+      * identifier shape (digits + dash, mostly uppercase short
+        token) — these belong as the ANSWER to a question, not
+        the topic
+      * pure numbers
+    """
     s = (name or "").strip()
     if not s or len(s) > 80:
         return None
@@ -599,11 +662,55 @@ def _clean_entity_name(name: str) -> str | None:
         return None
     if all(w.lower() in _STOPWORDS for w in words):
         return None
-    if len(words) == 1 and len(words[0]) <= 2:
+    # Bare single word: must not be on the noise list / stopwords.
+    # Length is intentionally NOT a strong filter — real names
+    # like "Bob" / acronyms like "API" should pass; the noise
+    # list handles the bad 3-char tokens ("PDF", "The", "ID")
+    # explicitly. Only single-char tokens get the length bar.
+    if len(words) == 1:
+        bare = words[0]
+        lowered = bare.lower()
+        if lowered in NOISE_TERMS:
+            return None
+        if lowered in _STOPWORDS:
+            return None
+        if len(bare) < 2:
+            return None
+    # Multi-word entities: reject when EVERY word is noise / stopword.
+    if all(w.lower() in NOISE_TERMS | _STOPWORDS for w in words):
         return None
     if all(w.isdigit() for w in words):
         return None
+    # Identifier-style strings (e.g. ``J1-CE-TEST-0426``,
+    # ``DOT-2024``). These are great as ANSWERS but make
+    # malformed questions when used as topics: "What is the X of
+    # J1-CE-TEST-0426?" already names the identifier. Reject when
+    # the candidate contains 2+ dashes or 1+ dashes AND a digit.
+    if _looks_like_identifier(s):
+        return None
     return s
+
+
+def _looks_like_identifier(s: str) -> bool:
+    """Identifier-style strings (``J1-CE-TEST-0426``, ``DOT-2024``,
+    ``CB-2``) are answers, not question topics. Detect and reject
+    so the topic extractor never asks "What is the X of <id>?"
+    """
+    if not s:
+        return False
+    # 2+ dashes is a strong identifier signal.
+    if s.count("-") >= 2:
+        return True
+    # 1 dash AND at least one digit segment = also identifier.
+    if "-" in s and re.search(r"\d", s):
+        # Allow a single-letter-word + digit pair (e.g. "Stage 1"
+        # split rendered as "Stage-1") via the workflow path.
+        # Reject when the part before/after the dash is itself
+        # short / nondescriptive (the typical id signature).
+        parts = s.split("-")
+        if all(len(p) <= 8 for p in parts):
+            return True
+    return False
 
 
 def _clean_title(title: str) -> str:

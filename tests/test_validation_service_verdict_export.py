@@ -149,7 +149,13 @@ def _seed_completed_run(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body=b"alpha keyword in chunk",
+        artifact_id="a-1",
+        # Body must include capitalised entities so the
+        # context-driven generator can extract topics. The
+        # quality-first refactor requires evidence-backed
+        # questions; bodies without proper nouns produce zero
+        # cases.
+        body=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="c-1",
     )
     vset = service.generate_validation_set(ctx, "run-1")

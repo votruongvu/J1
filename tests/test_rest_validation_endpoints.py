@@ -281,7 +281,7 @@ def test_post_generate_idempotent_returns_existing_set_id(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
 
     a = client.post(
@@ -302,7 +302,7 @@ def test_post_generate_force_creates_new_set(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
 
     a = client.post(
@@ -326,7 +326,7 @@ def test_list_validation_sets_returns_lightweight_items(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
     client.post(
         "/ingestion-runs/run-1/validation-sets/generate",
@@ -360,7 +360,7 @@ def test_get_validation_set_returns_full_payload(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
     created = client.post(
         "/ingestion-runs/run-1/validation-sets/generate",
@@ -399,7 +399,7 @@ def test_post_validation_run_returns_201_with_terminal_snapshot(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
     vs = client.post(
         "/ingestion-runs/run-1/validation-sets/generate",
@@ -466,7 +466,7 @@ def test_list_validation_runs_returns_lightweight_items(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
     vs = client.post(
         "/ingestion-runs/run-1/validation-sets/generate",
@@ -496,7 +496,7 @@ def test_get_validation_run_returns_full_payload_with_results(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
     vs = client.post(
         "/ingestion-runs/run-1/validation-sets/generate",

@@ -184,7 +184,7 @@ def _seed_run(client, run_store, ctx, workspace, artifact_registry, indexer):
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", body="alpha keyword", run_id="run-1", chunk_id="c-1",
+        artifact_id="a-1", body="The Risk Assessment workflow validates the proposal at Stage 1.", run_id="run-1", chunk_id="c-1",
     )
     vs = client.post(
         "/ingestion-runs/run-1/validation-sets/generate",

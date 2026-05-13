@@ -238,22 +238,24 @@ def test_generator_covers_multiple_categories():
     )
 
 
-def test_generator_smoke_uses_document_title():
-    """The smoke case now mentions the actual document title
-    rather than the prior hardcoded "What is this document
-    about?" boilerplate (when a title is available)."""
+def test_generator_no_longer_emits_smoke_case():
+    """Quality-first refactor (post operator feedback): the smoke
+    case is GONE. Operators flagged "What is this document
+    about?" as a low-value generic question. The generator now
+    relies entirely on content-driven cases — no boilerplate
+    smoke is added regardless of how rich the document is."""
     gen = DefaultTestCaseGenerator()
     chunks = _packet_chunks()
     vset = gen.generate(
         run_id="r-1", document_ids=["doc-1"], chunks=chunks,
         options=GenerationOptions(max_cases=10, negative_case_count=0),
     )
-    smoke = next(
-        c for c in vset.test_cases if c.metadata.get("smoke")
-    )
-    assert "Validation Packet" in smoke.question
-    assert smoke.validation_scope == "document"
-    assert smoke.generated_from == "smoke"
+    smoke_cases = [c for c in vset.test_cases if c.metadata.get("smoke")]
+    assert smoke_cases == []
+    smoke_provenance = [
+        c for c in vset.test_cases if c.generated_from == "smoke"
+    ]
+    assert smoke_provenance == []
 
 
 def test_generator_stamps_provenance_fields_on_every_case():
@@ -390,27 +392,42 @@ def test_filter_drops_vague_this_document_only_question():
     assert _passes_quality(case, context=ctx) is False
 
 
-def test_filter_keeps_specific_question_with_this_document():
-    """A reference to "this document" alongside a concrete topic
-    anchor (entity, section, page) passes — only the all-vague
-    short form is rejected."""
+def test_filter_keeps_evidence_anchored_question_with_this_document_ref():
+    """Quality-first refactor: ``this document`` is allowed only
+    when the case carries a real ``expected_answer`` +
+    ``expected_evidence`` (the post-emit gate requires both for
+    non-guardrail cases). Section-anchored questions with proper
+    evidence stamping pass."""
     case = _case(
         question="What does the section 'Risk Register' in this document cover?",
+        scope="workflow",
+    )
+    # Add the required evidence + answer fields the new gate
+    # demands of every non-guardrail case.
+    from dataclasses import replace
+    case = replace(
+        case,
+        expected_answer="The Risk Register describes …",
+        expected_evidence="page 5, section 'Risk Register'",
     )
     ctx = ValidationQuestionContext()
     assert _passes_quality(case, context=ctx) is True
 
 
-def test_filter_keeps_smoke_even_when_terse():
-    """Smoke cases are exempt — they're allowed to be short
-    / generic / topic-free because they're the index-alive
-    baseline."""
+def test_filter_rejects_terse_smoke_case():
+    """Quality-first refactor: smoke cases are NO LONGER exempt —
+    they're not emitted at all. Even when a caller passes
+    ``metadata.smoke=True`` the case must satisfy the same
+    expected_answer + expected_evidence + non-generic-scope
+    gates as any other positive case."""
     case = _case(
         question="What?",
         metadata={"smoke": True},
     )
     ctx = ValidationQuestionContext()
-    assert _passes_quality(case, context=ctx) is True
+    # Missing expected_answer + expected_evidence; gate must
+    # reject. Smoke-flag does not exempt anymore.
+    assert _passes_quality(case, context=ctx) is False
 
 
 def test_filter_keeps_guardrail_cases():
@@ -422,13 +439,24 @@ def test_filter_keeps_guardrail_cases():
 
 
 def test_dedup_collapses_normalised_duplicates():
-    a = _case(question="What is this document about?")
-    b = _case(question="What is this document about")
-    c = _case(question="WHAT IS THIS DOCUMENT ABOUT?!")
+    """Three case objects whose normalised question text matches
+    each other should collapse to one — regardless of what the
+    quality filter does. We bypass the gate by giving each case
+    legitimate fields (the quality filter would otherwise reject
+    them for being vague)."""
+    from dataclasses import replace
+    a = _case(question="What does the document say about Stage 1?")
+    b = _case(question="What does the document say about Stage 1")
+    c = _case(question="WHAT DOES THE DOCUMENT SAY ABOUT STAGE 1?!")
+    fields = {
+        "expected_answer": "Stage 1 reviews drawings.",
+        "expected_evidence": "page 1, section 'Overview'",
+    }
+    a = replace(a, **fields)
+    b = replace(b, **fields)
+    c = replace(c, **fields)
     ctx = ValidationQuestionContext()
     out = _filter_and_dedupe_cases([a, b, c], context=ctx)
-    # All three collapse to one (a wins; b and c are normalised
-    # duplicates).
     assert len(out) == 1
     assert out[0] is a
 

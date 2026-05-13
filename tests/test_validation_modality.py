@@ -513,7 +513,13 @@ def test_service_partitions_modality_artifacts_to_generator(
     types = {c.type for c in vset.test_cases}
     assert "table" in types
     assert "image" in types
-    assert "graph" in types
+    # Post-refactor (quality-first): graph cases require at least
+    # two clean entities. A bare ``graph_json`` artifact without
+    # ``top_entities`` metadata no longer emits — the previous
+    # generic "main entities and relationships" boilerplate was
+    # operator-flagged as vague. Service-side partition is still
+    # correct; the generator's quality gate is what changed.
+    assert "graph" not in types
     # Idempotency hash is unaffected by the new modality fields —
     # a regenerate without `force` still hits the cache.
     again = service.generate_validation_set(ctx, "run-1")

@@ -185,8 +185,12 @@ def test_generate_set_persists_and_returns_dto(
     assert vset.source == "generated"
     assert vset.status == "draft"
     assert vset.created_by == "tester"
-    # Smoke + chunk-derived case at minimum.
-    assert len(vset.test_cases) >= 2
+    # Quality-first refactor: smoke is gone. The chunk-derived
+    # content emitter must produce AT LEAST ONE strong case
+    # from the fixture body (which carries capitalised entities
+    # specifically so context extraction has material to work
+    # with).
+    assert len(vset.test_cases) >= 1
     # Persisted: a fetch by id round-trips.
     fetched = set_store.get(ctx, vset.validation_set_id)
     assert fetched is not None
@@ -202,7 +206,7 @@ def test_generate_set_is_idempotent_on_same_artifacts(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="chunk-A",
     )
 
@@ -221,7 +225,7 @@ def test_generate_set_force_bypasses_cache(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="chunk-A",
     )
 
@@ -273,7 +277,7 @@ def test_generate_set_emits_audit_event(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="chunk-A",
     )
 
@@ -295,7 +299,7 @@ def test_list_validation_sets_orders_recent_first(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="c-1",
     )
     older = service.generate_validation_set(ctx, "run-1", force=True)
@@ -332,7 +336,7 @@ def test_get_validation_set_for_wrong_run_raises(
     run_store.upsert(ctx, _make_run(run_id="run-B"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-A", chunk_id="c-1",
     )
 
@@ -355,7 +359,7 @@ def test_run_validation_persists_lifecycle_snapshots(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha keyword in chunk",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="c-1",
     )
     vset = service.generate_validation_set(ctx, "run-1")
@@ -391,7 +395,7 @@ def test_run_validation_cross_tenant_raises_review_not_found(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="c-1",
     )
     vset = service.generate_validation_set(ctx, "run-1")
@@ -407,7 +411,7 @@ def test_run_validation_emits_completion_audit_event(
     run_store.upsert(ctx, _make_run(run_id="run-1"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-1", content=b"alpha",
+        artifact_id="a-1", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-1", chunk_id="c-1",
     )
     vset = service.generate_validation_set(ctx, "run-1")
@@ -431,12 +435,12 @@ def test_list_validation_runs_filters_to_run(
     run_store.upsert(ctx, _make_run(run_id="run-B"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-A", content=b"alpha",
+        artifact_id="a-A", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-A", chunk_id="c-A",
     )
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-B", content=b"alpha",
+        artifact_id="a-B", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-B", chunk_id="c-B",
     )
     vset_a = service.generate_validation_set(ctx, "run-A")
@@ -460,7 +464,7 @@ def test_get_validation_run_for_wrong_run_raises(
     run_store.upsert(ctx, _make_run(run_id="run-B"))
     _stage_chunk(
         workspace, ctx, artifact_registry, indexer,
-        artifact_id="a-A", content=b"alpha",
+        artifact_id="a-A", content=b"The Risk Assessment workflow validates the proposal at Stage 1.",
         run_id="run-A", chunk_id="c-A",
     )
     vset_a = service.generate_validation_set(ctx, "run-A")

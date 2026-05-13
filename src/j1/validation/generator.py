@@ -207,20 +207,14 @@ class GenerationOptions:
  REST request → service → generator chain doesn't grow a six-arg
  function signature."""
 
-    # Default tuned for small/medium documents: 1 smoke + ~3
-    # modality + ~3 workflow/entity + ~5 fact + ~2 domain + 2
-    # negative = ~16 cases. Lower than the prior default of 25
-    # because the per-call LLM cap is 8 and the heuristic
-    # top-up was producing low-signal cases. Operators who want
-    # more coverage can bump ``max_cases`` per request.
-    max_cases: int = 15
-    # Lower bound: drop below this only when the run produced
-    # genuinely no context (no chunks AND no enriched
-    # artifacts AND no domain pack). The service's caller can
-    # set ``max_cases`` below this to short-circuit, but the
-    # default flow targets at least ``min_cases`` whenever
-    # enough context exists.
-    min_cases: int = 10
+    # Hard ceiling. Quality-first policy (post operator
+    # feedback): the generator EMITS ONLY AS MANY questions as
+    # the document can support with evidence. There's no
+    # minimum and no padding. ``max_cases`` is a soft upper
+    # bound — most sets land at 3-8 cases for a small/medium
+    # document. Callers who want more coverage should improve
+    # the document's evidence quality, not raise this number.
+    max_cases: int = 12
     citation_required: bool = False
     # Chunk-id force-include list. When non-empty, the generator
     # ensures these chunks show up in the sample (if they exist).
@@ -350,13 +344,12 @@ class DefaultTestCaseGenerator:
             domain_guidance=domain_guidance,
         )
 
-        cases: list[ValidationTestCaseDTO] = [
-            _smoke_case_from_context(
-                context=context,
-                citation_required=opts.citation_required,
-                domain_id=domain_id,
-            ),
-        ]
+        # Quality-first policy (post operator feedback): no smoke,
+        # no heuristic top-up, no minimum count. The generator
+        # emits only cases that survive evidence + topic gating.
+        # If the document is sparse, the set is sparse; that's
+        # the right signal.
+        cases: list[ValidationTestCaseDTO] = []
 
         # Modality cases. Each modality's count is bounded by both
         # `opts.max_*_cases` (per-modality) and the global
@@ -370,12 +363,11 @@ class DefaultTestCaseGenerator:
             if len(cases) >= opts.max_cases:
                 break
             cases.append(_image_case(visual, domain_id=domain_id))
-        # Graph cases — context-aware. When the registry surfaced
-        # graph artifacts we coalesce them by top-entity sets so
-        # three identical "main entities…" cases collapse to one.
-        # When the context also has entity / relationship seeds,
-        # subsequent emitters add entity-specific questions
-        # tagged with the ``graph`` scope.
+        # Graph cases — context-aware. Coalesces artifacts that
+        # share the same top-entities. Emits per-bucket only when
+        # at least two clean entities are available (single-entity
+        # buckets used to produce vague "What does the document
+        # say about X?" cases without backing facts).
         for case in _graph_cases_deduped(
             graph_artifacts or [],
             limit=opts.max_graph_cases,
@@ -387,11 +379,9 @@ class DefaultTestCaseGenerator:
             cases.append(case)
 
         # Context-driven category emitters. Each emits 0-N cases
-        # depending on what the context surfaced. The output here
-        # is what fixes the "all Generic / 3 questions" complaint
-        # for domain-specific validation packets: entity, section,
-        # workflow-stage, and fact emitters each contribute
-        # document-specific questions with proper scopes.
+        # depending on what the document supports. Operator-stated
+        # rule: never pad. Returns however many strong cases the
+        # document can produce.
         category_cases = _emit_context_cases(
             context=context,
             budget=max(0, opts.max_cases - len(cases)),
@@ -400,28 +390,14 @@ class DefaultTestCaseGenerator:
         )
         cases.extend(category_cases)
 
-        # Whole-document LLM generation. One call with the full
-        # evidence list + domain guidance instead of N per-chunk
-        # calls. When evidence is empty or no LLM is wired we fall
-        # back to the deterministic heuristic (one generic question
-        # per sampled chunk) so the generator still ships SOMETHING
-        # for runs without a FAST endpoint.
-        budget = max(0, opts.max_cases - len(cases))
-        # Reserve room for negative checks at the end of the budget.
-        # Each domain-driven negative consumes one slot; carve them
-        # out up front so grounded cases respect both ceilings.
+        # Whole-document LLM generation. Bounded to
+        # ``_LLM_MAX_GROUNDED_PER_CALL`` (8) per round-trip; the
+        # generator no longer tops up with the deterministic
+        # heuristic — quality is the contract.
         negative_slots = _count_negative_slots(
             opts=opts, guidance=domain_guidance,
         )
-        positive_budget = max(0, budget - negative_slots)
-
-        # Cap what we ask the LLM for in one call. Above ~8 cases
-        # local LLMs tend to truncate mid-string (output exceeds
-        # ``max_tokens``), producing nonsensical "cut" questions
-        # the operator can't act on. Anything left in the
-        # positive_budget after the LLM call is filled by the
-        # deterministic heuristic — fast (no round-trip) and
-        # guaranteed not to be truncated.
+        positive_budget = max(0, opts.max_cases - len(cases) - negative_slots)
         llm_budget = min(positive_budget, _LLM_MAX_GROUNDED_PER_CALL)
         llm_cases, llm_trace = self._llm_generate_grounded_cases(
             evidence_blocks=evidence_blocks or [],
@@ -431,28 +407,6 @@ class DefaultTestCaseGenerator:
             citation_required=opts.citation_required,
         )
         cases.extend(llm_cases)
-        # Top up with heuristic cases when the LLM (a) didn't run,
-        # (b) returned fewer than asked, or (c) the caller's
-        # max_cases budget is bigger than what we're willing to ask
-        # the LLM for in one call. The heuristic produces deterministic
-        # generic-form questions and is bounded by sampled chunks.
-        heuristic_needed = (opts.max_cases - negative_slots) - len(cases)
-        if heuristic_needed > 0 and sampled:
-            for chunk in sampled:
-                if len(cases) >= opts.max_cases - negative_slots:
-                    break
-                heuristic = _heuristic_questions_for_chunk(
-                    chunk, budget=_HEURISTIC_QUESTIONS_PER_CHUNK,
-                )
-                for q in heuristic:
-                    if len(cases) >= opts.max_cases - negative_slots:
-                        break
-                    cases.append(_heuristic_case_from_question(
-                        chunk=chunk,
-                        question=q,
-                        citation_required=opts.citation_required,
-                        domain_id=domain_id,
-                    ))
 
         # Domain-driven negative checks. Replaces the prior hardcoded
         # "World Cup / Bitcoin / Mars" pool with questions derived
@@ -701,9 +655,22 @@ def _negative_case(
 def _table_case(
     artifact: ArtifactRecord, *, domain_id: str | None = None,
 ) -> ValidationTestCaseDTO:
-    """A retrieval check for one extracted-table artifact."""
+    """A retrieval check for one extracted-table artifact.
+
+    Modality cases carry an ``expected_answer`` derived from the
+    artifact metadata so they pass the quality gate's
+    expected-answer requirement. The retrieval check still
+    operates on ``expected_artifacts`` (the indexer must surface
+    the table), but the answer summary tells the tester what the
+    table is about — usually its title or the page it lives on.
+    """
     label = _label_for_artifact(artifact)
     page_hint = _page_hint(artifact)
+    expected_answer = (
+        f"Content of the table on {page_hint}."
+        if page_hint
+        else f"Content of the table {label}."
+    )
     return ValidationTestCaseDTO(
         test_case_id=f"tc-table-{uuid.uuid4().hex[:8]}",
         question=(
@@ -714,6 +681,7 @@ def _table_case(
         type="table",
         priority="normal",
         expected_behavior="answer_with_citations",
+        expected_answer=expected_answer,
         expected_artifacts=[artifact.artifact_id],
         expected_pages=_pages_from_artifact(artifact),
         citation_required=True,
@@ -739,9 +707,17 @@ def _table_case(
 def _image_case(
     artifact: ArtifactRecord, *, domain_id: str | None = None,
 ) -> ValidationTestCaseDTO:
-    """A retrieval check for one visual-content artifact."""
+    """A retrieval check for one visual-content artifact. Same
+    structure as ``_table_case`` — expected_answer is derived
+    from the artifact location/label so the quality gate
+    accepts it."""
     label = _label_for_artifact(artifact)
     page_hint = _page_hint(artifact)
+    expected_answer = (
+        f"Content of the image on {page_hint}."
+        if page_hint
+        else f"Content of the image {label}."
+    )
     return ValidationTestCaseDTO(
         test_case_id=f"tc-image-{uuid.uuid4().hex[:8]}",
         question=(
@@ -752,6 +728,7 @@ def _image_case(
         type="image",
         priority="normal",
         expected_behavior="answer_with_citations",
+        expected_answer=expected_answer,
         expected_artifacts=[artifact.artifact_id],
         expected_pages=_pages_from_artifact(artifact),
         citation_required=True,
@@ -851,13 +828,34 @@ def _graph_cases_deduped(
         if len(cases) >= limit:
             break
         artifacts = buckets[entities]
-        cases.append(_graph_case_from_bucket(
+        case = _graph_case_from_bucket(
             artifacts=artifacts,
             entities=list(entities),
             domain_id=domain_id,
             context=context,
-        ))
+        )
+        if case is not None:
+            cases.append(case)
     return cases
+
+
+def _is_clean_graph_entity(name: str) -> bool:
+    """Reject single-word noise tokens (PDF, The, Expected, …) from
+    being treated as graph entities. Belt-and-braces with the
+    context extractor's filter. Length isn't a primary signal —
+    short legitimate names like "Bob" should pass; the noise
+    list catches the bad 3-char tokens."""
+    if not name:
+        return False
+    if name.count("-") >= 2 or ("-" in name and re.search(r"\d", name)):
+        return False  # identifier shape, not an entity
+    lowered = name.lower()
+    if lowered in NOISE_TERMS:
+        return False
+    words = name.split()
+    if len(words) == 1 and len(name) < 2:
+        return False
+    return True
 
 
 def _graph_case_from_bucket(
@@ -866,63 +864,46 @@ def _graph_case_from_bucket(
     entities: list[str],
     domain_id: str | None,
     context: ValidationQuestionContext | None = None,
-) -> ValidationTestCaseDTO:
-    """Build one graph case for a bucket of artifacts that share the
- same expected entities. When ``entities`` has 2+ items we phrase
- the question as a relationship lookup between the top two —
- grades the answer for specific entity mentions rather than
- the generic "what are the entities" boilerplate. When the
- bucket has no entity hints AND the context surfaced ANY
- entities at all, we fall back to context-derived ones so the
- graph emitter never lands on the prior all-generic boilerplate.
- """
+) -> ValidationTestCaseDTO | None:
+    """Build one graph case for a bucket of artifacts.
+
+    Quality-first policy: emit ONLY when at least two clean,
+    non-noise entities are present (graph cases are inherently
+    relationship questions). Single-entity buckets and
+    no-entity buckets return ``None`` rather than the prior
+    "What does the document say about CB-2?" / "main entities"
+    boilerplate that operators flagged.
+    """
     first = artifacts[0]
     artifact_ids = [a.artifact_id for a in artifacts]
     # When the artifact lacks per-row entity hints, lean on the
-    # context's top entities. The graph emitter is supposed to be
-    # the most ENTITY-AWARE path; falling back to the generic
-    # "what are the entities" boilerplate was the bug operators
-    # hit for domain-specific validation packets.
-    effective_entities = entities
+    # context's top entities. Pass them through the cleanliness
+    # check so chunk-derived noise (PDF, The) doesn't sneak in.
+    effective_entities: list[str] = []
+    for name in (entities or []):
+        if _is_clean_graph_entity(name):
+            effective_entities.append(name)
     if not effective_entities and context is not None:
-        effective_entities = [
-            e.name for e in context.entities[:3]
-        ]
-    if len(effective_entities) >= 2:
-        a, b = effective_entities[0], effective_entities[1]
-        question = (
-            f"What is the relationship between {a} and {b} in this document?"
-        )
-        expected_answer = (
-            f"The document describes a relationship between {a} and {b}."
-        )
-        reason = (
-            f"Targets the relationship between two top entities "
-            f"({a!r}, {b!r}) surfaced by the graph artifact."
-        )
-    elif len(effective_entities) == 1:
-        only = effective_entities[0]
-        question = (
-            f"What does the document say about {only}?"
-        )
-        expected_answer = (
-            f"The document discusses {only}."
-        )
-        reason = (
-            f"Targets the top entity {only!r} surfaced by the "
-            f"graph artifact."
-        )
-    else:
-        question = (
-            "What are the main entities and relationships described "
-            "in this document?"
-        )
-        expected_answer = None
-        reason = (
-            "Graph artifact present but no per-row entity hints "
-            "and the context didn't surface any entities — falling "
-            "back to the entity-discovery boilerplate."
-        )
+        for ent in context.entities:
+            if ent.source in {"graph", "document_map"} and _is_clean_graph_entity(ent.name):
+                effective_entities.append(ent.name)
+                if len(effective_entities) >= 3:
+                    break
+    if len(effective_entities) < 2:
+        # Not enough clean entities to phrase a meaningful
+        # relationship question.
+        return None
+    a, b = effective_entities[0], effective_entities[1]
+    question = (
+        f"What is the relationship between {a} and {b} in this document?"
+    )
+    expected_answer = (
+        f"The document describes a relationship between {a} and {b}."
+    )
+    reason = (
+        f"Targets the relationship between two top entities "
+        f"({a!r}, {b!r}) surfaced by the graph artifact."
+    )
     return ValidationTestCaseDTO(
         test_case_id=f"tc-graph-{uuid.uuid4().hex[:8]}",
         question=question,
@@ -950,6 +931,9 @@ def _graph_case_from_bucket(
         generated_from="modality_graph",
         confidence=0.85 if len(effective_entities) >= 2 else 0.6,
         reason=reason,
+        expected_evidence=(
+            f"graph artifact {first.artifact_id}"
+        ),
     )
 
 
@@ -1023,84 +1007,119 @@ def _emit_context_cases(
     citation_required: bool,
     domain_id: str | None,
 ) -> list[ValidationTestCaseDTO]:
-    """Emit context-driven cases across the user-spec categories.
+    """Emit content-driven cases — only when the source material is
+    strong enough to produce a useful question.
 
-    Order is deterministic per call: workflow → entities →
-    sections → facts → domain → guardrail. Each category is
-    bounded by per-category caps so a doc rich in entities
-    doesn't crowd out facts and vice versa. Stops once ``budget``
-    is exhausted.
+    Policy (post operator feedback): NEVER pad output. Quality
+    over quantity. Each emitter returns ``None`` when its seed
+    material isn't evidence-anchored; this function drops the
+    ``None`` rather than backfilling with weak templates.
 
-    The output here is what gives a domain-rich validation
-    packet its ~12-15 questions across multiple scopes —
-    operators see workflow stages, entity questions, section
-    walks, and fact lookups instead of three generic boilerplate
-    rows.
+    Per-category caps remain so a doc rich in one signal can't
+    crowd out the others, but the function never tries to reach
+    a minimum count. Returns however many strong cases survive.
+
+    Source-material requirements (each emitter enforces):
+      * entity case: entity comes from graph or document_map
+        (high-signal sources), AND there's a fact mentioning it
+      * fact case: clean ``_topic_from_fact`` survived the
+        noise/identifier filter
+      * section case: section is paired with a concrete fact
+        from the same section
+      * workflow case: stage entity passes the entity filter
+      * domain case: only when the domain pack is wired AND the
+        evidence actually covers the field
+
+    Smoke / "what is this document about?" is DELIBERATELY not
+    emitted. Operators flagged it as vague boilerplate that's
+    not evidence-backed; the generator now skips it entirely.
     """
     if budget <= 0 or not context.has_any_facts():
         return []
     out: list[ValidationTestCaseDTO] = []
     remaining = lambda: max(0, budget - len(out))  # noqa: E731
 
-    # 1. Workflow stages — high signal when present (process-
-    #    heavy documents, validation packets, runbooks).
-    #    Bounded to 3 to leave room for the other categories.
+    # Pre-index facts by section so the section emitter can pair
+    # a heading with a concrete fact from inside it.
+    facts_by_section: dict[str, list[ContextFact]] = {}
+    for fact in context.facts:
+        key = (fact.section or "").strip()
+        if key:
+            facts_by_section.setdefault(key, []).append(fact)
+
+    # 1. Workflow stages. Capped at 3.
     for stage in context.workflow_stages[: min(3, remaining())]:
-        out.append(_workflow_case(
+        case = _workflow_case(
             stage=stage, context=context, domain_id=domain_id,
             citation_required=citation_required,
-        ))
+            facts_by_section=facts_by_section,
+        )
+        if case is not None:
+            out.append(case)
         if not remaining():
             return out
 
-    # 2. Entity questions — pick the top entities not already
-    #    covered by graph cases. Cap at 4.
-    for entity in context.entities[: min(4, remaining())]:
-        out.append(_entity_case(
+    # 2. Entity questions — high-signal entities only. The
+    #    chunk-derived entity extractor has improved noise
+    #    rejection, but we ALSO require a fact mentioning the
+    #    entity so the case has a real evidence anchor.
+    for entity in context.entities:
+        if not remaining():
+            return out
+        if len(out) >= 4 + len(context.workflow_stages[:3]):
+            break
+        case = _entity_case(
             entity=entity, context=context, domain_id=domain_id,
             citation_required=citation_required,
-        ))
-        if not remaining():
-            return out
+        )
+        if case is not None:
+            out.append(case)
 
-    # 3. Section / structure questions — cap at 2 so a deeply
-    #    sectioned doc doesn't fill the set with structure-only.
+    # 3. Section walk — only when the section heading is paired
+    #    with a concrete fact. Section-only without a fact is
+    #    vague; reject.
     for section in context.sections[: min(2, remaining())]:
-        out.append(_section_case(
+        case = _section_case(
             section=section, context=context, domain_id=domain_id,
             citation_required=citation_required,
-        ))
+            facts_by_section=facts_by_section,
+        )
+        if case is not None:
+            out.append(case)
         if not remaining():
             return out
 
-    # 4. Fact retrieval — the bulk. Cap at 5 so the set retains
-    #    diversity. Each fact pins a question against a specific
-    #    chunk + page so the runner can verify retrieval surfaced
-    #    the right chunk.
+    # 4. Fact retrieval — the highest-quality signal. Capped at 5.
     for fact in context.facts[: min(5, remaining())]:
-        out.append(_fact_case(
+        case = _fact_case(
             fact=fact, context=context, domain_id=domain_id,
             citation_required=citation_required,
-        ))
+        )
+        if case is not None:
+            out.append(case)
         if not remaining():
             return out
 
-    # 5. Domain context — when a domain pack is wired AND
-    #    important_fields are declared, emit one question per
-    #    field that the document might cover. Distinct from the
-    #    domain-negative emitter (which fires when fields are
-    #    NOT covered). Capped at 2.
+    # 5. Domain context — only when the domain pack is wired AND
+    #    the document evidence actually covers the field. We
+    #    detect "covered" by string-matching the field name (with
+    #    underscores replaced) against the fact corpus.
     if context.domain_guidance is not None and context.domain_guidance.enabled:
+        fact_corpus = " ".join(
+            f.text.lower() for f in context.facts
+        )
         for field_name in (
             context.domain_guidance.important_fields[: min(2, remaining())]
         ):
-            out.append(_domain_case(
-                field_name=field_name, context=context,
-                domain_id=domain_id,
-                citation_required=citation_required,
-            ))
-            if not remaining():
-                return out
+            label = field_name.replace("_", " ").lower()
+            if label and label in fact_corpus:
+                out.append(_domain_case(
+                    field_name=field_name, context=context,
+                    domain_id=domain_id,
+                    citation_required=citation_required,
+                ))
+                if not remaining():
+                    return out
 
     return out
 
@@ -1111,10 +1130,49 @@ def _entity_case(
     context: ValidationQuestionContext,
     domain_id: str | None,
     citation_required: bool,
-) -> ValidationTestCaseDTO:
+) -> ValidationTestCaseDTO | None:
+    """Emit an entity-anchored case, OR return ``None`` when the
+    entity doesn't have enough evidence backing to produce a
+    useful question.
+
+    Operator-stated rules:
+      * single-word chunk-derived entities are noise (PDF, The,
+        Expected) → reject — context extractor already filters
+        most, this is the second line of defense.
+      * every entity case MUST carry a fact-derived
+        ``expected_evidence`` pointer so the runner can verify
+        the answer cites the right chunk. Without one the case
+        is just a vague "What is the role of <noun-run>?" which
+        operators flagged.
+    """
     name = entity.name
+    # Find a backing fact that mentions this entity. The fact
+    # gives us (a) a clean evidence pointer (page + chunk) and
+    # (b) proof that the entity isn't a stray noun-run.
+    backing_fact = _find_fact_mentioning(context.facts, name)
+    if backing_fact is None:
+        # Entity surfaced in metadata but never appears in a
+        # clean sentence. Cannot anchor a useful question.
+        return None
+
+    # Reject chunk-source entities that are single bare words
+    # (the context extractor already drops obvious noise but
+    # chunk-source entities are the lowest-signal class so we
+    # tighten further here).
+    if entity.source == "chunk" and len(name.split()) == 1:
+        return None
+
+    expected_answer = _expected_answer_from_fact(
+        backing_fact.text, name,
+    )
+    if not expected_answer:
+        # No clean answer can be derived from the fact body —
+        # skip rather than ship a question with no expected
+        # answer summary.
+        return None
+
     if entity.source == "graph":
-        question = f"What does the document graph say about {name}?"
+        question = f"What does the document say about {name}?"
         scope: ValidationScope = "graph"
         case_type: ValidationTestType = "graph"
         confidence = 0.85
@@ -1124,30 +1182,41 @@ def _entity_case(
         case_type = "retrieval"
         confidence = 0.8
     else:
-        question = f"What is the role of {name} in the document?"
+        question = f"What does the document say about {name}?"
         scope = "retrieval"
         case_type = "retrieval"
-        confidence = 0.65
+        confidence = 0.7
     return ValidationTestCaseDTO(
         test_case_id=f"tc-ent-{uuid.uuid4().hex[:8]}",
         question=question,
         type=case_type,
         priority="normal",
         expected_behavior="answer_with_citations",
+        expected_answer=expected_answer,
         expected_answer_points=[name],
-        expected_chunks=[],
+        expected_chunks=(
+            [backing_fact.chunk_id] if backing_fact.chunk_id else []
+        ),
+        expected_pages=(
+            [backing_fact.page] if backing_fact.page is not None else []
+        ),
         citation_required=citation_required,
-        source_traceability=[],
+        source_traceability=(
+            [backing_fact.chunk_id] if backing_fact.chunk_id else []
+        ),
         metadata={"entity": name, "entity_source": entity.source},
         question_type="fact_retrieval",
         validation_scope=scope,
+        source_artifact_id=backing_fact.artifact_id,
         domain_id=domain_id,
         generated_from="entity",
         confidence=confidence,
         reason=(
-            f"Targets the {entity.source}-surfaced entity {name!r} "
-            f"(occurrences={entity.occurrences})."
+            f"Entity {name!r} (from {entity.source}) appears in a "
+            f"fact on "
+            f"{'page ' + str(backing_fact.page) if backing_fact.page else 'a chunk'}."
         ),
+        expected_evidence=_evidence_pointer(backing_fact),
     )
 
 
@@ -1157,7 +1226,25 @@ def _section_case(
     context: ValidationQuestionContext,
     domain_id: str | None,
     citation_required: bool,
-) -> ValidationTestCaseDTO:
+    facts_by_section: dict[str, list[ContextFact]] | None = None,
+) -> ValidationTestCaseDTO | None:
+    """Section-case emitter — requires a fact pairing.
+
+    The previous "What does the section X cover?" template was
+    vague when it stood alone — no expected answer, no evidence
+    anchor beyond the heading itself. The new emitter requires
+    at least one fact from the same section so the question
+    carries an expected_answer derived from that fact.
+    """
+    paired_fact: ContextFact | None = None
+    if facts_by_section is not None:
+        candidates = facts_by_section.get(section.title) or []
+        paired_fact = candidates[0] if candidates else None
+    if paired_fact is None:
+        return None
+    expected_answer = _trim_for_expected_answer(paired_fact.text)
+    if not expected_answer:
+        return None
     page_hint = (
         f" on page {section.page}" if section.page is not None else ""
     )
@@ -1168,27 +1255,101 @@ def _section_case(
         type="retrieval",
         priority="normal",
         expected_behavior="answer_with_citations",
-        expected_answer_points=[],
-        expected_chunks=[],
+        expected_answer=expected_answer,
+        expected_answer_points=[section.title],
+        expected_chunks=(
+            [paired_fact.chunk_id] if paired_fact.chunk_id else []
+        ),
         expected_pages=[section.page] if section.page is not None else [],
         citation_required=citation_required,
-        source_traceability=[],
+        source_traceability=(
+            [paired_fact.chunk_id] if paired_fact.chunk_id else []
+        ),
         metadata={"section": section.title, "page": section.page},
         question_type="summary",
         validation_scope="workflow",
+        source_artifact_id=paired_fact.artifact_id,
         domain_id=domain_id,
         generated_from="section",
-        confidence=0.7,
+        confidence=0.75,
         reason=(
-            f"Targets the section heading {section.title!r}"
-            + (f" (page {section.page})" if section.page else "")
+            f"Section heading {section.title!r} paired with a fact "
+            + (
+                f"on page {paired_fact.page}"
+                if paired_fact.page
+                else "from inside it"
+            )
             + "."
         ),
-        expected_evidence=(
-            f"section: {section.title}"
-            + (f", page {section.page}" if section.page else "")
-        ),
+        expected_evidence=_evidence_pointer(paired_fact),
     )
+
+
+# ---- Shared helpers for the strict emitters ------------------------
+
+
+def _find_fact_mentioning(
+    facts: tuple[ContextFact, ...] | list[ContextFact],
+    name: str,
+) -> ContextFact | None:
+    """Return the first fact whose body contains the entity name.
+    Case-insensitive substring match. ``None`` when no fact
+    mentions it — the caller then skips the case entirely."""
+    if not name:
+        return None
+    needle = name.lower()
+    for fact in facts:
+        if needle in (fact.text or "").lower():
+            return fact
+    return None
+
+
+def _expected_answer_from_fact(
+    fact_text: str, anchor: str | None = None,
+) -> str | None:
+    """Trim a fact sentence into a question's expected answer.
+
+    When ``anchor`` is supplied, prefer the substring of the fact
+    that starts at the anchor (so the answer naturally pivots
+    around the entity the question is about). When the result is
+    too short / too long / equals the anchor, return ``None``.
+    """
+    text = (fact_text or "").strip()
+    if not text:
+        return None
+    if anchor and anchor.lower() in text.lower():
+        # Substring after the anchor → answer "what comes next"
+        # for that entity. Common in fact sentences like:
+        #   "Stage 1 reviews drawings and calculations …"
+        # When anchor="Stage 1" the answer trims to
+        # "reviews drawings and calculations …" — closer to a
+        # natural answer than the whole sentence.
+        idx = text.lower().index(anchor.lower())
+        tail = text[idx:].strip()
+        if 10 < len(tail) <= 200 and tail.lower() != anchor.lower():
+            return tail
+    return _trim_for_expected_answer(text)
+
+
+def _trim_for_expected_answer(text: str) -> str | None:
+    text = (text or "").strip()
+    if 10 < len(text) <= 200:
+        return text
+    if len(text) > 200:
+        return text[:197].rstrip() + "…"
+    return None
+
+
+def _evidence_pointer(fact: ContextFact) -> str:
+    """One-line "page X, section 'Y'" pointer for the FE."""
+    parts: list[str] = []
+    if fact.page is not None:
+        parts.append(f"page {fact.page}")
+    if fact.section:
+        parts.append(f"section {fact.section!r}")
+    if fact.chunk_id:
+        parts.append(f"chunk {fact.chunk_id}")
+    return ", ".join(parts) if parts else "document chunk"
 
 
 def _workflow_case(
@@ -1197,24 +1358,57 @@ def _workflow_case(
     context: ValidationQuestionContext,
     domain_id: str | None,
     citation_required: bool,
-) -> ValidationTestCaseDTO:
+    facts_by_section: dict[str, list[ContextFact]] | None = None,
+) -> ValidationTestCaseDTO | None:
+    """Workflow-stage emitter. Stages come from the context entity
+    extractor (an entity whose first word is Stage / Phase / Step /
+    Process). The stage must appear in a fact body — otherwise we
+    can't synthesise a useful expected_answer.
+
+    Returns ``None`` rather than a vague stub when no backing fact
+    exists.
+    """
+    backing_fact = _find_fact_mentioning(context.facts, stage)
+    if backing_fact is None:
+        return None
+    expected_answer = _expected_answer_from_fact(backing_fact.text, stage)
+    if not expected_answer:
+        return None
     return ValidationTestCaseDTO(
         test_case_id=f"tc-wf-{uuid.uuid4().hex[:8]}",
         question=f"What does the document say about {stage}?",
         type="retrieval",
         priority="critical",
         expected_behavior="answer_with_citations",
+        expected_answer=expected_answer,
         expected_answer_points=[stage],
-        expected_chunks=[],
+        expected_chunks=(
+            [backing_fact.chunk_id] if backing_fact.chunk_id else []
+        ),
+        expected_pages=(
+            [backing_fact.page] if backing_fact.page is not None else []
+        ),
         citation_required=citation_required,
-        source_traceability=[],
+        source_traceability=(
+            [backing_fact.chunk_id] if backing_fact.chunk_id else []
+        ),
         metadata={"workflow_stage": stage},
         question_type="fact_retrieval",
         validation_scope="workflow",
+        source_artifact_id=backing_fact.artifact_id,
         domain_id=domain_id,
         generated_from="workflow_stage",
         confidence=0.85,
-        reason=f"Targets the workflow stage {stage!r}.",
+        reason=(
+            f"Workflow stage {stage!r} appears in a fact "
+            + (
+                f"on page {backing_fact.page}"
+                if backing_fact.page
+                else "in the chunk corpus"
+            )
+            + "."
+        ),
+        expected_evidence=_evidence_pointer(backing_fact),
     )
 
 
@@ -1224,39 +1418,30 @@ def _fact_case(
     context: ValidationQuestionContext,
     domain_id: str | None,
     citation_required: bool,
-) -> ValidationTestCaseDTO:
-    """A fact-grounded retrieval case. The question is phrased
-    AROUND the fact's topic — never quoting the fact body
-    verbatim in the question string (the section-3 rule)."""
+) -> ValidationTestCaseDTO | None:
+    """A fact-grounded retrieval case.
+
+    Strict mode (post operator feedback): the topic MUST survive
+    the noise / identifier filter. When no clean topic can be
+    extracted from the fact body, we return ``None`` rather than
+    emit a vague section/page placeholder. The previous
+    "What does the section X say?" / "What does page X say?"
+    fallbacks produced low-value rows.
+    """
     topic = _topic_from_fact(fact.text)
-    if topic:
-        question = f"What does the document say about {topic}?"
-    else:
-        # No clean topic extractable; emit a section/page question
-        # rather than dump the fact body into the prompt.
-        if fact.section:
-            question = f"What does the section {fact.section!r} say?"
-        elif fact.page is not None:
-            question = f"What does page {fact.page} of the document say?"
-        else:
-            return _smoke_followup_case(
-                fact=fact, context=context, domain_id=domain_id,
-                citation_required=citation_required,
-            )
-    expected_evidence = None
-    if fact.page is not None and fact.section:
-        expected_evidence = f"page {fact.page}, section {fact.section!r}"
-    elif fact.page is not None:
-        expected_evidence = f"page {fact.page}"
-    elif fact.section:
-        expected_evidence = f"section {fact.section!r}"
+    if not topic:
+        return None
+    expected_answer = _expected_answer_from_fact(fact.text, topic)
+    if not expected_answer:
+        return None
     return ValidationTestCaseDTO(
         test_case_id=f"tc-fact-{uuid.uuid4().hex[:8]}",
-        question=question,
+        question=f"What does the document say about {topic}?",
         type="retrieval",
         priority="normal",
         expected_behavior="answer_with_citations",
-        expected_answer_points=[topic] if topic else [],
+        expected_answer=expected_answer,
+        expected_answer_points=[topic],
         expected_chunks=[fact.chunk_id] if fact.chunk_id else [],
         expected_pages=[fact.page] if fact.page is not None else [],
         citation_required=citation_required,
@@ -1270,39 +1455,12 @@ def _fact_case(
         source_artifact_id=fact.artifact_id,
         domain_id=domain_id,
         generated_from="fact",
-        confidence=0.75,
+        confidence=0.8,
         reason=(
-            f"Targets a fact extracted from "
+            f"Fact-grounded: topic {topic!r} extracted from "
             f"{'page ' + str(fact.page) if fact.page else 'a chunk'}."
         ),
-        expected_evidence=expected_evidence,
-    )
-
-
-def _smoke_followup_case(
-    *,
-    fact: ContextFact,
-    context: ValidationQuestionContext,
-    domain_id: str | None,
-    citation_required: bool,
-) -> ValidationTestCaseDTO:
-    return ValidationTestCaseDTO(
-        test_case_id=f"tc-rtr-{uuid.uuid4().hex[:8]}",
-        question="Find a chunk that mentions the document's core topic.",
-        type="retrieval",
-        priority="smoke",
-        expected_behavior="retrieve_evidence",
-        expected_answer_points=[],
-        expected_chunks=[fact.chunk_id] if fact.chunk_id else [],
-        citation_required=False,
-        source_traceability=[fact.chunk_id] if fact.chunk_id else [],
-        metadata={"retrieval_followup": True},
-        question_type="fact_retrieval",
-        validation_scope="retrieval",
-        domain_id=domain_id,
-        generated_from="fallback",
-        confidence=0.4,
-        reason="No clean topic in fact body; retrieval-only check.",
+        expected_evidence=_evidence_pointer(fact),
     )
 
 
@@ -1312,33 +1470,63 @@ def _domain_case(
     context: ValidationQuestionContext,
     domain_id: str | None,
     citation_required: bool,
-) -> ValidationTestCaseDTO:
-    """One question per domain ``important_field``. Phrased as a
-    direct lookup so the runner can verify the answer mentions
-    the field's value — if the document covers it. The negative
-    counterpart (``domain_negative_cases``) handles the
-    "field is missing" branch."""
+) -> ValidationTestCaseDTO | None:
+    """One question per domain ``important_field`` — but only when
+    the document evidence actually covers it (the caller verifies
+    this via fact-corpus matching). The negative counterpart
+    (``_domain_negative_cases``) handles the "field is missing"
+    branch."""
     label = field_name.replace("_", " ")
+    # Find a fact that actually mentions the label. The caller
+    # already gated on this — finding it here lets us populate a
+    # real expected_answer + evidence pointer.
+    backing_fact = None
+    needle = label.lower()
+    for fact in context.facts:
+        if needle in (fact.text or "").lower():
+            backing_fact = fact
+            break
+    expected_answer = (
+        _expected_answer_from_fact(backing_fact.text, label)
+        if backing_fact else None
+    )
+    if not expected_answer:
+        # Bail: caller's gate said this field was covered but we
+        # couldn't lift a clean answer. Skip rather than emit a
+        # questionable case.
+        return None
     return ValidationTestCaseDTO(
         test_case_id=f"tc-dom-{uuid.uuid4().hex[:8]}",
         question=f"What does the document say about {label}?",
         type="domain",
         priority="normal",
         expected_behavior="answer_with_citations",
+        expected_answer=expected_answer,
         expected_answer_points=[label],
-        expected_chunks=[],
+        expected_chunks=(
+            [backing_fact.chunk_id] if backing_fact.chunk_id else []
+        ),
+        expected_pages=(
+            [backing_fact.page] if backing_fact.page is not None else []
+        ),
         citation_required=citation_required,
-        source_traceability=[],
+        source_traceability=(
+            [backing_fact.chunk_id] if backing_fact.chunk_id else []
+        ),
         metadata={"domain_field": field_name},
         question_type="domain_enrichment_check",
         validation_scope="domain",
+        source_artifact_id=backing_fact.artifact_id,
         domain_id=domain_id,
         generated_from="domain_rule",
-        confidence=0.7,
+        confidence=0.8,
         reason=(
-            f"Domain pack flagged {field_name!r} as an important "
-            f"field for this domain."
+            f"Domain pack field {field_name!r} appears in document "
+            f"evidence"
+            + (f" on page {backing_fact.page}" if backing_fact.page else "")
+            + "."
         ),
+        expected_evidence=_evidence_pointer(backing_fact),
     )
 
 
@@ -1380,44 +1568,130 @@ def _passes_quality(
     *,
     context: ValidationQuestionContext,
 ) -> bool:
-    """Reject low-value cases. The spec section-12 criteria are
-    encoded as a series of predicates so the rules are auditable
-    and individually testable.
+    """Quality-first rejection rules.
 
-    The smoke case is exempt — its job is to be the "is the index
-    alive?" baseline regardless of how aggressive the filter
-    becomes."""
-    if case.metadata.get("smoke"):
-        return True
+    Operator-stated reject criteria (post-refactor):
+
+      * scope == ``generic`` → reject. The generator has
+        category-specific scopes; landing on ``generic`` means
+        the emitter couldn't tell what kind of test this is.
+      * scope == ``generic`` for the smoke case → also reject,
+        because the smoke was producing "What is this document
+        about?" boilerplate. Smoke is no longer emitted at all.
+      * no ``expected_answer`` and not a guardrail → reject.
+        Every positive case must carry a verifiable answer.
+      * no ``expected_evidence`` and not a guardrail → reject.
+      * topic-noise (``PDF``, ``The``, ``Expected``, etc.) in
+        the question's "about X" anchor → reject.
+      * answer-in-question shape (``What is the X of <id>?``)
+        → reject.
+      * raw-chunk-text injection (long quoted run) → reject.
+      * vague "this document"-only phrasing → reject.
+
+    Guardrail / negative-check cases are exempt from
+    ``expected_evidence`` / ``expected_answer`` because they
+    legitimately test that the engine ABSTAINS rather than
+    answers.
+    """
+    # Guardrail / negative-check exemption. These cases test
+    # abstention; they intentionally don't carry an
+    # expected_answer or evidence pointer.
     if case.validation_scope in {"negative_check", "guardrail"}:
         return True
     question = (case.question or "").strip()
     if not question:
         return False
-    # Raw-chunk-text injection signature: a quoted run over 80
-    # chars OR pipe-separated metadata. The previous heuristic
-    # emitted these and that's the spec's section-3 bug.
+
+    # 1. Scope must be more specific than ``generic``. The
+    #    emitters now have category-specific scopes for every
+    #    valid path; landing on ``generic`` is the signal of an
+    #    un-anchored case.
+    if case.validation_scope == "generic":
+        return False
+
+    # 2. Positive cases must have an expected_answer.
+    if not (case.expected_answer or "").strip():
+        return False
+
+    # 3. Positive cases must have an expected_evidence pointer
+    #    (page / section / chunk reference).
+    if not (case.expected_evidence or "").strip():
+        return False
+
+    # 4. Raw-chunk-text injection signature.
     if _contains_raw_chunk_quote(question):
         return False
-    # "What does the document say about 'this document'?" type
-    # cycles. Vague phrasings without a real topic anchor.
+
+    # 5. Answer-in-question shape — "What is the X of <identifier>?".
+    if _looks_like_answer_in_question(question):
+        return False
+
+    # 6. Topic-noise check. Pull the "about X" / "of X" / "role
+    #    of X" anchor and reject when X is in the noise list.
+    anchor = _extract_question_anchor(question)
+    if anchor is not None and not _is_acceptable_topic(anchor, question):
+        return False
+
+    # 7. Vague "this document"-only phrasing without a real
+    #    anchor.
     lowered = question.lower()
-    vague_phrases = (
-        "about this document", "in this document",
-        "in the document only",  # negative-check-coded phrasing
-    )
-    # Allow "in this document" when the question references a
-    # concrete entity / section. Reject only when the question
-    # is ENTIRELY about the document-as-vague-topic.
     if (
         "this document" in lowered
         and len(question) < 50
-        and not any(s in lowered for s in (":", "?", "stage", "section"))
+        and not any(s in lowered for s in (":", "stage", "section", "page"))
     ):
         return False
-    if any(p in lowered for p in vague_phrases) and len(question) < 45:
-        return False
+
     return True
+
+
+# Regex variants the post-emit quality filter runs against the
+# question text. Kept here so the rules are easy to read + tune.
+_QUESTION_ANCHOR_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(
+        r"\bwhat\s+(?:is|are)\s+the\s+(?:role|purpose)\s+of\s+([A-Za-z0-9][^?]+?)(?:\s+in\s+(?:the\s+)?document)?\??$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+(?:does|do)\s+the\s+document\s+(?:say|describe)\s+about\s+([A-Za-z0-9][^?]+?)\??$",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _extract_question_anchor(question: str) -> str | None:
+    """Return the topic the question targets (the X in
+    ``about X`` / ``role of X``), stripped of trailing
+    punctuation + quote marks. ``None`` when no recognisable
+    anchor pattern matches — quality filter then trusts the
+    other rules."""
+    for pattern in _QUESTION_ANCHOR_PATTERNS:
+        match = pattern.search(question.strip())
+        if match:
+            anchor = match.group(1).strip().strip("\"'?.,").strip()
+            if anchor:
+                return anchor
+    return None
+
+
+# Answer-in-question detector. Matches shapes like:
+#   "What is the project ID of J1-CE-TEST-0426?"
+#   "What is the version of v1.2.3?"
+# where the "of" tail is itself an identifier — i.e. the
+# answer to the question is literally named inside it.
+_ANSWER_IN_QUESTION_RE = re.compile(
+    r"\bwhat\s+is\s+the\s+[A-Za-z][A-Za-z\s]*\s+of\s+"
+    r"([A-Za-z0-9][A-Za-z0-9\-]*[\-:][A-Za-z0-9\-:.]+)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_answer_in_question(question: str) -> bool:
+    """Reject malformed ``What is the X of <id>?`` cases where
+    ``<id>`` is itself the answer (operator-flagged
+    ``"What is the project ID of J1-CE-TEST-0426?"`` lives
+    here)."""
+    return bool(_ANSWER_IN_QUESTION_RE.search(question))
 
 
 def _contains_raw_chunk_quote(question: str) -> bool:
@@ -1452,23 +1726,99 @@ _FACT_NORMALISE_RE = re.compile(r"[\s\.,;:!?\"'()\[\]{}]+")
 def _topic_from_fact(text: str) -> str | None:
     """Extract a short noun-phrase topic from a fact sentence.
 
-    Heuristic: walk the first capitalised noun-run; reject when
-    nothing emerges or the run is overly long (we'd be injecting
-    a near-verbatim fact body — exactly the bug we're fixing).
+    Walks capitalised noun-runs from left to right and returns the
+    first one that survives the noise filter. Returns ``None``
+    when no clean topic exists — the fact emitter then SKIPS the
+    fact entirely rather than emit a vague "What does the
+    document say about ‹first capitalised word›?" question.
+
+    Rejection rules:
+      * topic in ``NOISE_TERMS`` (PDF, The, Expected, …)
+      * single-word topic shorter than 4 chars
+      * identifier-shaped (``J1-CE-TEST-0426``) — these are
+        answers, not topics
+      * topic equals or contains the entire fact body (would
+        re-inject raw chunk text)
     """
     if not text:
         return None
-    # Look for the first capitalised noun-run of 1-5 words.
-    match = re.search(
+    # Iterate ALL capitalised noun-runs (1-5 words) and return the
+    # first acceptable one. The previous version returned the
+    # FIRST match unconditionally, which is how the determiner
+    # "The" (capitalised at sentence start) and noise like "PDF"
+    # leaked through.
+    for match in re.finditer(
         r"\b([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,4})\b",
         text,
-    )
-    if match is None:
-        return None
-    topic = match.group(1).strip()
-    if len(topic) > 60 or len(topic) < 3:
-        return None
-    return topic
+    ):
+        candidate = match.group(1).strip()
+        if not _is_acceptable_topic(candidate, text):
+            continue
+        return candidate
+    return None
+
+
+def _is_acceptable_topic(candidate: str, full_text: str) -> bool:
+    """Predicate used by both ``_topic_from_fact`` and the
+    post-emit quality filter so the rejection rules stay
+    consistent."""
+    if not candidate:
+        return False
+    lowered = candidate.lower()
+    if lowered in TOPIC_FORBIDDEN:
+        return False
+    if lowered in _STOPWORDS_FOR_TOPIC:
+        return False
+    words = candidate.split()
+    if len(words) == 1 and len(candidate) < 4:
+        return False
+    # Single-word topic where the bare word is on the noise list
+    # (regardless of cleaning). Belt-and-braces with the noise
+    # check above for case variants.
+    if len(words) == 1 and words[0].lower() in TOPIC_FORBIDDEN:
+        return False
+    # Multi-word topic where EVERY word is noise / stopword. Catches
+    # "The PDF" / "Expected Document" combinations the regex would
+    # otherwise pass.
+    if len(words) > 1 and all(
+        w.lower() in TOPIC_FORBIDDEN | _STOPWORDS_FOR_TOPIC for w in words
+    ):
+        return False
+    # Identifier shape — see ``_looks_like_identifier``.
+    if _looks_like_identifier_topic(candidate):
+        return False
+    # Topic length sanity.
+    if len(candidate) > 60 or len(candidate) < 3:
+        return False
+    # Never inject the entire fact body.
+    if candidate.lower() == full_text.lower().strip().rstrip("."):
+        return False
+    return True
+
+
+def _looks_like_identifier_topic(s: str) -> bool:
+    """Same rule as ``context._looks_like_identifier`` — duplicated
+    here so the generator's filter stays self-contained when the
+    context module is reloaded for tests. Kept tight."""
+    if s.count("-") >= 2:
+        return True
+    if "-" in s and re.search(r"\d", s):
+        parts = s.split("-")
+        if all(len(p) <= 8 for p in parts):
+            return True
+    return False
+
+
+# Re-import noise / stopword sets so the generator's local filters
+# don't have to round-trip through the context module on every call.
+# Same source-of-truth definitions; kept here as readable aliases.
+from j1.validation.context import NOISE_TERMS, TOPIC_FORBIDDEN  # noqa: E402
+
+_STOPWORDS_FOR_TOPIC: frozenset[str] = frozenset({
+    "the", "a", "an", "this", "that", "these", "those",
+    "it", "its", "his", "her", "their", "our", "your",
+    "is", "are", "was", "were", "be", "been", "being",
+})
 
 
 def _label_for_artifact(artifact: ArtifactRecord) -> str:
@@ -1927,6 +2277,13 @@ def _materialize_llm_case(
         # case that may have come from outside-world knowledge.
         return None
 
+    # LLM-supplied scope, falling back to ``evidence`` when the
+    # LLM left it generic — the case IS evidence-anchored (we
+    # verified the quote), so ``evidence`` is more honest than
+    # generic and passes the post-emit quality gate.
+    effective_scope: ValidationScope = (
+        scope if scope and scope != "generic" else "evidence"  # type: ignore[assignment]
+    )
     return ValidationTestCaseDTO(
         test_case_id=f"tc-{uuid.uuid4().hex[:10]}",
         question=question,
@@ -1945,7 +2302,7 @@ def _materialize_llm_case(
         source_artifact_id=source_artifact_id,
         source_artifact_type=source_artifact_type,
         question_type=question_type,
-        validation_scope=scope,
+        validation_scope=effective_scope,
         difficulty=difficulty,
         domain_id=domain_id,
         generated_from="llm",
@@ -1954,6 +2311,7 @@ def _materialize_llm_case(
             f"LLM-grounded against evidence in artifact "
             f"{source_artifact_id!r}."
         ),
+        expected_evidence=f"artifact {source_artifact_id}",
     )
 
 
