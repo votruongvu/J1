@@ -318,14 +318,20 @@ def build_smart_query_orchestrator(
         routes[RetrievalRouteKind.RAGANYTHING] = RAGAnythingAdapter(
             raganything_provider,
         )
+    def _resolve_eligible(ctx, scope):
+        """BM25 adapter wants ``frozenset[str] | None``;
+        ``resolve_eligible_active_run_ids`` returns ``EligibilityResult``.
+        Adapt the shape here."""
+        try:
+            result = resolve_eligible_active_run_ids(
+                ctx=ctx, scope=scope, registry=sources,
+            )
+            return result.run_ids
+        except Exception:  # noqa: BLE001 — gate failure → unfiltered
+            return None
     routes[RetrievalRouteKind.BM25] = BM25Adapter(
         indexer,
-        eligible_run_ids_resolver=lambda ctx, scope: (
-            resolve_eligible_active_run_ids(
-                ctx, scope, source_registry=sources,
-                run_store=JsonlIngestionRunStore(workspace),
-            )
-        ),
+        eligible_run_ids_resolver=_resolve_eligible,
     )
 
     def _read_artifact_bytes(record) -> str:
