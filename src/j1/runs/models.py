@@ -12,7 +12,7 @@ safe to surface to a frontend / log aggregator."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
@@ -223,7 +223,31 @@ def status_aliases(value: str | RunStatus) -> tuple[str, ...]:
 #
 # All existing runs persisted before this refactor are deserialised
 # with the safe default ``"initial"`` — see `_run_from_payload`.
-RunType = Literal["initial", "reindex", "resume", "retry", "validation"]
+RunType = Literal[
+    "initial", "reindex", "resume", "retry", "validation", "refresh_enrich",
+]
+
+
+# ---- Cleanup status literal ----
+#
+# Per-run cleanup state. Set by the cleanup service when a run's
+# artifacts are being / have been deleted (either because the run
+# was superseded by a successful candidate, or because the parent
+# document is being Removed).
+#
+#  * ``live``           — default. Run's artifacts are intact and
+#                         eligible for retention according to the
+#                         document-level rules.
+#  * ``superseded``     — a newer run took the active slot; this
+#                         run's chunks/vectors/graph have been
+#                         dropped from query surfaces.
+#  * ``removing``       — cleanup is in progress.
+#  * ``cleaned``        — cleanup completed.
+#  * ``cleanup_failed`` — cleanup left orphan artifacts; operator
+#                         action required.
+CleanupStatus = Literal[
+    "live", "superseded", "removing", "cleaned", "cleanup_failed",
+]
 
 
 @dataclass
@@ -273,6 +297,27 @@ class IngestionRun:
     document_version_id: str | None = None
     parent_run_id: str | None = None
 
+    # ---- UI metadata + lifecycle fields ----
+    # ``display_version`` is the operator-visible version chip the
+    # FE shows next to each run (e.g. ``13052026-01``,
+    # ``13052026-02`` for two runs on the same day for the same
+    # document). Format: ``DDMMYYYY-NN`` where ``NN`` is the per-
+    # document daily counter starting at ``01``. Allocated by
+    # :func:`j1.runs.models.allocate_display_version`; ``None`` on
+    # legacy runs that pre-date this field.
+    display_version: str | None = None
+
+    # ``superseded_at`` is set the moment another run for the same
+    # document promotes past this one (becomes ``active_run_id``).
+    # The supersede hook stamps this then schedules the cleanup
+    # primitives; surface for the FE so a user can see "run X was
+    # active until {ts}".
+    superseded_at: datetime | None = None
+
+    # ``cleanup_status`` mirrors the per-run side of cleanup
+    # progression — see ``CleanupStatus`` above.
+    cleanup_status: CleanupStatus = "live"
+
     def is_terminal(self) -> bool:
         return self.status in (
             RunStatus.SUCCEEDED,
@@ -313,3 +358,42 @@ class ProgressEvent:
     engine: str | None = None
     provider: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
+
+
+# ---- Display-version allocation ----------------------------------
+
+
+def allocate_display_version(
+    *,
+    started_at: datetime,
+    existing_runs: list["IngestionRun"],
+    document_id: str,
+) -> str:
+    """Return the next ``DDMMYYYY-NN`` chip for a run starting now.
+
+    Counts how many runs for ``document_id`` already started on the
+    same date (UTC), then returns the next slot. ``NN`` is
+    zero-padded to two digits; a third (or later) run on the same
+    day reads ``...-03`` and so on. The output is purely a UI
+    label — uniqueness is per-document per-day, not globally
+    unique, and never used as a database key.
+
+    Implementation notes:
+      * Date is computed from ``started_at`` in UTC so two
+        operators in different timezones see the same chip.
+      * Runs whose ``started_at`` falls on a different date
+        (or a different document) are ignored.
+      * ``existing_runs`` may include the candidate itself — the
+        helper de-dupes by counting unique ``run_id`` values for
+        the date, then adding 1 to allocate the next slot.
+    """
+    date_part = started_at.astimezone(timezone.utc).strftime("%d%m%Y")
+    same_day_runs = {
+        r.run_id
+        for r in existing_runs
+        if r.document_id == document_id
+        and r.started_at.astimezone(timezone.utc).strftime("%d%m%Y")
+        == date_part
+    }
+    slot = len(same_day_runs) + 1
+    return f"{date_part}-{slot:02d}"

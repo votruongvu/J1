@@ -70,6 +70,7 @@ def _seed_run(
     store, ctx: ProjectContext,
     *, run_id: str, document_id: str,
     status: RunStatus = RunStatus.RUNNING,
+    parent_run_id: str | None = None,
 ) -> None:
     store.upsert(ctx, IngestionRun(
         run_id=run_id,
@@ -79,6 +80,7 @@ def _seed_run(
         status=status,
         started_at=_NOW,
         updated_at=_NOW,
+        parent_run_id=parent_run_id,
     ))
 
 
@@ -203,7 +205,14 @@ def test_successful_reindex_promotes_to_new_active(
     _seed_document(registry, ctx, document_id="doc-1", active_run_id="r-old")
     _seed_run(run_store, ctx, run_id="r-old", document_id="doc-1",
               status=RunStatus.SUCCEEDED)
-    _seed_run(run_store, ctx, run_id="r-new", document_id="doc-1")
+    # The candidate's ``parent_run_id`` is what makes CAS-promotion
+    # safe: it pins what the candidate *expected* to supersede.
+    # Production reindex always sets this; the test mirrors that.
+    _seed_run(
+        run_store, ctx,
+        run_id="r-new", document_id="doc-1",
+        parent_run_id="r-old",
+    )
 
     _terminate(activities, ctx, "r-new", final_status="succeeded")
 

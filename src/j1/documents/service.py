@@ -39,9 +39,11 @@ from typing import Any
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
+from j1.documents.cleanup import DocumentCleanupService
 from j1.documents.models import DocumentRecord, KnowledgeState
 from j1.errors.exceptions import DocumentNotFoundError
 from j1.intake.registry import SourceRegistry
+from j1.jobs.status import ProcessingStatus
 from j1.projects.context import ProjectContext
 
 _log = logging.getLogger("j1.documents.service")
@@ -86,12 +88,21 @@ class DocumentLifecycleService:
         artifact_registry: ArtifactRegistry,
         audit: AuditRecorder | None = None,
         clock=None,
+        cleanup: DocumentCleanupService | None = None,
     ) -> None:
         self._registry = registry
         self._artifacts = artifact_registry
         self._audit = audit
         # Injected clock for deterministic tests; default to real UTC.
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # When wired, ``remove`` does gate-first + synchronous hard
+        # cleanup: flip ``lifecycle_status="removing"`` + clear
+        # ``active_run_id`` BEFORE deleting bytes so concurrent
+        # queries observe "nothing queryable for this doc" the
+        # moment the action starts. Without this collaborator,
+        # ``remove`` falls back to the legacy soft-tombstone
+        # behaviour (knowledge_state="removed", no artifact purge).
+        self._cleanup = cleanup
 
     # ---- Public actions ------------------------------------------
 
@@ -137,16 +148,149 @@ class DocumentLifecycleService:
         *,
         actor: str,
     ) -> DocumentRecord:
-        """Disown the document's generated knowledge.
+        """Permanently disown the document's generated knowledge.
 
-        Clears ``active_run_id`` and stamps ``removed_at``. The
-        document's run history stays on disk as a minimal tombstone
-        for audit; this is NOT a hard purge (Phase 8 territory).
+        **Gate-first + synchronous hard cleanup.** When a cleanup
+        service is wired (production), the steps are:
+
+          1. Flip ``lifecycle_status="removing"`` + clear
+             ``active_run_id`` + flip ``knowledge_state="removed"``.
+             This is the gate — the eligibility resolver
+             (``j1.query.eligibility``) immediately stops admitting
+             any of the document's runs into queries.
+          2. Synchronously run ``cleanup_document`` to drop every
+             artifact, FTS row, workspace dir, and raw file the
+             document owns.
+          3. Set ``lifecycle_status`` to ``removed`` (success) or
+             ``cleanup_failed`` (partial purge — operator action).
+
+        If no cleanup service is wired (legacy/test path), this
+        falls back to the soft-tombstone behaviour: flip
+        ``knowledge_state="removed"`` and stamp artifact metadata.
+        Both paths are idempotent — re-running on a
+        ``removed`` / ``cleanup_failed`` document is a no-op.
         """
-        return self._transition(
-            ctx, document_id, target="removed", actor=actor,
-            audit_action=_ACTION_REMOVE,
+        if self._cleanup is None:
+            # Legacy/test path: soft tombstone via _transition.
+            return self._transition(
+                ctx, document_id, target="removed", actor=actor,
+                audit_action=_ACTION_REMOVE,
+            )
+        return self._gated_remove(ctx, document_id, actor=actor)
+
+    def _gated_remove(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        actor: str,
+    ) -> DocumentRecord:
+        try:
+            doc = self._registry.get(ctx, document_id)
+        except DocumentNotFoundError:
+            # Already-removed: cleanup completed in a prior call
+            # and dropped the record. Idempotent return — a
+            # synthetic tombstone so the REST adapter doesn't
+            # 404 on a click-twice scenario.
+            return DocumentRecord(
+                document_id=document_id,
+                project=ctx,
+                original_filename="",
+                stored_filename="",
+                mime_type=None,
+                file_size=0,
+                checksum="",
+                status=ProcessingStatus.SUCCEEDED,
+                created_at=self._clock(),
+                knowledge_state="removed",
+                lifecycle_status="removed",
+            )
+        previous_state = doc.knowledge_state
+
+        # Idempotent: a fully-removed document re-enters this code
+        # path as a no-op. ``cleanup_failed`` returns its current
+        # record without re-running cleanup (operator must
+        # acknowledge before retrying).
+        if doc.lifecycle_status in ("removed", "cleanup_failed"):
+            return doc
+
+        now = self._clock()
+        # Phase 1: gate. Flip lifecycle_status to ``removing``,
+        # clear active_run_id, and stamp ``removed_at`` BEFORE any
+        # destructive work. The eligibility resolver disqualifies
+        # ``removing`` lifecycle, so even a concurrent query that
+        # already resolved scope will see an empty result on the
+        # next read.
+        gated = self._registry.update_document_fields(
+            ctx, document_id,
+            knowledge_state="removed",
+            lifecycle_status="removing",
+            active_run_id=None,
+            removed_at=now,
+            updated_at=now,
         )
+
+        # Phase 2: synchronous hard cleanup. On success this also
+        # deletes the document record itself, so the user can
+        # re-upload the same file as a fresh document. ``final`` is
+        # the gated snapshot — we don't try to re-read after a
+        # successful cleanup because the record is gone.
+        result = self._cleanup.cleanup_document(
+            ctx, document_id=document_id,
+        )
+
+        if result.ok:
+            # Cleanup deleted the record. The returned DTO is a
+            # synthetic "removed" tombstone so the REST adapter +
+            # FE can render "this document is gone" without a
+            # second registry read (which would 404). The state on
+            # disk is "no record at all" — exactly what lets
+            # re-upload of the same file start fresh.
+            final = _replace(
+                gated, lifecycle_status="removed",
+            )
+        else:
+            # Partial failure: tombstone the record with
+            # ``cleanup_failed`` so the operator can see the orphan.
+            try:
+                final = self._registry.update_document_fields(
+                    ctx, document_id,
+                    lifecycle_status="cleanup_failed",
+                    updated_at=self._clock(),
+                )
+            except DocumentNotFoundError:
+                # Belt + braces: even partial cleanup may have
+                # dropped the record. Fall back to the gated
+                # snapshot for the response.
+                final = gated
+
+        if self._audit is not None:
+            try:
+                self._audit.record(
+                    ctx,
+                    actor=actor,
+                    action=_ACTION_REMOVE,
+                    target_kind=_TARGET_DOCUMENT,
+                    target_id=document_id,
+                    payload={
+                        "previous_state": previous_state,
+                        "new_state": "removed",
+                        "cleanup_ok": result.ok,
+                        "cleanup_items_removed": result.items_removed,
+                        "cleanup_steps": [
+                            {"name": s.name, "ok": s.ok,
+                             "items_removed": s.items_removed,
+                             "error": s.error}
+                            for s in result.steps
+                        ],
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                _log.warning(
+                    "audit failed for remove on document %s",
+                    document_id, exc_info=True,
+                )
+        return final
 
     # ---- Internals -----------------------------------------------
 

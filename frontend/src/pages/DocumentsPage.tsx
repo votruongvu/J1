@@ -103,6 +103,17 @@ export function DocumentsPage({
           title: "Re-index started",
           body: `New run: ${r.reindexRunId.slice(0, 12)}`,
         });
+      } else if (action === "refresh_enrich") {
+        const r = await client.refreshEnrichDocument(
+          document.documentId,
+        );
+        pushToast?.({
+          kind: "success",
+          title: "Refresh enrichment started",
+          body: `Reusing compile from ${
+            r.reusedCompileFromRunId.slice(0, 12)
+          }; new run: ${r.refreshRunId.slice(0, 12)}`,
+        });
       } else if (action === "resume") {
         // Resume operates on a run, not the document. The detail
         // page is where this lives; the list-level button just
@@ -328,6 +339,14 @@ const ACTION_META: Record<DocumentAction, {
 }> = {
   view:    { label: "View",       variant: "ghost",  title: "Open document detail" },
   reindex: { label: "Re-index",   variant: "ghost",  title: "Rebuild knowledge for this document" },
+  refresh_enrich: {
+    label: "Refresh enrichment",
+    variant: "ghost",
+    title: (
+      "Re-run enrichment + graph + index, reusing the previous "
+      + "active run's compile output"
+    ),
+  },
   detach:  { label: "Detach",     variant: "ghost",  title: "Stop using this document for retrieval" },
   attach:  { label: "Attach",     variant: "primary", title: "Use this document for retrieval again" },
   remove:  { label: "Remove",     variant: "danger", title: "Remove this document's generated knowledge" },

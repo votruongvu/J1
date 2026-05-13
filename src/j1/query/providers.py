@@ -18,31 +18,69 @@ from j1.query.models import (
     QueryResponse,
     SourceReference,
 )
+from j1.query.eligibility import resolve_eligible_active_run_ids
 from j1.query.scope import RunScope
 from j1.review.governance import WarningCategory
 from j1.search.indexer import SearchHit, SqliteSearchIndexer
 from j1.workspace.resolver import WorkspaceResolver
 
 
-def _filter_by_scope(
-    records: list[ArtifactRecord], request: QueryRequest,
-) -> list[ArtifactRecord]:
-    """Apply `RunScope` + the knowledge-state gate to a list of
- artifacts loaded straight from the registry (graph / consistency
- / report providers don't go through the FTS index, so they need
- their own filter).
+def _resolve_eligible_run_ids(
+    ctx: ProjectContext,
+    request: QueryRequest,
+    registry: SourceRegistry | None,
+) -> frozenset[str] | None:
+    """Resolve the document-eligibility gate for this request.
 
- Default `WorkspaceScope` is the no-op for RUN scope, but the
- knowledge-state gate ALWAYS applies — detached/removed documents
- must never reach retrieval regardless of scope. `RunScope`
- additionally keeps only artifacts whose ``metadata.run_id``
- matches.
+    Returns the set of ``active_run_id`` values the request may
+    touch — the single source of query visibility post-refactor
+    (see :mod:`j1.query.eligibility`).
+
+      * ``None``      — no registry wired (legacy test wiring).
+                        Caller falls back to scope-based filtering.
+      * ``frozenset()`` — nothing queryable: every document is
+                        detached / removed / has no active run.
+                        Caller MUST short-circuit to empty results.
+      * non-empty    — the run_ids whose owning document is
+                        eligible. Caller filters by
+                        ``run_id IN <set>``.
+    """
+    if registry is None:
+        return None
+    result = resolve_eligible_active_run_ids(
+        ctx=ctx, scope=request.scope, registry=registry,
+    )
+    return result.run_ids
+
+
+def _filter_by_scope(
+    records: list[ArtifactRecord],
+    request: QueryRequest,
+    *,
+    eligible_run_ids: frozenset[str] | None = None,
+) -> list[ArtifactRecord]:
+    """Apply the document-eligibility gate (preferred) or fall back
+ to ``RunScope`` + knowledge-state gate (legacy). Graph /
+ consistency / report providers don't go through the FTS index,
+ so they need their own filter.
+
+ When ``eligible_run_ids`` is supplied (post-refactor wiring),
+ records are filtered by ``metadata.run_id IN <set>`` and the
+ empty-set case returns ``[]`` immediately — the operator-visible
+ "nothing queryable" signal.
+
+ When ``eligible_run_ids`` is None (legacy wiring without a
+ ``SourceRegistry``), the function falls back to:
+ ``filter_to_attached_artifacts`` + optional ``RunScope`` filter.
  """
-    # Document-centric gate: drop artifacts tied to detached or
-    # removed documents. Centralised in `j1.documents.lifecycle` so
-    # this rule lives in exactly one place. No-op by default —
-    # pre-refactor records have no `metadata.knowledge_state` and
-    # default to "attached".
+    if eligible_run_ids is not None:
+        if not eligible_run_ids:
+            return []
+        return [
+            r for r in records
+            if str(r.metadata.get("run_id", "")) in eligible_run_ids
+        ]
+    # Legacy fallback: knowledge-state gate + optional RunScope.
     from j1.documents.lifecycle import filter_to_attached_artifacts
     records = filter_to_attached_artifacts(records)
     if isinstance(request.scope, RunScope):
@@ -138,16 +176,23 @@ class KnowledgeQueryProvider:
     kind = f"{PROVIDER_KIND_PREFIX}.knowledge"
     mode = QueryMode.KNOWLEDGE_FIRST
 
-    def __init__(self, indexer: SqliteSearchIndexer) -> None:
+    def __init__(
+        self,
+        indexer: SqliteSearchIndexer,
+        sources: SourceRegistry | None = None,
+    ) -> None:
         self._indexer = indexer
+        self._sources = sources
 
     def query(self, ctx: ProjectContext, request: QueryRequest) -> QueryResponse:
+        eligible = _resolve_eligible_run_ids(ctx, request, self._sources)
         hits = self._indexer.search(
             ctx,
             request.question,
             artifact_types=request.artifact_types or None,
             max_results=request.max_results,
             scope=request.scope,
+            eligible_run_ids=eligible,
         )
         sources = [_hit_to_source(h) for h in hits]
         review_required = any(
@@ -197,13 +242,16 @@ class GraphQueryProvider:
         self,
         artifacts: ArtifactRegistry,
         workspace: WorkspaceResolver,
+        sources: SourceRegistry | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._workspace = workspace
+        self._sources = sources
 
     def query(self, ctx: ProjectContext, request: QueryRequest) -> QueryResponse:
         records = self._artifacts.list_artifacts(ctx, kind=GRAPH_JSON_KIND)
-        records = _filter_by_scope(records, request)
+        eligible = _resolve_eligible_run_ids(ctx, request, self._sources)
+        records = _filter_by_scope(records, request, eligible_run_ids=eligible)
         sources = [_record_to_source(r) for r in records]
         related = [r.artifact_id for r in records]
         # Parse via the normalizer so we recognise canonical /
@@ -331,12 +379,14 @@ class EvidenceProvider:
         self._sources = sources
 
     def query(self, ctx: ProjectContext, request: QueryRequest) -> QueryResponse:
+        eligible = _resolve_eligible_run_ids(ctx, request, self._sources)
         hits = self._indexer.search(
             ctx,
             request.question,
             artifact_types=request.artifact_types or None,
             max_results=request.max_results,
             scope=request.scope,
+            eligible_run_ids=eligible,
         )
         evidence: list[SourceReference] = []
         for hit in hits:
@@ -387,15 +437,18 @@ class ConsistencyProvider:
         self,
         artifacts: ArtifactRegistry,
         workspace: WorkspaceResolver,
+        sources: SourceRegistry | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._workspace = workspace
+        self._sources = sources
 
     def query(self, ctx: ProjectContext, request: QueryRequest) -> QueryResponse:
         records = self._artifacts.list_artifacts(
             ctx, kind=ARTIFACT_TYPE_CONSISTENCY_FINDINGS
         )
-        records = _filter_by_scope(records, request)
+        eligible = _resolve_eligible_run_ids(ctx, request, self._sources)
+        records = _filter_by_scope(records, request, eligible_run_ids=eligible)
         findings = self._collect_findings(ctx, records)
         warnings = [f"Consistency: {self._render_finding(f)}" for f in findings[:5]]
         if not warnings:
@@ -458,18 +511,26 @@ class ReportGenerator:
         self,
         indexer: SqliteSearchIndexer,
         profile: Profile,
+        sources: SourceRegistry | None = None,
         *,
         template_name: str = DEFAULT_REPORT_TEMPLATE_NAME,
     ) -> None:
         self._indexer = indexer
         self._profile = profile
+        self._sources = sources
         self._template_name = template_name
 
     def query(self, ctx: ProjectContext, request: QueryRequest) -> QueryResponse:
         hits = self._indexer.list_indexed(
             ctx, artifact_types=request.artifact_types or None
         )
-        if isinstance(request.scope, RunScope):
+        eligible = _resolve_eligible_run_ids(ctx, request, self._sources)
+        if eligible is not None:
+            if not eligible:
+                hits = []
+            else:
+                hits = [h for h in hits if (h.run_id or "") in eligible]
+        elif isinstance(request.scope, RunScope):
             run_id = request.scope.run_id
             hits = [h for h in hits if (h.run_id or "") == run_id]
         hits = hits[: request.max_results * 2]

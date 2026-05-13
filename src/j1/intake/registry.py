@@ -59,6 +59,69 @@ class SourceRegistry(Protocol):
  when the id isn't registered."""
         ...
 
+    def try_acquire_operation_lock(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        operation: str,
+        run_id: str | None = None,
+    ) -> DocumentRecord | None:
+        """Best-effort CAS lock for a document mutation.
+
+        Atomically (under the registry's write barrier) checks that
+        ``pending_operation`` is None and sets it to ``operation``
+        with ``run_id`` and a fresh ``started_at``. Returns the
+        updated record on success, ``None`` if the lock was already
+        held by another operation."""
+        ...
+
+    def release_operation_lock(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> DocumentRecord:
+        """Release the per-document operation lock.
+
+        When ``expected_run_id`` is supplied, only releases the lock
+        if the stored ``pending_operation_run_id`` matches — this
+        guards against a stale handler clearing a newer
+        operation's lock."""
+        ...
+
+    def delete(
+        self, ctx: ProjectContext, document_id: str,
+    ) -> bool:
+        """Physically remove the ``DocumentRecord`` entry.
+
+        Used by ``DocumentCleanupService.cleanup_document`` at the
+        tail of a successful Remove so the user can re-upload the
+        same file as a fresh document (new id). Returns True iff a
+        record was removed; False (idempotent) when the id wasn't
+        present."""
+        ...
+
+    def try_promote_active_run_id(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        new_run_id: str,
+        expected_active_run_id: str | None,
+        completed_at,
+    ) -> DocumentRecord | None:
+        """Atomic CAS: set ``active_run_id = new_run_id`` only if the
+        current value equals ``expected_active_run_id`` AND the
+        document isn't being removed.
+
+        Returns the updated record on success, ``None`` if the CAS
+        precondition didn't hold (concurrent promotion / document
+        removed / mid-removal). Callers MUST treat ``None`` as "the
+        candidate is now orphaned; trigger cleanup"."""
+        ...
+
 
 class JsonSourceRegistry:
     def __init__(self, workspace: WorkspaceResolver) -> None:
@@ -139,6 +202,148 @@ class JsonSourceRegistry:
             f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
         )
 
+    def try_acquire_operation_lock(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        operation: str,
+        run_id: str | None = None,
+    ) -> DocumentRecord | None:
+        """Atomic compare-and-set for the per-document mutation lock.
+
+        The atomicity is "atomic enough" for dev mode: read + check
+        + write happens inside one call, and ``_write`` uses
+        ``tmp.replace(path)`` so concurrent writers can't observe a
+        torn file. A higher-bar implementation (e.g. file lock)
+        belongs in the eventual production registry."""
+        from dataclasses import replace as _replace
+        from datetime import timezone
+
+        records = self._read(ctx)
+        for i, record in enumerate(records):
+            if record.document_id != document_id:
+                continue
+            # Lock already held → CAS fails. Same-operation retries
+            # are NOT auto-allowed here: the caller must release
+            # then re-acquire so we don't accidentally extend a
+            # crashed handler's lock.
+            if record.pending_operation is not None:
+                return None
+            merged = _replace(
+                record,
+                pending_operation=operation,  # type: ignore[arg-type]
+                pending_operation_run_id=run_id,
+                pending_operation_started_at=datetime.now(timezone.utc),
+            )
+            records[i] = merged
+            self._write(ctx, records)
+            return merged
+        raise DocumentNotFoundError(
+            f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
+        )
+
+    def delete(
+        self, ctx: ProjectContext, document_id: str,
+    ) -> bool:
+        records = self._read(ctx)
+        before = len(records)
+        kept = [r for r in records if r.document_id != document_id]
+        if len(kept) == before:
+            return False
+        self._write(ctx, kept)
+        return True
+
+    def try_promote_active_run_id(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        new_run_id: str,
+        expected_active_run_id: str | None,
+        completed_at,
+    ) -> DocumentRecord | None:
+        """Compare-and-set promotion.
+
+        Promotes ``new_run_id`` to ``active_run_id`` IFF:
+
+          * the document's current ``active_run_id`` equals
+            ``expected_active_run_id`` (no concurrent promotion
+            stole the slot mid-run), AND
+          * the document is NOT in a removed knowledge state, AND
+          * the document is NOT mid-removal (lifecycle_status in
+            {``removing``, ``removed``, ``failed``,
+            ``cleanup_failed``}).
+
+        Returns the updated record on success, ``None`` when the
+        CAS precondition didn't hold. ``None`` is the signal the
+        caller must use to trigger candidate-cleanup — the run
+        succeeded but its result is now orphan."""
+        from dataclasses import replace as _replace
+
+        records = self._read(ctx)
+        for i, record in enumerate(records):
+            if record.document_id != document_id:
+                continue
+            if record.knowledge_state == "removed":
+                return None
+            if record.lifecycle_status in (
+                "removing", "removed", "failed", "cleanup_failed",
+            ):
+                return None
+            if record.active_run_id != expected_active_run_id:
+                return None
+            merged = _replace(
+                record,
+                active_run_id=new_run_id,
+                updated_at=completed_at,
+            )
+            records[i] = merged
+            self._write(ctx, records)
+            return merged
+        raise DocumentNotFoundError(
+            f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
+        )
+
+    def release_operation_lock(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> DocumentRecord:
+        """Idempotent release.
+
+        Always-safe: if the lock is already clear, returns the
+        record unchanged. If ``expected_run_id`` is supplied and
+        doesn't match the currently-held lock, the release is
+        skipped — a stale handler can't clear someone else's lock."""
+        from dataclasses import replace as _replace
+
+        records = self._read(ctx)
+        for i, record in enumerate(records):
+            if record.document_id != document_id:
+                continue
+            if record.pending_operation is None:
+                return record
+            if (
+                expected_run_id is not None
+                and record.pending_operation_run_id != expected_run_id
+            ):
+                return record
+            merged = _replace(
+                record,
+                pending_operation=None,
+                pending_operation_run_id=None,
+                pending_operation_started_at=None,
+            )
+            records[i] = merged
+            self._write(ctx, records)
+            return merged
+        raise DocumentNotFoundError(
+            f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
+        )
+
     def _path(self, ctx: ProjectContext) -> Path:
         return self._workspace.runtime(ctx) / REGISTRY_FILENAME
 
@@ -179,6 +384,16 @@ def _record_from_dict(d: dict) -> DocumentRecord:
     raw_state = d.get("knowledge_state") or "attached"
     if raw_state not in ("attached", "detached", "removed"):
         raw_state = "attached"
+    raw_lifecycle = d.get("lifecycle_status") or "stable"
+    if raw_lifecycle not in (
+        "stable", "removing", "removed", "cleanup_failed", "failed",
+    ):
+        raw_lifecycle = "stable"
+    raw_pending_op = d.get("pending_operation")
+    if raw_pending_op not in (
+        "reindex", "refresh_enrich", "detach", "attach", "remove", None,
+    ):
+        raw_pending_op = None
     removed_at = (
         datetime.fromisoformat(d["removed_at"])
         if d.get("removed_at") else None
@@ -186,6 +401,10 @@ def _record_from_dict(d: dict) -> DocumentRecord:
     updated_at = (
         datetime.fromisoformat(d["updated_at"])
         if d.get("updated_at") else None
+    )
+    pending_started = (
+        datetime.fromisoformat(d["pending_operation_started_at"])
+        if d.get("pending_operation_started_at") else None
     )
     return DocumentRecord(
         document_id=d["document_id"],
@@ -202,4 +421,8 @@ def _record_from_dict(d: dict) -> DocumentRecord:
         latest_version_id=d.get("latest_version_id"),
         removed_at=removed_at,
         updated_at=updated_at,
+        lifecycle_status=raw_lifecycle,  # type: ignore[arg-type]
+        pending_operation=raw_pending_op,  # type: ignore[arg-type]
+        pending_operation_run_id=d.get("pending_operation_run_id"),
+        pending_operation_started_at=pending_started,
     )

@@ -51,6 +51,7 @@ INSERT INTO {_TABLE_NAME} (
 """
 
 _DELETE_SQL = f"DELETE FROM {_TABLE_NAME} WHERE artifact_id = ?"
+_DELETE_BY_RUN_ID_SQL = f"DELETE FROM {_TABLE_NAME} WHERE run_id = ?"
 
 _SELECT_COLUMNS = (
     "artifact_id, artifact_type, title, extracted_text, "
@@ -146,7 +147,33 @@ class SqliteSearchIndexer:
         artifact_types: list[str] | None = None,
         max_results: int = 20,
         scope: QueryScope | None = None,
+        eligible_run_ids: frozenset[str] | None = None,
     ) -> list[SearchHit]:
+        """Run a BM25 search against the per-project FTS index.
+
+        ``eligible_run_ids`` is the post-refactor query gate (see
+        ``j1.query.eligibility.resolve_eligible_active_run_ids``).
+        When supplied, the SQL adds ``AND run_id IN (...)`` so
+        only chunks from those runs participate in BM25 ranking.
+
+          * ``None``  — gate not applied. Used by code paths that
+                        haven't been migrated yet OR by diagnostic
+                        callers that explicitly want unfiltered
+                        access (validation's
+                        ``validation_scope="run"`` diagnostic
+                        path). Callers SHOULD pass an explicit set
+                        — None disables the gate by design.
+          * ``frozenset()`` — empty set → return zero results
+                              (the gate said "no eligible runs"
+                              and SQL is ``WHERE 1=0``).
+          * non-empty   — return only rows whose ``run_id`` is in
+                          the set.
+
+        ``scope`` is kept for backward compatibility with callers
+        that still pass ``RunScope`` directly. When BOTH ``scope``
+        and ``eligible_run_ids`` are supplied, the eligibility
+        gate wins (it's strictly stricter).
+        """
         if not query.strip():
             return []
         db_path = self._db_path(ctx)
@@ -156,6 +183,12 @@ class SqliteSearchIndexer:
         if not sanitized:
             return []
         scope = scope if scope is not None else default_scope()
+
+        # Eligibility gate emits ``AND 1=0`` for empty sets so BM25
+        # ranks no rows at all — the operator-visible signal of
+        # "nothing queryable right now".
+        if eligible_run_ids is not None and len(eligible_run_ids) == 0:
+            return []
 
         sql = (
             f"SELECT {_SELECT_COLUMNS}, bm25({_TABLE_NAME}) AS score "
@@ -167,13 +200,21 @@ class SqliteSearchIndexer:
             placeholders = ",".join("?" for _ in artifact_types)
             sql += f" AND artifact_type IN ({placeholders})"
             params.extend(artifact_types)
-        # Scope filter sits in the WHERE clause, BEFORE ORDER BY score
-        # / LIMIT, so BM25 ranks only rows that survived the run-id
-        # filter. Post-topK pruning would distort the ranking.
-        scope_sql, scope_params = _scope_to_sql(scope)
-        if scope_sql:
-            sql += f" {scope_sql}"
-            params.extend(scope_params)
+        # Apply eligibility gate FIRST when present, then any
+        # additional scope-based filter. Scope filter sits in the
+        # WHERE clause, BEFORE ORDER BY score / LIMIT, so BM25
+        # ranks only rows that survived the run-id gate.
+        if eligible_run_ids is not None:
+            placeholders = ",".join("?" for _ in eligible_run_ids)
+            sql += f" AND run_id IN ({placeholders})"
+            params.extend(eligible_run_ids)
+        else:
+            # Backward-compat: caller didn't supply eligibility.
+            # Use the legacy scope-based filter.
+            scope_sql, scope_params = _scope_to_sql(scope)
+            if scope_sql:
+                sql += f" {scope_sql}"
+                params.extend(scope_params)
         sql += " ORDER BY score LIMIT ?"
         params.append(max_results)
 
@@ -194,6 +235,23 @@ class SqliteSearchIndexer:
             )
             row = cursor.fetchone()
             return _row_to_hit(row, with_score=False) if row else None
+
+    def delete_by_run_id(
+        self, ctx: ProjectContext, run_id: str,
+    ) -> int:
+        """Drop every FTS row tagged with ``run_id``.
+
+        Used by ``DocumentCleanupService`` to drop the search-index
+        side of a candidate run that lost the CAS promotion race
+        (or a run whose document was Removed). Idempotent: deleting
+        rows that don't exist is success (returns 0)."""
+        db_path = self._db_path(ctx)
+        if not db_path.exists():
+            return 0
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute(_DELETE_BY_RUN_ID_SQL, (run_id,))
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def list_indexed(
         self,

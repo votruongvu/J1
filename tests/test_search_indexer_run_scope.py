@@ -304,3 +304,72 @@ def test_legacy_callers_omitting_scope_param_unchanged(
 
     hits = indexer.search(ctx, "hello", max_results=10)
     assert {h.artifact_id for h in hits} == {"a-1", "a-2"}
+
+
+# ---- Eligibility gate (post-refactor) ------------------------------
+
+
+def test_eligible_run_ids_filters_to_supplied_set(
+    indexer, workspace, ctx, artifact_registry,
+):
+    """``eligible_run_ids`` is the post-refactor query gate. When
+    non-empty, only rows whose ``run_id`` is in the set survive."""
+    _stage(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-1", content=b"shared", run_id="run-A",
+    )
+    _stage(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-2", content=b"shared", run_id="run-B",
+    )
+    _stage(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-3", content=b"shared", run_id="run-C",
+    )
+    indexer.index(ctx, ["a-1", "a-2", "a-3"])
+
+    hits = indexer.search(
+        ctx, "shared", eligible_run_ids=frozenset({"run-A", "run-C"}),
+    )
+    assert {h.artifact_id for h in hits} == {"a-1", "a-3"}
+
+
+def test_eligible_run_ids_empty_set_returns_zero(
+    indexer, workspace, ctx, artifact_registry,
+):
+    """Empty set → ``nothing queryable right now``. The gate emits
+    a short-circuit return rather than letting BM25 rank every row
+    and discarding them after."""
+    _stage(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-1", content=b"hello", run_id="run-X",
+    )
+    indexer.index(ctx, ["a-1"])
+
+    assert indexer.search(
+        ctx, "hello", eligible_run_ids=frozenset(),
+    ) == []
+
+
+def test_eligible_run_ids_overrides_legacy_scope(
+    indexer, workspace, ctx, artifact_registry,
+):
+    """When BOTH ``scope`` and ``eligible_run_ids`` are supplied,
+    the eligibility gate wins — it's strictly stricter, so the
+    legacy scope path is bypassed."""
+    _stage(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-1", content=b"shared", run_id="run-A",
+    )
+    _stage(
+        workspace, ctx, artifact_registry,
+        artifact_id="a-2", content=b"shared", run_id="run-B",
+    )
+    indexer.index(ctx, ["a-1", "a-2"])
+
+    hits = indexer.search(
+        ctx, "shared",
+        scope=RunScope(run_id="run-A"),
+        eligible_run_ids=frozenset({"run-B"}),
+    )
+    assert {h.artifact_id for h in hits} == {"a-2"}

@@ -54,6 +54,7 @@ import type {
   DocumentDetail,
   DocumentLifecycleResponse,
   DocumentListItem,
+  DocumentRefreshEnrichResponse,
   DocumentReindexResponse,
   DocumentRunSummary,
 } from "@/types/documents";
@@ -931,5 +932,17 @@ export class ApiClient implements IngestionClient {
       { method: "POST", headers: this.headers() },
     );
     return await this.json<DocumentReindexResponse>(resp);
+  }
+
+  async refreshEnrichDocument(
+    documentId: string,
+  ): Promise<DocumentRefreshEnrichResponse> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/refresh-enrich`,
+      ),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<DocumentRefreshEnrichResponse>(resp);
   }
 }

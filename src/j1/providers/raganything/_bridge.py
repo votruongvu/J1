@@ -1084,11 +1084,43 @@ def _prepare_compile(
             f"registered via j1.intake.DocumentIntakeService.register_*()?"
         )
     source_path = candidates[0]
-    output_dir = Path(
-        request.settings.workdir or "./data/raganything"
-    ).expanduser() / "outputs" / request.document_id
+    output_dir = _resolve_compile_output_dir(
+        workdir=request.settings.workdir,
+        document_id=request.document_id,
+        run_id=request.run_id,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     return rag, output_dir, source_path, dropped_overrides
+
+
+def _resolve_compile_output_dir(
+    *,
+    workdir: str | None,
+    document_id: str,
+    run_id: str | None,
+) -> Path:
+    """Resolve MinerU's scratch output directory for one compile.
+
+    Layout invariant:
+
+      * ``outputs/{document_id}/{run_id}/`` — production. Each run
+        gets an isolated scratch dir so two reindex attempts for the
+        same document don't overwrite each other's intermediate
+        files. Promotion = flip ``document.active_run_id``; cleanup
+        of a failed candidate = delete its run-scoped leaf only,
+        leaving the previous active run's dir intact.
+
+      * ``outputs/{document_id}/`` — legacy fallback when ``run_id``
+        is missing (direct test callers, pre-refactor compile paths).
+    """
+    base = (
+        Path(workdir or "./data/raganything").expanduser()
+        / "outputs"
+        / document_id
+    )
+    if run_id:
+        return base / run_id
+    return base
 
 
 def workspace_path_for_run(

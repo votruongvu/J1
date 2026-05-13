@@ -180,6 +180,7 @@ class RunsActivities:
         run_store: IngestionRunStore | None = None,
         source_registry: "SourceRegistry | None" = None,
         artifact_registry: "ArtifactRegistry | None" = None,
+        cleanup_service: "DocumentCleanupService | None" = None,
     ) -> None:
         # `progress_reporter` writes the audit-log progress events
         # the FE's SSE timeline reads. `run_store` updates the
@@ -208,6 +209,12 @@ class RunsActivities:
         # would return mixed-run results (the "graph_json from old
         # run still in search results" failure mode).
         self._artifact_registry = artifact_registry
+        # `cleanup_service` is the idempotent cleanup primitives
+        # (per-run and per-document). When wired, CAS-orphaned
+        # candidate runs delegate here to drop their artifacts +
+        # workspace; Remove flow chains through it to wipe an
+        # entire document.
+        self._cleanup_service = cleanup_service
 
     def all_activities(self) -> list:
         return [
@@ -454,8 +461,8 @@ class RunsActivities:
         self._maybe_promote_to_active(ctx, run)
 
     def _maybe_promote_to_active(self, ctx, run) -> None:
-        """Update `document.active_run_id` to this run when it
-        reached a usable terminal state.
+        """CAS-promote ``document.active_run_id`` to this run when
+        it reached a usable terminal state.
 
         Definition of "usable" matches the Phase 1 backfill's tier-1
         rule (`SUCCEEDED` + `SUCCEEDED_WITH_WARNINGS`). Anything
@@ -463,11 +470,19 @@ class RunsActivities:
         NOT promote, because a failed reindex must preserve the
         previous good active for retrieval / answer generation.
 
+        Promotion is CAS: the candidate's ``parent_run_id`` (for
+        reindex/refresh runs) or ``None`` (for an initial run) is
+        passed as the expected current ``active_run_id``. If
+        another reindex won the slot first, OR the document was
+        removed mid-run, the CAS returns ``None`` and we skip
+        promotion — the candidate is now orphan and the caller
+        side-effects cleanup. Without CAS we'd silently overwrite
+        the winner OR re-promote a run onto a removed document.
+
         Quiet on every failure path (no registry wired, lookup
         miss, write fails): the run-status update is the
         load-bearing operation; the promotion is a best-effort
-        side effect. We never want a registry hiccup to leave a
-        run in the wrong status.
+        side effect.
         """
         if self._source_registry is None:
             return
@@ -481,22 +496,31 @@ class RunsActivities:
             doc = self._source_registry.get(ctx, run.document_id)
         except Exception:  # noqa: BLE001 — best-effort
             return
-        # Don't promote a run onto a removed document — the
-        # knowledge has been disowned. Operator must re-upload to
-        # bring the document back; until then we leave
-        # active_run_id cleared.
-        if doc.knowledge_state == "removed":
-            return
         if doc.active_run_id == run.run_id:
             return  # already pointing at us; nothing to do
         previous_active_run_id = doc.active_run_id
+        # CAS precondition: for reindex / refresh runs, the expected
+        # active is the candidate's parent_run_id. Initial runs
+        # expect None (no prior active). Either way, mismatch
+        # means we lost the race or the document was removed —
+        # both warrant a no-op + cleanup, not a clobbering write.
+        expected_active = getattr(run, "parent_run_id", None)
+        promoted = None
         try:
-            self._source_registry.update_document_fields(
-                ctx, run.document_id,
-                active_run_id=run.run_id,
-                updated_at=run.completed_at or run.updated_at,
+            promoted = self._source_registry.try_promote_active_run_id(
+                ctx,
+                run.document_id,
+                new_run_id=run.run_id,
+                expected_active_run_id=expected_active,
+                completed_at=run.completed_at or run.updated_at,
             )
         except Exception:  # noqa: BLE001 — quiet best-effort
+            return
+        if promoted is None:
+            # CAS failed: candidate is orphaned. Best-effort drop
+            # of its workspace + artifacts so the run doesn't
+            # linger as queryable phantom evidence.
+            self._cleanup_orphan_candidate(ctx, run)
             return
 
         # Post-promotion supersede sweep. Mark the previous active
@@ -520,6 +544,37 @@ class RunsActivities:
             )
         except Exception:  # noqa: BLE001 — best-effort; never blocks promotion
             pass
+
+    def _cleanup_orphan_candidate(self, ctx, run) -> None:
+        """Best-effort cleanup of a candidate run that lost the CAS
+        promotion race (or was promoted onto a now-removed document).
+
+        Delegates to ``DocumentCleanupService.cleanup_run`` when the
+        service is wired; otherwise marks the run's
+        ``cleanup_status="cleanup_failed"`` so an operator sweep
+        can spot orphans. Quiet on every failure path — the run is
+        already terminal, this is purely housekeeping."""
+        if self._cleanup_service is None:
+            # No service wired (legacy / test path). Mark the run so
+            # operators see the orphan.
+            try:
+                run.cleanup_status = "cleanup_failed"  # type: ignore[assignment]
+                self._run_store.upsert(ctx, run)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        try:
+            self._cleanup_service.cleanup_run(
+                ctx, document_id=run.document_id, run_id=run.run_id,
+            )
+            run.cleanup_status = "cleaned"  # type: ignore[assignment]
+            self._run_store.upsert(ctx, run)
+        except Exception:  # noqa: BLE001 — best-effort
+            try:
+                run.cleanup_status = "cleanup_failed"  # type: ignore[assignment]
+                self._run_store.upsert(ctx, run)
+            except Exception:  # noqa: BLE001
+                pass
 
     @activity.defn(name=ACTIVITY_REPORT_STEP_SKIPPED)
     def report_step_skipped(self, input: ReportStepSkippedInput) -> None:

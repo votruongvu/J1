@@ -115,6 +115,15 @@ export function DocumentDetailPage({
           title: "Re-index started",
           body: `New run: ${r.reindexRunId.slice(0, 12)}`,
         });
+      } else if (action === "refresh_enrich") {
+        const r = await client.refreshEnrichDocument(documentId);
+        pushToast?.({
+          kind: "success",
+          title: "Refresh enrichment started",
+          body: `Reusing compile from ${
+            r.reusedCompileFromRunId.slice(0, 12)
+          }; new run: ${r.refreshRunId.slice(0, 12)}`,
+        });
       } else if (action === "resume") {
         if (detail.activeRunId) {
           // The resume API is run-scoped; route the operator to
@@ -374,6 +383,14 @@ function RunHistoryTable({
               {run.runId === activeRunId && (
                 <span className="run-history-row__active-badge">active</span>
               )}
+              {run.displayVersion && (
+                <span
+                  className="run-history-row__version-chip"
+                  title="Operator-facing version (DDMMYYYY-NN)"
+                >
+                  v{run.displayVersion}
+                </span>
+              )}
             </td>
             <td>{run.runType}</td>
             <td>{run.status}</td>
@@ -422,6 +439,10 @@ const ACTION_META: Record<DocumentAction, {
 }> = {
   view:    { label: "View",       variant: "ghost"   },
   reindex: { label: "Re-index document", variant: "ghost"   },
+  refresh_enrich: {
+    label: "Refresh enrichment",
+    variant: "ghost",
+  },
   detach:  { label: "Detach from Knowledge", variant: "ghost" },
   attach:  { label: "Attach to Knowledge",   variant: "primary" },
   remove:  { label: "Remove from Knowledge", variant: "danger"  },

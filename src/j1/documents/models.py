@@ -28,6 +28,40 @@ from j1.projects.context import ProjectContext
 KnowledgeState = Literal["attached", "detached", "removed"]
 
 
+# ---- Lifecycle status literal ----
+#
+# Tracks the *operational* state of a document — orthogonal to
+# ``KnowledgeState`` (which is the operator-facing visibility gate).
+# Set by Remove flow + cleanup service:
+#
+#  * ``stable``         — default. Document is in a steady state.
+#  * ``removing``       — gate-first phase of Remove: query_enabled
+#                         already false but cleanup still running.
+#  * ``removed``        — cleanup completed successfully.
+#  * ``cleanup_failed`` — partial cleanup; operator action required.
+#  * ``failed``         — initial ingestion failed terminally;
+#                         document is unusable.
+#
+# The eligibility resolver disqualifies any of the non-``stable``
+# states (see ``j1.query.eligibility._DISALLOWED_LIFECYCLE``) so a
+# document under cleanup CAN'T leak into queries even if a stale
+# ``active_run_id`` lingers during the transition.
+LifecycleStatus = Literal[
+    "stable", "removing", "removed", "cleanup_failed", "failed",
+]
+
+
+# ---- Pending operation literal ----
+#
+# Per-document mutating-operation lock. Only one of these may be
+# active at a time on a document (CAS-acquired by the dispatch
+# layer). Used to reject concurrent re-index / detach / remove
+# requests with a 409 rather than racing them.
+PendingOperation = Literal[
+    "reindex", "refresh_enrich", "detach", "attach", "remove",
+]
+
+
 @dataclass(frozen=True)
 class SourceDocument:
     uri: str
@@ -88,6 +122,31 @@ class DocumentRecord:
     latest_version_id: str | None = None
     removed_at: datetime | None = None
     updated_at: datetime | None = None
+
+    # ---- Lifecycle + operation-lock fields -----------------------
+    # ``lifecycle_status`` is the operational state (see literal
+    # above). Defaults to ``stable`` on read when the column is
+    # missing on disk so legacy records keep their existing
+    # behaviour.
+    lifecycle_status: LifecycleStatus = "stable"
+
+    # Per-document mutating-operation lock. CAS-acquired by the
+    # dispatcher before re-index / detach / remove / refresh-enrich
+    # so concurrent mutations on the same document are rejected
+    # with 409. ``None`` = unlocked (no operation in flight).
+    #
+    # ``pending_operation_run_id`` is the run_id (or operation id)
+    # the lock is held for — used for diagnostic logging and to
+    # disambiguate "is this the same operation retrying?" from
+    # "is a different operation trying to barge in?".
+    #
+    # ``pending_operation_started_at`` is the wall-clock time the
+    # lock was acquired. Used to flag stuck operations during
+    # cleanup sweeps (a lock older than the configured TTL is a
+    # candidate for forced release after operator inspection).
+    pending_operation: PendingOperation | None = None
+    pending_operation_run_id: str | None = None
+    pending_operation_started_at: datetime | None = None
 
     @property
     def tenant_id(self) -> str:

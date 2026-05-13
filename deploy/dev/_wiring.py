@@ -157,11 +157,11 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     if profile is not None:
         query_engine = HybridQueryEngine(
             classifier=QueryIntentClassifier(),
-            knowledge_provider=KnowledgeQueryProvider(indexer),
-            graph_provider=GraphQueryProvider(artifacts, workspace),
+            knowledge_provider=KnowledgeQueryProvider(indexer, sources),
+            graph_provider=GraphQueryProvider(artifacts, workspace, sources),
             evidence_provider=EvidenceProvider(indexer, sources),
-            consistency_provider=ConsistencyProvider(artifacts, workspace),
-            report_generator=ReportGenerator(indexer, profile),
+            consistency_provider=ConsistencyProvider(artifacts, workspace, sources),
+            report_generator=ReportGenerator(indexer, profile, sources),
         )
 
     review_activities = ReviewActivities(review_queue=reviews, audit=audit_recorder)
@@ -204,6 +204,39 @@ def build_document_lifecycle_service(workspace: WorkspaceResolver):
         registry=JsonSourceRegistry(workspace),
         artifact_registry=JsonArtifactRegistry(workspace),
         audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
+        cleanup=build_document_cleanup_service(workspace),
+    )
+
+
+def build_document_cleanup_service(workspace: WorkspaceResolver):
+    """Build the ``DocumentCleanupService`` for Remove + CAS-orphan
+    cleanup.
+
+    Wires the same JSONL-backed singletons + the SQLite search
+    indexer + the persistent run store. Pulls the per-run
+    LightRAG / MinerU workdir from ``J1_RAGANYTHING_WORKDIR``
+    (matches the dev compose default) so the reset script and the
+    Remove flow operate on the same filesystem tree."""
+    import os
+    from j1.artifacts.registry import JsonArtifactRegistry
+    from j1.documents.cleanup import DocumentCleanupService
+    from j1.runs.store import JsonlIngestionRunStore
+    from j1.search.indexer import SqliteSearchIndexer
+    artifacts = JsonArtifactRegistry(workspace)
+    sources = JsonSourceRegistry(workspace)
+    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+    run_store = JsonlIngestionRunStore(workspace)
+    raganything_workdir = (
+        os.environ.get("J1_RAGANYTHING_WORKDIR")
+        or "/var/lib/j1/raganything"
+    )
+    return DocumentCleanupService(
+        workspace=workspace,
+        artifacts=artifacts,
+        indexer=indexer,
+        run_store=run_store,
+        source_registry=sources,
+        raganything_workdir=raganything_workdir,
     )
 
 
@@ -292,11 +325,11 @@ def build_validation_service(workspace: WorkspaceResolver):
 
     query_engine = HybridQueryEngine(
         classifier=QueryIntentClassifier(),
-        knowledge_provider=KnowledgeQueryProvider(indexer),
-        graph_provider=GraphQueryProvider(artifacts, workspace),
+        knowledge_provider=KnowledgeQueryProvider(indexer, sources),
+        graph_provider=GraphQueryProvider(artifacts, workspace, sources),
         evidence_provider=EvidenceProvider(indexer, sources),
-        consistency_provider=ConsistencyProvider(artifacts, workspace),
-        report_generator=ReportGenerator(indexer, profile),
+        consistency_provider=ConsistencyProvider(artifacts, workspace, sources),
+        report_generator=ReportGenerator(indexer, profile, sources),
     )
 
     # Best-effort LLM client for the test-case generator. Prefer
@@ -679,6 +712,13 @@ def build_worker_spec(
         # results after reindex" gap the latest validation reports
         # exposed.
         artifact_registry=JsonArtifactRegistry(workspace),
+        # Cleanup service for CAS-orphan candidates: when a
+        # candidate reindex / refresh-enrich run finishes
+        # successfully but loses the CAS-promotion race (or the
+        # parent document was removed mid-run), the orphan run's
+        # artifacts / FTS rows / workspace dirs get dropped here
+        # rather than left as queryable phantom evidence.
+        cleanup_service=build_document_cleanup_service(workspace),
     ).all_activities()
     # Profiling activity (`j1.ingestion.profile_document`). Required
     # whenever `planner_enabled=True` flows through the workflow —

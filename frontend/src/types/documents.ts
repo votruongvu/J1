@@ -35,7 +35,8 @@ export type RunType =
   | "reindex"
   | "resume"
   | "retry"
-  | "validation";
+  | "validation"
+  | "refresh_enrich";
 
 /**
  * Server-computed action permission. The FE iterates this array
@@ -46,6 +47,7 @@ export type RunType =
 export type DocumentAction =
   | "view"
   | "reindex"
+  | "refresh_enrich"
   | "detach"
   | "attach"
   | "remove"
@@ -69,6 +71,13 @@ export interface DocumentRunSummary {
   completedAt: string | null;
   failureCode: string | null;
   isActive: boolean;
+  /**
+   * Operator-facing version chip in ``DDMMYYYY-NN`` format (per
+   * document, per day). ``null`` for legacy runs created before
+   * the dev-mode refactor — the FE renders nothing for those
+   * rather than showing an empty placeholder.
+   */
+  displayVersion: string | null;
 }
 
 /** List-view projection — one per document in `GET /documents`. */
@@ -122,4 +131,20 @@ export interface DocumentReindexResponse {
   parentRunId: string | null;
   workflowId: string;
   runType: RunType;
+}
+
+/**
+ * Response from `POST /documents/{id}/refresh-enrich`. Same shape
+ * as the reindex response with two refresh-specific fields:
+ * `refreshRunId` (the new candidate's id) and
+ * `reusedCompileFromRunId` (the active run whose compile output
+ * the new run reuses).
+ */
+export interface DocumentRefreshEnrichResponse {
+  documentId: string;
+  refreshRunId: string;
+  parentRunId: string;
+  workflowId: string;
+  runType: RunType;
+  reusedCompileFromRunId: string;
 }

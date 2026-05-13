@@ -2355,6 +2355,13 @@ def create_rest_api(
         actor = security.subject if security else "system"
         new_run_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc)
+        from j1.runs.models import allocate_display_version
+        prior_runs = store.list_runs(ctx, document_id=document_id)
+        display_version = allocate_display_version(
+            started_at=now,
+            existing_runs=prior_runs,
+            document_id=document_id,
+        )
         new_run = IngestionRun(
             run_id=new_run_id,
             document_id=document_id,
@@ -2378,6 +2385,7 @@ def create_rest_api(
             run_type="reindex",
             parent_run_id=active_run_id,
             document_version_id=previous_version_id,
+            display_version=display_version,
         )
         store.upsert(ctx, new_run)
 
@@ -2435,6 +2443,173 @@ def create_rest_api(
                 "parentRunId": active_run_id,
                 "workflowId": workflow_id,
                 "runType": "reindex",
+            },
+            _req_id(request),
+        )
+
+    # ---- Document-centric refresh-enrich (Phase 5b) -----------------
+    #
+    # ``POST /documents/{id}/refresh-enrich`` kicks a candidate run
+    # that REUSES the previous active run's compile output and re-
+    # runs only enrichment + graph + index. The compile stage is by
+    # far the most expensive (MinerU OCR + LLM passes); skipping it
+    # lets operators iterate on enricher / graph builder choices
+    # without paying for the parse again.
+    #
+    # Wire-on-disk contract:
+    #   * ``run_type="refresh_enrich"``
+    #   * ``parent_run_id=<document.active_run_id>``
+    #   * ``metadata.reused_compile_from_run_id=<active_run_id>``
+    #     — the workflow's compile stage reads this and short-circuits
+    #     to "reuse compile artifacts from that run".
+    #
+    # CAS promotion still applies on terminal success — same gate as
+    # reindex, so a failed refresh leaves the active run intact.
+
+    @app.post(
+        "/documents/{document_id}/refresh-enrich",
+        tags=["documents"],
+        summary="Refresh enrichment (reuse previous compile output)",
+        description=(
+            "Start a candidate ingestion run that REUSES the "
+            "previous active run's compile output and re-runs only "
+            "enrichment + graph + index. The new run carries "
+            "`runType=refreshEnrich` and "
+            "`metadata.reusedCompileFromRunId=<active_run_id>` so "
+            "the compile stage short-circuits to artifact reuse. "
+            "Promotion to `activeRunId` is gated on terminal "
+            "success (same CAS rule as reindex), so a failed "
+            "refresh preserves the previous active. Returns 409 "
+            "when the document is detached / removed, or when no "
+            "active run exists yet (refresh has nothing to reuse)."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_document_refresh_enrich(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        store = _require_run_store()
+        _enforce_document_attached_for_action(
+            ctx, document_id, "refresh-enrich",
+        )
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        active_run_id = getattr(doc_dto, "active_run_id", None)
+        if not active_run_id:
+            # Nothing to reuse — caller must run a full reindex
+            # first. 409 (state conflict) rather than 400 (bad
+            # request) so the FE renders an actionable hint.
+            raise HTTPException(
+                409,
+                f"document {document_id!r} has no active run to "
+                "refresh from; use POST /documents/{id}/reindex "
+                "for an initial run",
+            )
+        previous = store.get(ctx, active_run_id)
+        if previous is None:
+            raise HTTPException(
+                409,
+                f"active run {active_run_id!r} not found in the "
+                "run store; cannot refresh-enrich",
+            )
+        # Guard: don't kick a refresh while the previous run is
+        # still writing.
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(previous.status) in active_states:
+            raise HTTPException(
+                409,
+                f"previous run {active_run_id!r} is currently "
+                f"{previous.status} — wait for it to complete "
+                "before refresh-enrich",
+            )
+        actor = security.subject if security else "system"
+        new_run_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        previous_meta = dict(previous.metadata or {})
+        from j1.runs.models import allocate_display_version
+        prior_runs = store.list_runs(ctx, document_id=document_id)
+        display_version = allocate_display_version(
+            started_at=now,
+            existing_runs=prior_runs,
+            document_id=document_id,
+        )
+        new_run = IngestionRun(
+            run_id=new_run_id,
+            document_id=document_id,
+            workflow_id=None,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                "policy": previous_meta.get("policy", "auto"),
+                "mode": previous_meta.get("mode", "STANDARD"),
+                "document_name": previous_meta.get(
+                    "document_name", doc_dto.original_filename,
+                ),
+                # The load-bearing hint: the compile stage reads
+                # this and reuses compile artifacts from that run.
+                "reused_compile_from_run_id": active_run_id,
+            },
+            run_type="refresh_enrich",
+            parent_run_id=active_run_id,
+            document_version_id=previous.document_version_id,
+            display_version=display_version,
+        )
+        store.upsert(ctx, new_run)
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=new_run_id, document_id=document_id,
+                actor=actor,
+            )
+        body = IngestRequest(
+            compiler_kind=_resolve_compiler_kind(None),
+            enricher_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.enricher_kinds
+                 if processing_capabilities else frozenset()),
+                "enricherKind",
+            ),
+            graph_builder_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.graph_builder_kinds
+                 if processing_capabilities else frozenset()),
+                "graphBuilderKind",
+            ),
+            indexer_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.indexer_kinds
+                 if processing_capabilities else frozenset()),
+                "indexerKind",
+            ),
+            actor=actor,
+            correlation_id=new_run_id,
+            reindex_of=active_run_id,
+        )
+        workflow_id = await starter(ctx, document_id, body)
+        new_run.workflow_id = workflow_id
+        new_run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, new_run)
+        return envelope(
+            {
+                "documentId": document_id,
+                "refreshRunId": new_run_id,
+                "parentRunId": active_run_id,
+                "workflowId": workflow_id,
+                "runType": "refresh_enrich",
+                "reusedCompileFromRunId": active_run_id,
             },
             _req_id(request),
         )
@@ -2526,6 +2701,7 @@ def create_rest_api(
             ),
             "failureCode": r.failure_code,
             "isActive": r.is_active,
+            "displayVersion": r.display_version,
         }
 
     @app.get(

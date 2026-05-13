@@ -208,6 +208,27 @@ class DocumentIntakeService:
 
             existing = self._registry.find_by_checksum(ctx, checksum)
             if existing is not None:
+                # Re-upload guard: a document being Removed (or in
+                # ``cleanup_failed`` state) is not stable enough to
+                # accept a fresh upload. Reject so the operator
+                # waits for cleanup to complete (or unsticks the
+                # orphan) before re-uploading the same file. On a
+                # successful Remove the registry record was
+                # deleted, so ``find_by_checksum`` returns None and
+                # the upload proceeds as a fresh document — exactly
+                # the user's mental model.
+                existing_lifecycle = getattr(
+                    existing, "lifecycle_status", "stable",
+                )
+                if existing_lifecycle in ("removing", "cleanup_failed"):
+                    tmp_path.unlink(missing_ok=True)
+                    raise DuplicateDocumentError(
+                        f"document {existing.document_id} is currently "
+                        f"{existing_lifecycle}; wait for cleanup to "
+                        f"complete before re-uploading",
+                        existing_document_id=existing.document_id,
+                        checksum=checksum,
+                    )
                 tmp_path.unlink(missing_ok=True)
                 self._emit_duplicate(
                     ctx=ctx,

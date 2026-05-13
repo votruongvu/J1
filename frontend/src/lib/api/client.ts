@@ -41,6 +41,7 @@ import type {
   DocumentDetail,
   DocumentLifecycleResponse,
   DocumentListItem,
+  DocumentRefreshEnrichResponse,
   DocumentReindexResponse,
   DocumentRunSummary,
 } from "@/types/documents";
@@ -436,6 +437,17 @@ export interface IngestionClient {
  * result.
  */
   reindexDocument(documentId: string): Promise<DocumentReindexResponse>;
+
+  /**
+ * POST /documents/{id}/refresh-enrich — start a candidate run
+ * that REUSES the previous active run's compile output and re-
+ * runs only enrichment + graph + index. Promotion to
+ * `activeRunId` is gated on terminal success (same CAS rule as
+ * reindex), so a failed refresh preserves the previous active.
+ */
+  refreshEnrichDocument(
+    documentId: string,
+  ): Promise<DocumentRefreshEnrichResponse>;
 }
 
 /** Per-role probe result from `/healthz/llm`. */

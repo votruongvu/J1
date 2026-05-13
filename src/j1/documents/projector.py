@@ -72,6 +72,11 @@ class DocumentRunSummaryDTO:
     completed_at: datetime | None
     failure_code: str | None = None
     is_active: bool = False
+    # Operator-visible version chip (``DDMMYYYY-NN`` per document
+    # per day). Set by the run-creation layer when allocated;
+    # legacy runs that pre-date this field surface as ``None`` and
+    # the FE renders nothing — graceful degradation.
+    display_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +143,8 @@ class DocumentDetailDTO:
 _BASE_ACTIONS_BY_STATE: dict[KnowledgeState, tuple[Action, ...]] = {
     # "view" is always available — the FE renders it as the click
     # target on each row. Other actions are state-dependent.
+    # ``refresh_enrich`` is appended dynamically below when an
+    # active run exists to reuse compile output from.
     "attached": ("view", "reindex", "detach", "remove"),
     "detached": ("view", "attach", "remove"),
     "removed": ("view",),
@@ -167,6 +174,14 @@ def compute_available_actions(
     base = _BASE_ACTIONS_BY_STATE.get(document.knowledge_state, ("view",))
     actions: list[Action] = list(base)
     if document.knowledge_state == "attached" and active_run is not None:
+        # ``refresh_enrich`` is only meaningful when an active run
+        # already produced a compile artifact to reuse. Gating it on
+        # ``active_run_id`` AND a successful active run avoids the
+        # 409 cycle ("refresh-enrich rejected — no active run").
+        if active_run.status in (
+            RunStatus.SUCCEEDED, RunStatus.SUCCEEDED_WITH_WARNINGS,
+        ):
+            actions.append("refresh_enrich")
         if _is_resumable_failure(active_run):
             actions.append("resume")
     return tuple(actions)
@@ -319,6 +334,7 @@ def _to_run_summary(
         completed_at=run.completed_at,
         failure_code=run.failure_code,
         is_active=is_active,
+        display_version=run.display_version,
     )
 
 

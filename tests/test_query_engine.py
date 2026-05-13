@@ -34,6 +34,9 @@ def _now() -> datetime:
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+_DEFAULT_TEST_RUN_ID = "run-default"
+
+
 def _stage_artifact(
     workspace,
     ctx,
@@ -50,6 +53,7 @@ def _stage_artifact(
     review_status: ReviewStatus = ReviewStatus.NOT_REQUIRED,
     metadata_extras: dict | None = None,
     suffix: str = ".txt",
+    run_id: str | None = _DEFAULT_TEST_RUN_ID,
 ) -> ArtifactRecord:
     area_dir = workspace.area(ctx, area)
     area_dir.mkdir(parents=True, exist_ok=True)
@@ -62,6 +66,12 @@ def _stage_artifact(
         metadata["source_location"] = source_location
     if confidence is not None:
         metadata["confidence"] = confidence
+    if run_id:
+        # Default the artifact to the shared test run so the
+        # eligibility gate (active_run_id stamped on the document
+        # below) admits it. Tests that need a different run_id
+        # override this kwarg explicitly.
+        metadata.setdefault("run_id", run_id)
     record = ArtifactRecord(
         artifact_id=artifact_id,
         project=ctx,
@@ -81,7 +91,14 @@ def _stage_artifact(
     return record
 
 
-def _stage_document(ctx, registry, document_id="doc-1"):
+def _stage_document(
+    ctx,
+    registry,
+    document_id="doc-1",
+    *,
+    active_run_id: str | None = _DEFAULT_TEST_RUN_ID,
+    knowledge_state: str = "attached",
+):
     record = DocumentRecord(
         document_id=document_id,
         project=ctx,
@@ -92,6 +109,8 @@ def _stage_document(ctx, registry, document_id="doc-1"):
         checksum=f"sha256:{document_id}",
         status=ProcessingStatus.PENDING,
         created_at=_now(),
+        knowledge_state=knowledge_state,  # type: ignore[arg-type]
+        active_run_id=active_run_id,
     )
     registry.add(record)
     return record

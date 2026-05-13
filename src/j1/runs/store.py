@@ -55,6 +55,29 @@ class IngestionRunStore(Protocol):
  bytes physically leave the audit area."""
         ...
 
+    def list_runs(
+        self, ctx: ProjectContext, *, document_id: str,
+    ) -> list[IngestionRun]:
+        """Latest snapshot per ``run_id`` for the given document.
+
+        Used by ``DocumentCleanupService.cleanup_document`` to
+        enumerate every run that needs cleaning before the
+        document-level Remove can claim "complete"."""
+        ...
+
+    def delete_runs(
+        self,
+        ctx: ProjectContext,
+        *,
+        document_id: str,
+        run_ids: list[str],
+    ) -> int:
+        """Physically remove every snapshot of every ``run_id`` in
+        ``run_ids`` for ``document_id``. Returns the number of
+        run_ids that had at least one snapshot removed (an
+        already-gone run_id counts as zero, not an error)."""
+        ...
+
 
 class JsonlIngestionRunStore:
     """JSONL append-only store. Latest snapshot wins on read.
@@ -154,6 +177,63 @@ class JsonlIngestionRunStore:
         tmp.replace(path)
         return True
 
+    def list_runs(
+        self, ctx: ProjectContext, *, document_id: str,
+    ) -> list[IngestionRun]:
+        latest_by_id: dict[str, IngestionRun] = {}
+        for run in self._iter_all(ctx):
+            if run.document_id != document_id:
+                continue
+            latest_by_id[run.run_id] = run
+        runs = list(latest_by_id.values())
+        runs.sort(key=lambda r: r.started_at, reverse=True)
+        return runs
+
+    def delete_runs(
+        self,
+        ctx: ProjectContext,
+        *,
+        document_id: str,
+        run_ids: list[str],
+    ) -> int:
+        """Drop every snapshot of every ``run_id`` for ``document_id``.
+
+        Idempotent: re-running with the same inputs after the
+        first call is a no-op (returns 0)."""
+        if not run_ids:
+            return 0
+        path = self._path(ctx)
+        if not path.exists():
+            return 0
+        targets = set(run_ids)
+        kept_lines: list[str] = []
+        dropped_run_ids: set[str] = set()
+        with path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    kept_lines.append(stripped)
+                    continue
+                rid = str(payload.get("run_id") or "")
+                did = str(payload.get("document_id") or "")
+                if did == document_id and rid in targets:
+                    dropped_run_ids.add(rid)
+                    continue
+                kept_lines.append(stripped)
+        if not dropped_run_ids:
+            return 0
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for line in kept_lines:
+                fh.write(line)
+                fh.write("\n")
+        tmp.replace(path)
+        return len(dropped_run_ids)
+
     # ---- Internals ---------------------------------------------------
 
     def _iter_all(self, ctx: ProjectContext) -> Iterable[IngestionRun]:
@@ -206,9 +286,15 @@ def _run_from_payload(payload: dict) -> IngestionRun:
     # an explicit backfill pass.
     raw_run_type = payload.get("run_type") or "initial"
     if raw_run_type not in (
-        "initial", "reindex", "resume", "retry", "validation",
+        "initial", "reindex", "resume", "retry",
+        "validation", "refresh_enrich",
     ):
         raw_run_type = "initial"
+    raw_cleanup = payload.get("cleanup_status") or "live"
+    if raw_cleanup not in (
+        "live", "superseded", "removing", "cleaned", "cleanup_failed",
+    ):
+        raw_cleanup = "live"
     return IngestionRun(
         run_id=str(payload["run_id"]),
         document_id=str(payload["document_id"]),
@@ -229,4 +315,7 @@ def _run_from_payload(payload: dict) -> IngestionRun:
         run_type=raw_run_type,  # type: ignore[arg-type]
         document_version_id=payload.get("document_version_id"),
         parent_run_id=payload.get("parent_run_id"),
+        display_version=payload.get("display_version"),
+        superseded_at=_parse_dt(payload.get("superseded_at")),
+        cleanup_status=raw_cleanup,  # type: ignore[arg-type]
     )
