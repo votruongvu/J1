@@ -385,36 +385,10 @@ def test_index_failure_captured(processing_service, workspace, ctx):
     assert _read_audit(workspace, ctx)[0]["action"] == "processing.index.failed"
 
 
-# Query
-
-
-def test_query_returns_query_result_and_records_costs(
-    processing_service, workspace, ctx
-):
-    cost = CostBreakdown(
-        vendor="anthropic",
-        model="claude-sonnet-4-6",
-        unit_kind="input_tokens",
-        units=42,
-        amount=Decimal("0.0010"),
-    )
-    provider = _MockQueryProvider(
-        answer="42", citations=["doc-1", "art-9"], costs=[cost]
-    )
-    result = processing_service.query(ctx, provider, "what is the answer?")
-    assert isinstance(result, QueryResult)
-    assert result.answer == "42"
-    assert result.citations == ["doc-1", "art-9"]
-    assert _read_costs(workspace, ctx)[0]["units"] == 42
-    assert _read_audit(workspace, ctx)[0]["action"] == "processing.query.completed"
-
-
-def test_query_failure_captured(processing_service, workspace, ctx):
-    provider = _MockQueryProvider(raise_exc=RuntimeError("no llm"))
-    result = processing_service.query(ctx, provider, "anything?")
-    assert result.status is ResultStatus.FAILED
-    assert result.error == "no llm"
-    assert _read_audit(workspace, ctx)[0]["action"] == "processing.query.failed"
+# Query — legacy provider-based tests removed. The query path now
+# delegates to SmartQueryOrchestrator; see
+# ``test_processing_service_orchestrator_path.py`` for the
+# replacement coverage.
 
 
 # Cross-cutting

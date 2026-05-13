@@ -82,6 +82,7 @@ def query_engine(workspace, artifact_registry, registry, indexer):
 @pytest.fixture
 def validation_service(
     run_store, artifact_registry, query_engine, audit_sink, workspace,
+    stub_smart_query_orchestrator,
 ) -> IngestionValidationService:
     return IngestionValidationService(
         run_store=run_store,
@@ -92,6 +93,7 @@ def validation_service(
         validation_set_store=JsonlValidationSetStore(workspace),
         validation_run_store=JsonlValidationRunStore(workspace),
         test_case_generator=DefaultTestCaseGenerator(),
+        smart_query_orchestrator=stub_smart_query_orchestrator,
     )
 
 

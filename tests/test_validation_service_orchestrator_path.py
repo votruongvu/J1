@@ -234,36 +234,25 @@ def test_orchestrator_evidence_insufficient_maps_to_validation_failed(
     assert "100% design" in missing
 
 
-def test_orchestrator_path_skipped_when_not_wired(
+def test_manual_query_without_orchestrator_raises(
     ctx, workspace, run,
 ):
-    """Without an orchestrator the legacy path runs — the legacy
-    HybridQueryEngine gets called. This test pins the fallback."""
-
-    class _CapturingEngine:
-        def __init__(self):
-            self.called = False
-
-        def query(self, ctx, req):
-            self.called = True
-            from j1.query.models import QueryResponse
-            return QueryResponse(answer="legacy", mode_used="auto")
-
-    engine = _CapturingEngine()
+    """The legacy manual-query path was removed. Calling
+    ``run_manual_test_query`` without a wired orchestrator must
+    raise — silent fallback would mask a misconfigured deploy."""
     service = IngestionValidationService(
         run_store=JsonlIngestionRunStore(workspace),
         artifact_registry=JsonArtifactRegistry(workspace),
-        query_engine=engine,
+        query_engine=None,
         audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
         workspace=workspace,
-        # NO orchestrator wired.
     )
-    service.run_manual_test_query(
-        ctx, run.run_id,
-        ManualTestQueryRequest(question="anything"),
-        actor="tester",
-    )
-    assert engine.called is True
+    with pytest.raises(RuntimeError, match="SmartQueryOrchestrator"):
+        service.run_manual_test_query(
+            ctx, run.run_id,
+            ManualTestQueryRequest(question="anything"),
+            actor="tester",
+        )
 
 
 def test_orchestrator_citations_subset_of_retrieved(

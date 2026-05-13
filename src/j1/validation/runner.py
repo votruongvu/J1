@@ -33,7 +33,10 @@ from j1.projects.context import ProjectContext
 from j1.query.engine import HybridQueryEngine
 from j1.query.models import QueryMode, QueryRequest
 from j1.query.scope import RunScope
-from j1.validation.checks import aggregate_status, run_checks
+# Legacy ``run_checks`` / ``aggregate_status`` removed — every per-
+# case decision now flows through SmartQueryOrchestrator's
+# AnswerQualityGate. Refusal-pattern detection for the negative-
+# case check lives in ``_is_abstain_response`` below.
 from j1.validation.dtos import (
     EvidenceBlockDTO,
     LLMTraceDTO,
@@ -238,6 +241,47 @@ _LOW_CONFIDENCE_SCORE_FLOOR = 0.0  # placeholder — engine doesn't surface scor
 _PREVIEW_MAX_CHARS = 240
 
 
+# ---- Abstain detection (negative test case grading) -------------
+#
+# A negative test case grades PASSED when the answer is a refusal /
+# abstain. The orchestrator's ``AnswerQualityGate`` flips the
+# opposite way (it fails on refusals), so the runner inverts the
+# orchestrator's verdict via this regex set when the case is
+# ``type="negative"``. Lives here (not in
+# ``j1.query.answer_quality``) because abstain-on-purpose is a
+# validation-suite concept, not an orchestrator gate concern.
+
+_ABSTAIN_PATTERNS: tuple = tuple(
+    __import__("re").compile(p, __import__("re").IGNORECASE)
+    for p in (
+        r"\bi\s+(do\s+not|don'?t)\s+know\b",
+        r"\bi\s+(cannot|can\s+not|can'?t)\b",
+        r"\bnot\s+enough\s+information\b",
+        r"\binsufficient\s+information\b",
+        r"\bunable\s+to\s+answer\b",
+        r"\bno\s+information\b",
+        r"\bnot\s+(present|mentioned|covered|specified|provided"
+        r"|in\s+the\s+document)\b",
+        r"\bthe\s+document\s+(does\s+not|doesn'?t)\b",
+        r"\b(cannot|can\s+not|can'?t)\s+determine\b",
+        r"\bunable\s+to\s+determine\b",
+        r"\b(cannot|can\s+not|can'?t)\s+find\b",
+    )
+)
+
+
+def _is_abstain_response(answer: str) -> bool:
+    """True when the answer reads as a refusal / abstention.
+
+    Empty / whitespace-only answers count as abstaining — a blank
+    response from a knowledge-grounded engine on an out-of-scope
+    question is the right behaviour."""
+    body = (answer or "").strip()
+    if not body:
+        return True
+    return any(p.search(body) for p in _ABSTAIN_PATTERNS)
+
+
 class DefaultValidationRunner:
     """Drives one validation set to completion.
 
@@ -255,29 +299,29 @@ class DefaultValidationRunner:
     def __init__(
         self,
         *,
-        query_engine: HybridQueryEngine,
+        smart_query_orchestrator: "Any",
         artifact_registry: ArtifactRegistry,
         lifecycle_callback: Callable[[ValidationRunDTO], None] | None = None,
         judge: LLMJudge | None = None,
-        answer_synthesizer: AnswerSynthesizer | None = None,
-        synthesize_answers: bool = True,
         workspace: WorkspaceResolver | None = None,
         audit: "Any | None" = None,
-        smart_query_orchestrator: "Any | None" = None,
+        # Deprecated; ignored. Kept temporarily so legacy callers
+        # don't break on import — production already passes
+        # ``smart_query_orchestrator``. Will be removed entirely
+        # after one release.
+        query_engine: "Any | None" = None,
+        answer_synthesizer: "Any | None" = None,
+        synthesize_answers: bool = True,
     ) -> None:
-        self._query_engine = query_engine
-        self._artifacts = artifact_registry
-        # SmartQueryOrchestrator — when wired, every per-case
-        # execution flows through the orchestrator pipeline (intent
-        # classifier → routes → evidence pack → sufficiency gate →
-        # synth → citation binder → quality gate). The legacy
-        # ``run_checks`` / ``aggregate_status`` path is bypassed
-        # entirely. Case-specific checks
-        # (``expected_chunk_in_topk`` / ``expected_page`` /
-        # ``expected_artifact`` / graph evidence) still run on top
-        # of the orchestrator's retrieved set so existing batch
-        # validation sets keep their semantics.
+        if smart_query_orchestrator is None:
+            raise ValueError(
+                "DefaultValidationRunner requires a "
+                "SmartQueryOrchestrator. The legacy HybridQueryEngine "
+                "+ run_checks path was removed; wire an orchestrator "
+                "via deploy.dev._wiring.build_smart_query_orchestrator."
+            )
         self._smart_query_orchestrator = smart_query_orchestrator
+        self._artifacts = artifact_registry
         # Workspace is needed to load real artifact body text for
         # the synthesizer. When None (legacy callers / tests), the
         # runner falls back to the engine's preview text — same
@@ -449,151 +493,9 @@ class DefaultValidationRunner:
                 failure_reason=skip_reason,
             )
 
-        # New SmartQueryOrchestrator branch — replaces the legacy
-        # query_engine + run_checks + aggregate_status path. The
-        # orchestrator owns refusal detection, evidence sufficiency,
-        # and citation binding via explicit gates. Case-specific
-        # expected_*-checks still layer on top.
-        if self._smart_query_orchestrator is not None:
-            return self._execute_case_via_orchestrator(
-                ctx=ctx, run_id=run_id, case=case,
-                active_document_id=active_document_id,
-            )
-
-        try:
-            top_k = max(10, len(case.expected_chunks) * 2)
-            response = self._query_engine.query(
-                ctx,
-                QueryRequest(
-                    question=case.question,
-                    mode=QueryMode.AUTO,
-                    max_results=top_k,
-                    scope=RunScope(run_id=run_id),
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "validation case %s engine failure: %s",
-                case.test_case_id, exc,
-            )
-            return ValidationResultDTO(
-                result_id=f"vr-{uuid.uuid4().hex[:10]}",
-                test_case_id=case.test_case_id,
-                status="failed",
-                question=case.question,
-                answer="",
-                retrieved_chunks=[],
-                citations=[],
-                checks=[
-                    ValidationCheckDTO(
-                        name="engine_invocation",
-                        severity="required",
-                        passed=False,
-                        detail=f"engine raised: {exc}",
-                    ),
-                ],
-                failure_reason=f"Engine error: {exc}",
-            )
-
-        retrieved = _retrieved_chunks_from_response(response)
-        citations = _citations_from_response(response)
-        # ---- Targeted re-retrieval for stage-progression queries ----
-        # When the user's query contains stage-progression markers
-        # (percentages / "conceptual" / "final" / etc.) AND the
-        # first pass didn't surface chunks that mention them, run
-        # ONE expanded query — boosting the user's own anchors so
-        # BM25 / lexical signals upweight chunks containing those
-        # terms. Bounded: max one retry, no recursion. ANCHORS
-        # COME FROM THE QUERY (never a hardcoded domain
-        # dictionary).
-        retrieved, citations = self._maybe_retry_with_anchor_expansion(
+        return self._execute_case_via_orchestrator(
             ctx=ctx, run_id=run_id, case=case,
-            retrieved=retrieved, citations=citations,
-            initial_top_k=top_k,
-        )
-        # Populate citation previews from real artifact body text
-        # (chunk NDJSON, compiled.text files, document_map prose).
-        # The groundedness judge consumes ``citation.preview`` to
-        # compare against the answer's claims; without a non-empty
-        # preview the judge has nothing to verify against and
-        # over-flags every claim as "unsupported" — the false
-        # positive operators saw on otherwise-grounded answers.
-        # Mirrors the synthesizer's body-loading via
-        # ``build_evidence_blocks``; safe no-op when workspace
-        # isn't wired.
-        citations = self._enrich_citations_with_preview(
-            ctx=ctx, retrieved=retrieved, citations=citations,
-        )
-
-        # Optional LLM synthesis on top of the engine's raw answer.
-        # Positive cases benefit most — the engine returns a
-        # debug-style "Knowledge results for: <q>\n- title: …"
-        # string that's useless for graded answer-coverage checks.
-        # Negative cases skip synthesis (the engine's abstention
-        # text is already what the runner wants to grade).
-        synthesized_answer, llm_trace = self._maybe_synthesize_for_case(
-            ctx=ctx,
-            case=case,
-            retrieved=retrieved,
-            run_id=run_id,
             active_document_id=active_document_id,
-        )
-        final_answer = synthesized_answer or response.answer
-
-        #  + deterministic and judge-driven checks.
-        # Run-checks branches internally on `case_type` to swap
-        # required positive-case checks for the negative abstain
-        # check, and appends optional judge-driven checks when a
-        # judge is supplied.
-        checks = run_checks(
-            ctx=ctx,
-            run_id=run_id,
-            answer=final_answer,
-            retrieved_chunks=retrieved,
-            citations=citations,
-            citation_required=case.citation_required,
-            artifact_registry=self._artifacts,
-            case_type=case.type,
-            expected_answer_points=list(case.expected_answer_points),
-            question=case.question,
-            judge=self._judge,
-        )
-        #  case-specific checks layered on top. Skipped for
-        # negative cases — by definition there's no expected
-        # chunk/page (the question is out-of-scope).
-        if case.type != "negative":
-            if case.expected_chunks:
-                checks.append(_check_expected_chunk_in_topk(case, retrieved))
-            if case.expected_pages:
-                checks.append(_check_expected_page_in_citations(case, citations))
-            #  modality checks. Required when the case
-            # names expected modality evidence; skipped (omitted)
-            # when the corresponding expected list is empty.
-            if case.expected_artifacts:
-                checks.append(
-                    _check_expected_artifact_retrieved(case, retrieved),
-                )
-            if case.expected_graph_nodes or case.expected_graph_edges:
-                checks.append(
-                    _check_expected_graph_evidence(case, response),
-                )
-
-        validation_status = aggregate_status(checks)
-        result_status = _result_status_from_validation_status(validation_status)
-        failure_reason = _failure_reason_from_checks(checks) if result_status == "failed" else None
-
-        return ValidationResultDTO(
-            result_id=f"vr-{uuid.uuid4().hex[:10]}",
-            test_case_id=case.test_case_id,
-            status=result_status,
-            question=case.question,
-            answer=final_answer,
-            retrieved_chunks=retrieved,
-            citations=citations,
-            checks=checks,
-            failure_reason=failure_reason,
-            raw_answer=response.answer if synthesized_answer else None,
-            llm=llm_trace,
         )
 
     def _execute_case_via_orchestrator(
@@ -689,7 +591,6 @@ class DefaultValidationRunner:
         # explicit ``negative_answer_abstains`` check the way
         # batch validation has always graded them.
         if case.type == "negative":
-            from j1.validation.checks import _is_abstain_response
             abstained = _is_abstain_response(result.answer or "")
             checks = [
                 c for c in checks
@@ -767,267 +668,6 @@ class DefaultValidationRunner:
             raw_answer=None,
             llm=None,
         )
-
-    def _maybe_retry_with_anchor_expansion(
-        self,
-        *,
-        ctx: ProjectContext,
-        run_id: str,
-        case,
-        retrieved: list,
-        citations: list,
-        initial_top_k: int,
-    ) -> tuple[list, list]:
-        """One-pass targeted re-retrieval for stage-progression
-        queries that didn't surface anchor-bearing chunks.
-
-        The mechanism:
-
-          1. Extract stage anchors from the case question
-             (``query_stage_anchors``). Empty result → no retry.
-          2. Scan the FIRST PASS retrieved set's previews for
-             anchor coverage. If ≥2 anchors are already present,
-             no retry needed.
-          3. Build the expanded query
-             (``expand_query_with_anchors``) — original query +
-             user's own anchors as boost terms.
-          4. Run ONE more ``query_engine.query`` with a larger
-             ``max_results`` so the re-ranker has more raw recall.
-          5. Merge the new candidates onto the original (dedupe
-             by artifact_id), preserving the original ordering
-             plus the new additions.
-
-        No-op (returns ``(retrieved, citations)`` unchanged) when:
-          * the query has no stage anchors,
-          * the first pass already covers ≥ 2 anchors,
-          * the engine raises on the retry,
-          * the merge yields no new candidates.
-
-        Strict bounding: this method is called once per case; it
-        does not loop. Audit consumers can see the retry by
-        comparing retrieved counts before/after."""
-        try:
-            from j1.retrieval.anchors import (
-                expand_query_with_anchors, pack_anchor_coverage,
-                query_stage_anchors,
-            )
-            from j1.query.models import QueryRequest, QueryMode
-            from j1.query.scope import RunScope
-        except Exception:  # noqa: BLE001
-            return retrieved, citations
-
-        anchors = query_stage_anchors(case.question)
-        if not anchors:
-            return retrieved, citations
-
-        # First-pass anchor coverage. Use the retrieval preview
-        # text — it's the only body field present on
-        # ``RetrievedChunkRefDTO`` without an artifact lookup.
-        previews = [
-            (getattr(r, "preview", None) or "") for r in retrieved
-        ]
-        _matched, covered = pack_anchor_coverage(
-            previews, anchors.all,
-        )
-        if covered >= 2:
-            return retrieved, citations  # adequate
-
-        # Re-query with the user's own anchors appended.
-        expanded = expand_query_with_anchors(case.question, anchors)
-        # Bumped max_results so the re-ranker has more candidates
-        # to work with. Capped to keep the call cheap.
-        retry_top_k = max(initial_top_k * 2, 20)
-        try:
-            retry_response = self._query_engine.query(
-                ctx,
-                QueryRequest(
-                    question=expanded,
-                    mode=QueryMode.AUTO,
-                    max_results=retry_top_k,
-                    scope=RunScope(run_id=run_id),
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "anchor-expanded retry failed for case %s: %s",
-                getattr(case, "test_case_id", "?"), exc,
-            )
-            return retrieved, citations
-
-        retry_retrieved = _retrieved_chunks_from_response(retry_response)
-        retry_citations = _citations_from_response(retry_response)
-        if not retry_retrieved:
-            return retrieved, citations
-
-        # Merge: first-pass first (preserves original ordering),
-        # then any new candidates from the retry. Dedupe on
-        # artifact_id + chunk_id pair.
-        seen = {
-            (r.artifact_id, getattr(r, "chunk_id", None))
-            for r in retrieved
-        }
-        merged = list(retrieved)
-        for r in retry_retrieved:
-            key = (r.artifact_id, getattr(r, "chunk_id", None))
-            if key not in seen:
-                merged.append(r)
-                seen.add(key)
-
-        merged_citations = list(citations)
-        cit_seen = {
-            getattr(c, "artifact_id", None) for c in citations
-        }
-        for c in retry_citations:
-            if getattr(c, "artifact_id", None) not in cit_seen:
-                merged_citations.append(c)
-                cit_seen.add(getattr(c, "artifact_id", None))
-
-        # Audit-friendly log line so an operator inspecting the
-        # case can see the retry fired + how many new candidates
-        # it added.
-        _log.info(
-            "j1.retrieval.anchor_retry case=%s anchors=%s "
-            "first_pass_covered=%d first_pass_count=%d "
-            "retry_added=%d",
-            getattr(case, "test_case_id", "?"),
-            list(anchors.all),
-            covered, len(retrieved),
-            len(merged) - len(retrieved),
-        )
-        return merged, merged_citations
-
-    def _maybe_synthesize_for_case(
-        self,
-        *,
-        ctx: ProjectContext,
-        case: ValidationTestCaseDTO,
-        retrieved: list[RetrievedChunkRefDTO],
-        run_id: str | None = None,
-        active_document_id: str | None = None,
-    ) -> tuple[str | None, LLMTraceDTO | None]:
-        """Run the LLM synthesizer for this case when wired + enabled.
-
- Returns `(synthesized_answer, trace)`. Both `None` when:
-   * the runner wasn't constructed with a synthesizer
-   * `synthesize_answers=False` was set on the runner
-   * the case type is `negative` (the runner needs the engine's
-     abstention text verbatim for the abstain check to grade)
-   * no chunks were retrieved (no evidence to ground on)
-
- The synthesizer's internal failure modes (LLM raise, empty
- answer) surface on the trace via `error`; the caller falls
- back to the raw engine answer in that case.
- """
-        if self._synthesizer is None or not self._synthesize_answers:
-            return (None, None)
-        if case.type == "negative":
-            return (None, None)
-        if not retrieved:
-            return (None, None)
-
-        # CRITICAL: load REAL body text for each retrieved chunk
-        # before sending to the synthesizer. Earlier this path used
-        # ``r.preview`` (which is just the artifact title like
-        # "compiled.text/b7e57…") as evidence text — so the LLM
-        # saw a list of titles, not content, and correctly replied
-        # "Not in the retrieved evidence." That was the failure
-        # mode the latest validation report flagged on every
-        # retrieval/smoke case despite citations including chunk +
-        # compiled.text. The manual-query path already uses
-        # ``build_evidence_blocks`` for real text; we use the same
-        # helper here so both paths share one evidence pipeline.
-        #
-        # ``build_evidence_blocks`` requires a workspace +
-        # path-resolver. When the runner wasn't wired with a
-        # workspace (legacy test fixtures, deployments that
-        # predate this fix), fall back to the title-only evidence —
-        # same broken behaviour as before, with a WARNING logged
-        # so operators can spot the misconfiguration.
-        evidence: list[EvidenceBlockDTO]
-        if self._workspace is not None:
-            from pathlib import Path, PurePosixPath
-
-            def _resolver(record):
-                location = record.location
-                parts = PurePosixPath(location).parts
-                if len(parts) < 2:
-                    return Path(location)
-                area_name, *rest = parts
-                area = WorkspaceArea(area_name)
-                return self._workspace.area(  # type: ignore[union-attr]
-                    ctx, area,
-                ).joinpath(*rest)
-
-            # Build the retrieval-quality diagnostic collector for
-            # THIS case. Carries the active scope (doc+run) so
-            # ``build_evidence_blocks`` enables the planner-first
-            # path, boilerplate demotion, source grounding, and
-            # quality_check / fallback pipeline. ``audit`` may be
-            # None — events still record in-memory, just no audit
-            # emit. ``query`` from the case so the intent router
-            # can classify.
-            from j1.retrieval.diagnostics import RetrievalDiagnostics
-            diag = RetrievalDiagnostics(
-                audit=self._audit, ctx=ctx,
-                run_id=run_id, document_id=active_document_id,
-                query=case.question,
-            )
-            evidence = build_evidence_blocks(
-                ctx=ctx,
-                retrieved=retrieved,
-                artifact_registry=self._artifacts,
-                path_resolver=_resolver,
-                query=case.question,
-                active_document_id=active_document_id,
-                active_run_id=run_id,
-                diagnostics=diag,
-            )
-            # Unmistakable pre-LLM marker so an operator inspecting
-            # the audit log knows EXACTLY what evidence reached
-            # the synthesizer for this case.
-            _emit_live_path_evidence_sent(
-                audit=self._audit, ctx=ctx,
-                endpoint="validation.set.run",
-                handler="DefaultValidationRunner._maybe_synthesize_for_case",
-                run_id=run_id,
-                document_id=active_document_id,
-                evidence=evidence,
-                snapshot=diag.snapshot(),
-            )
-        else:
-            _log.warning(
-                "validation runner: no workspace wired — synthesizer "
-                "will see artifact titles instead of body text, which "
-                "causes false 'Not in the retrieved evidence' "
-                "fallbacks. Pass workspace=... to DefaultValidationRunner."
-            )
-            evidence = [
-                EvidenceBlockDTO(
-                    artifact_id=r.artifact_id,
-                    artifact_type=r.artifact_kind or "chunk",
-                    text=r.preview or "",
-                    chunk_id=r.chunk_id,
-                    score=r.score,
-                )
-                for r in retrieved
-                if (r.preview or "").strip()
-            ]
-        if not evidence:
-            return (None, None)
-        result = self._synthesizer.synthesize(
-            question=case.question,
-            evidence=evidence,
-        )
-        trace = LLMTraceDTO(
-            called=True,
-            provider=result.provider,
-            model=result.model,
-            latency_ms=result.latency_ms,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            error=result.error,
-        )
-        return (result.answer, trace)
 
     def _enrich_citations_with_preview(
         self,
@@ -1444,43 +1084,6 @@ def _count_by_field(
         counts[key] = counts.get(key, 0) + 1
     return counts
 
-
-# ---- Engine response → DTO helpers ---------------------------------
-
-
-def _retrieved_chunks_from_response(response: Any) -> list[RetrievedChunkRefDTO]:
-    out: list[RetrievedChunkRefDTO] = []
-    for source in getattr(response, "sources", []):
-        title = str(getattr(source, "title", "") or "")
-        out.append(
-            RetrievedChunkRefDTO(
-                artifact_id=source.artifact_id,
-                chunk_id=getattr(source, "chunk_id", None),
-                run_id=getattr(source, "run_id", None),
-                document_id=getattr(source, "source_document_id", None),
-                source_location=getattr(source, "source_location", None),
-                score=0.0,
-                preview=title[:_PREVIEW_MAX_CHARS],
-                artifact_kind=getattr(source, "artifact_type", None),
-            )
-        )
-    return out
-
-
-def _citations_from_response(response: Any) -> list[ValidationCitationDTO]:
-    out: list[ValidationCitationDTO] = []
-    for source in getattr(response, "sources", []):
-        out.append(
-            ValidationCitationDTO(
-                artifact_id=source.artifact_id,
-                artifact_type=source.artifact_type,
-                source_document_id=getattr(source, "source_document_id", None),
-                source_location=getattr(source, "source_location", None),
-                chunk_id=getattr(source, "chunk_id", None),
-                run_id=getattr(source, "run_id", None),
-            )
-        )
-    return out
 
 
 # ---- Misc ---------------------------------------------------------

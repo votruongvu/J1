@@ -35,6 +35,27 @@ from j1.validation.dtos import (
 )
 
 
+def _minimal_orch():
+    """In-test minimal SmartQueryOrchestrator — the tests below
+    exercise the runner's ``_enrich_citations_with_preview`` helper
+    directly, not the orchestrator pipeline. The orchestrator is
+    required by ``DefaultValidationRunner.__init__`` but never
+    actually invoked here."""
+    from j1.query.orchestrator import SmartQueryOrchestrator
+    from j1.query.query_plan import RetrievalRouteKind
+
+    class _Empty:
+        kind = RetrievalRouteKind.RAGANYTHING
+
+        def execute(self, job, ctx):
+            return []
+
+    return SmartQueryOrchestrator.from_components(
+        routes={RetrievalRouteKind.RAGANYTHING: _Empty()},
+        llm=lambda req: "",
+    )
+
+
 _NOW = datetime(2026, 5, 14, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -125,6 +146,7 @@ def test_runner_enriches_citation_preview_with_chunk_body(
     workspace.area.return_value = tmp_path / "compiled"
 
     runner = DefaultValidationRunner(
+        smart_query_orchestrator=_minimal_orch(),
         query_engine=MagicMock(),
         artifact_registry=registry,
         workspace=workspace,
@@ -162,6 +184,7 @@ def test_runner_preserves_existing_preview_if_set(ctx, tmp_path: Path):
     workspace.area.return_value = tmp_path
 
     runner = DefaultValidationRunner(
+        smart_query_orchestrator=_minimal_orch(),
         query_engine=MagicMock(),
         artifact_registry=_StubRegistry([]),
         workspace=workspace,
@@ -195,6 +218,7 @@ def test_runner_noops_when_workspace_not_wired(ctx):
     from j1.validation.runner import DefaultValidationRunner
 
     runner = DefaultValidationRunner(
+        smart_query_orchestrator=_minimal_orch(),
         query_engine=MagicMock(),
         artifact_registry=_StubRegistry([]),
         # NO workspace
@@ -211,30 +235,7 @@ def test_runner_noops_when_workspace_not_wired(ctx):
     assert enriched[0].preview is None
 
 
-# ---- _citation_to_dict propagates preview ------------------------
-
-
-def test_citation_to_dict_propagates_preview():
-    """The dict the judge consumes carries ``preview`` so the
-    citation renderer can show body excerpts. Earlier the helper
-    omitted preview, forcing every citation to render as
-    lineage-only."""
-    from j1.validation.checks import _citation_to_dict
-
-    c = ValidationCitationDTO(
-        artifact_id="art-1",
-        artifact_type="chunk",
-        preview="real body text",
-    )
-    d = _citation_to_dict(c)
-    assert d["preview"] == "real body text"
-
-
-def test_citation_to_dict_normalises_none_to_empty_string():
-    """When preview is None, the dict still carries a string —
-    keeps the judge prompt rendering simple."""
-    from j1.validation.checks import _citation_to_dict
-
-    c = ValidationCitationDTO(artifact_id="art-1", artifact_type="chunk")
-    d = _citation_to_dict(c)
-    assert d["preview"] == ""
+# NOTE: tests for ``_citation_to_dict`` were removed when the
+# legacy ``j1.validation.checks`` module was deleted. The
+# orchestrator's CitationBinder owns citation projection now;
+# see ``test_query_answer_quality.py`` for equivalent coverage.

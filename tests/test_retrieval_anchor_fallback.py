@@ -216,64 +216,12 @@ def test_check_pack_passes_when_evidence_covers_anchors():
     )
 
 
-# ---- Refusal-answer detection -------------------------------------
-
-
-@pytest.mark.parametrize("refusal_text", [
-    "Not in the retrieved evidence.",
-    "The information is not present in the evidence.",
-    "I cannot find any relevant information.",
-    "No relevant information was found.",
-    "Insufficient context to answer.",
-    "The evidence does not contain a clear statement.",
-])
-def test_check_answer_non_empty_fails_on_refusal(refusal_text):
-    from j1.validation.checks import (
-        _check_answer_non_empty, _CheckContext,
-    )
-    from j1.projects.context import ProjectContext
-    ctx = _CheckContext(
-        ctx=ProjectContext(tenant_id="t", project_id="p"),
-        run_id="run-A",
-        answer=refusal_text,
-        retrieved_chunks=[],
-        citations=[],
-        citation_required=False,
-        artifact_registry=None,
-        chunks_expected=True,
-    )
-    check = _check_answer_non_empty(ctx)
-    assert check.passed is False, (
-        f"refusal text should fail answer_non_empty: {refusal_text!r}"
-    )
-    assert "refusal" in (check.detail or "").lower() or (
-        "no-evidence" in (check.detail or "").lower()
-    )
-
-
-def test_check_answer_non_empty_passes_on_substantive_answer():
-    from j1.validation.checks import (
-        _check_answer_non_empty, _CheckContext,
-    )
-    from j1.projects.context import ProjectContext
-    ctx = _CheckContext(
-        ctx=ProjectContext(tenant_id="t", project_id="p"),
-        run_id="run-A",
-        answer=(
-            "The conceptual engineering phase produces a feasibility "
-            "report with a Class V AACE estimate. At 60% design the "
-            "deliverables include coordinated drawings with a Class "
-            "IV cost estimate. The 90% design carries Class III; the "
-            "100% design package includes a Class II AACE estimate."
-        ),
-        retrieved_chunks=[],
-        citations=[],
-        citation_required=False,
-        artifact_registry=None,
-        chunks_expected=True,
-    )
-    check = _check_answer_non_empty(ctx)
-    assert check.passed is True
+# NOTE: refusal-detection tests for ``_check_answer_non_empty``
+# were removed when the legacy ``j1.validation.checks`` module
+# was deleted. The orchestrator's ``AnswerQualityGate`` owns
+# refusal detection now — see ``test_query_answer_quality.py``
+# (``test_refusal_fails_regardless_of_length`` etc.) for
+# equivalent coverage with the same regex set.
 
 
 # ---- Expansion helper ---------------------------------------------

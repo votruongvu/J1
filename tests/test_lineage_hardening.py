@@ -386,96 +386,12 @@ def test_invalidate_orphans_is_idempotent(ctx):
 # ============================================================
 # D: validation debug fields
 # ============================================================
-
-
-def test_debug_dict_populated_on_no_retrieval():
-    """When retrieval found nothing, `fallback_reason="no_retrieval"`
- surfaces so the FE can render "no chunks matched your query"
- instead of a vague "Not in retrieved evidence"."""
-    from j1.validation.service import _build_manual_query_debug
-    debug = _build_manual_query_debug(
-        retrieved=[],
-        evidence_blocks=[],
-        synthesized_answer=None,
-        llm_trace=None,
-    )
-    assert debug["retrieved_count"] == 0
-    assert debug["evidence_items_after_filter"] == 0
-    assert debug["fallback_reason"] == "synthesis_disabled"
-
-
-def test_debug_dict_classifies_llm_abstention():
-    """When retrieval + evidence both have content but the LLM
- still abstained, fallback_reason="llm_abstained" — the most
- actionable signal for "the model didn't ground in the evidence
- we gave it"."""
-    from j1.validation.dtos import EvidenceBlockDTO, LLMTraceDTO, RetrievedChunkRefDTO
-    from j1.validation.service import _build_manual_query_debug
-    debug = _build_manual_query_debug(
-        retrieved=[RetrievedChunkRefDTO(
-            artifact_id="a-1", chunk_id="c-1", run_id="r-1",
-            document_id="d-1", source_location=None,
-            score=1.0, preview="...", artifact_kind="chunk",
-        )],
-        evidence_blocks=[EvidenceBlockDTO(
-            artifact_id="a-1", artifact_type="chunk",
-            text="The proposal is due 20 May 2026.",
-        )],
-        synthesized_answer=None,
-        llm_trace=LLMTraceDTO(called=True, error=None),
-    )
-    assert debug["fallback_reason"] == "llm_abstained"
-
-
-def test_debug_dict_classifies_llm_error():
-    from j1.validation.dtos import EvidenceBlockDTO, LLMTraceDTO, RetrievedChunkRefDTO
-    from j1.validation.service import _build_manual_query_debug
-    debug = _build_manual_query_debug(
-        retrieved=[RetrievedChunkRefDTO(
-            artifact_id="a-1", chunk_id="c-1", run_id="r-1",
-            document_id="d-1", source_location=None,
-            score=1.0, preview="x", artifact_kind="chunk",
-        )],
-        evidence_blocks=[EvidenceBlockDTO(
-            artifact_id="a-1", artifact_type="chunk", text="x",
-        )],
-        synthesized_answer=None,
-        llm_trace=LLMTraceDTO(called=True, error="timeout"),
-    )
-    assert debug["fallback_reason"] == "llm_error"
-
-
-def test_debug_dict_collects_artifact_types():
-    """Operator visibility: 'graph_json dominated my retrieval'
- should be obvious from the debug payload. `artifact_types_before/
- after_filter` exposes the kinds in play."""
-    from j1.validation.dtos import EvidenceBlockDTO, RetrievedChunkRefDTO
-    from j1.validation.service import _build_manual_query_debug
-    debug = _build_manual_query_debug(
-        retrieved=[
-            RetrievedChunkRefDTO(
-                artifact_id="a-1", chunk_id=None, run_id="r-1",
-                document_id="d-1", source_location=None,
-                score=1.0, preview="x", artifact_kind="graph_json",
-            ),
-            RetrievedChunkRefDTO(
-                artifact_id="a-2", chunk_id="c-1", run_id="r-1",
-                document_id="d-1", source_location=None,
-                score=0.9, preview="y", artifact_kind="chunk",
-            ),
-        ],
-        evidence_blocks=[EvidenceBlockDTO(
-            artifact_id="a-2", artifact_type="chunk", text="y body",
-        )],
-        synthesized_answer="some answer",
-        llm_trace=None,
-    )
-    assert "graph_json" in debug["artifact_types_before_filter"]
-    assert "chunk" in debug["artifact_types_before_filter"]
-    assert debug["artifact_types_after_filter"] == ["chunk"]
-    assert debug["fallback_reason"] is None  # synthesis succeeded
-    assert debug["top_evidence_preview"].startswith("y body")
-    assert debug["total_context_chars"] == len("y body")
+# Tests for the legacy ``_build_manual_query_debug`` helper were
+# removed when the helper was deleted as part of the
+# SmartQueryOrchestrator rollout. The orchestrator's QueryTrace
+# now lives on ``ManualTestQueryResponseDTO.debug.orchestrator_trace``
+# — see ``test_validation_service_orchestrator_path.py`` and the
+# ``/dev/query-trace`` endpoint tests for equivalent coverage.
 
 
 def test_debug_dict_populated_in_response_envelope():

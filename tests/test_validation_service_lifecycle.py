@@ -88,7 +88,7 @@ def audit_recorder(audit_sink) -> DefaultAuditRecorder:
 @pytest.fixture
 def service(
     run_store, artifact_registry, query_engine, audit_recorder,
-    workspace, set_store, vrun_store,
+    workspace, set_store, vrun_store, stub_smart_query_orchestrator,
 ) -> IngestionValidationService:
     """complete service: every dependency wired so
  generate / list / run all work."""
@@ -101,6 +101,7 @@ def service(
         validation_set_store=set_store,
         validation_run_store=vrun_store,
         test_case_generator=DefaultTestCaseGenerator(),  # heuristic, no LLM
+        smart_query_orchestrator=stub_smart_query_orchestrator,
     )
 
 
@@ -479,6 +480,7 @@ def test_get_validation_run_for_wrong_run_raises(
 
 def test_phase_1_only_construction_still_works(
     run_store, artifact_registry, query_engine, audit_recorder, ctx,
+    stub_smart_query_orchestrator,
 ):
     """A only deployment (no validation_set_store /
  validation_run_store / generator) must still ship — manual
@@ -489,6 +491,7 @@ def test_phase_1_only_construction_still_works(
         artifact_registry=artifact_registry,
         query_engine=query_engine,
         audit=audit_recorder,
+        smart_query_orchestrator=stub_smart_query_orchestrator,
     )
     run_store.upsert(ctx, _make_run(run_id="run-1"))
 

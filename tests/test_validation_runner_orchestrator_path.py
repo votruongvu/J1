@@ -224,32 +224,15 @@ def test_runner_evidence_insufficient_maps_to_failed(
     assert vrun.validation_status == "failed"
 
 
-def test_runner_legacy_path_runs_when_orchestrator_unwired(
-    ctx, workspace, artifact_registry,
+def test_runner_construction_without_orchestrator_raises(
+    artifact_registry,
 ):
-    """Without an orchestrator, the legacy ``query_engine`` path
-    runs — locks in backward compatibility."""
-
-    class _LegacyEngine:
-        called = False
-
-        def query(self, ctx, req):
-            self.called = True
-            from j1.query.models import QueryResponse
-            return QueryResponse(
-                answer="legacy answer.", mode_used="auto",
-            )
-
-    eng = _LegacyEngine()
-    runner = DefaultValidationRunner(
-        query_engine=eng,
-        artifact_registry=artifact_registry,
-        workspace=workspace,
-        # No orchestrator wired.
-    )
-    case = _make_case(
-        test_case_id="tc-1", question="anything",
-        expected_behavior="x",
-    )
-    runner.run(ctx, _set_with_case(case))
-    assert eng.called is True
+    """The legacy ``query_engine`` path was removed. Constructing
+    ``DefaultValidationRunner`` without an orchestrator must
+    raise — silent fallback would mask a misconfigured worker."""
+    import pytest
+    with pytest.raises(ValueError, match="SmartQueryOrchestrator"):
+        DefaultValidationRunner(
+            smart_query_orchestrator=None,
+            artifact_registry=artifact_registry,
+        )

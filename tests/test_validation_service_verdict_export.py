@@ -71,7 +71,7 @@ def vrun_store(workspace) -> JsonlValidationRunStore:
 @pytest.fixture
 def service(
     run_store, artifact_registry, query_engine, audit_sink,
-    workspace, vrun_store,
+    workspace, vrun_store, stub_smart_query_orchestrator,
 ) -> IngestionValidationService:
     return IngestionValidationService(
         run_store=run_store,
@@ -82,6 +82,7 @@ def service(
         validation_set_store=JsonlValidationSetStore(workspace),
         validation_run_store=vrun_store,
         test_case_generator=DefaultTestCaseGenerator(),
+        smart_query_orchestrator=stub_smart_query_orchestrator,
     )
 
 

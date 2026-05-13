@@ -200,27 +200,28 @@ def test_orchestrator_raising_maps_to_failed_query_result(
     assert "orchestrator crash" in (result.error or "")
 
 
-def test_legacy_path_runs_when_orchestrator_absent(
-    processing_service, ctx,
+def test_query_without_orchestrator_raises(
+    workspace, artifact_registry, audit_recorder, cost_recorder, ctx,
 ):
-    """Without an orchestrator the service falls through to the
-    legacy QueryProvider — existing workflow tests pin this
-    behavior."""
+    """The legacy QueryProvider path was removed. Constructing
+    ``ProcessingService`` without an orchestrator and then calling
+    ``query`` must raise — silent fallback would mask a
+    misconfigured worker."""
 
-    class _LegacyProvider:
-        kind = "legacy"
-        called = False
+    class _StubProvider:
+        kind = "noop"
 
         def query(self, ctx, question, *, max_results=None):
-            self.called = True
-            return QueryResult(
-                status=ResultStatus.SUCCEEDED,
-                answer="legacy answer",
-                citations=["a1"],
-            )
-    p = _LegacyProvider()
-    result = processing_service.query(
-        ctx, p, "anything", correlation_id="run-1",
+            raise AssertionError("must not be called")
+    svc = ProcessingService(
+        workspace=workspace,
+        artifact_registry=artifact_registry,
+        audit=audit_recorder,
+        cost=cost_recorder,
+        # No orchestrator wired.
     )
-    assert p.called is True
-    assert result.answer == "legacy answer"
+    import pytest
+    with pytest.raises(RuntimeError, match="SmartQueryOrchestrator"):
+        svc.query(
+            ctx, _StubProvider(), "anything", correlation_id="run-1",
+        )

@@ -125,6 +125,33 @@ def intake_service(
 
 
 @pytest.fixture
+def stub_smart_query_orchestrator():
+    """Minimal SmartQueryOrchestrator suitable for tests that don't
+    care about retrieval semantics — returns a deterministic
+    OrchestratorResult so the calling service can return a stable
+    QueryResult.
+
+    Tests that need richer orchestrator behavior construct one
+    explicitly (see ``test_query_orchestrator.py``)."""
+    from j1.query.answer_synthesizer import SynthesisRequest
+    from j1.query.orchestrator import SmartQueryOrchestrator
+    from j1.query.query_plan import RetrievalRouteKind
+
+    class _EmptyRoute:
+        kind = RetrievalRouteKind.RAGANYTHING
+
+        def execute(self, job, ctx):
+            return []
+
+    def _llm(req: SynthesisRequest) -> str:
+        return "stub orchestrator answer."
+    return SmartQueryOrchestrator.from_components(
+        routes={RetrievalRouteKind.RAGANYTHING: _EmptyRoute()},
+        llm=_llm,
+    )
+
+
+@pytest.fixture
 def processing_service(
     workspace: WorkspaceResolver,
     artifact_registry: JsonArtifactRegistry,
@@ -132,6 +159,7 @@ def processing_service(
     cost_recorder: DefaultCostRecorder,
     fixed_clock,
     id_factory,
+    stub_smart_query_orchestrator,
 ) -> ProcessingService:
     return ProcessingService(
         workspace=workspace,
@@ -140,6 +168,7 @@ def processing_service(
         cost=cost_recorder,
         clock=fixed_clock,
         id_factory=id_factory,
+        smart_query_orchestrator=stub_smart_query_orchestrator,
     )
 
 

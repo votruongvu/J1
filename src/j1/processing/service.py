@@ -893,59 +893,34 @@ class ProcessingService:
         actor: str = "system",
         correlation_id: str | None = None,
     ) -> QueryResult:
-        # SmartQueryOrchestrator branch. When wired, the new
-        # pipeline owns retrieval + synthesis + gates. The
-        # ``provider`` parameter becomes informational (the
-        # orchestrator picks its own routes). Audit semantics stay
-        # the same — same action strings, same payload shape — so
-        # consumers tailing ``processing.query.*`` events keep
-        # working unchanged.
-        if self._smart_query_orchestrator is not None:
-            return self._query_via_orchestrator(
-                ctx=ctx,
-                question=question,
-                provider_kind=getattr(provider, "kind", None),
-                max_results=max_results,
-                actor=actor,
-                correlation_id=correlation_id,
+        """Run a query through SmartQueryOrchestrator.
+
+        The legacy QueryProvider path was removed — every query now
+        flows through the new pipeline (intent → routes → evidence
+        → gates → synthesis → citation binder → quality gate).
+
+        ``provider`` is kept in the signature for backward
+        compatibility with Temporal callers that supply it; its
+        ``kind`` is forwarded to the audit payload as
+        ``processor_kind`` so existing audit consumers keep
+        working. The orchestrator picks its own routes — the
+        provider parameter is informational only.
+        """
+        if self._smart_query_orchestrator is None:
+            raise RuntimeError(
+                "ProcessingService.query requires a "
+                "SmartQueryOrchestrator. The legacy QueryProvider "
+                "path was removed; wire an orchestrator via "
+                "``smart_query_orchestrator=`` at construction."
             )
-        try:
-            output = provider.query(ctx, question, max_results=max_results)
-        except Exception as exc:
-            self._audit.record(
-                ctx,
-                actor=actor,
-                action=ACTION_QUERY_FAIL,
-                target_kind=TARGET_QUERY,
-                target_id=_question_id(question),
-                correlation_id=correlation_id,
-                payload={
-                    "processor_kind": getattr(provider, "kind", None),
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            return QueryResult(
-                status=ResultStatus.FAILED,
-                message=type(exc).__name__,
-                error=str(exc),
-            )
-        for breakdown in output.cost_events:
-            self._cost.record(ctx, breakdown, correlation_id=correlation_id)
-        self._audit.record(
-            ctx,
+        return self._query_via_orchestrator(
+            ctx=ctx,
+            question=question,
+            provider_kind=getattr(provider, "kind", None),
+            max_results=max_results,
             actor=actor,
-            action=ACTION_QUERY_OK,
-            target_kind=TARGET_QUERY,
-            target_id=_question_id(question),
             correlation_id=correlation_id,
-            payload={
-                "processor_kind": getattr(provider, "kind", None),
-                "citation_count": len(output.citations),
-                "result_status": output.status.value,
-            },
         )
-        return output
 
     def _query_via_orchestrator(
         self,
