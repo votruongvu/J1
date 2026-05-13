@@ -378,27 +378,25 @@ class DefaultTestCaseGenerator:
                 break
             cases.append(case)
 
-        # Context-driven category emitters. Each emits 0-N cases
-        # depending on what the document supports. Operator-stated
-        # rule: never pad. Returns however many strong cases the
-        # document can produce.
-        category_cases = _emit_context_cases(
-            context=context,
-            budget=max(0, opts.max_cases - len(cases)),
-            citation_required=opts.citation_required,
-            domain_id=domain_id,
-        )
-        cases.extend(category_cases)
-
-        # Whole-document LLM generation. Bounded to
-        # ``_LLM_MAX_GROUNDED_PER_CALL`` (8) per round-trip; the
-        # generator no longer tops up with the deterministic
-        # heuristic — quality is the contract.
+        # Whole-document LLM generation runs FIRST among the
+        # positive-case emitters. The LLM is the highest-signal
+        # source — its cases carry anti-hallucination-checked
+        # quotes + model-written expected answers. Running it
+        # before the deterministic context emitters guarantees
+        # the LLM gets a slice of the budget even when the
+        # document is rich enough that the context emitters
+        # could fill ``max_cases`` on their own.
+        #
+        # Bounded to ``_LLM_MAX_GROUNDED_PER_CALL`` (8) per
+        # round-trip; remaining budget falls through to the
+        # context emitters.
         negative_slots = _count_negative_slots(
             opts=opts, guidance=domain_guidance,
         )
-        positive_budget = max(0, opts.max_cases - len(cases) - negative_slots)
-        llm_budget = min(positive_budget, _LLM_MAX_GROUNDED_PER_CALL)
+        positive_budget_for_llm = max(
+            0, opts.max_cases - len(cases) - negative_slots,
+        )
+        llm_budget = min(positive_budget_for_llm, _LLM_MAX_GROUNDED_PER_CALL)
         llm_cases, llm_trace = self._llm_generate_grounded_cases(
             evidence_blocks=evidence_blocks or [],
             domain_guidance=domain_guidance,
@@ -407,6 +405,20 @@ class DefaultTestCaseGenerator:
             citation_required=opts.citation_required,
         )
         cases.extend(llm_cases)
+
+        # Context-driven category emitters fill any remaining
+        # budget. Each emits 0-N cases depending on what the
+        # document supports. Operator-stated rule: never pad.
+        # When the LLM already returned enough cases the context
+        # emitters quietly emit zero — that's the right outcome,
+        # not a regression.
+        category_cases = _emit_context_cases(
+            context=context,
+            budget=max(0, opts.max_cases - len(cases) - negative_slots),
+            citation_required=opts.citation_required,
+            domain_id=domain_id,
+        )
+        cases.extend(category_cases)
 
         # Domain-driven negative checks. Replaces the prior hardcoded
         # "World Cup / Bitcoin / Mars" pool with questions derived

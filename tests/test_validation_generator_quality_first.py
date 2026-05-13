@@ -336,6 +336,76 @@ def test_no_case_has_noise_term_as_topic_anchor():
             )
 
 
+def test_llm_is_always_called_when_evidence_supplied():
+    """Regression: prior ordering ran the context emitters BEFORE
+    the LLM, so a rich document could fill the budget with
+    context-derived cases and the LLM never got called. The new
+    order is LLM-first: every run with a wired LLM + non-empty
+    evidence_blocks must produce an LLM trace with ``called=True``.
+
+    The LLM is the highest-signal source; the context emitters
+    are the deterministic fallback for slots the LLM didn't fill.
+    """
+    from j1.validation.dtos import EvidenceBlockDTO
+
+    class _StubLLM:
+        provider = "stub"
+        model = "stub-1"
+
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def extract(self, prompt, schema, *, metadata=None):
+            self.calls.append((prompt, schema))
+            return ({"test_cases": [
+                {
+                    "question": "What does the document say about the workflow?",
+                    "expected_answer": "It validates the proposal.",
+                    "question_type": "fact_retrieval",
+                    "validation_scope": "evidence",
+                    "evidence": [
+                        {"source_artifact_id": "art-1", "quote": "workflow"},
+                    ],
+                },
+            ]}, object())
+
+    stub = _StubLLM()
+    gen = DefaultTestCaseGenerator(text_client=stub)
+    # Rich corpus that would fill the budget via context alone.
+    chunks = [
+        _chunk(
+            chunk_id=f"c-{i}",
+            section=f"Section {i}",
+            page_start=i,
+            body=(
+                f"The Section {i} describes the workflow stage "
+                f"validating the proposal. Stage {i} reviews drawings "
+                f"and calculations submitted by the engineer of record."
+            ),
+        )
+        for i in range(1, 5)
+    ]
+    evidence = [EvidenceBlockDTO(
+        artifact_id="art-1",
+        artifact_type="chunk",
+        text="The workflow validates the proposal at every stage.",
+        chunk_id="c-1",
+        score=0.9,
+    )]
+    vset = gen.generate(
+        run_id="r", document_ids=["doc-1"], chunks=chunks,
+        evidence_blocks=evidence,
+        options=GenerationOptions(max_cases=12, negative_case_count=0),
+    )
+    # The LLM stub was actually invoked.
+    assert len(stub.calls) == 1
+    # And the trace records ``called=True``.
+    assert vset.llm is not None and vset.llm.called is True
+    # And the LLM case shipped (passes the quality gate).
+    llm_cases = [c for c in vset.test_cases if c.metadata.get("llm_generated")]
+    assert len(llm_cases) >= 1
+
+
 def test_no_case_has_answer_in_question_shape():
     """End-to-end: no case may have the malformed
     ``What is the X of <identifier>?`` shape that operators
