@@ -122,16 +122,98 @@ def _is_abstain_response(answer: str) -> bool:
 
 
 def _check_answer_non_empty(ctx_: _CheckContext) -> ValidationCheckDTO:
+    """Verify the synthesizer produced a substantive answer.
+
+    Previously this check passed for ANY answer ≥ 5 characters —
+    which let "Not in the retrieved evidence." (32 chars) sail
+    through as a passing result. The user-reported failure was
+    that a refusal-style answer was being marked Passed.
+
+    Now also fails when the answer matches a refusal-style
+    pattern. The patterns are generic (English refusal phrases
+    the synthesizer / engine produce when grounding fails) — not
+    a domain-specific list."""
     body = (ctx_.answer or "").strip()
-    passed = len(body) >= 5
+    if len(body) < 5:
+        return ValidationCheckDTO(
+            name="answer_non_empty",
+            severity="required",
+            passed=False,
+            detail="answer was empty or trivially short",
+            expected="answer with >= 5 non-whitespace chars",
+            actual=f"len={len(body)}",
+        )
+    if _is_refusal_answer(body):
+        return ValidationCheckDTO(
+            name="answer_non_empty",
+            severity="required",
+            passed=False,
+            detail=(
+                "answer is a no-evidence refusal — synthesizer "
+                "found no usable evidence in the pack. The pack "
+                "may be irrelevant; check the retrieval audit "
+                "events for the dropped-relevant signals."
+            ),
+            expected="substantive answer grounded in evidence",
+            actual=_safe_preview(body, 120),
+        )
     return ValidationCheckDTO(
         name="answer_non_empty",
         severity="required",
-        passed=passed,
-        detail=None if passed else "answer was empty or trivially short",
+        passed=True,
+        detail=None,
         expected="answer with >= 5 non-whitespace chars",
         actual=f"len={len(body)}",
     )
+
+
+# Generic English refusal patterns the synthesizer emits when the
+# evidence pack didn't ground the question. Each compiled
+# case-insensitively. Add new shapes here as they appear in real
+# audit logs — never expand by guessing.
+_REFUSAL_PATTERNS = [
+    re.compile(
+        r"\bnot\s+(in\s+(the\s+)?retrieved\s+evidence"
+        r"|present\s+in\s+the\s+evidence"
+        r"|covered\s+in\s+the\s+evidence)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(i\s+(don'?t|do\s+not|cannot|can\s*not)\s+(have|see|find)"
+        r"|no\s+(relevant\s+)?(information|evidence)\s+(was\s+)?(found|available))\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(the\s+)?evidence\s+(does\s+not|doesn'?t)\s+contain\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\binsufficient\s+(information|evidence|context)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _is_refusal_answer(body: str) -> bool:
+    """True iff the answer matches any documented refusal shape.
+
+    Short-circuits on the first match. Refusal-shaped answers
+    that ALSO contain substantive content (a refusal preamble
+    followed by an actual answer) pass — we look for the refusal
+    pattern alone, not as a leading clause. Conservative by
+    design: when in doubt, treat as non-refusal."""
+    if len(body) > 400:
+        # Long answers are almost certainly substantive even if
+        # they contain a refusal phrase in passing. Tune this if
+        # production audit logs show false negatives.
+        return False
+    return any(p.search(body) for p in _REFUSAL_PATTERNS)
+
+
+def _safe_preview(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
 
 def _check_retrieved_chunks_present(ctx_: _CheckContext) -> ValidationCheckDTO:

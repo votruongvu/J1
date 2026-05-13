@@ -555,11 +555,22 @@ def build_evidence_blocks(
         # empty pack with no candidates) skip the fallback.
         if diagnostics is not None:
             from j1.retrieval.quality_checks import check_pack
+            from j1.retrieval.anchors import query_stage_anchors
+            # Extract stage anchors from the query the user
+            # actually wrote. Empty (falsy) when the query isn't
+            # a stage-progression — the coverage check then
+            # skips entirely. The anchors are USED BY the
+            # coverage check inside check_pack AND by the
+            # caller's targeted-retry path (when the runner
+            # opts in by passing the anchors back through).
+            stage_anchors = query_stage_anchors(query) if query else None
+            anchor_tuple = stage_anchors.all if stage_anchors else None
             result = check_pack(
                 blocks,
                 intent=detected_intent,
                 active_document_id=active_document_id,
                 active_run_id=active_run_id,
+                stage_anchors=anchor_tuple,
             )
             fallback_triggered = False
             fallback_succeeded: bool | None = None
@@ -594,6 +605,7 @@ def build_evidence_blocks(
                         intent=detected_intent,
                         active_document_id=active_document_id,
                         active_run_id=active_run_id,
+                        stage_anchors=anchor_tuple,
                     )
                     fallback_succeeded = fb_result.ok
                     # Swap in the fallback pack regardless of
@@ -701,6 +713,7 @@ _RECOVERABLE_CHECK_FAILURES: frozenset[str] = frozenset({
     "no_boilerplate_unless_intent_allows",
     "section_diversity_for_structured_intents",
     "source_grounding_for_enriched_anchored_packs",
+    "evidence_anchor_coverage_for_stage_progression",
 })
 
 

@@ -80,6 +80,8 @@ def check_pack(
     intent: Any | None,
     active_document_id: str | None,
     active_run_id: str | None,
+    stage_anchors: tuple[str, ...] | None = None,
+    min_anchor_coverage: int = 2,
 ) -> EvidenceCheckResult:
     pack_list = list(pack)
     failures: list[str] = []
@@ -167,6 +169,44 @@ def check_pack(
         ):
             failures.append(
                 "section_diversity_for_structured_intents",
+            )
+
+    # 7. evidence_anchor_coverage_for_stage_progression
+    # When the query contains stage-progression markers (60% /
+    # conceptual / final / etc.) the planner's intent fires as
+    # ``stage_progression``. For these queries the pack is only
+    # USEFUL if it covers ≥ N of the stage anchors the user
+    # wrote — otherwise the LLM gets evidence about CEP compliance
+    # / potholing / proposal formatting and answers "Not in the
+    # retrieved evidence".
+    #
+    # The check is gated on the caller supplying ``stage_anchors``;
+    # ``check_pack`` itself doesn't extract them (the runner /
+    # build_evidence_blocks does, since they have the query
+    # text). When ``stage_anchors`` is None / empty, the check
+    # is skipped entirely — preserves backward-compat for all
+    # other intent paths.
+    if stage_anchors:
+        from j1.retrieval.anchors import pack_anchor_coverage
+        bodies = []
+        for c in pack_list:
+            txt = (
+                _candidate_text(c)
+                or _section_path(c)
+                or ""
+            )
+            if txt:
+                bodies.append(txt)
+        matched, covered = pack_anchor_coverage(
+            bodies, tuple(stage_anchors),
+        )
+        details["stage_anchors"] = list(stage_anchors)
+        details["stage_anchors_matched"] = list(matched)
+        details["stage_anchors_covered"] = covered
+        details["stage_anchors_required"] = min_anchor_coverage
+        if covered < min_anchor_coverage:
+            failures.append(
+                "evidence_anchor_coverage_for_stage_progression",
             )
 
     # 6. source_grounding_for_enriched_anchored_packs
@@ -302,6 +342,18 @@ def _is_boilerplate(c: Any) -> bool:
         heading=str(heading) if heading else None,
         body_preview=str(body_preview) if body_preview else None,
     ) is not None
+
+
+def _candidate_text(c: Any) -> str | None:
+    """Best-effort body-text extractor. Tries fields in order:
+    ``text`` (EvidenceBlockDTO) → ``body`` → ``preview`` →
+    ``extracted_text``. Returns None when nothing is available."""
+    getter = _make_getter(c)
+    for k in ("text", "body", "preview", "extracted_text"):
+        v = getter(k)
+        if v:
+            return str(v)
+    return None
 
 
 def _candidate_summary(c: Any) -> dict[str, Any]:

@@ -474,6 +474,20 @@ class DefaultValidationRunner:
 
         retrieved = _retrieved_chunks_from_response(response)
         citations = _citations_from_response(response)
+        # ---- Targeted re-retrieval for stage-progression queries ----
+        # When the user's query contains stage-progression markers
+        # (percentages / "conceptual" / "final" / etc.) AND the
+        # first pass didn't surface chunks that mention them, run
+        # ONE expanded query — boosting the user's own anchors so
+        # BM25 / lexical signals upweight chunks containing those
+        # terms. Bounded: max one retry, no recursion. ANCHORS
+        # COME FROM THE QUERY (never a hardcoded domain
+        # dictionary).
+        retrieved, citations = self._maybe_retry_with_anchor_expansion(
+            ctx=ctx, run_id=run_id, case=case,
+            retrieved=retrieved, citations=citations,
+            initial_top_k=top_k,
+        )
         # Populate citation previews from real artifact body text
         # (chunk NDJSON, compiled.text files, document_map prose).
         # The groundedness judge consumes ``citation.preview`` to
@@ -558,6 +572,134 @@ class DefaultValidationRunner:
             raw_answer=response.answer if synthesized_answer else None,
             llm=llm_trace,
         )
+
+    def _maybe_retry_with_anchor_expansion(
+        self,
+        *,
+        ctx: ProjectContext,
+        run_id: str,
+        case,
+        retrieved: list,
+        citations: list,
+        initial_top_k: int,
+    ) -> tuple[list, list]:
+        """One-pass targeted re-retrieval for stage-progression
+        queries that didn't surface anchor-bearing chunks.
+
+        The mechanism:
+
+          1. Extract stage anchors from the case question
+             (``query_stage_anchors``). Empty result → no retry.
+          2. Scan the FIRST PASS retrieved set's previews for
+             anchor coverage. If ≥2 anchors are already present,
+             no retry needed.
+          3. Build the expanded query
+             (``expand_query_with_anchors``) — original query +
+             user's own anchors as boost terms.
+          4. Run ONE more ``query_engine.query`` with a larger
+             ``max_results`` so the re-ranker has more raw recall.
+          5. Merge the new candidates onto the original (dedupe
+             by artifact_id), preserving the original ordering
+             plus the new additions.
+
+        No-op (returns ``(retrieved, citations)`` unchanged) when:
+          * the query has no stage anchors,
+          * the first pass already covers ≥ 2 anchors,
+          * the engine raises on the retry,
+          * the merge yields no new candidates.
+
+        Strict bounding: this method is called once per case; it
+        does not loop. Audit consumers can see the retry by
+        comparing retrieved counts before/after."""
+        try:
+            from j1.retrieval.anchors import (
+                expand_query_with_anchors, pack_anchor_coverage,
+                query_stage_anchors,
+            )
+            from j1.query.models import QueryRequest, QueryMode
+            from j1.query.scope import RunScope
+        except Exception:  # noqa: BLE001
+            return retrieved, citations
+
+        anchors = query_stage_anchors(case.question)
+        if not anchors:
+            return retrieved, citations
+
+        # First-pass anchor coverage. Use the retrieval preview
+        # text — it's the only body field present on
+        # ``RetrievedChunkRefDTO`` without an artifact lookup.
+        previews = [
+            (getattr(r, "preview", None) or "") for r in retrieved
+        ]
+        _matched, covered = pack_anchor_coverage(
+            previews, anchors.all,
+        )
+        if covered >= 2:
+            return retrieved, citations  # adequate
+
+        # Re-query with the user's own anchors appended.
+        expanded = expand_query_with_anchors(case.question, anchors)
+        # Bumped max_results so the re-ranker has more candidates
+        # to work with. Capped to keep the call cheap.
+        retry_top_k = max(initial_top_k * 2, 20)
+        try:
+            retry_response = self._query_engine.query(
+                ctx,
+                QueryRequest(
+                    question=expanded,
+                    mode=QueryMode.AUTO,
+                    max_results=retry_top_k,
+                    scope=RunScope(run_id=run_id),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "anchor-expanded retry failed for case %s: %s",
+                getattr(case, "test_case_id", "?"), exc,
+            )
+            return retrieved, citations
+
+        retry_retrieved = _retrieved_chunks_from_response(retry_response)
+        retry_citations = _citations_from_response(retry_response)
+        if not retry_retrieved:
+            return retrieved, citations
+
+        # Merge: first-pass first (preserves original ordering),
+        # then any new candidates from the retry. Dedupe on
+        # artifact_id + chunk_id pair.
+        seen = {
+            (r.artifact_id, getattr(r, "chunk_id", None))
+            for r in retrieved
+        }
+        merged = list(retrieved)
+        for r in retry_retrieved:
+            key = (r.artifact_id, getattr(r, "chunk_id", None))
+            if key not in seen:
+                merged.append(r)
+                seen.add(key)
+
+        merged_citations = list(citations)
+        cit_seen = {
+            getattr(c, "artifact_id", None) for c in citations
+        }
+        for c in retry_citations:
+            if getattr(c, "artifact_id", None) not in cit_seen:
+                merged_citations.append(c)
+                cit_seen.add(getattr(c, "artifact_id", None))
+
+        # Audit-friendly log line so an operator inspecting the
+        # case can see the retry fired + how many new candidates
+        # it added.
+        _log.info(
+            "j1.retrieval.anchor_retry case=%s anchors=%s "
+            "first_pass_covered=%d first_pass_count=%d "
+            "retry_added=%d",
+            getattr(case, "test_case_id", "?"),
+            list(anchors.all),
+            covered, len(retrieved),
+            len(merged) - len(retrieved),
+        )
+        return merged, merged_citations
 
     def _maybe_synthesize_for_case(
         self,
