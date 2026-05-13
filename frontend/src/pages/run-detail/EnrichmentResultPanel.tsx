@@ -171,7 +171,20 @@ function EnrichmentResultContent({
   );
 
   return (
-    <div data-testid="enrichment-result-panel">
+    <div
+      className="card run-panel enrichment-result-panel"
+      data-testid="enrichment-result-panel"
+    >
+      <div className="run-panel__head">
+        <h3>Enrichment Overlay</h3>
+        <span
+          className="run-panel__source"
+          data-testid="enrichment-result-source"
+        >
+          {statusLabel(status)}
+        </span>
+      </div>
+
       <div
         className={`banner enrichment-banner enrichment-banner--${status}`}
         data-testid="enrichment-result-banner"
@@ -184,99 +197,99 @@ function EnrichmentResultContent({
         ) : null}
       </div>
 
-      <div className="card" data-testid="enrichment-result-card">
-        <div className="card__body">
-        <h3>Enrichment Overlay</h3>
+      {isSkipped ? (
+        <p
+          className="run-panel__hint"
+          data-testid="enrichment-result-skipped-explainer"
+        >
+          <Typewriter
+            text="Domain enrichment was skipped for this run. The base compile output is unchanged and remains the source of truth for downstream consumers."
+            speed={140}
+            cursor
+          />
+        </p>
+      ) : null}
 
-        {isSkipped ? (
-          <p
-            style={{ color: "var(--text-muted)" }}
-            data-testid="enrichment-result-skipped-explainer"
+      {!isSkipped && outcomes.length > 0 && (
+        <div
+          className="run-panel__subsection"
+          data-testid="enrichment-result-modules-section"
+        >
+          <div className="run-panel__label">Modules</div>
+          <ul
+            className="module-outcome-list"
+            data-testid="enrichment-result-modules"
           >
-            <Typewriter
-              text="Domain enrichment was skipped for this run. The base compile output is unchanged and remains the source of truth for downstream consumers."
-              speed={140}
-              cursor
-            />
-          </p>
-        ) : null}
-
-        {!isSkipped && outcomes.length > 0 && (
-          <dl className="kv">
-            <dt>Modules</dt>
-            <dd>
-              <ul
-                className="module-outcome-list"
-                data-testid="enrichment-result-modules"
-              >
-                {outcomes.map((o) => (
-                  <ModuleOutcomeRow key={o.module_id} outcome={o} />
-                ))}
-              </ul>
-            </dd>
-          </dl>
-        )}
-
-        {!isSkipped && (
-          <dl className="kv">
-            <dt>What enrichment added</dt>
-            <dd data-testid="enrichment-result-additions">
-              {hasAdditions ? (
-                <ul className="bullet-list">
-                  {Object.keys(docMeta).length > 0 && (
-                    <li>
-                      Document metadata: {Object.keys(docMeta).length}{" "}
-                      field{Object.keys(docMeta).length === 1 ? "" : "s"}
-                    </li>
-                  )}
-                  {terminology.length > 0 && (
-                    <li>
-                      Terminology entries: {terminology.length}
-                    </li>
-                  )}
-                </ul>
-              ) : (
-                <span
-                  style={{ color: "var(--text-muted)" }}
-                  data-testid="enrichment-result-no-additions"
-                >
-                  No enrichment artefacts were produced for this run.
-                </span>
-              )}
-            </dd>
-          </dl>
-        )}
-
-        {warnings.length > 0 && (
-          <dl className="kv">
-            <dt>Warnings</dt>
-            <dd>
-              <ul
-                className="bullet-list"
-                data-testid="enrichment-result-warnings"
-                style={{ color: "var(--warning-fg)" }}
-              >
-                {warnings.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            </dd>
-          </dl>
-        )}
-        {errors.length > 0 && (
-          <dl className="kv">
-            <dt>Errors</dt>
-            <dd>
-              <ul
-                className="bullet-list"
-                data-testid="enrichment-result-errors"
-                style={{ color: "var(--error-fg)" }}
-              >
-                {errors.map((e, i) => <li key={i}>{e}</li>)}
-              </ul>
-            </dd>
-          </dl>
-        )}
+            {outcomes.map((o) => (
+              <ModuleOutcomeRow key={o.module_id} outcome={o} />
+            ))}
+          </ul>
         </div>
-      </div>
+      )}
+
+      {!isSkipped && (
+        <div
+          className="run-panel__subsection"
+          data-testid="enrichment-result-additions-section"
+        >
+          <div className="run-panel__label">What enrichment added</div>
+          <div data-testid="enrichment-result-additions">
+            {hasAdditions ? (
+              <ul className="bullet-list">
+                {Object.keys(docMeta).length > 0 && (
+                  <li>
+                    Document metadata: {Object.keys(docMeta).length}{" "}
+                    field{Object.keys(docMeta).length === 1 ? "" : "s"}
+                  </li>
+                )}
+                {terminology.length > 0 && (
+                  <li>
+                    Terminology entries: {terminology.length}
+                  </li>
+                )}
+              </ul>
+            ) : (
+              <span
+                style={{ color: "var(--text-muted)" }}
+                data-testid="enrichment-result-no-additions"
+              >
+                No enrichment artefacts were produced for this run.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div
+          className="run-panel__subsection"
+          data-testid="enrichment-result-warnings-section"
+        >
+          <div className="run-panel__label">Warnings</div>
+          <ul
+            className="bullet-list"
+            data-testid="enrichment-result-warnings"
+            style={{ color: "var(--warning-fg)" }}
+          >
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
+      {errors.length > 0 && (
+        <div
+          className="run-panel__subsection"
+          data-testid="enrichment-result-errors-section"
+        >
+          <div className="run-panel__label">Errors</div>
+          <ul
+            className="bullet-list"
+            data-testid="enrichment-result-errors"
+            style={{ color: "var(--error-fg)" }}
+          >
+            {errors.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

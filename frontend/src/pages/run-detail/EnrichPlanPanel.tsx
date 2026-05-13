@@ -140,7 +140,20 @@ export function EnrichPlanPanel({
 function EnrichPlanContent({ plan }: { plan: PostCompileEnrichPlanPayload }) {
   const banners = bannersForEnrichPlan(plan);
   return (
-    <div data-testid="enrich-plan-panel">
+    <div
+      className="card run-panel enrich-plan-panel"
+      data-testid="enrich-plan-panel"
+    >
+      <div className="run-panel__head">
+        <h3>Enrich Plan</h3>
+        <span
+          className="run-panel__source"
+          data-testid="enrich-plan-source"
+        >
+          {decisionSourceLabel(plan.decision_source)}
+        </span>
+      </div>
+
       {banners.length > 0 && (
         <div data-testid="enrich-plan-banners">
           {banners.map((b, i) => (
@@ -154,9 +167,11 @@ function EnrichPlanContent({ plan }: { plan: PostCompileEnrichPlanPayload }) {
           ))}
         </div>
       )}
-      <div className="card" data-testid="enrich-plan-card">
-        <div className="card__body">
-        <h3>Enrich Plan</h3>
+
+      <div
+        className="run-panel__subsection"
+        data-testid="enrich-plan-card"
+      >
         <dl className="kv">
           <dt>Recommendation</dt>
           <dd>
@@ -217,7 +232,6 @@ function EnrichPlanContent({ plan }: { plan: PostCompileEnrichPlanPayload }) {
             </>
           )}
         </dl>
-        </div>
       </div>
     </div>
   );

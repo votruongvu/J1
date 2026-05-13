@@ -144,35 +144,13 @@ export function CompileStrategyPanel({
 
 function CompileStrategyContent({ report }: { report: CompileStrategyReport }) {
   // Note: AssessmentPlan rendering is owned by `AssessmentPlanPanel`
-  // (mounted FIRST on the run-detail page). This panel focuses on
-  // the compile-side: mapped config, per-attempt timeline, and
-  // final-quality summary.
-  return (
-    <div
-      className="compile-strategy-panel"
-      data-testid="compile-strategy-panel"
-    >
-      <Banners report={report} />
-      <CompileStrategyCard report={report} />
-      <CompileAttemptsTimeline attempts={report.attempts} />
-      <FinalQualitySummary report={report} />
-    </div>
-  );
-}
-
-function CapList({ caps }: { caps: string[] }) {
-  return (
-    <div className="cap-pills">
-      {caps.map((c) => (
-        <span key={c} className="badge cap-pill">{c}</span>
-      ))}
-    </div>
-  );
-}
-
-// ---- Compile Strategy card -----------------------------------------
-
-function CompileStrategyCard({ report }: { report: CompileStrategyReport }) {
+  // (mounted FIRST on the run-detail page). This panel covers the
+  // compile-side: mapped config, per-attempt timeline, and
+  // final-quality summary. All three render as subsections inside
+  // ONE outer card (the ``run-panel`` class set), matching the
+  // AssessmentPlan visual — no nested boxed cards inside the
+  // pipeline-stream transcript.
+  const banners = bannersForReport(report);
   const required = report.assessment_plan.required_capabilities ?? [];
   const unhandled = report.unhandled_capabilities ?? [];
   const applied = appliedCapabilities(report);
@@ -180,9 +158,49 @@ function CompileStrategyCard({ report }: { report: CompileStrategyReport }) {
   const mappedConfig = lastAttempt?.mapped_compile_config ?? {};
   const planMissing = isFallbackOnly(report);
   return (
-    <div className="card" data-testid="compile-strategy-card">
-      <div className="card__body">
+    <div
+      className="card run-panel compile-strategy-panel"
+      data-testid="compile-strategy-panel"
+    >
+      <div className="run-panel__head">
         <h3>Compile Strategy</h3>
+        <span
+          className="run-panel__source"
+          data-testid="compile-strategy-source"
+        >
+          {lastAttempt?.parser
+            ? `${lastAttempt.parser}${
+                lastAttempt.parse_method
+                  ? ` · ${lastAttempt.parse_method}`
+                  : ""
+              }`
+            : "post-compile"}
+        </span>
+      </div>
+
+      {banners.length > 0 && (
+        <div data-testid="strategy-banners">
+          {banners.map((b, i) => (
+            <div
+              key={i}
+              className={`banner banner--${b.kind}`}
+              data-testid={b.testid}
+            >
+              {i === 0 ? (
+                <Typewriter text={b.message} speed={140} cursor />
+              ) : b.message}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Subsection 1: mapped config + capabilities. Operator-facing
+       * summary of how the AssessmentPlan was translated to compile
+       * inputs. */}
+      <div
+        className="run-panel__subsection"
+        data-testid="compile-strategy-card"
+      >
         <dl className="kv">
           <dt>Compiler adapter</dt>
           <dd>{lastAttempt?.parser ?? "—"}</dd>
@@ -214,141 +232,140 @@ function CompileStrategyCard({ report }: { report: CompileStrategyReport }) {
           </dd>
         </dl>
       </div>
+
+      {/* Subsection 2: per-attempt timeline. */}
+      <CompileAttemptsSubsection attempts={report.attempts} />
+
+      {/* Subsection 3: final-quality summary. */}
+      <FinalQualitySubsection report={report} />
     </div>
   );
 }
 
-// ---- 3) Compile Attempts timeline ---------------------------------
-
-function CompileAttemptsTimeline({
-  attempts,
-}: { attempts: CompileAttemptRecord[] }) {
-  if (!attempts.length) {
-    return (
-      <div className="card" data-testid="compile-attempts-empty">
-        <div className="card__body">
-          <h3>Compile Attempts</h3>
-          <p style={{ color: "var(--text-muted)" }}>No attempts recorded.</p>
-        </div>
-      </div>
-    );
-  }
+function CapList({ caps }: { caps: string[] }) {
   return (
-    <div className="card" data-testid="compile-attempts-timeline">
-      <div className="card__body">
-        <h3>Compile Attempts</h3>
-        <ol className="attempt-list">
-          {attempts.map((a) => (
-            <li
-              key={a.attempt_number}
-              data-testid={`compile-attempt-${a.attempt_number}`}
-              className={`attempt attempt--${a.quality} attempt--status-${a.status}`}
-            >
-              <div className="attempt__head">
-                <span className="attempt__num">#{a.attempt_number}</span>
-                <span className={`badge mode-badge mode-badge--${a.mode ?? "unknown"}`}>
-                  {a.mode ?? "—"}
-                </span>
-                <span className={`badge quality-badge quality-badge--${a.quality}`}>
-                  {a.quality}
-                </span>
-                <span className="attempt__status mono">{a.status}</span>
-              </div>
-              <dl className="kv">
-                <dt>Parser / parse_method</dt>
-                <dd className="mono">
-                  {a.parser} / {a.parse_method ?? "—"}
-                </dd>
-                <dt>chunks</dt>
-                <dd>{a.chunks_count}</dd>
-                <dt>extracted text chars</dt>
-                <dd>{a.extracted_text_chars ?? "unknown"}</dd>
-                {a.retry_reason && (
-                  <>
-                    <dt>Retry reason</dt>
-                    <dd className="mono">{a.retry_reason}</dd>
-                  </>
-                )}
-                {a.warnings.length > 0 && (
-                  <>
-                    <dt>Warnings</dt>
-                    <dd>
-                      <ul className="bullet-list">
-                        {a.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                      </ul>
-                    </dd>
-                  </>
-                )}
-              </dl>
-            </li>
-          ))}
-        </ol>
-      </div>
-    </div>
-  );
-}
-
-// ---- 4) Banners ---------------------------------------------------
-
-function Banners({ report }: { report: CompileStrategyReport }) {
-  const banners = bannersForReport(report);
-  if (banners.length === 0) return null;
-  return (
-    <div data-testid="strategy-banners">
-      {banners.map((b, i) => (
-        <div
-          key={i}
-          className={`banner banner--${b.kind}`}
-          data-testid={b.testid}
-        >
-          {i === 0 ? (
-            <Typewriter text={b.message} speed={140} cursor />
-          ) : b.message}
-        </div>
+    <div className="cap-pills">
+      {caps.map((c) => (
+        <span key={c} className="badge cap-pill">{c}</span>
       ))}
     </div>
   );
 }
 
-// ---- 5) Final Compile Quality summary -----------------------------
+// ---- Subsection: Compile Attempts timeline -------------------------
 
-function FinalQualitySummary({ report }: { report: CompileStrategyReport }) {
+function CompileAttemptsSubsection({
+  attempts,
+}: { attempts: CompileAttemptRecord[] }) {
+  if (!attempts.length) {
+    return (
+      <div
+        className="run-panel__subsection"
+        data-testid="compile-attempts-empty"
+      >
+        <div className="run-panel__label">Compile Attempts</div>
+        <p style={{ color: "var(--text-muted)", margin: 0 }}>
+          No attempts recorded.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="run-panel__subsection"
+      data-testid="compile-attempts-timeline"
+    >
+      <div className="run-panel__label">Compile Attempts</div>
+      <ol className="attempt-list">
+        {attempts.map((a) => (
+          <li
+            key={a.attempt_number}
+            data-testid={`compile-attempt-${a.attempt_number}`}
+            className={`attempt attempt--${a.quality} attempt--status-${a.status}`}
+          >
+            <div className="attempt__head">
+              <span className="attempt__num">#{a.attempt_number}</span>
+              <span className={`badge mode-badge mode-badge--${a.mode ?? "unknown"}`}>
+                {a.mode ?? "—"}
+              </span>
+              <span className={`badge quality-badge quality-badge--${a.quality}`}>
+                {a.quality}
+              </span>
+              <span className="attempt__status mono">{a.status}</span>
+            </div>
+            <dl className="kv">
+              <dt>Parser / parse_method</dt>
+              <dd className="mono">
+                {a.parser} / {a.parse_method ?? "—"}
+              </dd>
+              <dt>chunks</dt>
+              <dd>{a.chunks_count}</dd>
+              <dt>extracted text chars</dt>
+              <dd>{a.extracted_text_chars ?? "unknown"}</dd>
+              {a.retry_reason && (
+                <>
+                  <dt>Retry reason</dt>
+                  <dd className="mono">{a.retry_reason}</dd>
+                </>
+              )}
+              {a.warnings.length > 0 && (
+                <>
+                  <dt>Warnings</dt>
+                  <dd>
+                    <ul className="bullet-list">
+                      {a.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </dd>
+                </>
+              )}
+            </dl>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+// ---- Subsection: Final Compile Quality summary ---------------------
+
+function FinalQualitySubsection({ report }: { report: CompileStrategyReport }) {
   const last = report.attempts[report.attempts.length - 1];
   return (
-    <div className="card" data-testid="final-quality-summary">
-      <div className="card__body">
-        <h3>Final Compile Quality</h3>
-        <dl className="kv">
-          <dt>Quality</dt>
-          <dd>
-            <span className={`badge quality-badge quality-badge--${report.final_compile_quality}`}>
-              {report.final_compile_quality}
-            </span>
-          </dd>
-          <dt>Initial mode</dt>
-          <dd>{report.initial_mode ?? "—"}</dd>
-          <dt>Final mode</dt>
-          <dd>{report.final_mode ?? "—"}</dd>
-          <dt>Retry used</dt>
-          <dd>{report.retry_used ? "yes" : "no"}</dd>
-          <dt>Attempts</dt>
-          <dd>{report.attempts_count}</dd>
-          <dt>Final chunks</dt>
-          <dd>{last?.chunks_count ?? 0}</dd>
-          <dt>Final extracted chars</dt>
-          <dd>{last?.extracted_text_chars ?? "unknown"}</dd>
-          {report.final_warnings.length > 0 && (
-            <>
-              <dt>Final warnings</dt>
-              <dd>
-                <ul className="bullet-list">
-                  {report.final_warnings.map((w, i) => <li key={i}>{w}</li>)}
-                </ul>
-              </dd>
-            </>
-          )}
-        </dl>
-      </div>
+    <div
+      className="run-panel__subsection"
+      data-testid="final-quality-summary"
+    >
+      <div className="run-panel__label">Final Compile Quality</div>
+      <dl className="kv">
+        <dt>Quality</dt>
+        <dd>
+          <span className={`badge quality-badge quality-badge--${report.final_compile_quality}`}>
+            {report.final_compile_quality}
+          </span>
+        </dd>
+        <dt>Initial mode</dt>
+        <dd>{report.initial_mode ?? "—"}</dd>
+        <dt>Final mode</dt>
+        <dd>{report.final_mode ?? "—"}</dd>
+        <dt>Retry used</dt>
+        <dd>{report.retry_used ? "yes" : "no"}</dd>
+        <dt>Attempts</dt>
+        <dd>{report.attempts_count}</dd>
+        <dt>Final chunks</dt>
+        <dd>{last?.chunks_count ?? 0}</dd>
+        <dt>Final extracted chars</dt>
+        <dd>{last?.extracted_text_chars ?? "unknown"}</dd>
+        {report.final_warnings.length > 0 && (
+          <>
+            <dt>Final warnings</dt>
+            <dd>
+              <ul className="bullet-list">
+                {report.final_warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </dd>
+          </>
+        )}
+      </dl>
     </div>
   );
 }

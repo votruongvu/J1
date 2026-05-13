@@ -4104,6 +4104,81 @@ pre.json .b {
   background: var(--surface-soft, rgba(0, 0, 0, 0.02));
 }
 
+/* ---- Shared run-panel chrome ---------------------------------------
+ *
+ * The Compile Strategy / Compile Attempts / Final Compile Quality /
+ * Base Compile Result / Enrich Plan / Enrichment Overlay panels were
+ * each rendering a different visual: some nested `.card` boxes inside
+ * a wrapper div, some flat dl/dt/dd lists with no separator. The
+ * Assessment Plan panel — the design reference — uses a single
+ * outer card with internal ``__head`` / ``__label`` / ``__hero`` /
+ * ``__subsection`` blocks. The `.run-panel*` rules below give every
+ * post-assessment panel the same structure so the transcript flows
+ * uniformly inside `.pipeline-stream__body`.
+ */
+.run-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: var(--sp-6) var(--sp-7);
+}
+.run-panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.run-panel__head h3 {
+  margin: 0;
+}
+.run-panel__source {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--mono, monospace);
+}
+.run-panel__subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.run-panel__subsection + .run-panel__subsection {
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-subtle, #e5e7eb);
+}
+.run-panel__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.run-panel__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.run-panel__callout {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface-soft, rgba(0, 0, 0, 0.02));
+  font-size: 13px;
+}
+
+/* Inter-panel breathing room: the pipeline-stream chrome-strip rule
+ * adds 12px margin-bottom + dashed border between cards. Bump to 20px
+ * (+ a matching top padding) so the assessment / compile / enrich /
+ * overlay panels each have clear vertical separation when stacked. */
+.pipeline-stream__body > .card.run-panel,
+.pipeline-stream__body > .card.assessment-plan-panel {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.pipeline-stream__body > .card > .card__body {
+  padding: 8px 0 20px;
+  margin-bottom: 20px;
+}
+
 /* Mode badge — large variant for the hero */
 .mode-badge--lg {
   font-size: 18px;

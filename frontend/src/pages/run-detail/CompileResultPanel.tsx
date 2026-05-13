@@ -158,18 +158,35 @@ function CompileResultContent({
   const errors = plan.errors ?? [];
   const rawRefs = plan.raw_artifact_refs ?? [];
   return (
-    <div data-testid="compile-result-panel">
-      <div className="card" data-testid="compile-result-card">
-        <div className="card__body">
-          <h3>Base Compile Result</h3>
-        <p
-          style={{ color: "var(--text-muted)", marginTop: "-0.4rem" }}
-          data-testid="compile-result-tagline"
+    <div
+      className="card run-panel compile-result-panel"
+      data-testid="compile-result-panel"
+    >
+      <div className="run-panel__head">
+        <h3>Base Compile Result</h3>
+        <span
+          className="run-panel__source"
+          data-testid="compile-result-source"
         >
-          Output produced by the base compile engine. Raw compile
-          output is preserved on disk and accessible via the artifacts
-          tab.
-        </p>
+          {plan.parser
+            ? `${plan.parser}${plan.parse_method ? ` · ${plan.parse_method}` : ""}`
+            : "base compile engine"}
+        </span>
+      </div>
+
+      <p
+        className="run-panel__hint"
+        data-testid="compile-result-tagline"
+      >
+        Output produced by the base compile engine. Raw compile
+        output is preserved on disk and accessible via the artifacts
+        tab.
+      </p>
+
+      <div
+        className="run-panel__subsection"
+        data-testid="compile-result-card"
+      >
         <dl className="kv">
           <dt>Parser</dt>
           <dd>
@@ -255,7 +272,6 @@ function CompileResultContent({
             </>
           )}
         </dl>
-        </div>
       </div>
     </div>
   );
