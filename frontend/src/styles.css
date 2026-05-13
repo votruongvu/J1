@@ -4647,3 +4647,595 @@ pre.json .b {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ─────────────────────────────────────────────────────────────
+ * Manual Query Trace view — operator surface for the
+ * SmartQueryOrchestrator pipeline. Renders the full QueryTrace
+ * with status banner, collapsible sections, candidate / gate
+ * tables, and evidence-block previews.
+ * ──────────────────────────────────────────────────────────── */
+
+.mqt-root {
+  display: flex;
+  flex-direction: column;
+}
+
+.mqt-input {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mqt-input__label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-overline);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.mqt-textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  line-height: var(--lh-snug);
+  resize: vertical;
+  min-height: 80px;
+}
+
+.mqt-input__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mqt-duration {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.mqt-error {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: oklch(94% 0.04 25);
+  border: 1px solid oklch(78% 0.1 25);
+  color: oklch(38% 0.13 25);
+  font-size: var(--text-sm);
+  line-height: var(--lh-snug);
+}
+
+.mqt-output {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Status banner ─────────────────────────────────────────── */
+
+.mqt-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-tinted);
+}
+
+.mqt-banner--ok {
+  border-color: oklch(78% 0.07 145);
+  background: oklch(96% 0.025 145);
+}
+
+.mqt-banner--warning {
+  border-color: oklch(80% 0.1 80);
+  background: oklch(97% 0.03 85);
+}
+
+.mqt-banner--fail {
+  border-color: oklch(78% 0.1 25);
+  background: oklch(96% 0.025 25);
+}
+
+.mqt-banner__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  align-items: center;
+}
+
+.mqt-banner__badge {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  font-weight: 600;
+}
+
+.mqt-banner__intent {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.mqt-banner__intent code {
+  font-family: var(--font-mono);
+  background: var(--bg-elev);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  margin: 0 4px;
+}
+
+.mqt-banner__confidence {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+}
+
+.mqt-banner__duration {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.mqt-banner__message {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--lh-snug);
+  color: var(--text);
+}
+
+/* ── Collapsible section ──────────────────────────────────── */
+
+.mqt-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+
+.mqt-section__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-elev);
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  transition: background-color 80ms ease;
+}
+
+.mqt-section__header:hover {
+  background: var(--bg-hover);
+}
+
+.mqt-section__caret {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.mqt-section__title {
+  font-size: var(--text-h3);
+  font-weight: 600;
+  letter-spacing: var(--tracking-h3);
+  color: var(--text);
+}
+
+.mqt-section__count {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.mqt-section__summary {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--text-subtle);
+  font-style: italic;
+}
+
+.mqt-section__body {
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  overflow-x: auto;
+}
+
+/* ── Key/value grid (plan view) ────────────────────────────── */
+
+.mqt-kv {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) 1fr;
+  gap: 8px 18px;
+  margin: 0;
+}
+
+.mqt-kv dt {
+  font-size: var(--text-overline);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  color: var(--text-muted);
+  font-weight: 600;
+  padding-top: 4px;
+}
+
+.mqt-kv dd {
+  margin: 0;
+  font-size: var(--text-body);
+  color: var(--text);
+  line-height: var(--lh-snug);
+  min-width: 0;
+}
+
+/* ── Chips ─────────────────────────────────────────────────── */
+
+.mqt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mqt-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.mqt-chip--info {
+  background: oklch(95% 0.04 235);
+  border-color: oklch(85% 0.05 235);
+  color: oklch(38% 0.07 235);
+}
+
+.mqt-chip--ok {
+  background: oklch(95% 0.035 145);
+  border-color: oklch(80% 0.06 145);
+  color: oklch(36% 0.07 145);
+}
+
+.mqt-chip--fail {
+  background: oklch(95% 0.04 25);
+  border-color: oklch(80% 0.08 25);
+  color: oklch(38% 0.12 25);
+}
+
+/* ── Tag (small inline pill, e.g. group label) ─────────────── */
+
+.mqt-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  margin-left: 6px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.mqt-tag--group {
+  color: oklch(40% 0.07 280);
+  background: oklch(95% 0.03 280);
+  border-color: oklch(82% 0.05 280);
+}
+
+/* ── Code / mono ───────────────────────────────────────────── */
+
+.mqt-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.mqt-code--route {
+  text-transform: lowercase;
+  color: oklch(36% 0.08 280);
+  background: oklch(96% 0.025 280);
+  border-color: oklch(85% 0.05 280);
+}
+
+.mqt-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.mqt-muted {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.mqt-h4 {
+  font-size: var(--text-overline);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  color: var(--text-muted);
+  font-weight: 600;
+  margin: 16px 0 8px;
+}
+
+.mqt-h4:first-child {
+  margin-top: 0;
+}
+
+.mqt-list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: var(--lh-snug);
+}
+
+.mqt-list li + li {
+  margin-top: 4px;
+}
+
+.mqt-empty {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-tinted);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+/* ── Tables ────────────────────────────────────────────────── */
+
+.mqt-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.mqt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  table-layout: auto;
+}
+
+.mqt-table th {
+  text-align: left;
+  font-size: var(--text-overline);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 8px 12px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.mqt-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text);
+  line-height: var(--lh-snug);
+}
+
+.mqt-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.mqt-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.mqt-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mqt-ellipsis {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mqt-row--error td {
+  background: oklch(97% 0.025 25);
+}
+
+.mqt-row--dropped td {
+  background: oklch(98% 0.012 60);
+  color: var(--text-subtle);
+}
+
+/* ── Pills (status indicators inside tables) ──────────────── */
+
+.mqt-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.mqt-pill--kept {
+  background: oklch(93% 0.05 145);
+  color: oklch(36% 0.09 145);
+  border: 1px solid oklch(78% 0.07 145);
+}
+
+.mqt-pill--drop {
+  background: oklch(94% 0.04 25);
+  color: oklch(38% 0.13 25);
+  border: 1px solid oklch(78% 0.1 25);
+}
+
+/* ── Groups (covered/missing) ─────────────────────────────── */
+
+.mqt-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.mqt-groups__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mqt-groups__label {
+  font-size: var(--text-overline);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+  color: var(--text-muted);
+  font-weight: 600;
+  min-width: 80px;
+}
+
+/* ── Evidence blocks (selected / LLM input) ──────────────── */
+
+.mqt-blocks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mqt-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.mqt-block__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+
+.mqt-block__index {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.mqt-block__id {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.mqt-block__body {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: var(--bg);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* ── Answer view ──────────────────────────────────────────── */
+
+.mqt-answer {
+  display: flex;
+  flex-direction: column;
+}
+
+.mqt-answer__body {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.mqt-citations {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+
+.mqt-citations li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Dark-mode adjustments ────────────────────────────────── */
+
+@media (prefers-color-scheme: dark) {
+  .mqt-banner--ok {
+    background: oklch(30% 0.04 145);
+    border-color: oklch(45% 0.07 145);
+  }
+  .mqt-banner--warning {
+    background: oklch(30% 0.05 85);
+    border-color: oklch(45% 0.08 85);
+  }
+  .mqt-banner--fail {
+    background: oklch(30% 0.05 25);
+    border-color: oklch(45% 0.09 25);
+  }
+  .mqt-error {
+    background: oklch(28% 0.05 25);
+    border-color: oklch(45% 0.09 25);
+    color: oklch(85% 0.06 25);
+  }
+}
