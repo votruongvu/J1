@@ -243,6 +243,35 @@ def test_missing_required_field_fails():
     assert fields.passed is False
 
 
+def test_field_with_filler_passes_when_head_noun_present():
+    """A classifier-extracted field like ``"modules involved"`` must
+    pass when the answer talks about modules, even if the answer
+    doesn't repeat the filler word ``"involved"`` verbatim. The
+    gate splits the field and ignores stopwords (a/the/of/involved/
+    associated/...) so it tests for the content noun(s)."""
+    from j1.query.answer_quality import _fields_covered
+
+    # Filler-word case: the head noun is present.
+    answer = "The modules are A, B, and C."
+    passed, missing = _fields_covered(answer, ("modules involved",))
+    assert passed is True
+    assert missing == []
+
+    # Multi-token content field still requires every content token.
+    passed, missing = _fields_covered(
+        answer, ("cost estimate class",),
+    )
+    assert passed is False
+    assert "cost estimate class" in missing
+
+    # Field that's nothing but stopwords (classifier noise) is
+    # treated as satisfied — refusing here would punish the answer
+    # for a bug upstream.
+    passed, missing = _fields_covered(answer, ("the of",))
+    assert passed is True
+    assert missing == []
+
+
 def test_paragraph_answer_for_non_table_intent_passes_shape():
     from j1.query.query_plan import QualityPolicy, AnswerShape
     plan = QueryIntentClassifier().classify("Summarize the document.")
