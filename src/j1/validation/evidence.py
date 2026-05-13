@@ -41,7 +41,10 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from j1.retrieval.diagnostics import RetrievalDiagnostics
 
 from j1.artifacts.models import ArtifactRecord
 from j1.artifacts.registry import ArtifactNotFoundError, ArtifactRegistry
@@ -191,6 +194,22 @@ def build_evidence_blocks(
     total_budget_chars: int = _TOTAL_BUDGET_CHARS,
     query: str | None = None,
     rerank_config: "RerankConfig | None" = None,
+    # Phase-1 retrieval-quality wiring. All four are OPTIONAL —
+    # behavior is unchanged when omitted (existing tests + callers
+    # that don't opt in see the legacy flow byte-for-byte).
+    #
+    # ``active_document_id`` / ``active_run_id``: when supplied,
+    # ``enforce_active_scope`` drops any candidate whose source
+    # doc/run doesn't match BEFORE rerank — the contamination
+    # guard. Cross-document search is the both-None case.
+    #
+    # ``diagnostics``: per-query collector. When supplied, scope
+    # filter + intent router + boilerplate demoter + plan_evidence
+    # + check_pack all activate and emit the 9 stable
+    # ``j1.retrieval.*`` audit events.
+    active_document_id: str | None = None,
+    active_run_id: str | None = None,
+    diagnostics: "RetrievalDiagnostics | None" = None,
 ) -> list[EvidenceBlockDTO]:
     """Materialise clean evidence blocks from the engine's retrieval
  projection.
@@ -228,6 +247,58 @@ def build_evidence_blocks(
     # parent artifact.
     chunk_cache: dict[str, dict[str, _ChunkRecord]] = {}
     projector = ChunkProjector(path_resolver=path_resolver)
+
+    # ---- Phase-1 retrieval-quality gate -----------------------------
+    # ``retrieval_active`` is True when the caller wired the
+    # diagnostics + at least one scope identifier. When True we run
+    # the new pipeline: enforce_active_scope → detect_intent →
+    # boilerplate demotion → rerank → plan_evidence → check_pack.
+    # When False, legacy behavior runs unchanged.
+    retrieval_active = (
+        diagnostics is not None and (
+            active_document_id is not None
+            or active_run_id is not None
+        )
+    )
+    detected_intent = None
+    if diagnostics is not None:
+        # Always emit ``query.received`` + ``intent.selected`` so
+        # the audit log records EVERY query, even when the new
+        # gate isn't enabled (e.g. cross-document search).
+        diagnostics.record_query_received(
+            max_results=max_blocks,
+            scope_kind=(
+                "active" if retrieval_active else "cross_document"
+            ),
+        )
+        if query:
+            from j1.retrieval.intent_router import detect_intent
+            det = detect_intent(query)
+            detected_intent = det.intent
+            diagnostics.record_intent_selected(
+                det.intent.value, signals=det.signals_payload(),
+            )
+
+    if retrieval_active:
+        from j1.retrieval.scope import enforce_active_scope
+        admitted, _scopes = enforce_active_scope(
+            retrieved,
+            active_document_id=active_document_id,
+            active_run_id=active_run_id,
+            diagnostics=diagnostics,
+        )
+        # IMPORTANT: rebind ``retrieved`` so all downstream code in
+        # this function works with the scope-filtered list. Drops
+        # were emitted on ``diagnostics`` inside enforce_active_scope.
+        rejected_count = len(retrieved) - len(admitted)
+        retrieved = list(admitted)
+        diagnostics.record_scope_applied(
+            active_run_id=active_run_id,
+            active_document_id=active_document_id,
+            admitted=len(admitted),
+            rejected=rejected_count,
+            scope_kind="active",
+        )
 
     # If a query is provided AND reranking is on, load every
     # eligible candidate's body up-front, score it, and select
@@ -276,6 +347,19 @@ def build_evidence_blocks(
             raws.append(float(hit.score or 0.0))
             sections.append(section)
 
+        # Phase-1: emit the retrieved-candidates event AFTER scope
+        # filter + kind skip + body load. This is the candidate
+        # pool the reranker actually sees.
+        if diagnostics is not None:
+            from j1.retrieval.diagnostics import CandidateDiagnostic
+            retrieved_diags = [
+                CandidateDiagnostic.from_search_hit(p[0])
+                for p in prepared
+            ]
+            diagnostics.record_candidates_retrieved(
+                retrieved_diags, source="bm25+rerank",
+            )
+
         # Stage 2: rerank + coverage-select.
         selected_payloads, selected_scores, intents, query_terms = (
             rerank_and_select(
@@ -287,6 +371,59 @@ def build_evidence_blocks(
                 config=effective_config,
             )
         )
+
+        # Phase-1: emit reranked event + apply boilerplate demotion
+        # via ``detected_intent`` (regardless of whether the
+        # retrieval_active gate is on — boilerplate is safe to
+        # demote whenever we have an intent).
+        if diagnostics is not None:
+            from j1.retrieval.boilerplate import (
+                boilerplate_demotion, is_boilerplate_chunk,
+            )
+            from j1.retrieval.diagnostics import (
+                CandidateDiagnostic, DropReason,
+            )
+            # Build per-candidate diagnostics tagged with the
+            # rerank score so the audit reader sees the order.
+            reranked_diags: list[CandidateDiagnostic] = []
+            score_by_payload: dict[int, float] = {}
+            for payload, score in zip(
+                selected_payloads, selected_scores,
+            ):
+                d = CandidateDiagnostic.from_search_hit(payload)
+                # ``CandidateScore`` is a dataclass; ``.total``
+                # is the composite. Raw floats also accepted in
+                # case the rerank module is swapped later.
+                d.rerank_score = float(
+                    getattr(score, "total", score),
+                )
+                # Boilerplate demotion folded into final_score.
+                bp_match = is_boilerplate_chunk(
+                    section_path=d.section_path,
+                    heading=d.heading,
+                    body_preview=None,
+                )
+                base = d.rerank_score or 0.0
+                if bp_match is not None:
+                    mult = boilerplate_demotion(
+                        bp_match.category, detected_intent,
+                    )
+                    d.final_score = base * mult
+                else:
+                    d.final_score = base
+                reranked_diags.append(d)
+                score_by_payload[id(payload)] = d.final_score
+            diagnostics.record_candidates_reranked(reranked_diags)
+            # When boilerplate demotion knocked a candidate below
+            # the rerank cutoff, re-sort by final_score and use
+            # the top ``max_blocks`` as the selection input.
+            # Otherwise we leave selected_payloads alone — the
+            # rerank already picked.
+            paired = list(zip(selected_payloads, reranked_diags))
+            paired.sort(
+                key=lambda pr: pr[1].final_score or 0.0, reverse=True,
+            )
+            selected_payloads = [p for p, _ in paired]
 
         # Stage 3: project the winners into EvidenceBlockDTOs,
         # applying the per-call total-budget cap (the rerank
@@ -326,12 +463,37 @@ def build_evidence_blocks(
                 section=section,
                 source_location=hit.source_location,
             ))
+            # Phase-1: record one ``evidence_pack.selected`` event
+            # per emitted block so the FE / audit can render the
+            # final pack composition.
+            if diagnostics is not None:
+                from j1.retrieval.diagnostics import CandidateDiagnostic
+                d = CandidateDiagnostic.from_search_hit(hit)
+                d.section_path = section or d.section_path
+                diagnostics.record_selected(
+                    d, reason="rerank_top",
+                )
         _log.debug(
             "rerank selected %d/%d blocks "
             "(query_terms=%d intents=%s)",
             len(blocks), len(prepared), len(query_terms),
             sorted(i.value for i in intents),
         )
+        # Phase-1: pre-LLM quality check + finalize event.
+        if diagnostics is not None:
+            from j1.retrieval.quality_checks import check_pack
+            result = check_pack(
+                blocks,
+                intent=detected_intent,
+                active_document_id=active_document_id,
+                active_run_id=active_run_id,
+            )
+            diagnostics.record_evidence_pack_finalized(
+                pack_size=len(blocks),
+                fallback_triggered=False,
+                checks_passed=result.ok,
+                check_failures=result.failures,
+            )
         return blocks
 
     # ---- Legacy priority-sort path (no query supplied) -------------

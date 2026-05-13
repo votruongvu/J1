@@ -218,6 +218,16 @@ _LEGAL: list[tuple[str, float]] = [
     (r"\bjurisdiction\b", 1.5),
     (r"\bdispute\s+resolution\b", 2.0),
     (r"\bsignatur(y|e)\b.*\b(clause|provision|block)\b", 2.0),
+    # Insurance / liability questions surface as legal because
+    # the spec collapsed the prior ``insurance_terms`` intent
+    # into ``legal_or_contract_terms`` — they share the
+    # boilerplate-keep behaviour and the user usually asks
+    # about them in one breath ("what are the insurance
+    # requirements in this contract?").
+    (r"\binsurance\s+(requirements?|coverage|provision)", 3.0),
+    (r"\bliabilit(y|ies)\s+(insurance|provision|cap|limit)", 2.5),
+    (r"\b(general|professional)\s+liability\b", 2.0),
+    (r"\bworkers?\s*compensation\b", 2.0),
 ]
 
 _COST_EFFORT: list[tuple[str, float]] = [

@@ -649,11 +649,28 @@ class IngestionValidationService:
             else None
         )
 
+        # Phase-1 retrieval-quality diagnostics. One per query;
+        # carries the audit trail through scope filter / intent
+        # router / boilerplate demotion / quality checks. The
+        # snapshot is also surfaced on the response as
+        # ``retrieval_trace`` so the FE can render the per-
+        # candidate decisions.
+        from j1.retrieval.diagnostics import RetrievalDiagnostics
+        retrieval_diag = RetrievalDiagnostics(
+            audit=self._audit,
+            ctx=ctx,
+            run_id=run.run_id,
+            document_id=run.document_id,
+            query=request.question,
+        )
         evidence_blocks = self._build_evidence_blocks_for_run(
             ctx=ctx,
             request=request,
             retrieved=retrieved,
             response=response,
+            active_document_id=run.document_id,
+            active_run_id=run.run_id,
+            diagnostics=retrieval_diag,
         )
         # Synthesis is suppressed by the dispatcher when BM25
         # evidence may exist (for inspection) but must NOT be
@@ -1957,6 +1974,9 @@ class IngestionValidationService:
         request: ManualTestQueryRequest,
         retrieved: list[RetrievedChunkRefDTO],
         response: Any | None = None,
+        active_document_id: str | None = None,
+        active_run_id: str | None = None,
+        diagnostics: "Any | None" = None,
     ) -> list[EvidenceBlockDTO]:
         """Materialise the clean evidence blocks the synthesizer will
  actually see. Returns `[]` when synthesis is opted out (saves
@@ -2023,6 +2043,15 @@ class IngestionValidationService:
                 query=request.question,
                 rerank_config=_config,
                 max_blocks=self._validation_evidence_max_blocks,
+                # Phase-1 wiring: the retrieval-quality modules
+                # ride on these three optional kwargs. When the
+                # caller passes ``diagnostics`` + at least one
+                # scope identifier, build_evidence_blocks runs
+                # the scope filter + intent router + boilerplate
+                # demoter + check_pack pipeline.
+                active_document_id=active_document_id,
+                active_run_id=active_run_id,
+                diagnostics=diagnostics,
             )
 
         # Graph-paths fallback. Fires when:

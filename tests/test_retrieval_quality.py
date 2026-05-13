@@ -485,9 +485,93 @@ def test_planner_source_grounding_swap_when_only_enriched():
     kinds = {c.artifact_type for c in plan.selected}
     assert "chunk" in kinds
     assert "enriched.risks" in kinds
-    # The dropped report explains the swap.
+    # The dropped report explains the swap WITH the grounding
+    # method appended (default is heuristic_best_score when the
+    # enriched anchor has no explicit source_chunk_ids etc.).
     drop_reasons = {reason for _, reason in plan.dropped}
-    assert "swapped_for_source_grounding" in drop_reasons
+    assert any(
+        r.startswith("swapped_for_source_grounding:")
+        for r in drop_reasons
+    )
+    assert "heuristic_best_score" in " ".join(drop_reasons)
+
+
+@pytest.mark.parametrize(
+    "anchor_meta,source_chunks,expected_method,expected_chunk_id",
+    [
+        # explicit_source_chunk wins over a higher-scoring chunk
+        # whose chunk_id doesn't match the anchor's list.
+        (
+            {"source_chunk_ids": ["chunk-target"]},
+            [
+                ("chunk-noise", 9.0, None, "Section X"),
+                ("chunk-target", 1.0, "chunk-target", "Section A"),
+            ],
+            "explicit_source_chunk", "chunk-target",
+        ),
+        # source_artifact_section: anchor names source_artifact_id,
+        # section_path overlaps.
+        (
+            {
+                "source_artifact_id": "art-7",
+                "section_path": "Chapter 3 / Risk Register",
+            },
+            [
+                ("chunk-x", 8.0, None, "Chapter 1"),
+                # Same artifact + overlapping section wins even
+                # though scored lower.
+                (
+                    "chunk-7", 2.0, None,
+                    "Chapter 3 / Risk Register",
+                ),
+            ],
+            "source_artifact_section", "chunk-7",
+        ),
+        # heuristic_best_score: no metadata signals at all.
+        (
+            {},
+            [
+                ("chunk-low", 1.0, None, "Section A"),
+                ("chunk-high", 9.0, None, "Section B"),
+            ],
+            "heuristic_best_score", "chunk-high",
+        ),
+    ],
+)
+def test_grounding_method_picks_correct_source(
+    anchor_meta, source_chunks, expected_method, expected_chunk_id,
+):
+    """Direct unit on the grounding picker. Each row covers one
+    of the documented methods so the spec's grounding ladder is
+    exercised end-to-end."""
+    from j1.retrieval.evidence_planner import _pick_grounding_source
+
+    anchor = _FakeCand(
+        "anchor", artifact_type="enriched.risks",
+        rerank_score=10.0, metadata=anchor_meta,
+    )
+    pool = []
+    for art_id, score, chunk_id, section in source_chunks:
+        c = _FakeCand(
+            art_id, artifact_type="chunk",
+            rerank_score=score, section_path=section,
+            metadata={"section_path": section},
+        )
+        if chunk_id is not None:
+            c.metadata["chunk_id"] = chunk_id
+            setattr(c, "chunk_id", chunk_id)
+        # source_artifact_id on the chunk's metadata, when relevant
+        if expected_method == "source_artifact_section":
+            c.metadata["source_artifact_id"] = (
+                "art-7" if art_id == "chunk-7" else "art-other"
+            )
+        pool.append(c)
+
+    chunk, method = _pick_grounding_source(
+        enriched_anchor=anchor, source_pool=pool,
+    )
+    assert method == expected_method
+    assert chunk.artifact_id == expected_chunk_id
 
 
 def test_planner_avoid_kinds_penalized_but_not_removed():

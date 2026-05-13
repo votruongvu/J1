@@ -321,33 +321,45 @@ def plan_evidence(
     # ---- Pass 3: source-grounding requirement check
     # When the policy requires source grounding AND the pack so
     # far is all enriched artifacts, swap the lowest-scoring
-    # enriched block for the highest-scoring source chunk (if
-    # any exists in `ranked`).
+    # enriched block for a source chunk picked by a documented
+    # grounding method:
+    #   1. ``explicit_source_chunk``  — enriched anchor metadata
+    #       names a chunk_id we have in the pool.
+    #   2. ``source_artifact_section`` — anchor metadata names a
+    #       source_artifact_id whose section_path matches a chunk.
+    #   3. ``page_range_match`` — anchor's page_range matches a
+    #       chunk's page_range.
+    #   4. ``heuristic_best_score`` — last-resort fallback.
+    grounding_method: str | None = None
     if policy.require_source_grounding:
         has_source = any(
             _kind(c) in ("chunk", "compiled.text") for c in selected
         )
         if not has_source:
-            # Find best source chunk among the not-yet-selected pool.
             source_pool = [
                 c for c in ranked
                 if c not in selected
                 and _kind(c) in ("chunk", "compiled.text")
             ]
-            if source_pool:
-                replacement = max(source_pool, key=_score)
-                # Drop the lowest-score enriched block.
-                enriched_in_pack = [
-                    c for c in selected
-                    if _kind(c).startswith("enriched.")
-                ]
-                if enriched_in_pack:
-                    drop = min(enriched_in_pack, key=_score)
-                    selected.remove(drop)
-                    dropped.append(
-                        (drop, "swapped_for_source_grounding"),
-                    )
-                    selected.append(replacement)
+            enriched_in_pack = [
+                c for c in selected
+                if _kind(c).startswith("enriched.")
+            ]
+            if source_pool and enriched_in_pack:
+                drop = min(enriched_in_pack, key=_score)
+                replacement, grounding_method = _pick_grounding_source(
+                    enriched_anchor=drop,
+                    source_pool=source_pool,
+                )
+                selected.remove(drop)
+                # Surface BOTH the swap reason and the grounding
+                # method so the audit reader sees how the source
+                # was chosen.
+                dropped.append((
+                    drop,
+                    f"swapped_for_source_grounding:{grounding_method}",
+                ))
+                selected.append(replacement)
 
     # Everything in `candidates` that didn't land in `selected`
     # is implicitly dropped — but we DON'T emit drop reasons for
@@ -374,6 +386,92 @@ def plan_evidence(
         dropped=dropped,
         policy_summary=summary,
     )
+
+
+def _pick_grounding_source(
+    *,
+    enriched_anchor: Any,
+    source_pool: list[Any],
+) -> tuple[Any, str]:
+    """Choose the source-chunk replacement using the documented
+    grounding methods, in order of decreasing fidelity.
+
+    Returns ``(chunk, grounding_method)``. ``grounding_method`` is
+    one of:
+      * ``explicit_source_chunk``
+      * ``source_artifact_section``
+      * ``page_range_match``
+      * ``heuristic_best_score``
+
+    The caller is expected to surface the method via the drop
+    event AND (per spec) lower confidence / add a warning when
+    the method is ``heuristic_best_score``."""
+    getter = _make_getter(enriched_anchor)
+    anchor_meta = getter("metadata") or {}
+    if not isinstance(anchor_meta, dict):
+        anchor_meta = {}
+
+    # 1. Explicit chunk-id list on the enriched anchor.
+    explicit_chunk_ids = anchor_meta.get("source_chunk_ids")
+    if isinstance(explicit_chunk_ids, (list, tuple)) and explicit_chunk_ids:
+        wanted = {str(cid) for cid in explicit_chunk_ids}
+        for cand in source_pool:
+            cand_chunk = _make_getter(cand)("chunk_id")
+            if cand_chunk and str(cand_chunk) in wanted:
+                return cand, "explicit_source_chunk"
+
+    # 2. Source artifact id + section path overlap.
+    source_artifact_id = anchor_meta.get("source_artifact_id")
+    anchor_section = _section_value(anchor_meta)
+    if source_artifact_id is not None:
+        wanted_artifact = str(source_artifact_id)
+        for cand in source_pool:
+            cand_get = _make_getter(cand)
+            cand_meta = cand_get("metadata") or {}
+            if not isinstance(cand_meta, dict):
+                cand_meta = {}
+            cand_artifact = (
+                cand_meta.get("source_artifact_id")
+                or cand_get("artifact_id")
+            )
+            cand_section = _section_value(cand_meta)
+            if str(cand_artifact or "") == wanted_artifact and (
+                not anchor_section
+                or not cand_section
+                or anchor_section.lower() in cand_section.lower()
+                or cand_section.lower() in anchor_section.lower()
+            ):
+                return cand, "source_artifact_section"
+
+    # 3. Page range match.
+    anchor_pages = anchor_meta.get("page_range")
+    if anchor_pages:
+        anchor_pages_str = str(anchor_pages)
+        for cand in source_pool:
+            cand_meta = _make_getter(cand)("metadata") or {}
+            if not isinstance(cand_meta, dict):
+                cand_meta = {}
+            cand_pages = cand_meta.get("page_range")
+            if cand_pages and str(cand_pages) == anchor_pages_str:
+                return cand, "page_range_match"
+
+    # 4. Heuristic — best-scoring source chunk.
+    def _score(c: Any) -> float:
+        getter = _make_getter(c)
+        v = getter("rerank_score") or getter("score")
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+    return max(source_pool, key=_score), "heuristic_best_score"
+
+
+def _section_value(meta: dict[str, Any]) -> str:
+    return str(
+        meta.get("section_path")
+        or meta.get("section")
+        or ""
+    ).strip()
 
 
 def _make_getter(hit):
