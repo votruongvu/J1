@@ -426,6 +426,94 @@ describe("ApiClient.runManualTestQuery", () => {
   });
 });
 
+
+// ---- runQueryTrace (SmartQueryOrchestrator dev endpoint) ----
+
+describe("ApiClient.runQueryTrace", () => {
+  const _TRACE_PAYLOAD = {
+    data: {
+      final_status: "passed",
+      answer: "demo",
+      message: null,
+      trace: {
+        question: "q",
+        normalized_question: "q",
+        plan: {
+          normalized_question: "q",
+          intent: "stage_progression",
+          anchors: ["60%"],
+          requested_fields: ["deliverables"],
+          answer_shape: "stage_by_stage_table",
+          synthesis_mode: "project_structured",
+          retrieval_jobs: [],
+          required_groups: [],
+          sufficiency: {
+            min_required_groups: 3,
+            min_total_blocks: 3,
+            fail_when_no_candidates: true,
+          },
+          quality: {
+            required_fields: [],
+            answer_shape: "stage_by_stage_table",
+            fail_on_refusal: true,
+          },
+          intent_confidence: 0.9,
+          domain_id: "",
+        },
+        routes_executed: [],
+        all_candidates: [],
+        selected: [],
+        dropped: [],
+        groups_covered: ["60%"],
+        groups_missing: [],
+        llm_evidence: [],
+        answer: "demo",
+        citations: [],
+        gate_results: [],
+        final_status: "passed",
+        duration_ms: 42,
+      },
+    },
+  };
+
+  it("POSTs to /dev/query-trace with question + run_id", async () => {
+    const { calls } = withFetch(() => jsonResponse(_TRACE_PAYLOAD));
+    await makeClient().runQueryTrace("run-1", "what is X?");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/dev/query-trace",
+    );
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body).toEqual({ question: "what is X?", run_id: "run-1" });
+  });
+
+  it("unwraps the envelope and returns the trace payload verbatim", async () => {
+    withFetch(() => jsonResponse(_TRACE_PAYLOAD));
+    const out = await makeClient().runQueryTrace("run-1", "q");
+    expect(out.final_status).toBe("passed");
+    expect(out.trace.plan.intent).toBe("stage_progression");
+    expect(out.trace.duration_ms).toBe(42);
+  });
+
+  it("surfaces a 503 (orchestrator not wired) as ApiError", async () => {
+    withFetch(() =>
+      jsonResponse(
+        {
+          error: {
+            code: "HTTP_503",
+            message: "smart_query_orchestrator not configured",
+          },
+        },
+        503,
+      ),
+    );
+    await expect(
+      makeClient().runQueryTrace("run-1", "q"),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+
 describe("ApiClient validation set methods ", () => {
   const _SET_PAYLOAD = {
     data: {

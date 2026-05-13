@@ -28,6 +28,7 @@ import type {
   ManualTestQueryRequest,
   ContentInventory,
   ManualTestQueryResponse,
+  QueryTracePayload,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -476,6 +477,41 @@ export class ApiClient implements IngestionClient {
     // The backend response is camelCase already (CamelModel) so we
     // don't translate field names — same shape as ManualTestQueryResponse.
     return await this.json<ManualTestQueryResponse>(resp);
+  }
+
+  // ---- runQueryTrace (raw orchestrator trace) ---------------------
+  //
+  // Hits POST /dev/query-trace and returns the full ``QueryTrace``
+  // JSON verbatim. The trace exposes EVERY orchestrator stage so an
+  // operator can answer "why did the query fail" without
+  // instrumentation: plan, routes executed, candidates with
+  // kept/dropped reasons, evidence groups, llm_evidence, citations,
+  // and gate results. Used by ManualQueryTraceView (Validation
+  // tab's "Trace" sub-panel).
+  //
+  // Returns 503 when no orchestrator is wired at the backend —
+  // callers should fall back to runManualTestQuery in that case.
+  async runQueryTrace(
+    runId: string,
+    question: string,
+  ): Promise<QueryTracePayload> {
+    const resp = await fetch(
+      this.url(`/dev/query-trace`),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ question, run_id: runId }),
+      },
+    );
+    const wrapped = await this.json<{ data?: QueryTracePayload } | QueryTracePayload>(
+      resp,
+    );
+    // The endpoint uses the envelope() wrapper so the body is
+    // {requestId, data: {...}}. Unwrap when present.
+    if (wrapped && typeof wrapped === "object" && "data" in wrapped) {
+      return (wrapped as { data: QueryTracePayload }).data;
+    }
+    return wrapped as QueryTracePayload;
   }
 
   // ---- Validation sets + runs ----------------------------

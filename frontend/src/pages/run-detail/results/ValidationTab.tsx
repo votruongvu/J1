@@ -29,6 +29,7 @@ import type {
 import { GeneratedTestCasesTable } from "./GeneratedTestCasesTable";
 import { KnowledgeReadinessCard } from "./KnowledgeReadinessCard";
 import { ManualQueryConsole } from "./ManualQueryConsole";
+import { ManualQueryTraceView } from "./ManualQueryTraceView";
 import { TestCaseDetailDrawer } from "./TestCaseDetailDrawer";
 import { ValidationResultDrawer } from "./ValidationResultDrawer";
 
@@ -217,6 +218,13 @@ export function ValidationTab({ runId }: ValidationTabProps) {
       )}
 
       <ManualQueryConsole runId={runId} />
+
+      {/* SmartQueryOrchestrator trace view — exposes the full
+          orchestrator pipeline for developer/operator debugging.
+          Returns 503 + a hint when the backend was started without
+          ``smart_query_orchestrator`` wired, so deployments that
+          haven't migrated stay clean. */}
+      <ManualQueryTraceView runId={runId} />
 
       <ValidationResultDrawer
         open={drawerResultId !== null}

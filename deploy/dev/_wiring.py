@@ -237,6 +237,122 @@ def build_diagnostic_recorder(
     )
 
 
+def build_smart_query_orchestrator(
+    *,
+    workspace: WorkspaceResolver,
+    llm_registry=None,
+    raganything_provider=None,
+):
+    """Build the ``SmartQueryOrchestrator`` with production routes.
+
+    Returns ``None`` when the LLM registry isn't wired — the
+    orchestrator needs a synthesis LLM, and without one the
+    legacy fallback path is the right behaviour (no silent
+    half-built orchestrator that synthesises nothing).
+
+    Wires the three production routes:
+
+      * **RAGAnything** (primary) — semantic + graph retrieval
+        through the existing ``RAGAnythingQueryProvider``. Falls
+        through to a no-op stub when the provider isn't wired
+        (deployments without RAGAnything still get BM25-only
+        retrieval).
+      * **BM25** (auxiliary lexical recall) — ``SqliteSearchIndexer``
+        with the eligibility-gate resolver from ``j1.query.eligibility``
+        so cross-run leaks are blocked at the SQL layer.
+      * **ArtifactLookup** (direct enriched-artifact reads) —
+        ``JsonArtifactRegistry`` + a workspace-path body loader.
+
+    One-line wire-in at the deployment boundary:
+
+    .. code-block:: python
+
+        orch = build_smart_query_orchestrator(
+            workspace=workspace, llm_registry=boot.llm_registry,
+            raganything_provider=rag_provider,
+        )
+        validation_service = IngestionValidationService(
+            ..., smart_query_orchestrator=orch,
+        )
+        processing_service = ProcessingService(
+            ..., smart_query_orchestrator=orch,
+        )
+        create_rest_api(facade, ..., smart_query_orchestrator=orch)
+    """
+    if llm_registry is None:
+        # The orchestrator without an LLM is misleading — it would
+        # always return ``answer_nonempty=False``. Better to return
+        # ``None`` and let callers fall back to legacy.
+        import logging
+        logging.getLogger("j1.query.wiring").warning(
+            "SmartQueryOrchestrator NOT built: llm_registry not "
+            "wired. Manual-query and validation paths will fall "
+            "back to the legacy HybridQueryEngine.",
+        )
+        return None
+
+    from j1.artifacts.registry import JsonArtifactRegistry
+    from j1.query.eligibility import resolve_eligible_active_run_ids
+    from j1.query.orchestrator import SmartQueryOrchestrator
+    from j1.query.query_plan import RetrievalRouteKind
+    from j1.query.retrieval_routes import (
+        ArtifactLookupAdapter,
+        BM25Adapter,
+        RAGAnythingAdapter,
+    )
+    from j1.search.indexer import SqliteSearchIndexer
+
+    artifacts = JsonArtifactRegistry(workspace)
+    sources = JsonSourceRegistry(workspace)
+    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+
+    routes: dict = {}
+    if raganything_provider is not None:
+        routes[RetrievalRouteKind.RAGANYTHING] = RAGAnythingAdapter(
+            raganything_provider,
+        )
+    routes[RetrievalRouteKind.BM25] = BM25Adapter(
+        indexer,
+        eligible_run_ids_resolver=lambda ctx, scope: (
+            resolve_eligible_active_run_ids(
+                ctx, scope, source_registry=sources,
+                run_store=JsonlIngestionRunStore(workspace),
+            )
+        ),
+    )
+
+    def _read_artifact_bytes(record) -> str:
+        try:
+            path = workspace.project_root(record.project) / record.location
+            return path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — missing body is non-fatal
+            return ""
+    routes[RetrievalRouteKind.ARTIFACT_LOOKUP] = ArtifactLookupAdapter(
+        artifacts, body_loader=_read_artifact_bytes,
+    )
+
+    def _llm_callable(req):
+        """Adapt the registry's text client into the orchestrator's
+        ``LLMCallable`` shape. The text client returns a structured
+        completion; the synthesizer just wants the text answer."""
+        try_text = getattr(llm_registry, "try_text", None)
+        if try_text is None:
+            return ""
+        client = try_text()
+        if client is None:
+            return ""
+        full_prompt = f"{req.system_prompt}\n\n{req.user_prompt}"
+        try:
+            response = client.complete(full_prompt)
+            return getattr(response, "text", "") or str(response)
+        except Exception as exc:  # noqa: BLE001
+            return f"[llm error: {type(exc).__name__}: {exc}]"
+
+    return SmartQueryOrchestrator.from_components(
+        routes=routes, llm=_llm_callable,
+    )
+
+
 def build_document_cleanup_service(workspace: WorkspaceResolver):
     """Build the ``DocumentCleanupService`` for Remove + CAS-orphan
     cleanup.

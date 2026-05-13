@@ -263,9 +263,21 @@ class DefaultValidationRunner:
         synthesize_answers: bool = True,
         workspace: WorkspaceResolver | None = None,
         audit: "Any | None" = None,
+        smart_query_orchestrator: "Any | None" = None,
     ) -> None:
         self._query_engine = query_engine
         self._artifacts = artifact_registry
+        # SmartQueryOrchestrator — when wired, every per-case
+        # execution flows through the orchestrator pipeline (intent
+        # classifier → routes → evidence pack → sufficiency gate →
+        # synth → citation binder → quality gate). The legacy
+        # ``run_checks`` / ``aggregate_status`` path is bypassed
+        # entirely. Case-specific checks
+        # (``expected_chunk_in_topk`` / ``expected_page`` /
+        # ``expected_artifact`` / graph evidence) still run on top
+        # of the orchestrator's retrieved set so existing batch
+        # validation sets keep their semantics.
+        self._smart_query_orchestrator = smart_query_orchestrator
         # Workspace is needed to load real artifact body text for
         # the synthesizer. When None (legacy callers / tests), the
         # runner falls back to the engine's preview text — same
@@ -437,6 +449,17 @@ class DefaultValidationRunner:
                 failure_reason=skip_reason,
             )
 
+        # New SmartQueryOrchestrator branch — replaces the legacy
+        # query_engine + run_checks + aggregate_status path. The
+        # orchestrator owns refusal detection, evidence sufficiency,
+        # and citation binding via explicit gates. Case-specific
+        # expected_*-checks still layer on top.
+        if self._smart_query_orchestrator is not None:
+            return self._execute_case_via_orchestrator(
+                ctx=ctx, run_id=run_id, case=case,
+                active_document_id=active_document_id,
+            )
+
         try:
             top_k = max(10, len(case.expected_chunks) * 2)
             response = self._query_engine.query(
@@ -571,6 +594,178 @@ class DefaultValidationRunner:
             failure_reason=failure_reason,
             raw_answer=response.answer if synthesized_answer else None,
             llm=llm_trace,
+        )
+
+    def _execute_case_via_orchestrator(
+        self,
+        *,
+        ctx: ProjectContext,
+        run_id: str,
+        case: ValidationTestCaseDTO,
+        active_document_id: str | None,
+    ) -> ValidationResultDTO:
+        """Per-case execution via SmartQueryOrchestrator.
+
+        Replaces the legacy ``query_engine.query`` + ``run_checks``
+        + ``aggregate_status`` chain. The orchestrator owns answer
+        quality decisions; the runner still layers on case-specific
+        ``expected_*`` checks (chunks / pages / artifacts / graph)
+        that lock test-set authoring intent.
+
+        Negative cases get special handling: the legacy
+        ``negative_answer_abstains`` check passes when the answer
+        IS a refusal. We map that by inverting the orchestrator's
+        ``answer_not_refusal`` gate."""
+        from j1.query.orchestrator import OrchestratorRequest
+        from j1.query.scope import RunScope as _RunScope
+        from j1.validation.service import (
+            _checks_from_gate_results,
+            _retrieved_chunks_from_trace,
+            _citations_from_orchestrator,
+            _validation_status_from_final,
+        )
+
+        try:
+            result = self._smart_query_orchestrator.run(OrchestratorRequest(
+                ctx=ctx,
+                question=case.question,
+                scope=_RunScope(run_id=run_id),
+                run_id=run_id,
+                document_id=active_document_id,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "validation case %s orchestrator failure: %s",
+                case.test_case_id, exc,
+            )
+            return ValidationResultDTO(
+                result_id=f"vr-{uuid.uuid4().hex[:10]}",
+                test_case_id=case.test_case_id,
+                status="failed",
+                question=case.question,
+                answer="",
+                retrieved_chunks=[],
+                citations=[],
+                checks=[
+                    ValidationCheckDTO(
+                        name="orchestrator_invocation",
+                        severity="required",
+                        passed=False,
+                        detail=f"orchestrator raised: {exc}",
+                    ),
+                ],
+                failure_reason=f"Orchestrator error: {exc}",
+            )
+
+        retrieved = _retrieved_chunks_from_trace(result.trace)
+        citations_dicts = _citations_from_orchestrator(result)
+        # Convert citation dicts → ValidationCitationDTO so the
+        # existing case-specific checks (which take
+        # ``list[ValidationCitationDTO]``) keep working.
+        citations: list[ValidationCitationDTO] = [
+            ValidationCitationDTO(
+                artifact_id=c["artifactId"],
+                artifact_type=c["artifactType"],
+                source_document_id=c.get("sourceDocumentId"),
+                source_location=c.get("sourceLocation"),
+                chunk_id=c.get("chunkId"),
+                run_id=c.get("runId"),
+            )
+            for c in citations_dicts
+        ]
+        # Same body-preview enrichment as the legacy path — case-
+        # specific checks and judges need real text to verify
+        # against, not empty previews.
+        citations = self._enrich_citations_with_preview(
+            ctx=ctx, retrieved=retrieved, citations=citations,
+        )
+        # Map orchestrator gate results → ValidationCheckDTOs.
+        checks = list(_checks_from_gate_results(result.gate_results))
+
+        # Negative-case semantics: an abstaining answer IS the
+        # ideal outcome on a negative test. The orchestrator's
+        # ``answer_not_refusal`` gate fires opposite to what we
+        # want — invert it for negative cases by appending an
+        # explicit ``negative_answer_abstains`` check the way
+        # batch validation has always graded them.
+        if case.type == "negative":
+            from j1.validation.checks import _is_abstain_response
+            abstained = _is_abstain_response(result.answer or "")
+            checks = [
+                c for c in checks
+                if c.name != "answer_not_refusal"
+            ]
+            checks.append(ValidationCheckDTO(
+                name="negative_answer_abstains",
+                severity="required",
+                passed=abstained,
+                detail=(
+                    None if abstained
+                    else "negative case expected an abstention "
+                         "but the synthesizer produced an answer"
+                ),
+                expected="abstain / refusal / empty",
+                actual=(result.answer or "")[:120],
+            ))
+
+        # Case-specific checks (orthogonal to synthesis).
+        if case.type != "negative":
+            if case.expected_chunks:
+                checks.append(
+                    _check_expected_chunk_in_topk(case, retrieved),
+                )
+            if case.expected_pages:
+                checks.append(
+                    _check_expected_page_in_citations(case, citations),
+                )
+            if case.expected_artifacts:
+                checks.append(
+                    _check_expected_artifact_retrieved(case, retrieved),
+                )
+            if case.expected_graph_nodes or case.expected_graph_edges:
+                # The graph-evidence check expects a ``QueryResponse``-
+                # shaped object with ``graph_paths``. Construct a
+                # minimal stand-in from the trace.
+                checks.append(
+                    _check_expected_graph_evidence(
+                        case, _OrchestratorGraphView(result.trace),
+                    ),
+                )
+
+        # Composite verdict — propagate the orchestrator's
+        # final_status verdict UNLESS a case-specific check fails.
+        validation_status = _validation_status_from_final(
+            result.final_status,
+        )
+        # Any case-specific check failure flips status to failed
+        # (matches the legacy aggregate_status rule).
+        for c in checks:
+            if (
+                c.severity == "required"
+                and not c.passed
+                and not c.skipped
+            ):
+                validation_status = "failed"
+                break
+        result_status = _result_status_from_validation_status(
+            validation_status,
+        )
+        failure_reason = (
+            _failure_reason_from_checks(checks)
+            if result_status == "failed" else None
+        )
+        return ValidationResultDTO(
+            result_id=f"vr-{uuid.uuid4().hex[:10]}",
+            test_case_id=case.test_case_id,
+            status=result_status,
+            question=case.question,
+            answer=result.answer or "",
+            retrieved_chunks=retrieved,
+            citations=citations,
+            checks=checks,
+            failure_reason=failure_reason,
+            raw_answer=None,
+            llm=None,
         )
 
     def _maybe_retry_with_anchor_expansion(
@@ -1015,6 +1210,41 @@ def _check_expected_artifact_retrieved(
         expected=sorted(expected),
         actual=sorted(actual),
     )
+
+
+class _OrchestratorGraphView:
+    """Adapter so ``_check_expected_graph_evidence`` can read graph
+    evidence from a ``QueryTrace`` without changing its signature.
+
+    The check expects an object with ``graph_paths`` exposing a list
+    of node-id-bearing objects. We project the trace's candidates
+    of kind ``graph_json`` (and graph-shaped extras) into that
+    shape. When the orchestrator wasn't asked for graph routes, the
+    list is empty — same as a legacy engine that didn't return
+    graph paths."""
+
+    def __init__(self, trace: Any) -> None:
+        self._trace = trace
+
+    @property
+    def graph_paths(self) -> list:
+        # Each candidate of a graph-related kind contributes its
+        # artifact_id as a "node id"; this is a coarse mapping but
+        # matches what the legacy check actually consumes (it only
+        # reads node ids out of paths).
+        out: list[_GraphPath] = []
+        for c in getattr(self._trace, "all_candidates", ()):
+            if "graph" in (c.artifact_kind or "").lower():
+                out.append(_GraphPath(nodes=[c.artifact_id]))
+        return out
+
+
+class _GraphPath:
+    """Minimal stand-in for ``j1.query.models.GraphPath`` —
+    ``nodes`` is the only attribute the graph check reads."""
+
+    def __init__(self, nodes: list[str]) -> None:
+        self.nodes = nodes
 
 
 def _check_expected_graph_evidence(

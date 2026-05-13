@@ -753,6 +753,116 @@ export interface ManualTestQueryResponse {
   debug?: ManualQueryDebug;
 }
 
+
+// ---- /dev/query-trace payload --------------------------------
+//
+// Raw operator-surface shape: the orchestrator's QueryTrace
+// rendered as JSON. Every stage of the new query pipeline lands
+// here in one envelope so a developer can answer "why did the
+// query fail" without instrumentation.
+
+export interface QueryPlanShape {
+  normalized_question: string;
+  intent: string;
+  anchors: string[];
+  requested_fields: string[];
+  answer_shape: string;
+  synthesis_mode: string;
+  retrieval_jobs: Array<{
+    route: string;
+    query: string;
+    max_results: number;
+    filters: Record<string, unknown>;
+    label: string;
+  }>;
+  required_groups: Array<{
+    name: string;
+    description: string;
+    anchors: string[];
+    required: boolean;
+  }>;
+  sufficiency: {
+    min_required_groups: number;
+    min_total_blocks: number;
+    fail_when_no_candidates: boolean;
+  };
+  quality: {
+    required_fields: string[];
+    answer_shape: string;
+    fail_on_refusal: boolean;
+  };
+  intent_confidence: number;
+  domain_id: string;
+}
+
+export interface EvidenceCandidateShape {
+  route: string;
+  artifact_id: string;
+  artifact_kind: string;
+  chunk_id: string | null;
+  text_preview: string;
+  score: number;
+  matched_anchors: string[];
+  run_id: string | null;
+  document_id: string | null;
+  project_id: string;
+  extra: Record<string, unknown>;
+}
+
+export interface EvidenceBlockShape {
+  candidate: EvidenceCandidateShape;
+  body: string;
+  group: string | null;
+  rank_in_group: number;
+}
+
+export interface DroppedCandidateShape {
+  candidate: EvidenceCandidateShape;
+  reason: string;
+}
+
+export interface RouteExecutionRecordShape {
+  route: string;
+  query: string;
+  label: string;
+  duration_ms: number;
+  candidates: EvidenceCandidateShape[];
+  error: string | null;
+}
+
+export interface GateResultShape {
+  name: string;
+  passed: boolean;
+  severity: string;
+  reason: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface QueryTraceShape {
+  question: string;
+  normalized_question: string;
+  plan: QueryPlanShape;
+  routes_executed: RouteExecutionRecordShape[];
+  all_candidates: EvidenceCandidateShape[];
+  selected: EvidenceBlockShape[];
+  dropped: DroppedCandidateShape[];
+  groups_covered: string[];
+  groups_missing: string[];
+  llm_evidence: EvidenceBlockShape[];
+  answer: string;
+  citations: EvidenceBlockShape[];
+  gate_results: GateResultShape[];
+  final_status: string;
+  duration_ms: number;
+}
+
+export interface QueryTracePayload {
+  final_status: string;
+  answer: string;
+  message: string | null;
+  trace: QueryTraceShape;
+}
+
 // ---- Validation sets and runs -------------------------
 
 export type ValidationTestType =

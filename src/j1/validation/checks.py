@@ -90,22 +90,27 @@ class _CheckContext:
 # WAS there) are preferable to false positives. An LLM that says "Yes,
 # 20 May 2026" should never look like an abstain.
 
+# Legacy abstain patterns. Still used by the batch validation
+# runner via the negative-case check (an empty / "I don't know"
+# answer on a negative test case is the IDEAL outcome). Will go
+# away once the runner migrates to ``SmartQueryOrchestrator``.
+# Manual-query refusal detection lives in
+# ``j1.query.answer_quality._looks_like_refusal`` — that one
+# enforces the no-length-shortcut rule.
 _ABSTAIN_PATTERNS: tuple[re.Pattern, ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
-        # "I don't know" / "I do not know"
         r"\bi\s+(do\s+not|don'?t)\s+know\b",
-        # "I cannot" / "I can not" / "I can't"
         r"\bi\s+(cannot|can\s+not|can'?t)\b",
         r"\bnot\s+enough\s+information\b",
         r"\binsufficient\s+information\b",
         r"\bunable\s+to\s+answer\b",
         r"\bno\s+information\b",
-        r"\bnot\s+(present|mentioned|covered|specified|provided|in\s+the\s+document)\b",
+        r"\bnot\s+(present|mentioned|covered|specified|provided"
+        r"|in\s+the\s+document)\b",
         r"\bthe\s+document\s+(does\s+not|doesn'?t)\b",
         r"\b(cannot|can\s+not|can'?t)\s+determine\b",
         r"\bunable\s+to\s+determine\b",
-        # "cannot find" / "can't find" — captures "I cannot find that"
         r"\b(cannot|can\s+not|can'?t)\s+find\b",
     )
 )
@@ -114,9 +119,11 @@ _ABSTAIN_PATTERNS: tuple[re.Pattern, ...] = tuple(
 def _is_abstain_response(answer: str) -> bool:
     """True when the answer reads as a refusal / abstention.
 
- Empty / whitespace-only answers also count as abstaining — a
- blank response from a knowledge-grounded engine on an out-of-
- scope question is the right behaviour."""
+    Legacy: used by the batch-runner's negative-case check. The
+    SmartQueryOrchestrator path has its own refusal detection in
+    ``j1.query.answer_quality._looks_like_refusal``. New code
+    should NOT call this — go through the orchestrator's gate.
+    """
     body = (answer or "").strip()
     if not body:
         return True
@@ -774,7 +781,20 @@ def run_checks(
     judge: LLMJudge | None = None,
     chunks_expected: bool = True,
 ) -> list[ValidationCheckDTO]:
-    """Run the deterministic check suite + optional judge checks.
+    """DEPRECATED for the manual-query path — use
+    ``SmartQueryOrchestrator`` (see ``j1.query.orchestrator``)
+    which owns refusal detection, evidence sufficiency, and
+    citation binding behind explicit, individually-testable
+    gates.
+
+    Still used by the batch validation runner
+    (``j1.validation.runner.DefaultValidationRunner``) for the
+    long-form test-case suite. That call site will migrate to the
+    orchestrator in a follow-up PR — until then, ``run_checks``
+    + ``aggregate_status`` remain the source of truth for batch
+    runs.
+
+    Run the deterministic check suite + optional judge checks.
 
  Order matters for operator readability — answer presence first,
  retrieval next, then run-scope checks, then ownership defense,
@@ -863,19 +883,29 @@ def run_checks(
 
 
 def aggregate_status(checks: list[ValidationCheckDTO]) -> ValidationStatus:
-    """Roll up per-check outcomes into the single `validationStatus`
- field on the response.
+    """DEPRECATED for the manual-query path. Use the orchestrator's
+    ``AnswerQualityGate`` (``j1.query.answer_quality``) — that gate
+    enforces the same "any required failed → failed" rule but with
+    explicitly-named gates the operator can read in the trace.
 
- Skipped checks (``check.skipped=True``) never count towards pass
- or fail — they didn't run, so they can't contribute either way.
+    Why the deprecation: this rule's old length-shortcut for
+    refusal detection let multi-paragraph "Not in the retrieved
+    evidence" answers pass. The shortcut was removed (see the
+    note on ``_check_answer_non_empty``); the orchestrator's
+    new ``answer_not_refusal`` + ``answer_shape`` + ``required_
+    fields_covered`` + ``citations_subset`` gates make each
+    check individually visible AND independently testable.
 
- ships only `required` checks, so the aggregation reduces
- to "any required failed → failed; else passed". The
- `passed_with_warnings` branch exists for forward-compat with
- 's optional / judge checks. `inconclusive` is reserved
- for catastrophic engine failures (the service layer sets it
- directly when an exception bubbles out of the query call).
- """
+    Still consumed by ``j1.validation.runner`` for the batch
+    test-case suite. That call site will migrate next.
+
+    Roll up per-check outcomes into the single `validationStatus`
+    field on the response.
+
+    Skipped checks (``check.skipped=True``) never count towards
+    pass or fail — they didn't run, so they can't contribute
+    either way.
+    """
     has_required_fail = any(
         not c.skipped and not c.passed and c.severity == "required"
         for c in checks

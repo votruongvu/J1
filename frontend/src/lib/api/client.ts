@@ -15,6 +15,7 @@ import type {
   GenerateValidationSetRequest,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
+  QueryTracePayload,
   ReviewArtifactContent,
   ReviewArtifactListQuery,
   ReviewArtifactPage,
@@ -230,6 +231,19 @@ export interface IngestionClient {
     runId: string,
     request: ManualTestQueryRequest,
   ): Promise<ManualTestQueryResponse>;
+
+  /**
+   * Run a question through SmartQueryOrchestrator and return the
+   * full QueryTrace JSON. Operator/developer surface — exposes
+   * every stage of the new pipeline (plan, routes, candidates,
+   * dropped reasons, gates) so testers can diagnose "why did
+   * this query fail" without instrumentation. Returns 503 when
+   * no orchestrator is wired at the backend.
+   */
+  runQueryTrace(
+    runId: string,
+    question: string,
+  ): Promise<QueryTracePayload>;
 
   // ---- Validation sets + runs --------------------------
 
