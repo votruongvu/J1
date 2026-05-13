@@ -23,6 +23,17 @@ interface GeneratedTestCasesTableProps {
   onSelectResult: (testCaseId: string) => void;
 }
 
+// Human-readable labels for the structured ``llm.error`` codes the
+// generator emits when ``called=false``. Falling back to the
+// machine code in parentheses keeps unknown codes debuggable.
+const _LLM_SKIPPED_LABEL: Record<string, string> = {
+  no_llm_client_wired:
+    "LLM not configured — set J1_FAST_LLM_PROVIDER or "
+    + "J1_TEXT_LLM_PROVIDER and restart the API",
+  no_evidence:
+    "Skipped: no evidence available for grounded generation",
+};
+
 const _RESULT_LABEL: Record<ValidationResultStatus, string> = {
   passed: "✓ Pass",
   warning: "⚠ Warn",
@@ -134,8 +145,10 @@ function GeneratorTraceStrip({ set }: { set: ValidationSet }) {
     }
     if (set.llm.error) parts.push(`error: ${set.llm.error}`);
   } else if (set.llm) {
-    parts.push("LLM skipped");
-    if (set.llm.error) parts.push(set.llm.error);
+    // LLM trace exists but called=false → translate machine codes
+    // into operator-readable explanations.
+    parts.push(_LLM_SKIPPED_LABEL[set.llm.error ?? ""] ?? "LLM skipped");
+    if (set.llm.error) parts.push(`(${set.llm.error})`);
   } else {
     parts.push("heuristic (no LLM)");
   }

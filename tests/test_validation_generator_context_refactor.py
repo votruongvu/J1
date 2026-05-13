@@ -286,7 +286,11 @@ def test_generator_works_without_llm_using_context():
         chunks=_packet_chunks(),
         options=GenerationOptions(max_cases=15, negative_case_count=0),
     )
-    assert vset.llm is None
+    # Trace now explicitly reports ``no_llm_client_wired`` instead
+    # of being None — see ``DefaultTestCaseGenerator._llm_generate_grounded_cases``.
+    assert vset.llm is not None
+    assert vset.llm.called is False
+    assert vset.llm.error == "no_llm_client_wired"
     assert len(vset.test_cases) >= 5
     # Every case (apart from smoke) references doc-derived content
     # (Stage / Risk / Quality / Sign-off / Manager).

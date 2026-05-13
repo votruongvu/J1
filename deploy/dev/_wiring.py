@@ -336,6 +336,17 @@ def build_validation_service(workspace: WorkspaceResolver):
     # FAST role (cheap structured output) and fall back to text;
     # the generator gracefully degrades to its heuristic question
     # producer if no client is wired.
+    #
+    # Failures are LOGGED (not swallowed) so an operator who sees
+    # "heuristic (no LLM)" on the FE can diagnose without
+    # restarting in a debug shell. Common causes:
+    #   * .env not loaded (running outside docker without
+    #     ``load_dotenv`` — fixed in deploy/dev/api.py);
+    #   * J1_TEXT_LLM_PROVIDER unset (no client registered for
+    #     either role);
+    #   * Provider URL/credentials rejected at construction time.
+    import logging as _logging
+    _wire_log = _logging.getLogger("j1.deploy.dev.validation")
     llm_client = None
     try:
         boot = bootstrap_from_env()
@@ -346,7 +357,28 @@ def build_validation_service(workspace: WorkspaceResolver):
                 llm_client = try_fast()
             if llm_client is None and callable(try_text):
                 llm_client = try_text()
-    except Exception:  # noqa: BLE001 — bootstrap may not be available in tests
+            if llm_client is None:
+                _wire_log.warning(
+                    "validation generator: no LLM client registered "
+                    "(registered roles: %s). Set J1_FAST_LLM_PROVIDER "
+                    "or J1_TEXT_LLM_PROVIDER and restart to enable "
+                    "LLM-backed question generation.",
+                    boot.llm_registry.list()
+                    if hasattr(boot.llm_registry, "list") else "unknown",
+                )
+            else:
+                _wire_log.info(
+                    "validation generator: LLM wired (provider=%s "
+                    "model=%s)",
+                    getattr(llm_client, "provider", None),
+                    getattr(llm_client, "model", None),
+                )
+    except Exception as exc:  # noqa: BLE001
+        _wire_log.warning(
+            "validation generator: bootstrap failed; falling back to "
+            "heuristic question producer. Reason: %s: %s",
+            type(exc).__name__, exc,
+        )
         llm_client = None
 
     #  LLM judge — uses the same FAST/text client as the

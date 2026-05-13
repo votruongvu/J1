@@ -586,7 +586,17 @@ class DefaultTestCaseGenerator:
         if budget <= 0:
             return ([], None)
         if self._text_client is None:
-            return ([], None)
+            # Caller didn't wire an LLM client — return an explanatory
+            # trace (instead of ``None``) so the FE's generator strip
+            # surfaces "LLM skipped: no client wired" instead of the
+            # misleading "heuristic (no LLM)" implying everything is
+            # working as intended. Operator can then check
+            # J1_TEXT_LLM_PROVIDER / J1_FAST_LLM_PROVIDER without
+            # guessing.
+            return ([], LLMTraceDTO(
+                called=False,
+                error="no_llm_client_wired",
+            ))
         if not evidence_blocks:
             # No body text reached us. Generating from an empty
             # evidence context is exactly how we ended up with the

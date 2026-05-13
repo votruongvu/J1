@@ -423,8 +423,11 @@ def test_generator_falls_back_to_heuristic_on_llm_failure():
 
 
 def test_generator_uses_heuristic_when_no_llm_configured():
-    """No LLM at construction → no LLM trace, deterministic
- context-driven emitters only."""
+    """No LLM at construction → heuristic-only generation PLUS a
+ trace explaining why no LLM ran ("no_llm_client_wired"). The
+ explicit trace replaced the previous ``None`` so the FE can
+ surface "LLM skipped" with a reason instead of the misleading
+ "heuristic (no LLM)" which implied everything was working."""
     gen = DefaultTestCaseGenerator(text_client=None)
     chunks = [_chunk(
         chunk_id="c-1",
@@ -441,8 +444,10 @@ def test_generator_uses_heuristic_when_no_llm_configured():
         if tc.priority != "smoke" and tc.type != "negative"
     ]
     assert non_smoke, "expected at least one non-smoke case"
-    # No LLM was wired → no trace.
-    assert vset.llm is None
+    # New: trace is present with called=False + actionable reason.
+    assert vset.llm is not None
+    assert vset.llm.called is False
+    assert vset.llm.error == "no_llm_client_wired"
 
 
 def _all_quoted_runs(text: str) -> list[str]:

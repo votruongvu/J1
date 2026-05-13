@@ -17,8 +17,37 @@ The container's CMD wraps this. NOT a production deployment — see
 import contextlib
 import logging
 import os
+from pathlib import Path
 
 import uvicorn
+
+
+def _load_local_dotenv() -> None:
+    """Best-effort: pull the project-root .env into ``os.environ``.
+
+    Same config that docker-compose picks up via ``env_file`` is
+    then visible when running the API locally with
+    ``python -m deploy.dev.api`` (or uvicorn directly). Without
+    this, the .env-only ``J1_TEXT_LLM_*`` keys are missing from
+    ``os.environ`` and the validation generator silently falls
+    back to the heuristic question producer ("heuristic (no LLM)"
+    trace on the FE).
+
+    Only called from the ``__main__`` guard below so importing
+    ``deploy.dev.api`` from tests (or any other consumer) does
+    NOT leak ``.env`` into the process — tests that exercise the
+    bootstrap config-error path depend on the env staying clean.
+    """
+    try:
+        from dotenv import load_dotenv  # type: ignore
+    except ImportError:
+        # python-dotenv is a dev dependency; if missing, the user
+        # is expected to source the env file before launching.
+        return
+    root = Path(__file__).resolve().parents[2]
+    dotenv = root / ".env"
+    if dotenv.is_file():
+        load_dotenv(dotenv, override=False)
 
 from deploy.dev._wiring import (
     build_application_facade,
@@ -451,6 +480,12 @@ def _build_app():
 
 
 def main() -> None:
+    # Pull .env into os.environ before any wiring runs so local
+    # ``python -m deploy.dev.api`` invocations see the same
+    # config docker compose's ``env_file`` injects. Has no effect
+    # under docker (.env already in environment) or under tests
+    # (this path doesn't run on import).
+    _load_local_dotenv()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     port = int(os.environ.get("J1_API_PORT", "8000"))
