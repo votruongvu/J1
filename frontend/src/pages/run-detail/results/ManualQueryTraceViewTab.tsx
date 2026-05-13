@@ -1,12 +1,11 @@
 /**
- * ManualQueryTraceView — operator surface for the
- * SmartQueryOrchestrator pipeline.
+ * Results > Manual Query Trace tab.
  *
- * Renders the full QueryTrace JSON returned by
- * ``POST /dev/query-trace``. Every pipeline stage is laid out so
+ * Operator surface for the SmartQueryOrchestrator pipeline. Renders
+ * the full QueryTrace JSON returned by ``POST /dev/query-trace`` so
  * an operator can answer "why did this query fail" at a glance:
  *
- *   * Big status banner (pass / fail / insufficient)
+ *   * Status banner (pass / fail / insufficient)
  *   * Detected intent + retrieval plan
  *   * Routes executed with timings
  *   * Candidate table (kept vs dropped, with reasons)
@@ -15,12 +14,13 @@
  *   * Final answer + cited subset
  *   * Gate-by-gate verdict
  *
- * Visual conventions:
- *   * Existing design-token classes (.card / .btn / .badge) where
- *     they match — keeps the trace view consistent with the rest
- *     of the app.
- *   * `mqt-*` classes (Manual Query Trace) for trace-specific
- *     layout — defined in styles.css.
+ * Visual conventions (matches other Results tabs):
+ *   * Top-level wrapper is ``.results-manual-trace`` — sits inside
+ *     ``.results-section__body`` which already provides padding.
+ *     Tabs don't double-wrap in ``.card``.
+ *   * Error / empty states use ``.results__empty`` (same as the
+ *     Raw / Assets tabs).
+ *   * Pipeline-specific structure uses the ``.mqt-*`` namespace.
  */
 
 import { useCallback, useState } from "react";
@@ -35,7 +35,7 @@ import type {
   RouteExecutionRecordShape,
 } from "@/types/review";
 
-interface ManualQueryTraceViewProps {
+interface ManualQueryTraceViewTabProps {
   runId: string;
 }
 
@@ -48,7 +48,9 @@ type SectionKey =
   | "answer"
   | "gates";
 
-export function ManualQueryTraceView({ runId }: ManualQueryTraceViewProps) {
+export function ManualQueryTraceViewTab(
+  { runId }: ManualQueryTraceViewTabProps,
+) {
   const client = useClient();
   const [question, setQuestion] = useState(
     "How do the deliverables evolve from conceptual engineering " +
@@ -99,23 +101,23 @@ export function ManualQueryTraceView({ runId }: ManualQueryTraceViewProps) {
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
-    <section
-      className="card mqt-root"
+    <div
+      className="results-manual-trace"
       data-testid="manual-query-trace-view"
     >
-      <header className="card__header">
-        <div>
-          <h3 className="card__title">SmartQueryOrchestrator trace</h3>
-          <p className="card__subtitle">
-            Drives the question through the orchestrator and renders the
-            full pipeline trace. Use this when an answer looks wrong —
-            the trace shows <em>why</em>.
-          </p>
-        </div>
+      <header className="results-manual-trace__header">
+        <h3 className="results-manual-trace__title">
+          SmartQueryOrchestrator trace
+        </h3>
+        <p className="results-manual-trace__subtitle">
+          Drives the question through the orchestrator and renders the
+          full pipeline trace. Use this when an answer looks wrong —
+          the trace shows <em>why</em>.
+        </p>
       </header>
 
-      <div className="card__body mqt-input">
-        <label className="mqt-input__label">
+      <section className="results-manual-trace__input">
+        <label className="results-manual-trace__label">
           Question
           <textarea
             aria-label="Question"
@@ -127,7 +129,7 @@ export function ManualQueryTraceView({ runId }: ManualQueryTraceViewProps) {
             placeholder="Ask anything about this run's indexed content…"
           />
         </label>
-        <div className="mqt-input__actions">
+        <div className="results-manual-trace__actions">
           <button
             type="button"
             className="btn btn--primary"
@@ -138,21 +140,34 @@ export function ManualQueryTraceView({ runId }: ManualQueryTraceViewProps) {
             {running ? "Running…" : "Run trace"}
           </button>
           {payload && (
-            <span className="mqt-duration" title="End-to-end orchestrator time">
+            <span
+              className="results-manual-trace__duration"
+              title="End-to-end orchestrator time"
+            >
               {formatDuration(payload.trace.duration_ms)}
             </span>
           )}
         </div>
         {error && (
           <div
-            className="mqt-error"
+            className="results__empty"
             role="alert"
             data-testid="trace-error"
+            style={{ marginTop: 12 }}
           >
-            {error}
+            <strong>Trace failed.</strong>
+            <div style={{ color: "var(--text-muted)", marginTop: 4 }}>
+              {error}
+            </div>
           </div>
         )}
-      </div>
+        {!payload && !error && !running && (
+          <p className="results-manual-trace__hint">
+            Enter a question above and click <strong>Run trace</strong>{" "}
+            to see the orchestrator pipeline.
+          </p>
+        )}
+      </section>
 
       {payload && (
         <div className="mqt-output" data-testid="trace-output">
@@ -251,7 +266,7 @@ export function ManualQueryTraceView({ runId }: ManualQueryTraceViewProps) {
           </Section>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 

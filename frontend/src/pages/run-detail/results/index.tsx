@@ -20,7 +20,7 @@ import type { ReviewQualityReport, ReviewRunSummary } from "@/types/review";
 import { AssetsTab } from "./AssetsTab";
 import { ChunksTab } from "./ChunksTab";
 import { GraphTab } from "./GraphTab";
-import { ManualQueryTraceView } from "./ManualQueryTraceView";
+import { ManualQueryTraceViewTab } from "./ManualQueryTraceViewTab";
 import { OverviewTab } from "./OverviewTab";
 import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
@@ -282,7 +282,7 @@ export function ResultsSection({
         {tab === "assets" && <AssetsTab runId={runId} />}
         {tab === "graph" && <GraphTab runId={runId} />}
         {tab === "raw" && <RawArtifactsTab runId={runId} />}
-        {tab === "manual-trace" && <ManualQueryTraceView runId={runId} />}
+        {tab === "manual-trace" && <ManualQueryTraceViewTab runId={runId} />}
         {tab === "validation" && <ValidationTab runId={runId} />}
       </div>
     </section>

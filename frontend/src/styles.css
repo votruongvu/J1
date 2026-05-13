@@ -4649,24 +4649,52 @@ pre.json .b {
 }
 
 /* ─────────────────────────────────────────────────────────────
- * Manual Query Trace view — operator surface for the
+ * Results > Manual Query Trace tab — operator surface for the
  * SmartQueryOrchestrator pipeline. Renders the full QueryTrace
  * with status banner, collapsible sections, candidate / gate
  * tables, and evidence-block previews.
+ *
+ * Top-level wrapper is ``.results-manual-trace`` (matches sibling
+ * tabs like ``.results-raw`` / ``.results-assets``). Pipeline-
+ * specific structure uses the ``.mqt-*`` namespace.
  * ──────────────────────────────────────────────────────────── */
 
-.mqt-root {
+.results-manual-trace {
   display: flex;
   flex-direction: column;
+  gap: 16px;
 }
 
-.mqt-input {
+.results-manual-trace__header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.results-manual-trace__title {
+  margin: 0;
+  font-size: var(--text-h2);
+  letter-spacing: var(--tracking-h2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.results-manual-trace__subtitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-snug);
+}
+
+.results-manual-trace__input {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.mqt-input__label {
+.results-manual-trace__label {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -4685,34 +4713,32 @@ pre.json .b {
   min-height: 80px;
 }
 
-.mqt-input__actions {
+.results-manual-trace__actions {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.mqt-duration {
+.results-manual-trace__duration {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
-.mqt-error {
+.results-manual-trace__hint {
+  margin: 0;
   padding: 10px 14px;
-  border-radius: var(--radius);
-  background: oklch(94% 0.04 25);
-  border: 1px solid oklch(78% 0.1 25);
-  color: oklch(38% 0.13 25);
   font-size: var(--text-sm);
-  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  background: var(--bg-tinted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
 }
 
 .mqt-output {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 0 16px 16px;
-  border-top: 1px solid var(--border);
 }
 
 /* ── Status banner ─────────────────────────────────────────── */
@@ -4723,7 +4749,6 @@ pre.json .b {
   gap: 8px;
   padding: 14px 16px;
   border-radius: var(--radius);
-  margin-top: 14px;
   border: 1px solid var(--border);
   background: var(--bg-tinted);
 }
