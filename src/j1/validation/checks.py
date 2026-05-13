@@ -71,6 +71,11 @@ class _CheckContext:
     citation_required: bool
     artifact_registry: ArtifactRegistry
     chunks_expected: bool = True
+    # The original case question. Optional default for backward
+    # compat with legacy test fixtures that don't supply it; when
+    # present, intent-aware answer checks (e.g. the stage-aware
+    # substantive check) use it to derive the expected shape.
+    question: str | None = None
 
 
 # ---- abstain regex ---------------------------------------------
@@ -124,15 +129,22 @@ def _is_abstain_response(answer: str) -> bool:
 def _check_answer_non_empty(ctx_: _CheckContext) -> ValidationCheckDTO:
     """Verify the synthesizer produced a substantive answer.
 
-    Previously this check passed for ANY answer ≥ 5 characters —
-    which let "Not in the retrieved evidence." (32 chars) sail
-    through as a passing result. The user-reported failure was
-    that a refusal-style answer was being marked Passed.
+    Three failure modes, in order:
 
-    Now also fails when the answer matches a refusal-style
-    pattern. The patterns are generic (English refusal phrases
-    the synthesizer / engine produce when grounding fails) — not
-    a domain-specific list."""
+      1. Empty / trivially short (< 5 chars).
+      2. Refusal-shaped — matches a generic English refusal
+         pattern. Length is NO LONGER a shortcut: a 600-char
+         answer that's still a refusal phrase + apologetic
+         filler still fails. (Previous behaviour passed any
+         answer > 400 chars regardless of content, which let
+         long refusals through.)
+      3. Stage-progression intent: when the question asks about
+         multiple stages (`60%, 90%, 100% design` or similar),
+         the answer must cover ≥3 of the requested stages AND
+         mention a deliverable shape AND mention a
+         cost-estimate/class shape. Otherwise the answer
+         doesn't carry the stage-by-stage mapping the question
+         requested."""
     body = (ctx_.answer or "").strip()
     if len(body) < 5:
         return ValidationCheckDTO(
@@ -157,6 +169,12 @@ def _check_answer_non_empty(ctx_: _CheckContext) -> ValidationCheckDTO:
             expected="substantive answer grounded in evidence",
             actual=_safe_preview(body, 120),
         )
+    # Intent-aware substantive check: for stage-progression
+    # questions, require the ANSWER to carry the expected
+    # stage-by-stage mapping.
+    stage_failure = _check_stage_progression_answer(ctx_, body)
+    if stage_failure is not None:
+        return stage_failure
     return ValidationCheckDTO(
         name="answer_non_empty",
         severity="required",
@@ -164,6 +182,67 @@ def _check_answer_non_empty(ctx_: _CheckContext) -> ValidationCheckDTO:
         detail=None,
         expected="answer with >= 5 non-whitespace chars",
         actual=f"len={len(body)}",
+    )
+
+
+def _check_stage_progression_answer(
+    ctx_: _CheckContext,
+    answer_body: str,
+) -> ValidationCheckDTO | None:
+    """When the question reads as stage-progression AND the
+    answer doesn't carry the stage-by-stage mapping, fail with
+    a structured detail. Returns ``None`` when the check
+    doesn't apply (no question, no stage anchors detected, or
+    the answer DOES carry the mapping)."""
+    if not ctx_.question:
+        return None
+    try:
+        from j1.retrieval.anchors import (
+            stage_progression_coverage, stage_progression_groups,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    groups = stage_progression_groups(ctx_.question)
+    if groups is None or len(groups.stages_requested) < 2:
+        # Not a stage-progression question OR only one stage
+        # mentioned — the substantive-mapping rule doesn't apply.
+        return None
+    coverage = stage_progression_coverage(
+        groups=groups, bodies=[answer_body],
+    )
+    # Minimum: 3 of 4 stages, OR all stages when fewer than 4 were
+    # requested. We don't enforce > 3 when the user only asked
+    # about 2 stages — the rule scales with the question.
+    min_stages = min(3, max(1, len(groups.stages_requested)))
+    stages_ok = len(coverage.stage_hits) >= min_stages
+    deliverable_ok = coverage.deliverable_present
+    estimate_ok = coverage.estimate_present
+    if stages_ok and deliverable_ok and estimate_ok:
+        return None
+    missing: list[str] = []
+    if not stages_ok:
+        missing.append(
+            f"stages covered={len(coverage.stage_hits)}/{min_stages} "
+            f"(requested {list(groups.stages_requested)})",
+        )
+    if not deliverable_ok:
+        missing.append("no deliverable/submittal mention")
+    if not estimate_ok:
+        missing.append("no cost-estimate/class mention")
+    return ValidationCheckDTO(
+        name="answer_non_empty",
+        severity="required",
+        passed=False,
+        detail=(
+            "answer does not carry the stage-by-stage mapping the "
+            "question requested; missing: " + "; ".join(missing)
+        ),
+        expected=(
+            "answer covering >= 3 of the requested stages plus "
+            "a deliverable mention plus a cost-estimate/class "
+            "mention"
+        ),
+        actual=_safe_preview(answer_body, 240),
     )
 
 
@@ -197,16 +276,18 @@ _REFUSAL_PATTERNS = [
 def _is_refusal_answer(body: str) -> bool:
     """True iff the answer matches any documented refusal shape.
 
-    Short-circuits on the first match. Refusal-shaped answers
-    that ALSO contain substantive content (a refusal preamble
-    followed by an actual answer) pass — we look for the refusal
-    pattern alone, not as a leading clause. Conservative by
-    design: when in doubt, treat as non-refusal."""
-    if len(body) > 400:
-        # Long answers are almost certainly substantive even if
-        # they contain a refusal phrase in passing. Tune this if
-        # production audit logs show false negatives.
-        return False
+    No length shortcut. The previous ``len > 400`` shortcut let
+    a long apologetic refusal (refusal phrase + padding /
+    speculation) pass as "substantive" — the actual failure mode
+    operators reported. Now: if the refusal pattern fires, the
+    answer is flagged regardless of length.
+
+    Conservative by design: we look for ANY documented refusal
+    pattern. Substantive answers that mention "not in the
+    retrieved evidence" as a clause (rare in practice) will be
+    flagged, but the cost of a false positive (one validation
+    case marked failed) is far less than the false-negative cost
+    we just fixed (long refusals marked Passed)."""
     return any(p.search(body) for p in _REFUSAL_PATTERNS)
 
 
@@ -723,6 +804,7 @@ def run_checks(
         citation_required=citation_required,
         artifact_registry=artifact_registry,
         chunks_expected=chunks_expected,
+        question=question,
     )
     checks: list[ValidationCheckDTO] = []
 

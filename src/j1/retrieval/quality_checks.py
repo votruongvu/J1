@@ -82,6 +82,8 @@ def check_pack(
     active_run_id: str | None,
     stage_anchors: tuple[str, ...] | None = None,
     min_anchor_coverage: int = 2,
+    stage_groups: "Any | None" = None,
+    min_stages_covered: int = 3,
 ) -> EvidenceCheckResult:
     pack_list = list(pack)
     failures: list[str] = []
@@ -172,21 +174,46 @@ def check_pack(
             )
 
     # 7. evidence_anchor_coverage_for_stage_progression
-    # When the query contains stage-progression markers (60% /
-    # conceptual / final / etc.) the planner's intent fires as
-    # ``stage_progression``. For these queries the pack is only
-    # USEFUL if it covers ≥ N of the stage anchors the user
-    # wrote — otherwise the LLM gets evidence about CEP compliance
-    # / potholing / proposal formatting and answers "Not in the
-    # retrieved evidence".
-    #
-    # The check is gated on the caller supplying ``stage_anchors``;
-    # ``check_pack`` itself doesn't extract them (the runner /
-    # build_evidence_blocks does, since they have the query
-    # text). When ``stage_anchors`` is None / empty, the check
-    # is skipped entirely — preserves backward-compat for all
-    # other intent paths.
-    if stage_anchors:
+    # Group-based rule: stage-progression questions get
+    # FAIL → need ≥3 of the requested stage anchors AND ≥1
+    # deliverable-shape match AND ≥1 estimate/class-shape match.
+    # When the caller supplies ``stage_anchors`` (legacy code
+    # path) but doesn't supply ``stage_groups``, we keep the
+    # original flat-count rule for backward compatibility.
+    if stage_groups is not None and stage_groups.stages_requested:
+        from j1.retrieval.anchors import stage_progression_coverage
+        bodies = []
+        for c in pack_list:
+            txt = (
+                _candidate_text(c)
+                or _section_path(c)
+                or ""
+            )
+            if txt:
+                bodies.append(txt)
+        coverage = stage_progression_coverage(
+            groups=stage_groups, bodies=bodies,
+        )
+        details["stage_groups"] = {
+            "requested": list(coverage.stages_requested),
+            "stage_hits": list(coverage.stage_hits),
+            "stages_covered": len(coverage.stage_hits),
+            "stages_required": min_stages_covered,
+            "deliverable_present": coverage.deliverable_present,
+            "estimate_present": coverage.estimate_present,
+            "deliverable_hits": list(coverage.deliverable_hits[:3]),
+            "estimate_hits": list(coverage.estimate_hits[:3]),
+        }
+        stages_ok = len(coverage.stage_hits) >= min_stages_covered
+        if not (
+            stages_ok
+            and coverage.deliverable_present
+            and coverage.estimate_present
+        ):
+            failures.append(
+                "evidence_anchor_coverage_for_stage_progression",
+            )
+    elif stage_anchors:
         from j1.retrieval.anchors import pack_anchor_coverage
         bodies = []
         for c in pack_list:

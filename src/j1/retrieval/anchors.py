@@ -219,8 +219,169 @@ def expand_query_with_anchors(
 
 __all__ = [
     "StageAnchors",
+    "StageProgressionGroups",
     "count_anchors_present",
     "expand_query_with_anchors",
     "pack_anchor_coverage",
     "query_stage_anchors",
+    "stage_progression_groups",
+    "stage_progression_coverage",
 ]
+
+
+# ---- Group-based coverage (stage-progression intent) ---------------
+#
+# Flat anchor counting (≥ N anchors anywhere) lets a pack pass
+# when it covers, e.g., "60%" + "deliverables" but mentions
+# neither the OTHER stages nor any cost-estimate concept. For
+# stage-progression questions the answer SHAPE is "stage →
+# deliverable → cost class" — so the sufficiency rule needs THREE
+# groups, each with its own minimum.
+#
+# Patterns here are SHAPE-based — they match the surface forms
+# documents in this question family use. They are NOT a per-
+# customer dictionary. The intent gate (stage_progression only)
+# keeps them from firing on unrelated queries.
+
+# Stage-marker patterns. These match against EVIDENCE TEXT to
+# determine which of the user's stage anchors are present.
+_PERCENT_STAGE_BODY = re.compile(r"\b(\d{1,3})\s*%", re.IGNORECASE)
+
+# Deliverable-side shape patterns (generic across business docs).
+_DELIVERABLE_BODY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        r"\bdeliverable[s]?\b",
+        r"\bsubmittal[s]?\b",
+        r"\bsubmission[s]?\b",
+        r"\b(report|memo|drawing|plan|specification|package)s?\b"
+        r"\s+(?:will|shall|to\s+be|include[ds]?|are\s+(?:provided|produced))",
+        r"\b(output|artifact|document)s?\s+(?:include|comprise|consist)",
+    )
+)
+
+# Cost-estimate / classification shape patterns. The "Class N"
+# and "AACE" shapes are widely used across cost-estimation /
+# project-budget documents — they are SHAPES, not single-customer
+# references.
+_ESTIMATE_BODY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        r"\bcost\s+estimate[s]?\b",
+        r"\b(?:rough\s+order\s+of\s+magnitude|ROM)\b",
+        r"\bestimate\s+(?:class|classification|category)\b",
+        r"\bclass\s+[ivxlcdm0-9]+\s+(?:estimate|cost)?",
+        r"\bAACE\b",
+        r"\bbudgetary\s+estimate\b",
+    )
+)
+
+
+@dataclass(frozen=True)
+class StageProgressionGroups:
+    """Per-group anchor sets for the sufficiency rule.
+
+    ``stages_requested`` are the specific stage markers the user
+    wrote in the query (e.g. ["60%", "90%", "100% design",
+    "conceptual"]). ``estimate_terms`` and ``deliverable_terms``
+    are caller-supplied bag-of-shapes used only during coverage
+    checking — not extracted from the query (which usually only
+    says "cost estimate class" once)."""
+
+    stages_requested: tuple[str, ...]
+    deliverable_present: bool
+    estimate_present: bool
+    stage_hits: tuple[str, ...]          # stages found in evidence
+    deliverable_hits: tuple[str, ...]    # which deliverable patterns matched
+    estimate_hits: tuple[str, ...]       # which estimate patterns matched
+
+
+def stage_progression_groups(query: str) -> StageProgressionGroups | None:
+    """Return the requested STAGE GROUP from a query, ready for
+    pairing with ``stage_progression_coverage`` over evidence.
+
+    Crucially: this method extracts ONLY stage markers
+    (percentages, numbered stages, ordinal-stage phrases) — it
+    does NOT collect estimate-class shapes ("cost estimate
+    class") into the stage list. Estimate-class is a SEPARATE
+    group covered by ``_ESTIMATE_BODY_PATTERNS`` over the
+    evidence text.
+
+    Returns ``None`` when the query has no stage markers —
+    callers fall back to the legacy flat coverage rule."""
+    if not query:
+        return None
+    seen: set[str] = set()
+    stage_markers: list[str] = []
+    for pat in (
+        _PERCENT_STAGE_RE,
+        _NUMBERED_STAGE_RE,
+        _ORDINAL_STAGE_RE,
+    ):
+        for m in pat.finditer(query):
+            s = m.group(0).strip()
+            k = s.lower()
+            if k not in seen:
+                seen.add(k)
+                stage_markers.append(s)
+    if not stage_markers:
+        return None
+    return StageProgressionGroups(
+        stages_requested=tuple(stage_markers),
+        deliverable_present=False,
+        estimate_present=False,
+        stage_hits=(),
+        deliverable_hits=(),
+        estimate_hits=(),
+    )
+
+
+def stage_progression_coverage(
+    *,
+    groups: StageProgressionGroups,
+    bodies: list[str],
+) -> StageProgressionGroups:
+    """Walk the evidence ``bodies`` and report coverage per group.
+
+    Returns a NEW ``StageProgressionGroups`` with the ``*_hits`` /
+    ``*_present`` fields populated. ``stage_hits`` is the subset
+    of ``stages_requested`` that appeared somewhere in the
+    bodies.
+
+    The sufficiency rule the caller enforces:
+      * ``len(stage_hits) >= 3`` (≥3 of 4 requested stages)
+      * ``deliverable_present`` (≥1 deliverable-shape hit)
+      * ``estimate_present`` (≥1 estimate/class-shape hit)
+    """
+    stage_hit_set: set[str] = set()
+    deliverable_hits: list[str] = []
+    estimate_hits: list[str] = []
+    for body in bodies:
+        if not body:
+            continue
+        body_l = body.lower()
+        # Stage match — substring of each requested anchor.
+        for anchor in groups.stages_requested:
+            if anchor.lower() in body_l:
+                stage_hit_set.add(anchor)
+        # Deliverable patterns.
+        for pat in _DELIVERABLE_BODY_PATTERNS:
+            m = pat.search(body)
+            if m:
+                deliverable_hits.append(m.group(0))
+                break  # one hit per body is enough for this group
+        # Estimate patterns.
+        for pat in _ESTIMATE_BODY_PATTERNS:
+            m = pat.search(body)
+            if m:
+                estimate_hits.append(m.group(0))
+                break
+    return StageProgressionGroups(
+        stages_requested=groups.stages_requested,
+        stage_hits=tuple(
+            s for s in groups.stages_requested
+            if s in stage_hit_set
+        ),
+        deliverable_hits=tuple(deliverable_hits),
+        estimate_hits=tuple(estimate_hits),
+        deliverable_present=bool(deliverable_hits),
+        estimate_present=bool(estimate_hits),
+    )

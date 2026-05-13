@@ -555,22 +555,27 @@ def build_evidence_blocks(
         # empty pack with no candidates) skip the fallback.
         if diagnostics is not None:
             from j1.retrieval.quality_checks import check_pack
-            from j1.retrieval.anchors import query_stage_anchors
-            # Extract stage anchors from the query the user
-            # actually wrote. Empty (falsy) when the query isn't
-            # a stage-progression — the coverage check then
-            # skips entirely. The anchors are USED BY the
-            # coverage check inside check_pack AND by the
-            # caller's targeted-retry path (when the runner
-            # opts in by passing the anchors back through).
+            from j1.retrieval.anchors import (
+                query_stage_anchors, stage_progression_groups,
+            )
+            # Extract stage anchors + groups from the query the user
+            # actually wrote. Empty (falsy) → the coverage check
+            # skips. ``stage_groups`` activates the GROUP-BASED
+            # sufficiency rule (≥3 stages + deliverable + estimate);
+            # ``stage_anchors`` is the legacy flat-count fallback
+            # for callers that opt out of groups.
             stage_anchors = query_stage_anchors(query) if query else None
             anchor_tuple = stage_anchors.all if stage_anchors else None
+            stage_groups = (
+                stage_progression_groups(query) if query else None
+            )
             result = check_pack(
                 blocks,
                 intent=detected_intent,
                 active_document_id=active_document_id,
                 active_run_id=active_run_id,
                 stage_anchors=anchor_tuple,
+                stage_groups=stage_groups,
             )
             fallback_triggered = False
             fallback_succeeded: bool | None = None
@@ -606,6 +611,7 @@ def build_evidence_blocks(
                         active_document_id=active_document_id,
                         active_run_id=active_run_id,
                         stage_anchors=anchor_tuple,
+                        stage_groups=stage_groups,
                     )
                     fallback_succeeded = fb_result.ok
                     # Swap in the fallback pack regardless of
