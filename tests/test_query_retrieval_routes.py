@@ -184,20 +184,28 @@ def test_raganything_adapter_surfaces_native_answer_as_advisory(route_ctx):
     assert "Native LightRAG" in candidates[0].text_preview
 
 
-def test_raganything_adapter_emits_nothing_on_empty_answer(route_ctx):
-    """Empty bridge response → no candidates. Sufficiency gate
-    correctly fails with ``retrieval_insufficient``."""
+def test_raganything_adapter_marks_empty_response_for_diagnostics(route_ctx):
+    """Empty bridge response surfaces a single ``empty_response``
+    marker candidate (score 0.0) so the trace shows the route ran
+    but RAGAnything returned nothing. Operators need this to
+    distinguish "route didn't run" from "route ran, got no data"."""
     provider = _StubRAGProvider(_StubRAGResult(
         answer="",
         citations=[],
-        metadata={},
+        metadata={"working_dir": "/var/lib/j1/raganything/runs/x"},
     ))
     adapter = RAGAnythingAdapter(provider)
     candidates = adapter.execute(
         RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
         route_ctx,
     )
-    assert candidates == []
+    assert len(candidates) == 1
+    assert candidates[0].artifact_kind == "raganything.empty_response"
+    assert candidates[0].score == 0.0
+    assert (
+        candidates[0].extra["raganything_working_dir"]
+        == "/var/lib/j1/raganything/runs/x"
+    )
 
 
 # ---- BM25 adapter ------------------------------------------------

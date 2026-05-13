@@ -3446,9 +3446,21 @@ def create_rest_api(
             )
         run_id = body.get("run_id") or body.get("runId")
         document_id = body.get("document_id") or body.get("documentId")
-        # Lazy imports — keep the REST module's top-level import set
-        # free of orchestrator types so the package stays decoupled
-        # from j1.query at module load.
+        # Resolve ``document_id`` from the run record when the
+        # caller didn't supply one. The RAGAnything per-run
+        # workspace path is
+        # ``{workdir}/runs/{tenant}/{project}/{document}/{run_id}`` —
+        # without ``document_id`` the path resolves to ``None`` and
+        # LightRAG silently falls back to the GLOBAL workdir (which
+        # has no per-run data → "Sorry, I'm not able to provide an
+        # answer to that question" for every query).
+        if run_id and not document_id and ingestion_run_store is not None:
+            try:
+                run = ingestion_run_store.get(ctx, str(run_id))
+                if run is not None:
+                    document_id = run.document_id
+            except Exception:  # noqa: BLE001 — best-effort resolution
+                pass
         from j1.query.orchestrator import OrchestratorRequest
         from j1.query.scope import RunScope, default_scope
         scope = (

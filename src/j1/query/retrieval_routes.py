@@ -190,8 +190,49 @@ class RAGAnythingAdapter:
         # as "retrieval returned nothing").
         native_answer = getattr(result, "answer", None) or ""
         native_answer = native_answer.strip()
+        # Surface the LightRAG working_dir + status so the trace
+        # shows which storage path the query actually read. When
+        # the path is wrong (e.g. ``document_id`` missing → global
+        # workdir fallback → no data), LightRAG produces a generic
+        # "Sorry, I'm not able to provide an answer to that
+        # question" for every query; operators couldn't see why
+        # without this surface.
+        result_metadata = getattr(result, "metadata", None) or {}
+        working_dir = result_metadata.get("working_dir")
+        result_status = getattr(result, "status", None)
         if not native_answer:
-            return []
+            # Emit a marker candidate so the trace shows the route
+            # ran but the bridge returned NOTHING. ``score=0.0`` so
+            # it never drives an answer.
+            candidates.append(EvidenceCandidate(
+                route=job.route,
+                artifact_id="raganything.empty_response",
+                artifact_kind="raganything.empty_response",
+                chunk_id=None,
+                text_preview=(
+                    f"RAGAnything returned no answer. "
+                    f"working_dir={working_dir!r}, "
+                    f"status={getattr(result_status, 'value', result_status)!r}"
+                ),
+                score=0.0,
+                matched_anchors=(),
+                run_id=run_id,
+                document_id=context.document_id,
+                project_id=context.ctx.project_id,
+                extra={
+                    "body": "",
+                    "raganything_native_answer": True,
+                    "advisory_only": True,
+                    "raganything_working_dir": working_dir,
+                    "raganything_result_status": (
+                        getattr(result_status, "value", str(result_status))
+                    ),
+                    "raganything_result_error": getattr(
+                        result, "error", None,
+                    ),
+                },
+            ))
+            return candidates
         candidates.append(EvidenceCandidate(
             route=job.route,
             artifact_id="raganything.native_answer",
@@ -207,6 +248,7 @@ class RAGAnythingAdapter:
                 "body": native_answer,
                 "raganything_native_answer": True,
                 "advisory_only": True,
+                "raganything_working_dir": working_dir,
             },
         ))
         return candidates
