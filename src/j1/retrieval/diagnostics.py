@@ -413,14 +413,27 @@ class RetrievalDiagnostics:
         *,
         pack_size: int,
         fallback_triggered: bool = False,
+        fallback_succeeded: bool | None = None,
         checks_passed: bool = True,
         check_failures: list[str] | None = None,
+        check_failures_before_fallback: list[str] | None = None,
     ) -> None:
+        """Emit the terminal ``evidence_pack.finalized`` event.
+
+        ``fallback_succeeded`` / ``check_failures_before_fallback``
+        are populated when the caller ran a one-pass fallback after
+        the initial ``check_pack`` failed for recoverable reasons.
+        ``None`` for ``fallback_succeeded`` means no fallback ran.
+        """
         summary = {
             "pack_size": pack_size,
             "fallback_triggered": fallback_triggered,
+            "fallback_succeeded": fallback_succeeded,
             "checks_passed": checks_passed,
             "check_failures": list(check_failures or []),
+            "check_failures_before_fallback": list(
+                check_failures_before_fallback or [],
+            ),
             "drop_counts": self.dropped_reasons_summary(),
         }
         self._snapshot.finalized_summary = dict(summary)

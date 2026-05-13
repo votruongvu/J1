@@ -57,6 +57,16 @@ _BOILERPLATE_OK_INTENTS: frozenset[str] = frozenset({
 })
 
 
+# Intents where a single-section pack is acceptable — diversity
+# becomes a warning, never a hard failure.
+_DIVERSITY_SOFT_INTENTS: frozenset[str] = frozenset({
+    "list_extraction",
+    "exact_fact_lookup",
+    "summary_lookup",
+    "generic_lookup",
+})
+
+
 @dataclass
 class EvidenceCheckResult:
     ok: bool
@@ -121,6 +131,22 @@ def check_pack(
             details["boilerplate_samples"] = boilerplate_hits[:3]
 
     # 5. section_diversity_for_structured_intents
+    # Intent-aware: not every "diversity-leaning" intent should
+    # hard-fail on single-section packs. The spec carves out two
+    # exceptions:
+    #
+    #   * ``list_extraction`` — one exact list section is often
+    #     the right answer (an enumeration belongs in ONE place
+    #     in the document). Diversity below the policy minimum
+    #     is a SOFT WARNING here, not a hard fail.
+    #   * ``exact_fact_lookup`` / ``generic_lookup`` /
+    #     ``summary_lookup`` — diversity is irrelevant; never
+    #     fails on these.
+    #
+    # Mapping intents (responsibility / dependency / stage /
+    # deliverable / issue_risk / decision_trace) still hard-fail
+    # below 2 distinct paths because their answer SHAPE is a
+    # graph that needs ≥ 2 nodes.
     policy = policy_for_intent(intent)
     if policy.require_section_diversity:
         section_paths = {
@@ -128,18 +154,20 @@ def check_pack(
             for sp in (_section_path(c) for c in pack_list)
             if sp
         }
+        details["distinct_section_paths"] = len(section_paths)
+        details["min_section_paths"] = policy.min_section_paths
         if len(section_paths) < policy.min_section_paths:
-            # Soft fail when there are simply not enough
-            # candidates to satisfy diversity (the planner did
-            # what it could). Hard fail when diversity dropped
-            # below 2 — those packs can't support a structured
-            # answer regardless.
-            details["distinct_section_paths"] = len(section_paths)
-            details["min_section_paths"] = policy.min_section_paths
-            if len(section_paths) < 2:
-                failures.append(
-                    "section_diversity_for_structured_intents",
-                )
+            warnings = details.setdefault("warnings", [])
+            warnings.append(
+                "section_diversity_for_structured_intents",
+            )
+        if (
+            intent_str not in _DIVERSITY_SOFT_INTENTS
+            and len(section_paths) < 2
+        ):
+            failures.append(
+                "section_diversity_for_structured_intents",
+            )
 
     # 6. source_grounding_for_enriched_anchored_packs
     if policy.require_source_grounding:
@@ -223,13 +251,31 @@ def _belongs_to_scope(
     active_doc: str | None,
     active_run: str | None,
 ) -> bool:
+    """Defensive scope check used after evidence packing.
+
+    Returns True when:
+      * the candidate's owning doc/run ids match the active scope,
+        OR
+      * the candidate has NO owning doc/run id at all — meaning we
+        can't judge from here. Strict scope filtering (which DOES
+        reject candidates with no scope metadata) runs BEFORE
+        evidence packing, and the projection step from
+        ``RetrievedChunkRefDTO`` → ``EvidenceBlockDTO`` drops the
+        metadata dict on purpose. Treating the missing-id case as
+        "out of scope" would produce a false ``check_pack`` failure
+        every time the pack reached the synthesizer through the
+        normal path.
+
+    Mismatch (non-None and != active) still returns False so a real
+    cross-document leak still surfaces if one ever made it past the
+    scope filter."""
     if active_doc is not None:
         d = _owning_document_id(c)
-        if d != active_doc:
+        if d is not None and d != active_doc:
             return False
     if active_run is not None:
         r = _owning_run_id(c)
-        if r != active_run:
+        if r is not None and r != active_run:
             return False
     return True
 

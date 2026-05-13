@@ -116,6 +116,24 @@ _SKIP_KINDS: frozenset[str] = frozenset({
 })
 
 
+# Intents for which the structure-aware planner OWNS final
+# evidence selection. The legacy rerank + select_by_coverage
+# pre-picks a top-N for everyone else; that's the wrong layer
+# for these because their answer shape is a small graph (actor→
+# action, stage→stage, A→depends-on→B). The planner reads the
+# document's heading hierarchy + the candidate pool's artifact-
+# kind mix to plan distinct-section coverage + source grounding.
+_STRUCTURED_INTENTS: frozenset[str] = frozenset({
+    "responsibility_mapping",
+    "dependency_mapping",
+    "stage_progression",
+    "deliverable_mapping",
+    "issue_risk_mapping",
+    "decision_trace",
+    "list_extraction",
+})
+
+
 # Artifact-type policy (spec section 7): textual kinds win the
 # evidence budget. `chunk` is the canonical ground truth (smallest
 # unit, highest fidelity); `compiled.text` and
@@ -360,70 +378,114 @@ def build_evidence_blocks(
                 retrieved_diags, source="bm25+rerank",
             )
 
-        # Stage 2: rerank + coverage-select.
-        selected_payloads, selected_scores, intents, query_terms = (
-            rerank_and_select(
-                bodies=prepared,
-                raw_scores=raws,
-                sections=sections,
-                artifact_kinds=kinds,
-                query=query,
-                config=effective_config,
-            )
+        # Stage 2: scoring + selection.
+        #
+        # Two paths, dispatched on the detected intent:
+        #
+        #   * STRUCTURED intents (responsibility / dependency /
+        #     stage_progression / deliverable / issue_risk /
+        #     decision_trace / list_extraction) — the planner
+        #     OWNS final selection. We bypass rerank's
+        #     ``select_by_coverage`` by setting
+        #     ``enable_coverage_selection=False`` so we get the
+        #     full scored set back, apply boilerplate demotion to
+        #     EVERY candidate (not just the rerank's pre-picked
+        #     top-N), then call ``plan_evidence`` to drive the
+        #     final pack with section diversity + source
+        #     grounding + boilerplate-as-last-resort logic.
+        #
+        #   * Non-structured intents — the existing
+        #     ``rerank_and_select`` (with coverage selection)
+        #     keeps its previous behaviour. Backward-compatible
+        #     for ``exact_fact_lookup`` / ``generic_lookup`` /
+        #     ``summary_lookup``.
+        # ``planner_reason_by_payload`` / ``planner_score_by_payload``
+        # are populated by the structured-intent dispatch. Used at
+        # projection time to (a) emit the correct ``reason_selected``
+        # on the selected event and (b) carry the planner's
+        # rerank_score / final_score onto the audit payload (else the
+        # ``from_search_hit`` projection produces all-None scores).
+        planner_reason_by_payload: dict[int, str] = {}
+        planner_score_by_payload: dict[int, tuple[float, float]] = {}
+        structured = (
+            diagnostics is not None
+            and detected_intent is not None
+            and detected_intent.value in _STRUCTURED_INTENTS
         )
-
-        # Phase-1: emit reranked event + apply boilerplate demotion
-        # via ``detected_intent`` (regardless of whether the
-        # retrieval_active gate is on — boilerplate is safe to
-        # demote whenever we have an intent).
-        if diagnostics is not None:
-            from j1.retrieval.boilerplate import (
-                boilerplate_demotion, is_boilerplate_chunk,
+        if structured:
+            # Score-only mode: ``enable_coverage_selection=False``
+            # gives us all candidates back, ranked by total score
+            # but NOT pruned to a budget. We pass len(prepared)
+            # as the cap so nothing is dropped at this layer.
+            from dataclasses import replace as _replace
+            score_only_config = _replace(
+                effective_config,
+                enable_coverage_selection=False,
+                evidence_max_blocks=len(prepared) or 1,
             )
-            from j1.retrieval.diagnostics import (
-                CandidateDiagnostic, DropReason,
+            scored_payloads, scored_scores, intents, query_terms = (
+                rerank_and_select(
+                    bodies=prepared,
+                    raw_scores=raws,
+                    sections=sections,
+                    artifact_kinds=kinds,
+                    query=query,
+                    config=score_only_config,
+                )
             )
-            # Build per-candidate diagnostics tagged with the
-            # rerank score so the audit reader sees the order.
-            reranked_diags: list[CandidateDiagnostic] = []
-            score_by_payload: dict[int, float] = {}
-            for payload, score in zip(
+            (
                 selected_payloads, selected_scores,
-            ):
-                d = CandidateDiagnostic.from_search_hit(payload)
-                # ``CandidateScore`` is a dataclass; ``.total``
-                # is the composite. Raw floats also accepted in
-                # case the rerank module is swapped later.
-                d.rerank_score = float(
-                    getattr(score, "total", score),
-                )
-                # Boilerplate demotion folded into final_score.
-                bp_match = is_boilerplate_chunk(
-                    section_path=d.section_path,
-                    heading=d.heading,
-                    body_preview=None,
-                )
-                base = d.rerank_score or 0.0
-                if bp_match is not None:
-                    mult = boilerplate_demotion(
-                        bp_match.category, detected_intent,
-                    )
-                    d.final_score = base * mult
-                else:
-                    d.final_score = base
-                reranked_diags.append(d)
-                score_by_payload[id(payload)] = d.final_score
-            diagnostics.record_candidates_reranked(reranked_diags)
-            # When boilerplate demotion knocked a candidate below
-            # the rerank cutoff, re-sort by final_score and use
-            # the top ``max_blocks`` as the selection input.
-            # Otherwise we leave selected_payloads alone — the
-            # rerank already picked.
-            paired = list(zip(selected_payloads, reranked_diags))
-            paired.sort(
-                key=lambda pr: pr[1].final_score or 0.0, reverse=True,
+                planner_reason_by_payload, planner_score_by_payload,
+            ) = _structured_intent_select(
+                ctx=ctx,
+                prepared=prepared,
+                scored_payloads=scored_payloads,
+                scored_scores=scored_scores,
+                detected_intent=detected_intent,
+                max_blocks=max_blocks,
+                diagnostics=diagnostics,
+                artifact_registry=artifact_registry,
             )
-            selected_payloads = [p for p, _ in paired]
+        else:
+            # Legacy path: rerank + coverage selection picks for us.
+            selected_payloads, selected_scores, intents, query_terms = (
+                rerank_and_select(
+                    bodies=prepared,
+                    raw_scores=raws,
+                    sections=sections,
+                    artifact_kinds=kinds,
+                    query=query,
+                    config=effective_config,
+                )
+            )
+            # Still emit the reranked event + apply boilerplate
+            # demotion via a re-sort so non-structured intents
+            # benefit from boilerplate demotion too. This is the
+            # previous behaviour, preserved.
+            if diagnostics is not None:
+                _emit_legacy_demotion_diagnostics(
+                    selected_payloads=selected_payloads,
+                    selected_scores=selected_scores,
+                    detected_intent=detected_intent,
+                    diagnostics=diagnostics,
+                )
+                # Re-sort selected_payloads by post-demotion score.
+                from j1.retrieval.boilerplate import (
+                    boilerplate_demotion, is_boilerplate_chunk,
+                )
+                paired = []
+                for p, s in zip(selected_payloads, selected_scores):
+                    base = float(getattr(s, "total", s))
+                    section = getattr(p, "source_location", None)
+                    kind = (getattr(p, "artifact_kind", "") or "").strip()
+                    bp = is_boilerplate_chunk(section_path=section)
+                    if bp is not None:
+                        base *= boilerplate_demotion(
+                            bp.category, detected_intent,
+                        )
+                    paired.append((p, base))
+                paired.sort(key=lambda pr: pr[1], reverse=True)
+                selected_payloads = [p for p, _ in paired]
 
         # Stage 3: project the winners into EvidenceBlockDTOs,
         # applying the per-call total-budget cap (the rerank
@@ -465,21 +527,32 @@ def build_evidence_blocks(
             ))
             # Phase-1: record one ``evidence_pack.selected`` event
             # per emitted block so the FE / audit can render the
-            # final pack composition.
+            # final pack composition. Reason comes from the
+            # structured-intent dispatch when it ran; falls back
+            # to the legacy ``rerank_top`` for non-structured paths.
             if diagnostics is not None:
                 from j1.retrieval.diagnostics import CandidateDiagnostic
                 d = CandidateDiagnostic.from_search_hit(hit)
                 d.section_path = section or d.section_path
-                diagnostics.record_selected(
-                    d, reason="rerank_top",
+                reason = planner_reason_by_payload.get(
+                    id(hit), "rerank_top",
                 )
+                scores = planner_score_by_payload.get(id(hit))
+                if scores is not None:
+                    d.rerank_score, d.final_score = scores
+                diagnostics.record_selected(d, reason=reason)
         _log.debug(
             "rerank selected %d/%d blocks "
             "(query_terms=%d intents=%s)",
             len(blocks), len(prepared), len(query_terms),
             sorted(i.value for i in intents),
         )
-        # Phase-1: pre-LLM quality check + finalize event.
+        # Phase-1: pre-LLM quality check + optional one-pass
+        # fallback. The fallback runs at most ONCE — never a
+        # loop. Recoverable failures (boilerplate / diversity /
+        # source-grounding) trigger a re-plan with stricter
+        # rules; unrecoverable failures (cross-document leak,
+        # empty pack with no candidates) skip the fallback.
         if diagnostics is not None:
             from j1.retrieval.quality_checks import check_pack
             result = check_pack(
@@ -488,11 +561,56 @@ def build_evidence_blocks(
                 active_document_id=active_document_id,
                 active_run_id=active_run_id,
             )
+            fallback_triggered = False
+            fallback_succeeded: bool | None = None
+            failures_before_fallback: list[str] = []
+            if (
+                structured
+                and not result.ok
+                and _has_recoverable_failure(result.failures)
+                and prepared
+            ):
+                fallback_triggered = True
+                failures_before_fallback = list(result.failures)
+                # Re-run the structured-intent selector with
+                # stricter rules. Same scope, same intent.
+                fb_blocks = _run_structured_fallback(
+                    ctx=ctx,
+                    prepared=prepared,
+                    scored_payloads=scored_payloads,
+                    scored_scores=scored_scores,
+                    detected_intent=detected_intent,
+                    max_blocks=max(max_blocks + 2, max_blocks),
+                    total_budget_chars=total_budget_chars,
+                    diagnostics=diagnostics,
+                    artifact_registry=artifact_registry,
+                    projector=projector,
+                    chunk_cache=chunk_cache,
+                    path_resolver=path_resolver,
+                )
+                if fb_blocks:
+                    fb_result = check_pack(
+                        fb_blocks,
+                        intent=detected_intent,
+                        active_document_id=active_document_id,
+                        active_run_id=active_run_id,
+                    )
+                    fallback_succeeded = fb_result.ok
+                    # Swap in the fallback pack regardless of
+                    # whether it fully passed — even a partial
+                    # improvement is better than the original
+                    # failing pack.
+                    blocks = fb_blocks[:max_blocks]
+                    result = fb_result
+                else:
+                    fallback_succeeded = False
             diagnostics.record_evidence_pack_finalized(
                 pack_size=len(blocks),
-                fallback_triggered=False,
+                fallback_triggered=fallback_triggered,
+                fallback_succeeded=fallback_succeeded,
                 checks_passed=result.ok,
                 check_failures=result.failures,
+                check_failures_before_fallback=failures_before_fallback,
             )
         return blocks
 
@@ -570,6 +688,412 @@ def build_evidence_blocks(
 
 
 # ---- helpers -------------------------------------------------------
+
+
+# ---- Recoverable check_pack failures ------------------------------
+#
+# Set of ``check_pack`` failure codes that the one-pass fallback
+# can plausibly fix by re-planning with stricter rules. Empty-pack
+# / cross-document failures are NOT here — fallback can't conjure
+# candidates that aren't in the prepared set, and a cross-doc leak
+# is a scope-filter bug, not a planner one.
+_RECOVERABLE_CHECK_FAILURES: frozenset[str] = frozenset({
+    "no_boilerplate_unless_intent_allows",
+    "section_diversity_for_structured_intents",
+    "source_grounding_for_enriched_anchored_packs",
+})
+
+
+def _has_recoverable_failure(failures: list[str]) -> bool:
+    """True iff ANY of the check failures are in the recoverable
+    set. We could intersect more strictly (require all failures to
+    be recoverable), but it's better to attempt fallback even when
+    a mix of recoverable + unrecoverable failures fire — the
+    fallback may at least improve the recoverable ones."""
+    return any(f in _RECOVERABLE_CHECK_FAILURES for f in failures)
+
+
+def _run_structured_fallback(
+    *,
+    ctx,
+    prepared,
+    scored_payloads,
+    scored_scores,
+    detected_intent,
+    max_blocks: int,
+    total_budget_chars: int,
+    diagnostics,
+    artifact_registry,
+    projector,
+    chunk_cache,
+    path_resolver,
+):
+    """One-pass fallback: re-run structured-intent selection with
+    stricter rules + slightly larger budget. Returns the new
+    ``list[EvidenceBlockDTO]`` or an empty list when no improvement
+    was possible.
+
+    Stricter rules (vs. the first pass):
+
+      * ``strict_boilerplate=True`` — never select a boilerplate
+        candidate even as last-resort. If the corpus contains
+        only boilerplate the fallback returns an empty pack and
+        the caller surfaces that as ``fallback_succeeded=False``.
+      * ``max_blocks + 2`` — moderate budget bump so the planner
+        can pick more distinct sections without re-retrieving.
+
+    Pure replanning over the already-prepared candidate set —
+    no new retrieval, no LLM call. Cheap and bounded."""
+    from j1.retrieval.diagnostics import CandidateDiagnostic
+
+    if diagnostics is None:
+        return []
+
+    (
+        fb_selected, fb_scores,
+        fb_reasons, fb_score_map,
+    ) = _structured_intent_select(
+        ctx=ctx,
+        prepared=prepared,
+        scored_payloads=scored_payloads,
+        scored_scores=scored_scores,
+        detected_intent=detected_intent,
+        max_blocks=max_blocks,
+        diagnostics=diagnostics,
+        artifact_registry=artifact_registry,
+        strict_boilerplate=True,
+    )
+    if not fb_selected:
+        return []
+
+    # Project the fallback selection into EvidenceBlockDTO using the
+    # same body cache + budgeting as the first pass. We can't reuse
+    # the legacy projection loop directly without copy-pasting — so
+    # rebuild the minimal projection here. Identical block shape so
+    # downstream consumers don't see any difference.
+    prepared_by_payload = {id(p[0]): p[1] for p in prepared}
+    blocks: list[EvidenceBlockDTO] = []
+    used_chars = 0
+    seen_prefixes: set[str] = set()
+    for hit in fb_selected:
+        if len(blocks) >= max_blocks:
+            break
+        if used_chars >= total_budget_chars:
+            break
+        text = prepared_by_payload.get(id(hit), "")
+        if not text:
+            continue
+        prefix_key = text[:_DEDUP_PREFIX_LEN]
+        if prefix_key in seen_prefixes:
+            continue
+        seen_prefixes.add(prefix_key)
+        remaining = total_budget_chars - used_chars
+        if len(text) > remaining:
+            text = text[:remaining].rstrip() + "…"
+        used_chars += len(text)
+        kind = (hit.artifact_kind or "").strip()
+        page_start, page_end, section = _page_info(
+            ctx=ctx, hit=hit, kind=kind,
+            registry=artifact_registry, projector=projector,
+            chunk_cache=chunk_cache, path_resolver=path_resolver,
+        )
+        blocks.append(EvidenceBlockDTO(
+            artifact_id=hit.artifact_id,
+            artifact_type=kind or hit.artifact_kind or "",
+            text=text,
+            chunk_id=hit.chunk_id,
+            score=hit.score,
+            page_start=page_start,
+            page_end=page_end,
+            section=section,
+            source_location=hit.source_location,
+        ))
+        d = CandidateDiagnostic.from_search_hit(hit)
+        d.section_path = section or d.section_path
+        reason = fb_reasons.get(id(hit), "fallback_top")
+        # Annotate with ``fallback:`` prefix so the audit reader
+        # distinguishes first-pass selects from fallback-pass selects.
+        diagnostics.record_selected(d, reason=f"fallback:{reason}")
+    return blocks
+
+
+def _structured_intent_select(
+    *,
+    ctx,
+    prepared,
+    scored_payloads,
+    scored_scores,
+    detected_intent,
+    max_blocks: int,
+    diagnostics,
+    artifact_registry,
+    strict_boilerplate: bool = False,
+):
+    """Planner-driven selection for structured intents.
+
+    Flow:
+      1. Score every prepared candidate (caller already did this
+         via ``rerank_and_select(enable_coverage_selection=False)``).
+      2. Apply boilerplate demotion to each score using the
+         active intent.
+      3. Split into non-boilerplate + boilerplate pools.
+      4. Build proxy candidate objects (with section_path /
+         artifact_type / chunk_id / metadata / rerank_score)
+         that ``plan_evidence`` can read.
+      5. Call ``plan_evidence`` on the non-boilerplate pool
+         first. If the planner returns an empty pack, fall back
+         to the full pool and tag the chosen boilerplate
+         candidates with the documented last-resort reason.
+      6. Surface ``grounding_method`` (from the source-grounding
+         swap in the planner) on the selected events.
+
+    Returns ``(selected_payloads_in_order, scores_aligned)``.
+    The caller projects those into ``EvidenceBlockDTO`` using
+    the existing prepared-body cache.
+    """
+    from j1.retrieval.boilerplate import (
+        boilerplate_demotion, is_boilerplate_chunk,
+    )
+    from j1.retrieval.diagnostics import (
+        CandidateDiagnostic, DropReason,
+    )
+    from j1.retrieval.evidence_planner import plan_evidence
+
+    # Build per-payload section/kind quick-lookups from prepared.
+    section_by_payload: dict[int, str | None] = {}
+    kind_by_payload: dict[int, str] = {}
+    for hit, _body in prepared:
+        section_by_payload[id(hit)] = (
+            getattr(hit, "source_location", None)
+        )
+        kind_by_payload[id(hit)] = (
+            getattr(hit, "artifact_kind", "") or ""
+        ).strip()
+
+    # Step 2-4: build candidate proxies that carry the post-
+    # demotion score the planner sorts on. Same shape the
+    # synthetic tests use so plan_evidence can read it without a
+    # special path.
+    @dataclass
+    class _Proxy:
+        artifact_id: str
+        artifact_type: str
+        rerank_score: float
+        score: float
+        section_path: str | None
+        title: str | None
+        chunk_id: str | None
+        metadata: dict
+        payload: object
+        is_boilerplate: bool
+        boilerplate_category: str | None
+
+    proxies: list[_Proxy] = []
+    reranked_diags: list[CandidateDiagnostic] = []
+    for payload, score in zip(scored_payloads, scored_scores):
+        section = section_by_payload.get(id(payload))
+        kind = kind_by_payload.get(id(payload), "")
+        bp = is_boilerplate_chunk(section_path=section)
+        base = float(getattr(score, "total", score))
+        if bp is not None:
+            mult = boilerplate_demotion(bp.category, detected_intent)
+            demoted = base * mult
+        else:
+            demoted = base
+        proxy_meta = {
+            "section_path": section,
+            "chunk_id": getattr(payload, "chunk_id", None),
+        }
+        # The retrieved-hit DTO doesn't carry artifact metadata.
+        # For enriched / compiled candidates the source-grounding
+        # picker NEEDS those metadata keys (``source_chunk_ids``,
+        # ``source_artifact_id``, ``page_range``, ``section_path``)
+        # — look them up from the registry on demand.
+        artifact_id = getattr(payload, "artifact_id", None)
+        if artifact_id and artifact_registry is not None:
+            try:
+                record = artifact_registry.get(ctx, artifact_id)
+                rec_meta = getattr(record, "metadata", None) or {}
+                if isinstance(rec_meta, dict):
+                    for k in (
+                        "source_chunk_ids", "source_artifact_id",
+                        "page_range", "section_path", "chunk_id",
+                    ):
+                        if k in rec_meta and k not in proxy_meta:
+                            proxy_meta[k] = rec_meta[k]
+            except Exception:  # noqa: BLE001 — diagnostics must not break
+                pass
+        proxy = _Proxy(
+            artifact_id=str(getattr(payload, "artifact_id", "")),
+            artifact_type=kind,
+            rerank_score=demoted,
+            score=demoted,
+            section_path=section,
+            title=getattr(payload, "title", None),
+            chunk_id=getattr(payload, "chunk_id", None),
+            metadata=proxy_meta,
+            payload=payload,
+            is_boilerplate=bp is not None,
+            boilerplate_category=bp.category.value if bp else None,
+        )
+        proxies.append(proxy)
+
+        # Audit: emit one diagnostic per scored candidate so the
+        # reranked event captures the full pool (not just rerank's
+        # pre-selection).
+        d = CandidateDiagnostic.from_search_hit(payload)
+        d.rerank_score = base
+        d.final_score = demoted
+        d.section_path = section or d.section_path
+        reranked_diags.append(d)
+
+    diagnostics.record_candidates_reranked(reranked_diags)
+
+    # Step 5: planner runs on non-boilerplate pool first.
+    non_bp = [p for p in proxies if not p.is_boilerplate]
+    bp_pool = [p for p in proxies if p.is_boilerplate]
+
+    plan = plan_evidence(
+        non_bp,
+        intent=detected_intent,
+        max_blocks=max_blocks,
+    )
+    selected_proxies = list(plan.selected)
+    last_resort_used = False
+    if not selected_proxies and not strict_boilerplate:
+        # No non-boilerplate alternative existed. The user spec
+        # allows boilerplate as a documented last resort — but
+        # only on the FIRST pass. The fallback path (strict
+        # mode) refuses this exit so a check_pack failure can
+        # actually be improved.
+        last_resort_plan = plan_evidence(
+            bp_pool,
+            intent=detected_intent,
+            max_blocks=max_blocks,
+        )
+        selected_proxies = list(last_resort_plan.selected)
+        plan = last_resort_plan
+        last_resort_used = True
+
+    # Step 6: emit drop events for the planner's swaps with
+    # grounding_method preserved.
+    for dropped_obj, reason in plan.dropped:
+        d = CandidateDiagnostic.from_search_hit(dropped_obj)
+        diagnostics.record_dropped(d, reason=str(reason))
+
+    # Build the (payload, reason) map the projection loop uses
+    # to emit ``record_selected`` exactly once per block with the
+    # correct planner reason. Reason variants:
+    #   * ``planner_top_for_intent``                         — normal pick
+    #   * ``planner_top_for_intent:<grounding_method>``      — when source
+    #         grounding swapped this chunk in for an enriched anchor
+    #   * ``selected_as_last_resort_no_non_boilerplate_candidate``
+    #         — corpus has only boilerplate candidates in scope
+    # Pre-compute pack composition for grounding_status tagging.
+    # When the selection naturally contains BOTH an enriched
+    # anchor and a source chunk, the source-grounding requirement
+    # was satisfied WITHOUT a swap. Tag the chunk-side select event
+    # with the documented status so an audit reader doesn't have
+    # to infer absence-of-swap from missing drop events.
+    pack_has_enriched = any(
+        p.artifact_type.startswith("enriched.") for p in selected_proxies
+    )
+    pack_has_source = any(
+        p.artifact_type in ("chunk", "compiled.text")
+        for p in selected_proxies
+    )
+    natural_grounding = pack_has_enriched and pack_has_source
+
+    reason_by_payload: dict[int, str] = {}
+    score_by_payload: dict[int, tuple[float, float]] = {}
+    selected_payloads_out: list = []
+    selected_scores_out: list = []
+    for proxy in selected_proxies:
+        # Stash the rerank + post-demotion scores so the
+        # projection loop can decorate the selected event with
+        # the planner's final numbers (otherwise the legacy
+        # ``CandidateDiagnostic.from_search_hit`` projection
+        # produces all-None scores).
+        score_by_payload[id(proxy.payload)] = (
+            proxy.rerank_score, proxy.score,
+        )
+        if last_resort_used and proxy.is_boilerplate:
+            reason = (
+                "selected_as_last_resort_no_non_boilerplate_candidate"
+            )
+        else:
+            reason = "planner_top_for_intent"
+        method = _grounding_method_for(proxy, plan.dropped)
+        if method is not None:
+            reason = f"{reason}:{method}"
+        # Generic grounding status: tag chunk-kind selects when
+        # the pack also has an enriched anchor + no swap drop
+        # accounted for the grounding. Lower-priority fix from
+        # the spec — strictly additive.
+        if (
+            natural_grounding
+            and proxy.artifact_type in ("chunk", "compiled.text")
+            and method is None
+        ):
+            reason = f"{reason}:source_already_selected"
+        reason_by_payload[id(proxy.payload)] = reason
+        selected_payloads_out.append(proxy.payload)
+        selected_scores_out.append(proxy.score)
+    return (
+        selected_payloads_out, selected_scores_out,
+        reason_by_payload, score_by_payload,
+    )
+
+
+def _grounding_method_for(proxy, dropped_pairs) -> str | None:
+    """When ``plan_evidence`` swapped an enriched anchor for this
+    proxy via the source-grounding helper, the swap's drop event
+    carries ``swapped_for_source_grounding:<method>``. Extract the
+    method so the SELECTED event can mirror it."""
+    if proxy.artifact_type not in ("chunk", "compiled.text"):
+        return None
+    for _dropped_obj, reason in dropped_pairs:
+        if isinstance(reason, str) and reason.startswith(
+            "swapped_for_source_grounding:",
+        ):
+            return reason.split(":", 1)[1]
+    return None
+
+
+def _emit_legacy_demotion_diagnostics(
+    *,
+    selected_payloads,
+    selected_scores,
+    detected_intent,
+    diagnostics,
+) -> None:
+    """For non-structured intents we keep the existing rerank
+    pre-pick + a post-hoc reranked event with boilerplate-
+    demoted final_score. The legacy paths still see the same
+    selected_payloads order, only post-demotion if a non-bp
+    candidate ranked higher post-demotion."""
+    from j1.retrieval.boilerplate import (
+        boilerplate_demotion, is_boilerplate_chunk,
+    )
+    from j1.retrieval.diagnostics import CandidateDiagnostic
+
+    reranked_diags: list[CandidateDiagnostic] = []
+    for payload, score in zip(selected_payloads, selected_scores):
+        d = CandidateDiagnostic.from_search_hit(payload)
+        base = float(getattr(score, "total", score))
+        d.rerank_score = base
+        bp = is_boilerplate_chunk(section_path=d.section_path)
+        if bp is not None:
+            d.final_score = base * boilerplate_demotion(
+                bp.category, detected_intent,
+            )
+        else:
+            d.final_score = base
+        reranked_diags.append(d)
+    diagnostics.record_candidates_reranked(reranked_diags)
+
+
+from dataclasses import dataclass  # noqa: E402 — used by _Proxy above
 
 
 def _resolve_text_for_hit(
