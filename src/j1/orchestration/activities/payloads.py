@@ -52,6 +52,13 @@ class EnrichActivityInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Workflow-supplied owning document so the diagnostic recorder
+    # can stamp ``document_id`` onto the per-stage audit events.
+    # Without it the enrich stage events used to land with
+    # ``document_id=None`` even though the workflow always knows
+    # which document the per-artifact loop is enriching. Optional
+    # for legacy callers that don't carry the document context.
+    document_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,10 @@ class IndexActivityInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Workflow-supplied owning document for diagnostic attribution;
+    # see ``EnrichActivityInput.document_id`` for rationale. Optional
+    # for legacy callers (multi-document indexers may pass None).
+    document_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -40,11 +40,19 @@ with workflow.unsafe.imports_passed_through():
     )
     from j1.orchestration.activities.project import ProjectActivities
     from j1.orchestration.activities.runs import (
+        ReportAttemptInput,
         ReportRunTerminalInput,
         ReportStepLifecycleInput,
         ReportStepSkippedInput,
         RunsActivities,
         StepSummaryEntry,
+    )
+    from j1.processing.diagnostics import (
+        EVENT_COMPILE_ATTEMPT_COMPLETED,
+        EVENT_COMPILE_ATTEMPT_STARTED,
+        EVENT_COMPILE_RETRY_SCHEDULED,
+        EVENT_ENRICHMENT_ATTEMPT_COMPLETED,
+        EVENT_ENRICHMENT_ATTEMPT_STARTED,
     )
     from j1.orchestration.errors import (
         ERROR_TYPE_REQUIRED_STEP_FAILED,
@@ -702,6 +710,19 @@ def _safe_now_iso() -> str:
     except Exception:  # noqa: BLE001 — outside workflow runtime
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_now():
+    """Datetime variant of :func:`_safe_now_iso`. Same fallback
+ rationale: callers (e.g. duration math around compile / enrich
+ attempts) need a datetime in both production replay paths AND in
+ unit tests that drive the workflow without a real Temporal
+ event loop."""
+    try:
+        return workflow.now()
+    except Exception:  # noqa: BLE001 — outside workflow runtime
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc)
 
 
 def _parse_method_for_mode(mode: str | None) -> str | None:
@@ -2474,6 +2495,53 @@ class ProjectProcessingWorkflow:
         except Exception:  # noqa: BLE001
             pass
 
+    async def _emit_attempt(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        action: str,
+        attempt: int,
+        document_id: str | None = None,
+        artifact_id: str | None = None,
+        mode: str | None = None,
+        next_mode: str | None = None,
+        duration_ms: int | None = None,
+        success: bool | None = None,
+        reason: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Emit a compile / enrich attempt or retry-scheduled event.
+
+        Wraps ``RunsActivities.report_attempt``, which forwards to
+        the diagnostic recorder. Best-effort: a telemetry failure
+        never blocks the workflow; that's why we don't propagate
+        errors here. Used by the compile retry loop and the
+        per-artifact enrich loop."""
+        if not request.correlation_id:
+            return
+        try:
+            await workflow.execute_activity_method(
+                RunsActivities.report_attempt,
+                ReportAttemptInput(
+                    scope=request.scope,
+                    run_id=request.correlation_id,
+                    action=action,
+                    attempt=attempt,
+                    document_id=document_id,
+                    artifact_id=artifact_id,
+                    mode=mode,
+                    next_mode=next_mode,
+                    duration_ms=duration_ms,
+                    success=success,
+                    reason=reason,
+                    error=error,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _set_search_attribute(self, name: str, value: str) -> None:
         """Opt-in keyword search-attribute upsert.
 
@@ -2962,6 +3030,18 @@ class ProjectProcessingWorkflow:
 
         for attempt_n in range(1, max_attempts + 1):
             attempt_started_at = _safe_now_iso()
+            current_mode_for_attempt = (
+                (current_assessment_payload or {}).get("mode")
+                if current_assessment_payload else None
+            )
+            attempt_started_clock = _safe_now()
+            await self._emit_attempt(
+                request,
+                action=EVENT_COMPILE_ATTEMPT_STARTED,
+                attempt=attempt_n,
+                document_id=document_id,
+                mode=current_mode_for_attempt,
+            )
             compile_result = await workflow.execute_activity_method(
                 ProcessingActivities.compile,
                 CompileActivityInput(
@@ -2984,6 +3064,11 @@ class ProjectProcessingWorkflow:
                 retry_policy=COMPILE_RETRY.to_temporal(),
             )
             attempt_completed_at = _safe_now_iso()
+            attempt_completed_clock = _safe_now()
+            attempt_duration_ms = int(
+                (attempt_completed_clock - attempt_started_clock)
+                .total_seconds() * 1000
+            )
             verdict = self._evaluate_compile_attempt(
                 compile_result,
                 retry_settings=retry_settings,
@@ -2992,6 +3077,17 @@ class ProjectProcessingWorkflow:
             current_mode = (
                 (current_assessment_payload or {}).get("mode")
                 if current_assessment_payload else None
+            )
+            await self._emit_attempt(
+                request,
+                action=EVENT_COMPILE_ATTEMPT_COMPLETED,
+                attempt=attempt_n,
+                document_id=document_id,
+                mode=current_mode,
+                duration_ms=attempt_duration_ms,
+                success=(str(compile_result.status) == "succeeded"),
+                reason=verdict.retry_reason,
+                error=compile_result.error,
             )
             current_parse_method = (
                 _parse_method_for_mode(current_mode)
@@ -3092,6 +3188,20 @@ class ProjectProcessingWorkflow:
                     f"retrying compile: attempt={attempt_n} reason="
                     f"{verdict.retry_reason} → next_mode={next_mode.value}"
                 ),
+            )
+            # Audit-event sibling of the existing workflow log line;
+            # ``_log_step`` writes to the workflow logger only, this
+            # call lands the retry on the events.jsonl stream so
+            # operators tailing ``/ingestion-runs/{id}/events`` see
+            # the escalation in real time.
+            await self._emit_attempt(
+                request,
+                action=EVENT_COMPILE_RETRY_SCHEDULED,
+                attempt=attempt_n,
+                document_id=document_id,
+                mode=current_mode,
+                next_mode=next_mode.value,
+                reason=verdict.retry_reason,
             )
         # write the compile retry count to the search
         # attribute surface so ops dashboards can aggregate by
@@ -3321,11 +3431,22 @@ class ProjectProcessingWorkflow:
             # validation would create N reports per run; one report
             # per stage per run is the contract.
             enrich_produced_ids: list[str] = []
-            for artifact_id in list(compile_result.artifact_ids):
+            for enrich_attempt_idx, artifact_id in enumerate(
+                list(compile_result.artifact_ids), start=1,
+            ):
                 enrich_op = f"{OPERATION_ENRICH}:{artifact_id}"
                 if await self._gate_before_expensive(request, enrich_op):
                     return
                 self._begin(enrich_op)
+                enrich_started_clock = _safe_now()
+                await self._emit_attempt(
+                    request,
+                    action=EVENT_ENRICHMENT_ATTEMPT_STARTED,
+                    attempt=enrich_attempt_idx,
+                    document_id=document_id,
+                    artifact_id=artifact_id,
+                    mode=request.enricher_kind,
+                )
                 enrich_result: ArtifactActivityResult = (
                     await workflow.execute_activity_method(
                         ProcessingActivities.enrich,
@@ -3335,6 +3456,13 @@ class ProjectProcessingWorkflow:
                             processor_kind=request.enricher_kind,
                             actor=request.actor,
                             correlation_id=request.correlation_id,
+                            # Thread the owning document through so
+                            # the diagnostic recorder stamps it onto
+                            # every ``j1.ingestion.stage.*`` event for
+                            # the enrich stage. Without this, run-
+                            # scoped audit consumers can't attribute
+                            # an enrich event to a document.
+                            document_id=document_id,
                         ),
                         start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                         # Long enrich children — vision / table-LLM
@@ -3367,6 +3495,21 @@ class ProjectProcessingWorkflow:
                         ),
                         metadata={"artifact_id": artifact_id},
                     )
+                    enrich_failed_duration_ms = int(
+                        (_safe_now() - enrich_started_clock)
+                        .total_seconds() * 1000
+                    )
+                    await self._emit_attempt(
+                        request,
+                        action=EVENT_ENRICHMENT_ATTEMPT_COMPLETED,
+                        attempt=enrich_attempt_idx,
+                        document_id=document_id,
+                        artifact_id=artifact_id,
+                        mode=request.enricher_kind,
+                        duration_ms=enrich_failed_duration_ms,
+                        success=False,
+                        error=enrich_result.error,
+                    )
                     raise _BusinessRejection(
                         f"enrich failed for {artifact_id}: {enrich_result.error}"
                     )
@@ -3379,7 +3522,29 @@ class ProjectProcessingWorkflow:
                     required=True,
                     source=StepSource.CALLER,
                     artifact_count=len(enrich_result.artifact_ids),
-                    metadata={"artifact_id": artifact_id},
+                    # ``artifact_id`` here is the source compile
+                    # artifact this enrich pass consumed; the resume
+                    # snapshot reads this to populate
+                    # ``completed_step_instances`` so the per-artifact
+                    # identity is recoverable.
+                    metadata={
+                        "artifact_id": artifact_id,
+                        "document_id": document_id,
+                    },
+                )
+                enrich_done_duration_ms = int(
+                    (_safe_now() - enrich_started_clock)
+                    .total_seconds() * 1000
+                )
+                await self._emit_attempt(
+                    request,
+                    action=EVENT_ENRICHMENT_ATTEMPT_COMPLETED,
+                    attempt=enrich_attempt_idx,
+                    document_id=document_id,
+                    artifact_id=artifact_id,
+                    mode=request.enricher_kind,
+                    duration_ms=enrich_done_duration_ms,
+                    success=True,
                 )
                 self._complete(enrich_op)
             await self._maybe_review(request, GATE_AFTER_ENRICH)
@@ -3502,6 +3667,12 @@ class ProjectProcessingWorkflow:
                     processor_kind=request.indexer_kind,
                     actor=request.actor,
                     correlation_id=request.correlation_id,
+                    # Single owning document for single-doc workflows;
+                    # batch / multi-document indexers leave it None.
+                    document_id=(
+                        request.target_document_ids[0]
+                        if len(request.target_document_ids) == 1 else None
+                    ),
                 ),
                 start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                 retry_policy=DEFAULT_RETRY.to_temporal(),

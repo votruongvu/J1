@@ -67,6 +67,26 @@ EVENT_LLM_CALL_COMPLETED = "j1.ingestion.llm_call.completed"
 EVENT_ENRICHMENT_PROGRESS = "j1.ingestion.enrichment.progress"
 EVENT_REPORT_WRITTEN = "j1.ingestion.diagnostic_report.written"
 
+# Compile-attempt + retry trace. Emitted from the workflow's
+# compile-retry ladder so audit consumers can see every attempt
+# (FAST → STANDARD → DEEP → STOP) and the operator-visible reason
+# each retry was scheduled. Without these, the events stream
+# carried a single ``processing.compile.completed`` per document
+# with no visibility into how many attempts ran or why an
+# escalation fired.
+EVENT_COMPILE_ATTEMPT_STARTED = "j1.ingestion.compile.attempt.started"
+EVENT_COMPILE_ATTEMPT_COMPLETED = "j1.ingestion.compile.attempt.completed"
+EVENT_COMPILE_RETRY_SCHEDULED = "j1.ingestion.compile.retry.scheduled"
+
+# Enrichment-attempt trace. Per-artifact enrich invocation in the
+# composite path. Companion events to ``EVENT_ENRICHMENT_PROGRESS``
+# (which carries the aggregate counters) so consumers can attribute
+# each LLM call to a specific enrich attempt against a specific
+# artifact.
+EVENT_ENRICHMENT_ATTEMPT_STARTED = "j1.ingestion.enrichment.attempt.started"
+EVENT_ENRICHMENT_ATTEMPT_COMPLETED = "j1.ingestion.enrichment.attempt.completed"
+EVENT_ENRICHMENT_RETRY_SCHEDULED = "j1.ingestion.enrichment.retry.scheduled"
+
 
 # ---- Artifact kind -----------------------------------------------
 
@@ -378,6 +398,64 @@ class DiagnosticRecorder:
                 exc_info=True,
             )
 
+    # ---- Compile / enrichment attempt + retry trace --------------
+
+    def record_attempt_event(
+        self,
+        *,
+        ctx: "ProjectContext",
+        run_id: str | None,
+        action: str,
+        attempt: int,
+        document_id: str | None = None,
+        artifact_id: str | None = None,
+        mode: str | None = None,
+        next_mode: str | None = None,
+        duration_ms: int | None = None,
+        success: bool | None = None,
+        reason: str | None = None,
+        error: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a compile / enrichment attempt or retry-scheduled
+        audit event. Generic so the workflow can use one helper for
+        all six new event actions (compile.attempt.started /
+        completed / retry.scheduled and enrichment counterparts).
+
+        ``mode`` is the compile-retry ladder rung (FAST / STANDARD
+        / DEEP / STOP) or the enricher kind. ``next_mode`` is what
+        the retry will run as. ``reason`` is the operator-visible
+        explanation (e.g. ``"insufficient_chunks"``) for a retry.
+        """
+        if run_id is None:
+            return
+        try:
+            payload: dict[str, Any] = {
+                "run_id": run_id,
+                "document_id": document_id,
+                "artifact_id": artifact_id,
+                "attempt": int(attempt),
+                "mode": mode,
+                "next_mode": next_mode,
+                "duration_ms": duration_ms,
+                "success": success,
+                "reason": _safe_preview(reason, limit=240),
+                "error": _safe_preview(error),
+            }
+            if extra:
+                for k, v in extra.items():
+                    payload.setdefault(k, v)
+            self._safe_audit(
+                ctx=ctx, action=action,
+                target_id=run_id,
+                payload=payload,
+            )
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "diagnostic recorder: record_attempt_event failed "
+                "(action=%s)", action, exc_info=True,
+            )
+
     # ---- Enrichment progress -------------------------------------
 
     def record_enrichment_progress(
@@ -648,16 +726,26 @@ class DiagnosticRecorder:
         action: str,
         target_id: str,
         payload: dict[str, Any],
+        correlation_id: str | None = None,
     ) -> None:
         if self._audit is None:
             return
         try:
+            # ``j1.ingestion.*`` events carry the same run_id in
+            # target_id (the diagnostic surface is always run-scoped),
+            # so default ``correlation_id`` to ``target_id`` when the
+            # caller didn't override. Without this the recorder used
+            # to emit events with ``correlation_id=None`` even though
+            # the run was unambiguous — operators tailing
+            # ``/ingestion-runs/{id}/events`` couldn't filter to the
+            # current run.
             self._audit.record(
                 ctx,
                 actor="system",
                 action=action,
                 target_kind="ingestion_run",
                 target_id=target_id,
+                correlation_id=correlation_id or target_id,
                 payload=payload,
             )
         except Exception:  # noqa: BLE001
@@ -829,7 +917,13 @@ def _materialise_report(
 __all__ = [
     "ARTIFACT_KIND_DIAGNOSTIC_REPORT",
     "DIAGNOSTIC_REPORT_FILENAME",
+    "EVENT_COMPILE_ATTEMPT_COMPLETED",
+    "EVENT_COMPILE_ATTEMPT_STARTED",
+    "EVENT_COMPILE_RETRY_SCHEDULED",
+    "EVENT_ENRICHMENT_ATTEMPT_COMPLETED",
+    "EVENT_ENRICHMENT_ATTEMPT_STARTED",
     "EVENT_ENRICHMENT_PROGRESS",
+    "EVENT_ENRICHMENT_RETRY_SCHEDULED",
     "EVENT_LLM_CALL_COMPLETED",
     "EVENT_REPORT_WRITTEN",
     "EVENT_STAGE_COMPLETED",

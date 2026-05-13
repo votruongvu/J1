@@ -45,3 +45,46 @@ def test_correlation_id_round_trips(audit_recorder, workspace, ctx):
     )
     line = (workspace.audit(ctx) / AUDIT_LOG_FILENAME).read_text().splitlines()[0]
     assert json.loads(line)["correlation_id"] == "run-9"
+
+
+def test_sequence_increments_per_correlation_id(
+    audit_recorder, workspace, ctx,
+):
+    """Each ``record`` call against the same ``correlation_id`` gets a
+    monotonically-increasing ``sequence`` so consumers can detect
+    out-of-order delivery and reorder ties on ``occurred_at``."""
+    for i in range(3):
+        audit_recorder.record(
+            ctx, actor="system", action=f"a-{i}",
+            target_kind="thing", target_id="t",
+            correlation_id="run-7",
+        )
+    audit_recorder.record(
+        ctx, actor="system", action="other",
+        target_kind="thing", target_id="t",
+        correlation_id="run-other",
+    )
+    lines = (
+        workspace.audit(ctx) / AUDIT_LOG_FILENAME
+    ).read_text().splitlines()
+    parsed = [json.loads(line) for line in lines]
+    run7_events = [e for e in parsed if e["correlation_id"] == "run-7"]
+    other_events = [e for e in parsed if e["correlation_id"] == "run-other"]
+    assert [e["sequence"] for e in run7_events] == [1, 2, 3]
+    # A separate correlation_id has its own counter starting at 1.
+    assert other_events[0]["sequence"] == 1
+
+
+def test_sequence_is_none_when_no_correlation_id(
+    audit_recorder, workspace, ctx,
+):
+    """Unscoped events (no correlation_id) skip the sequencer — the
+    feature only makes sense within a run-scoped event stream."""
+    audit_recorder.record(
+        ctx, actor="system", action="x",
+        target_kind="thing", target_id="t",
+    )
+    line = (
+        workspace.audit(ctx) / AUDIT_LOG_FILENAME
+    ).read_text().splitlines()[0]
+    assert json.loads(line)["sequence"] is None

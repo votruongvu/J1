@@ -1023,7 +1023,7 @@ class ProcessingActivities:
     def enrich(self, input: EnrichActivityInput) -> ArtifactActivityResult:
         ctx = input.scope.to_context()
         with self._diag_stage_wrap(
-            ctx, input.correlation_id, None,
+            ctx, input.correlation_id, input.document_id,
             stage_name="enrich",
             counters={},
         ):
@@ -1104,7 +1104,7 @@ class ProcessingActivities:
     def index(self, input: IndexActivityInput) -> ProcessingActivityResult:
         ctx = input.scope.to_context()
         with self._diag_stage_wrap(
-            ctx, input.correlation_id, None,
+            ctx, input.correlation_id, input.document_id,
             stage_name="index",
             counters={"input_artifact_count": len(input.artifact_ids or [])},
         ):
@@ -1937,32 +1937,34 @@ class ProcessingActivities:
             recorder=self._diagnostics,
             ctx=ctx,
         )
-        started = time.perf_counter()
-        success = True
-        error: str | None = None
-        with set_current_run_context(rc):
+        # ``stage()`` (context manager) emits ``stage.started`` at
+        # entry and ``stage.completed`` at exit — proper start/end
+        # timing on the wall clock. The previous implementation
+        # called ``record_stage_event`` in the ``finally`` block,
+        # which emitted BOTH events with the same end-of-stage
+        # timestamp; downstream consumers couldn't tell when the
+        # stage actually began. The wrapped ``stage()`` also lets
+        # the live counters dict mutate during the activity body
+        # — its final contents land on the completed event when
+        # the with-block exits.
+        with set_current_run_context(rc), self._diagnostics.stage(
+            ctx=ctx,
+            run_id=run_id,
+            stage_name=stage_name,
+            counters=dict(counters),
+            document_id=document_id,
+        ) as stage_handle:
             try:
                 yield
-            except Exception as exc:
-                success = False
-                error = type(exc).__name__
-                raise
             finally:
+                # Push the activity's accumulated counter snapshot
+                # onto the stage record so ``stage.completed``
+                # carries the final numbers, not the empty initial
+                # set. ``update`` is a no-op when the recorder is
+                # unwired (``_no_op=True``).
                 try:
-                    self._diagnostics.record_stage_event(
-                        ctx=ctx,
-                        run_id=run_id,
-                        stage_name=stage_name,
-                        document_id=document_id,
-                        duration_ms=int(
-                            (time.perf_counter() - started) * 1000,
-                        ),
-                        success=success,
-                        error=error,
-                        counters=dict(counters),
-                    )
+                    stage_handle.update(**counters)
                 except Exception:  # noqa: BLE001
-                    # Diagnostic failures must not surface.
                     pass
 
     # ---- Progress-reporter integration -------------------------

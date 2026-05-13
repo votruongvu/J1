@@ -44,12 +44,16 @@ class _SpyAudit:
     def __init__(self) -> None:
         self.events: list[dict] = []
 
-    def record(self, ctx, *, actor, action, target_kind, target_id, payload):
+    def record(
+        self, ctx, *, actor, action, target_kind, target_id, payload,
+        correlation_id=None,
+    ):
         self.events.append({
             "actor": actor,
             "action": action,
             "target_kind": target_kind,
             "target_id": target_id,
+            "correlation_id": correlation_id,
             "payload": dict(payload),
         })
 
@@ -381,3 +385,99 @@ def test_audit_failure_does_not_break_stage_wrap(
     report = rec.build_report("r-1")
     assert report is not None
     assert any(s["name"] == "compile" for s in report["stages"])
+
+
+# ---- Phase A: correlation_id defaults to target_id (= run_id) ----
+
+
+def test_diagnostic_events_carry_correlation_id_by_default(
+    ctx, workspace, artifact_registry,
+):
+    """Every ``j1.ingestion.*`` event emitted by the recorder MUST
+    carry ``correlation_id`` so consumers tailing
+    ``/ingestion-runs/{id}/events`` can filter to the current run.
+    The recorder defaults ``correlation_id`` to ``target_id`` (=
+    ``run_id``) when the caller doesn't pass one — issue-3 fix."""
+    audit = _SpyAudit()
+    rec = _make_recorder(workspace, artifact_registry, audit=audit)
+    with rec.stage(ctx=ctx, run_id="r-42", stage_name="compile"):
+        pass
+    rec.record_llm_call(
+        ctx=ctx, run_id="r-42", stage="compile", purpose="chunk_metadata",
+        provider="x", model="y", duration_ms=10,
+    )
+    assert audit.events, "expected at least one event"
+    for e in audit.events:
+        assert e["correlation_id"] == "r-42", (
+            f"event {e['action']!r} missing correlation_id"
+        )
+
+
+# ---- Phase C: attempt + retry event emission --------------------
+
+
+def test_record_attempt_event_emits_audit_with_payload(
+    ctx, workspace, artifact_registry,
+):
+    """``record_attempt_event`` is the helper the workflow's
+    ``RunsActivities.report_attempt`` activity forwards to. It
+    must emit a structured audit event carrying attempt + mode +
+    duration so the events stream shows the compile-retry ladder
+    + per-artifact enrich attempts."""
+    from j1.processing.diagnostics import (
+        EVENT_COMPILE_ATTEMPT_COMPLETED,
+        EVENT_COMPILE_RETRY_SCHEDULED,
+        EVENT_ENRICHMENT_ATTEMPT_COMPLETED,
+    )
+    audit = _SpyAudit()
+    rec = _make_recorder(workspace, artifact_registry, audit=audit)
+
+    rec.record_attempt_event(
+        ctx=ctx, run_id="r-1", action=EVENT_COMPILE_ATTEMPT_COMPLETED,
+        attempt=1, document_id="doc-1", mode="standard",
+        duration_ms=42_000, success=True,
+    )
+    rec.record_attempt_event(
+        ctx=ctx, run_id="r-1", action=EVENT_COMPILE_RETRY_SCHEDULED,
+        attempt=1, document_id="doc-1",
+        mode="standard", next_mode="deep",
+        reason="insufficient_chunks",
+    )
+    rec.record_attempt_event(
+        ctx=ctx, run_id="r-1", action=EVENT_ENRICHMENT_ATTEMPT_COMPLETED,
+        attempt=3, document_id="doc-1", artifact_id="art-7",
+        mode="j1.enricher.composite", duration_ms=12_000, success=True,
+    )
+
+    actions = [e["action"] for e in audit.events]
+    assert EVENT_COMPILE_ATTEMPT_COMPLETED in actions
+    assert EVENT_COMPILE_RETRY_SCHEDULED in actions
+    assert EVENT_ENRICHMENT_ATTEMPT_COMPLETED in actions
+
+    retry = next(e for e in audit.events if e["action"] == EVENT_COMPILE_RETRY_SCHEDULED)
+    assert retry["payload"]["next_mode"] == "deep"
+    assert retry["payload"]["reason"] == "insufficient_chunks"
+    assert retry["correlation_id"] == "r-1"
+
+    enrich_attempt = next(
+        e for e in audit.events
+        if e["action"] == EVENT_ENRICHMENT_ATTEMPT_COMPLETED
+    )
+    assert enrich_attempt["payload"]["artifact_id"] == "art-7"
+    assert enrich_attempt["payload"]["attempt"] == 3
+    assert enrich_attempt["payload"]["success"] is True
+
+
+def test_record_attempt_event_no_op_when_run_id_missing(
+    ctx, workspace, artifact_registry,
+):
+    """The activity stays callable in tests that don't pass a
+    run_id — no audit fires, no exception either."""
+    audit = _SpyAudit()
+    rec = _make_recorder(workspace, artifact_registry, audit=audit)
+    from j1.processing.diagnostics import EVENT_COMPILE_ATTEMPT_STARTED
+    rec.record_attempt_event(
+        ctx=ctx, run_id=None, action=EVENT_COMPILE_ATTEMPT_STARTED,
+        attempt=1,
+    )
+    assert audit.events == []

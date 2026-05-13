@@ -446,3 +446,86 @@ def test_artifact_record_does_not_leak_absolute_paths(processing_service, ctx):
 )
 def test_service_exposes_all_capability_methods(processing_service, method_name):
     assert callable(getattr(processing_service, method_name))
+
+
+# ---- Issue 5: action-string correctness on persist helpers -------
+
+
+def test_persist_enrichment_result_emits_enrich_completed_action(
+    processing_service, workspace, ctx,
+):
+    """``persist_enrichment_result`` used to emit
+    ``processing.compile.completed``; ~9× of the
+    ``processing.compile.completed`` audit rows on every run came
+    from these auxiliary persists. The fix routes it through
+    ``processing.enrich.completed`` so the compile event count
+    matches actual compile attempts."""
+    record = processing_service.persist_enrichment_result(
+        ctx,
+        run_id="run-77",
+        document_id="doc-1",
+        payload={"status": "succeeded", "module_outcomes": []},
+    )
+    assert record.kind  # registered
+    events = _read_audit(workspace, ctx)
+    actions = [e["action"] for e in events]
+    assert "processing.enrich.completed" in actions
+    assert "processing.compile.completed" not in actions
+
+
+def test_persist_report_helpers_dual_emit_legacy_compile_completed(
+    processing_service, workspace, ctx,
+):
+    """Auxiliary report-persist helpers
+    (``persist_compile_strategy_report`` and friends) now emit
+    ``processing.report.persisted`` AS THE PRIMARY EVENT. They
+    also dual-emit ``processing.compile.completed`` for one
+    release so legacy UI consumers don't break — the dual-emit
+    event carries ``deprecated_alias_of`` in its payload so
+    consumers can detect the transition."""
+    processing_service.persist_compile_strategy_report(
+        ctx, run_id="run-77", document_id="doc-1",
+        payload={"attempts": [], "final_compile_quality": "good"},
+    )
+    events = _read_audit(workspace, ctx)
+    actions = [e["action"] for e in events]
+    assert "processing.report.persisted" in actions
+    assert "processing.compile.completed" in actions
+    legacy = next(
+        e for e in events if e["action"] == "processing.compile.completed"
+    )
+    assert legacy["payload"]["deprecated_alias_of"] == (
+        "processing.report.persisted"
+    )
+
+
+def test_audit_payload_carries_kinds_by_format_for_transparency(
+    processing_service, workspace, ctx,
+):
+    """Each enricher emits ``json`` + ``md`` sibling drafts of the
+    same kind, so the audit payload's ``artifact_ids`` list shows
+    each kind twice. ``kinds_by_format`` makes the breakdown
+    explicit so consumers don't have to re-derive it from a
+    registry query — issue-7 transparency."""
+    drafts = [
+        ArtifactDraft(
+            kind="enriched.tables", content=b"{}",
+            suggested_extension=".json",
+            metadata={"format": "json"},
+        ),
+        ArtifactDraft(
+            kind="enriched.tables", content=b"# tables",
+            suggested_extension=".md",
+            metadata={"format": "markdown"},
+        ),
+    ]
+    processor = _MockEnricher(drafts=drafts)
+    processing_service.enrich(ctx, processor, _artifact(ctx))
+    events = _read_audit(workspace, ctx)
+    enrich_event = next(
+        e for e in events if e["action"] == "processing.enrich.completed"
+    )
+    breakdown = enrich_event["payload"]["kinds_by_format"]
+    assert breakdown == {
+        "enriched.tables": {"json": 1, "markdown": 1},
+    }

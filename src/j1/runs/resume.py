@@ -144,19 +144,46 @@ def build_resume_snapshot(
     settings_snapshot = build_settings_snapshot(request)
     completed_steps: list[str] = []
     failed_steps: list[str] = []
-    for entry in step_results_payload:
+    # ``completed_step_instances`` adds per-step identity so a
+    # resume snapshot disambiguates the many "enrich" entries you'd
+    # see on a multi-artifact document — each one corresponds to a
+    # distinct compile artifact. Without this, the legacy
+    # ``completed_steps`` list contains N copies of the string
+    # "enrich" and a consumer can't tell which compile artifacts
+    # already had enrichment carried forward.
+    completed_step_instances: list[dict[str, Any]] = []
+    step_results_list = list(step_results_payload)
+    for entry in step_results_list:
         status = str(entry.get("status") or "")
         step = str(entry.get("step") or "")
         if not step:
             continue
         if status == "completed":
             completed_steps.append(step)
+            metadata = entry.get("metadata") or {}
+            artifact_id = None
+            document_id = None
+            if isinstance(metadata, Mapping):
+                if metadata.get("artifact_id"):
+                    artifact_id = str(metadata["artifact_id"])
+                if metadata.get("document_id"):
+                    document_id = str(metadata["document_id"])
+            instance: dict[str, Any] = {"step": step}
+            if artifact_id:
+                instance["artifact_id"] = artifact_id
+            if document_id:
+                instance["document_id"] = document_id
+            completed_step_instances.append(instance)
         elif status == "failed":
             failed_steps.append(step)
     return {
         "settings_hash": compute_settings_hash(settings_snapshot),
         "settings_snapshot": settings_snapshot,
         "completed_steps": completed_steps,
+        # Identity-aware view of completed_steps (see comment above).
+        # Kept as a sibling rather than replacing ``completed_steps``
+        # so existing resume consumers keep working unchanged.
+        "completed_step_instances": completed_step_instances,
         "failed_steps": failed_steps,
         "produced_artifact_ids": list(produced_artifact_ids),
         "produced_artifact_kinds": list(produced_artifact_kinds),

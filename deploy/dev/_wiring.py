@@ -944,6 +944,13 @@ def build_worker_spec(
             tables_enabled=tables_enabled,
             diagrams_enabled=diagrams_enabled,
             scanned_pages_enabled=scanned_pages_enabled,
+            # Without the limiter every LLM call inside the composite
+            # bypasses ``_emit_diag_llm_call`` → diagnostic report
+            # shows ``llm_call_count=0`` even though real LLM traffic
+            # is happening. Wiring it here lets the limiter's per-call
+            # hook fire ``j1.ingestion.llm_call.completed`` so the
+            # report and the audit stream both reflect actual usage.
+            llm_call_limiter=llm_call_limiter,
         )
         resolved_enrichers = {composite.kind: composite}
     else:

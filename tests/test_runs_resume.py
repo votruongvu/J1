@@ -137,3 +137,42 @@ def test_build_resume_snapshot_carries_failure_context():
     )
     assert snap["failure_code"] == "REQUIRED_STEP_FAILED"
     assert snap["failure_message"].startswith("enrich failed")
+
+
+def test_build_resume_snapshot_carries_per_step_identity():
+    """``completed_step_instances`` adds artifact-level identity so a
+    resume consumer can disambiguate the N "enrich" entries you'd
+    see on a multi-artifact document. Without this, ``completed_steps``
+    looks like ``[\"enrich\", \"enrich\", \"enrich\"]`` and a
+    consumer can't tell which compile artifacts already had
+    enrichment carried forward — issue-8 fix."""
+    snap = build_resume_snapshot(
+        request=_StubRequest(),
+        step_results_payload=[
+            {"step": "compile", "status": "completed",
+             "metadata": {"document_id": "doc-1"}},
+            {"step": "enrich", "status": "completed",
+             "metadata": {"artifact_id": "art-1",
+                          "document_id": "doc-1"}},
+            {"step": "enrich", "status": "completed",
+             "metadata": {"artifact_id": "art-2",
+                          "document_id": "doc-1"}},
+            {"step": "enrich", "status": "completed",
+             "metadata": {"artifact_id": "art-3",
+                          "document_id": "doc-1"}},
+        ],
+        produced_artifact_ids=[],
+        produced_artifact_kinds=[],
+    )
+    # Legacy view still carries 3 "enrich" entries for backward
+    # compat — consumers that already use it don't break.
+    assert snap["completed_steps"].count("enrich") == 3
+    # Identity-aware view distinguishes the three enrich attempts.
+    instances = snap["completed_step_instances"]
+    enrich_instances = [
+        i for i in instances if i["step"] == "enrich"
+    ]
+    assert len(enrich_instances) == 3
+    artifact_ids = {i["artifact_id"] for i in enrich_instances}
+    assert artifact_ids == {"art-1", "art-2", "art-3"}
+    assert all(i["document_id"] == "doc-1" for i in enrich_instances)

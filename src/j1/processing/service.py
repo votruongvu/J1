@@ -42,6 +42,18 @@ ACTION_INDEX_OK = "processing.index.completed"
 ACTION_INDEX_FAIL = "processing.index.failed"
 ACTION_QUERY_OK = "processing.query.completed"
 ACTION_QUERY_FAIL = "processing.query.failed"
+# Generic "a non-compile / non-enrich report artifact was
+# persisted" event. Used by ``persist_compile_strategy_report``,
+# ``persist_post_compile_enrich_plan``,
+# ``persist_compile_result_summary``,
+# ``persist_final_ingestion_report``,
+# ``persist_initial_execution_plan``,
+# ``persist_final_summary``, and ``persist_error_report``.
+# Replaces the previous misuse of ``ACTION_COMPILE_OK`` for these
+# auxiliary reports — the legacy ``processing.compile.completed``
+# is still emitted alongside the new event for one release so UI
+# consumers continue to work while they're migrated.
+ACTION_REPORT_PERSISTED = "processing.report.persisted"
 
 TARGET_DOCUMENT = "document"
 TARGET_ARTIFACT = "artifact"
@@ -227,16 +239,18 @@ class ProcessingService:
         )
         from j1.workspace.layout import WorkspaceArea
         # action + target_kind constants live at module top of this file
+        # See ``ACTION_REPORT_PERSISTED`` rationale at module top.
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -298,13 +312,14 @@ class ProcessingService:
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -360,13 +375,14 @@ class ProcessingService:
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -424,10 +440,16 @@ class ProcessingService:
         result = ArtifactProcessingResult(
             status=ResultStatus.SUCCEEDED, drafts=[draft],
         )
+        # Action string: this is an enrichment overlay being
+        # persisted, NOT a compile artifact. Previously emitted
+        # ``processing.compile.completed`` here, which overloaded the
+        # compile event for non-compile artifacts (the
+        # ``processing.compile.completed`` audit row count was
+        # ~9× the real compile count, breaking attribution).
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.ENRICHED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_ENRICH_OK,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
@@ -492,13 +514,14 @@ class ProcessingService:
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -554,13 +577,14 @@ class ProcessingService:
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -621,13 +645,14 @@ class ProcessingService:
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -696,13 +721,14 @@ class ProcessingService:
         registered = self._handle_artifact_output(
             ctx, result,
             area=WorkspaceArea.COMPILED,
-            action=ACTION_COMPILE_OK,
+            action=ACTION_REPORT_PERSISTED,
             target_kind=TARGET_DOCUMENT,
             target_id=document_id or run_id,
             actor=actor,
             correlation_id=run_id,
             processor_kind=None,
             source_document_ids=[document_id] if document_id else [],
+            legacy_action=ACTION_COMPILE_OK,
         )
         if registered.artifacts:
             return registered.artifacts[0]
@@ -904,6 +930,7 @@ class ProcessingService:
         processor_kind: str | None,
         source_document_ids: list[str] | None = None,
         source_artifact_ids: list[str] | None = None,
+        legacy_action: str | None = None,
     ) -> ArtifactProcessingResult:
         registered: list[ArtifactRecord] = []
         for draft in output.drafts:
@@ -918,6 +945,25 @@ class ProcessingService:
             registered.append(record)
         for breakdown in output.cost_events:
             self._cost.record(ctx, breakdown, correlation_id=correlation_id)
+        # Issue-7 transparency: each enricher produces ``json`` +
+        # ``md`` sibling drafts for the same kind by design, so an
+        # ``artifact_ids`` list of length 18 across 9 kinds is the
+        # expected shape, not a duplicate-write bug. Surface the
+        # breakdown (kind → [json_count, md_count]) so consumers
+        # don't have to re-derive it from a registry query.
+        kinds_by_format: dict[str, dict[str, int]] = {}
+        for r in registered:
+            fmt = "unknown"
+            if r.metadata:
+                fmt = str(r.metadata.get("format") or "unknown")
+            bucket = kinds_by_format.setdefault(r.kind, {})
+            bucket[fmt] = bucket.get(fmt, 0) + 1
+        payload = {
+            "processor_kind": processor_kind,
+            "artifact_ids": [r.artifact_id for r in registered],
+            "result_status": output.status.value,
+            "kinds_by_format": kinds_by_format,
+        }
         self._audit.record(
             ctx,
             actor=actor,
@@ -925,12 +971,23 @@ class ProcessingService:
             target_kind=target_kind,
             target_id=target_id,
             correlation_id=correlation_id,
-            payload={
-                "processor_kind": processor_kind,
-                "artifact_ids": [r.artifact_id for r in registered],
-                "result_status": output.status.value,
-            },
+            payload=payload,
         )
+        # Phase E: dual-emit the legacy action when supplied so
+        # existing UI consumers (which still match against
+        # ``processing.compile.completed`` for non-compile reports)
+        # keep functioning for one release. Same payload — only the
+        # ``action`` string differs. Drop after consumers migrate.
+        if legacy_action and legacy_action != action:
+            self._audit.record(
+                ctx,
+                actor=actor,
+                action=legacy_action,
+                target_kind=target_kind,
+                target_id=target_id,
+                correlation_id=correlation_id,
+                payload={**payload, "deprecated_alias_of": action},
+            )
         return replace(output, artifacts=registered)
 
     def _register_draft(

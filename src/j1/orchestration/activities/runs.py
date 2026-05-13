@@ -30,13 +30,16 @@ ACTIVITY_REPORT_STEP_SKIPPED = "j1.runs.report_step_skipped"
 ACTIVITY_REPORT_PLAN_GENERATED = "j1.runs.report_plan_generated"
 ACTIVITY_REPORT_PLAN_REVISED = "j1.runs.report_plan_revised"
 ACTIVITY_REPORT_STEP_LIFECYCLE = "j1.runs.report_step_lifecycle"
+ACTIVITY_REPORT_ATTEMPT = "j1.runs.report_attempt"
 
 __all__ = [
+    "ACTIVITY_REPORT_ATTEMPT",
     "ACTIVITY_REPORT_PLAN_GENERATED",
     "ACTIVITY_REPORT_PLAN_REVISED",
     "ACTIVITY_REPORT_RUN_TERMINAL",
     "ACTIVITY_REPORT_STEP_LIFECYCLE",
     "ACTIVITY_REPORT_STEP_SKIPPED",
+    "ReportAttemptInput",
     "ReportPlanGeneratedInput",
     "ReportPlanRevisedInput",
     "ReportRunTerminalInput",
@@ -140,6 +143,35 @@ class ReportStepSkippedInput:
 
 
 @dataclass(frozen=True)
+class ReportAttemptInput:
+    """Workflow → activity payload for compile / enrich attempt and
+    retry-scheduled audit events.
+
+    Generic enough to carry both the compile-retry ladder (mode
+    escalation: FAST → STANDARD → DEEP) and the per-artifact
+    enrich attempt trace, so the workflow uses a single activity
+    for all six new event actions
+    (``j1.ingestion.compile.attempt.{started,completed}``,
+    ``j1.ingestion.compile.retry.scheduled``, and the
+    ``enrichment.*`` counterparts). ``action`` is the audit event
+    name; the activity forwards to ``DiagnosticRecorder.record_attempt_event``.
+    """
+
+    scope: ProjectScope
+    run_id: str
+    action: str
+    attempt: int
+    document_id: str | None = None
+    artifact_id: str | None = None
+    mode: str | None = None
+    next_mode: str | None = None
+    duration_ms: int | None = None
+    success: bool | None = None
+    reason: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class ReportStepLifecycleInput:
     """Workflow → activity payload for synthetic `step.started` /
  `step.completed` events.
@@ -230,7 +262,38 @@ class RunsActivities:
             self.report_step_lifecycle,
             self.report_plan_generated,
             self.report_plan_revised,
+            self.report_attempt,
         ]
+
+    @activity.defn(name=ACTIVITY_REPORT_ATTEMPT)
+    def report_attempt(self, input: ReportAttemptInput) -> None:
+        """Emit a compile / enrichment attempt or retry-scheduled
+        audit event via the diagnostic recorder.
+
+        Pulls the audit-emit path through the activity boundary so
+        the workflow stays replay-deterministic. No-op when the
+        recorder isn't wired — the workflow's retry logic is the
+        source of truth; this event is visibility-only."""
+        if self._diagnostics is None:
+            return
+        ctx = input.scope.to_context()
+        try:
+            self._diagnostics.record_attempt_event(
+                ctx=ctx,
+                run_id=input.run_id,
+                action=input.action,
+                attempt=input.attempt,
+                document_id=input.document_id,
+                artifact_id=input.artifact_id,
+                mode=input.mode,
+                next_mode=input.next_mode,
+                duration_ms=input.duration_ms,
+                success=input.success,
+                reason=input.reason,
+                error=input.error,
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks workflow
+            pass
 
     @activity.defn(name=ACTIVITY_REPORT_PLAN_GENERATED)
     def report_plan_generated(self, input: ReportPlanGeneratedInput) -> None:
