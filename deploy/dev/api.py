@@ -23,6 +23,7 @@ import uvicorn
 from deploy.dev._wiring import (
     build_application_facade,
     build_batch_run_store,
+    build_document_lifecycle_service,
     build_review_service,
     build_validation_service,
     build_run_progress_surface,
@@ -407,6 +408,12 @@ def _build_app():
         # is fine because the FE's Validation tab availability gate
         # in `availableViews.validation` will already be off.
         validation_service=build_validation_service(workspace),
+        # Document-centric attach / detach / remove flow. Without
+        # this the three ``POST /documents/{id}/<action>``
+        # endpoints 503 — operators clicked "Remove from Knowledge"
+        # in the Document UI and got an immediate "Remove failed"
+        # toast because the service wasn't wired.
+        document_lifecycle_service=build_document_lifecycle_service(workspace),
         # Hand the LLM registry to the REST adapter so `POST
         # /healthz/llm/refresh` (the FE banner's "Retry now" button)
         # can re-probe synchronously instead of waiting for the next

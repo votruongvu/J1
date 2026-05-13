@@ -181,6 +181,32 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     )
 
 
+def build_document_lifecycle_service(workspace: WorkspaceResolver):
+    """Build the ``DocumentLifecycleService`` for the REST adapter.
+
+    Owns the document-centric attach / detach / remove flow.
+    Without this wired, the three ``POST /documents/{id}/<action>``
+    endpoints return 503 — which is what made operators see
+    "Remove failed" toasts immediately after clicking the
+    button in the Document UI.
+
+    All dependencies are the same JSONL-backed singletons the
+    rest of the dev stack uses: the source registry for the
+    ``knowledge_state`` field on the document record, the
+    artifact registry to flip ``metadata.knowledge_state`` on
+    every artifact tied to the document, and the audit recorder
+    so each transition lands in the audit log.
+    """
+    from j1.audit.recorder import DefaultAuditRecorder
+    from j1.audit.sink import JsonlAuditSink
+    from j1.documents.service import DocumentLifecycleService
+    return DocumentLifecycleService(
+        registry=JsonSourceRegistry(workspace),
+        artifact_registry=JsonArtifactRegistry(workspace),
+        audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
+    )
+
+
 def build_review_service(workspace: WorkspaceResolver):
     """Build the `IngestionResultReviewService` for the REST adapter.
 
