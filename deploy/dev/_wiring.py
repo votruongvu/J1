@@ -141,9 +141,16 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
         max_upload_bytes=_resolve_max_upload_bytes(),
         allowed_extensions=_resolve_allowed_upload_extensions(),
     )
+    # SmartQueryOrchestrator — required by ProcessingService.query
+    # once the orchestrator path is wired. Built once here and
+    # threaded into every query consumer. Falls back to ``None``
+    # when the LLM registry isn't available, in which case
+    # ProcessingService.query raises with a clear message.
+    smart_query_orchestrator = _build_orchestrator_or_none(workspace)
     processing = ProcessingService(
         workspace=workspace, artifact_registry=artifacts,
         audit=audit_recorder, cost=cost_recorder,
+        smart_query_orchestrator=smart_query_orchestrator,
     )
     indexer = SqliteSearchIndexer(workspace, artifacts, sources)
 
@@ -643,6 +650,60 @@ def build_validation_service(workspace: WorkspaceResolver):
         enable_bm25_evidence=enable_bm25_evidence,
         enable_bm25_fallback=enable_bm25_fallback,
         native_query_fallback_to_bm25=native_query_fallback_to_bm25,
+        # SmartQueryOrchestrator — required by run_manual_test_query
+        # (the legacy path was removed). Built once at the
+        # deployment boundary; the validation service threads it
+        # into every per-case execution via DefaultValidationRunner
+        # too.
+        smart_query_orchestrator=_build_orchestrator_or_none(workspace),
+    )
+
+
+def _build_orchestrator_or_none(workspace: WorkspaceResolver):
+    """Build a SmartQueryOrchestrator from the current environment.
+
+    Returns ``None`` when the LLM registry isn't wired (orchestrator
+    without an LLM would always answer with ``answer_nonempty=False``
+    and that's worse than no orchestrator at all). Returns a fully-
+    routed orchestrator otherwise — RAGAnything (when available),
+    BM25, and ArtifactLookup adapters all wired with the same
+    project workspace as the rest of the stack.
+
+    Single helper used by both REST facade construction and worker
+    spec construction so a deployment doesn't get half-wired (REST
+    using the orchestrator, Temporal still on the legacy path) or
+    vice versa.
+    """
+    import logging
+    _wlog = logging.getLogger("j1.deploy.wiring")
+    try:
+        from j1.compose import bootstrap_from_env
+    except Exception as exc:  # noqa: BLE001
+        _wlog.warning(
+            "SmartQueryOrchestrator unavailable: bootstrap import "
+            "failed: %s", exc, exc_info=True,
+        )
+        return None
+    try:
+        boot = bootstrap_from_env()
+    except Exception as exc:  # noqa: BLE001
+        _wlog.warning(
+            "SmartQueryOrchestrator unavailable: bootstrap failed: %s",
+            exc, exc_info=True,
+        )
+        return None
+    llm_registry = getattr(boot, "llm_registry", None)
+    if llm_registry is None:
+        _wlog.warning(
+            "SmartQueryOrchestrator unavailable: bootstrap returned "
+            "no llm_registry",
+        )
+        return None
+    rag_provider = _build_native_query_provider_or_none()
+    return build_smart_query_orchestrator(
+        workspace=workspace,
+        llm_registry=llm_registry,
+        raganything_provider=rag_provider,
     )
 
 
@@ -849,9 +910,16 @@ def build_worker_spec(
         max_upload_bytes=_resolve_max_upload_bytes(),
         allowed_extensions=_resolve_allowed_upload_extensions(),
     )
+    # Worker-side orchestrator. Temporal's ACTIVITY_QUERY delegates
+    # through ProcessingService.query, which requires the
+    # orchestrator. Built once per worker so route adapters
+    # (RAGAnything / BM25 / artifact) are shared across activity
+    # invocations in the same process.
+    smart_query_orchestrator = _build_orchestrator_or_none(workspace)
     processing = ProcessingService(
         workspace=workspace, artifact_registry=artifacts,
         audit=audit_recorder, cost=cost_recorder,
+        smart_query_orchestrator=smart_query_orchestrator,
     )
     indexer = SqliteSearchIndexer(workspace, artifacts, sources)
 

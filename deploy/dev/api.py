@@ -50,6 +50,7 @@ def _load_local_dotenv() -> None:
         load_dotenv(dotenv, override=False)
 
 from deploy.dev._wiring import (
+    _build_orchestrator_or_none,
     build_application_facade,
     build_batch_run_store,
     build_document_lifecycle_service,
@@ -437,6 +438,13 @@ def _build_app():
         # is fine because the FE's Validation tab availability gate
         # in `availableViews.validation` will already be off.
         validation_service=build_validation_service(workspace),
+        # SmartQueryOrchestrator for the ``POST /dev/query-trace``
+        # operator surface. Same instance the validation service +
+        # processing service consume; built once at the deployment
+        # boundary via ``build_smart_query_orchestrator``. Returns
+        # ``None`` when no LLM registry is wired — endpoint then
+        # returns 503 with a wiring hint.
+        smart_query_orchestrator=_build_orchestrator_or_none(workspace),
         # Document-centric attach / detach / remove flow. Without
         # this the three ``POST /documents/{id}/<action>``
         # endpoints 503 — operators clicked "Remove from Knowledge"
