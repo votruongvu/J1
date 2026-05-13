@@ -446,10 +446,22 @@ class QueryIntentClassifier:
             max_results=self._default_max_results,
             label="primary",
         ))
-        # BM25 lexical recall over anchors when present. The user
-        # writing "60% design" is a strong lexical signal that
-        # exact-phrase recall will help — even when the semantic
-        # retriever didn't surface those chunks at top-K.
+        # BM25 lexical recall over the FULL question text. Always
+        # dispatched, not anchor-only — for queries with no detected
+        # anchors (e.g. plain ``what is X?``) BM25 is the only route
+        # that hits the lexical index. Without this job, a thin
+        # RAGAnything response leaves the pack empty and the
+        # sufficiency gate fails before the LLM is called.
+        jobs.append(RetrievalJob(
+            route=RetrievalRouteKind.BM25,
+            query=question,
+            max_results=self._default_max_results,
+            label="bm25_primary",
+        ))
+        # Additional BM25 jobs per anchor term. The user writing
+        # "60% design" is a strong lexical signal that exact-phrase
+        # recall will help — even when the semantic retriever didn't
+        # surface those chunks at top-K.
         for anchor in anchors:
             jobs.append(RetrievalJob(
                 route=RetrievalRouteKind.BM25,

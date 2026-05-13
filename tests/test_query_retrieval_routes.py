@@ -135,11 +135,40 @@ def test_raganything_adapter_falls_back_to_citations(route_ctx):
     assert all(c.text_preview == "" for c in candidates)
 
 
-def test_raganything_adapter_ignores_native_answer_field(route_ctx):
-    """The native answer string never lands in candidates. The
-    contract: routes return CHUNKS; orchestrator owns synthesis."""
+def test_raganything_adapter_prefers_chunks_over_native_answer(route_ctx):
+    """When evidence_chunks is non-empty, the native answer is NOT
+    surfaced. Real chunks always win."""
     provider = _StubRAGProvider(_StubRAGResult(
         answer="A WHOLE PROSE ANSWER",
+        citations=[],
+        metadata={"evidence_chunks": [
+            {"artifact_id": "a1", "artifact_kind": "chunk",
+             "text": "real chunk body", "score": 0.9},
+        ]},
+    ))
+    adapter = RAGAnythingAdapter(provider)
+    candidates = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        route_ctx,
+    )
+    assert len(candidates) == 1
+    assert candidates[0].artifact_id == "a1"
+    # The native prose answer is not turned into a candidate when
+    # real chunks exist.
+    assert not any(
+        "A WHOLE PROSE ANSWER" in (c.text_preview or "")
+        for c in candidates
+    )
+
+
+def test_raganything_adapter_surfaces_native_answer_as_advisory(route_ctx):
+    """When the bridge returns ONLY a prose answer (the current
+    default — chunks/citations not surfaced), we expose the answer
+    as a SINGLE advisory candidate so the trace shows what
+    LightRAG-native produced. Marked ``advisory_only=True`` so the
+    evidence builder can downrank it when real evidence exists."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="Native LightRAG produced this answer.",
         citations=[],
         metadata={"evidence_chunks": []},
     ))
@@ -148,13 +177,27 @@ def test_raganything_adapter_ignores_native_answer_field(route_ctx):
         RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
         route_ctx,
     )
-    # Empty candidates is fine — the orchestrator's sufficiency gate
-    # will catch this. The point is that the answer string never
-    # appears as a candidate body.
-    assert all(
-        "A WHOLE PROSE ANSWER" not in (c.text_preview or "")
-        for c in candidates
+    assert len(candidates) == 1
+    assert candidates[0].artifact_kind == "raganything.native_answer"
+    assert candidates[0].extra["advisory_only"] is True
+    assert candidates[0].extra["raganything_native_answer"] is True
+    assert "Native LightRAG" in candidates[0].text_preview
+
+
+def test_raganything_adapter_emits_nothing_on_empty_answer(route_ctx):
+    """Empty bridge response → no candidates. Sufficiency gate
+    correctly fails with ``retrieval_insufficient``."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="",
+        citations=[],
+        metadata={},
+    ))
+    adapter = RAGAnythingAdapter(provider)
+    candidates = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        route_ctx,
     )
+    assert candidates == []
 
 
 # ---- BM25 adapter ------------------------------------------------

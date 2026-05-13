@@ -155,30 +155,60 @@ class RAGAnythingAdapter:
             document_id=context.document_id,
             run_id=run_id,
         )
-        # The provider returns a ``QueryResult``. We only consume
-        # its metadata + sources — the native ``answer`` field is
-        # intentionally ignored.
         candidates: list[EvidenceCandidate] = []
+        # Preferred shape: bridge exposes structured chunks under
+        # ``metadata['evidence_chunks']``. When LightRAG / the
+        # bridge surfaces real per-chunk evidence one day, this
+        # branch lights up.
         evidence_chunks = []
         if getattr(result, "metadata", None):
             evidence_chunks = result.metadata.get(
                 "evidence_chunks", [],
             ) or []
-        if not evidence_chunks:
-            # Fall back to citations + sources when the bridge
-            # didn't expose evidence_chunks. Each citation maps to
-            # one candidate; body comes from metadata when available.
-            for c in getattr(result, "citations", []) or []:
-                candidates.append(
-                    _candidate_from_citation(
-                        c, job, context, run_id, self._chunk_kind_default,
-                    )
-                )
+        if evidence_chunks:
+            for ec in evidence_chunks:
+                candidates.append(_candidate_from_evidence_chunk(
+                    ec, job, context, run_id, self._chunk_kind_default,
+                ))
             return candidates
-        for ec in evidence_chunks:
-            candidates.append(_candidate_from_evidence_chunk(
-                ec, job, context, run_id, self._chunk_kind_default,
-            ))
+        # Second fallback: citation strings the bridge attached.
+        for c in getattr(result, "citations", []) or []:
+            candidates.append(
+                _candidate_from_citation(
+                    c, job, context, run_id, self._chunk_kind_default,
+                )
+            )
+        if candidates:
+            return candidates
+        # Final fallback: the bridge returned ONLY a prose answer
+        # (today's default). Surface that as a SINGLE advisory
+        # candidate so the trace shows what LightRAG-native said.
+        # Marked with ``raganything_native_answer=True`` in extra
+        # so the EvidencePackBuilder can downrank / drop it when
+        # real chunked evidence exists from other routes. Empty
+        # answer → no candidates (sufficiency gate fails cleanly
+        # as "retrieval returned nothing").
+        native_answer = getattr(result, "answer", None) or ""
+        native_answer = native_answer.strip()
+        if not native_answer:
+            return []
+        candidates.append(EvidenceCandidate(
+            route=job.route,
+            artifact_id="raganything.native_answer",
+            artifact_kind="raganything.native_answer",
+            chunk_id=None,
+            text_preview=_truncate(native_answer),
+            score=0.5,  # advisory — lower than real BM25 / chunk
+            matched_anchors=(),
+            run_id=run_id,
+            document_id=context.document_id,
+            project_id=context.ctx.project_id,
+            extra={
+                "body": native_answer,
+                "raganything_native_answer": True,
+                "advisory_only": True,
+            },
+        ))
         return candidates
 
 
