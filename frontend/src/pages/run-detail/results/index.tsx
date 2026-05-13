@@ -20,6 +20,7 @@ import type { ReviewQualityReport, ReviewRunSummary } from "@/types/review";
 import { AssetsTab } from "./AssetsTab";
 import { ChunksTab } from "./ChunksTab";
 import { GraphTab } from "./GraphTab";
+import { ManualQueryTraceView } from "./ManualQueryTraceView";
 import { OverviewTab } from "./OverviewTab";
 import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
@@ -32,7 +33,14 @@ type ResultsTab =
   | "graph"
   | "quality"
   | "raw"
+  | "manual-trace"
   | "validation";
+
+// Temporary kill-switch for the Validation tab. The new
+// SmartQueryOrchestrator surface (Manual Query Trace) replaces it
+// for now — the batch validation flow is paused while the
+// orchestrator beds in. Flip back to ``false`` to restore the tab.
+const VALIDATION_TAB_DISABLED = true;
 
 interface ResultsSectionProps {
   run: IngestionRun | null;
@@ -204,10 +212,23 @@ export function ResultsSection({
       reason: views?.rawArtifacts?.reason ?? "Loading…",
     },
     {
+      // SmartQueryOrchestrator trace surface — always available
+      // (no artifact preconditions). The orchestrator answers
+      // "why did this query fail" at the operator level; works
+      // regardless of summary load state.
+      key: "manual-trace",
+      label: "Manual Query Trace",
+      available: true,
+    },
+    {
       key: "validation",
       label: "Validation",
-      available: views?.validation?.available ?? false,
-      reason: views?.validation?.reason ?? "Loading…",
+      available: VALIDATION_TAB_DISABLED
+        ? false
+        : (views?.validation?.available ?? false),
+      reason: VALIDATION_TAB_DISABLED
+        ? "Validation tab is temporarily disabled — use Manual Query Trace instead."
+        : (views?.validation?.reason ?? "Loading…"),
     },
   ];
 
@@ -261,6 +282,7 @@ export function ResultsSection({
         {tab === "assets" && <AssetsTab runId={runId} />}
         {tab === "graph" && <GraphTab runId={runId} />}
         {tab === "raw" && <RawArtifactsTab runId={runId} />}
+        {tab === "manual-trace" && <ManualQueryTraceView runId={runId} />}
         {tab === "validation" && <ValidationTab runId={runId} />}
       </div>
     </section>

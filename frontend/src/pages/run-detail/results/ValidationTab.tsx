@@ -29,7 +29,6 @@ import type {
 import { GeneratedTestCasesTable } from "./GeneratedTestCasesTable";
 import { KnowledgeReadinessCard } from "./KnowledgeReadinessCard";
 import { ManualQueryConsole } from "./ManualQueryConsole";
-import { ManualQueryTraceView } from "./ManualQueryTraceView";
 import { TestCaseDetailDrawer } from "./TestCaseDetailDrawer";
 import { ValidationResultDrawer } from "./ValidationResultDrawer";
 
@@ -219,12 +218,11 @@ export function ValidationTab({ runId }: ValidationTabProps) {
 
       <ManualQueryConsole runId={runId} />
 
-      {/* SmartQueryOrchestrator trace view — exposes the full
-          orchestrator pipeline for developer/operator debugging.
-          Returns 503 + a hint when the backend was started without
-          ``smart_query_orchestrator`` wired, so deployments that
-          haven't migrated stay clean. */}
-      <ManualQueryTraceView runId={runId} />
+      {/* ManualQueryTraceView lives in its own dedicated tab
+          ("Manual Query Trace") — see results/index.tsx. The
+          orchestrator trace is the operator's primary diagnostic
+          surface; pairing it with the batch-validation flow here
+          mixed two concerns and made the panel too long. */}
 
       <ValidationResultDrawer
         open={drawerResultId !== null}
