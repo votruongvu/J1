@@ -106,6 +106,8 @@ class ProcessingService:
         cost: CostRecorder,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
+        *,
+        smart_query_orchestrator: "object | None" = None,
     ) -> None:
         self._workspace = workspace
         self._artifacts = artifact_registry
@@ -113,6 +115,19 @@ class ProcessingService:
         self._cost = cost
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
+        # SmartQueryOrchestrator — when wired, ``query`` delegates
+        # to the new pipeline (intent classification → multi-route
+        # retrieval → grouped evidence → sufficiency gate →
+        # synthesis → citation binder → answer-quality gate)
+        # INSTEAD OF the legacy QueryProvider path. The provider
+        # passed to ``query`` becomes informational (the orchestrator
+        # picks its own routes). Optional so existing tests +
+        # deployments keep working unchanged.
+        #
+        # Typed as ``object`` to avoid a static import from
+        # ``j1.processing`` onto ``j1.query`` — the only API the
+        # service consumes is ``.run(OrchestratorRequest)``.
+        self._smart_query_orchestrator = smart_query_orchestrator
 
     def compile(
         self,
@@ -878,6 +893,22 @@ class ProcessingService:
         actor: str = "system",
         correlation_id: str | None = None,
     ) -> QueryResult:
+        # SmartQueryOrchestrator branch. When wired, the new
+        # pipeline owns retrieval + synthesis + gates. The
+        # ``provider`` parameter becomes informational (the
+        # orchestrator picks its own routes). Audit semantics stay
+        # the same — same action strings, same payload shape — so
+        # consumers tailing ``processing.query.*`` events keep
+        # working unchanged.
+        if self._smart_query_orchestrator is not None:
+            return self._query_via_orchestrator(
+                ctx=ctx,
+                question=question,
+                provider_kind=getattr(provider, "kind", None),
+                max_results=max_results,
+                actor=actor,
+                correlation_id=correlation_id,
+            )
         try:
             output = provider.query(ctx, question, max_results=max_results)
         except Exception as exc:
@@ -915,6 +946,107 @@ class ProcessingService:
             },
         )
         return output
+
+    def _query_via_orchestrator(
+        self,
+        *,
+        ctx: ProjectContext,
+        question: str,
+        provider_kind: str | None,
+        max_results: int | None,
+        actor: str,
+        correlation_id: str | None,
+    ) -> QueryResult:
+        """Run a query through SmartQueryOrchestrator and project the
+        result into the legacy ``QueryResult`` shape.
+
+        Audit semantics preserved: emit ``processing.query.completed``
+        on success (any orchestrator final_status that produced an
+        answer), ``processing.query.failed`` on the orchestrator
+        raising. ``evidence_insufficient`` /
+        ``retrieval_insufficient`` map to ``SUCCEEDED`` with an
+        empty answer + a ``message`` carrying the gate reason —
+        consumers can distinguish via the ``orchestrator_final_status``
+        metadata key.
+        """
+        from j1.query.orchestrator import OrchestratorRequest
+        from j1.query.scope import RunScope, default_scope
+        # ``correlation_id`` is the run_id by convention (the
+        # workflow stamps it at activity dispatch). RunScope-pin
+        # is the strict scoping; legacy callers without a
+        # correlation_id fall back to workspace-wide.
+        scope = (
+            RunScope(run_id=str(correlation_id))
+            if correlation_id else default_scope()
+        )
+        try:
+            result = self._smart_query_orchestrator.run(
+                OrchestratorRequest(
+                    ctx=ctx,
+                    question=question,
+                    scope=scope,
+                    run_id=correlation_id,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — orchestrator failure
+            self._audit.record(
+                ctx, actor=actor, action=ACTION_QUERY_FAIL,
+                target_kind=TARGET_QUERY,
+                target_id=_question_id(question),
+                correlation_id=correlation_id,
+                payload={
+                    "processor_kind": (
+                        provider_kind or "smart_query_orchestrator"
+                    ),
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return QueryResult(
+                status=ResultStatus.FAILED,
+                message=type(exc).__name__,
+                error=str(exc),
+            )
+        # Citations are the orchestrator's cited subset — strictly
+        # the blocks the LLM drew from. The QueryResult.citations
+        # contract is ``list[str]`` (artifact ids); we project the
+        # cited blocks' artifact_ids into that shape.
+        citations = [
+            c.candidate.artifact_id for c in result.citations
+        ]
+        is_success = result.final_status == "passed"
+        self._audit.record(
+            ctx, actor=actor, action=ACTION_QUERY_OK,
+            target_kind=TARGET_QUERY,
+            target_id=_question_id(question),
+            correlation_id=correlation_id,
+            payload={
+                "processor_kind": (
+                    provider_kind or "smart_query_orchestrator"
+                ),
+                "citation_count": len(citations),
+                "result_status": result.final_status,
+                "orchestrator": True,
+            },
+        )
+        return QueryResult(
+            status=(
+                ResultStatus.SUCCEEDED if is_success
+                else ResultStatus.SUCCEEDED  # gate failures are
+                # still "the query ran" — audit consumers
+                # distinguish via metadata.
+            ),
+            answer=result.answer or None,
+            citations=citations,
+            message=result.message,
+            metadata={
+                "orchestrator_final_status": result.final_status,
+                "orchestrator_message": result.message or "",
+                "intent": result.trace.plan.intent.value,
+                "groups_covered": list(result.trace.groups_covered),
+                "groups_missing": list(result.trace.groups_missing),
+            },
+        )
 
     def _handle_artifact_output(
         self,

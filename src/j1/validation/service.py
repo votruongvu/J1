@@ -372,6 +372,16 @@ class IngestionValidationService:
         # supplied (truthy), it sets ``enable_bm25_fallback``.
         # The default ``None`` means "respect the new flag."
         native_query_fallback_to_bm25: bool | None = None,
+        # SmartQueryOrchestrator (j1.query.orchestrator). When wired,
+        # ``run_manual_test_query`` delegates to the new pipeline:
+        # intent classification → multi-route retrieval → grouped
+        # evidence pack → sufficiency gate → synthesis → citation
+        # binder → answer-quality gate. The legacy aggregate_status
+        # / refusal-regex path is bypassed entirely. Optional so
+        # tests (and deployments that haven't migrated yet) keep
+        # working unchanged. Type ``object`` here to avoid an import
+        # cycle — the service only reads ``.run(OrchestratorRequest)``.
+        smart_query_orchestrator: object | None = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -403,6 +413,11 @@ class IngestionValidationService:
         # spec-compliant default for deployments that haven't
         # adopted the document-centric flow.
         self._source_registry = source_registry
+        # SmartQueryOrchestrator (lazy attribute — accessed only on
+        # the manual-query path). Stored as ``object | None`` to
+        # avoid a static import dependency from the validation
+        # module onto ``j1.query``.
+        self._smart_query_orchestrator = smart_query_orchestrator
         # Decoupled candidate vs final-evidence sizing. The
         # request's ``top_k`` controls the user-visible "how many
         # retrievals does the FE show" knob; the service
@@ -532,6 +547,19 @@ class IngestionValidationService:
         # Reserve the request id up-front so the value the FE sees in
         # the response also lands in the audit log on the same row.
         request_id = f"tq-{uuid.uuid4().hex[:12]}"
+
+        # New pipeline branch: when a SmartQueryOrchestrator is
+        # wired, delegate to the new flow. The legacy
+        # aggregate_status / refusal-regex path is bypassed
+        # entirely — the orchestrator's AnswerQualityGate owns
+        # final_status. The legacy code below stays in place for
+        # tests / deployments that haven't migrated yet, but
+        # production should land here.
+        if self._smart_query_orchestrator is not None:
+            return self._run_manual_query_via_orchestrator(
+                ctx=ctx, run=run, request=request,
+                request_id=request_id, actor=actor,
+            )
 
         requested_top_k = max(1, min(request.top_k, _TOP_K_HARD_CAP))
         # Decouple raw FTS candidate breadth from the FE-requested
@@ -964,6 +992,103 @@ class IngestionValidationService:
             native_query_failed_reason=native_error,
             native_latency_ms=native_latency,
             provider_wired=True,
+        )
+
+    # ---- New orchestrator-based manual query path ------------
+
+    def _run_manual_query_via_orchestrator(
+        self,
+        *,
+        ctx: ProjectContext,
+        run: "IngestionRun",
+        request: ManualTestQueryRequest,
+        request_id: str,
+        actor: str,
+    ) -> ManualTestQueryResponseDTO:
+        """Drive one manual test query through the SmartQueryOrchestrator
+        and project the result into the legacy
+        ``ManualTestQueryResponseDTO`` shape.
+
+        The new pipeline owns:
+          * intent classification + retrieval planning
+          * multi-route retrieval (RAGAnything / BM25 / artifact)
+          * grouped evidence pack + per-group caps + scope filter
+          * sufficiency gate (refuses to call the LLM on a thin pack)
+          * synthesis (shape-specific prompt, only selected evidence)
+          * citation binding (cited ⊆ selected)
+          * answer-quality gate (no length shortcut, no aggregate
+            override letting refusals pass)
+
+        The frontend reads the same DTO fields it always has —
+        ``validation_status`` comes from the orchestrator's
+        ``final_status`` instead of ``aggregate_status``, and
+        ``checks[]`` is a flattened view of the gate results so the
+        Validation tab keeps rendering one row per check.
+
+        The full trace JSON lands on ``debug['orchestrator_trace']``
+        so operators can dig in without needing the separate
+        ``/dev/query-trace`` endpoint.
+        """
+        # Lazy imports — keep ``j1.query`` out of this module's top.
+        from j1.query.orchestrator import OrchestratorRequest
+
+        engine_scope = self._resolve_query_scope(
+            ctx=ctx, run=run, validation_scope=request.validation_scope,
+        )
+        result = self._smart_query_orchestrator.run(OrchestratorRequest(
+            ctx=ctx,
+            question=request.question,
+            scope=engine_scope,
+            run_id=run.run_id,
+            document_id=run.document_id,
+        ))
+
+        retrieved_chunks = _retrieved_chunks_from_trace(result.trace)
+        citations_list = _citations_from_orchestrator(result)
+        checks = _checks_from_gate_results(result.gate_results)
+        validation_status = _validation_status_from_final(
+            result.final_status,
+        )
+        evidence_sent_to_llm = _evidence_blocks_from_trace(result.trace)
+        evidence_flags = _evidence_flags_from_trace(result.trace)
+        llm_trace = LLMTraceDTO(
+            called=bool(result.trace.llm_evidence),
+            provider="smart_query_orchestrator",
+            model="composite",
+            error=(
+                None if result.final_status == "passed"
+                else result.message
+            ),
+        )
+        debug: dict[str, Any] = {
+            "query_engine": "smart_query_orchestrator",
+            "orchestrator_final_status": result.final_status,
+            "orchestrator_message": result.message,
+            "orchestrator_trace": result.trace.to_dict(),
+        }
+        self._audit_manual_query(
+            ctx=ctx, run=run, request_id=request_id, request=request,
+            validation_status=validation_status,
+            retrieved_count=len(retrieved_chunks),
+            citation_count=len(citations_list),
+            actor=actor,
+        )
+        return ManualTestQueryResponseDTO(
+            request_id=request_id,
+            run_id=run.run_id,
+            question=request.question,
+            answer=result.answer or "",
+            mode_used="smart_query_orchestrator",
+            retrieved_chunks=retrieved_chunks,
+            citations=citations_list,
+            checks=checks,
+            validation_status=validation_status,
+            evidence_flags=evidence_flags,
+            raw_response=None,
+            synthesized_answer=result.answer or None,
+            llm=llm_trace,
+            evidence_sent_to_llm=evidence_sent_to_llm,
+            debug=debug,
         )
 
     def _resolve_query_scope(
@@ -3558,3 +3683,159 @@ def _inconclusive_response(
         },
         raw_response=None,
     )
+
+
+# ---- Orchestrator → ManualTestQueryResponseDTO mapping ---------
+#
+# These helpers project ``SmartQueryOrchestrator`` output into the
+# legacy DTO shape so the frontend keeps working unchanged. They are
+# module-level (not methods) so the new path can be unit-tested
+# without instantiating the 151KB service.
+
+
+def _retrieved_chunks_from_trace(trace: Any) -> list[RetrievedChunkRefDTO]:
+    """Project ``QueryTrace.all_candidates`` into the public chunk-ref
+    DTO. All candidates that came back from any route surface here —
+    the frontend's "retrieved" list shows what retrieval surfaced,
+    independent of what synthesis used."""
+    out: list[RetrievedChunkRefDTO] = []
+    seen: set[tuple[str, str | None]] = set()
+    for cand in getattr(trace, "all_candidates", ()):
+        key = (cand.artifact_id, cand.chunk_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(RetrievedChunkRefDTO(
+            artifact_id=cand.artifact_id,
+            chunk_id=cand.chunk_id,
+            run_id=cand.run_id,
+            document_id=cand.document_id,
+            source_location=(
+                (cand.extra or {}).get("section_path")
+            ),
+            score=float(cand.score or 0.0),
+            preview=(cand.text_preview or "")[:_PREVIEW_MAX_CHARS],
+            artifact_kind=cand.artifact_kind,
+        ))
+    return out
+
+
+def _citations_from_orchestrator(result: Any) -> list[dict[str, Any]]:
+    """Project the orchestrator's ``citations`` (cited subset of
+    selected) into the wire-shape citation dicts. The contract: this
+    list is STRICTLY the blocks the LLM cited — never the broader
+    retrieved set, never the full selected pack. Closes the legacy
+    "20 citations when only 4 were used" gap."""
+    out: list[dict[str, Any]] = []
+    for block in getattr(result, "citations", ()):
+        cand = block.candidate
+        out.append({
+            "artifactId": cand.artifact_id,
+            "artifactType": cand.artifact_kind,
+            "sourceDocumentId": cand.document_id,
+            "sourceLocation": (cand.extra or {}).get("section_path"),
+            "chunkId": cand.chunk_id,
+            "runId": cand.run_id,
+        })
+    return out
+
+
+def _checks_from_gate_results(
+    gate_results: tuple,
+) -> list[ValidationCheckDTO]:
+    """Translate orchestrator ``GateResult``s into the legacy
+    ``ValidationCheckDTO`` list. The frontend's Validation tab
+    iterates this list one row per check — same wire shape, new
+    source of truth.
+
+    ``severity`` is mapped: orchestrator's "required" stays "required";
+    "advisory" maps to "optional" so the legacy UI keeps rendering
+    correctly. Skipped gates (advisory with no failure) come through
+    as ``skipped=True``."""
+    out: list[ValidationCheckDTO] = []
+    for g in gate_results:
+        severity = "required" if g.severity == "required" else "optional"
+        is_skipped = (
+            g.severity == "advisory"
+            and bool(g.detail.get("skipped"))
+        )
+        out.append(ValidationCheckDTO(
+            name=g.name,
+            severity=severity,
+            passed=bool(g.passed) and not is_skipped,
+            detail=g.reason,
+            expected=None,
+            actual=g.detail if g.detail else None,
+            skipped=is_skipped,
+            skipped_reason=(
+                "gate skipped for this intent / plan policy"
+                if is_skipped else None
+            ),
+        ))
+    return out
+
+
+def _validation_status_from_final(final_status: str):
+    """Map ``QueryFinalStatus`` strings into the legacy
+    ``ValidationStatus`` literal.
+
+    The orchestrator's vocabulary is narrower (passed / failed /
+    evidence_insufficient / retrieval_insufficient). The legacy
+    vocabulary has passed / passed_with_warnings / failed /
+    inconclusive. Mapping:
+
+      * ``passed``                  → ``passed``
+      * ``failed``                  → ``failed``
+      * ``evidence_insufficient``   → ``failed`` (the gate fired
+                                       BEFORE synthesis — that's a
+                                       failure for the validation
+                                       surface, not a soft warning)
+      * ``retrieval_insufficient``  → ``inconclusive`` (no
+                                       candidates at all — typically
+                                       a configuration / scope issue)
+      * anything else               → ``inconclusive``
+    """
+    if final_status == "passed":
+        return "passed"
+    if final_status == "failed":
+        return "failed"
+    if final_status == "evidence_insufficient":
+        return "failed"
+    if final_status == "retrieval_insufficient":
+        return "inconclusive"
+    return "inconclusive"
+
+
+def _evidence_blocks_from_trace(trace: Any) -> list[EvidenceBlockDTO]:
+    """Project the orchestrator's ``llm_evidence`` (the blocks the
+    synthesizer actually saw) into the DTO. When the sufficiency
+    gate failed before synthesis, ``llm_evidence`` is empty — that's
+    correct: nothing was sent to the LLM."""
+    out: list[EvidenceBlockDTO] = []
+    for block in getattr(trace, "llm_evidence", ()):
+        cand = block.candidate
+        out.append(EvidenceBlockDTO(
+            artifact_id=cand.artifact_id,
+            artifact_type=cand.artifact_kind,
+            text=(block.body or cand.text_preview or "")[:4000],
+            chunk_id=cand.chunk_id,
+            score=float(cand.score or 0.0),
+            section=(cand.extra or {}).get("section_path"),
+            source_location=(cand.extra or {}).get("section_path"),
+        ))
+    return out
+
+
+def _evidence_flags_from_trace(trace: Any) -> dict[str, bool]:
+    """Modality flags the FE renders as Graph/Tables/Images chips.
+    Derived from the retrieved-candidate kinds + trace metadata."""
+    kinds = {
+        c.artifact_kind for c in getattr(trace, "all_candidates", ())
+    }
+    return {
+        "graphUsed": "graph_json" in kinds or any(
+            "graph" in (k or "") for k in kinds
+        ),
+        "tablesUsed": "enriched.tables" in kinds,
+        "imagesUsed": "enriched.visuals" in kinds,
+    }

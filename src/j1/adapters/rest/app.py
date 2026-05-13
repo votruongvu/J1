@@ -417,6 +417,7 @@ def create_rest_api(
     progress_reporter: "ProgressReporter | None" = None,
     review_service: IngestionResultReviewService | None = None,
     validation_service: IngestionValidationService | None = None,
+    smart_query_orchestrator: "object | None" = None,
     document_lifecycle_service: "DocumentLifecycleService | None" = None,
     confirm_handler: RunConfirmHandler | None = None,
     compile_handler: RunCompileHandler | None = None,
@@ -3409,6 +3410,84 @@ def create_rest_api(
             debug=dict(getattr(result, "debug", None) or {}),
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Raw orchestrator trace surface (developer / operator) ----
+    #
+    # The new ``SmartQueryOrchestrator`` produces a full
+    # ``QueryTrace`` per query — plan, routes, candidates, dropped
+    # blocks with reasons, gate results, final status. This endpoint
+    # exposes the trace verbatim so operators can answer "why did
+    # the query fail" without instrumentation gymnastics. The
+    # response is intentionally NOT shaped like
+    # ``ManualTestQueryResponseDTO`` — that DTO is the production
+    # shape the frontend reads; this one is the diagnostic shape.
+    #
+    # Endpoint is OPTIONAL: when no orchestrator was wired into
+    # ``create_rest_api``, it returns 503 with a hint pointing to
+    # the wiring helper.
+
+    @app.post(
+        "/dev/query-trace",
+        tags=["system"],
+        summary="Diagnostic: run a question through SmartQueryOrchestrator",
+        description=(
+            "Developer/operator surface — runs a single question "
+            "through the new SmartQueryOrchestrator and returns the "
+            "full ``QueryTrace`` JSON. Includes the plan, every "
+            "route execution, all candidates with kept/dropped "
+            "reasons, evidence groups covered/missing, the exact "
+            "blocks sent to the LLM, the answer, citations, and "
+            "every gate result. Use this when the production "
+            "``/ingestion-runs/{id}/test-query`` answer looks "
+            "wrong: the trace shows WHY.\n\n"
+            "Returns 503 when the orchestrator isn't wired."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_dev_query_trace(
+        request: Request,
+        body: dict,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        if smart_query_orchestrator is None:
+            raise HTTPException(
+                503,
+                "smart_query_orchestrator not configured "
+                "(pass `smart_query_orchestrator=` to create_rest_api)",
+            )
+        question = str(body.get("question") or "").strip()
+        if not question:
+            raise HTTPException(
+                400, "request body must contain a non-empty 'question'",
+            )
+        run_id = body.get("run_id") or body.get("runId")
+        document_id = body.get("document_id") or body.get("documentId")
+        # Lazy imports — keep the REST module's top-level import set
+        # free of orchestrator types so the package stays decoupled
+        # from j1.query at module load.
+        from j1.query.orchestrator import OrchestratorRequest
+        from j1.query.scope import RunScope, default_scope
+        scope = (
+            RunScope(run_id=str(run_id))
+            if run_id else default_scope()
+        )
+        result = smart_query_orchestrator.run(OrchestratorRequest(
+            ctx=ctx,
+            question=question,
+            scope=scope,
+            run_id=str(run_id) if run_id else None,
+            document_id=str(document_id) if document_id else None,
+        ))
+        # The response is the trace JSON verbatim PLUS a tiny header.
+        # Frontends consuming this endpoint render the trace fields
+        # directly; no DTO mapping required.
+        return envelope({
+            "final_status": result.final_status,
+            "answer": result.answer,
+            "message": result.message,
+            "trace": result.trace.to_dict(),
+        }, _req_id(request))
 
     @app.post(
         "/ingestion-runs/{run_id}/native-debug-query",
