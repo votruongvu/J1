@@ -45,7 +45,6 @@ type SectionKey =
   | "candidates"
   | "pack"
   | "llmInput"
-  | "answer"
   | "gates";
 
 export function ManualQueryTraceViewTab(
@@ -60,14 +59,15 @@ export function ManualQueryTraceViewTab(
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<QueryTracePayload | null>(null);
+  // Diagnostics are collapsed by default — the answer is the primary
+  // surface; the pipeline trace is the "why did it fail" zoom-in.
   const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>({
-    plan: true,
-    routes: true,
+    plan: false,
+    routes: false,
     candidates: false,
-    pack: true,
-    llmInput: true,
-    answer: true,
-    gates: true,
+    pack: false,
+    llmInput: false,
+    gates: false,
   });
 
   const submit = useCallback(async () => {
@@ -172,98 +172,101 @@ export function ManualQueryTraceViewTab(
       {payload && (
         <div className="mqt-output" data-testid="trace-output">
           <StatusBanner payload={payload} />
+          <AnswerHero payload={payload} />
+          <MetricsStrip payload={payload} />
 
-          <Section
-            id="plan"
-            title="Query plan"
-            summary={planSummary(payload)}
-            open={expanded.plan}
-            onToggle={() => toggle("plan")}
-            testId="trace-plan-section"
-          >
-            <PlanView payload={payload} />
-          </Section>
+          <div className="mqt-diagnostics">
+            <div className="mqt-diagnostics__heading">
+              <span className="mqt-diagnostics__label">
+                Pipeline diagnostics
+              </span>
+              <span className="mqt-muted mqt-diagnostics__hint">
+                Expand a stage to inspect why the orchestrator
+                produced this answer.
+              </span>
+            </div>
 
-          <Section
-            id="routes"
-            title="Routes executed"
-            badge={`${payload.trace.routes_executed.length}`}
-            summary={routesSummary(payload)}
-            open={expanded.routes}
-            onToggle={() => toggle("routes")}
-            testId="trace-routes-section"
-          >
-            <RoutesView routes={payload.trace.routes_executed} />
-          </Section>
+            <Section
+              id="plan"
+              title="1 · Query plan"
+              summary={planSummary(payload)}
+              open={expanded.plan}
+              onToggle={() => toggle("plan")}
+              testId="trace-plan-section"
+            >
+              <PlanView payload={payload} />
+            </Section>
 
-          <Section
-            id="candidates"
-            title="All candidates"
-            badge={`${payload.trace.all_candidates.length}`}
-            summary={candidatesSummary(payload)}
-            open={expanded.candidates}
-            onToggle={() => toggle("candidates")}
-            testId="trace-candidates-section"
-          >
-            <CandidatesTable
-              all={payload.trace.all_candidates}
-              dropped={payload.trace.dropped}
-            />
-          </Section>
+            <Section
+              id="routes"
+              title="2 · Routes executed"
+              badge={`${payload.trace.routes_executed.length}`}
+              summary={routesSummary(payload)}
+              open={expanded.routes}
+              onToggle={() => toggle("routes")}
+              testId="trace-routes-section"
+            >
+              <RoutesView routes={payload.trace.routes_executed} />
+            </Section>
 
-          <Section
-            id="pack"
-            title="Evidence pack"
-            summary={packSummary(payload)}
-            open={expanded.pack}
-            onToggle={() => toggle("pack")}
-            testId="trace-pack-section"
-          >
-            <GroupsView
-              covered={payload.trace.groups_covered}
-              missing={payload.trace.groups_missing}
-            />
-            <SelectedBlocks blocks={payload.trace.selected} />
-          </Section>
+            <Section
+              id="candidates"
+              title="3 · All candidates"
+              badge={`${payload.trace.all_candidates.length}`}
+              summary={candidatesSummary(payload)}
+              open={expanded.candidates}
+              onToggle={() => toggle("candidates")}
+              testId="trace-candidates-section"
+            >
+              <CandidatesTable
+                all={payload.trace.all_candidates}
+                dropped={payload.trace.dropped}
+              />
+            </Section>
 
-          <Section
-            id="llmInput"
-            title="LLM input"
-            badge={`${payload.trace.llm_evidence.length} blocks`}
-            summary={
-              payload.trace.llm_evidence.length === 0
-                ? "LLM was NOT called"
-                : null
-            }
-            open={expanded.llmInput}
-            onToggle={() => toggle("llmInput")}
-            testId="trace-llm-input-section"
-          >
-            <LLMInputBlocks blocks={payload.trace.llm_evidence} />
-          </Section>
+            <Section
+              id="pack"
+              title="4 · Evidence pack"
+              summary={packSummary(payload)}
+              open={expanded.pack}
+              onToggle={() => toggle("pack")}
+              testId="trace-pack-section"
+            >
+              <GroupsView
+                covered={payload.trace.groups_covered}
+                missing={payload.trace.groups_missing}
+              />
+              <SelectedBlocks blocks={payload.trace.selected} />
+            </Section>
 
-          <Section
-            id="answer"
-            title="Final answer + citations"
-            badge={`${payload.trace.citations.length} cited`}
-            open={expanded.answer}
-            onToggle={() => toggle("answer")}
-            testId="trace-answer-section"
-          >
-            <AnswerView payload={payload} />
-          </Section>
+            <Section
+              id="llmInput"
+              title="5 · LLM input"
+              badge={`${payload.trace.llm_evidence.length} blocks`}
+              summary={
+                payload.trace.llm_evidence.length === 0
+                  ? "LLM was NOT called"
+                  : null
+              }
+              open={expanded.llmInput}
+              onToggle={() => toggle("llmInput")}
+              testId="trace-llm-input-section"
+            >
+              <LLMInputBlocks blocks={payload.trace.llm_evidence} />
+            </Section>
 
-          <Section
-            id="gates"
-            title="Gate results"
-            badge={`${payload.trace.gate_results.length}`}
-            summary={gatesSummary(payload)}
-            open={expanded.gates}
-            onToggle={() => toggle("gates")}
-            testId="trace-gates-section"
-          >
-            <GatesTable gates={payload.trace.gate_results} />
-          </Section>
+            <Section
+              id="gates"
+              title="6 · Gate results"
+              badge={`${payload.trace.gate_results.length}`}
+              summary={gatesSummary(payload)}
+              open={expanded.gates}
+              onToggle={() => toggle("gates")}
+              testId="trace-gates-section"
+            >
+              <GatesTable gates={payload.trace.gate_results} />
+            </Section>
+          </div>
         </div>
       )}
     </div>
@@ -634,47 +637,184 @@ function LLMInputBlocks({ blocks }: { blocks: EvidenceBlockShape[] }) {
   return <SelectedBlocks blocks={blocks} />;
 }
 
-// ---- Answer view ----------------------------------------------
+// ---- Answer hero ----------------------------------------------
 
-function AnswerView({ payload }: { payload: QueryTracePayload }) {
+function AnswerHero({ payload }: { payload: QueryTracePayload }) {
   const hasAnswer = (payload.answer || "").trim().length > 0;
+  const citations = payload.trace.citations;
+  const status = payload.final_status;
+  const tone = statusTone(status);
+
   return (
-    <div className="mqt-answer">
-      <h4 className="mqt-h4">Answer</h4>
+    <section
+      className={`mqt-hero mqt-hero--${tone}`}
+      data-testid="trace-answer-hero"
+    >
+      <header className="mqt-hero__header">
+        <h4 className="mqt-hero__title">Final answer</h4>
+        {hasAnswer && (
+          <span
+            className="mqt-hero__copy"
+            title="Citations and evidence are detailed below"
+          >
+            {citations.length} citation{citations.length === 1 ? "" : "s"}
+            {" · "}
+            {payload.trace.llm_evidence.length} block
+            {payload.trace.llm_evidence.length === 1 ? "" : "s"} to LLM
+          </span>
+        )}
+      </header>
+
       {hasAnswer ? (
         <pre
-          className="mqt-answer__body"
+          className="mqt-hero__answer"
           data-testid="trace-answer-body"
         >
           {payload.answer}
         </pre>
       ) : (
-        <p className="mqt-empty">(empty)</p>
+        <div className="mqt-hero__empty" data-testid="trace-answer-empty">
+          <strong className="mqt-hero__empty-title">
+            No answer produced.
+          </strong>
+          <p className="mqt-hero__empty-reason">
+            {emptyAnswerReason(payload)}
+          </p>
+        </div>
       )}
-      <h4 className="mqt-h4">
-        Citations{" "}
-        <span className="mqt-muted">
-          ({payload.trace.citations.length})
-        </span>
-      </h4>
-      {payload.trace.citations.length === 0 ? (
-        <p className="mqt-muted">No citations.</p>
-      ) : (
-        <ul className="mqt-citations">
-          {payload.trace.citations.map((c, i) => (
-            <li key={i}>
-              <code className="mqt-code">{c.candidate.artifact_id}</code>
-              {c.candidate.chunk_id && (
-                <span className="mqt-muted"> · {c.candidate.chunk_id}</span>
-              )}
-              {c.group && (
-                <span className="mqt-tag mqt-tag--group">{c.group}</span>
-              )}
-            </li>
-          ))}
-        </ul>
+
+      {citations.length > 0 && (
+        <div className="mqt-hero__citations">
+          <span className="mqt-hero__citations-label">Cited:</span>
+          <ul className="mqt-citations">
+            {citations.map((c, i) => (
+              <li key={i}>
+                <code className="mqt-code">{c.candidate.artifact_id}</code>
+                {c.candidate.chunk_id && (
+                  <span className="mqt-muted"> · {c.candidate.chunk_id}</span>
+                )}
+                {c.group && (
+                  <span className="mqt-tag mqt-tag--group">{c.group}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
+    </section>
+  );
+}
+
+// ---- Metrics strip --------------------------------------------
+
+function MetricsStrip({ payload }: { payload: QueryTracePayload }) {
+  const trace = payload.trace;
+  const totalCandidates = trace.routes_executed.reduce(
+    (acc, r) => acc + r.candidates.length,
+    0,
+  );
+  const requiredGates = trace.gate_results.filter(
+    (g) => g.severity === "required",
+  );
+  const passedGates = requiredGates.filter((g) => g.passed).length;
+
+  const metrics: Array<{
+    label: string;
+    value: string;
+    title: string;
+    tone?: "ok" | "warn" | "fail";
+  }> = [
+    {
+      label: "Duration",
+      value: formatDuration(trace.duration_ms),
+      title: "End-to-end orchestrator time",
+    },
+    {
+      label: "Routes",
+      value: `${trace.routes_executed.length}`,
+      title: "Retrieval routes executed",
+    },
+    {
+      label: "Candidates",
+      value: `${totalCandidates}`,
+      title: "Total candidates surfaced across routes",
+    },
+    {
+      label: "Selected",
+      value: `${trace.selected.length}`,
+      title: "Candidates kept in the evidence pack",
+    },
+    {
+      label: "LLM blocks",
+      value: `${trace.llm_evidence.length}`,
+      title: "Evidence blocks sent to the synthesizer",
+      tone: trace.llm_evidence.length === 0 ? "warn" : "ok",
+    },
+    {
+      label: "Citations",
+      value: `${trace.citations.length}`,
+      title: "Distinct artifacts cited in the answer",
+    },
+    {
+      label: "Gates",
+      value: `${passedGates}/${requiredGates.length}`,
+      title: "Required gates passed",
+      tone:
+        requiredGates.length === 0
+          ? undefined
+          : passedGates === requiredGates.length
+            ? "ok"
+            : "fail",
+    },
+  ];
+
+  return (
+    <div className="mqt-metrics" data-testid="trace-metrics">
+      {metrics.map((m) => (
+        <div
+          key={m.label}
+          className={`mqt-metric${m.tone ? ` mqt-metric--${m.tone}` : ""}`}
+          title={m.title}
+        >
+          <span className="mqt-metric__label">{m.label}</span>
+          <span className="mqt-metric__value">{m.value}</span>
+        </div>
+      ))}
     </div>
+  );
+}
+
+function emptyAnswerReason(payload: QueryTracePayload): string {
+  const status = payload.final_status;
+  if (status === "retrieval_insufficient") {
+    return (
+      "Retrieval surfaced no usable candidates — see Routes and " +
+      "Candidates below."
+    );
+  }
+  if (status === "evidence_insufficient") {
+    const missing = payload.trace.groups_missing;
+    if (missing.length > 0) {
+      return (
+        `Sufficiency gate failed before synthesis. Missing groups: ` +
+        `${missing.join(", ")}.`
+      );
+    }
+    return (
+      "Sufficiency gate failed before synthesis — see Evidence pack " +
+      "below."
+    );
+  }
+  if (status === "failed") {
+    return (
+      payload.message ||
+      "An answer-quality gate rejected the synthesized answer — see " +
+        "Gate results below."
+    );
+  }
+  return (
+    "The synthesizer returned an empty body. See LLM input and " +
+    "Gate results below."
   );
 }
 

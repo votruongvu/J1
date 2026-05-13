@@ -5243,6 +5243,178 @@ pre.json .b {
   flex-wrap: wrap;
 }
 
+/* ── Answer hero ──────────────────────────────────────────── */
+
+.mqt-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.mqt-hero--ok {
+  border-color: var(--ok-border, oklch(80% 0.08 145));
+  background: var(--ok-bg, oklch(98% 0.02 145));
+}
+.mqt-hero--warning {
+  border-color: var(--warn-border, oklch(80% 0.1 85));
+  background: var(--warn-bg, oklch(98% 0.03 85));
+}
+.mqt-hero--fail {
+  border-color: var(--fail-border, oklch(80% 0.1 25));
+  background: var(--fail-bg, oklch(98% 0.03 25));
+}
+
+.mqt-hero__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mqt-hero__title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.mqt-hero__copy {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.mqt-hero__answer {
+  margin: 0;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.mqt-hero__empty {
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.mqt-hero__empty-title {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.mqt-hero__empty-reason {
+  margin: 6px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.mqt-hero__citations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mqt-hero__citations-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* ── Metrics strip ────────────────────────────────────────── */
+
+.mqt-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.mqt-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border);
+}
+
+.mqt-metric__label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.mqt-metric__value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mqt-metric--ok {
+  border-left-color: oklch(60% 0.13 145);
+}
+.mqt-metric--warn {
+  border-left-color: oklch(70% 0.15 85);
+}
+.mqt-metric--fail {
+  border-left-color: oklch(60% 0.18 25);
+}
+.mqt-metric--fail .mqt-metric__value {
+  color: oklch(45% 0.18 25);
+}
+
+/* ── Diagnostics block ────────────────────────────────────── */
+
+.mqt-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mqt-diagnostics__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+
+.mqt-diagnostics__label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.mqt-diagnostics__hint {
+  font-size: var(--text-xs);
+}
+
 /* ── Dark-mode adjustments ────────────────────────────────── */
 
 @media (prefers-color-scheme: dark) {
@@ -5257,6 +5429,21 @@ pre.json .b {
   .mqt-banner--fail {
     background: oklch(30% 0.05 25);
     border-color: oklch(45% 0.09 25);
+  }
+  .mqt-hero--ok {
+    background: oklch(20% 0.03 145);
+    border-color: oklch(35% 0.06 145);
+  }
+  .mqt-hero--warning {
+    background: oklch(20% 0.04 85);
+    border-color: oklch(35% 0.07 85);
+  }
+  .mqt-hero--fail {
+    background: oklch(20% 0.04 25);
+    border-color: oklch(35% 0.08 25);
+  }
+  .mqt-metric--fail .mqt-metric__value {
+    color: oklch(75% 0.14 25);
   }
   .mqt-error {
     background: oklch(28% 0.05 25);
