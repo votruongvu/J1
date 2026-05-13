@@ -990,8 +990,19 @@ def test_generator_does_not_pad_when_llm_returns_fewer_than_budget():
     # Exactly the 2 LLM cases ship; no padding from the (removed)
     # heuristic top-up.
     assert len(llm_cases) == 2
-    # And the total set isn't artificially inflated to ``max_cases``.
-    assert len(vset.test_cases) <= 4
+    # No "fallback" / "heuristic" generated_from values — those
+    # were the prior padding paths and are gone. The set may
+    # legitimately contain context-driven entity / fact cases
+    # when the chunks carry capitalised tokens, but never the
+    # padded-to-max output operators flagged.
+    forbidden = {"fallback", "heuristic"}
+    for case in vset.test_cases:
+        assert case.generated_from not in forbidden, (
+            f"padding-path case shipped: {case.question!r} "
+            f"({case.generated_from})"
+        )
+    # The total set isn't inflated to ``max_cases`` (10).
+    assert len(vset.test_cases) < 10
 
 
 def test_looks_truncated_heuristic_unit():

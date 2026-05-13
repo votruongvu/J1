@@ -612,26 +612,28 @@ def _split_sentences(body: str, *, max_sentences: int) -> list[str]:
 
 def _is_useful_sentence(sentence: str) -> bool:
     """Reject obvious non-sentence material (metadata blocks, code,
-    overly-long paragraph dumps). The thresholds are tuned to
-    accept short-but-useful sentences like "The proposal is due
-    20 May 2026." while rejecting one-word fragments, pure
-    numbers, and metadata pipe-tables."""
+    overly-long paragraph dumps). Balanced thresholds (operator
+    feedback round 3): tight enough to filter ``page 1`` /
+    ``[]`` / metadata pipe-blocks, loose enough to accept short
+    factual sentences like ``Stage 1 reviews drawings.`` (24
+    chars, 3 NSW)."""
     s = sentence.strip()
-    if len(s) < 18 or len(s) > 220:
+    if len(s) < 12 or len(s) > 220:
         return False
     if "|" in s and s.count("|") >= 2:
         # "Doc ID: X | Version: Y | …" metadata blocks.
         return False
     if s.startswith(("- ", "* ", "• ", "  ")):
         return False
-    # Must contain at least one alphabetic word + at least two
-    # non-stopwords. Rules out "page 1", "[]", number-only lines
-    # without rejecting short legitimate sentences.
+    # Must contain at least one alphabetic word + at least one
+    # non-stopword. Rules out "page 1", "[]", number-only lines
+    # while letting short factual sentences ("Yes, 20 May 2026.")
+    # survive.
     words = [
         w for w in re.findall(r"[A-Za-z]+", s)
         if w.lower() not in _STOPWORDS
     ]
-    if len(words) < 2:
+    if len(words) < 1:
         return False
     return True
 

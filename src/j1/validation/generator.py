@@ -343,6 +343,21 @@ class DefaultTestCaseGenerator:
             domain_id=domain_id,
             domain_guidance=domain_guidance,
         )
+        # Diagnostic log: what did the context extractor surface?
+        # Operators who see an empty validation set need to know
+        # whether the chunks were the problem or the emitters
+        # downstream were too strict.
+        _log.info(
+            "validation generator context: run_id=%s chunks=%d "
+            "facts=%d entities=%d sections=%d workflow_stages=%d "
+            "has_tables=%s has_visuals=%s has_graph=%s "
+            "domain_id=%s evidence_blocks=%d",
+            run_id, len(chunks),
+            len(context.facts), len(context.entities),
+            len(context.sections), len(context.workflow_stages),
+            context.has_tables, context.has_visuals, context.has_graph,
+            domain_id, len(evidence_blocks or []),
+        )
 
         # Quality-first policy (post operator feedback): no smoke,
         # no heuristic top-up, no minimum count. The generator
@@ -377,6 +392,7 @@ class DefaultTestCaseGenerator:
             if len(cases) >= opts.max_cases:
                 break
             cases.append(case)
+        modality_count = len(cases)
 
         # Whole-document LLM generation runs FIRST among the
         # positive-case emitters. The LLM is the highest-signal
@@ -405,6 +421,13 @@ class DefaultTestCaseGenerator:
             citation_required=opts.citation_required,
         )
         cases.extend(llm_cases)
+        _log.info(
+            "validation generator LLM phase: run_id=%s budget=%d "
+            "cases_returned=%d trace_called=%s trace_error=%s",
+            run_id, llm_budget, len(llm_cases),
+            llm_trace.called if llm_trace else None,
+            llm_trace.error if llm_trace else None,
+        )
 
         # Context-driven category emitters fill any remaining
         # budget. Each emits 0-N cases depending on what the
@@ -412,6 +435,7 @@ class DefaultTestCaseGenerator:
         # When the LLM already returned enough cases the context
         # emitters quietly emit zero — that's the right outcome,
         # not a regression.
+        pre_context_count = len(cases)
         category_cases = _emit_context_cases(
             context=context,
             budget=max(0, opts.max_cases - len(cases) - negative_slots),
@@ -419,6 +443,10 @@ class DefaultTestCaseGenerator:
             domain_id=domain_id,
         )
         cases.extend(category_cases)
+        _log.info(
+            "validation generator context phase: run_id=%s cases_added=%d",
+            run_id, len(cases) - pre_context_count,
+        )
 
         # Domain-driven negative checks. Replaces the prior hardcoded
         # "World Cup / Bitcoin / Mars" pool with questions derived
@@ -436,11 +464,61 @@ class DefaultTestCaseGenerator:
 
         # Post-emit quality pass: drop cases that look generic /
         # raw-chunk-text-injected, dedupe near-duplicates by
-        # normalised question text. Spec section 12 enumerates
-        # the reject criteria — the smoke case is exempt so the
-        # set always has at least the "is the index alive?"
-        # baseline regardless of how aggressive the filter is.
+        # normalised question text. Quality-first rules in
+        # ``_passes_quality`` — every drop logged so operators
+        # who see an empty set know which gate killed it.
+        before_filter = len(cases)
         cases = _filter_and_dedupe_cases(cases, context=context)
+        dropped_by_filter = before_filter - len(cases)
+        _log.info(
+            "validation generator filter phase: run_id=%s "
+            "before=%d after=%d dropped=%d",
+            run_id, before_filter, len(cases), dropped_by_filter,
+        )
+
+        # Final summary log + empty-output reason. Surfaces the
+        # most likely cause directly to operators when the set is
+        # empty so they don't have to scroll back through the
+        # phase logs.
+        empty_reason: str | None = None
+        if not cases:
+            if not chunks:
+                empty_reason = "no_chunks_for_run"
+            elif not (evidence_blocks or []):
+                empty_reason = "no_evidence_blocks_built_from_chunks"
+            elif (
+                llm_trace is not None
+                and llm_trace.error
+                and not llm_cases
+            ):
+                empty_reason = f"llm_error: {llm_trace.error}"
+            elif not context.has_any_facts() and not llm_cases:
+                empty_reason = (
+                    "context_extraction_yielded_no_facts_entities_or_sections"
+                )
+            elif dropped_by_filter > 0:
+                empty_reason = (
+                    f"all_{dropped_by_filter}_cases_dropped_by_quality_filter"
+                )
+            else:
+                empty_reason = "unknown"
+            _log.warning(
+                "validation generator returned ZERO cases for run_id=%s: %s "
+                "(chunks=%d facts=%d entities=%d sections=%d "
+                "llm_called=%s llm_cases=%d filter_dropped=%d)",
+                run_id, empty_reason, len(chunks),
+                len(context.facts), len(context.entities),
+                len(context.sections),
+                llm_trace.called if llm_trace else None,
+                len(llm_cases), dropped_by_filter,
+            )
+        else:
+            _log.info(
+                "validation generator emitted %d cases for run_id=%s "
+                "(modality=%d llm=%d filter_dropped=%d)",
+                len(cases), run_id, modality_count,
+                len(llm_cases), dropped_by_filter,
+            )
 
         artifacts_hash = _hash_chunks(sampled)
         context_summary = _build_context_summary(
@@ -466,6 +544,17 @@ class DefaultTestCaseGenerator:
                 "table_artifact_count": len(table_artifacts or []),
                 "visual_artifact_count": len(visual_artifacts or []),
                 "graph_artifact_count": len(graph_artifacts or []),
+                # Per-phase counters + empty-output diagnostic. The
+                # FE can surface ``empty_reason`` when test_cases is
+                # empty so operators don't have to grep server logs.
+                "context_facts": len(context.facts),
+                "context_entities": len(context.entities),
+                "context_sections": len(context.sections),
+                "context_workflow_stages": len(context.workflow_stages),
+                "modality_case_count": modality_count,
+                "llm_case_count": len(llm_cases),
+                "filter_dropped_count": dropped_by_filter,
+                "empty_reason": empty_reason,
             },
             domain_id=domain_id,
             llm=llm_trace,
@@ -1344,8 +1433,13 @@ def _expected_answer_from_fact(
 
 
 def _trim_for_expected_answer(text: str) -> str | None:
+    """Trim a fact / chunk-derived string into a presentable
+    expected-answer summary. Balanced thresholds (operator
+    feedback round 3): allow short answers like ``Stage 1`` or
+    ``20 May 2026`` while still rejecting empty / single-char
+    junk."""
     text = (text or "").strip()
-    if 10 < len(text) <= 200:
+    if 4 <= len(text) <= 200:
         return text
     if len(text) > 200:
         return text[:197].rstrip() + "…"
@@ -1433,27 +1527,61 @@ def _fact_case(
 ) -> ValidationTestCaseDTO | None:
     """A fact-grounded retrieval case.
 
-    Strict mode (post operator feedback): the topic MUST survive
-    the noise / identifier filter. When no clean topic can be
-    extracted from the fact body, we return ``None`` rather than
-    emit a vague section/page placeholder. The previous
-    "What does the section X say?" / "What does page X say?"
-    fallbacks produced low-value rows.
+    Strategy (operator feedback round 3): prefer a topic-anchored
+    question, but fall back to a section / page anchor when no
+    clean topic can be extracted. The fallback path keeps the
+    case evidence-grounded (the fact body becomes the expected
+    answer; the section/page is the anchor) without re-introducing
+    the raw-chunk-text-injection bug — the question text doesn't
+    quote the fact, it points at the section/page where the
+    fact lives.
+
+    Returns ``None`` only when EVEN the section/page fallback
+    isn't usable (no section, no page) AND no clean topic exists.
     """
     topic = _topic_from_fact(fact.text)
-    if not topic:
+    if topic:
+        question = f"What does the document say about {topic}?"
+        expected_answer_points = [topic]
+        confidence = 0.8
+        reason = (
+            f"Fact-grounded: topic {topic!r} extracted from "
+            f"{'page ' + str(fact.page) if fact.page else 'a chunk'}."
+        )
+    elif fact.section:
+        # Section-anchored fallback: the fact body becomes the
+        # answer, the section heading anchors the question.
+        question = f"What does the section {fact.section!r} cover?"
+        expected_answer_points = [fact.section]
+        confidence = 0.65
+        reason = (
+            f"Fact-grounded fallback: no clean topic, anchored on "
+            f"section heading {fact.section!r}."
+        )
+    elif fact.page is not None:
+        question = (
+            f"What information is presented on page {fact.page} "
+            "of the document?"
+        )
+        expected_answer_points = [f"page {fact.page}"]
+        confidence = 0.55
+        reason = (
+            f"Fact-grounded fallback: no clean topic, anchored on "
+            f"page {fact.page}."
+        )
+    else:
         return None
-    expected_answer = _expected_answer_from_fact(fact.text, topic)
+    expected_answer = _expected_answer_from_fact(fact.text, topic or "")
     if not expected_answer:
         return None
     return ValidationTestCaseDTO(
         test_case_id=f"tc-fact-{uuid.uuid4().hex[:8]}",
-        question=f"What does the document say about {topic}?",
+        question=question,
         type="retrieval",
         priority="normal",
         expected_behavior="answer_with_citations",
         expected_answer=expected_answer,
-        expected_answer_points=[topic],
+        expected_answer_points=expected_answer_points,
         expected_chunks=[fact.chunk_id] if fact.chunk_id else [],
         expected_pages=[fact.page] if fact.page is not None else [],
         citation_required=citation_required,
@@ -1467,11 +1595,8 @@ def _fact_case(
         source_artifact_id=fact.artifact_id,
         domain_id=domain_id,
         generated_from="fact",
-        confidence=0.8,
-        reason=(
-            f"Fact-grounded: topic {topic!r} extracted from "
-            f"{'page ' + str(fact.page) if fact.page else 'a chunk'}."
-        ),
+        confidence=confidence,
+        reason=reason,
         expected_evidence=_evidence_pointer(fact),
     )
 
@@ -1625,9 +1750,19 @@ def _passes_quality(
     if not (case.expected_answer or "").strip():
         return False
 
-    # 3. Positive cases must have an expected_evidence pointer
-    #    (page / section / chunk reference).
-    if not (case.expected_evidence or "").strip():
+    # 3. Positive cases must have AT LEAST ONE of:
+    #    - ``expected_evidence`` (page / section / chunk pointer)
+    #    - ``evidence_quote`` (LLM-grounded verbatim quote that
+    #      already passed the anti-hallucination filter)
+    #    The double-requirement of both was over-strict — LLM
+    #    cases carry the quote but the materializer's evidence
+    #    pointer is just the artifact id. Either form proves the
+    #    answer is anchored in the document.
+    has_evidence = bool(
+        (case.expected_evidence or "").strip()
+        or (case.evidence_quote or "").strip()
+    )
+    if not has_evidence:
         return False
 
     # 4. Raw-chunk-text injection signature.
@@ -1640,9 +1775,16 @@ def _passes_quality(
 
     # 6. Topic-noise check. Pull the "about X" / "of X" / "role
     #    of X" anchor and reject when X is in the noise list.
-    anchor = _extract_question_anchor(question)
-    if anchor is not None and not _is_acceptable_topic(anchor, question):
-        return False
+    #    LLM-grounded cases (those carrying an ``evidence_quote``)
+    #    are exempt — the LLM already verified the quote against
+    #    the source artifact via the anti-hallucination filter,
+    #    so the topic-regex would be over-aggressive here. The
+    #    check stays in force for context-derived cases where
+    #    noise leakage is the real risk.
+    if not case.evidence_quote:
+        anchor = _extract_question_anchor(question)
+        if anchor is not None and not _is_acceptable_topic(anchor, question):
+            return False
 
     # 7. Vague "this document"-only phrasing without a real
     #    anchor.
@@ -2389,19 +2531,26 @@ def _normalise_for_match(text: str) -> str:
 def _quote_is_in_evidence(quote: str, haystack: str) -> bool:
     """Substring match with progressive prefix-shortening so a
  paraphrased quote still grounds when the LLM trimmed trailing
- punctuation or whitespace. Minimum accepted prefix is 40 chars
- — shorter than that we'd risk accepting hallucinated quotes that
- happen to share a few words with the doc."""
+ punctuation or whitespace.
+
+ Balanced thresholds (operator feedback round 3): 8B local
+ models routinely paraphrase quoted spans. The previous 40-char
+ minimum prefix dropped most LLM cases silently. The new
+ minimum is 20 chars — still long enough that a hallucinated
+ quote can't accidentally match (the search space across a
+ typical 5KB evidence corpus is too large for a 20-char
+ random match), but short enough that paraphrased quotes
+ anchored on a real fact survive."""
     if not quote:
         return False
     if quote in haystack:
         return True
     cut = quote
-    while len(cut) >= 40:
+    while len(cut) >= 20:
         if cut in haystack:
             return True
-        cut = cut[: max(40, len(cut) - 20)]
-        if len(cut) == 40 and cut not in haystack:
+        cut = cut[: max(20, len(cut) - 10)]
+        if len(cut) == 20 and cut not in haystack:
             return False
     return False
 
