@@ -103,21 +103,30 @@ class _StubProcessing:
         self.index_result = ProcessingResult(status=ResultStatus.SUCCEEDED)
         self.compile_raises: Exception | None = None
 
-    def compile(self, ctx, compiler, document, *, actor, correlation_id):
+    def compile(
+        self, ctx, compiler, document,
+        *, actor, correlation_id, **kwargs,
+    ):
         if self.compile_raises:
             raise self.compile_raises
         return self.compile_result
 
-    def enrich(self, ctx, processor, artifact, *, actor, correlation_id):
+    def enrich(
+        self, ctx, processor, artifact,
+        *, actor, correlation_id, **kwargs,
+    ):
         return self.enrich_result
 
     def build_graph(
         self, ctx, builder, artifact_ids,
-        *, actor, correlation_id, document_id=None,
+        *, actor, correlation_id, document_id=None, **kwargs,
     ):
         return self.build_graph_result
 
-    def index(self, ctx, indexer, artifact_ids, *, actor, correlation_id):
+    def index(
+        self, ctx, indexer, artifact_ids,
+        *, actor, correlation_id, **kwargs,
+    ):
         return self.index_result
 
 

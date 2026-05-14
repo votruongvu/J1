@@ -1096,6 +1096,9 @@ class ProcessingActivities:
                         actor=input.actor,
                         correlation_id=input.correlation_id,
                         document_id=input.document_id,
+                        target_snapshot_id=getattr(
+                            input, "target_snapshot_id", None,
+                        ),
                     )
             except Exception as exc:
                 self._report_step_failure(

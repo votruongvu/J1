@@ -804,18 +804,17 @@ class ProcessingService:
         actor: str = "system",
         correlation_id: str | None = None,
         document_id: str | None = None,
+        target_snapshot_id: str | None = None,
     ) -> ArtifactProcessingResult:
-        # Thread document_id + run_id (= correlation_id) into the
-        # builder when the concrete implementation accepts them.
-        # Mirrors the inspect-based passthrough used by
-        # ``compile``. Concrete adapters (e.g.
-        # ``RAGAnythingGraphBuilder``) use these to:
-        #   1. Scope LightRAG's working_dir per-run, so a reindex
-        #      reads the right scoped graph storage rather than
-        #      the global workdir.
-        #   2. Stamp ``metadata.run_id`` + ``metadata.document_id``
-        #      onto every emitted graph_json draft at the producer
-        #      layer, so the registry-level lineage guard at
+        # Thread document_id, run_id (= correlation_id), and the
+        # workflow-allocated snapshot_id into the builder when the
+        # concrete implementation accepts them. Concrete adapters
+        # (e.g. ``RAGAnythingGraphBuilder``) use these to:
+        #   1. Scope LightRAG's working_dir per-snapshot so a
+        #      reindex reads the right scoped graph storage rather
+        #      than the global workdir.
+        #   2. Stamp lineage metadata on every emitted graph_json
+        #      draft so the registry-level lineage guard at
         #      ``JsonArtifactRegistry.add()`` doesn't reject them.
         # Legacy / mock builders without the kwargs keep working
         # unchanged.
@@ -827,6 +826,11 @@ class ProcessingService:
                 build_kwargs["document_id"] = document_id
             if "run_id" in sig.parameters and correlation_id:
                 build_kwargs["run_id"] = correlation_id
+            if (
+                "snapshot_id" in sig.parameters
+                and target_snapshot_id
+            ):
+                build_kwargs["snapshot_id"] = target_snapshot_id
         except (TypeError, ValueError):
             pass
         try:
