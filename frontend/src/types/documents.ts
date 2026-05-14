@@ -43,11 +43,14 @@ export type RunType =
  * to decide which buttons to render — never compares against the
  * `knowledgeState` directly. Adding a new action server-side means
  * the FE picks it up automatically as long as it's rendered.
+ *
+ * Run-scoped actions (delete-run, refresh-enrichment, run-enrichment)
+ * are NOT on this enum — they're driven by capability flags carried
+ * on each ``DocumentRunSummary``.
  */
 export type DocumentAction =
   | "view"
   | "reindex"
-  | "refresh_enrich"
   | "detach"
   | "attach"
   | "remove";
@@ -77,6 +80,14 @@ export interface DocumentRunSummary {
    * rather than showing an empty placeholder.
    */
   displayVersion: string | null;
+  /**
+   * Run-level capability flags. Computed server-side; the FE MUST
+   * NOT recompute these locally. Drive every Run Detail action.
+   */
+  isOnlyRun: boolean;
+  canDeleteRun: boolean;
+  canRefreshEnrichment: boolean;
+  canRunEnrichment: boolean;
 }
 
 /** List-view projection — one per document in `GET /documents`. */
@@ -133,13 +144,12 @@ export interface DocumentReindexResponse {
 }
 
 /**
- * Response from `POST /documents/{id}/refresh-enrich`. Same shape
- * as the reindex response with two refresh-specific fields:
- * `refreshRunId` (the new candidate's id) and
- * `reusedCompileFromRunId` (the active run whose compile output
- * the new run reuses).
+ * Response from ``POST /ingestion-runs/{run_id}/refresh-enrichment``.
+ * The endpoint allocates a new candidate run that reuses the active
+ * run's compile output and re-runs only enrichment + graph + index.
+ * Promotion to ``activeSnapshotId`` is CAS-on-terminal-success.
  */
-export interface DocumentRefreshEnrichResponse {
+export interface RunRefreshEnrichmentResponse {
   documentId: string;
   refreshRunId: string;
   parentRunId: string;

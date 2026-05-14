@@ -38,7 +38,7 @@ import type {
   DocumentDetail,
   DocumentLifecycleResponse,
   DocumentListItem,
-  DocumentRefreshEnrichResponse,
+  RunRefreshEnrichmentResponse,
   DocumentReindexResponse,
   DocumentRunSummary,
 } from "@/types/documents";
@@ -307,27 +307,18 @@ export interface IngestionClient {
   // ---- Operational actions ---------------------------------------
 
   /**
- * DELETE an ingestion run (soft tombstone). Backend marks the
- * run + its artifacts deleted; subsequent reads exclude them.
- * Idempotent — `wasAlreadyDeleted=true` on the second call.
- * Throws ApiError(409) when the run is still active.
+ * DELETE an ingestion run — single-step hard delete. Physically
+ * removes the run record, every artifact (file on disk + registry
+ * record), every JSONL snapshot of the run, and cascades to any
+ * validation sets/runs that referenced it. Audit log stays intact.
+ *
+ * Throws `ApiError(409)` when the run is still active, when the
+ * run is the document's currently active run, or when the run is
+ * the document's only run. Throws `ApiError(404)` when the run
+ * doesn't exist (also returned on a second delete — the operation
+ * is idempotent in the sense that retries are safe).
  */
   deleteRun(runId: string): Promise<DeleteRunResult>;
-
-  /**
- * POST purge — physically remove a soft-deleted run, its
- * artifacts (files + registry records), and any validation
- * sets/runs that referenced it. Audit log stays intact.
- *
- * By default the backend requires the run to already be
- * soft-deleted (DELETE first). Pass `force=true` to bypass that
- * gate for admin tooling.
- *
- * Throws `ApiError(409)` when the run is still active OR when
- * the operator hasn't soft-deleted it first (and `force` is
- * false).
- */
-  purgeRun(runId: string, opts?: { force?: boolean }): Promise<PurgeRunResult>;
 
   /**
  * POST a multi-upload batch. Backend registers each file as a
@@ -393,15 +384,16 @@ export interface IngestionClient {
   reindexDocument(documentId: string): Promise<DocumentReindexResponse>;
 
   /**
- * POST /documents/{id}/refresh-enrich — start a candidate run
- * that REUSES the previous active run's compile output and re-
- * runs only enrichment + graph + index. Promotion to
- * `activeRunId` is gated on terminal success (same CAS rule as
- * reindex), so a failed refresh preserves the previous active.
+ * POST /ingestion-runs/{run_id}/refresh-enrichment — start a new
+ * candidate run that REUSES this run's compile output and re-runs
+ * only enrichment + graph + index. ``run_id`` MUST be the
+ * document's currently active run; the server rejects non-active
+ * runs with HTTP 409.
+ *
+ * Promotion to ``activeSnapshotId`` is CAS-on-terminal-success —
+ * a failed refresh preserves the previous active.
  */
-  refreshEnrichDocument(
-    documentId: string,
-  ): Promise<DocumentRefreshEnrichResponse>;
+  refreshRunEnrichment(runId: string): Promise<RunRefreshEnrichmentResponse>;
 }
 
 /** Per-role probe result from `/healthz/llm`. */
@@ -420,20 +412,11 @@ export interface LLMHealthStatus {
   results: LLMHealthRole[];
 }
 
-/** Result envelope from `DELETE /ingestion-runs/{id}`. */
+/** Result envelope from `DELETE /ingestion-runs/{id}` (hard delete). */
 export interface DeleteRunResult {
   runId: string;
-  status: string;
-  tombstonedArtifactCount: number;
-  wasAlreadyDeleted: boolean;
-  deletedAt: string;
-}
-
-/** Result envelope from `POST /ingestion-runs/{id}/purge`. */
-export interface PurgeRunResult {
-  runId: string;
   /** Registry records removed. */
-  artifactsPurged: number;
+  artifactsDeleted: number;
   /** Files actually unlinked from disk. */
   filesDeleted: number;
   /** Files that were already missing (idempotent path). */
@@ -442,7 +425,7 @@ export interface PurgeRunResult {
   snapshotsRemoved: number;
   validationSetsRemoved: number;
   validationRunsRemoved: number;
-  purgedAt: string;
+  deletedAt: string;
 }
 
 /** Result envelope from `POST /ingestion-batches`. */

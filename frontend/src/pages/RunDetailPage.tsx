@@ -74,6 +74,12 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
   // confusing operators.
   const [documentDisplayName, setDocumentDisplayName] =
     useState<string | null>(null);
+  // Server-computed capability flags for THIS run, sourced from the
+  // document detail's runHistory. Drives the Run Detail action area
+  // (delete-run, refresh-enrichment, etc.); ``null`` while loading.
+  const [runCapability, setRunCapability] = useState<
+    import("@/types/documents").DocumentRunSummary | null
+  >(null);
 
   const streamHandle = useRef<StreamHandle | null>(null);
   const eventIdsRef = useRef<Set<string>>(new Set());
@@ -297,25 +303,37 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
   useEffect(() => {
     if (!run?.document_id) {
       setDocumentDisplayName(null);
-      return;
-    }
-    if (run.document_name && run.document_name !== run.document_id) {
-      setDocumentDisplayName(run.document_name);
+      setRunCapability(null);
       return;
     }
     let cancelled = false;
     void (async () => {
       try {
         const d = await client.getDocumentDetail(run.document_id!);
-        if (!cancelled) setDocumentDisplayName(d.displayName ?? null);
+        if (cancelled) return;
+        if (run.document_name && run.document_name !== run.document_id) {
+          setDocumentDisplayName(run.document_name);
+        } else {
+          setDocumentDisplayName(d.displayName ?? null);
+        }
+        const capability =
+          d.runHistory.find((r) => r.runId === run.runId) ?? null;
+        setRunCapability(capability);
       } catch {
-        if (!cancelled) setDocumentDisplayName(null);
+        if (!cancelled) {
+          if (run.document_name && run.document_name !== run.document_id) {
+            setDocumentDisplayName(run.document_name);
+          } else {
+            setDocumentDisplayName(null);
+          }
+          setRunCapability(null);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [client, run?.document_id, run?.document_name]);
+  }, [client, run?.document_id, run?.document_name, run?.runId]);
 
   const enrichmentSignals: EnrichmentSignals = (() => {
     // prefer the report's enrichment summary when present.
@@ -359,6 +377,7 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
         ctx={ctx}
         origin={origin}
         documentDisplayName={documentDisplayName}
+        runCapability={runCapability}
         onBack={onBack}
         onOpenDrawer={() => setDrawerOpen(true)}
         onRefresh={() => {
@@ -369,16 +388,16 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
         }}
         pushToast={pushToast}
         onAfterAction={(action, newRunId) => {
-          // Delete → back to runs list; Re-process / Resume → jump
-          // to the new run if one was created. Other actions
-          // (pause / resume / cancel) just refresh in-place via
-          // onRefresh.
-          if (action === "delete" || action === "purge") {
-            // Soft-delete and purge both remove the run from view —
-            // bounce back to the list so the user doesn't sit on a
-            // page for something that no longer exists.
+          if (action === "delete") {
+            // The run is gone — bounce back so the user doesn't sit
+            // on a page for something that no longer exists.
             onBack();
-          } else if (action === "reindex" && newRunId) {
+          } else if (
+            (action === "refresh_enrichment" || action === "run_enrichment")
+            && newRunId
+          ) {
+            // Jump to the new candidate run so the operator can
+            // watch enrichment progress.
             try {
               window.history.pushState({}, "", `?run=${newRunId}`);
             } catch {

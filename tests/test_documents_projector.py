@@ -332,3 +332,132 @@ def test_project_run_history_returns_empty_for_unprocessed_document():
         document=_doc(active_snapshot_id=None), runs=[],
     )
     assert history == ()
+
+
+# ---- Run-level capability flags --------------------------------
+
+
+def _enriched_step_metadata() -> dict:
+    return {"step_results": {"enrich": {"status": "completed"}}}
+
+
+def test_run_capability_flags_for_active_enriched_run():
+    """The active run with completed enrichment exposes
+    ``can_refresh_enrichment`` (not ``can_run_enrichment``) and is
+    NOT delete-eligible."""
+    older = _run(
+        run_id="r-old", status=RunStatus.FAILED,
+        started_at=_NOW - timedelta(hours=1),
+    )
+    active = _run(run_id="r-active", status=RunStatus.SUCCEEDED)
+    # The projector reads ``step_results`` off ``metadata``.
+    active.metadata = _enriched_step_metadata()
+
+    history = project_run_history(
+        document=_doc(active_snapshot_id="snap-active"),
+        runs=[older, active],
+    )
+    by_id = {h.run_id: h for h in history}
+
+    assert by_id["r-active"].is_active is True
+    assert by_id["r-active"].is_only_run is False
+    assert by_id["r-active"].can_delete_run is False
+    assert by_id["r-active"].can_refresh_enrichment is True
+    assert by_id["r-active"].can_run_enrichment is False
+
+
+def test_run_capability_flags_for_active_run_without_enrichment():
+    """An active run that never produced enrichment exposes
+    ``can_run_enrichment`` instead of refresh."""
+    older = _run(
+        run_id="r-old", status=RunStatus.FAILED,
+        started_at=_NOW - timedelta(hours=1),
+    )
+    active = _run(run_id="r-active", status=RunStatus.SUCCEEDED)
+    # No step_results.enrich → flag flips to run_enrichment.
+
+    history = project_run_history(
+        document=_doc(active_snapshot_id="snap-active"),
+        runs=[older, active],
+    )
+    by_id = {h.run_id: h for h in history}
+    assert by_id["r-active"].can_refresh_enrichment is False
+    assert by_id["r-active"].can_run_enrichment is True
+
+
+def test_run_capability_flags_for_non_active_run():
+    """A historical non-active run is delete-eligible but NOT
+    enrichment-eligible."""
+    older = _run(
+        run_id="r-old", status=RunStatus.FAILED,
+        started_at=_NOW - timedelta(hours=1),
+    )
+    active = _run(run_id="r-active", status=RunStatus.SUCCEEDED)
+
+    history = project_run_history(
+        document=_doc(active_snapshot_id="snap-active"),
+        runs=[older, active],
+    )
+    older_summary = next(h for h in history if h.run_id == "r-old")
+    assert older_summary.is_active is False
+    assert older_summary.is_only_run is False
+    assert older_summary.can_delete_run is True
+    assert older_summary.can_refresh_enrichment is False
+    assert older_summary.can_run_enrichment is False
+
+
+def test_run_capability_flags_for_only_run_blocks_delete():
+    """A document with exactly one run cannot have that run deleted
+    via the run endpoint — ``is_only_run`` is True and
+    ``can_delete_run`` is False even though the run isn't active."""
+    only = _run(run_id="r-only", status=RunStatus.FAILED)
+
+    history = project_run_history(
+        document=_doc(active_snapshot_id=None), runs=[only],
+    )
+    summary = history[0]
+    assert summary.is_only_run is True
+    assert summary.is_active is False
+    assert summary.can_delete_run is False
+
+
+def test_run_capability_flags_for_inflight_run_blocks_everything():
+    """A RUNNING run is in-flight; delete is refused and no
+    enrichment action is offered."""
+    active = _run(
+        run_id="r-active", status=RunStatus.SUCCEEDED,
+        started_at=_NOW - timedelta(hours=1),
+    )
+    inflight = _run(run_id="r-inflight", status=RunStatus.RUNNING)
+
+    history = project_run_history(
+        document=_doc(active_snapshot_id="snap-active"),
+        runs=[active, inflight],
+    )
+    by_id = {h.run_id: h for h in history}
+    assert by_id["r-inflight"].can_delete_run is False
+    assert by_id["r-inflight"].can_refresh_enrichment is False
+    assert by_id["r-inflight"].can_run_enrichment is False
+
+
+def test_run_capability_flags_when_document_detached():
+    """A detached document still allows historical runs to be
+    deleted (so operators can clean up), but never offers
+    enrichment actions."""
+    older = _run(
+        run_id="r-old", status=RunStatus.FAILED,
+        started_at=_NOW - timedelta(hours=1),
+    )
+    active = _run(run_id="r-active", status=RunStatus.SUCCEEDED)
+    active.metadata = _enriched_step_metadata()
+
+    history = project_run_history(
+        document=_doc(state="detached", active_snapshot_id="snap-active"),
+        runs=[older, active],
+    )
+    by_id = {h.run_id: h for h in history}
+    # No enrichment actions on a detached document.
+    assert by_id["r-active"].can_refresh_enrichment is False
+    assert by_id["r-active"].can_run_enrichment is False
+    # The older run is still safely delete-eligible.
+    assert by_id["r-old"].can_delete_run is True

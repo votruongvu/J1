@@ -51,16 +51,15 @@ import type {
   DocumentDetail,
   DocumentLifecycleResponse,
   DocumentListItem,
-  DocumentRefreshEnrichResponse,
   DocumentReindexResponse,
   DocumentRunSummary,
+  RunRefreshEnrichmentResponse,
 } from "@/types/documents";
 import {
   ApiError,
   type BatchDetail,
   type BatchUploadResult,
   type DeleteRunResult,
-  type PurgeRunResult,
   type IngestionClient,
   type LLMHealthStatus,
   type RunControlResult,
@@ -703,31 +702,13 @@ export class ApiClient implements IngestionClient {
     const data = await this.json<Record<string, unknown>>(resp);
     return {
       runId: String(data.runId ?? runId),
-      status: String(data.status ?? "deleted"),
-      tombstonedArtifactCount: Number(data.tombstonedArtifactCount ?? 0),
-      wasAlreadyDeleted: Boolean(data.wasAlreadyDeleted),
-      deletedAt: String(data.deletedAt ?? ""),
-    };
-  }
-
-  async purgeRun(
-    runId: string, opts: { force?: boolean } = {},
-  ): Promise<PurgeRunResult> {
-    const qs = opts.force ? "?force=true" : "";
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/purge${qs}`),
-      { method: "POST", headers: this.headers() },
-    );
-    const data = await this.json<Record<string, unknown>>(resp);
-    return {
-      runId: String(data.runId ?? runId),
-      artifactsPurged: Number(data.artifactsPurged ?? 0),
+      artifactsDeleted: Number(data.artifactsDeleted ?? 0),
       filesDeleted: Number(data.filesDeleted ?? 0),
       filesMissing: Number(data.filesMissing ?? 0),
       snapshotsRemoved: Number(data.snapshotsRemoved ?? 0),
       validationSetsRemoved: Number(data.validationSetsRemoved ?? 0),
       validationRunsRemoved: Number(data.validationRunsRemoved ?? 0),
-      purgedAt: String(data.purgedAt ?? ""),
+      deletedAt: String(data.deletedAt ?? ""),
     };
   }
 
@@ -854,15 +835,15 @@ export class ApiClient implements IngestionClient {
     return await this.json<DocumentReindexResponse>(resp);
   }
 
-  async refreshEnrichDocument(
-    documentId: string,
-  ): Promise<DocumentRefreshEnrichResponse> {
+  async refreshRunEnrichment(
+    runId: string,
+  ): Promise<RunRefreshEnrichmentResponse> {
     const resp = await fetch(
       this.url(
-        `/documents/${encodeURIComponent(documentId)}/refresh-enrich`,
+        `/ingestion-runs/${encodeURIComponent(runId)}/refresh-enrichment`,
       ),
       { method: "POST", headers: this.headers() },
     );
-    return await this.json<DocumentRefreshEnrichResponse>(resp);
+    return await this.json<RunRefreshEnrichmentResponse>(resp);
   }
 }

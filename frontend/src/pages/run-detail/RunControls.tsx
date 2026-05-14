@@ -1,55 +1,71 @@
 /**
- * Status-aware control buttons for an ingestion run.
+ * Run-level action buttons.
  *
- * A run is an immutable execution record: nothing here ever restarts
- * or re-indexes the run. Re-processing a document is a document-level
- * action — see the "Re-Index Document" button on the Document page.
+ * A run is an immutable execution record. Re-processing a document is
+ * a document-level action — see "Re-Index Document" on the Document
+ * page. This component only exposes actions whose scope is THIS run:
  *
- * What this component still exposes:
+ *   * **Pause / Cancel** — operator workflow control while the run is
+ *     in-flight.
+ *   * **Run enrichment / Refresh enrichment** — active-run only.
+ *     Label flips based on whether enrichment artifacts already
+ *     exist on the active run.
+ *   * **Delete Run** — hard delete this single run + its artifacts /
+ *     chunks / enrichment / graph / index / validation outputs. Only
+ *     surfaced on non-active runs that are NOT the document's only
+ *     run. The only-run case shows helper text pointing at Remove
+ *     Knowledge instead.
  *
- *   * **Cancel** — stop an in-flight workflow. Lets operators stop a
- *     stuck or unwanted run; the run still becomes an immutable
- *     CANCELLED record.
- *   * **Pause** — pause an in-flight workflow at the next
- *     pause-checkpoint. Operator escape hatch; resume is intentionally
- *     not surfaced (a paused run can only be cancelled, then the user
- *     starts a fresh re-index from the document).
- *   * **Advanced → Delete / Purge** — soft-delete the run record or
- *     hard-purge it from disk. These never start a new run; they only
- *     remove historical data.
- *
- * What's removed:
- *
- *   * "Re-process" / "Re-index" on a run — only available at the
- *     document level now.
- *   * "Resume" of a stopped/paused run — only document-level
- *     re-index can produce a new run.
- *   * "Continue from compiled result" / "Rebuild index" — same reason.
+ * Every action gate comes from server-side capability flags on the
+ * ``DocumentRunSummary`` (``isActive``, ``isOnlyRun``,
+ * ``canDeleteRun``, ``canRefreshEnrichment``, ``canRunEnrichment``).
+ * The frontend MUST NOT recompute these locally — the server is the
+ * source of truth, including for the active-run identity.
  */
 
 import { useCallback, useState } from "react";
 import { ApiError, type RunControlResult } from "@/lib/api/client";
 import { useClient } from "@/lib/hooks/useClient";
 import {
-  ACTIVE_STATUSES,
   CANCELLABLE_STATUSES,
   PAUSABLE_STATUSES,
   RUN_STATUS,
 } from "@/lib/constants/runStatus";
 import type { IngestionRun } from "@/types/ingestion";
+import type { DocumentRunSummary } from "@/types/documents";
 import type { Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 
-type ControlAction = "pause" | "cancel" | "delete" | "purge";
+type ControlAction =
+  | "pause"
+  | "cancel"
+  | "delete"
+  | "refresh_enrichment"
+  | "run_enrichment";
 
 interface RunControlsProps {
   run: IngestionRun | null;
+  /**
+   * Server-computed capability flags for THIS run. Coming from the
+   * document detail's ``runHistory``. When absent, only the in-flight
+   * actions (pause / cancel) are surfaced — destructive and
+   * enrichment actions stay hidden until the parent loads it.
+   */
+  capability?: Pick<
+    DocumentRunSummary,
+    | "isActive"
+    | "isOnlyRun"
+    | "canDeleteRun"
+    | "canRefreshEnrichment"
+    | "canRunEnrichment"
+  > | null;
   onRefresh: () => void;
   pushToast: (toast: Omit<Toast, "id">) => void;
   /** Compact list-row variant — narrower buttons, no labels. */
   compact?: boolean;
-  /** Optional: invoked after a successful Delete with `null` so the
-   * parent can navigate away (back to the list). */
+  /** Invoked after a successful action so the parent can navigate
+   *  (e.g. back to the run list after a delete, or to the new
+   *  enrichment-refresh run). */
   onAfterAction?: (action: ControlAction, newRunId: string | null) => void;
 }
 
@@ -57,11 +73,15 @@ const PAUSE_FROM = PAUSABLE_STATUSES;
 const CANCEL_FROM = CANCELLABLE_STATUSES;
 
 export function RunControls({
-  run, onRefresh, pushToast, compact = false, onAfterAction,
+  run,
+  capability = null,
+  onRefresh,
+  pushToast,
+  compact = false,
+  onAfterAction,
 }: RunControlsProps) {
   const client = useClient();
   const [pending, setPending] = useState<ControlAction | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const dispatch = useCallback(
     async (action: ControlAction) => {
@@ -75,22 +95,11 @@ export function RunControls({
       }
       if (action === "delete") {
         const ok = window.confirm(
-          `Delete THIS RUN of "${run.document_name}"?\n\n` +
-            `This soft-deletes ONLY this attempt. The document and ` +
-            `its other runs stay attached to the knowledge base.\n\n` +
-            `Looking to remove the document from search/answers? ` +
-            `Use Detach or Remove on the document page instead.`,
-        );
-        if (!ok) return;
-      }
-      if (action === "purge") {
-        const ok = window.confirm(
-          `PERMANENTLY purge "${run.document_name}"?\n\n` +
-            `This physically deletes the run record + every artifact ` +
-            `file on disk + cascades to validation sets/runs. The ` +
-            `audit log stays intact for compliance, but the run + its ` +
-            `outputs are GONE.\n\n` +
-            `This action CANNOT be undone.`,
+          `Delete this run?\n\n` +
+            `This permanently deletes this run and all run-scoped ` +
+            `artifacts, chunks, enrichment, validation outputs, and ` +
+            `index data.\n\n` +
+            `This cannot be undone.`,
         );
         if (!ok) return;
       }
@@ -98,7 +107,7 @@ export function RunControls({
       try {
         let toastTitle = "";
         let toastBody = "";
-        const newRunId: string | null = null;
+        let newRunId: string | null = null;
         if (action === "pause" || action === "cancel") {
           let result: RunControlResult;
           if (action === "pause") result = await client.pauseRun(run.runId);
@@ -108,17 +117,20 @@ export function RunControls({
           toastBody = result.message ?? `Run is now ${result.status}.`;
         } else if (action === "delete") {
           const result = await client.deleteRun(run.runId);
-          toastTitle = result.wasAlreadyDeleted
-            ? "Already deleted" : "Deleted";
-          toastBody = result.wasAlreadyDeleted
-            ? "This run was already tombstoned."
-            : `Tombstoned ${result.tombstonedArtifactCount} artifact(s).`;
-        } else if (action === "purge") {
-          const result = await client.purgeRun(run.runId);
-          toastTitle = "Purged";
+          toastTitle = "Run deleted";
           toastBody =
-            `${result.filesDeleted} file(s) + ${result.artifactsPurged} ` +
+            `${result.filesDeleted} file(s) + ${result.artifactsDeleted} ` +
             `artifact record(s) removed.`;
+        } else if (
+          action === "refresh_enrichment" || action === "run_enrichment"
+        ) {
+          const result = await client.refreshRunEnrichment(run.runId);
+          toastTitle =
+            action === "refresh_enrichment"
+              ? "Refresh enrichment started"
+              : "Enrichment started";
+          toastBody = `New run: ${result.refreshRunId.slice(0, 12)}`;
+          newRunId = result.refreshRunId;
         }
         pushToast({ kind: "success", title: toastTitle, body: toastBody });
         if (onAfterAction) onAfterAction(action, newRunId);
@@ -126,10 +138,18 @@ export function RunControls({
         const status = err instanceof ApiError ? err.status : undefined;
         const message =
           err instanceof Error ? err.message : `Failed to ${action} the run.`;
-        const verb = action.charAt(0).toUpperCase() + action.slice(1);
+        const verbLabel: Record<ControlAction, string> = {
+          pause: "Pause",
+          cancel: "Cancel",
+          delete: "Delete",
+          refresh_enrichment: "Refresh enrichment",
+          run_enrichment: "Run enrichment",
+        };
         pushToast({
           kind: "error",
-          title: `${verb} failed${status != null ? ` (HTTP ${status})` : ""}`,
+          title:
+            `${verbLabel[action]} failed` +
+            (status != null ? ` (HTTP ${status})` : ""),
           body: message,
         });
       } finally {
@@ -142,18 +162,25 @@ export function RunControls({
 
   if (!run) return null;
   const status = run.status;
-  const isActive = ACTIVE_STATUSES.has(status);
-  const isDeleted = status === RUN_STATUS.DELETED;
   const showPause = PAUSE_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
-  const showAdvancedDelete = !isActive && !isDeleted;
-  const showAdvancedPurge = isDeleted;
-  const hasAdvanced =
-    !compact && (showAdvancedDelete || showAdvancedPurge);
+  const canDeleteRun = capability?.canDeleteRun ?? false;
+  const canRefreshEnrichment = capability?.canRefreshEnrichment ?? false;
+  const canRunEnrichment = capability?.canRunEnrichment ?? false;
+  const isOnlyRun = capability?.isOnlyRun ?? false;
+  const isActive = capability?.isActive ?? false;
+  const showOnlyRunHint = !compact && isOnlyRun && !isActive;
+
+  const anyButton =
+    showPause ||
+    showCancel ||
+    canDeleteRun ||
+    canRefreshEnrichment ||
+    canRunEnrichment;
 
   if (
-    !showPause && !showCancel
-    && !hasAdvanced
+    !anyButton
+    && !showOnlyRunHint
     && status !== RUN_STATUS.CANCELLING
   ) {
     return null;
@@ -203,77 +230,80 @@ export function RunControls({
           {!compact && <span style={{ marginLeft: 4 }}>Cancel</span>}
         </button>
       )}
-      {hasAdvanced && (
-        <div className="run-controls__advanced">
-          <button
-            type="button"
-            className={`${btnClass} btn--ghost run-controls__advanced-toggle`}
-            onClick={() => setAdvancedOpen((v) => !v)}
-            aria-expanded={advancedOpen}
-            aria-controls="run-controls-advanced-panel"
-            data-testid="run-controls-advanced-toggle"
-            title={
-              "Run-level destructive actions. Re-processing a document " +
-              "is a document-level action (Re-Index Document)."
-            }
-          >
-            Advanced {advancedOpen ? "▴" : "▾"}
-          </button>
-          {advancedOpen && (
-            <div
-              id="run-controls-advanced-panel"
-              className="run-controls__advanced-panel"
-              role="group"
-              aria-label="Advanced run actions"
-            >
-              <p className="run-controls__advanced-note">
-                These act on this specific run, not the document.
-                To re-process the document from scratch, use{" "}
-                <strong>Re-Index Document</strong> on the document
-                page.
-              </p>
-              {showAdvancedDelete && (
-                <button
-                  type="button"
-                  className={`${btnClass} btn--danger`}
-                  disabled={anyPending}
-                  onClick={() => void dispatch("delete")}
-                  aria-label="Delete this run only"
-                  title="Soft-delete this run + its artifacts only"
-                  data-testid="run-controls-delete"
-                >
-                  {isPending("delete") ? (
-                    <Icon.RefreshCw className="icon-sm spin" />
-                  ) : (
-                    <Icon.XCircle className="icon-sm" />
-                  )}
-                  <span style={{ marginLeft: 4 }}>Delete this run</span>
-                </button>
-              )}
-              {showAdvancedPurge && (
-                <button
-                  type="button"
-                  className={`${btnClass} btn--danger`}
-                  disabled={anyPending}
-                  onClick={() => void dispatch("purge")}
-                  aria-label="Permanently purge run + artifacts"
-                  title={
-                    "Physically delete the run + every artifact file on disk. " +
-                    "Audit log stays intact. CANNOT be undone."
-                  }
-                  data-testid="run-controls-purge"
-                >
-                  {isPending("purge") ? (
-                    <Icon.RefreshCw className="icon-sm spin" />
-                  ) : (
-                    <Icon.XCircle className="icon-sm" />
-                  )}
-                  <span style={{ marginLeft: 4 }}>Purge</span>
-                </button>
-              )}
-            </div>
+      {canRefreshEnrichment && (
+        <button
+          type="button"
+          className={btnClass}
+          disabled={anyPending}
+          onClick={() => void dispatch("refresh_enrichment")}
+          aria-label="Refresh enrichment for this run"
+          title={
+            "Re-run enrichment + graph + index using this run's compile " +
+            "output. Active-run only."
+          }
+          data-testid="run-controls-refresh-enrichment"
+        >
+          {isPending("refresh_enrichment") ? (
+            <Icon.RefreshCw className="icon-sm spin" />
+          ) : (
+            <Icon.RefreshCw className="icon-sm" />
           )}
-        </div>
+          {!compact && (
+            <span style={{ marginLeft: 4 }}>Refresh enrichment</span>
+          )}
+        </button>
+      )}
+      {canRunEnrichment && (
+        <button
+          type="button"
+          className={`${btnClass} btn--primary`}
+          disabled={anyPending}
+          onClick={() => void dispatch("run_enrichment")}
+          aria-label="Run enrichment for this run"
+          title={
+            "Run enrichment on this run for the first time. Re-uses this " +
+            "run's compile output."
+          }
+          data-testid="run-controls-run-enrichment"
+        >
+          {isPending("run_enrichment") ? (
+            <Icon.RefreshCw className="icon-sm spin" />
+          ) : (
+            <Icon.RefreshCw className="icon-sm" />
+          )}
+          {!compact && <span style={{ marginLeft: 4 }}>Run enrichment</span>}
+        </button>
+      )}
+      {canDeleteRun && (
+        <button
+          type="button"
+          className={`${btnClass} btn--danger`}
+          disabled={anyPending}
+          onClick={() => void dispatch("delete")}
+          aria-label="Delete this run"
+          title={
+            "Permanently delete this run, its artifacts, chunks, " +
+            "enrichment, validation outputs, and index data."
+          }
+          data-testid="run-controls-delete"
+        >
+          {isPending("delete") ? (
+            <Icon.RefreshCw className="icon-sm spin" />
+          ) : (
+            <Icon.XCircle className="icon-sm" />
+          )}
+          {!compact && <span style={{ marginLeft: 4 }}>Delete Run</span>}
+        </button>
+      )}
+      {showOnlyRunHint && (
+        <p
+          className="run-controls__only-run-hint"
+          data-testid="run-controls-only-run-hint"
+        >
+          This is the only run for this document. Use{" "}
+          <strong>Remove Knowledge</strong> on the document page to
+          delete the document and all related data.
+        </p>
       )}
     </div>
   );

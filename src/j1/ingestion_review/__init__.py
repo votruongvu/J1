@@ -37,10 +37,7 @@ from j1.ingestion_review.dtos import (
     StepResultDTO,
     WarningDTO,
 )
-from j1.ingestion_review.exceptions import (
-    ReviewNotFound,
-    RunNotTerminal,
-)
+from j1.ingestion_review.exceptions import ReviewNotFound
 from j1.ingestion_review.service import (
     ArtifactContent,
     IngestionResultReviewService,
@@ -70,7 +67,6 @@ __all__ = [
     "QualityReportDTO",
     "QualitySummaryDTO",
     "ReviewNotFound",
-    "RunNotTerminal",
     "RunSummaryDTO",
     "SkippedStepDTO",
     "StepErrorDTO",

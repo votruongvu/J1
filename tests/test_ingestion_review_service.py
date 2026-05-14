@@ -2290,77 +2290,55 @@ def test_get_run_planning_audit_log_fallback_marks_source(
     assert report.execution_plan is None
 
 
-# ---- Soft delete --------------------------------------------------
+# ---- Hard delete --------------------------------------------------
 
 
-def test_delete_run_tombstones_run_and_artifacts(
-    service, run_store, artifact_registry, ctx,
+def test_delete_run_physically_removes_artifacts_and_run_record(
+    service, run_store, artifact_registry, workspace, ctx,
 ):
-    """`delete_run` flips the run to status=DELETED and tombstones
- every artifact tagged with the run_id (sets `metadata.deleted_at`).
- Subsequent `summarize_run` returns an empty kinds list because
- `_resolve_run_artifacts` excludes tombstoned records."""
-    from j1.runs.models import RunStatus
-
-    run_store.upsert(ctx, _make_run(document_id="doc-A"))
+    """Happy path: ``delete_run`` is a single-step hard delete.
+    Artifact files are unlinked, registry records removed, and run
+    snapshots deleted from the JSONL store. Audit log untouched."""
+    from j1.workspace.layout import WorkspaceArea
+    compiled_dir = workspace.area(ctx, WorkspaceArea.COMPILED)
+    compiled_dir.mkdir(parents=True, exist_ok=True)
+    file_a = compiled_dir / "art-A.json"
+    file_b = compiled_dir / "art-B.json"
+    file_a.write_text('{"chunk": "A"}')
+    file_b.write_text('{"chunk": "B"}')
     artifact_registry.add(_make_artifact(
-        ctx, artifact_id="ps-1", kind="parsed_source",
-        source_document_ids=["doc-A"],
+        ctx, artifact_id="art-A", kind="chunk",
+        source_document_ids=["doc-1"],
         metadata={"run_id": "run-1"},
     ))
     artifact_registry.add(_make_artifact(
-        ctx, artifact_id="manifest-1", kind="parsed_content_manifest",
-        source_document_ids=["doc-A"],
+        ctx, artifact_id="art-B", kind="enriched.tables",
+        source_document_ids=["doc-1"],
         metadata={"run_id": "run-1"},
     ))
-
-    # Sanity: artifacts visible before delete.
-    pre = service.summarize_run(ctx, "run-1")
-    assert "parsed_source" in pre.artifact_counts
+    run_store.upsert(ctx, _make_run(
+        document_id="doc-1", status=RunStatus.SUCCEEDED,
+    ))
 
     report = service.delete_run(ctx, "run-1", actor="ops@example.com")
-    assert report["status"] == "deleted"
-    assert report["tombstoned_artifact_count"] == 2
-    assert report["was_already_deleted"] is False
-
-    # Run record is now DELETED.
-    refetched = run_store.get(ctx, "run-1")
-    assert str(refetched.status) == RunStatus.DELETED.value
-    assert refetched.metadata.get("deleted_at") == report["deleted_at"]
-    assert refetched.metadata.get("deleted_by") == "ops@example.com"
-
-    # Tombstoned artifacts no longer surface in the resolver.
-    post = service.summarize_run(ctx, "run-1")
-    assert post.artifact_counts == {}
-
-
-def test_delete_run_is_idempotent(
-    service, run_store, artifact_registry, ctx,
-):
-    """Calling `delete_run` twice produces `was_already_deleted=True`
- on the second call and tombstones zero new artifacts."""
-    run_store.upsert(ctx, _make_run(document_id="doc-A"))
-    artifact_registry.add(_make_artifact(
-        ctx, artifact_id="a-1", kind="chunk",
-        source_document_ids=["doc-A"],
-        metadata={"run_id": "run-1"},
-    ))
-
-    first = service.delete_run(ctx, "run-1")
-    second = service.delete_run(ctx, "run-1")
-
-    assert first["was_already_deleted"] is False
-    assert first["tombstoned_artifact_count"] == 1
-    assert second["was_already_deleted"] is True
-    assert second["tombstoned_artifact_count"] == 0
+    assert report["files_deleted"] == 2
+    assert report["files_missing"] == 0
+    assert report["artifacts_deleted"] == 2
+    assert report["snapshots_removed"] == 1
+    assert not file_a.exists()
+    assert not file_b.exists()
+    from j1.artifacts.registry import ArtifactNotFoundError
+    with pytest.raises(ArtifactNotFoundError):
+        artifact_registry.get(ctx, "art-A")
+    with pytest.raises(ArtifactNotFoundError):
+        artifact_registry.get(ctx, "art-B")
+    assert run_store.get(ctx, "run-1") is None
 
 
 def test_delete_run_rejects_active_run(service, run_store, ctx):
-    """A RUNNING run can't be deleted — the workflow could still be
- writing artifacts. The service raises `RunStillActive`; the REST
- layer maps this to 409."""
+    """A RUNNING run can't be deleted — workflow could still be
+    writing artifacts. ``RunStillActive`` → 409 at REST."""
     from j1.ingestion_review.exceptions import RunStillActive
-    from j1.runs.models import RunStatus
     run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
     with pytest.raises(RunStillActive):
         service.delete_run(ctx, "run-1")
@@ -2372,109 +2350,12 @@ def test_delete_run_404s_for_unknown_run(service, ctx):
         service.delete_run(ctx, "missing-run")
 
 
-# ---- Hard delete (purge) -----------------------------------------
-
-
-def test_purge_run_physically_removes_artifacts_and_run_record(
+def test_delete_run_second_call_is_not_found(
     service, run_store, artifact_registry, workspace, ctx,
 ):
-    """Happy path: a soft-deleted run gets its artifact files
- unlinked, registry records removed, and run snapshots deleted
- from the JSONL store. Audit log untouched."""
-    # Seed a soft-deleted run with two artifacts whose files exist
-    # on disk. Use the workspace area resolver so the test paths
-    # match what the service's _resolve_artifact_path computes.
-    from j1.workspace.layout import WorkspaceArea
-    compiled_dir = workspace.area(ctx, WorkspaceArea.COMPILED)
-    compiled_dir.mkdir(parents=True, exist_ok=True)
-    file_a = compiled_dir / "art-A.json"
-    file_b = compiled_dir / "art-B.json"
-    file_a.write_text('{"chunk": "A"}')
-    file_b.write_text('{"chunk": "B"}')
-    artifact_registry.add(_make_artifact(
-        ctx, artifact_id="art-A", kind="chunk",
-        source_document_ids=["doc-1"],
-        metadata={"run_id": "run-1", "deleted_at": "2026-05-10T11:00:00+00:00"},
-    ))
-    artifact_registry.add(_make_artifact(
-        ctx, artifact_id="art-B", kind="enriched.tables",
-        source_document_ids=["doc-1"],
-        metadata={"run_id": "run-1", "deleted_at": "2026-05-10T11:00:00+00:00"},
-    ))
-    run_store.upsert(ctx, _make_run(
-        document_id="doc-1", status=RunStatus.DELETED,
-        metadata={"deleted_at": "2026-05-10T11:00:00+00:00"},
-    ))
-
-    report = service.purge_run(ctx, "run-1", actor="ops@example.com")
-    assert report["files_deleted"] == 2
-    assert report["files_missing"] == 0
-    assert report["artifacts_purged"] == 2
-    assert report["snapshots_removed"] == 1
-    # Files are gone from disk.
-    assert not file_a.exists()
-    assert not file_b.exists()
-    # Registry records are gone.
-    from j1.artifacts.registry import ArtifactNotFoundError
-    with pytest.raises(ArtifactNotFoundError):
-        artifact_registry.get(ctx, "art-A")
-    with pytest.raises(ArtifactNotFoundError):
-        artifact_registry.get(ctx, "art-B")
-    # Run record no longer resolves.
-    assert run_store.get(ctx, "run-1") is None
-
-
-def test_purge_run_requires_soft_delete_first_by_default(
-    service, run_store, ctx,
-):
-    """Two-step delete ritual: a SUCCEEDED run can't be purged
- without first soft-deleting it. Reduces the blast radius of an
- accidental click."""
-    from j1.ingestion_review.exceptions import RunNotTerminal
-    run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED))
-    with pytest.raises(RunNotTerminal):
-        service.purge_run(ctx, "run-1")
-
-
-def test_purge_run_force_bypasses_soft_delete_gate(
-    service, run_store, artifact_registry, ctx,
-):
-    """Admin tooling can pass `require_already_deleted=False` to
- skip the soft-delete gate."""
-    artifact_registry.add(_make_artifact(
-        ctx, artifact_id="art-X", kind="chunk",
-        source_document_ids=["doc-1"],
-        metadata={"run_id": "run-1"},
-    ))
-    run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED))
-    report = service.purge_run(
-        ctx, "run-1", require_already_deleted=False,
-    )
-    assert report["snapshots_removed"] == 1
-    assert run_store.get(ctx, "run-1") is None
-
-
-def test_purge_run_rejects_active_run(service, run_store, ctx):
-    """An in-flight run can't be purged — workflow could still be
- writing artifacts. RunStillActive → 409 at REST."""
-    from j1.ingestion_review.exceptions import RunStillActive
-    run_store.upsert(ctx, _make_run(status=RunStatus.RUNNING))
-    with pytest.raises(RunStillActive):
-        service.purge_run(ctx, "run-1", require_already_deleted=False)
-
-
-def test_purge_run_404s_for_unknown_run(service, ctx):
-    from j1.ingestion_review.exceptions import ReviewNotFound
-    with pytest.raises(ReviewNotFound):
-        service.purge_run(ctx, "missing")
-
-
-def test_purge_run_idempotent_on_second_call(
-    service, run_store, artifact_registry, workspace, ctx,
-):
-    """Calling purge_run twice is safe: the second call sees no
- artifacts and no run record, returns zero counts. Operators can
- retry on transient errors without compounding side effects."""
+    """Second call on an already-deleted run raises ``ReviewNotFound``
+    (the run record is gone). Operators retrying on transient errors
+    can treat 404 as "already removed"."""
     from j1.workspace.layout import WorkspaceArea
     compiled_dir = workspace.area(ctx, WorkspaceArea.COMPILED)
     compiled_dir.mkdir(parents=True, exist_ok=True)
@@ -2482,13 +2363,10 @@ def test_purge_run_idempotent_on_second_call(
     artifact_registry.add(_make_artifact(
         ctx, artifact_id="art-Y", kind="chunk",
         source_document_ids=["doc-1"],
-        metadata={"run_id": "run-1", "deleted_at": "2026-05-10T11:00:00+00:00"},
+        metadata={"run_id": "run-1"},
     ))
-    run_store.upsert(ctx, _make_run(status=RunStatus.DELETED))
-    service.purge_run(ctx, "run-1")
-    # Second call — run no longer exists, raises ReviewNotFound (the
-    # 404 path is the right answer for "already purged"; the FE
-    # surfaces it as "the run is gone").
+    run_store.upsert(ctx, _make_run(status=RunStatus.SUCCEEDED))
+    service.delete_run(ctx, "run-1")
     from j1.ingestion_review.exceptions import ReviewNotFound
     with pytest.raises(ReviewNotFound):
-        service.purge_run(ctx, "run-1")
+        service.delete_run(ctx, "run-1")

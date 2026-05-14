@@ -31,7 +31,6 @@ from j1.ingestion_review import IngestionResultReviewService
 from j1.ingestion_review.audit_actions import (
     ACTION_OPS_BATCH_DISPATCHED,
     ACTION_OPS_RUN_DELETED,
-    ACTION_OPS_RUN_PURGED,
     TARGET_KIND_INGESTION_BATCH,
     TARGET_KIND_INGESTION_RUN,
 )
@@ -225,7 +224,17 @@ def _seed_document(registry, *, document_id="doc-A"):
 def test_delete_endpoint_emits_ops_run_deleted(
     client, run_store, workspace,
 ):
-    _seed_run(run_store, status=RunStatus.SUCCEEDED)
+    # Two runs so the active/only-run guards don't reject. The active
+    # run is the SUCCEEDED one (``run-active``); ``run-prior`` is an
+    # older FAILED attempt that can be safely deleted.
+    _seed_run(
+        run_store, run_id="run-active",
+        status=RunStatus.SUCCEEDED,
+    )
+    _seed_run(
+        run_store, run_id="run-prior",
+        status=RunStatus.FAILED,
+    )
     resp = client.delete("/ingestion-runs/run-prior", headers=_HEADERS)
     assert resp.status_code == 200, resp.text
     ctx = ProjectContext(tenant_id="acme", project_id="alpha")
@@ -235,24 +244,8 @@ def test_delete_endpoint_emits_ops_run_deleted(
     assert e["target_kind"] == TARGET_KIND_INGESTION_RUN
     assert e["target_id"] == "run-prior"
     assert e["correlation_id"] == "run-prior"
-    assert "tombstoned_artifact_count" in e["payload"]
-    assert e["payload"]["was_already_deleted"] is False
-
-
-def test_purge_endpoint_emits_ops_run_purged(
-    client, run_store, workspace,
-):
-    _seed_run(run_store, status=RunStatus.DELETED)
-    resp = client.post(
-        "/ingestion-runs/run-prior/purge", headers=_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-    ctx = ProjectContext(tenant_id="acme", project_id="alpha")
-    events = _events_with_action(workspace, ctx, ACTION_OPS_RUN_PURGED)
-    assert len(events) == 1
-    e = events[0]
-    assert e["target_id"] == "run-prior"
-    assert e["payload"]["snapshots_removed"] == 1
+    assert "artifacts_deleted" in e["payload"]
+    assert "snapshots_removed" in e["payload"]
     assert "files_deleted" in e["payload"]
     assert "files_missing" in e["payload"]
 

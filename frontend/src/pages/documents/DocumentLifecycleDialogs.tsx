@@ -64,14 +64,13 @@ export function ConfirmRemoveDialog({
     <ModalShell onClose={onCancel} testId="confirm-remove-dialog">
       <h3>Remove this document from Knowledge?</h3>
       <p>
-        J1 will remove the generated knowledge for{" "}
-        <strong>{document.displayName}</strong> from active indexes.
-        It will no longer be searchable or usable in answers.
+        This permanently deletes <strong>{document.displayName}</strong>,
+        all of its ingestion runs, artifacts, chunks, enrichment,
+        validation outputs, and index data.
       </p>
       <p>
-        Previous run history may be kept only as minimal internal
-        audit/debug metadata. Re-attaching this document requires
-        re-uploading it.
+        The document will no longer appear in search or answers.
+        <strong> This cannot be undone.</strong>
       </p>
       <div className="modal__actions">
         <button
@@ -87,7 +86,7 @@ export function ConfirmRemoveDialog({
           onClick={onConfirm}
           data-testid="confirm-remove"
         >
-          Remove from Knowledge
+          Remove Knowledge
         </button>
       </div>
     </ModalShell>

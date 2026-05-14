@@ -1318,145 +1318,33 @@ class IngestionResultReviewService:
         *,
         actor: str = "system",
     ) -> dict[str, Any]:
-        """Soft-delete an ingestion run.
-
- Tombstones the `IngestionRun` record (status=DELETED) and
- every `ArtifactRecord` belonging to the run (sets
- `metadata.deleted_at`). Tombstoned records stay on disk for
- audit; `_resolve_run_artifacts` excludes them from every
- read path so the FE no longer surfaces them.
-
- Idempotent — calling twice produces the same response shape;
- the second call counts zero newly-tombstoned records.
-
- Returns a deletion-report dict the REST layer envelopes:
- `{run_id, status, tombstoned_artifact_count, was_already_deleted, deleted_at}`.
-
- Raises `ReviewNotFound` if the run doesn't exist.
- Raises `RunStillActive` (409 at the REST boundary) if the run
- is currently RUNNING — operators must `cancel` first."""
-        from datetime import datetime, timezone
-        from j1.runs.models import RunStatus
-
-        run = self._load_run(ctx, run_id)
-        # Guard: don't tombstone an in-flight run. The workflow could
-        # still be writing artifacts; tombstoning mid-flight produces
-        # confusing partial state.
-        active_states = {
-            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
-            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
-        }
-        if str(run.status) in active_states:
-            raise RunStillActive(
-                f"run {run_id!r} is currently {run.status} — cancel it before deleting"
-            )
-
-        already_deleted = str(run.status) == RunStatus.DELETED.value
-        deleted_at = datetime.now(timezone.utc).isoformat()
-        tombstoned = 0
-
-        # Tombstone every artifact tagged with this run_id, plus
-        # lineage-resolved artifacts (so the FE's filter actually
-        # hides them all). Skip records already tombstoned.
-        artifacts = self._resolve_run_artifacts(ctx, run)
-        # `_resolve_run_artifacts` already filters out deleted
-        # records, so on a re-delete we get an empty list — that's
-        # the idempotent path.
-        for a in artifacts:
-            existing_meta = dict(a.metadata or {})
-            if existing_meta.get("deleted_at"):
-                continue
-            existing_meta["deleted_at"] = deleted_at
-            existing_meta["deleted_by"] = actor
-            # Re-register with updated metadata. The registry's
-            # `update_metadata` is the right call; fall back to
-            # `add` if the registry only supports add (some test
-            # fixtures).
-            update = getattr(self._artifacts, "update_metadata", None)
-            if callable(update):
-                try:
-                    update(ctx, a.artifact_id, existing_meta)
-                    tombstoned += 1
-                    continue
-                except Exception:  # noqa: BLE001
-                    pass
-            # Fallback: replace via add — works on the in-memory
-            # test fixture, no-ops on a real registry that rejects
-            # duplicate ids.
-            from dataclasses import replace as _replace
-            try:
-                self._artifacts.add(_replace(a, metadata=existing_meta))
-                tombstoned += 1
-            except Exception:  # noqa: BLE001 — best-effort tombstone
-                continue
-
-        # Flip the run record to DELETED last so the run still
-        # resolves during the tombstone loop above.
-        if not already_deleted:
-            run.status = RunStatus.DELETED
-            run.updated_at = datetime.now(timezone.utc)
-            metadata = dict(run.metadata or {})
-            metadata["deleted_at"] = deleted_at
-            metadata["deleted_by"] = actor
-            run.metadata = metadata
-            self._run_store.upsert(ctx, run)
-
-        return {
-            "run_id": run_id,
-            "status": RunStatus.DELETED.value,
-            "tombstoned_artifact_count": tombstoned,
-            "was_already_deleted": already_deleted,
-            "deleted_at": deleted_at,
-        }
-
-    def purge_run(
-        self,
-        ctx: ProjectContext,
-        run_id: str,
-        *,
-        actor: str = "system",
-        require_already_deleted: bool = True,
-    ) -> dict[str, Any]:
         """Hard-delete an ingestion run.
 
- Physically removes:
- 1. Each artifact file on disk (via `Path.unlink`).
- 2. Each artifact record in the registry (via
- `delete_by_artifact_id`).
- 3. Every JSONL snapshot of the run record (via
- `IngestionRunStore.purge`).
+        Single-step: physically removes the run record, every artifact
+        (file on disk + registry record), and every JSONL snapshot of
+        the run. Audit-log events are PRESERVED for compliance.
 
- Audit-log events are PRESERVED — compliance requires the
- full history of what happened, even after the run record is
- gone. Validation sets / runs that reference this run_id are
- cascaded separately by the REST orchestration (the review
- service doesn't own those stores).
+        Refuses (raising ``RunStillActive``) when the run is in an
+        in-flight state — operators must ``cancel`` first.
 
- `require_already_deleted=True` (default) refuses to operate
- on a run that hasn't been soft-deleted first. Two-step
- ritual reduces accidental data loss — the operator does
- DELETE → confirm → POST /purge. Set False to skip the gate
- when an operator explicitly invokes purge on an undeleted
- terminal run (admin tooling).
+        Idempotent: a second call on a run that's already gone returns
+        zero counts.
 
- Returns a report dict the REST layer envelopes:
- {
- "run_id": str,
- "artifacts_purged": int, # records removed
- "files_deleted": int, # files actually removed from disk
- "files_missing": int, # already absent (idempotent path)
- "snapshots_removed": int, # JSONL snapshots of run record
- "purged_at": str (ISO),
- }
+        Cross-run guards (active-run / only-run) are enforced by the
+        REST layer because they require document context that the
+        review service doesn't own. The audit-log cascade to
+        validation sets / runs is likewise REST-orchestrated.
 
- Raises:
- - `ReviewNotFound` if the run doesn't exist (404).
- - `RunStillActive` if the run is in an in-flight state (409).
- - `RunNotTerminal` if `require_already_deleted=True` and
- the run isn't already soft-deleted (409 — operator
- must `DELETE` first).
- """
-        from j1.ingestion_review.exceptions import RunNotTerminal
+        Returns a report dict the REST layer envelopes:
+            {
+                "run_id": str,
+                "artifacts_deleted": int,   # registry records removed
+                "files_deleted": int,       # files removed from disk
+                "files_missing": int,       # already absent
+                "snapshots_removed": int,   # JSONL run-record rows removed
+                "deleted_at": str (ISO),
+            }
+        """
         from j1.runs.models import RunStatus
 
         run = self._load_run(ctx, run_id)
@@ -1467,29 +1355,21 @@ class IngestionResultReviewService:
         if str(run.status) in active_states:
             raise RunStillActive(
                 f"run {run_id!r} is currently {run.status} — "
-                "cancel it before purging"
-            )
-        if require_already_deleted and str(run.status) != RunStatus.DELETED.value:
-            raise RunNotTerminal(
-                f"run {run_id!r} is {run.status} — soft-delete it "
-                "first (DELETE /ingestion-runs/{id}) before purging"
+                "cancel it before deleting"
             )
 
-        # Resolve EVERY artifact tagged with this run_id, including
-        # the tombstoned ones (soft-delete sets metadata.deleted_at;
-        # the resolver hides them by default — opt in here so the
-        # purge sees the full set).
-        artifacts = self._resolve_run_artifacts(
-            ctx, run, include_deleted=True,
-        )
+        # Resolve every artifact for this run (lineage walk). No
+        # ``include_deleted`` filter needed — soft-delete has been
+        # removed; every artifact returned here is live.
+        artifacts = self._resolve_run_artifacts(ctx, run)
         files_deleted = 0
         files_missing = 0
-        artifacts_purged = 0
+        artifacts_deleted = 0
         for a in artifacts:
             # File deletion first — the registry record is the only
             # pointer to where the file lives. If we delete the
-            # record before the file, a crash leaves an orphaned
-            # file on disk with no way to find it.
+            # record before the file, a crash leaves an orphan on
+            # disk with no way to find it.
             try:
                 path = self._resolve_artifact_path(ctx, a)
             except Exception:  # noqa: BLE001 — unresolvable path; skip file
@@ -1510,27 +1390,27 @@ class IngestionResultReviewService:
             if callable(delete_fn):
                 try:
                     if delete_fn(ctx, a.artifact_id):
-                        artifacts_purged += 1
+                        artifacts_deleted += 1
                 except Exception:  # noqa: BLE001 — best-effort
                     pass
         # Run record last — once it's gone, the resolver can no
         # longer enumerate the artifacts (lineage is broken). Doing
-        # this last keeps the purge restartable on partial failures.
+        # this last keeps the delete restartable on partial failures.
         snapshots_removed = 0
         try:
             if self._run_store.purge(ctx, run_id):
                 snapshots_removed = 1
-        except Exception:  # noqa: BLE001 — defensive, store may not implement
+        except Exception:  # noqa: BLE001 — defensive
             pass
         from datetime import datetime as _dt, timezone as _tz
         return {
             "run_id": run_id,
             "actor": actor,
-            "artifacts_purged": artifacts_purged,
+            "artifacts_deleted": artifacts_deleted,
             "files_deleted": files_deleted,
             "files_missing": files_missing,
             "snapshots_removed": snapshots_removed,
-            "purged_at": _dt.now(_tz.utc).isoformat(),
+            "deleted_at": _dt.now(_tz.utc).isoformat(),
         }
 
     # ---- Internals ----------------------------------------------------
@@ -1607,59 +1487,35 @@ class IngestionResultReviewService:
 
     def _resolve_run_artifacts(
         self, ctx: ProjectContext, run: IngestionRun,
-        *,
-        include_deleted: bool = False,
     ) -> list[ArtifactRecord]:
         """Return artifacts produced by `run`.
 
- Two strategies, applied in order:
+        Two strategies, applied in order:
 
- 1. **Direct tag** — match `record.metadata["run_id"] == run.run_id`.
- Fast path for runs whose artifacts were tagged at registration
- time.
+        1. **Direct tag** — match ``record.metadata["run_id"] ==
+           run.run_id``. Fast path for runs whose artifacts were tagged
+           at registration time.
 
- 2. **Lineage fallback (transitive)** — start from artifacts whose
- `source_document_ids` overlaps the run's target document set
- (typically the compile-stage outputs), then iteratively pull in
- any artifact whose `source_artifact_ids` overlaps the
- accumulating set. The iteration is required because downstream
- stages (graph_json, enriched.*) record `source_artifact_ids`
- pointing at compile artifacts — they carry NO
- `source_document_ids`, so a single-hop check leaves them
- unresolved. Without this walk the Graph tab silently disables
- on legacy untagged runs even though graph_json artifacts
- exist on disk.
-
- `include_deleted=True` opts into seeing tombstoned records.
- Used by the hard-delete (purge) path which needs to physically
- remove the same files soft-delete tombstoned. Every other
- caller wants the default (False) — soft-deleted artifacts
- stay invisible to read surfaces."""
+        2. **Lineage fallback (transitive)** — start from artifacts
+           whose ``source_document_ids`` overlaps the run's target
+           document set (typically the compile-stage outputs), then
+           iteratively pull in any artifact whose
+           ``source_artifact_ids`` overlaps the accumulating set. The
+           iteration is required because downstream stages
+           (``graph_json``, ``enriched.*``) record
+           ``source_artifact_ids`` pointing at compile artifacts —
+           they carry NO ``source_document_ids``, so a single-hop
+           check leaves them unresolved. Without this walk the Graph
+           tab silently disables on legacy untagged runs even though
+           ``graph_json`` artifacts exist on disk.
+        """
         all_artifacts = self._artifacts.list_artifacts(ctx)
-        # Soft-deleted artifact filter: any record carrying
-        # `metadata.deleted_at` is hidden from every read path. The
-        # tombstone stays on disk for audit; only the listing surface
-        # excludes it. The purge path opts back in via
-        # `include_deleted=True` so it can physically delete the
-        # tombstoned files + records.
-        if not include_deleted:
-            all_artifacts = [
-                a for a in all_artifacts
-                if not (
-                    isinstance(getattr(a, "metadata", None), dict)
-                    and a.metadata.get("deleted_at")
-                )
-            ]
-            # Document-centric gate: drop artifacts whose source
-            # document was detached or removed from the knowledge
-            # layer. No-op by default (every artifact's
-            # `metadata.knowledge_state` is absent → treated as
-            # attached) until Phase 3 lands the detach/remove
-            # actions that stamp the field. Centralised in
-            # `j1.documents.lifecycle` so the run-detail surface and
-            # the query providers share the same rule.
-            from j1.documents.lifecycle import filter_to_attached_artifacts
-            all_artifacts = filter_to_attached_artifacts(all_artifacts)
+        # Document-centric gate: drop artifacts whose source document
+        # was detached or removed from the knowledge layer. Centralised
+        # in ``j1.documents.lifecycle`` so the run-detail surface and
+        # the query providers share the same rule.
+        from j1.documents.lifecycle import filter_to_attached_artifacts
+        all_artifacts = filter_to_attached_artifacts(all_artifacts)
 
         target_doc_ids = set(_document_ids(run))
 

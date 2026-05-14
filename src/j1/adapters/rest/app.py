@@ -130,7 +130,6 @@ from j1.errors.exceptions import (
 from j1.ingestion_review.audit_actions import (
     ACTION_OPS_BATCH_DISPATCHED,
     ACTION_OPS_RUN_DELETED,
-    ACTION_OPS_RUN_PURGED,
     ACTION_OPS_RUN_REINDEXED,
     TARGET_KIND_INGESTION_BATCH,
     TARGET_KIND_INGESTION_RUN,
@@ -1379,15 +1378,20 @@ def create_rest_api(
     @app.delete(
         "/ingestion-runs/{run_id}",
         tags=["ingestion-runs"],
-        summary="Soft-delete an ingestion run",
+        summary="Hard-delete an ingestion run",
         description=(
-            "Tombstones the run + every artifact tagged with this "
-            "run_id. Tombstoned records stay on disk for audit; the "
-            "FE listing surface excludes them. Idempotent — calling "
-            "twice returns the same envelope with "
-            "`wasAlreadyDeleted=true`. Refuses to operate on a run "
-            "that's still RUNNING / PAUSED / CANCELLING / ASSESSING "
-            "with HTTP 409 — operators must `cancel` first."
+            "Single-step hard delete. Physically removes the run "
+            "record, every artifact (file on disk + registry record), "
+            "every JSONL snapshot of the run, and cascades to "
+            "validation sets / runs that reference this run_id. The "
+            "audit log stays intact for compliance.\n\n"
+            "Refuses (HTTP 409) when:\n"
+            "  * the run is still RUNNING / PAUSED / CANCELLING / "
+            "ASSESSING — cancel first;\n"
+            "  * the run is the document's currently active run — "
+            "remove the document with `POST /documents/{id}/remove` "
+            "instead;\n"
+            "  * the run is the document's only run — same remedy."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
@@ -1401,84 +1405,49 @@ def create_rest_api(
             ReviewNotFound, RunStillActive,
         )
         service = _require_review_service()
+        store = _require_run_store()
         actor = security.subject if security else "system"
+
+        run = store.get(ctx, run_id)
+        if run is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+
+        # Active-run + only-run guards. Both require document context
+        # the review service doesn't carry; check at the REST edge so
+        # the service stays document-agnostic.
+        if run.document_id:
+            sibling_runs = [
+                r for r in store.list_runs(ctx, document_id=run.document_id)
+                if r.run_id != run_id
+            ]
+            if not sibling_runs:
+                raise HTTPException(
+                    409,
+                    f"run {run_id!r} is the only run for document "
+                    f"{run.document_id!r}. Remove the document via "
+                    "POST /documents/{id}/remove instead.",
+                )
+            active_run_id = _latest_succeeded_run_id(ctx, run.document_id)
+            if active_run_id == run_id:
+                raise HTTPException(
+                    409,
+                    f"run {run_id!r} is the active run for document "
+                    f"{run.document_id!r}. Re-index or remove the "
+                    "document to replace it before deleting this run.",
+                )
+
         try:
             report = service.delete_run(ctx, run_id, actor=actor)
         except ReviewNotFound:
             raise HTTPException(404, f"ingestion run {run_id!r} not found")
         except RunStillActive as exc:
             raise HTTPException(409, str(exc))
-        _emit_ops_event(
-            ctx,
-            action=ACTION_OPS_RUN_DELETED,
-            target_id=run_id,
-            actor=actor,
-            correlation_id=run_id,
-            payload={
-                "tombstoned_artifact_count":
-                    report["tombstoned_artifact_count"],
-                "was_already_deleted": report["was_already_deleted"],
-                "deleted_at": report["deleted_at"],
-            },
-        )
-        return envelope(
-            {
-                "runId": report["run_id"],
-                "status": report["status"],
-                "tombstonedArtifactCount": report["tombstoned_artifact_count"],
-                "wasAlreadyDeleted": report["was_already_deleted"],
-                "deletedAt": report["deleted_at"],
-            },
-            _req_id(request),
-        )
 
-    @app.post(
-        "/ingestion-runs/{run_id}/purge",
-        tags=["ingestion-runs"],
-        summary="Hard-delete (purge) an ingestion run",
-        description=(
-            "Physically removes the run record + every artifact "
-            "(file on disk + registry record) + cascades to "
-            "validation sets / runs that reference this run_id. "
-            "The audit log stays intact for compliance. Refuses "
-            "to operate on an in-flight run (HTTP 409). By default "
-            "requires the run to already be soft-deleted (HTTP 409 "
-            "if not — operator must `DELETE` first); set "
-            "`?force=true` to bypass that gate for admin tooling. "
-            "Idempotent: calling twice returns "
-            "`{snapshotsRemoved: 0, ...}` on the second call."
-        ),
-        dependencies=[Depends(scope_required(SCOPE_INGEST))],
-    )
-    def purge_ingestion_run(
-        request: Request,
-        run_id: str,
-        force: bool = False,
-        ctx: ProjectContext = Depends(get_ctx),
-        security: SecurityContext = Depends(get_security),
-    ) -> dict[str, Any]:
-        from j1.ingestion_review.exceptions import (
-            ReviewNotFound, RunNotTerminal, RunStillActive,
-        )
-        service = _require_review_service()
-        actor = security.subject if security else "system"
-        try:
-            report = service.purge_run(
-                ctx, run_id, actor=actor,
-                require_already_deleted=not force,
-            )
-        except ReviewNotFound:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        except RunStillActive as exc:
-            raise HTTPException(409, str(exc))
-        except RunNotTerminal as exc:
-            raise HTTPException(409, str(exc))
         # Cascade-delete validation history. Best-effort — failures
-        # here don't roll back the artifact/run purge above (which
-        # already physically removed bytes from disk; rollback isn't
-        # available). The validation cascade is purely operational
-        # cleanup; a stale validation record pointing at a missing
-        # run is ugly but not dangerous.
+        # here don't roll back the artifact/run delete above (which
+        # already physically removed bytes from disk). A stale
+        # validation record pointing at a missing run is ugly but
+        # not dangerous.
         validation_cascade = {"sets_removed": 0, "runs_removed": 0}
         if validation_service is not None:
             try:
@@ -1487,32 +1456,33 @@ def create_rest_api(
                 )
             except Exception:  # noqa: BLE001 — best-effort
                 pass
+
         _emit_ops_event(
             ctx,
-            action=ACTION_OPS_RUN_PURGED,
+            action=ACTION_OPS_RUN_DELETED,
             target_id=run_id,
             actor=actor,
             correlation_id=run_id,
             payload={
-                "artifacts_purged": report["artifacts_purged"],
+                "artifacts_deleted": report["artifacts_deleted"],
                 "files_deleted": report["files_deleted"],
                 "files_missing": report["files_missing"],
                 "snapshots_removed": report["snapshots_removed"],
                 "validation_sets_removed": validation_cascade["sets_removed"],
                 "validation_runs_removed": validation_cascade["runs_removed"],
-                "purged_at": report["purged_at"],
+                "deleted_at": report["deleted_at"],
             },
         )
         return envelope(
             {
                 "runId": report["run_id"],
-                "artifactsPurged": report["artifacts_purged"],
+                "artifactsDeleted": report["artifacts_deleted"],
                 "filesDeleted": report["files_deleted"],
                 "filesMissing": report["files_missing"],
                 "snapshotsRemoved": report["snapshots_removed"],
                 "validationSetsRemoved": validation_cascade["sets_removed"],
                 "validationRunsRemoved": validation_cascade["runs_removed"],
-                "purgedAt": report["purged_at"],
+                "deletedAt": report["deleted_at"],
             },
             _req_id(request),
         )
@@ -2085,35 +2055,48 @@ def create_rest_api(
     # reindex, so a failed refresh leaves the active snapshot intact.
 
     @app.post(
-        "/documents/{document_id}/refresh-enrich",
-        tags=["documents"],
-        summary="Refresh enrichment (reuse previous compile output)",
+        "/ingestion-runs/{run_id}/refresh-enrichment",
+        tags=["ingestion-runs"],
+        summary="Refresh enrichment on the active run",
         description=(
-            "Start a candidate ingestion run that REUSES the "
-            "previous active run's compile output and re-runs only "
-            "enrichment + graph + index. The new run carries "
-            "`runType=refreshEnrich` and "
-            "`metadata.reusedCompileFromRunId=<previousRunId>` so "
-            "the compile stage short-circuits to artifact reuse. "
+            "Start a new candidate ingestion run that REUSES this "
+            "run's compile output and re-runs only enrichment + "
+            "graph + index. The new run carries "
+            "`runType=refresh_enrich` and "
+            "`metadata.reusedCompileFromRunId=<this run id>`. "
             "Promotion to `activeSnapshotId` is gated on terminal "
-            "success (same CAS rule as reindex), so a failed "
-            "refresh preserves the previous active. Returns 409 "
-            "when the document is detached / removed, or when no "
-            "active run exists yet (refresh has nothing to reuse)."
+            "success — a failed refresh preserves the previous "
+            "active.\n\n"
+            "Refuses (HTTP 409) when:\n"
+            "  * `run_id` is not the document's currently active "
+            "run (refresh-enrichment is an active-run-only action);\n"
+            "  * the run is still in-flight;\n"
+            "  * the document is detached or removed."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
-    async def post_document_refresh_enrich(
+    async def post_run_refresh_enrichment(
         request: Request,
-        document_id: str,
+        run_id: str,
         ctx: ProjectContext = Depends(get_ctx),
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         from datetime import datetime, timezone
         store = _require_run_store()
+
+        previous = store.get(ctx, run_id)
+        if previous is None:
+            raise HTTPException(404, f"ingestion run {run_id!r} not found")
+        if not previous.document_id:
+            raise HTTPException(
+                400,
+                f"run {run_id!r} has no document_id; cannot "
+                "refresh-enrich",
+            )
+        document_id = previous.document_id
         _enforce_document_attached_for_action(
-            ctx, document_id, "refresh-enrich",
+            ctx, document_id, "refresh-enrichment",
         )
         try:
             doc_dto = facade.source_lookup.get_source(ctx, document_id)
@@ -2121,29 +2104,28 @@ def create_rest_api(
             raise HTTPException(
                 404, f"document {document_id!r} not found",
             )
-        # Phase 9: ``active_run_id`` was deleted from the document
-        # contract. Derive the previous-active run from the runs
-        # store (latest succeeded run).
+
+        # Active-run guard: refresh-enrichment only operates on the
+        # document's currently active run.
         active_run_id = _latest_succeeded_run_id(ctx, document_id)
-        if not active_run_id:
-            # Nothing to reuse — caller must run a full reindex
-            # first. 409 (state conflict) rather than 400 (bad
-            # request) so the FE renders an actionable hint.
+        if active_run_id != run_id:
+            if not active_run_id:
+                raise HTTPException(
+                    409,
+                    f"document {document_id!r} has no active run yet; "
+                    "run an initial reindex first via "
+                    "POST /documents/{id}/reindex",
+                )
             raise HTTPException(
                 409,
-                f"document {document_id!r} has no active run to "
-                "refresh from; use POST /documents/{id}/reindex "
-                "for an initial run",
+                f"run {run_id!r} is not the active run for document "
+                f"{document_id!r} (active is {active_run_id!r}). "
+                "Refresh-enrichment is only valid on the active run.",
             )
-        previous = store.get(ctx, active_run_id)
-        if previous is None:
-            raise HTTPException(
-                409,
-                f"active run {active_run_id!r} not found in the "
-                "run store; cannot refresh-enrich",
-            )
-        # Guard: don't kick a refresh while the previous run is
-        # still writing.
+
+        # In-flight guard mirrors what the active-run lookup would
+        # have already excluded, but kept explicit so the message is
+        # clear for ASSESSING / CANCELLING edge cases.
         active_states = {
             RunStatus.RUNNING.value, RunStatus.PAUSED.value,
             RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
@@ -2151,10 +2133,11 @@ def create_rest_api(
         if str(previous.status) in active_states:
             raise HTTPException(
                 409,
-                f"previous run {active_run_id!r} is currently "
-                f"{previous.status} — wait for it to complete "
-                "before refresh-enrich",
+                f"active run {run_id!r} is currently "
+                f"{previous.status} — wait for it to complete before "
+                "refresh-enrichment",
             )
+
         actor = security.subject if security else "system"
         new_run_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc)
@@ -2182,13 +2165,12 @@ def create_rest_api(
                 ),
                 # The load-bearing hint: the compile stage reads
                 # this and reuses compile artifacts from that run.
-                "reused_compile_from_run_id": active_run_id,
+                "reused_compile_from_run_id": run_id,
             },
             run_type="refresh_enrich",
-            parent_run_id=active_run_id,
+            parent_run_id=run_id,
             document_version_id=previous.document_version_id,
             display_version=display_version,
-            # Phase 5: up-front snapshot allocation. See full-reindex.
             target_snapshot_id=_allocate_target_snapshot(
                 ctx, document_id, new_run_id,
             ),
@@ -2221,7 +2203,7 @@ def create_rest_api(
             ),
             actor=actor,
             correlation_id=new_run_id,
-            reindex_of=active_run_id,
+            reindex_of=run_id,
             target_snapshot_id=new_run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, document_id, body)
@@ -2232,10 +2214,10 @@ def create_rest_api(
             {
                 "documentId": document_id,
                 "refreshRunId": new_run_id,
-                "parentRunId": active_run_id,
+                "parentRunId": run_id,
                 "workflowId": workflow_id,
                 "runType": "refresh_enrich",
-                "reusedCompileFromRunId": active_run_id,
+                "reusedCompileFromRunId": run_id,
             },
             _req_id(request),
         )
@@ -2328,6 +2310,12 @@ def create_rest_api(
             "failureCode": r.failure_code,
             "isActive": r.is_active,
             "displayVersion": r.display_version,
+            # Run-level capability flags (the FE renders Run Detail
+            # action buttons off these — never recomputed locally).
+            "isOnlyRun": r.is_only_run,
+            "canDeleteRun": r.can_delete_run,
+            "canRefreshEnrichment": r.can_refresh_enrichment,
+            "canRunEnrichment": r.can_run_enrichment,
         }
 
     @app.get(

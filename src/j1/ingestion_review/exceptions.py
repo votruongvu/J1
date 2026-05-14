@@ -21,20 +21,10 @@ class ReviewNotFound(J1Error):
  """
 
 
-class RunNotTerminal(J1Error):
-    """Operation requires a terminal run; the run is still in progress.
-
- Some review surfaces (e.g. summary, quality report) only make sense
- once the workflow is finished. The REST layer maps this to 409
- (Conflict) so clients can distinguish "not ready yet" from
- "doesn't exist."
- """
-
-
 class RunStillActive(J1Error):
     """Operation can't run while the workflow is still active.
 
- Soft-delete and purge both refuse to operate on a RUNNING /
- PAUSED / CANCELLING / ASSESSING run — the workflow could still be
- writing artifacts. Mapped to 409 at the REST boundary; clients
- are expected to `cancel` first."""
+ Delete refuses to operate on a RUNNING / PAUSED / CANCELLING /
+ ASSESSING run — the workflow could still be writing artifacts.
+ Mapped to 409 at the REST boundary; clients are expected to
+ `cancel` first."""

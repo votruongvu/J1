@@ -10,6 +10,7 @@
  */
 
 import type { IngestionRun } from "@/types/ingestion";
+import type { DocumentRunSummary } from "@/types/documents";
 import type { ProjectContext, RunOrigin, Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 import { StatusBadge } from "@/components/badges";
@@ -27,16 +28,21 @@ interface RunHeaderProps {
    * `run.document_name` which can fall back to the doc id when the
    * filename was not preserved in metadata. */
   documentDisplayName?: string | null;
+  /** Server-computed capability flags for this run. ``null`` while
+   * the parent is still loading; ``RunControls`` falls back to
+   * showing only the in-flight actions until the flags arrive. */
+  runCapability?: DocumentRunSummary | null;
   onBack: () => void;
   onOpenDrawer: () => void;
   onRefresh: () => void;
   pushToast: (toast: Omit<Toast, "id">) => void;
-  /** Forwarded to RunControls so the page can navigate after
- * Re-process (→ new run) / Delete (→ list). */
+  /** Forwarded to RunControls so the page can navigate after a
+   * successful action (e.g. back to the run list after Delete, or
+   * to the new refresh-enrichment run). */
   onAfterAction?: (
     action:
-      | "pause" | "resume" | "cancel"
-      | "reindex" | "delete" | "purge",
+      | "pause" | "cancel"
+      | "delete" | "refresh_enrichment" | "run_enrichment",
     newRunId: string | null,
   ) => void;
 }
@@ -54,8 +60,8 @@ function formatDuration(seconds: number | null): string {
 }
 
 export function RunHeader({
-  run, ctx, origin, documentDisplayName, onBack, onOpenDrawer, onRefresh,
-  pushToast, onAfterAction,
+  run, ctx, origin, documentDisplayName, runCapability,
+  onBack, onOpenDrawer, onRefresh, pushToast, onAfterAction,
 }: RunHeaderProps) {
   if (!run) return null;
   const startedMs = run.started_at ? new Date(run.started_at).getTime() : null;
@@ -116,6 +122,7 @@ export function RunHeader({
         <div className="run-hero__actions">
           <RunControls
             run={run}
+            capability={runCapability}
             onRefresh={onRefresh}
             pushToast={pushToast}
             onAfterAction={onAfterAction}

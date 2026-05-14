@@ -59,10 +59,14 @@ class DocumentRunSummaryDTO:
     """Compact per-run row for the run-history panel on the
     document detail page.
 
-    Carries just enough to render one row (badge color, label,
-    timestamps) — full per-run detail comes from the existing
-    `/ingestion-runs/{id}` endpoints. Sorted by `started_at`
+    Carries just enough to render one row (badge, timestamps,
+    capability flags) — full per-run detail comes from the existing
+    ``/ingestion-runs/{id}`` endpoints. Sorted by ``started_at``
     descending in the parent DTO.
+
+    Capability flags are the source of truth for what actions the
+    FE may render on this run. The frontend MUST NOT recompute these
+    locally; pass through whatever the projector reports.
     """
 
     run_id: str
@@ -77,6 +81,23 @@ class DocumentRunSummaryDTO:
     # legacy runs that pre-date this field surface as ``None`` and
     # the FE renders nothing — graceful degradation.
     display_version: str | None = None
+    # ---- Capability flags (drive the Run Detail action area) -----
+    # True when this run is the document's only run. The FE uses
+    # this to hide ``Delete Run`` and surface helper text directing
+    # the user to ``Remove Knowledge`` at the document level.
+    is_only_run: bool = False
+    # True when this run can be hard-deleted via DELETE on the run
+    # endpoint. Always False for the active run and the only run;
+    # always False for runs still in-flight.
+    can_delete_run: bool = False
+    # True when this run is the document's active run AND its
+    # enrichment artifacts already exist (a refresh would replace
+    # them). Mutually exclusive with ``can_run_enrichment``.
+    can_refresh_enrichment: bool = False
+    # True when this run is the document's active run but never
+    # produced enrichment artifacts (an initial enrich would create
+    # them). Mutually exclusive with ``can_refresh_enrichment``.
+    can_run_enrichment: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,8 +164,9 @@ class DocumentDetailDTO:
 _BASE_ACTIONS_BY_STATE: dict[KnowledgeState, tuple[Action, ...]] = {
     # "view" is always available — the FE renders it as the click
     # target on each row. Other actions are state-dependent.
-    # ``refresh_enrich`` is appended dynamically below when an
-    # active run exists to reuse compile output from.
+    # ``refresh_enrich`` is intentionally NOT here — enrichment is a
+    # run-level concern; the action lives on Run Detail and is gated
+    # by the run-level capability flags.
     "attached": ("view", "reindex", "detach", "remove"),
     "detached": ("view", "attach", "remove"),
     "removed": ("view",),
@@ -156,29 +178,14 @@ def compute_available_actions(
     document: DocumentRecord,
     active_run: IngestionRun | None,
 ) -> tuple[Action, ...]:
-    """Return the actions the FE should render for this document.
+    """Return the document-level actions the FE should render.
 
-    Composition: start with the base set for the document's
-    knowledge state, then append ``"refresh_enrich"`` when the
-    active run already produced a usable compile artifact.
-
-    ``"resume"`` is intentionally NEVER included: a run is an
-    immutable execution record. When a previous run failed, the
-    user re-runs the document via ``"reindex"`` — the new run
-    starts from the original uploaded file.
+    Pure function of ``document.knowledge_state``. Run-level actions
+    (delete-run, refresh-enrichment, run-enrichment) live on the
+    per-run capability flags carried by ``DocumentRunSummaryDTO``.
     """
-    base = _BASE_ACTIONS_BY_STATE.get(document.knowledge_state, ("view",))
-    actions: list[Action] = list(base)
-    if document.knowledge_state == "attached" and active_run is not None:
-        # ``refresh_enrich`` is only meaningful when an active run
-        # already produced a compile artifact to reuse. Gating it on
-        # ``active_run_id`` AND a successful active run avoids the
-        # 409 cycle ("refresh-enrich rejected — no active run").
-        if active_run.status in (
-            RunStatus.SUCCEEDED, RunStatus.SUCCEEDED_WITH_WARNINGS,
-        ):
-            actions.append("refresh_enrich")
-    return tuple(actions)
+    del active_run  # kept for caller compatibility; no longer used
+    return _BASE_ACTIONS_BY_STATE.get(document.knowledge_state, ("view",))
 
 
 # ---- DTO builders ----------------------------------------------------
@@ -198,17 +205,14 @@ def project_document_summary(
 ) -> DocumentSummaryDTO:
     """Build a `DocumentSummaryDTO` from raw model objects.
 
-    Phase 9: ``active_snapshot_id`` is the visibility key.
-    ``active_run`` is derived heuristically (most recent succeeded
-    run) for display purposes — operators still want a "current
-    result" panel in the FE, but visibility-correctness is owned by
-    the snapshot side.
+    ``active_snapshot_id`` is the visibility key; ``active_run`` is
+    derived heuristically (most recent succeeded run) so the FE's
+    "current result" panel has something to render.
     """
     active_run = _find_active_run(document, runs)
     sorted_runs = _sort_runs_desc(runs)
-    active_run_id = active_run.run_id if active_run else None
     history = tuple(
-        _to_run_summary(r, is_active=(r.run_id == active_run_id))
+        _build_run_summary(r, document=document, all_runs=runs, active_run=active_run)
         for r in sorted_runs[:_LIST_RUN_HISTORY_CAP]
     )
     return DocumentSummaryDTO(
@@ -237,9 +241,8 @@ def project_document_detail(
     full run history (not capped)."""
     active_run = _find_active_run(document, runs)
     sorted_runs = _sort_runs_desc(runs)
-    active_run_id = active_run.run_id if active_run else None
     history = tuple(
-        _to_run_summary(r, is_active=(r.run_id == active_run_id))
+        _build_run_summary(r, document=document, all_runs=runs, active_run=active_run)
         for r in sorted_runs
     )
     return DocumentDetailDTO(
@@ -266,9 +269,8 @@ def project_run_history(
     `GET /documents/{id}/runs` endpoint when callers want only the
     history without the summary roll-up."""
     active_run = _find_active_run(document, runs)
-    active_run_id = active_run.run_id if active_run else None
     return tuple(
-        _to_run_summary(r, is_active=(r.run_id == active_run_id))
+        _build_run_summary(r, document=document, all_runs=runs, active_run=active_run)
         for r in _sort_runs_desc(runs)
     )
 
@@ -311,9 +313,58 @@ def _sort_runs_desc(runs: list[IngestionRun]) -> list[IngestionRun]:
     )
 
 
-def _to_run_summary(
-    run: IngestionRun, *, is_active: bool,
+# Run statuses considered "in-flight" — neither delete-run nor any
+# enrichment action is allowed while the workflow is still writing.
+_INFLIGHT_STATUSES: frozenset[RunStatus] = frozenset({
+    RunStatus.RUNNING, RunStatus.PAUSED,
+    RunStatus.CANCELLING, RunStatus.ASSESSING,
+    RunStatus.CREATED,
+})
+
+
+def _run_has_enrichment(run: IngestionRun) -> bool:
+    """True when this run's metadata reports a completed enrich step.
+
+    Single source of truth used by both ``can_refresh_enrichment``
+    and ``can_run_enrichment`` flag computation. The signal lives in
+    ``metadata.step_results.enrich.status`` — same shape the run-
+    detail surface reads for its timeline display.
+    """
+    step_results = run.metadata.get("step_results")
+    if not isinstance(step_results, dict):
+        return False
+    enrich = step_results.get("enrich")
+    if not isinstance(enrich, dict):
+        return False
+    return enrich.get("status") == "completed"
+
+
+def _build_run_summary(
+    run: IngestionRun,
+    *,
+    document: DocumentRecord,
+    all_runs: list[IngestionRun],
+    active_run: IngestionRun | None,
 ) -> DocumentRunSummaryDTO:
+    is_active = active_run is not None and run.run_id == active_run.run_id
+    is_only_run = len(all_runs) <= 1
+    is_inflight = run.status in _INFLIGHT_STATUSES
+    document_attached = document.knowledge_state == "attached"
+
+    can_delete_run = (
+        not is_active
+        and not is_only_run
+        and not is_inflight
+    )
+    enrichment_action_eligible = (
+        is_active
+        and not is_inflight
+        and document_attached
+    )
+    has_enrichment = _run_has_enrichment(run)
+    can_refresh_enrichment = enrichment_action_eligible and has_enrichment
+    can_run_enrichment = enrichment_action_eligible and not has_enrichment
+
     return DocumentRunSummaryDTO(
         run_id=run.run_id,
         run_type=run.run_type,
@@ -323,6 +374,10 @@ def _to_run_summary(
         failure_code=run.failure_code,
         is_active=is_active,
         display_version=run.display_version,
+        is_only_run=is_only_run,
+        can_delete_run=can_delete_run,
+        can_refresh_enrichment=can_refresh_enrichment,
+        can_run_enrichment=can_run_enrichment,
     )
 
 

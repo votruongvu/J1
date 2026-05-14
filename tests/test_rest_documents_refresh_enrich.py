@@ -1,17 +1,19 @@
-"""REST tests for ``POST /documents/{id}/refresh-enrich``.
+"""REST tests for ``POST /ingestion-runs/{run_id}/refresh-enrichment``.
 
-Covers the candidate-creation contract:
-  * Creates a NEW run under the same document_id with
-    ``runType="refresh_enrich"`` and
-    ``parentRunId=<document.activeRunId>``.
-  * ``metadata.reused_compile_from_run_id`` points at the
-    previous active run (the load-bearing hint the compile stage
-    reads to skip OCR + reuse compiled artifacts).
-  * ``activeRunId`` doesn't flip until the new run reaches a
-    usable terminal state — CAS-promoted exactly like reindex.
-  * 409 when document has no active run yet (nothing to reuse).
-  * 409 when document is detached / removed.
-  * 409 when the previous active run is still running.
+Refresh-enrichment is a run-level action that's only valid on the
+document's currently active run. It allocates a new candidate run
+that reuses the active run's compile output and re-runs only
+enrichment + graph + index. Promotion to ``activeSnapshotId`` is
+CAS-on-terminal-success — a failed refresh preserves the previous
+active.
+
+Covers:
+  * Happy path: posting against the active run creates a candidate.
+  * Active-run guard: posting against a non-active run is rejected
+    with HTTP 409.
+  * In-flight guard: rejected while the active run is still RUNNING.
+  * Detached / removed documents are rejected with HTTP 409.
+  * Unknown run → HTTP 404.
 """
 
 from __future__ import annotations
@@ -110,7 +112,7 @@ def _headers(ctx):
 
 def _seed_doc(
     registry, ctx, *, document_id="doc-1", state="attached",
-    active_snapshot_id="r-active",
+    active_snapshot_id="snap-active",
 ):
     registry.add(DocumentRecord(
         document_id=document_id,
@@ -130,16 +132,18 @@ def _seed_doc(
 def _seed_run(
     run_store, ctx, *, run_id, document_id,
     status=RunStatus.SUCCEEDED, metadata=None,
+    started_at: datetime | None = None,
 ):
+    started = started_at or _NOW
     run_store.upsert(ctx, IngestionRun(
         run_id=run_id,
         document_id=document_id,
         workflow_id=f"wf-{run_id}",
         workflow_run_id=None,
         status=status,
-        started_at=_NOW,
-        updated_at=_NOW,
-        completed_at=_NOW,
+        started_at=started,
+        updated_at=started,
+        completed_at=started,
         metadata=metadata or {},
     ))
 
@@ -147,14 +151,17 @@ def _seed_run(
 # ---- Happy path ---------------------------------------------------
 
 
-def test_refresh_enrich_creates_candidate_under_same_document(
+def test_refresh_enrichment_on_active_run_creates_candidate(
     client, registry, run_store, started_jobs, ctx,
 ):
-    _seed_doc(registry, ctx, active_snapshot_id="r-active")
+    """Posting against the active run allocates a new candidate run
+    that reuses the active run's compile output."""
+    _seed_doc(registry, ctx)
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
 
     resp = client.post(
-        "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
+        "/ingestion-runs/r-active/refresh-enrichment",
+        headers=_headers(ctx),
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()["data"]
@@ -170,62 +177,105 @@ def test_refresh_enrich_creates_candidate_under_same_document(
     assert new_run.metadata["reused_compile_from_run_id"] == "r-active"
 
 
-def test_refresh_enrich_does_not_flip_active_immediately(
+def test_refresh_enrichment_does_not_flip_active_immediately(
     client, registry, run_store, ctx,
 ):
-    _seed_doc(registry, ctx, active_snapshot_id="r-active")
+    _seed_doc(registry, ctx, active_snapshot_id="snap-active")
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
 
     client.post(
-        "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
+        "/ingestion-runs/r-active/refresh-enrichment",
+        headers=_headers(ctx),
     )
-    # active_run_id unchanged — promotion is CAS-on-terminal-success.
-    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-active"
+    # active_snapshot_id unchanged — promotion is CAS-on-terminal-success.
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "snap-active"
 
 
 # ---- Refusal paths -------------------------------------------------
 
 
-def test_refresh_enrich_rejected_when_no_active_run(
-    client, registry, ctx,
+def test_refresh_enrichment_rejects_non_active_run(
+    client, registry, run_store, ctx,
 ):
-    _seed_doc(registry, ctx, active_snapshot_id=None)
+    """Posting against a non-active run (older / superseded) is
+    rejected. Only the document's currently active run can be
+    refresh-enriched."""
+    from datetime import timedelta
+    _seed_doc(registry, ctx, active_snapshot_id="snap-newer")
+    # The active run for this document is r-newer; r-older is a
+    # historical attempt and must not be refresh-enrichable.
+    _seed_run(
+        run_store, ctx, run_id="r-older", document_id="doc-1",
+        started_at=_NOW - timedelta(hours=1),
+    )
+    _seed_run(
+        run_store, ctx, run_id="r-newer", document_id="doc-1",
+        status=RunStatus.SUCCEEDED,
+        started_at=_NOW,
+    )
+
     resp = client.post(
-        "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
+        "/ingestion-runs/r-older/refresh-enrichment",
+        headers=_headers(ctx),
+    )
+    assert resp.status_code == 409
+    assert "not the active run" in resp.text.lower()
+
+
+def test_refresh_enrichment_rejected_when_document_has_no_active_run(
+    client, registry, run_store, ctx,
+):
+    """A document with no terminally-succeeded run yet has no active
+    run. Refresh-enrichment is meaningless until a successful initial
+    run exists; the error message points the user at reindex."""
+    _seed_doc(registry, ctx, active_snapshot_id=None)
+    _seed_run(
+        run_store, ctx, run_id="r-failed",
+        document_id="doc-1", status=RunStatus.FAILED,
+    )
+    resp = client.post(
+        "/ingestion-runs/r-failed/refresh-enrichment",
+        headers=_headers(ctx),
     )
     assert resp.status_code == 409
     assert "no active run" in resp.text.lower()
 
 
-def test_refresh_enrich_rejected_when_document_detached(
+def test_refresh_enrichment_rejected_when_document_detached(
     client, registry, run_store, ctx,
 ):
     _seed_doc(
-        registry, ctx, state="detached", active_snapshot_id="r-active",
+        registry, ctx, state="detached", active_snapshot_id="snap-active",
     )
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
     resp = client.post(
-        "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
+        "/ingestion-runs/r-active/refresh-enrichment",
+        headers=_headers(ctx),
     )
     assert resp.status_code == 409
 
 
-def test_refresh_enrich_rejected_while_previous_running(
+def test_refresh_enrichment_rejected_while_active_run_is_running(
     client, registry, run_store, ctx,
 ):
-    _seed_doc(registry, ctx, active_snapshot_id="r-active")
+    """If the candidate active run is still RUNNING (we caught it
+    mid-flight), refuse the refresh — the workflow could still be
+    writing artifacts."""
+    _seed_doc(registry, ctx, active_snapshot_id="snap-active")
     _seed_run(
         run_store, ctx, run_id="r-active",
         document_id="doc-1", status=RunStatus.RUNNING,
     )
     resp = client.post(
-        "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
+        "/ingestion-runs/r-active/refresh-enrichment",
+        headers=_headers(ctx),
     )
     assert resp.status_code == 409
 
 
-def test_refresh_enrich_404_on_unknown_document(client, ctx):
+def test_refresh_enrichment_404_on_unknown_run(client, ctx):
     resp = client.post(
-        "/documents/missing/refresh-enrich", headers=_headers(ctx),
+        "/ingestion-runs/missing/refresh-enrichment",
+        headers=_headers(ctx),
     )
     assert resp.status_code == 404
