@@ -346,6 +346,21 @@ describe("runDocumentTestQuery", () => {
     });
   });
 
+  it("response runId is allowed to be empty — FE must treat it as audit-only", async () => {
+    // The snapshot-centric endpoints return ``runId=""`` because
+    // they don't route through a run. The client surface MUST
+    // not transform this into ``null`` or reject the response —
+    // empty-string is the documented contract.
+    withFetch(() => jsonResponse(_MANUAL_QUERY_OK));
+    const result = await makeClient().runDocumentTestQuery("doc-1", {
+      question: "q",
+    });
+    expect(result.runId).toBe("");
+    // The interesting identifiers live elsewhere.
+    expect(result.requestId).toBeTruthy();
+    expect(result.validationStatus).toBe("passed");
+  });
+
   it("URI-encodes document_id with special characters", async () => {
     const { calls } = withFetch(() => jsonResponse(_MANUAL_QUERY_OK));
     await makeClient().runDocumentTestQuery("doc/with slash", {

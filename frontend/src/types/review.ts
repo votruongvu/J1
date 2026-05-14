@@ -757,6 +757,16 @@ export interface EvidenceBlock {
 
 export interface ManualTestQueryResponse {
   requestId: string;
+  /**
+   * Lineage / debug metadata only. Populated for the run-keyed
+   * endpoint (``POST /ingestion-runs/{id}/test-query``); EMPTY for
+   * the snapshot-centric document- and project-level endpoints.
+   *
+   * The FE MUST NOT use this for routing, query identity, or UI
+   * branching — the snapshot id (in the request scope and in each
+   * retrieved chunk) is the load-bearing identifier now. Treat
+   * ``runId`` like an opt-in audit tag, never like a key.
+   */
   runId: string;
   question: string;
   answer: string;

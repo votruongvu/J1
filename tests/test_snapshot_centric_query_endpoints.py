@@ -321,6 +321,25 @@ def test_rest_document_test_query_refuses_allow_run_scope(client, ctx):
     assert "run" in resp.json()["error"]["message"].lower()
 
 
+def test_rest_document_test_query_refuses_project_active_scope(client, ctx):
+    """The document URL must not silently widen to a project-wide
+    query. Operators wanting project_active scope have a dedicated
+    endpoint; refusing 400 here keeps the URL honest."""
+    resp = client.post(
+        "/documents/doc-1/test-query",
+        headers=_headers(ctx),
+        json={
+            "question": "q",
+            "scope": {"type": "project_active"},
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    msg = resp.json()["error"]["message"].lower()
+    assert "project_active" in msg or "project-wide" in msg
+    # Hint mentions the right replacement endpoint.
+    assert "/projects/" in resp.json()["error"]["message"]
+
+
 def test_rest_project_query_routes_through_service(
     client, capturing_orchestrator, ctx,
 ):

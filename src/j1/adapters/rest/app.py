@@ -3383,6 +3383,19 @@ def create_rest_api(
                 "/ingestion-runs/{run_id}/test-query for the "
                 "diagnostic run-keyed surface.",
             )
+        # Reject project-wide scope under a document URL — the path
+        # promises document-scoped behaviour; honouring
+        # ``project_active`` here would silently widen the query and
+        # make the URL misleading. Operators wanting project-wide
+        # scope MUST use ``POST /projects/{id}/query``.
+        if body.scope is not None and body.scope.type == "project_active":
+            raise HTTPException(
+                400,
+                "scope.type='project_active' is not accepted on the "
+                "document-level test-query endpoint. Use "
+                "POST /projects/{project_id}/query for project-wide "
+                "queries; this URL is document-scoped.",
+            )
         # Refuse 404 / 503 for unknown document before doing work.
         lookup = _require_source_registry()
         try:
