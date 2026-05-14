@@ -2479,6 +2479,12 @@ def create_rest_api(
             ),
             "failureCode": r.failure_code,
             "isActive": r.is_active,
+            # The snapshot this run produced (or was allocated to
+            # build). Renders as the "Produced snapshot" column on
+            # the run-history table so the snapshot boundary is
+            # visible directly. ``None`` on legacy runs predating
+            # the snapshot model — the FE renders an em-dash.
+            "targetSnapshotId": r.target_snapshot_id,
             "displayVersion": r.display_version,
             # Run-level capability flags (the FE renders Run Detail
             # action buttons off these — never recomputed locally).

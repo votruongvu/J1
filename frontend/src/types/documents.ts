@@ -74,6 +74,15 @@ export interface DocumentRunSummary {
   failureCode: string | null;
   isActive: boolean;
   /**
+   * The snapshot this run produced (or was allocated to build).
+   * ``null`` on legacy runs predating the snapshot model. The
+   * Document Detail page uses this to render the "Produced
+   * snapshot" column and to identify the active snapshot's
+   * producing run (the run whose ``targetSnapshotId`` equals
+   * ``DocumentDetail.activeSnapshotId``).
+   */
+  targetSnapshotId: string | null;
+  /**
    * Operator-facing version chip in ``DDMMYYYY-NN`` format (per
    * document, per day). ``null`` for legacy runs created before
    * the dev-mode refactor — the FE renders nothing for those
@@ -95,6 +104,13 @@ export interface DocumentListItem {
   documentId: string;
   displayName: string;
   knowledgeState: KnowledgeState;
+  /**
+   * The canonical visibility key: which DocumentSnapshot is currently
+   * "live" for this document. ``null`` when no snapshot has been
+   * promoted yet (just uploaded; first ingestion still queued; or
+   * removed and the snapshot pointer cleared).
+   */
+  activeSnapshotId: string | null;
   latestVersionId: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -109,15 +125,25 @@ export interface DocumentListItem {
  * returns. Same shape as the list item but with the full
  * run history (uncapped) instead of just a 3-row tail.
  *
- * The display-active run is derived from `runHistory.find(r =>
- * r.isActive)`. The backend stores the canonical visibility key as
- * `activeSnapshotId`; the active run id is intentionally not on the
- * wire — it's a UI-display concept that the projector marks per-run.
+ * Snapshot-centric model:
+ *
+ *   Document         = source file + lifecycle
+ *   Snapshot         = queryable knowledge version (activeSnapshotId)
+ *   Run              = workflow execution that produced a snapshot
+ *
+ * The "active run" the UI displays is derived from
+ * ``runHistory.find(r => r.targetSnapshotId === activeSnapshotId)``
+ * — that's the run that *produced* the active snapshot, NOT the
+ * latest succeeded run (the two can diverge, e.g. a later run
+ * that succeeded but didn't promote). Falls back to
+ * ``isActive`` when ``targetSnapshotId`` is unavailable (legacy
+ * runs predating the snapshot model).
  */
 export interface DocumentDetail {
   documentId: string;
   displayName: string;
   knowledgeState: KnowledgeState;
+  activeSnapshotId: string | null;
   latestVersionId: string | null;
   createdAt: string | null;
   updatedAt: string | null;

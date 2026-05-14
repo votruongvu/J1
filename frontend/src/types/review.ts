@@ -838,6 +838,19 @@ export interface GateResultShape {
   detail: Record<string, unknown>;
 }
 
+/**
+ * Snapshot-scope diagnostics on every query trace. The orchestrator
+ * stamps this block so operators can verify BM25 + RAGAnything
+ * queried the same eligibility boundary. Absent on traces from
+ * older deployments — render fallbacks treat undefined as "unknown".
+ */
+export interface QueryTraceSnapshotScope {
+  eligible_snapshot_ids: string[];
+  queried_raganything_snapshot_ids: string[];
+  bm25_allowed_snapshot_ids: string[];
+  used_global_workspace: boolean;
+}
+
 export interface QueryTraceShape {
   question: string;
   normalized_question: string;
@@ -854,6 +867,7 @@ export interface QueryTraceShape {
   gate_results: GateResultShape[];
   final_status: string;
   duration_ms: number;
+  snapshot_scope?: QueryTraceSnapshotScope;
 }
 
 export interface QueryTracePayload {

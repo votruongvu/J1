@@ -82,6 +82,7 @@ export function DocumentDetailPage({
     documentId: d.documentId,
     displayName: d.displayName,
     knowledgeState: d.knowledgeState,
+    activeSnapshotId: d.activeSnapshotId,
     latestVersionId: d.latestVersionId,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -111,8 +112,11 @@ export function DocumentDetailPage({
         const r = await client.reindexDocument(documentId);
         pushToast?.({
           kind: "success",
-          title: "Re-index started",
-          body: `New run: ${r.reindexRunId.slice(0, 12)}`,
+          title: "Building new candidate snapshot",
+          body: (
+            `Current active knowledge stays live while the new ` +
+            `candidate is built. Run ${r.reindexRunId.slice(0, 12)}.`
+          ),
         });
       }
       await load();
@@ -180,11 +184,34 @@ export function DocumentDetailPage({
 
   const otherActions = detail.availableActions.filter((a) => a !== "view");
   const summary = detail.currentResultSummary;
-  // Display-active run id is derived from the per-run `isActive`
-  // flag the projector stamps server-side. The wire shape no longer
-  // carries a top-level `activeRunId` — `activeSnapshotId` is the
-  // canonical visibility key and the run pointer is UI sugar.
-  const activeRunId = detail.runHistory.find((r) => r.isActive)?.runId ?? null;
+  // Snapshot-centric model: the visibility key is
+  // ``activeSnapshotId``. The "active run" is the run that
+  // *produced* that snapshot — preferred lookup is
+  // ``r.targetSnapshotId === activeSnapshotId`` since the producing
+  // run is the load-bearing one for delete protection / promotion
+  // copy. Falls back to ``r.isActive`` on legacy runs that don't
+  // carry ``targetSnapshotId`` yet.
+  const activeSnapshotId = detail.activeSnapshotId;
+  const activeProducingRun = activeSnapshotId
+    ? detail.runHistory.find(
+        (r) => r.targetSnapshotId === activeSnapshotId,
+      ) ?? detail.runHistory.find((r) => r.isActive)
+    : detail.runHistory.find((r) => r.isActive);
+  const activeRunId = activeProducingRun?.runId ?? null;
+  // A "candidate" is any run that has *not* produced the active
+  // snapshot. Surfaces in the Candidate Knowledge section so users
+  // understand the blue/green model: current active stays
+  // queryable while a new candidate is being built / awaiting
+  // promotion. Most recent first; in-flight runs sort to the top
+  // because runHistory is already started_at desc.
+  const candidateRuns = detail.runHistory.filter(
+    (r) => r.runId !== activeRunId,
+  );
+  const inflightCandidate = candidateRuns.find((r) =>
+    ["running", "paused", "cancelling", "assessing", "created"].includes(
+      (r.status || "").toLowerCase(),
+    ),
+  );
 
   return (
     <div className="document-detail">
@@ -256,10 +283,19 @@ export function DocumentDetailPage({
             <div className="vsmall">{summary.validationStatus ?? "—"}</div>
           </div>
           <div className="run-stats__item">
-            <label>Active run</label>
+            <label
+              title={
+                "The canonical visibility key. The Active Knowledge " +
+                "Snapshot is what global query reads from. A new " +
+                "re-index builds a Candidate Snapshot; the active " +
+                "snapshot stays live until promotion."
+              }
+            >
+              Active snapshot
+            </label>
             <div className="v mono">
-              {activeRunId
-                ? `${activeRunId.slice(0, 12)}…`
+              {activeSnapshotId
+                ? `${activeSnapshotId.slice(0, 12)}…`
                 : "none yet"}
             </div>
           </div>
@@ -273,9 +309,10 @@ export function DocumentDetailPage({
       </div>
 
       {detail.knowledgeState === "detached" && (
-        <Banner kind="warn" title="This document is detached">
-          J1 is not using this document for search, answers, validation,
-          or domain context. Attach it again to re-enable retrieval.
+        <Banner kind="warn" title="This document is detached from project knowledge">
+          Excluded from global query. Manual testing on this page is
+          still available for inspection. Attach it again to bring it
+          back into project query scope.
         </Banner>
       )}
       {detail.knowledgeState === "removed" && (
@@ -291,15 +328,50 @@ export function DocumentDetailPage({
       )}
 
       <section className="document-detail__section">
+        <h3>Active Knowledge Snapshot</h3>
+        <ActiveKnowledgePanel
+          detail={detail}
+          producingRun={activeProducingRun ?? null}
+        />
+      </section>
+
+      {(inflightCandidate || candidateRuns.length > 0) && (
+        <section className="document-detail__section">
+          <h3>
+            Candidate Knowledge
+            {inflightCandidate && (
+              <span className="run-history-row__active-badge">
+                in progress
+              </span>
+            )}
+          </h3>
+          <p className="muted document-detail__hint">
+            J1 keeps the current snapshot active while a new candidate
+            is built. The candidate only replaces the current snapshot
+            after it completes and passes the configured checks.
+          </p>
+          <CandidateKnowledgeList
+            runs={candidateRuns}
+            onOpenRun={onOpenRun}
+          />
+        </section>
+      )}
+
+      <section className="document-detail__section">
         <h3>
-          Run history
+          Processing History
           <span className="document-detail__count">
             ({detail.runHistory.length})
           </span>
         </h3>
+        <p className="muted document-detail__hint">
+          Each row is one processing run. The snapshot it produced is
+          the queryable unit; the run itself is the execution log.
+        </p>
         <RunHistoryTable
           runs={detail.runHistory}
           activeRunId={activeRunId}
+          activeSnapshotId={activeSnapshotId}
           onOpenRun={onOpenRun}
         />
       </section>
@@ -337,11 +409,134 @@ function BackLink({ onBack }: { onBack: () => void }) {
 }
 
 
+function ActiveKnowledgePanel({
+  detail, producingRun,
+}: {
+  detail: DocumentDetail;
+  producingRun: DocumentDetail["runHistory"][number] | null;
+}) {
+  if (!detail.activeSnapshotId) {
+    return (
+      <p className="muted">
+        No active snapshot yet — re-index this document to build the
+        first knowledge version. Until a snapshot is promoted, this
+        document is not queryable.
+      </p>
+    );
+  }
+  const queryable = detail.knowledgeState === "attached";
+  return (
+    <div className="active-knowledge-panel">
+      <dl className="active-knowledge-panel__grid">
+        <div>
+          <dt>Snapshot ID</dt>
+          <dd className="mono" title={detail.activeSnapshotId}>
+            {detail.activeSnapshotId.slice(0, 16)}…
+          </dd>
+        </div>
+        <div>
+          <dt>Produced by run</dt>
+          <dd className="mono">
+            {producingRun ? (
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                }}
+                title={producingRun.runId}
+              >
+                {producingRun.runId.slice(0, 12)}…
+                {producingRun.displayVersion && (
+                  <span className="run-history-row__version-chip">
+                    v{producingRun.displayVersion}
+                  </span>
+                )}
+              </a>
+            ) : (
+              <span className="muted">—</span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Knowledge state</dt>
+          <dd><KnowledgeStateBadge state={detail.knowledgeState} /></dd>
+        </div>
+        <div>
+          <dt>Queryable in global scope</dt>
+          <dd className={queryable ? "ok" : "muted"}>
+            {queryable ? "Yes" : "No"}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+
+function CandidateKnowledgeList({
+  runs, onOpenRun,
+}: {
+  runs: DocumentDetail["runHistory"];
+  onOpenRun: (runId: string) => void;
+}) {
+  if (runs.length === 0) {
+    return (
+      <p className="muted">
+        No candidate snapshots in this document's history.
+      </p>
+    );
+  }
+  return (
+    <ul className="candidate-knowledge-list">
+      {runs.slice(0, 5).map((run) => (
+        <li key={run.runId} className="candidate-knowledge-list__row">
+          <div className="candidate-knowledge-list__head">
+            <RunStatusPill status={run.status} />
+            <span className="mono" title={run.runId}>
+              {run.runId.slice(0, 12)}…
+            </span>
+            <span className="muted">{run.runType}</span>
+            {run.displayVersion && (
+              <span className="run-history-row__version-chip">
+                v{run.displayVersion}
+              </span>
+            )}
+          </div>
+          <div className="candidate-knowledge-list__meta">
+            <span>
+              <strong>Candidate snapshot: </strong>
+              <code className="mono">
+                {run.targetSnapshotId
+                  ? `${run.targetSnapshotId.slice(0, 16)}…`
+                  : "—"}
+              </code>
+            </span>
+            <span className="muted">
+              Not used by global query until promoted.
+            </span>
+          </div>
+          <div className="candidate-knowledge-list__actions">
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => onOpenRun(run.runId)}
+            >
+              View processing run
+            </button>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+
 function RunHistoryTable({
-  runs, activeRunId, onOpenRun,
+  runs, activeRunId, activeSnapshotId, onOpenRun,
 }: {
   runs: DocumentDetail["runHistory"];
   activeRunId: string | null;
+  activeSnapshotId: string | null;
   onOpenRun: (runId: string) => void;
 }) {
   if (runs.length === 0) {
@@ -354,24 +549,35 @@ function RunHistoryTable({
           <th>Run</th>
           <th>Type</th>
           <th>Status</th>
+          <th>Produced snapshot</th>
           <th>Started</th>
           <th>Completed</th>
           <th className="run-history-row__action"></th>
         </tr>
       </thead>
       <tbody>
-        {runs.map((run) => (
+        {runs.map((run) => {
+          const isActiveProducer =
+            run.runId === activeRunId
+            || (!!activeSnapshotId
+              && run.targetSnapshotId === activeSnapshotId);
+          return (
           <tr
             key={run.runId}
-            className={run.runId === activeRunId ? "run-history-row--active" : ""}
+            className={isActiveProducer ? "run-history-row--active" : ""}
           >
             <td>
               <span className="run-history-row__id">
                 <span className="run-history-row__id-text">
                   {run.runId.slice(0, 12)}…
                 </span>
-                {run.runId === activeRunId && (
-                  <span className="run-history-row__active-badge">active</span>
+                {isActiveProducer && (
+                  <span
+                    className="run-history-row__active-badge"
+                    title="This run produced the document's active knowledge snapshot."
+                  >
+                    active snapshot
+                  </span>
                 )}
                 {run.displayVersion && (
                   <span
@@ -386,6 +592,18 @@ function RunHistoryTable({
             <td className="run-history-row__type">{run.runType}</td>
             <td>
               <RunStatusPill status={run.status} />
+            </td>
+            <td className="run-history-row__snapshot mono">
+              {run.targetSnapshotId ? (
+                <span
+                  title={run.targetSnapshotId}
+                  className={isActiveProducer ? "ok" : ""}
+                >
+                  {run.targetSnapshotId.slice(0, 12)}…
+                </span>
+              ) : (
+                <span className="muted">—</span>
+              )}
             </td>
             <td className="run-history-row__time">
               {run.startedAt ? relativeTime(run.startedAt) : "—"}
@@ -403,7 +621,8 @@ function RunHistoryTable({
               </button>
             </td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
   );

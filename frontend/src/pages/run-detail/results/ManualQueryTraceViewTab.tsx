@@ -168,6 +168,7 @@ export function ManualQueryTraceViewTab(
       {payload && (
         <div className="mqt-output" data-testid="trace-output">
           <StatusBanner payload={payload} />
+          <SnapshotScopeBanner payload={payload} />
           <AnswerHero payload={payload} />
           <MetricsStrip payload={payload} />
 
@@ -304,6 +305,69 @@ function StatusBanner({ payload }: { payload: QueryTracePayload }) {
       )}
     </div>
   );
+}
+
+// ---- Snapshot scope banner ------------------------------------
+
+function SnapshotScopeBanner(
+  { payload }: { payload: QueryTracePayload },
+) {
+  const scope = payload.trace.snapshot_scope;
+  if (!scope) {
+    // Legacy trace from a backend that doesn't stamp scope yet.
+    return null;
+  }
+  const eligible = scope.eligible_snapshot_ids ?? [];
+  const ragQueried = scope.queried_raganything_snapshot_ids ?? [];
+  const bm25Allowed = scope.bm25_allowed_snapshot_ids ?? [];
+  const usedGlobal = Boolean(scope.used_global_workspace);
+  // Mismatch: query proved that RAGAnything went outside the
+  // eligible set or the global-workspace heuristic tripped. Surfaced
+  // as a hard warning so a leak regression is obvious.
+  const leaked = usedGlobal
+    || ragQueried.some((id) => !eligible.includes(id));
+  return (
+    <div
+      className={
+        `mqt-banner mqt-banner--${leaked ? "fail" : "ok"} ` +
+        "mqt-banner--scope"
+      }
+      data-testid="trace-snapshot-scope"
+    >
+      <div className="mqt-banner__row">
+        <span className="mqt-banner__badge">
+          Scope: {eligible.length === 1 ? "1 snapshot" : `${eligible.length} snapshots`}
+        </span>
+        <span className="mqt-banner__intent" title="Eligible snapshot IDs">
+          eligible: <code>{summariseIds(eligible)}</code>
+        </span>
+        <span className="mqt-banner__intent" title="Snapshots queried by RAGAnything">
+          RAGAnything: <code>{summariseIds(ragQueried)}</code>
+        </span>
+        <span className="mqt-banner__intent" title="Snapshots passed to BM25 allowlist">
+          BM25: <code>{summariseIds(bm25Allowed)}</code>
+        </span>
+        {usedGlobal && (
+          <span className="badge badge--err" title="Regression alarm">
+            used global workspace
+          </span>
+        )}
+      </div>
+      {leaked && (
+        <p className="mqt-banner__message">
+          Scope warning: RAGAnything or the bridge fell outside the
+          eligible snapshot set. Investigate via the routes section
+          below.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function summariseIds(ids: readonly string[]): string {
+  if (ids.length === 0) return "(empty)";
+  if (ids.length === 1) return ids[0]!.slice(0, 12) + "…";
+  return `${ids[0]!.slice(0, 12)}… +${ids.length - 1} more`;
 }
 
 // ---- Collapsible section --------------------------------------

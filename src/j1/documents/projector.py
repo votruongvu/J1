@@ -76,6 +76,12 @@ class DocumentRunSummaryDTO:
     completed_at: datetime | None
     failure_code: str | None = None
     is_active: bool = False
+    # The snapshot this run was building / built. Populated at run
+    # creation by the REST/workflow allocator; ``None`` for legacy
+    # runs predating the snapshot model. The FE renders this as the
+    # "Produced snapshot" column so operators can see the snapshot
+    # boundary directly instead of inferring it from run status.
+    target_snapshot_id: str | None = None
     # Operator-visible version chip (``DDMMYYYY-NN`` per document
     # per day). Set by the run-creation layer when allocated;
     # legacy runs that pre-date this field surface as ``None`` and
@@ -373,6 +379,7 @@ def _build_run_summary(
         completed_at=run.completed_at,
         failure_code=run.failure_code,
         is_active=is_active,
+        target_snapshot_id=getattr(run, "target_snapshot_id", None),
         display_version=run.display_version,
         is_only_run=is_only_run,
         can_delete_run=can_delete_run,

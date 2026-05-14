@@ -236,10 +236,12 @@ export function RunControls({
           className={btnClass}
           disabled={anyPending}
           onClick={() => void dispatch("refresh_enrichment")}
-          aria-label="Refresh enrichment for this run"
+          aria-label="Refresh enrichment for active snapshot"
           title={
-            "Re-run enrichment + graph + index using this run's compile " +
-            "output. Active-run only."
+            "Build a new candidate snapshot that reuses this run's " +
+            "compile output and re-runs enrichment + graph + index. " +
+            "Current active knowledge stays live until the new " +
+            "candidate is promoted."
           }
           data-testid="run-controls-refresh-enrichment"
         >
@@ -249,7 +251,9 @@ export function RunControls({
             <Icon.RefreshCw className="icon-sm" />
           )}
           {!compact && (
-            <span style={{ marginLeft: 4 }}>Refresh enrichment</span>
+            <span style={{ marginLeft: 4 }}>
+              Refresh enrichment for active snapshot
+            </span>
           )}
         </button>
       )}
@@ -280,10 +284,12 @@ export function RunControls({
           className={`${btnClass} btn--danger`}
           disabled={anyPending}
           onClick={() => void dispatch("delete")}
-          aria-label="Delete this run"
+          aria-label="Delete this processing run"
           title={
-            "Permanently delete this run, its artifacts, chunks, " +
-            "enrichment, validation outputs, and index data."
+            "Permanently delete this processing run and the candidate " +
+            "snapshot it produced (artifacts, chunks, enrichment, " +
+            "validation outputs, index data). The active knowledge " +
+            "snapshot is never deletable from this control."
           }
           data-testid="run-controls-delete"
         >
@@ -292,7 +298,9 @@ export function RunControls({
           ) : (
             <Icon.XCircle className="icon-sm" />
           )}
-          {!compact && <span style={{ marginLeft: 4 }}>Delete Run</span>}
+          {!compact && (
+            <span style={{ marginLeft: 4 }}>Delete Processing Run</span>
+          )}
         </button>
       )}
       {showOnlyRunHint && (
