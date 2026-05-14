@@ -278,6 +278,20 @@ Health monitor (background probe):
 | `J1_CLEANUP_HARD_DELETE` | `false` | no | bool | cleanup service | Hard-delete instead of tombstone. |
 | `J1_CLEANUP_RETENTION_DAYS` | unset | no | int | cleanup service | Retention window for periodic prune. |
 
+### Ingestion performance trace
+
+Dedicated developer/operator debugging surface for investigating slow
+or stuck ingestion. See [docs/ingestion-tracing.md](ingestion-tracing.md)
+for the full event schema and verification recipe. Disabled by default;
+turn on only while debugging.
+
+| Setting | Default | Required | Valid values | Used by | Description |
+| --- | --- | --- | --- | --- | --- |
+| `J1_INGEST_TRACE_ENABLED` | `false` | no | bool | ingest trace logger | Master switch. When false, the trace helper is a no-op and no file is created. |
+| `J1_INGEST_TRACE_LEVEL` | `INFO` | no | `INFO` / `DEBUG` | ingest trace logger | INFO records stage-level timing; DEBUG may include additional safe metadata summaries. |
+| `J1_INGEST_TRACE_SLOW_STAGE_MS` | `30000` | no | int > 0 | ingest trace logger | Threshold (ms) above which a stage is flagged `slow=true` and emits one `ingest.trace.slow_stage` warning on the normal logger. |
+| `J1_INGEST_TRACE_OUTPUT` | `logs/ingest_trace.jsonl` | no | path | ingest trace logger | JSONL output file. Parent directory is created automatically. |
+
 ### Optional: Graphify graph provider
 
 | Setting | Default | Required | Valid values | Used by | Description |
@@ -603,6 +617,16 @@ J1_BENCHMARK_INGESTION=false
 J1_BENCHMARK_OUTPUT_PATH=/var/lib/j1/benchmarks
 J1_CLEANUP_HARD_DELETE=false
 #J1_CLEANUP_RETENTION_DAYS=
+
+# ---------------------------------------------------------------------
+#  Ingestion performance trace
+#    Developer/operator debugging only. Disabled by default. See
+#    docs/ingestion-tracing.md for the event schema and recipes.
+# ---------------------------------------------------------------------
+J1_INGEST_TRACE_ENABLED=false
+J1_INGEST_TRACE_LEVEL=INFO
+J1_INGEST_TRACE_SLOW_STAGE_MS=30000
+J1_INGEST_TRACE_OUTPUT=logs/ingest_trace.jsonl
 
 # ---------------------------------------------------------------------
 #  Optional: Graphify graph provider (alternative to RAGAnything)

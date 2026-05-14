@@ -257,6 +257,16 @@ class DiagnosticRecorder:
                 "counters": dict(record.counters),
             },
         )
+        # Dedicated ingest-trace surface (separate from the audit log
+        # above). No-op when ``J1_INGEST_TRACE_ENABLED=false``.
+        self._emit_stage_trace(
+            trace_event=f"ingest.{stage_name}.started",
+            stage=stage_name,
+            status="started",
+            ctx=ctx,
+            run_id=run_id,
+            document_id=document_id,
+        )
         handle = _StageHandle(record=record)
         started_perf = time.perf_counter()
         try:
@@ -449,6 +459,36 @@ class DiagnosticRecorder:
                 ctx=ctx, action=action,
                 target_id=run_id,
                 payload=payload,
+            )
+            # Dedicated ingest-trace mirror — compile attempts and
+            # retry-scheduled events are some of the most diagnostic
+            # things to surface when a run is slow or stuck. Keep the
+            # event name aligned with the audit action.
+            trace_meta: dict[str, Any] = {
+                "attempt": int(attempt),
+                "mode": mode,
+                "next_mode": next_mode,
+                "success": success,
+                "reason": _safe_preview(reason, limit=240),
+            }
+            if extra:
+                for k, v in extra.items():
+                    trace_meta.setdefault(k, v)
+            status = (
+                "completed" if success is True
+                else "failed" if success is False
+                else "retry_scheduled"
+            )
+            self._emit_stage_trace(
+                trace_event=action,
+                stage="compile" if "compile" in action else "enrich",
+                status=status,
+                ctx=ctx,
+                run_id=run_id,
+                document_id=document_id,
+                duration_ms=duration_ms,
+                error_type=_safe_preview(error),
+                metadata=trace_meta,
             )
         except Exception:  # noqa: BLE001
             _log.warning(
@@ -718,6 +758,25 @@ class DiagnosticRecorder:
                 "counters": dict(record.counters),
             },
         )
+        # Dedicated ingest-trace surface — paired completed/failed
+        # event with duration + slow flag + sanitised counters.
+        status = "completed" if record.success else "failed"
+        trace_event_name = f"ingest.{record.name}.{status}"
+        # Counters are already small integers (artifact counts,
+        # warning counts, etc.) so they're safe to surface; the trace
+        # writer's metadata sanitiser strips anything suspicious.
+        meta = dict(record.counters) if record.counters else None
+        self._emit_stage_trace(
+            trace_event=trace_event_name,
+            stage=record.name,
+            status=status,
+            ctx=ctx,
+            run_id=run_id,
+            document_id=document_id,
+            duration_ms=record.duration_ms,
+            error_type=record.error if not record.success else None,
+            metadata=meta,
+        )
 
     def _safe_audit(
         self,
@@ -752,6 +811,69 @@ class DiagnosticRecorder:
             _log.warning(
                 "diagnostic recorder: audit emit failed (action=%s)",
                 action, exc_info=True,
+            )
+
+    def _emit_stage_trace(
+        self,
+        *,
+        trace_event: str,
+        stage: str,
+        status: str,
+        ctx: "ProjectContext",
+        run_id: str | None,
+        document_id: str | None,
+        duration_ms: int | None = None,
+        error_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit one event to the dedicated ingest-trace JSONL file.
+
+        Distinct from ``_safe_audit`` (above) which feeds the business
+        audit log. The trace logger is a no-op when
+        ``J1_INGEST_TRACE_ENABLED=false`` so this call is essentially
+        free in production.
+        """
+        try:
+            from j1.observability.ingest_trace import (
+                TraceContext, current_ingest_trace_logger,
+            )
+        except Exception:  # noqa: BLE001 — never let trace wiring fail audit
+            return
+        logger = current_ingest_trace_logger()
+        if not logger.enabled:
+            return
+        try:
+            trace_ctx = TraceContext(
+                tenant_id=getattr(ctx, "tenant_id", None),
+                project_id=getattr(ctx, "project_id", None),
+                document_id=document_id,
+                run_id=run_id,
+            )
+            slow = (
+                duration_ms is not None
+                and duration_ms >= logger.slow_stage_ms
+            )
+            logger.emit(
+                trace_event=trace_event,
+                stage=stage,
+                status=status,
+                context=trace_ctx,
+                duration_ms=duration_ms,
+                slow=slow if duration_ms is not None else None,
+                error_type=error_type,
+                metadata=metadata,
+            )
+            if slow:
+                logger.emit_slow_warning(
+                    trace_event=trace_event,
+                    stage=stage,
+                    duration_ms=duration_ms,
+                    context=trace_ctx,
+                )
+        except Exception:  # noqa: BLE001 — trace must never break ingestion
+            _log.debug(
+                "diagnostic recorder: ingest trace emit failed",
+                exc_info=True,
             )
 
     def _safe_now(self) -> datetime:

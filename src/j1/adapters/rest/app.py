@@ -1976,6 +1976,43 @@ def create_rest_api(
         )
         store.upsert(ctx, new_run)
 
+        # Dedicated ingest-trace surface (no-op when disabled). Emitted
+        # at the REST edge so operators can correlate the moment of
+        # run creation with the workflow-start latency below.
+        from j1.observability.ingest_trace import (
+            TraceContext as _TraceCtx,
+            trace_event as _trace_event,
+        )
+        _ingest_trace_ctx = _TraceCtx(
+            tenant_id=getattr(ctx, "tenant_id", None),
+            project_id=getattr(ctx, "project_id", None),
+            document_id=document_id,
+            run_id=new_run_id,
+            target_snapshot_id=new_run.target_snapshot_id,
+        )
+        _trace_event(
+            trace_event="ingest.run.created",
+            stage="run",
+            status="started",
+            context=_ingest_trace_ctx,
+            metadata={
+                "run_type": "reindex",
+                "parent_run_id": active_run_id,
+                "fresh_run": True,
+                "reused_existing_compile": False,
+                "reused_existing_chunks": False,
+                "reused_existing_enrichment": False,
+            },
+        )
+        if new_run.target_snapshot_id:
+            _trace_event(
+                trace_event="ingest.snapshot.allocated",
+                stage="snapshot",
+                status="completed",
+                context=_ingest_trace_ctx,
+                metadata={"snapshot_id": new_run.target_snapshot_id},
+            )
+
         if progress_reporter is not None:
             progress_reporter.report_run_created(
                 ctx, run_id=new_run_id, document_id=document_id,
@@ -2011,6 +2048,20 @@ def create_rest_api(
         new_run.workflow_id = workflow_id
         new_run.updated_at = datetime.now(timezone.utc)
         store.upsert(ctx, new_run)
+        _trace_event(
+            trace_event="ingest.workflow.started",
+            stage="workflow",
+            status="started",
+            context=_TraceCtx(
+                tenant_id=getattr(ctx, "tenant_id", None),
+                project_id=getattr(ctx, "project_id", None),
+                document_id=document_id,
+                run_id=new_run_id,
+                target_snapshot_id=new_run.target_snapshot_id,
+                workflow_id=workflow_id,
+            ),
+            metadata={"run_type": "reindex"},
+        )
         _emit_ops_event(
             ctx,
             action=ACTION_OPS_RUN_REINDEXED,

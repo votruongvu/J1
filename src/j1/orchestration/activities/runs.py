@@ -566,6 +566,56 @@ class RunsActivities:
         except Exception:  # noqa: BLE001 — telemetry never blocks workflow
             pass
 
+        # Dedicated ingest-trace surface — emit run-terminal event so
+        # operators can correlate end-of-run latency, failure codes,
+        # and the run's overall slow/not-slow status without parsing
+        # the audit log. No-op when trace is disabled.
+        try:
+            from j1.observability.ingest_trace import (
+                TraceContext, current_ingest_trace_logger,
+            )
+            tracer = current_ingest_trace_logger()
+            if tracer.enabled:
+                final_status_str = str(input.final_status).lower()
+                if final_status_str in {"cancelled", "canceled"}:
+                    trace_event_name = "ingest.run.cancelled"
+                    trace_status = "cancelled"
+                elif final_status_str.startswith("succeeded"):
+                    trace_event_name = "ingest.run.completed"
+                    trace_status = "completed"
+                else:
+                    trace_event_name = "ingest.run.failed"
+                    trace_status = "failed"
+                tracer.emit(
+                    trace_event=trace_event_name,
+                    stage="run",
+                    status=trace_status,
+                    context=TraceContext(
+                        tenant_id=getattr(ctx, "tenant_id", None),
+                        project_id=getattr(ctx, "project_id", None),
+                        document_id=run.document_id,
+                        run_id=run.run_id,
+                        target_snapshot_id=run.target_snapshot_id,
+                        workflow_id=run.workflow_id,
+                    ),
+                    error_type=(
+                        input.failure_code
+                        if trace_status == "failed"
+                        else None
+                    ),
+                    error_message=(
+                        input.failure_message
+                        if trace_status == "failed"
+                        else None
+                    ),
+                    metadata={
+                        "final_status": str(input.final_status),
+                        "warning_count": int(input.warning_count or 0),
+                    },
+                )
+        except Exception:  # noqa: BLE001 — never let trace fail workflow
+            pass
+
         # Document-centric promotion (Phase 4): when this run
         # reached a usable terminal state, point the document at it
         # as the current "active" result. Failed / cancelled /
