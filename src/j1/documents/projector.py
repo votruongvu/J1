@@ -107,7 +107,7 @@ class DocumentSummaryDTO:
     document_id: str
     display_name: str
     knowledge_state: KnowledgeState
-    active_run_id: str | None
+    active_snapshot_id: str | None
     latest_version_id: str | None
     created_at: datetime
     updated_at: datetime | None
@@ -127,7 +127,7 @@ class DocumentDetailDTO:
     document_id: str
     display_name: str
     knowledge_state: KnowledgeState
-    active_run_id: str | None
+    active_snapshot_id: str | None
     latest_version_id: str | None
     created_at: datetime
     updated_at: datetime | None
@@ -227,23 +227,24 @@ def project_document_summary(
 ) -> DocumentSummaryDTO:
     """Build a `DocumentSummaryDTO` from raw model objects.
 
-    `runs` is the full list of runs for this document — the
-    projector picks the active one, sorts the history, and caps
-    the list-view tail. The caller (REST adapter) is responsible
-    for the `(document, runs)` join because the projector stays
-    free of registry / store coupling.
+    Phase 9: ``active_snapshot_id`` is the visibility key.
+    ``active_run`` is derived heuristically (most recent succeeded
+    run) for display purposes — operators still want a "current
+    result" panel in the FE, but visibility-correctness is owned by
+    the snapshot side.
     """
     active_run = _find_active_run(document, runs)
     sorted_runs = _sort_runs_desc(runs)
+    active_run_id = active_run.run_id if active_run else None
     history = tuple(
-        _to_run_summary(r, is_active=(r.run_id == document.active_run_id))
+        _to_run_summary(r, is_active=(r.run_id == active_run_id))
         for r in sorted_runs[:_LIST_RUN_HISTORY_CAP]
     )
     return DocumentSummaryDTO(
         document_id=document.document_id,
         display_name=document.original_filename,
         knowledge_state=document.knowledge_state,
-        active_run_id=document.active_run_id,
+        active_snapshot_id=document.active_snapshot_id,
         latest_version_id=document.latest_version_id,
         created_at=document.created_at,
         updated_at=document.updated_at,
@@ -265,15 +266,16 @@ def project_document_detail(
     full run history (not capped)."""
     active_run = _find_active_run(document, runs)
     sorted_runs = _sort_runs_desc(runs)
+    active_run_id = active_run.run_id if active_run else None
     history = tuple(
-        _to_run_summary(r, is_active=(r.run_id == document.active_run_id))
+        _to_run_summary(r, is_active=(r.run_id == active_run_id))
         for r in sorted_runs
     )
     return DocumentDetailDTO(
         document_id=document.document_id,
         display_name=document.original_filename,
         knowledge_state=document.knowledge_state,
-        active_run_id=document.active_run_id,
+        active_snapshot_id=document.active_snapshot_id,
         latest_version_id=document.latest_version_id,
         created_at=document.created_at,
         updated_at=document.updated_at,
@@ -292,8 +294,10 @@ def project_run_history(
     """Just the run-history list — used by the dedicated
     `GET /documents/{id}/runs` endpoint when callers want only the
     history without the summary roll-up."""
+    active_run = _find_active_run(document, runs)
+    active_run_id = active_run.run_id if active_run else None
     return tuple(
-        _to_run_summary(r, is_active=(r.run_id == document.active_run_id))
+        _to_run_summary(r, is_active=(r.run_id == active_run_id))
         for r in _sort_runs_desc(runs)
     )
 
@@ -304,14 +308,27 @@ def project_run_history(
 def _find_active_run(
     document: DocumentRecord, runs: list[IngestionRun],
 ) -> IngestionRun | None:
-    if not document.active_run_id:
+    """Phase 9: derive the display-active run heuristically.
+
+    The canonical visibility key is ``document.active_snapshot_id``;
+    the projector picks a representative run for the FE's
+    "current result" panel. Selection rule:
+
+      1. Latest succeeded / succeeded-with-warnings run.
+      2. Otherwise None — the FE renders "no current result".
+
+    Resumable-failure detection is preserved by the existing
+    ``compute_available_actions`` helper, which gates on the
+    selected active run's status.
+    """
+    if not document.active_snapshot_id:
         return None
-    for r in runs:
-        if r.run_id == document.active_run_id:
+    sorted_runs = _sort_runs_desc(runs)
+    for r in sorted_runs:
+        if r.status in (
+            RunStatus.SUCCEEDED, RunStatus.SUCCEEDED_WITH_WARNINGS,
+        ):
             return r
-    # Active-run pointer references a run we can't find — return
-    # None rather than raise; the projector callers fall back to
-    # "no active result" which is the right UX for the FE.
     return None
 
 

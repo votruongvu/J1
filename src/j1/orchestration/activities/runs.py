@@ -612,6 +612,7 @@ class RunsActivities:
         if self._snapshot_service is not None:
             snapshot_promoted = self._promote_snapshot(
                 ctx, run.document_id, run.run_id,
+                target_snapshot_id=getattr(run, "target_snapshot_id", None),
                 previous_active_snapshot_id=previous_active_snapshot_id,
             )
         if not snapshot_promoted:
@@ -627,10 +628,18 @@ class RunsActivities:
         # them. The supersede helper keys on snapshot_id (Phase 6).
         if self._artifact_registry is None or self._snapshot_service is None:
             return
+        target_snapshot_id = getattr(run, "target_snapshot_id", None)
         try:
-            new_snap = self._snapshot_service.get_or_create_for_run(
-                ctx, document_id=run.document_id, run_id=run.run_id,
-            )
+            if target_snapshot_id:
+                new_snap = self._snapshot_service.require_existing_target_snapshot(
+                    ctx,
+                    document_id=run.document_id,
+                    snapshot_id=target_snapshot_id,
+                )
+            else:
+                new_snap = self._snapshot_service.get_or_create_for_run(
+                    ctx, document_id=run.document_id, run_id=run.run_id,
+                )
         except Exception:  # noqa: BLE001 — best-effort
             return
         try:
@@ -655,18 +664,32 @@ class RunsActivities:
         document_id: str,
         run_id: str,
         *,
+        target_snapshot_id: str | None,
         previous_active_snapshot_id: str | None,
     ) -> bool:
-        """Phase 7: snapshot-side promotion is the CANONICAL
-        promotion path. Returns True on success, False when the
-        snapshot service refused (CAS conflict, snapshot missing,
-        store error). On False, the caller triggers orphan
-        cleanup — same contract the legacy run-id CAS path had.
+        """Phase 9: snapshot-side promotion is the CANONICAL
+        promotion path. When the run carries ``target_snapshot_id``
+        (the up-front allocation threaded through
+        ``ProjectProcessingRequest``), load it via
+        ``require_existing_target_snapshot``. Falls back to the
+        deprecated lazy ``get_or_create_for_run`` for legacy
+        bulk-job runs that haven't been migrated yet.
+
+        Returns True on success, False when the snapshot service
+        refused (CAS conflict, snapshot missing, store error). On
+        False, the caller triggers orphan cleanup.
         """
         try:
-            snap = self._snapshot_service.get_or_create_for_run(
-                ctx, document_id=document_id, run_id=run_id,
-            )
+            if target_snapshot_id:
+                snap = self._snapshot_service.require_existing_target_snapshot(
+                    ctx,
+                    document_id=document_id,
+                    snapshot_id=target_snapshot_id,
+                )
+            else:
+                snap = self._snapshot_service.get_or_create_for_run(
+                    ctx, document_id=document_id, run_id=run_id,
+                )
         except Exception:  # noqa: BLE001 — best-effort
             return False
         # Phase 7: caller already resolved the previous active

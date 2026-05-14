@@ -73,7 +73,7 @@ def _document_to_dto(record: DocumentRecord) -> DocumentDTO:
         status=record.status.value,
         created_at=record.created_at,
         knowledge_state=record.knowledge_state,
-        active_run_id=record.active_run_id,
+        active_snapshot_id=record.active_snapshot_id,
         latest_version_id=record.latest_version_id,
     )
 

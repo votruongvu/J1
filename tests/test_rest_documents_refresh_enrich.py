@@ -110,7 +110,7 @@ def _headers(ctx):
 
 def _seed_doc(
     registry, ctx, *, document_id="doc-1", state="attached",
-    active_run_id="r-active",
+    active_snapshot_id="r-active",
 ):
     registry.add(DocumentRecord(
         document_id=document_id,
@@ -123,7 +123,7 @@ def _seed_doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     ))
 
 
@@ -150,7 +150,7 @@ def _seed_run(
 def test_refresh_enrich_creates_candidate_under_same_document(
     client, registry, run_store, started_jobs, ctx,
 ):
-    _seed_doc(registry, ctx, active_run_id="r-active")
+    _seed_doc(registry, ctx, active_snapshot_id="r-active")
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
 
     resp = client.post(
@@ -173,14 +173,14 @@ def test_refresh_enrich_creates_candidate_under_same_document(
 def test_refresh_enrich_does_not_flip_active_immediately(
     client, registry, run_store, ctx,
 ):
-    _seed_doc(registry, ctx, active_run_id="r-active")
+    _seed_doc(registry, ctx, active_snapshot_id="r-active")
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
 
     client.post(
         "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
     )
     # active_run_id unchanged — promotion is CAS-on-terminal-success.
-    assert registry.get(ctx, "doc-1").active_run_id == "r-active"
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-active"
 
 
 # ---- Refusal paths -------------------------------------------------
@@ -189,7 +189,7 @@ def test_refresh_enrich_does_not_flip_active_immediately(
 def test_refresh_enrich_rejected_when_no_active_run(
     client, registry, ctx,
 ):
-    _seed_doc(registry, ctx, active_run_id=None)
+    _seed_doc(registry, ctx, active_snapshot_id=None)
     resp = client.post(
         "/documents/doc-1/refresh-enrich", headers=_headers(ctx),
     )
@@ -201,7 +201,7 @@ def test_refresh_enrich_rejected_when_document_detached(
     client, registry, run_store, ctx,
 ):
     _seed_doc(
-        registry, ctx, state="detached", active_run_id="r-active",
+        registry, ctx, state="detached", active_snapshot_id="r-active",
     )
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
     resp = client.post(
@@ -213,7 +213,7 @@ def test_refresh_enrich_rejected_when_document_detached(
 def test_refresh_enrich_rejected_while_previous_running(
     client, registry, run_store, ctx,
 ):
-    _seed_doc(registry, ctx, active_run_id="r-active")
+    _seed_doc(registry, ctx, active_snapshot_id="r-active")
     _seed_run(
         run_store, ctx, run_id="r-active",
         document_id="doc-1", status=RunStatus.RUNNING,

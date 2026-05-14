@@ -395,12 +395,11 @@ def _record_from_dict(d: dict) -> DocumentRecord:
         status=ProcessingStatus(d["status"]),
         created_at=datetime.fromisoformat(d["created_at"]),
         knowledge_state=raw_state,  # type: ignore[arg-type]
-        # Phase 8: ``active_snapshot_id`` is the only visibility
-        # pointer. ``active_run_id`` is a trace-only audit shim;
-        # missing on Phase-8-fresh records, present on pre-Phase-8
-        # data (still rendered by some legacy projector paths).
+        # Phase 9: ``active_snapshot_id`` is the ONLY visibility
+        # pointer. Pre-Phase-9 records with ``active_run_id`` on
+        # disk lose that field on read — the canonical migration
+        # path is reset + re-ingest.
         active_snapshot_id=d.get("active_snapshot_id"),
-        active_run_id=d.get("active_run_id"),
         latest_version_id=d.get("latest_version_id"),
         removed_at=removed_at,
         updated_at=updated_at,

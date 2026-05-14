@@ -64,7 +64,6 @@ def _doc(
     document_id: str = "doc-1",
     *,
     active_snapshot_id: str | None = None,
-    active_run_id: str | None = None,
     knowledge_state: str = "attached",
     lifecycle_status: str = "stable",
 ) -> DocumentRecord:
@@ -79,7 +78,6 @@ def _doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=datetime.now(timezone.utc),
         knowledge_state=knowledge_state,
-        active_run_id=active_run_id,
         active_snapshot_id=active_snapshot_id,
         lifecycle_status=lifecycle_status,
     )
@@ -104,21 +102,22 @@ class _InMemoryRegistry:
 
 def test_eligibility_publishes_snapshot_ids_for_workspace_scope(ctx):
     reg = _InMemoryRegistry([
-        _doc("doc-a", active_snapshot_id="snap-a", active_run_id="run-a"),
-        _doc("doc-b", active_snapshot_id="snap-b", active_run_id="run-b"),
+        _doc("doc-a", active_snapshot_id="snap-a"),
+        _doc("doc-b", active_snapshot_id="snap-b"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=WorkspaceScope(), registry=reg,
     )
     assert result.snapshot_ids == frozenset({"snap-a", "snap-b"})
-    # Legacy run-id companion still populated during the migration.
-    assert result.run_ids == frozenset({"run-a", "run-b"})
+    # Phase 9: legacy run-id companion is no longer populated from
+    # the document side; snapshot_ids is the source of truth.
+    assert result.run_ids == frozenset()
     assert not result.is_empty
 
 
 def test_eligibility_helper_name_alias_returns_same_shape(ctx):
     reg = _InMemoryRegistry([
-        _doc("doc-a", active_snapshot_id="snap-a", active_run_id="run-a"),
+        _doc("doc-a", active_snapshot_id="snap-a"),
     ])
     a = resolve_eligible_active_run_ids(
         ctx=ctx, scope=WorkspaceScope(), registry=reg,
@@ -134,7 +133,6 @@ def test_detached_document_is_not_visible(ctx):
         _doc(
             "doc-detached",
             active_snapshot_id="snap-x",
-            active_run_id="run-x",
             knowledge_state="detached",
         ),
     ])
@@ -149,7 +147,6 @@ def test_document_with_no_active_snapshot_and_no_run_is_not_visible(ctx):
         _doc(
             "doc-stuck",
             active_snapshot_id=None,
-            active_run_id=None,
         ),
     ])
     result = resolve_eligible_active_run_ids(
@@ -163,12 +160,10 @@ def test_active_scope_returns_only_documents_snapshot_id(ctx):
         _doc(
             "doc-keep",
             active_snapshot_id="snap-keep",
-            active_run_id="run-keep",
         ),
         _doc(
             "doc-other",
             active_snapshot_id="snap-other",
-            active_run_id="run-other",
         ),
     ])
     result = resolve_eligible_active_run_ids(
@@ -279,7 +274,7 @@ def test_source_registry_promotes_active_snapshot_id(workspace, ctx):
     denormalises the snapshot id onto the DocumentRecord so the
     eligibility filter can read it without a snapshot-store hit."""
     sources = JsonSourceRegistry(workspace)
-    sources.add(_doc("doc-1", active_run_id="run-1"))
+    sources.add(_doc("doc-1"))
 
     updated = sources.try_promote_active_snapshot_id(
         ctx, "doc-1", new_snapshot_id="snap-1",

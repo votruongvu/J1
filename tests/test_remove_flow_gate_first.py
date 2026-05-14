@@ -76,7 +76,7 @@ class _SpyCleanup:
         )
 
 
-def _make_doc(registry, ctx, *, document_id="doc-1", active_run_id="run-A"):
+def _make_doc(registry, ctx, *, document_id="doc-1", active_snapshot_id="run-A"):
     record = DocumentRecord(
         document_id=document_id,
         project=ctx,
@@ -88,7 +88,7 @@ def _make_doc(registry, ctx, *, document_id="doc-1", active_run_id="run-A"):
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state="attached",
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     )
     registry.add(record)
     return record
@@ -132,7 +132,7 @@ def test_remove_flips_lifecycle_to_removed_and_clears_active_run(
 
     final = service.remove(ctx, "doc-1", actor="op")
     assert final.knowledge_state == "removed"
-    assert final.active_run_id is None
+    assert final.active_snapshot_id is None
     assert final.lifecycle_status == "removed"
     assert final.removed_at is not None
     # Cleanup service was actually called.

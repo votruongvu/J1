@@ -51,7 +51,7 @@ from j1.profiles import DEFAULT_PROFILE_ID, ProfileLoader
 
 
 # Phase 8 test stub for the deleted SqliteSearchIndexer.
-class SqliteSearchIndexer:
+class DummySearchIndexer:
     kind = "null_indexer"
 
     def __init__(self, *_, **__):
@@ -78,7 +78,7 @@ def _now() -> datetime:
 
 @pytest.fixture
 def search_indexer(workspace, artifact_registry, registry):
-    return SqliteSearchIndexer(workspace, artifact_registry, registry)
+    return DummySearchIndexer(workspace, artifact_registry, registry)
 @pytest.fixture
 def feedback_store(workspace) -> JsonlFeedbackStore:
     return JsonlFeedbackStore(workspace)

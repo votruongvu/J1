@@ -101,14 +101,18 @@ def test_legacy_sqlite_env_flag_no_longer_does_anything(monkeypatch):
         assert not hasattr(sa, "_legacy_sqlite_enabled")
 
 
-def test_document_record_active_run_id_is_trace_only():
-    """Phase 8: ``active_run_id`` remains on ``DocumentRecord`` as
-    a trace-only audit field. Promotion does not write it and the
-    eligibility filter does not read it."""
+def test_document_record_active_run_id_is_deleted():
+    """Phase 9: ``active_run_id`` is REMOVED from ``DocumentRecord``.
+    ``active_snapshot_id`` is the canonical visibility key."""
+    import dataclasses
     from datetime import datetime, timezone
     from j1.documents.models import DocumentRecord
     from j1.jobs.status import ProcessingStatus
     from j1.projects.context import ProjectContext
+
+    fields = {f.name for f in dataclasses.fields(DocumentRecord)}
+    assert "active_run_id" not in fields
+    assert "active_snapshot_id" in fields
 
     doc = DocumentRecord(
         document_id="d-1",
@@ -118,9 +122,6 @@ def test_document_record_active_run_id_is_trace_only():
         status=ProcessingStatus.SUCCEEDED,
         created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
     )
-    # The field is present (trace-only) and defaults to None.
-    assert doc.active_run_id is None
-    # active_snapshot_id is the canonical visibility key.
     assert doc.active_snapshot_id is None
 
 

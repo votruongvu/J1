@@ -111,7 +111,7 @@ def _document(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id="r-1",
+        active_snapshot_id="r-1",
     )
 
 
@@ -263,7 +263,7 @@ def test_remove_disowns_document_and_clears_active_run(service, ctx):
 
     assert updated.knowledge_state == "removed"
     assert updated.removed_at == _NOW
-    assert updated.active_run_id is None  # cleared on remove
+    assert updated.active_snapshot_id is None  # cleared on remove
     a1 = artifacts.get(ctx, "a-1")
     assert a1.metadata["knowledge_state"] == "removed"
     assert audit.events[0]["action"] == "j1.document.removed"

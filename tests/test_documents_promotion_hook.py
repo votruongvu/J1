@@ -58,7 +58,7 @@ def _seed_document(
     registry, ctx: ProjectContext,
     *, document_id: str = "doc-1",
     state: str = "attached",
-    active_run_id: str | None = None,
+    active_snapshot_id: str | None = None,
 ) -> None:
     """Add a `DocumentRecord` to the project's documents.json."""
     registry.add(DocumentRecord(
@@ -72,7 +72,7 @@ def _seed_document(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     ))
 
 
@@ -121,7 +121,7 @@ def test_succeeded_run_becomes_documents_active_snapshot(
     promoted on the SNAPSHOT side. ``active_snapshot_id`` is the
     canonical visibility key; ``active_run_id`` is no longer
     written by the promotion path."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id=None)
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
     _seed_run(run_store, ctx, run_id="r-1", document_id="doc-1")
 
     _terminate(activities, ctx, "r-1", final_status="succeeded")
@@ -130,8 +130,8 @@ def test_succeeded_run_becomes_documents_active_snapshot(
     # Snapshot side promoted.
     assert doc.active_snapshot_id is not None
     assert doc.active_snapshot_id.startswith("snap_")
-    # Run side: not written by the promotion path.
-    assert doc.active_run_id is None
+    # Phase 9: ``active_run_id`` was deleted from the model;
+    # nothing on the run side to assert against.
 
 
 def test_succeeded_with_warnings_also_promotes(
@@ -139,7 +139,7 @@ def test_succeeded_with_warnings_also_promotes(
 ):
     """`succeeded` and `succeeded_with_warnings` are both usable
  results — both promote the snapshot."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id=None)
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
     _seed_run(run_store, ctx, run_id="r-1", document_id="doc-1")
 
     _terminate(
@@ -159,36 +159,36 @@ def test_failed_run_does_not_promote(
     """The load-bearing rule: a FAILED run leaves the document's
  active_run_id pointing at the previous good run. This is what
  makes "failed reindex doesn't clobber" true."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id="r-good")
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id="r-good")
     _seed_run(run_store, ctx, run_id="r-bad", document_id="doc-1")
 
     _terminate(activities, ctx, "r-bad", final_status="failed")
 
     # active_run_id stays pinned to the previous run.
-    assert registry.get(ctx, "doc-1").active_run_id == "r-good"
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-good"
 
 
 def test_cancelled_run_does_not_promote(
     activities, run_store, registry, ctx,
 ):
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id="r-good")
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id="r-good")
     _seed_run(run_store, ctx, run_id="r-cancel", document_id="doc-1")
 
     _terminate(activities, ctx, "r-cancel", final_status="cancelled")
 
-    assert registry.get(ctx, "doc-1").active_run_id == "r-good"
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-good"
 
 
 def test_timed_out_run_does_not_promote(
     activities, run_store, registry, ctx,
 ):
     """`timed_out` maps to FAILED internally — same no-promotion rule."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id="r-good")
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id="r-good")
     _seed_run(run_store, ctx, run_id="r-timeout", document_id="doc-1")
 
     _terminate(activities, ctx, "r-timeout", final_status="timed_out")
 
-    assert registry.get(ctx, "doc-1").active_run_id == "r-good"
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-good"
 
 
 # ---- Reindex flow contract --------------------------------------
@@ -199,7 +199,7 @@ def test_failed_reindex_preserves_previous_successful_active(
 ):
     """Phase 7: failed re-index doesn't replace the previously
     promoted snapshot."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id=None)
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
     # First run: succeeds and becomes active.
     _seed_run(run_store, ctx, run_id="r-initial", document_id="doc-1")
     _terminate(activities, ctx, "r-initial", final_status="succeeded")
@@ -216,7 +216,7 @@ def test_successful_reindex_promotes_to_new_active(
     activities, run_store, registry, ctx,
 ):
     """Phase 7: a SUCCESSFUL reindex flips the snapshot side."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id=None)
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
     _seed_run(run_store, ctx, run_id="r-old", document_id="doc-1")
     _terminate(activities, ctx, "r-old", final_status="succeeded")
     first_snapshot = registry.get(ctx, "doc-1").active_snapshot_id
@@ -265,7 +265,7 @@ def test_promotion_skips_removed_documents(
  silently bring the document back into retrieval."""
     _seed_document(
         registry, ctx, document_id="doc-1",
-        state="removed", active_run_id=None,
+        state="removed", active_snapshot_id=None,
     )
     _seed_run(run_store, ctx, run_id="r-late", document_id="doc-1")
 
@@ -273,7 +273,7 @@ def test_promotion_skips_removed_documents(
 
     # active_run_id stays None — removed documents have no usable
     # active result by definition.
-    assert registry.get(ctx, "doc-1").active_run_id is None
+    assert registry.get(ctx, "doc-1").active_snapshot_id is None
     assert registry.get(ctx, "doc-1").knowledge_state == "removed"
 
 
@@ -283,13 +283,13 @@ def test_promotion_idempotent_when_already_pointing_at_run(
     """Defensive: re-running the terminal hook for the same run
  (e.g. continue-as-new replays at a workflow boundary) shouldn't
  churn the document record."""
-    _seed_document(registry, ctx, document_id="doc-1", active_run_id="r-1")
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id="r-1")
     _seed_run(run_store, ctx, run_id="r-1", document_id="doc-1",
               status=RunStatus.SUCCEEDED)
 
     # Already active — second terminal-write shouldn't write again.
     _terminate(activities, ctx, "r-1", final_status="succeeded")
-    assert registry.get(ctx, "doc-1").active_run_id == "r-1"
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-1"
 
 
 def test_promotion_tolerates_missing_document(

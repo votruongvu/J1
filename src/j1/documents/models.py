@@ -45,7 +45,7 @@ KnowledgeState = Literal["attached", "detached", "removed"]
 # The eligibility resolver disqualifies any of the non-``stable``
 # states (see ``j1.query.eligibility._DISALLOWED_LIFECYCLE``) so a
 # document under cleanup CAN'T leak into queries even if a stale
-# ``active_run_id`` lingers during the transition.
+# ``active_snapshot_id`` lingers during the transition.
 LifecycleStatus = Literal[
     "stable", "removing", "removed", "cleanup_failed", "failed",
 ]
@@ -85,16 +85,6 @@ class DocumentRecord:
       Defaults to ``attached`` on read when missing on disk so
       pre-refactor documents remain visible to retrieval.
 
-    * ``active_run_id`` — the run whose result the document layer
-      considers "current usable". Selection rule lives in the
-      backfill helper (`select_active_run_id` in
-      `j1.documents.lifecycle`):
-        1. latest succeeded run, else
-        2. latest failed run with a compile checkpoint, else
-        3. latest run by ``created_at``.
-      ``None`` when the document has no terminal runs yet (e.g.
-      just uploaded, ingestion still queued).
-
     * ``latest_version_id`` — pointer to the most recent
       ``DocumentVersion`` for this document. ``None`` for legacy
       records until the backfill creates an initial version.
@@ -122,21 +112,14 @@ class DocumentRecord:
     removed_at: datetime | None = None
     updated_at: datetime | None = None
 
-    # ---- Snapshot-centered visibility (Phase 8) -------------------
+    # ---- Snapshot-centered visibility (Phase 9) -------------------
     # ``active_snapshot_id`` is the ONLY active knowledge pointer.
-    # Phase 8 deleted the legacy ``active_run_id`` field — reset +
-    # re-ingest is the only supported migration path.
-    # ``None`` means the document has no promoted snapshot yet.
+    # ``active_run_id`` was DELETED in Phase 9 — reset + re-ingest
+    # is the only supported migration path. Execution trace is
+    # available via ``IngestionRun.run_id`` (the run that produced
+    # the active snapshot lives in
+    # ``DocumentSnapshot.created_by_run_id``).
     active_snapshot_id: str | None = None
-
-    # Phase 8 trace-only audit shim. Read-only diagnostic surface
-    # exposed by some projector/DTO paths so dashboards keep
-    # rendering. NEVER written by promotion or eligibility, NEVER
-    # used for visibility, cleanup, or storage. Phase 9 deletes
-    # this once every dashboard has migrated to displaying
-    # snapshot-side lineage (``created_by_run_id`` on the active
-    # snapshot record).
-    active_run_id: str | None = None
 
     # ---- Lifecycle + operation-lock fields -----------------------
     # ``lifecycle_status`` is the operational state (see literal

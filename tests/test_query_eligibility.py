@@ -40,16 +40,9 @@ def _doc(
     ctx: ProjectContext,
     document_id: str = "doc-1",
     state: str = "attached",
-    active_run_id: str | None = "r-1",
-    active_snapshot_id: str | None = None,
+    active_snapshot_id: str | None = "r-1",
     lifecycle: str | None = None,
 ) -> DocumentRecord:
-    # Phase 3 retry: ``active_snapshot_id`` is the visibility key.
-    # Test helper synthesises one from the run id when the caller
-    # doesn't supply one so existing tests written against
-    # ``active_run_id`` keep working.
-    if active_snapshot_id is None and active_run_id is not None:
-        active_snapshot_id = f"snap-from-{active_run_id}"
     doc = DocumentRecord(
         document_id=document_id,
         project=ctx,
@@ -61,7 +54,6 @@ def _doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
         active_snapshot_id=active_snapshot_id,
     )
     # ``lifecycle_status`` field is being added in a subsequent
@@ -76,31 +68,31 @@ def _doc(
 # ---- WorkspaceScope ----------------------------------------------
 
 
-def test_workspace_scope_unions_eligible_active_runs(ctx):
+def test_workspace_scope_unions_eligible_active_snapshots(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id="r1"),
-        _doc(ctx=ctx, document_id="d2", active_run_id="r2"),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
+        _doc(ctx=ctx, document_id="d2", active_snapshot_id="r2"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=WorkspaceScope(), registry=registry,
     )
-    assert result.run_ids == frozenset({"r1", "r2"})
+    assert result.snapshot_ids == frozenset({"r1", "r2"})
     assert result.document_ids == frozenset({"d1", "d2"})
 
 
 def test_workspace_scope_drops_detached_and_removed(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id="r1"),
-        _doc(ctx=ctx, document_id="d2", state="detached", active_run_id="r2"),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
+        _doc(ctx=ctx, document_id="d2", state="detached", active_snapshot_id="r2"),
         _doc(
             ctx=ctx, document_id="d3",
-            active_run_id="r3", lifecycle="removing",
+            active_snapshot_id="r3", lifecycle="removing",
         ),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=WorkspaceScope(), registry=registry,
     )
-    assert result.run_ids == frozenset({"r1"})
+    assert result.snapshot_ids == frozenset({"r1"})
 
 
 def test_workspace_scope_empty_project_returns_empty(ctx):
@@ -109,40 +101,40 @@ def test_workspace_scope_empty_project_returns_empty(ctx):
         ctx=ctx, scope=WorkspaceScope(), registry=registry,
     )
     assert result.is_empty
-    assert result.run_ids == frozenset()
+    assert result.snapshot_ids == frozenset()
 
 
 # ---- ActiveScope -------------------------------------------------
 
 
-def test_active_scope_returns_active_run_for_eligible_doc(ctx):
+def test_active_scope_returns_active_snapshot_for_eligible_doc(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id="r1"),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=ActiveScope(document_id="d1"), registry=registry,
     )
-    assert result.run_ids == frozenset({"r1"})
+    assert result.snapshot_ids == frozenset({"r1"})
 
 
 def test_active_scope_returns_empty_when_detached(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", state="detached", active_run_id="r1"),
+        _doc(ctx=ctx, document_id="d1", state="detached", active_snapshot_id="r1"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=ActiveScope(document_id="d1"), registry=registry,
     )
-    assert result.run_ids == frozenset()
+    assert result.snapshot_ids == frozenset()
 
 
-def test_active_scope_returns_empty_when_no_active_run(ctx):
+def test_active_scope_returns_empty_when_no_active_snapshot(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id=None),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id=None),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=ActiveScope(document_id="d1"), registry=registry,
     )
-    assert result.run_ids == frozenset()
+    assert result.snapshot_ids == frozenset()
 
 
 def test_active_scope_unknown_document_returns_empty(ctx):
@@ -150,44 +142,35 @@ def test_active_scope_unknown_document_returns_empty(ctx):
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=ActiveScope(document_id="ghost"), registry=registry,
     )
-    assert result.run_ids == frozenset()
+    assert result.snapshot_ids == frozenset()
 
 
 # ---- RunScope ----------------------------------------------------
+# Phase 9: gated RunScope no longer maps to a document (documents
+# expose only ``active_snapshot_id``). The gated path returns empty
+# — operators must use ``unchecked=True`` for diagnostic run
+# scoping. These tests pin that contract.
 
 
-def test_run_scope_passes_when_run_points_at_eligible_doc(ctx):
+def test_gated_run_scope_returns_empty(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id="r1"),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=RunScope(run_id="r1"), registry=registry,
     )
-    assert result.run_ids == frozenset({"r1"})
-
-
-def test_run_scope_rejects_when_owning_doc_removed(ctx):
-    registry = _StubRegistry([
-        _doc(
-            ctx=ctx, document_id="d1",
-            active_run_id="r1", lifecycle="removed",
-        ),
-    ])
-    result = resolve_eligible_active_run_ids(
-        ctx=ctx, scope=RunScope(run_id="r1"), registry=registry,
-    )
+    assert result.snapshot_ids == frozenset()
     assert result.run_ids == frozenset()
 
 
-def test_run_scope_rejects_when_no_doc_owns_run(ctx):
-    """Superseded / candidate runs no longer point at any active
-    document — the gated path returns empty so leaks stay closed."""
+def test_gated_run_scope_empty_when_no_doc_owns_run(ctx):
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id="r-promoted"),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r-promoted"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=RunScope(run_id="r-superseded"), registry=registry,
     )
+    assert result.snapshot_ids == frozenset()
     assert result.run_ids == frozenset()
 
 
@@ -214,7 +197,7 @@ def test_unchecked_with_active_or_workspace_returns_empty(ctx):
     scopes return empty so the operator either fixes the scope or
     accepts zero results."""
     registry = _StubRegistry([
-        _doc(ctx=ctx, document_id="d1", active_run_id="r1"),
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx,

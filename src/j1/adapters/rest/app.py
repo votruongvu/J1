@@ -490,6 +490,31 @@ def create_rest_api(
         except Exception:  # noqa: BLE001 — best-effort
             return None
 
+    def _latest_succeeded_run_id(
+        ctx: ProjectContext, document_id: str,
+    ) -> str | None:
+        """Phase 9: derive the previous-active run_id from the runs
+        store. Documents no longer carry ``active_run_id``; the
+        canonical visibility key is ``active_snapshot_id`` on the
+        document and ``created_by_run_id`` on the snapshot. For
+        reindex / refresh-enrich the previous-run lookup just needs
+        the most recent succeeded run, which the projector's
+        ``_find_active_run`` already computes the same way.
+        """
+        store = _require_run_store()
+        prior = store.list_runs(ctx, document_id=document_id)
+        sorted_runs = sorted(
+            prior,
+            key=lambda r: (r.started_at, r.updated_at),
+            reverse=True,
+        )
+        for r in sorted_runs:
+            if r.status in (
+                RunStatus.SUCCEEDED, RunStatus.SUCCEEDED_WITH_WARNINGS,
+            ):
+                return r.run_id
+        return None
+
     policy = SecurityPolicy(
         authenticator=authenticator,
         anonymous_paths=(
@@ -2097,7 +2122,7 @@ def create_rest_api(
         return {
             "documentId": record.document_id,
             "knowledgeState": record.knowledge_state,
-            "activeRunId": record.active_run_id,
+            "activeSnapshotId": record.active_snapshot_id,
             "latestVersionId": record.latest_version_id,
             "removedAt": (
                 record.removed_at.isoformat() if record.removed_at else None
@@ -2353,9 +2378,31 @@ def create_rest_api(
             raise HTTPException(
                 404, f"document {document_id!r} not found",
             )
-        active_run_id = getattr(doc_dto, "active_run_id", None)
+        # Phase 9: ``active_run_id`` was deleted from the document
+        # contract. The in-flight guard inspects every run on this
+        # document (not just the historically-active one) so a
+        # mid-flight reindex can't kick off a second concurrent
+        # attempt. Settings inheritance pulls from the latest
+        # succeeded run.
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        all_runs = store.list_runs(ctx, document_id=document_id)
+        in_flight = next(
+            (r for r in all_runs if str(r.status) in active_states),
+            None,
+        )
+        if in_flight is not None:
+            raise HTTPException(
+                409,
+                f"previous run {in_flight.run_id!r} is currently "
+                f"{in_flight.status} — cancel it before "
+                "starting a reindex",
+            )
+        active_run_id = _latest_succeeded_run_id(ctx, document_id)
 
-        # Inherit settings from the previous active run when one
+        # Inherit settings from the latest succeeded run when one
         # exists. New documents (no prior run) get the deployment
         # defaults — same fallback chain as the upload flow.
         previous_meta: dict[str, Any] = {}
@@ -2363,20 +2410,6 @@ def create_rest_api(
         if active_run_id:
             previous = store.get(ctx, active_run_id)
             if previous is not None:
-                # Same active-state guard the run-level full-reindex
-                # uses: don't kick off a new attempt while the
-                # previous workflow might still be writing artifacts.
-                active_states = {
-                    RunStatus.RUNNING.value, RunStatus.PAUSED.value,
-                    RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
-                }
-                if str(previous.status) in active_states:
-                    raise HTTPException(
-                        409,
-                        f"previous run {active_run_id!r} is currently "
-                        f"{previous.status} — cancel it before "
-                        "starting a reindex",
-                    )
                 previous_meta = dict(previous.metadata or {})
                 previous_version_id = previous.document_version_id
 
@@ -2535,7 +2568,10 @@ def create_rest_api(
             raise HTTPException(
                 404, f"document {document_id!r} not found",
             )
-        active_run_id = getattr(doc_dto, "active_run_id", None)
+        # Phase 9: ``active_run_id`` was deleted from the document
+        # contract. Derive the previous-active run from the runs
+        # store (latest succeeded run).
+        active_run_id = _latest_succeeded_run_id(ctx, document_id)
         if not active_run_id:
             # Nothing to reuse — caller must run a full reindex
             # first. 409 (state conflict) rather than 400 (bad
@@ -2688,7 +2724,7 @@ def create_rest_api(
             "documentId": dto.document_id,
             "displayName": dto.display_name,
             "knowledgeState": dto.knowledge_state,
-            "activeRunId": dto.active_run_id,
+            "activeSnapshotId": dto.active_snapshot_id,
             "latestVersionId": dto.latest_version_id,
             "createdAt": dto.created_at.isoformat() if dto.created_at else None,
             "updatedAt": dto.updated_at.isoformat() if dto.updated_at else None,
@@ -2707,7 +2743,7 @@ def create_rest_api(
             "documentId": dto.document_id,
             "displayName": dto.display_name,
             "knowledgeState": dto.knowledge_state,
-            "activeRunId": dto.active_run_id,
+            "activeSnapshotId": dto.active_snapshot_id,
             "latestVersionId": dto.latest_version_id,
             "createdAt": dto.created_at.isoformat() if dto.created_at else None,
             "updatedAt": dto.updated_at.isoformat() if dto.updated_at else None,

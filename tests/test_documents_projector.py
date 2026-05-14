@@ -42,7 +42,7 @@ _NOW = datetime(2026, 5, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 def _doc(
     *, state: str = "attached",
-    active_run_id: str | None = "r-1",
+    active_snapshot_id: str | None = "r-1",
     removed_at: datetime | None = None,
 ) -> DocumentRecord:
     return DocumentRecord(
@@ -56,7 +56,7 @@ def _doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
         latest_version_id="dv-1",
         removed_at=removed_at,
         updated_at=_NOW,
@@ -142,7 +142,7 @@ def test_attached_document_without_active_run_omits_resume():
     """A document with no active run yet (just uploaded, first
  ingestion still queued) can't offer resume."""
     actions = compute_available_actions(
-        document=_doc(state="attached", active_run_id=None),
+        document=_doc(state="attached", active_snapshot_id=None),
         active_run=None,
     )
     assert actions == ("view", "reindex", "detach", "remove")
@@ -181,7 +181,7 @@ def test_removed_document_offers_only_view():
  the FE's normal list excludes removed docs entirely; the
  admin/history view uses the view action to surface them."""
     actions = compute_available_actions(
-        document=_doc(state="removed", active_run_id=None,
+        document=_doc(state="removed", active_snapshot_id=None,
                       removed_at=_NOW),
         active_run=None,
     )
@@ -193,7 +193,7 @@ def test_removed_document_with_residual_active_run_still_only_offers_view():
  succeeded active_run pointing somewhere (data quirk), the
  actions must stay restricted to view."""
     actions = compute_available_actions(
-        document=_doc(state="removed", active_run_id="r-1",
+        document=_doc(state="removed", active_snapshot_id="r-1",
                       removed_at=_NOW),
         active_run=_run(status=RunStatus.SUCCEEDED),
     )
@@ -211,18 +211,18 @@ def test_summary_includes_active_run_status_in_result_summary():
     assert dto.current_result_summary.status == "succeeded"
     assert dto.display_name == "bridge.pdf"
     assert dto.knowledge_state == "attached"
-    assert dto.active_run_id == "r-1"
+    assert dto.active_snapshot_id == "r-1"
 
 
 def test_summary_returns_none_status_when_no_active_run():
     """Uploaded but unprocessed doc: status="none" so the FE shows
  "not yet processed" rather than a misleading empty badge."""
     dto = project_document_summary(
-        document=_doc(active_run_id=None),
+        document=_doc(active_snapshot_id=None),
         runs=[],
     )
     assert dto.current_result_summary.status == "none"
-    assert dto.active_run_id is None
+    assert dto.active_snapshot_id is None
 
 
 def test_summary_caps_run_history_to_three_most_recent():
@@ -233,7 +233,7 @@ def test_summary_caps_run_history_to_three_most_recent():
         for i in range(10)
     ]
     dto = project_document_summary(
-        document=_doc(active_run_id="r-9"), runs=runs,
+        document=_doc(active_snapshot_id="r-9"), runs=runs,
     )
     assert len(dto.run_history_summary) == 3
     # Most recent first.
@@ -248,19 +248,19 @@ def test_summary_marks_active_run_in_history():
         _run(run_id="r-2", started_at=_NOW + timedelta(minutes=1)),
     ]
     dto = project_document_summary(
-        document=_doc(active_run_id="r-2"), runs=runs,
+        document=_doc(active_snapshot_id="r-2"), runs=runs,
     )
     active_rows = [r for r in dto.run_history_summary if r.is_active]
     assert len(active_rows) == 1
     assert active_rows[0].run_id == "r-2"
 
 
-def test_summary_handles_active_run_id_pointing_to_unknown_run():
-    """Defensive: if `active_run_id` references a run that's not
- in the list (data corruption, race condition), the projector
- falls back to status="none" rather than raising."""
+def test_summary_falls_back_to_none_when_no_active_snapshot():
+    """Phase 9: without an active_snapshot_id, the projector
+ doesn't surface a current result — even when a succeeded run
+ exists. The snapshot pointer is the visibility gate."""
     dto = project_document_summary(
-        document=_doc(active_run_id="r-ghost"),
+        document=_doc(active_snapshot_id=None),
         runs=[_run(run_id="r-1")],
     )
     assert dto.current_result_summary.status == "none"
@@ -277,7 +277,7 @@ def test_summary_includes_step_statuses_from_run_metadata():
         "validate": {"status": "failed"},
     }
     dto = project_document_summary(
-        document=_doc(active_run_id="r-1"), runs=[run],
+        document=_doc(active_snapshot_id="r-1"), runs=[run],
     )
     assert dto.current_result_summary.compile_status == "completed"
     assert dto.current_result_summary.enrichment_status == "completed"
@@ -292,7 +292,7 @@ def test_detail_returns_full_history_not_capped():
     runs = [_run(run_id=f"r-{i}", started_at=_NOW + timedelta(minutes=i))
             for i in range(10)]
     dto = project_document_detail(
-        document=_doc(active_run_id="r-9"), runs=runs,
+        document=_doc(active_snapshot_id="r-9"), runs=runs,
     )
     assert len(dto.run_history) == 10
     # Still most-recent-first.
@@ -319,7 +319,7 @@ def test_project_run_history_returns_sorted_compact_rows():
         _run(run_id="r-2", started_at=_NOW + timedelta(hours=1)),
     ]
     history = project_run_history(
-        document=_doc(active_run_id="r-2"), runs=runs,
+        document=_doc(active_snapshot_id="r-2"), runs=runs,
     )
     assert [h.run_id for h in history] == ["r-2", "r-1"]
     assert history[0].is_active is True
@@ -328,6 +328,6 @@ def test_project_run_history_returns_sorted_compact_rows():
 
 def test_project_run_history_returns_empty_for_unprocessed_document():
     history = project_run_history(
-        document=_doc(active_run_id=None), runs=[],
+        document=_doc(active_snapshot_id=None), runs=[],
     )
     assert history == ()

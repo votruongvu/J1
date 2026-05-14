@@ -217,7 +217,7 @@ def test_promotion_writes_only_active_snapshot_id(workspace, ctx, registry):
     )
     doc = registry.get(ctx, "doc-7")
     assert doc.active_snapshot_id is not None
-    assert doc.active_run_id is None  # Phase 7: not written.
+    # Phase 9: ``active_run_id`` field is deleted from the model.
 
 
 # ---- KnowledgeProcessingActivities threads snapshot_id ---------

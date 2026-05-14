@@ -42,7 +42,6 @@ def _doc(
     document_id="d-1",
     *,
     active_snapshot_id="snap-1",
-    active_run_id="run-1",
     knowledge_state="attached",
     lifecycle_status="stable",
 ):
@@ -57,7 +56,6 @@ def _doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=datetime.now(timezone.utc),
         knowledge_state=knowledge_state,
-        active_run_id=active_run_id,
         active_snapshot_id=active_snapshot_id,
         lifecycle_status=lifecycle_status,
     )
@@ -123,7 +121,7 @@ def test_search_service_filters_by_active_snapshot_allowlist(ctx):
     )]
     adapter, backend = _adapter_returning(hits)
     registry = _InMemoryRegistry([
-        _doc(active_snapshot_id="snap-1", active_run_id="run-1"),
+        _doc(active_snapshot_id="snap-1"),
     ])
     svc = SearchService(adapter, registry)
     out = svc.search(ctx, "hello")
@@ -141,7 +139,7 @@ def test_search_service_returns_empty_when_no_active_snapshot(ctx):
 
     adapter, backend = _adapter_returning([])
     registry = _InMemoryRegistry([
-        _doc(active_snapshot_id=None, active_run_id="run-1"),
+        _doc(active_snapshot_id=None),
     ])
     svc = SearchService(adapter, registry)
     out = svc.search(ctx, "hello")
@@ -174,7 +172,7 @@ def test_search_service_only_passes_active_snapshots_to_adapter(ctx):
     adapter, backend = _adapter_returning([])
     registry = _InMemoryRegistry([
         _doc("d-1", active_snapshot_id="snap-1"),
-        _doc("d-2", active_snapshot_id=None, active_run_id="run-2"),
+        _doc("d-2", active_snapshot_id=None),
         _doc("d-3", active_snapshot_id="snap-3", knowledge_state="detached"),
         _doc("d-4", active_snapshot_id="snap-4"),
     ])

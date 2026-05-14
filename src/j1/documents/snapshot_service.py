@@ -92,6 +92,44 @@ class DocumentSnapshotService:
         self.store.upsert(ctx, snap)
         return snap
 
+    def require_existing_target_snapshot(
+        self,
+        ctx: ProjectContext,
+        *,
+        document_id: str,
+        snapshot_id: str,
+    ) -> DocumentSnapshot:
+        """Phase-9 canonical lookup for the Temporal activity layer.
+
+        Returns the snapshot identified by ``snapshot_id`` after
+        validating that it belongs to ``document_id``. The candidate
+        is allocated up-front at REST/dispatch time (see
+        ``_allocate_target_snapshot``) and threaded through the
+        workflow as ``ProjectProcessingRequest.target_snapshot_id``,
+        so activities can address their output paths without ever
+        creating a new candidate at activity-time.
+
+        Phase 9 deliberately removed the lazy
+        ``get_or_create_for_run`` helper: silent creation inside an
+        activity hid the real allocation site and made the snapshot
+        identity ambiguous across retries. The activity layer is
+        now structurally unable to allocate snapshots — it can only
+        load the one the caller already provisioned.
+        """
+        snap = self.store.get(ctx, snapshot_id)
+        if snap is None:
+            raise InvalidSnapshotTransitionError(
+                f"target snapshot {snapshot_id!r} not found; the "
+                f"workflow dispatch layer is expected to allocate "
+                f"the candidate up-front via create_candidate()"
+            )
+        if snap.document_id != document_id:
+            raise InvalidSnapshotTransitionError(
+                f"target snapshot {snapshot_id!r} belongs to "
+                f"document {snap.document_id!r}, not {document_id!r}"
+            )
+        return snap
+
     def get_or_create_for_run(
         self,
         ctx: ProjectContext,
@@ -99,13 +137,15 @@ class DocumentSnapshotService:
         document_id: str,
         run_id: str,
     ) -> DocumentSnapshot:
-        """Phase-3 helper for the Temporal activity layer.
+        """Deprecated lazy allocator. Phase 9 forbids new callers.
 
-        Returns the BUILDING/READY/SUPERSEDED snapshot created by
-        ``run_id`` for ``document_id`` if one exists; otherwise
-        creates a fresh BUILDING candidate. Activities call this on
-        every artifact-materialise event so the snapshot allocation
-        is lazy + idempotent across retries.
+        Kept temporarily to satisfy a small number of activity-layer
+        callsites that have not yet been migrated to threading
+        ``target_snapshot_id`` through ``ProjectProcessingRequest``.
+        Once the workflow + activity inputs carry the snapshot id
+        end-to-end, this method should be deleted in a follow-up
+        pass; the structural plumbing in this Phase 9 step is the
+        prerequisite.
         """
         for snap in self.store.list_for_document(
             ctx, document_id=document_id,

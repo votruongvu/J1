@@ -83,7 +83,7 @@ def _seed_doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id="r-1",
+        active_snapshot_id="r-1",
     ))
 
 

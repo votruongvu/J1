@@ -1,26 +1,26 @@
-"""Active-run eligibility resolver.
+"""Active-snapshot eligibility resolver.
 
 Single source of query visibility. Every retrieval path that wants
 to surface document-backed knowledge MUST resolve the set of
-eligible active ``run_id`` values through this module first, then
-filter chunks / vector / graph / index rows by ``run_id IN
+eligible active ``snapshot_id`` values through this module first,
+then filter evidence / vector / graph rows by ``snapshot_id IN
 <eligible_set>``.
 
-Rationale (dev-mode refactor): queries must never use
-``document_id`` alone. The structural invariant is:
+Phase 9 invariant (queries MUST NOT use ``document_id`` alone, and
+``active_run_id`` no longer exists on document records):
 
   eligible = {
-      doc.active_run_id
+      doc.active_snapshot_id
       for doc in documents(ctx)
       if doc.knowledge_state == "attached"
-         and doc.active_run_id is not None
+         and doc.active_snapshot_id is not None
          and doc.lifecycle_status not in {"removing", "removed",
                                           "failed", "cleanup_failed"}
   }
 
 Returning an empty set is a legitimate "nothing is queryable
 right now" answer (e.g. an empty project, or every document
-detached). Callers translate that into ``WHERE 1=0`` so BM25
+detached). Callers translate that into ``WHERE 1=0`` so FTS
 ranking sees zero rows.
 """
 
@@ -66,9 +66,8 @@ class EligibilityResult:
 
     @property
     def is_empty(self) -> bool:
-        # The snapshot side is now the source of truth. A query
-        # with no eligible snapshots is unrunnable even when a
-        # legacy ``active_run_id`` exists.
+        # The snapshot side is the source of truth. A query with
+        # no eligible snapshots is unrunnable.
         return not self.snapshot_ids
 
 
@@ -79,27 +78,24 @@ def resolve_eligible_active_run_ids(
     registry: SourceRegistry,
     unchecked: bool = False,
 ) -> EligibilityResult:
-    """Return the set of run_ids that may participate in a query.
+    """Return the eligibility set for a query.
 
     ``unchecked=True`` is the explicit escape hatch the validation
     surface uses when ``validation_scope="run"`` — operators
     intentionally querying a specific run (including failed /
     superseded / detached / removed) for diagnostic reasons. In
-    that case the supplied scope's ``run_id`` is returned without
-    the document-state check.
+    that case the supplied scope's ``run_id`` is returned in
+    ``run_ids`` without the document-state check.
 
-    For the regular (gated) path:
+    For the regular (gated) path the result is snapshot-centered:
 
-      * ``RunScope(run_id)`` — return ``{run_id}`` if the run
-        belongs to an eligible document; empty otherwise.
       * ``ActiveScope(document_id)`` — return
-        ``{doc.active_run_id}`` if that document is eligible;
-        empty otherwise.
-      * ``WorkspaceScope`` — return the union of every eligible
-        document's ``active_run_id``.
-
-    The structural rules in the module docstring are the only
-    way a run becomes eligible.
+        ``snapshot_ids={doc.active_snapshot_id}`` if eligible.
+      * ``WorkspaceScope`` — union of every eligible document's
+        ``active_snapshot_id``.
+      * ``RunScope(run_id)`` — empty in the gated path (Phase 9
+        removed the run_id-based reverse lookup; use
+        ``unchecked=True`` for diagnostic run scoping).
     """
     if unchecked:
         if isinstance(scope, RunScope):
@@ -140,22 +136,15 @@ def _resolve_workspace_scope(
 ) -> EligibilityResult:
     docs = registry.list_documents(ctx)
     eligible_snaps: set[str] = set()
-    eligible_runs: set[str] = set()
     eligible_docs: set[str] = set()
     for doc in docs:
         if not _is_document_eligible(doc):
             continue
         eligible_docs.add(doc.document_id)
         eligible_snaps.add(doc.active_snapshot_id)
-        # Legacy companion: SQLite-FTS code paths that still filter
-        # by ``run_id`` keep working when ``active_run_id`` is also
-        # set. NEW eligible documents always have ``active_snapshot_id``
-        # — the fallback only fires for pre-Phase-3 reads.
-        if getattr(doc, "active_run_id", None):
-            eligible_runs.add(doc.active_run_id)
     return EligibilityResult(
         snapshot_ids=frozenset(eligible_snaps),
-        run_ids=frozenset(eligible_runs),
+        run_ids=frozenset(),
         document_ids=frozenset(eligible_docs),
     )
 
@@ -179,11 +168,7 @@ def _resolve_active_scope(
         )
     return EligibilityResult(
         snapshot_ids=frozenset({doc.active_snapshot_id}),
-        run_ids=(
-            frozenset({doc.active_run_id})
-            if getattr(doc, "active_run_id", None)
-            else frozenset()
-        ),
+        run_ids=frozenset(),
         document_ids=frozenset({doc.document_id}),
     )
 
@@ -191,31 +176,16 @@ def _resolve_active_scope(
 def _resolve_run_scope(
     ctx: ProjectContext, run_id: str, registry: SourceRegistry,
 ) -> EligibilityResult:
-    """RunScope is the most precise scope: the caller already
-    knows the run_id. We still check that the owning document is
-    eligible — otherwise queries against an explicit run_id of a
-    removed document would leak.
+    """RunScope in the gated path is unreachable after Phase 9.
 
-    Snapshot-id companion: when the matched document has an
-    ``active_snapshot_id``, the result carries it in
-    ``snapshot_ids``. New code paths read this set; legacy paths
-    still see the run_id in ``run_ids``.
+    Documents no longer carry ``active_run_id``; visibility is
+    snapshot-centered. Callers that want a specific run_id must
+    use ``unchecked=True`` (the validation-diagnostic path).
+    Returning empty here is fail-closed: the gated path can't
+    derive owning-document eligibility from a bare run_id without
+    walking the snapshot store, and we deliberately don't do that
+    (snapshot scope is the supported route).
     """
-    docs = registry.list_documents(ctx)
-    for doc in docs:
-        if doc.active_run_id == run_id:
-            if _is_document_eligible(doc):
-                return EligibilityResult(
-                    snapshot_ids=frozenset({doc.active_snapshot_id}),
-                    run_ids=frozenset({run_id}),
-                    document_ids=frozenset({doc.document_id}),
-                )
-            return EligibilityResult(
-                snapshot_ids=frozenset(),
-                run_ids=frozenset(),
-                document_ids=frozenset({doc.document_id}),
-            )
-    # Run id supplied but no document currently points at it.
     return EligibilityResult(
         snapshot_ids=frozenset(),
         run_ids=frozenset(),

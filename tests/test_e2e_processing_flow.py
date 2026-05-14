@@ -64,7 +64,7 @@ from j1 import (
 
 
 # Phase 8 test stub for the deleted SqliteSearchIndexer.
-class SqliteSearchIndexer:
+class DummySearchIndexer:
     kind = "null_indexer"
 
     def __init__(self, *_, **__):
@@ -373,7 +373,7 @@ def test_end_to_end_processing_flow(tmp_path: Path, monkeypatch):
     )
 
     # ---------- 7. Run mock search indexing ----------
-    indexer = SqliteSearchIndexer(
+    indexer = DummySearchIndexer(
         env.workspace, env.artifact_registry, env.source_registry,
     )
     index_result = indexer.index(ctx, all_artifact_ids)

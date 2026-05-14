@@ -116,7 +116,7 @@ def _headers(ctx):
 
 def _seed_doc(
     registry, ctx, *, document_id: str, state: str = "attached",
-    active_run_id: str | None = None,
+    active_snapshot_id: str | None = None,
 ):
     registry.add(DocumentRecord(
         document_id=document_id,
@@ -129,7 +129,7 @@ def _seed_doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     ))
 
 
@@ -159,7 +159,7 @@ def _seed_run(
 def test_reindex_creates_new_run_under_same_document(
     client, registry, run_store, started_jobs, ctx,
 ):
-    _seed_doc(registry, ctx, document_id="doc-1", active_run_id="r-prev")
+    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-prev")
     _seed_run(run_store, ctx, run_id="r-prev", document_id="doc-1")
 
     resp = client.post(
@@ -189,13 +189,13 @@ def test_reindex_does_not_clobber_previous_active_run_id_immediately(
     """Dispatch only — `active_run_id` stays pinned to the previous
  active. The promotion happens later when the new run reaches a
  terminal state (tested in `test_documents_promotion_hook`)."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_run_id="r-prev")
+    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-prev")
     _seed_run(run_store, ctx, run_id="r-prev", document_id="doc-1")
 
     client.post("/documents/doc-1/reindex", headers=_headers(ctx))
 
     # Document's active_run_id is unchanged.
-    assert registry.get(ctx, "doc-1").active_run_id == "r-prev"
+    assert registry.get(ctx, "doc-1").active_snapshot_id == "r-prev"
 
 
 def test_reindex_inherits_settings_from_previous_run(
@@ -203,7 +203,7 @@ def test_reindex_inherits_settings_from_previous_run(
 ):
     """Re-index should repeat with the same recipe — policy + mode
  inherited from the previous active run's metadata."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_run_id="r-prev")
+    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-prev")
     _seed_run(
         run_store, ctx, run_id="r-prev", document_id="doc-1",
         metadata={"policy": "aggressive", "mode": "ENRICHED"},
@@ -226,7 +226,7 @@ def test_reindex_for_document_without_prior_run(
     """A document with no active run yet (just uploaded?) can still
  be re-indexed. parent_run_id ends up None; the new run uses
  deployment defaults for settings."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_run_id=None)
+    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id=None)
 
     resp = client.post(
         "/documents/doc-1/reindex", headers=_headers(ctx),
@@ -245,7 +245,7 @@ def test_reindex_for_document_without_prior_run(
 def test_reindex_returns_409_on_detached_document(client, registry, ctx):
     _seed_doc(
         registry, ctx, document_id="doc-1",
-        state="detached", active_run_id="r-prev",
+        state="detached", active_snapshot_id="r-prev",
     )
     resp = client.post(
         "/documents/doc-1/reindex", headers=_headers(ctx),
@@ -257,7 +257,7 @@ def test_reindex_returns_409_on_detached_document(client, registry, ctx):
 def test_reindex_returns_409_on_removed_document(client, registry, ctx):
     _seed_doc(
         registry, ctx, document_id="doc-1",
-        state="removed", active_run_id=None,
+        state="removed", active_snapshot_id=None,
     )
     resp = client.post(
         "/documents/doc-1/reindex", headers=_headers(ctx),
@@ -279,7 +279,7 @@ def test_reindex_returns_409_when_previous_run_is_still_active(
     """If the previous active run is still running / paused, refuse
  to start a reindex — can't have two attempts writing artifacts
  for the same document concurrently."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_run_id="r-running")
+    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-running")
     _seed_run(
         run_store, ctx, run_id="r-running", document_id="doc-1",
         status=RunStatus.RUNNING,

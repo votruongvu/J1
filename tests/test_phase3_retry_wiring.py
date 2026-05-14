@@ -58,7 +58,6 @@ class _InMemoryRegistry:
 def _doc(
     document_id: str = "doc-1",
     *,
-    active_run_id=None,
     active_snapshot_id=None,
     knowledge_state="attached",
     lifecycle_status="stable",
@@ -74,7 +73,6 @@ def _doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=datetime.now(timezone.utc),
         knowledge_state=knowledge_state,
-        active_run_id=active_run_id,
         active_snapshot_id=active_snapshot_id,
         lifecycle_status=lifecycle_status,
     )
@@ -86,9 +84,9 @@ def test_eligibility_requires_active_snapshot_id_only(ctx):
     and re-ingest after the cutover."""
     reg = _InMemoryRegistry([
         # Pre-Phase-3 data: only run_id set.
-        _doc("doc-legacy", active_run_id="run-legacy"),
+        _doc("doc-legacy"),
         # Phase-3 data: snapshot set.
-        _doc("doc-new", active_snapshot_id="snap-new", active_run_id="run-new"),
+        _doc("doc-new", active_snapshot_id="snap-new"),
     ])
     result = resolve_eligible_active_run_ids(
         ctx=ctx, scope=WorkspaceScope(), registry=reg,
@@ -96,14 +94,14 @@ def test_eligibility_requires_active_snapshot_id_only(ctx):
     # Only the Phase-3 document is visible.
     assert result.snapshot_ids == frozenset({"snap-new"})
     assert result.document_ids == frozenset({"doc-new"})
-    # Legacy run_id is in the companion set ONLY when the doc has
-    # an active_snapshot_id (i.e. it's already a Phase-3 doc).
-    assert result.run_ids == frozenset({"run-new"})
+    # Phase 9: run_ids companion is no longer populated from the
+    # document side — snapshot_ids is the only source of truth.
+    assert result.run_ids == frozenset()
 
 
 def test_eligibility_helper_alias_returns_same_shape(ctx):
     reg = _InMemoryRegistry([
-        _doc("d", active_snapshot_id="s", active_run_id="r"),
+        _doc("d", active_snapshot_id="s"),
     ])
     a = resolve_eligible_active_run_ids(
         ctx=ctx, scope=WorkspaceScope(), registry=reg,

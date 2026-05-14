@@ -596,6 +596,13 @@ class KnowledgeCompilationInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Phase 9: up-front snapshot allocation. The REST adapter
+    # allocates the candidate ``DocumentSnapshot`` at workflow
+    # dispatch time and threads the id through so this activity
+    # can address its output paths under the snapshot-scoped
+    # workspace without ever calling ``get_or_create_for_run``.
+    # ``None`` only for legacy bulk-job runs that pre-date Phase 9.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -632,6 +639,9 @@ class ArtifactEnrichmentInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id``.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -671,6 +681,11 @@ class GraphBuildInput:
     # legacy callers without document context fall back to the
     # global workdir.
     document_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id`` so the graph
+    # builder can land its outputs under the snapshot-scoped
+    # workspace directly.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -692,6 +707,9 @@ class SearchIndexInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id``.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -17,10 +17,6 @@ Covers, in this order:
 
 * ``IngestionRun`` deserializes with the new fields defaulted, and
   the run-store round-trips them when set.
-
-* ``backfill_project`` is idempotent + applies the documented
-  active-run selection rule (succeeded → failed-with-checkpoint →
-  latest).
 """
 
 from __future__ import annotations
@@ -31,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from j1.artifacts.models import ArtifactRecord
-from j1.documents.backfill import backfill_project, select_active_run_id
 from j1.documents.lifecycle import filter_to_attached_artifacts, is_attached
 from j1.documents.models import DocumentRecord, DocumentVersion
 from j1.documents.versions import (
@@ -147,7 +142,7 @@ def test_document_record_defaults(ctx):
         created_at=_NOW,
     )
     assert doc.knowledge_state == "attached"
-    assert doc.active_run_id is None
+    assert doc.active_snapshot_id is None
     assert doc.latest_version_id is None
     assert doc.removed_at is None
     assert doc.updated_at is None
@@ -183,7 +178,7 @@ def test_legacy_document_record_deserializes_with_defaults(workspace, ctx):
     registry = JsonSourceRegistry(workspace)
     doc = registry.get(ctx, "doc-legacy")
     assert doc.knowledge_state == "attached"
-    assert doc.active_run_id is None
+    assert doc.active_snapshot_id is None
     assert doc.is_attached()
 
 
@@ -377,152 +372,10 @@ def _run(
     )
 
 
-def test_select_active_run_returns_none_for_empty_list():
-    assert select_active_run_id([]) is None
-
-
-def test_select_active_run_prefers_latest_succeeded():
-    """Tier 1: latest succeeded run wins even when failures come
- later — the user's last GOOD result is what the document
- exposes as "current usable"."""
-    t0 = _NOW
-    runs = [
-        _run(run_id="r-fail-old", document_id="d", status=RunStatus.FAILED, started_at=t0),
-        _run(run_id="r-good", document_id="d", status=RunStatus.SUCCEEDED, started_at=t0 + timedelta(hours=1)),
-        # A LATER failure shouldn't displace the previous good run.
-        _run(run_id="r-fail-new", document_id="d", status=RunStatus.FAILED, started_at=t0 + timedelta(hours=2)),
-    ]
-    assert select_active_run_id(runs) == "r-good"
-
-
-def test_select_active_run_succeeded_with_warnings_counts():
-    """SUCCEEDED_WITH_WARNINGS is still a usable result — operational
- warnings don't make the knowledge unusable."""
-    runs = [
-        _run(run_id="r-warn", document_id="d", status=RunStatus.SUCCEEDED_WITH_WARNINGS, started_at=_NOW),
-    ]
-    assert select_active_run_id(runs) == "r-warn"
-
-
-def test_select_active_run_tier2_failed_with_checkpoint():
-    """Tier 2: if no succeeded runs exist, pick the latest FAILED
- run that has a compile checkpoint — the only failure-mode that's
- resumable."""
-    runs = [
-        _run(run_id="r-no-cp", document_id="d", status=RunStatus.FAILED, started_at=_NOW),
-        _run(
-            run_id="r-cp", document_id="d", status=RunStatus.FAILED,
-            started_at=_NOW + timedelta(hours=1), has_checkpoint=True,
-        ),
-    ]
-    assert select_active_run_id(runs) == "r-cp"
-
-
-def test_select_active_run_tier3_falls_back_to_latest():
-    """Tier 3: no succeeded, no failed-with-checkpoint → just pick
- the latest run by started_at. Lets the FE always show SOMETHING
- even when every run failed pre-compile."""
-    runs = [
-        _run(run_id="r-1", document_id="d", status=RunStatus.FAILED, started_at=_NOW),
-        _run(run_id="r-2", document_id="d", status=RunStatus.FAILED, started_at=_NOW + timedelta(hours=1)),
-    ]
-    assert select_active_run_id(runs) == "r-2"
-
-
-def test_backfill_stamps_active_run_and_default_state(
-    workspace, ctx, registry,
-):
-    """Happy path: a project with one document + one succeeded run
- ends up with `knowledge_state="attached"` + `active_run_id=r-1`
- after the backfill."""
-    from j1.intake.registry import JsonSourceRegistry
-    from j1.runs.store import JsonlIngestionRunStore
-
-    doc = DocumentRecord(
-        document_id="d",
-        project=ctx,
-        original_filename="x.pdf",
-        stored_filename="x.pdf",
-        mime_type=None,
-        file_size=1,
-        checksum="sha256:x",
-        status=ProcessingStatus.SUCCEEDED,
-        created_at=_NOW,
-    )
-    registry.add(doc)
-    run_store = JsonlIngestionRunStore(workspace)
-    run_store.upsert(
-        ctx,
-        _run(run_id="r-1", document_id="d", status=RunStatus.SUCCEEDED, started_at=_NOW),
-    )
-
-    summary = backfill_project(ctx, registry=registry, run_store=run_store)
-    assert summary["documents_inspected"] == 1
-    assert summary["documents_updated"] == 1
-
-    after = registry.get(ctx, "d")
-    assert after.knowledge_state == "attached"
-    assert after.active_run_id == "r-1"
-    assert after.updated_at is not None
-
-
-def test_backfill_is_idempotent(workspace, ctx, registry):
-    """Running the backfill twice leaves the data identical — no
- spurious writes, no churn. Operators can safely call it on every
- worker startup."""
-    from j1.runs.store import JsonlIngestionRunStore
-
-    registry.add(DocumentRecord(
-        document_id="d",
-        project=ctx,
-        original_filename="x.pdf",
-        stored_filename="x.pdf",
-        mime_type=None,
-        file_size=1,
-        checksum="sha256:x",
-        status=ProcessingStatus.SUCCEEDED,
-        created_at=_NOW,
-    ))
-    run_store = JsonlIngestionRunStore(workspace)
-    run_store.upsert(
-        ctx,
-        _run(run_id="r-1", document_id="d", status=RunStatus.SUCCEEDED, started_at=_NOW),
-    )
-    first = backfill_project(ctx, registry=registry, run_store=run_store)
-    second = backfill_project(ctx, registry=registry, run_store=run_store)
-    assert first["documents_updated"] == 1
-    # Second pass updates nothing — the first pass already settled
-    # the document into its final state.
-    assert second["documents_updated"] == 0
-    assert second["documents_unchanged"] == 1
-
-
-def test_backfill_does_not_overwrite_explicit_state(
-    workspace, ctx, registry,
-):
-    """If an operator detached a document manually between backfill
- runs, the second backfill must NOT flip it back to attached."""
-    from j1.runs.store import JsonlIngestionRunStore
-
-    registry.add(DocumentRecord(
-        document_id="d",
-        project=ctx,
-        original_filename="x.pdf",
-        stored_filename="x.pdf",
-        mime_type=None,
-        file_size=1,
-        checksum="sha256:x",
-        status=ProcessingStatus.SUCCEEDED,
-        created_at=_NOW,
-        knowledge_state="detached",  # operator-set
-    ))
-    run_store = JsonlIngestionRunStore(workspace)
-    run_store.upsert(
-        ctx,
-        _run(run_id="r-1", document_id="d", status=RunStatus.SUCCEEDED, started_at=_NOW),
-    )
-    backfill_project(ctx, registry=registry, run_store=run_store)
-    assert registry.get(ctx, "d").knowledge_state == "detached"
+# Phase 9: backfill module deleted. select_active_run_id and
+# backfill_project tests removed — reset + re-ingest is the only
+# supported migration path; the runtime no longer materialises
+# ``active_run_id`` from the run store.
 
 
 # ---- helper ------------------------------------------------------

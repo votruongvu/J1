@@ -69,7 +69,7 @@ def client(application_facade, workspace, run_store):
 def _seed_doc(
     registry: JsonSourceRegistry, ctx: ProjectContext,
     *, document_id: str, state: str = "attached",
-    active_run_id: str | None = "r-1",
+    active_snapshot_id: str | None = "r-1",
 ) -> None:
     registry.add(DocumentRecord(
         document_id=document_id,
@@ -82,7 +82,7 @@ def _seed_doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     ))
 
 
@@ -90,15 +90,17 @@ def _seed_run(
     store: JsonlIngestionRunStore, ctx: ProjectContext,
     *, run_id: str, document_id: str,
     status: RunStatus = RunStatus.SUCCEEDED,
+    started_at: datetime | None = None,
 ) -> None:
+    started = started_at or _NOW
     store.upsert(ctx, IngestionRun(
         run_id=run_id,
         document_id=document_id,
         workflow_id=f"wf-{run_id}",
         workflow_run_id=None,
         status=status,
-        started_at=_NOW,
-        updated_at=_NOW,
+        started_at=started,
+        updated_at=started,
     ))
 
 
@@ -126,7 +128,7 @@ def test_list_documents_returns_camelcase_envelope(
     assert row["documentId"] == "doc-1"
     assert row["displayName"] == "doc-1.pdf"
     assert row["knowledgeState"] == "attached"
-    assert row["activeRunId"] == "r-1"
+    assert row["activeSnapshotId"] == "r-1"
     assert "availableActions" in row
     assert "view" in row["availableActions"]
     assert "currentResultSummary" in row
@@ -138,7 +140,7 @@ def test_list_excludes_removed_documents_by_default(
 ):
     _seed_doc(registry, ctx, document_id="doc-keep")
     _seed_doc(registry, ctx, document_id="doc-gone", state="removed",
-              active_run_id=None)
+              active_snapshot_id=None)
     resp = client.get("/documents", headers=_headers(ctx))
     ids = {d["documentId"] for d in resp.json()["data"]["documents"]}
     assert ids == {"doc-keep"}
@@ -149,7 +151,7 @@ def test_list_includes_removed_documents_when_query_param_set(
 ):
     _seed_doc(registry, ctx, document_id="doc-keep")
     _seed_doc(registry, ctx, document_id="doc-gone", state="removed",
-              active_run_id=None)
+              active_snapshot_id=None)
     resp = client.get(
         "/documents?includeRemoved=true", headers=_headers(ctx),
     )
@@ -232,9 +234,16 @@ def test_runs_endpoint_returns_history_sorted_descending(
 def test_runs_endpoint_marks_active_run(
     client, registry, run_store, ctx,
 ):
-    _seed_doc(registry, ctx, document_id="doc-1", active_run_id="r-2")
+    from datetime import timedelta
+    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-2")
     _seed_run(run_store, ctx, run_id="r-1", document_id="doc-1")
-    _seed_run(run_store, ctx, run_id="r-2", document_id="doc-1")
+    # Phase 9: the projector marks the latest succeeded run as
+    # active. Give r-2 a strictly-later timestamp so it wins the
+    # ordering deterministically.
+    _seed_run(
+        run_store, ctx, run_id="r-2", document_id="doc-1",
+        started_at=_NOW + timedelta(minutes=1),
+    )
     resp = client.get(
         "/documents/doc-1/runs", headers=_headers(ctx),
     )

@@ -1,29 +1,21 @@
-"""Helper to resolve `ActiveScope` against the source registry.
+"""Resolver for `ActiveScope` → concrete `RunScope`.
 
-`ActiveScope` is a marker — it doesn't carry a run_id. The
-validation service calls this resolver to turn it into a concrete
-``RunScope`` by looking up the document's currently promoted run.
-Keeping the resolution in a dedicated module means the query
-provider layer never needs registry access; it stays a pure
-filtering function over `RunScope` / `WorkspaceScope`.
+After the Phase 9 snapshot-centered cleanup, documents no longer
+carry ``active_run_id``; visibility is keyed off
+``active_snapshot_id``. The RunScope-based filtering path that
+this resolver feeds (validation's `_filter_by_scope`) is therefore
+unable to derive a concrete run_id from a document anymore — the
+snapshot store is the canonical source of truth.
 
-Resolution rules:
+This resolver is preserved for caller compatibility (validation
+service still calls it for ``validation_scope="active"`` requests)
+but the result is always the sentinel `RunScope(_NO_ACTIVE_RUN_SENTINEL)`
+when the input is an `ActiveScope`. Downstream `_filter_by_scope`
+matches zero artifacts, which renders as the correct
+"no active knowledge to validate via the run-id path — use the
+snapshot-centered query path instead" answer.
 
-* Document is **attached** AND has an ``active_run_id`` → resolve
-  to ``RunScope(active_run_id)``.
-* Document is **detached** or **removed** → return a sentinel
-  `RunScope(_NO_ACTIVE_RUN_SENTINEL)`. Downstream `_filter_by_scope`
-  will match zero artifacts against that sentinel, which is the
-  right "validate the active knowledge" answer when there is no
-  active knowledge to validate.
-* Document **missing** from the registry → same sentinel.
-* Document attached but ``active_run_id`` is None (just uploaded,
-  first ingestion still queued) → same sentinel.
-
-The sentinel approach (vs. raising) matches the rest of the
-codebase's "quiet degradation" pattern — the validation surface
-still gets a result it can render ("no active artifacts") instead
-of a 500.
+`RunScope` / `WorkspaceScope` inputs are returned unchanged.
 """
 
 from __future__ import annotations
@@ -33,11 +25,11 @@ from j1.projects.context import ProjectContext
 from j1.query.scope import ActiveScope, QueryScope, RunScope
 
 
-# Sentinel run_id used when the document isn't in a state that has
-# usable active knowledge. Format is intentionally not a valid
-# uuid hex so no real artifact can ever match it — the filter
-# returns an empty result, which is the correct
-# "no-active-knowledge-to-validate" answer.
+# Sentinel run_id used when ActiveScope cannot be resolved to a
+# concrete run. Format is intentionally not a valid uuid hex so no
+# real artifact can ever match it — the filter returns an empty
+# result, which is the correct
+# "no-active-knowledge-to-validate-via-run-id" answer.
 _NO_ACTIVE_RUN_SENTINEL = "__no_active_run__"
 
 
@@ -50,11 +42,12 @@ def resolve_to_concrete_scope(
     """Resolve `ActiveScope` against the source registry; pass
     `RunScope` / `WorkspaceScope` through unchanged.
 
-    Called by the validation service before dispatching the query
-    so the query provider only ever sees concrete scopes. Quiet
-    on every failure path (missing document, registry hiccup) —
-    returns the sentinel so the caller still gets a valid empty
-    result set.
+    Phase 9: documents no longer expose ``active_run_id``, so
+    ActiveScope always resolves to the sentinel. Callers that
+    need active-knowledge filtering should use the
+    snapshot-centered eligibility resolver in
+    ``j1.query.eligibility`` directly, not this RunScope-based
+    bridge.
     """
     if not isinstance(scope, ActiveScope):
         return scope
@@ -65,18 +58,18 @@ def resolve_to_concrete_scope(
         return RunScope(run_id=_NO_ACTIVE_RUN_SENTINEL)
 
     # Detached / removed documents have no usable active knowledge.
-    # Operator must attach (or re-upload, for removed) before
-    # active-scoped validation makes sense.
     if doc.knowledge_state != "attached":
         return RunScope(run_id=_NO_ACTIVE_RUN_SENTINEL)
 
-    if not doc.active_run_id:
-        # Document attached but never reached a usable terminal
-        # state. No promotion has happened; there's no run to
-        # validate against.
+    if not doc.active_snapshot_id:
+        # Attached but no successful snapshot promotion yet.
         return RunScope(run_id=_NO_ACTIVE_RUN_SENTINEL)
 
-    return RunScope(run_id=doc.active_run_id)
+    # Phase 9: the snapshot is the truth, but RunScope downstream
+    # filters by run_id. Without a snapshot→run reverse lookup
+    # wired into this code path, return the sentinel and let
+    # snapshot-centered query paths handle the real filtering.
+    return RunScope(run_id=_NO_ACTIVE_RUN_SENTINEL)
 
 
 __all__ = ["resolve_to_concrete_scope"]

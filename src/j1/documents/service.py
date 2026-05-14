@@ -216,8 +216,8 @@ class DocumentLifecycleService:
 
         now = self._clock()
         # Phase 1: gate. Flip lifecycle_status to ``removing``,
-        # clear active_run_id, and stamp ``removed_at`` BEFORE any
-        # destructive work. The eligibility resolver disqualifies
+        # clear active_snapshot_id, and stamp ``removed_at`` BEFORE
+        # any destructive work. The eligibility resolver disqualifies
         # ``removing`` lifecycle, so even a concurrent query that
         # already resolved scope will see an empty result on the
         # next read.
@@ -225,7 +225,7 @@ class DocumentLifecycleService:
             ctx, document_id,
             knowledge_state="removed",
             lifecycle_status="removing",
-            active_run_id=None,
+            active_snapshot_id=None,
             removed_at=now,
             updated_at=now,
         )
@@ -330,10 +330,11 @@ class DocumentLifecycleService:
         if target == "removed":
             # Removing should clear the "current usable result"
             # pointer so any FE that hasn't read this transition
-            # yet won't try to render a removed run as the active
-            # result. The active run still exists in the run-store
-            # tombstone; it's just no longer the document's pick.
-            updates["active_run_id"] = None
+            # yet won't try to render a removed snapshot as the
+            # active result. The snapshot record still exists in
+            # the snapshot store; it's just no longer the document's
+            # pick.
+            updates["active_snapshot_id"] = None
             updates["removed_at"] = now
         elif previous_state == "removed":
             # Defensive: should be caught by the rejection above.

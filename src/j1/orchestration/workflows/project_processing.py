@@ -395,6 +395,16 @@ class ProjectProcessingRequest:
     # sends `SIGNAL_TRIGGER_COMPILE` to advance the workflow. When
     # False (default), compile dispatches inline as before.
     two_phase_compile: bool = False
+    # Phase 9: up-front snapshot allocation. The REST adapter
+    # allocates a candidate ``DocumentSnapshot`` at the same time
+    # it creates the IngestionRun and threads the snapshot_id
+    # through here so every downstream activity can address its
+    # output paths under
+    # ``{workdir}/tenants/{t}/projects/{p}/documents/{d}/snapshots/{s}/``
+    # without round-tripping through ``get_or_create_for_run``.
+    # ``None`` only for the legacy bulk-job path that pre-dates
+    # snapshot-centered processing; new flows always supply this.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)

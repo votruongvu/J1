@@ -24,7 +24,10 @@ class DocumentDTO:
     # to "attached" so existing callers without these fields on
     # disk still behave as before.
     knowledge_state: str = "attached"
-    active_run_id: str | None = None
+    # Phase 9: ``active_snapshot_id`` is the only visibility key.
+    # ``active_run_id`` was deleted; consumers needing execution
+    # trace read ``created_by_run_id`` on the snapshot record.
+    active_snapshot_id: str | None = None
     latest_version_id: str | None = None
 
 

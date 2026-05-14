@@ -1,16 +1,12 @@
 """Tests for `ActiveScope` resolution.
 
-Spec section 9: validation must explicitly choose between two
-scopes — "validate this specific run" (RunScope) and "validate
-what users can actually search" (ActiveScope). These tests pin
-the resolver's behavior: ActiveScope → RunScope(active_run_id)
-when the document is attached and has a promoted run; falls back
-to a no-match sentinel otherwise.
-
-The sentinel-match approach (vs. raising) means the validation
-surface always gets a valid, empty result set rather than a 500 —
-"no active knowledge to validate" is a meaningful answer, not
-an error.
+Phase 9: documents no longer carry ``active_run_id``; visibility
+is snapshot-centered. The legacy ActiveScope → RunScope resolver
+preserved here always returns the sentinel for ActiveScope inputs
+and passes RunScope / WorkspaceScope through unchanged. Callers
+that need active-knowledge filtering should use the
+snapshot-centered eligibility resolver in ``j1.query.eligibility``
+directly.
 """
 
 from __future__ import annotations
@@ -28,6 +24,12 @@ from j1.query.scope import ActiveScope, RunScope, WorkspaceScope
 
 
 _NOW = datetime(2026, 5, 12, 12, 0, 0, tzinfo=timezone.utc)
+_SENTINEL = "__no_active_run__"
+
+
+@pytest.fixture
+def ctx() -> ProjectContext:
+    return ProjectContext(tenant_id="acme", project_id="alpha")
 
 
 class _StubRegistry:
@@ -45,7 +47,7 @@ class _StubRegistry:
 def _doc(
     *, ctx: ProjectContext, document_id: str = "doc-1",
     state: str = "attached",
-    active_run_id: str | None = "r-active",
+    active_snapshot_id: str | None = "snap-active",
 ) -> DocumentRecord:
     return DocumentRecord(
         document_id=document_id,
@@ -58,7 +60,7 @@ def _doc(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     )
 
 
@@ -66,8 +68,6 @@ def _doc(
 
 
 def test_workspace_scope_passes_through_unchanged(ctx):
-    """The resolver only does work for ActiveScope. WorkspaceScope
- and RunScope should round-trip untouched."""
     registry = _StubRegistry([])
     result = resolve_to_concrete_scope(
         WorkspaceScope(), registry=registry, ctx=ctx,
@@ -84,113 +84,65 @@ def test_run_scope_passes_through_unchanged(ctx):
     assert result.run_id == "r-1"
 
 
-# ---- ActiveScope happy path --------------------------------------
+# ---- ActiveScope: always sentinel after Phase 9 ------------------
 
 
-def test_active_scope_resolves_to_documents_active_run(ctx):
-    """Headline behaviour: an attached document with a promoted
- run → RunScope(active_run_id). This is what "validate what
- users can actually search" means in practice."""
-    registry = _StubRegistry([_doc(ctx=ctx, active_run_id="r-active")])
+def test_active_scope_on_attached_returns_sentinel(ctx):
+    """Phase 9: ActiveScope resolves to the sentinel even for an
+    attached document with a promoted snapshot. The RunScope-based
+    filtering path can't derive a run_id from a snapshot without
+    a reverse lookup — callers should use the snapshot eligibility
+    resolver instead."""
+    registry = _StubRegistry([_doc(ctx=ctx, active_snapshot_id="s-a")])
     result = resolve_to_concrete_scope(
         ActiveScope(document_id="doc-1"),
         registry=registry, ctx=ctx,
     )
     assert isinstance(result, RunScope)
-    assert result.run_id == "r-active"
+    assert result.run_id == _SENTINEL
 
 
-# ---- ActiveScope no-active-knowledge paths -----------------------
-
-
-def test_active_scope_on_detached_document_returns_no_match_sentinel(ctx):
-    """A detached document has no usable active knowledge — the
- operator must attach (or re-upload, for removed) first. The
- resolver returns a sentinel that matches no artifact, which
- the downstream filter renders as an empty result set."""
+def test_active_scope_on_detached_document_returns_sentinel(ctx):
     registry = _StubRegistry([_doc(ctx=ctx, state="detached")])
     result = resolve_to_concrete_scope(
         ActiveScope(document_id="doc-1"),
         registry=registry, ctx=ctx,
     )
     assert isinstance(result, RunScope)
-    # The sentinel run_id is the same regardless of why we got
-    # here — the caller treats "no active knowledge" uniformly.
-    assert result.run_id == "__no_active_run__"
+    assert result.run_id == _SENTINEL
 
 
 def test_active_scope_on_removed_document_returns_sentinel(ctx):
-    """Removed documents are even more excluded. Same sentinel."""
     registry = _StubRegistry([_doc(ctx=ctx, state="removed")])
     result = resolve_to_concrete_scope(
         ActiveScope(document_id="doc-1"),
         registry=registry, ctx=ctx,
     )
-    assert result.run_id == "__no_active_run__"
+    assert result.run_id == _SENTINEL
 
 
-def test_active_scope_on_doc_without_active_run_returns_sentinel(ctx):
-    """Document attached but no active_run_id (just uploaded, first
- ingestion still queued / failed pre-compile). No active
- knowledge to validate yet."""
-    registry = _StubRegistry([_doc(ctx=ctx, active_run_id=None)])
+def test_active_scope_on_doc_without_active_snapshot_returns_sentinel(ctx):
+    registry = _StubRegistry([_doc(ctx=ctx, active_snapshot_id=None)])
     result = resolve_to_concrete_scope(
         ActiveScope(document_id="doc-1"),
         registry=registry, ctx=ctx,
     )
-    assert result.run_id == "__no_active_run__"
+    assert result.run_id == _SENTINEL
 
 
 def test_active_scope_on_missing_document_returns_sentinel(ctx):
-    """Document not in the registry → sentinel. Lets the caller
- handle the missing-document case as 'empty active knowledge'
- rather than raising."""
-    registry = _StubRegistry([])  # empty
+    registry = _StubRegistry([])
     result = resolve_to_concrete_scope(
         ActiveScope(document_id="doc-ghost"),
         registry=registry, ctx=ctx,
     )
-    assert result.run_id == "__no_active_run__"
-
-
-# ---- ActiveScope vs RunScope semantic distinction ----------------
-
-
-def test_active_and_run_scope_can_differ_after_reindex(ctx):
-    """The whole point of ActiveScope: when a reindex has produced
- a new active run, ActiveScope picks the NEW run while
- RunScope still points at the original. The validation surface
- uses ActiveScope to test current user-visible knowledge."""
-    # Document's active_run_id is now r-new after a successful
-    # reindex; r-old is the previous run that's still on disk.
-    doc = _doc(ctx=ctx, active_run_id="r-new")
-    registry = _StubRegistry([doc])
-
-    active_resolution = resolve_to_concrete_scope(
-        ActiveScope(document_id="doc-1"),
-        registry=registry, ctx=ctx,
-    )
-    # RunScope on the OLD run is a pass-through, unchanged.
-    old_scope = resolve_to_concrete_scope(
-        RunScope(run_id="r-old"), registry=registry, ctx=ctx,
-    )
-
-    # The two scopes target different runs — exactly what spec
-    # section 9 requires.
-    assert active_resolution.run_id == "r-new"
-    assert old_scope.run_id == "r-old"
-    assert active_resolution.run_id != old_scope.run_id
+    assert result.run_id == _SENTINEL
 
 
 # ---- Resolver robustness -----------------------------------------
 
 
 def test_resolver_quiet_on_registry_exceptions(ctx):
-    """Registry could raise for any number of reasons (file I/O,
- lock contention). The resolver MUST NOT propagate — it
- returns the sentinel so validation gets an empty result
- set instead of 500."""
-
     class _BrokenRegistry:
         def get(self, *args, **kwargs):
             raise RuntimeError("disk caught fire")
@@ -201,4 +153,4 @@ def test_resolver_quiet_on_registry_exceptions(ctx):
         ctx=ctx,
     )
     assert isinstance(result, RunScope)
-    assert result.run_id == "__no_active_run__"
+    assert result.run_id == _SENTINEL

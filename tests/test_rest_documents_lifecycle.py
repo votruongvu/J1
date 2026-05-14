@@ -96,7 +96,7 @@ def _seed_document(
         status=ProcessingStatus.SUCCEEDED,
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
-        active_run_id="r-1",
+        active_snapshot_id="r-1",
     )
     registry.add(doc)
     return doc
@@ -148,7 +148,7 @@ def test_remove_endpoint_clears_active_run_and_stamps_removed_at(
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["knowledgeState"] == "removed"
-    assert body["activeRunId"] is None
+    assert body["activeSnapshotId"] is None
     assert body["removedAt"] is not None
 
 
