@@ -1,192 +1,162 @@
 # J1
 
-A reusable, domain-neutral framework for ingesting, processing, and
-querying document-based knowledge.
+J1 is a document-centric knowledge platform. You upload documents
+into a project, the platform parses + enriches them, and you can
+then ask questions that are answered with citations drawn from
+those documents.
 
-J1 is a Python library — not an application. It exposes pluggable
-processing contracts, durable workflow orchestration on Temporal, and
-a complete external-integration surface (REST + OpenAPI + SSE +
-webhooks + AsyncAPI + bulk import/export). Domain-specific behaviour
-lives in **profiles**; the framework itself ships no industry vocabulary.
+The system is multi-tenant and multi-project. Every document, every
+processing run, and every query is scoped to a `(tenant, project)`
+pair. Inside that scope, J1 turns raw files into a snapshot-versioned
+**knowledge base** that the query path can search against.
 
-```
-documents → intake → compile → enrich → graph → index → query → answer
- ▲ (every stage is pluggable; profiles configure prompts/schemas)
- │
- audit + cost + review (recorded for every stage)
-```
+## What J1 is trying to solve
 
----
+Most "RAG on top of an LLM" stacks struggle once real teams use
+them. Files change. Documents are re-ingested. Old chunks bleed
+into new answers. There's no clean way to roll back, no clean way
+to share a tenant boundary, and "what was the index actually like
+when this answer was produced" is unanswerable.
 
-## Quick links
+J1 is built around three product decisions that fix that:
 
-| Topic | Doc |
-|---|---|
-| **Start here — developer onboarding** (zero → first workflow) | [docs/development/onboarding.md](docs/development/onboarding.md) |
-| **Full architecture** | [docs/architecture.md](docs/architecture.md) |
-| External integration map (REST + webhook + queue + bulk) | [docs/external-integration-architecture.md](docs/external-integration-architecture.md) |
-| REST API + SSE streaming | [docs/rest-api.md](docs/rest-api.md) |
-| Auth + scopes | [docs/security.md](docs/security.md) |
-| Webhooks (CloudEvents 1.0) | [docs/webhooks.md](docs/webhooks.md) |
-| Queue / event broker (AsyncAPI 3.0) | [docs/event-integration.md](docs/event-integration.md) |
-| Bulk import / export (NDJSON) | [docs/bulk.md](docs/bulk.md) |
-| MCP status | [docs/mcp-status.md](docs/mcp-status.md) |
-| **Provider layer + composition root** (LLM roles, optional RAGAnything / Graphify) | [docs/providers.md](docs/providers.md) |
-| Environment-variable reference (every `J1_*` var) | [docs/configuration/environment.md](docs/configuration/environment.md) |
-| **Integrating a new project** (sources, providers, domain policies, evaluators — end-to-end) | [docs/integration-guide.md](docs/integration-guide.md) |
-| **Extension model overview** (5-layer map, 12 contracts, generic workflow shape) | [docs/extension/overview.md](docs/extension/overview.md) |
-| Adapter contracts and canonical primitives | [docs/extension/contracts.md](docs/extension/contracts.md) |
-| Adapter manifests and the capability registry | [docs/extension/manifest-and-registry.md](docs/extension/manifest-and-registry.md) |
-| Adapter conformance tests | [docs/extension/conformance-tests.md](docs/extension/conformance-tests.md) |
-| Adding a provider (compiler / graph / retrieval / LLM) | [docs/extension/add-a-provider.md](docs/extension/add-a-provider.md) |
-| Domain-module isolation (building on top of J1) | [docs/extension/domain-module-isolation.md](docs/extension/domain-module-isolation.md) |
-| Temporal operations | [docs/operations/temporal.md](docs/operations/temporal.md) |
-| Operational issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
-| **Local Docker stack** (API + worker + Temporal + UI) | [deploy/dev/README.md](deploy/dev/README.md) |
-| Contributor guide | [CONTRIBUTING.md](CONTRIBUTING.md) |
+1. **Snapshot-versioned knowledge.** Every ingestion produces a
+   versioned `DocumentSnapshot`. Promotion is atomic. The previous
+   snapshot stays on disk for diagnostics but stops driving the
+   answer. Re-index never partially-clobbers the live state.
+2. **Document is the unit of management.** Operators detach, remove,
+   and re-index *documents* — not runs. A run is a processing
+   attempt; the document and its active snapshot are the durable
+   handles.
+3. **Compile is a single black box.** Parsing + chunking + embedding
+   + graph generation goes through RAGAnything, which owns its own
+   workspace per `(tenant, project, document, snapshot)`. Everything
+   the LLM eventually sees is grounded in artifacts that compile
+   produced.
 
----
+## Key capabilities
 
-## Install
+- Multi-tenant, multi-project document management with knowledge-state
+  lifecycle (attach / detach / remove).
+- Ingestion through Temporal workflows: profile → assess →
+  RAGAnything compile → domain enrichment → graph + index →
+  snapshot promotion.
+- Snapshot-centered visibility: queries and answers only see the
+  document's currently-promoted snapshot.
+- Hybrid retrieval with RAGAnything (LightRAG-native graph +
+  vector) as the answering engine; Postgres FTS available as
+  auxiliary evidence / diagnostic surface.
+- LLM-synthesised answers with grounded citations.
+- Domain packs that customise enrichment and query planning (a
+  generic pack plus a worked Civil Engineering example).
+- Compact validation surface: Manual Test Query for one-off
+  inspection plus an imported-CSV test-case section for quick
+  confidence checks.
+- REST + event-driven integration boundaries.
 
-Python 3.11+ required.
-
-```bash
-python3.11 -m venv.venv
-source.venv/bin/activate
-pip install -e ".[dev]"
-```
-
-A running Temporal server is needed only when running workers; unit
-tests don't require one.
-
----
-
-## Run the tests
-
-```bash.venv/bin/pytest # full suite (~4s).venv/bin/pytest -q # quiet mode.venv/bin/pytest --durations=10
-```
-
-The full suite is hermetic: every test uses `tmp_path`-style
-filesystem isolation, no external services, no network. CI just runs
-`pytest`.
-
----
-
-## Run the whole stack locally with Docker
-
-A self-contained Docker Compose stack — API + worker + Temporal +
-Temporal UI — is in [deploy/dev/](deploy/dev/):
-
-```bash
-cp.env.example.env
-docker compose -f deploy/dev/docker-compose.yml up --build
-```
-
-- API: <http://localhost:8000>
-- Temporal UI: <http://localhost:8080>
-
-Trigger a sample workflow:
-
-```bash
-curl -X POST http://localhost:8000/projects \
- -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
- -d '{"projectId": "alpha"}'
-```
-
-See [deploy/dev/README.md](deploy/dev/README.md) for the full
-walkthrough, including which services were intentionally omitted
-(Postgres / Redis / S3) and why.
-
----
-
-## Run an end-to-end smoke
-
-The single E2E test
-([tests/test_e2e_processing_flow.py](tests/test_e2e_processing_flow.py))
-walks the entire processing pipeline locally — create project,
-register documents, drive the workflow state machine, run real
-compile/enrich/graph/index/query through `ProcessingService` against
-mock processors, exercise the review gate, verify audit + cost logs.
-~50 ms.
-
-```bash.venv/bin/pytest tests/test_e2e_processing_flow.py -v
-```
-
----
-
-## What's where
+## High-level project structure
 
 ```
-src/j1/
-├── intake/ Document registration + dedup
-├── processing/ Protocols + ProcessingService + ArtifactDraft
-├── enrichers.py Built-in structured enricher scaffolds
-├── connectors/ External-tool wrappers (compiler, graph)
-├── search/ SQLite FTS5 indexer
-├── query/ HybridQueryEngine + intent classifier
-├── artifacts/ Per-project artifact registry
-├── audit/ Append-only audit log (JSONL)
-├── cost/ Cost recording + aggregation + budget gates + model router
-├── review/ Human-review queue + governance helpers
-├── workspace/ Per-project filesystem layout
-├── profiles/ Domain configuration (prompts, schemas, taxonomy, …)
-├── orchestration/ Temporal workflows + activities
-├── integration/ Ports, DTOs, ApplicationFacade, security, events, bulk
-└── adapters/ Outer transport adapters (REST + webhook)
+src/j1/                     # Python core
+  intake/                   # Document registry + upload
+  documents/                # Document records, snapshots, lifecycle
+  orchestration/            # Temporal workflow + activities
+  providers/raganything/    # Compile + graph + retrieval black box
+  processing/               # Compile assessment, enrichment, results
+  domains/                  # Domain packs (general + civil_engineering)
+  query/                    # Orchestrator, eligibility, retrieval
+  validation/               # Manual test query + imported test cases
+  search/                   # Evidence adapter (Postgres FTS)
+  artifacts/                # Artifact registry
+  audit/                    # Audit trail
+  adapters/rest/            # FastAPI application
+  integration/              # Application facade + DTO boundary
+frontend/                   # React UI (Vite + TypeScript)
+deploy/dev/                 # Docker Compose + dev wiring + workers
+tests/                      # Backend tests
+docs/                       # Architecture documentation (start here)
 ```
 
-The dependency arrow points one way only — outer layers depend on
-inner. Statically enforced by tests in
-[`tests/test_integration_layer.py`](tests/test_integration_layer.py)
-and
-[`tests/test_external_integration_consistency.py`](tests/test_external_integration_consistency.py).
+## Run with Docker
 
----
+The dev Docker Compose stack stands up Postgres, Redis, MinIO,
+Qdrant, Neo4j, Temporal, the J1 API, the worker, and the frontend.
+A one-shot init container creates the MinIO bucket.
 
-## Make it talk to the outside world
+```sh
+# 1. Copy the example env and edit secrets you care about.
+cp .env.example .env
 
-Stand up a REST server with whatever subset of capabilities you need
-wired in:
+# 2. Bring everything up.
+docker compose -f deploy/dev/docker-compose.yml up -d
 
-```python
-from j1 import ApplicationFacade, create_rest_api
-import uvicorn
-
-facade = ApplicationFacade(...) # see docs/architecture.md § Integration
-app = create_rest_api(
- facade,
- authenticator=..., # API-key / JWT — optional
- bulk_export=..., bulk_import=..., # optional
- event_bus=..., # webhooks + queue — optional
- workspace=..., # required for /events lookup
- job_starter=..., # required for /documents/{id}/ingest
-)
-
-uvicorn.run(app, host="0.0.0.0", port=8000)
+# 3. Open the frontend.
+open http://localhost:8081
 ```
 
-Every optional integration gracefully returns 503 when not wired —
-misconfiguration silently disables a surface, never silently enables
-it. Hit `/capabilities` to see what's on.
+The API is reachable at `http://localhost:8000`, the Temporal UI at
+`http://localhost:8233`, and MinIO Console at `http://localhost:9001`.
 
----
+## Run in local Dev Mode
 
-## License & status
+If you'd rather run Python on the host (faster code iteration,
+fewer container layers to fight):
 
-License is currently **unspecified** — no LICENSE file ships with
-the repository. Treat redistribution and external use as undecided
-until the maintainers publish licensing intent.
+```sh
+# 1. Stand up the infrastructure services only.
+docker compose -f deploy/dev/docker-compose.yml up -d \
+  postgres redis minio minio-init temporal temporal-init
 
-The framework's public surface is stable for the modules listed in
-[`src/j1/__init__.py`](src/j1/__init__.py). Items flagged "deferred"
-or "limitation" in the per-area docs are intentional gaps — see
-those docs for the rationale and recipe.
+# 2. Activate a 3.13 venv and install the package in editable mode.
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install -e .
 
-Provider integrations such as RAGAnything and Graphify are
-**optional vendor adapters** packaged behind the framework's
-provider boundary, not part of the J1 core identity. The same is
-true of the LLM clients (OpenAI-compatible HTTP, LangChain) — they
-implement role-specific protocols and can be swapped without
-touching core code. See [docs/providers.md](docs/providers.md) and
-[docs/extension/add-a-provider.md](docs/extension/add-a-provider.md).
+# 3. Point your local Python at the shared services + run.
+export J1_DATA_ROOT=$(pwd)/.data
+python -m deploy.dev.api &
+python -m deploy.dev.worker &
+
+# 4. Frontend.
+cd frontend && npm install && npm run dev
+```
+
+See [docs/05-developer-onboarding.md](docs/05-developer-onboarding.md)
+for a longer walkthrough.
+
+## Required environment summary
+
+The full reference is in
+[docs/05-developer-onboarding.md](docs/05-developer-onboarding.md)
+and [docs/07-deployment-and-scaling.md](docs/07-deployment-and-scaling.md);
+at minimum you need:
+
+| Variable | Purpose |
+| --- | --- |
+| `J1_RUNTIME_PROFILE` | `dev` (default) or `prod`. Controls validator strictness. |
+| `J1_DATA_ROOT` | Workspace root. Set to a shared path when API + worker run as separate processes. |
+| `J1_METADATA_DSN` | Postgres connection for app metadata + FTS. |
+| `J1_ARTIFACT_ENDPOINT` / `_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY` | S3-compatible artifact storage (MinIO in dev). |
+| `J1_CACHE_URL` | Redis URL. |
+| `J1_TEMPORAL_HOST` | Temporal frontend address. |
+| `J1_FAST_LLM_PROVIDER` / `J1_TEXT_LLM_PROVIDER` | Which LLM client is registered for the FAST and TEXT roles. |
+| `OPENAI_API_KEY` etc. | Whatever the chosen LLM provider needs. |
+
+## Documentation
+
+Read in roughly this order. Each doc is standalone, but they assume
+you've at least skimmed `01-overall-architecture.md`.
+
+- [docs/01-overall-architecture.md](docs/01-overall-architecture.md) — Business-friendly system overview.
+- [docs/02-ingestion-flow.md](docs/02-ingestion-flow.md) — Upload → compile → enrich → snapshot.
+- [docs/03-query-flow.md](docs/03-query-flow.md) — Manual query → orchestrator → answer + citations.
+- [docs/04-core-data-model.md](docs/04-core-data-model.md) — Tenant / Project / Document / Snapshot / Profile / Knowledge Base.
+- [docs/05-developer-onboarding.md](docs/05-developer-onboarding.md) — Run, test, extend the codebase.
+- [docs/06-risks-and-known-limitations.md](docs/06-risks-and-known-limitations.md) — Where intent and code don't yet line up.
+- [docs/07-deployment-and-scaling.md](docs/07-deployment-and-scaling.md) — Production direction.
+- [docs/08-multi-kb-model.md](docs/08-multi-kb-model.md) — How the per-project knowledge bases compose.
+- [docs/09-external-integration-model.md](docs/09-external-integration-model.md) — REST + event integration with outside systems.
+- [docs/10-domain-configuration.md](docs/10-domain-configuration.md) — Domain packs (general + civil engineering).
+
+## License
+
+See `LICENSE`.

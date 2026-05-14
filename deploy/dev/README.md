@@ -5,26 +5,23 @@ Brings up a REST API, a Temporal worker, the J1 Execution Console
 SPA, a Temporal server (with Postgres for its own storage), and the
 Temporal web UI on a single laptop.
 
-> **First time?** Read [`docs/development/onboarding.md`](../../docs/development/onboarding.md)
-> first — it walks the full path from install through first
-> workflow trigger and points back here when you reach the Docker
-> step. For the canonical list of `J1_*` environment variables see
-> [`docs/configuration/environment.md`](../../docs/configuration/environment.md).
-> For Temporal-specific operations (signals, recovery, scaling
-> workers) see [`docs/operations/temporal.md`](../../docs/operations/temporal.md).
+> **First time?** Read
+> [`docs/05-developer-onboarding.md`](../../docs/05-developer-onboarding.md)
+> first — it walks install → first ingestion → first query.
+> The full `J1_*` env reference + deployment direction lives in
+> [`docs/07-deployment-and-scaling.md`](../../docs/07-deployment-and-scaling.md).
 
-> **About Postgres.** It's here **only as Temporal's storage backend**
-> — Temporal's official `auto-setup` image only supports
-> mysql8 / postgres12 / postgres12_pgx / cassandra. The J1 framework
-> itself does **not** use a relational database; J1 state lives in
-> flat-file JSON registries + per-project SQLite FTS5 under
-> `J1_DATA_ROOT`. The Postgres container's life is fully internal to
-> Temporal.
+> **About Postgres.** The dev stack runs a single Postgres
+> container that is shared between Temporal (its required backend)
+> and the J1 application — J1 stores both metadata and the
+> evidence FTS index in Postgres. Set `J1_METADATA_DSN` to the
+> shared instance; the evidence layer reuses it.
 
 This stack is **for development only** — not a production deployment.
-See [docs/architecture.md](../../docs/architecture.md) for the full
-architecture, and the per-area docs (security, webhooks,
-event-integration, …) for production hardening.
+See [`docs/01-overall-architecture.md`](../../docs/01-overall-architecture.md)
+for the architecture and
+[`docs/07-deployment-and-scaling.md`](../../docs/07-deployment-and-scaling.md)
+for production direction.
 
 ---
 
@@ -465,35 +462,36 @@ Every variable lives in [`.env.example`](../../.env.example). Highlights:
 | `J1_WEBHOOK_SUBSCRIPTIONS` / `J1_WEBHOOK_SUBSCRIPTIONS_FILE` | unset | No webhook delivery by default |
 | `J1_EVENT_PUBLISHER_TYPE` | `noop` | Set to `bus` to fan events into the in-process `ApplicationEventBus` |
 
-The single-page environment-variable reference (every `J1_*` var,
-grouped by section, with defaults and required-by-when notes) is at
-[docs/configuration/environment.md](../../docs/configuration/environment.md).
-Per-area context lives in:
+Cross-references:
 
-- [docs/security.md](../../docs/security.md) — auth specifics
-- [docs/webhooks.md](../../docs/webhooks.md) — webhook delivery
-- [docs/event-integration.md](../../docs/event-integration.md) — event publisher / AsyncAPI
-- [docs/providers.md](../../docs/providers.md) — RAGAnything / Graphify / LLM roles
-- [docs/operations/temporal.md](../../docs/operations/temporal.md) — Temporal worker operations
+- [`docs/05-developer-onboarding.md`](../../docs/05-developer-onboarding.md)
+  — environment variables grouped by feature, common workflows,
+  troubleshooting.
+- [`docs/07-deployment-and-scaling.md`](../../docs/07-deployment-and-scaling.md)
+  — production direction, worker scaling, storage, Temporal cluster.
+- [`docs/09-external-integration-model.md`](../../docs/09-external-integration-model.md)
+  — REST + event boundary for integrating systems.
 
 ---
 
 ## 8. Forking this for production
 
-1. **Switch Temporal off `auto-setup`.** Use `temporalio/server` with
- a real Cassandra / Postgres + Elasticsearch backing.
+Read [`docs/07-deployment-and-scaling.md`](../../docs/07-deployment-and-scaling.md)
+first — it has the full production-readiness checklist. Short
+form:
+
+1. **Switch Temporal off `auto-setup`.** Use Temporal Cloud or a
+   real self-hosted cluster with managed Postgres + (optional)
+   Elasticsearch.
 2. **Mount `J1_DATA_ROOT` on shared durable storage** (NFS / EFS /
- Azure Files) — the JSON registries are single-writer, so multiple
- API replicas writing to the same project are not supported.
+   Filestore). The RAGAnything workspace requires it whenever you
+   run more than one worker.
 3. **Wire authentication.** Set `J1_AUTH_API_KEYS_FILE` to a path
- mounted from your secret manager. See [docs/security.md](../../docs/security.md).
-4. **Plug in real processors.** Fork [`worker.py`](worker.py) and
- register your own `KnowledgeCompiler` / `EnrichmentProcessor` /
- `GraphBuilder` / `ModelProvider` implementations.
-5. **Deployment platform.** This compose file is laptop-grade. For
- Kubernetes, the same image (`Dockerfile`) works as a base — split
- the API and worker into separate Deployments / StatefulSets and
- run the worker with N replicas to scale activity throughput.
+   mounted from your secret manager.
+4. **Use managed Postgres + Redis + S3.** The compose containers
+   are dev convenience only.
+5. **Split the worker by queue** when you outgrow a single
+   process — see the deployment doc.
 
 ---
 
