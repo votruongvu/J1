@@ -130,12 +130,21 @@ class SearchActivities:
         cache.clear()
 
         from j1.search.evidence_adapter import EvidenceIndexRequest
+        target_snapshot_id = getattr(input, "target_snapshot_id", None)
         indexed_total = 0
         for document_id, ids in by_doc.items():
             try:
-                snap = self._snapshot_service.get_or_create_for_run(
-                    ctx, document_id=document_id, run_id=correlation_id,
-                )
+                if target_snapshot_id:
+                    snap = self._snapshot_service.require_existing_target_snapshot(
+                        ctx,
+                        document_id=document_id,
+                        snapshot_id=target_snapshot_id,
+                    )
+                else:
+                    snap = self._snapshot_service.get_or_create_for_run(
+                        ctx, document_id=document_id,
+                        run_id=correlation_id,
+                    )
             except Exception:  # noqa: BLE001 — best-effort
                 continue
             try:

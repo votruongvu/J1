@@ -43,6 +43,12 @@ class CompileActivityInput:
     # the bulk-job path that doesn't run profiling — bridge falls
     # back to `settings.parse_method`.
     assessment_plan_payload: dict | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id`` so the
+    # compiler can load the up-front-allocated candidate via
+    # ``require_existing_target_snapshot`` instead of lazily
+    # creating one inside the activity.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,9 @@ class EnrichActivityInput:
     # which document the per-artifact loop is enriching. Optional
     # for legacy callers that don't carry the document context.
     document_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id``.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,9 @@ class GraphActivityInput:
     # at ``JsonArtifactRegistry.add()`` catches any draft that still
     # arrives without ``run_id``.
     document_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id``.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +102,9 @@ class IndexActivityInput:
     # see ``EnrichActivityInput.document_id`` for rationale. Optional
     # for legacy callers (multi-document indexers may pass None).
     document_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id``.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -622,6 +637,12 @@ class RegisterArtifactsInput:
     source_artifact_ids: list[str] = field(default_factory=list)
     actor: str = "system"
     correlation_id: str | None = None
+    # Phase 9: snapshot identity threaded from
+    # ``ProjectProcessingRequest.target_snapshot_id`` so the
+    # artifact-registration activity can stamp ``snapshot_id`` via
+    # ``require_existing_target_snapshot`` instead of
+    # lazy-allocating from run_id.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)

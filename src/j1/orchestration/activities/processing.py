@@ -700,14 +700,26 @@ class ProcessingActivities:
             "actor": input.actor,
             "correlation_id": input.correlation_id,
         }
-        if assessment_plan is not None:
-            try:
-                import inspect
-                sig = inspect.signature(self._processing.compile)
-                if "assessment_plan" in sig.parameters:
-                    compile_kwargs["assessment_plan"] = assessment_plan
-            except (TypeError, ValueError):
-                pass
+        try:
+            import inspect
+            sig = inspect.signature(self._processing.compile)
+            if (
+                assessment_plan is not None
+                and "assessment_plan" in sig.parameters
+            ):
+                compile_kwargs["assessment_plan"] = assessment_plan
+            # Phase 9: forward the snapshot identity so the
+            # ProcessingService can route it into the compiler's
+            # snapshot-scoped workspace.
+            if (
+                getattr(input, "target_snapshot_id", None)
+                and "target_snapshot_id" in sig.parameters
+            ):
+                compile_kwargs["target_snapshot_id"] = (
+                    input.target_snapshot_id
+                )
+        except (TypeError, ValueError):
+            pass
         try:
             with _heartbeating({
                 "stage": "compile",

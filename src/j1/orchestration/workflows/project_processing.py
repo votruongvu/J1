@@ -3061,6 +3061,7 @@ class ProjectProcessingWorkflow:
                     actor=request.actor,
                     correlation_id=request.correlation_id,
                     assessment_plan_payload=current_assessment_payload,
+                    target_snapshot_id=request.target_snapshot_id,
                 ),
                 # Compile is the most expensive activity (MinerU parse
                 # is minutes per real PDF). Wider timeout absorbs
@@ -3473,6 +3474,7 @@ class ProjectProcessingWorkflow:
                             # scoped audit consumers can't attribute
                             # an enrich event to a document.
                             document_id=document_id,
+                            target_snapshot_id=request.target_snapshot_id,
                         ),
                         start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                         # Long enrich children — vision / table-LLM
@@ -3631,6 +3633,7 @@ class ProjectProcessingWorkflow:
                         # — which then trips the registry-level
                         # ``RegistryLineageError`` guard.
                         document_id=document_id,
+                        target_snapshot_id=request.target_snapshot_id,
                     ),
                     start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=HEARTBEAT_TIMEOUT,
@@ -3683,6 +3686,7 @@ class ProjectProcessingWorkflow:
                         request.target_document_ids[0]
                         if len(request.target_document_ids) == 1 else None
                     ),
+                    target_snapshot_id=request.target_snapshot_id,
                 ),
                 start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                 retry_policy=DEFAULT_RETRY.to_temporal(),

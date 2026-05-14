@@ -316,9 +316,10 @@ class IngestionRun:
     # legacy runs that pre-date this field.
     display_version: str | None = None
 
-    # ``superseded_at`` is set the moment another run for the same
-    # document promotes past this one (becomes ``active_run_id``).
-    # The supersede hook stamps this then schedules the cleanup
+    # ``superseded_at`` is set the moment another run's snapshot
+    # for the same document is promoted past this one (the new
+    # snapshot becomes ``document.active_snapshot_id``). The
+    # supersede hook stamps this then schedules the cleanup
     # primitives; surface for the FE so a user can see "run X was
     # active until {ts}".
     superseded_at: datetime | None = None

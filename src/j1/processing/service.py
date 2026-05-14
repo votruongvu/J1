@@ -138,12 +138,14 @@ class ProcessingService:
         actor: str = "system",
         correlation_id: str | None = None,
         assessment_plan: object | None = None,
+        target_snapshot_id: str | None = None,
     ) -> ArtifactProcessingResult:
-        # Detect whether the compiler accepts ``assessment_plan`` and
-        # ``run_id`` (the ``KnowledgeCompiler`` Protocol's ``compile``
-        # signature only requires ``(ctx, document_id)``; concrete
-        # adapters opt in via additive kwargs). Mock compilers +
-        # legacy implementations stay working without changes.
+        # Detect whether the compiler accepts ``assessment_plan``,
+        # ``run_id``, and ``snapshot_id`` (the ``KnowledgeCompiler``
+        # Protocol's ``compile`` signature only requires
+        # ``(ctx, document_id)``; concrete adapters opt in via
+        # additive kwargs). Mock compilers + legacy implementations
+        # stay working without changes.
         #
         # ``run_id`` MUST flow through whenever the caller supplied a
         # ``correlation_id``. Concrete adapters (RAGAnythingCompiler)
@@ -151,8 +153,12 @@ class ProcessingService:
         # without it a reindex shares the workdir with the original
         # run, hits LightRAG's doc-status dedupe, and produces zero
         # new chunks → "Compile safety retry triggered" → LOW
-        # quality. The orchestration ``run_knowledge_compilation_activity``
-        # does the same passthrough.
+        # quality.
+        #
+        # ``snapshot_id`` (Phase 9): when provided, lets the
+        # compiler land outputs under the snapshot-scoped workspace
+        # directly, instead of round-tripping through
+        # ``get_or_create_for_run``.
         compile_kwargs: dict = {}
         try:
             import inspect
@@ -161,6 +167,8 @@ class ProcessingService:
                 compile_kwargs["assessment_plan"] = assessment_plan
             if correlation_id and "run_id" in sig.parameters:
                 compile_kwargs["run_id"] = correlation_id
+            if target_snapshot_id and "snapshot_id" in sig.parameters:
+                compile_kwargs["snapshot_id"] = target_snapshot_id
         except (TypeError, ValueError):
             # Builtins / C extensions don't expose a signature;
             # fall back to no kwargs (legacy behaviour).

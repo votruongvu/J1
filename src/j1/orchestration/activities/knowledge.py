@@ -161,11 +161,13 @@ class KnowledgeProcessingActivities:
         self._graph_builders = dict(graph_builders or {})
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
-        # Phase 3: when wired, every materialised artifact gets a
-        # ``snapshot_id`` stamped on the typed field + metadata mirror.
-        # The activity allocates/looks up the candidate snapshot
-        # via ``get_or_create_for_run`` so retries on the same
-        # (document_id, run_id) pair land in the same snapshot.
+        # Phase 9: when wired, every materialised artifact gets a
+        # ``snapshot_id`` stamped on the typed field + metadata
+        # mirror. The activity prefers the up-front-allocated
+        # ``target_snapshot_id`` via
+        # ``require_existing_target_snapshot``; falls back to the
+        # deprecated lazy ``get_or_create_for_run`` allocator for
+        # legacy bulk-job runs that don't carry the snapshot id.
         # ``None`` keeps the legacy run-keyed path active.
         self._snapshot_service = snapshot_service
 
@@ -215,19 +217,30 @@ class KnowledgeProcessingActivities:
             sig = inspect.signature(compiler.compile)
             if "run_id" in sig.parameters and input.correlation_id:
                 compile_kwargs["run_id"] = input.correlation_id
-            # Phase 7: thread the snapshot id through to the
+            # Phase 9: thread the snapshot id through to the
             # compiler so the bridge's snapshot-aware workspace
-            # resolver picks up the snapshot-scoped path. The
-            # snapshot is allocated lazily via ``get_or_create_for_run``
-            # — REST allocates up-front (Phase 5) so retries see the
-            # same id.
+            # resolver picks up the snapshot-scoped path. REST
+            # allocates the candidate up-front, so the activity
+            # only needs ``require_existing_target_snapshot`` —
+            # the lazy ``get_or_create_for_run`` fallback is kept
+            # for legacy bulk-job runs that pre-date Phase 9.
             if "snapshot_id" in sig.parameters and self._snapshot_service is not None:
+                target_snapshot_id = getattr(
+                    input, "target_snapshot_id", None,
+                )
                 try:
-                    snap = self._snapshot_service.get_or_create_for_run(
-                        ctx,
-                        document_id=input.document_id,
-                        run_id=input.correlation_id,
-                    )
+                    if target_snapshot_id:
+                        snap = self._snapshot_service.require_existing_target_snapshot(
+                            ctx,
+                            document_id=input.document_id,
+                            snapshot_id=target_snapshot_id,
+                        )
+                    else:
+                        snap = self._snapshot_service.get_or_create_for_run(
+                            ctx,
+                            document_id=input.document_id,
+                            run_id=input.correlation_id,
+                        )
                     compile_kwargs["snapshot_id"] = snap.snapshot_id
                 except Exception:  # noqa: BLE001 — best-effort
                     pass
@@ -349,6 +362,9 @@ class KnowledgeProcessingActivities:
                 area=WorkspaceArea.ENRICHED,
                 source_document_ids=[],
                 source_artifact_ids=[input.artifact_id],
+                target_snapshot_id=getattr(
+                    input, "target_snapshot_id", None,
+                ),
             )
             registered_ids.append(record.artifact_id)
 
@@ -527,6 +543,9 @@ class KnowledgeProcessingActivities:
                 # which is the root cause of graph_json artifacts
                 # appearing with run_id=None during validation.
                 run_id=input.correlation_id,
+                target_snapshot_id=getattr(
+                    input, "target_snapshot_id", None,
+                ),
             )
             new_ids.append(record.artifact_id)
 
@@ -559,6 +578,7 @@ class KnowledgeProcessingActivities:
         source_document_ids: list[str],
         source_artifact_ids: list[str],
         run_id: str | None = None,
+        target_snapshot_id: str | None = None,
     ) -> ArtifactRecord:
         artifact_id = self._id_factory()
         ext = draft.suggested_extension
@@ -582,26 +602,37 @@ class KnowledgeProcessingActivities:
         merged_metadata = dict(draft.metadata)
         if run_id and "run_id" not in merged_metadata:
             merged_metadata["run_id"] = run_id
-        # Phase 3: resolve the snapshot the artifact belongs to. When
-        # the activities class was constructed with a snapshot
-        # service, every artifact gets ``snapshot_id`` on the typed
-        # field + metadata mirror. The legacy run_id mirror is kept
-        # so during the migration window the validation + search
-        # filters still find their data.
+        # Phase 9: resolve the snapshot the artifact belongs to.
+        # Prefer the up-front-allocated ``target_snapshot_id``
+        # threaded by the workflow; fall back to the lazy
+        # ``get_or_create_for_run`` allocator for legacy bulk-job
+        # runs that don't carry the snapshot id yet.
         snapshot_id: str | None = None
         primary_doc_id = (
             (draft.source_document_ids or source_document_ids or [None])[0]
         )
         if (
             self._snapshot_service is not None
-            and run_id
             and primary_doc_id
         ):
-            snap = self._snapshot_service.get_or_create_for_run(
-                ctx, document_id=primary_doc_id, run_id=run_id,
-            )
-            snapshot_id = snap.snapshot_id
-            merged_metadata.setdefault("snapshot_id", snapshot_id)
+            try:
+                if target_snapshot_id:
+                    snap = self._snapshot_service.require_existing_target_snapshot(
+                        ctx,
+                        document_id=primary_doc_id,
+                        snapshot_id=target_snapshot_id,
+                    )
+                elif run_id:
+                    snap = self._snapshot_service.get_or_create_for_run(
+                        ctx, document_id=primary_doc_id, run_id=run_id,
+                    )
+                else:
+                    snap = None
+            except Exception:  # noqa: BLE001 — best-effort
+                snap = None
+            if snap is not None:
+                snapshot_id = snap.snapshot_id
+                merged_metadata.setdefault("snapshot_id", snapshot_id)
         # Fail-fast lineage guard. Phase-3 prefers snapshot_id; legacy
         # callers that supplied only run_id still satisfy the guard
         # via the metadata fallback for backward compatibility.

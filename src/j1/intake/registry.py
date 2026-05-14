@@ -12,7 +12,8 @@ from j1.workspace.resolver import WorkspaceResolver
 
 REGISTRY_FILENAME = "documents.json"
 # Bumped from 1 → 2 on the document-centric refactor. v2 records
-# carry `knowledge_state`, `active_run_id`, `latest_version_id`,
+# carry `knowledge_state`, `active_snapshot_id` (Phase 9 — replaced
+# the pre-refactor `active_run_id`), `latest_version_id`,
 # `removed_at`, `updated_at`. The deserializer below remains
 # tolerant of v1 records: missing fields fall back to safe defaults
 # (knowledge_state="attached") so existing project workspaces keep
@@ -182,10 +183,10 @@ class JsonSourceRegistry:
         Public surface for the document-centric lifecycle actions
         (attach / detach / remove). Distinct from `update_status`
         because `status` carries the *ingestion* outcome of the
-        upload itself; the new fields (`knowledge_state`,
-        `active_run_id`, `removed_at`, `updated_at`,
-        `latest_version_id`) describe knowledge-layer state which is
-        conceptually separate.
+        upload itself; the snapshot-centered fields
+        (`knowledge_state`, `active_snapshot_id`, `removed_at`,
+        `updated_at`, `latest_version_id`) describe knowledge-layer
+        state which is conceptually separate.
 
         Raises `DocumentNotFoundError` if the id isn't present.
         Returns the updated record so callers don't have to re-read.

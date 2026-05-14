@@ -1121,9 +1121,9 @@ def _resolve_compile_output_dir(
       * ``outputs/{document_id}/{run_id}/`` — production. Each run
         gets an isolated scratch dir so two reindex attempts for the
         same document don't overwrite each other's intermediate
-        files. Promotion = flip ``document.active_run_id``; cleanup
-        of a failed candidate = delete its run-scoped leaf only,
-        leaving the previous active run's dir intact.
+        files. Promotion = flip ``document.active_snapshot_id``;
+        cleanup of a failed candidate = delete its run-scoped leaf
+        only, leaving the previous active snapshot's dir intact.
 
       * ``outputs/{document_id}/`` — legacy fallback when ``run_id``
         is missing (direct test callers, pre-refactor compile paths).

@@ -224,8 +224,8 @@ class SearchService:
     New: wraps an ``EvidenceIndexAdapter`` (Postgres FTS by default)
     and ALWAYS resolves the active-snapshot allowlist through the
     eligibility gate before issuing a query. A document is searchable
-    iff it has ``active_snapshot_id`` set (Phase 3 retired the
-    ``active_run_id`` fallback) and isn't detached/removed.
+    iff it has ``active_snapshot_id`` set (Phase 9 deleted the
+    ``active_run_id`` field entirely) and isn't detached/removed.
 
     Three modes of construction:
 

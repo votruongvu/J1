@@ -84,6 +84,12 @@ class BatchChildSpec:
     indexer_kind: str | None = None
     actor: str = "system"
     planner_enabled: bool = False
+    # Phase 9: up-front snapshot allocation for this child run.
+    # REST allocates the candidate when it creates the IngestionRun
+    # and threads the id through here so the child workflow's
+    # activities can use ``require_existing_target_snapshot``
+    # instead of lazily creating from run_id.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +164,7 @@ class BatchOrchestrationWorkflow:
                 correlation_id=spec.correlation_id,
                 target_document_ids=(spec.document_id,),
                 planner_enabled=spec.planner_enabled,
+                target_snapshot_id=spec.target_snapshot_id,
             )
             try:
                 await workflow.execute_child_workflow(

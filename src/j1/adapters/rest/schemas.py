@@ -68,6 +68,14 @@ class IngestRequest(CamelModel):
     # only runs the index activity against `resume_artifact_ids`.
     # Used by `POST /ingestion-runs/{id}/rebuild-index`.
     rebuild_index_only: bool = False
+    # Phase 9: snapshot identity. The REST adapter allocates the
+    # candidate ``DocumentSnapshot`` at run-creation time and
+    # threads the id through here so the JobStarter can wire it
+    # onto `ProjectProcessingRequest.target_snapshot_id`. None for
+    # legacy callers / bulk-job dispatch that doesn't allocate
+    # up-front; the workflow falls back to the deprecated lazy
+    # ``get_or_create_for_run`` allocator in that case.
+    target_snapshot_id: str | None = None
 
 
 class JobStartRecord(CamelModel):

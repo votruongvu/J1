@@ -470,11 +470,11 @@ def create_rest_api(
 
     # Phase 5: Allocate a candidate ``DocumentSnapshot`` BEFORE the
     # Temporal workflow starts. Returns the new snapshot's id (or
-    # ``None`` when the service isn't wired — the activity layer's
-    # ``get_or_create_for_run`` still catches that case lazily).
-    # Best-effort: any failure here returns ``None`` so the run
-    # creation isn't blocked by a snapshot-store hiccup; the
-    # downstream activity layer will fill in the gap.
+    # ``None`` when the snapshot service isn't wired — the activity
+    # layer's deprecated ``get_or_create_for_run`` fallback handles
+    # that case for legacy bulk-job runs). Best-effort: any failure
+    # here returns ``None`` so the run creation isn't blocked by a
+    # snapshot-store hiccup.
     def _allocate_target_snapshot(
         ctx: ProjectContext, document_id: str, run_id: str,
     ) -> str | None:
@@ -1436,6 +1436,7 @@ def create_rest_api(
             actor=actor,
             correlation_id=new_run_id,
             reindex_of=run_id,  # signals starter to use suffixed workflow_id
+            target_snapshot_id=new_run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, original.document_id, body)
         new_run.workflow_id = workflow_id
@@ -1651,6 +1652,7 @@ def create_rest_api(
             resume_completed_steps=tuple(plan["resumable_steps"]),
             resume_artifact_ids=tuple(plan["carry_forward_artifact_ids"]),
             resume_artifact_kinds=tuple(plan["carry_forward_artifact_kinds"]),
+            target_snapshot_id=new_run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, original.document_id, body)
         new_run.workflow_id = workflow_id
@@ -1811,6 +1813,7 @@ def create_rest_api(
             resume_artifact_ids=tuple(plan["chunk_artifact_ids"]),
             resume_artifact_kinds=tuple(plan["chunk_artifact_kinds"]),
             rebuild_index_only=True,
+            target_snapshot_id=new_run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, original.document_id, body)
         new_run.workflow_id = workflow_id
@@ -2209,8 +2212,8 @@ def create_rest_api(
         summary="Remove a document's generated knowledge from the knowledge base",
         description=(
             "Disown the document from the active knowledge layer. "
-            "Clears `active_run_id`, sets `removed_at`, and stamps "
-            "every artifact tied to the document as `removed` so "
+            "Clears `active_snapshot_id`, sets `removed_at`, and "
+            "stamps every artifact tied to the document as `removed` so "
             "retrieval / search / validation / answer generation can "
             "no longer surface it. Idempotent — calling on an "
             "already-removed document is a no-op. Run history remains "
@@ -2483,6 +2486,7 @@ def create_rest_api(
             actor=actor,
             correlation_id=new_run_id,
             reindex_of=active_run_id or None,
+            target_snapshot_id=new_run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, document_id, body)
         new_run.workflow_id = workflow_id
@@ -2523,13 +2527,13 @@ def create_rest_api(
     #
     # Wire-on-disk contract:
     #   * ``run_type="refresh_enrich"``
-    #   * ``parent_run_id=<document.active_run_id>``
-    #   * ``metadata.reused_compile_from_run_id=<active_run_id>``
+    #   * ``parent_run_id=<latest succeeded run_id from runs store>``
+    #   * ``metadata.reused_compile_from_run_id=<parent_run_id>``
     #     — the workflow's compile stage reads this and short-circuits
     #     to "reuse compile artifacts from that run".
     #
     # CAS promotion still applies on terminal success — same gate as
-    # reindex, so a failed refresh leaves the active run intact.
+    # reindex, so a failed refresh leaves the active snapshot intact.
 
     @app.post(
         "/documents/{document_id}/refresh-enrich",
@@ -2540,9 +2544,9 @@ def create_rest_api(
             "previous active run's compile output and re-runs only "
             "enrichment + graph + index. The new run carries "
             "`runType=refreshEnrich` and "
-            "`metadata.reusedCompileFromRunId=<active_run_id>` so "
+            "`metadata.reusedCompileFromRunId=<previousRunId>` so "
             "the compile stage short-circuits to artifact reuse. "
-            "Promotion to `activeRunId` is gated on terminal "
+            "Promotion to `activeSnapshotId` is gated on terminal "
             "success (same CAS rule as reindex), so a failed "
             "refresh preserves the previous active. Returns 409 "
             "when the document is detached / removed, or when no "
@@ -2669,6 +2673,7 @@ def create_rest_api(
             actor=actor,
             correlation_id=new_run_id,
             reindex_of=active_run_id,
+            target_snapshot_id=new_run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, document_id, body)
         new_run.workflow_id = workflow_id
@@ -4474,6 +4479,7 @@ def create_rest_api(
             indexer_kind=resolved_indexer,
             actor=actor,
             correlation_id=run_id,
+            target_snapshot_id=run.target_snapshot_id,
         )
         workflow_id = await starter(ctx, doc_dto.document_id, body)
 
@@ -4655,6 +4661,7 @@ def create_rest_api(
                 "graph_builder_kind": graph_builder_kind,
                 "indexer_kind": indexer_kind,
                 "actor": actor,
+                "target_snapshot_id": child_run.target_snapshot_id,
             })
             child_run_ids.append(child_run_id)
 

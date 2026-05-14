@@ -176,6 +176,9 @@ def make_per_document_starter(
                     getattr(body, "rebuild_index_only", False)
                 ),
                 assessment_failure_policy=assessment_failure_policy,
+                target_snapshot_id=getattr(
+                    body, "target_snapshot_id", None,
+                ),
             ),
             id=workflow_id,
             task_queue=task_queue,
@@ -227,6 +230,7 @@ def make_batch_starter(
                 indexer_kind=s.get("indexer_kind"),
                 actor=str(s.get("actor", "system")),
                 planner_enabled=planner_enabled,
+                target_snapshot_id=s.get("target_snapshot_id"),
             )
             for s in child_specs
         )

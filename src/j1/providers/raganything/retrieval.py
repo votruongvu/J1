@@ -27,9 +27,11 @@ class RAGAnythingQueryRequest:
 
       * ``RunScope(run_id=X)`` validation queries → read from
         ``{workdir}/runs/{tenant}/{project}/{doc}/X/``.
-      * ``ActiveScope(document_id=D)`` queries → the engine resolves
-        ``active_run_id`` from the document registry and passes it
-        as ``run_id``; same routing as above.
+      * ``ActiveScope(document_id=D)`` queries → after Phase 9 the
+        resolver returns the sentinel run_id (visibility is
+        snapshot-centered). Callers needing active-knowledge
+        filtering should use the snapshot eligibility resolver in
+        ``j1.query.eligibility`` directly.
       * ``WorkspaceScope`` (project-wide) → no per-run override;
         falls back to ``settings.workdir`` (the legacy unscoped
         graph). This case is rare for graph QA but kept for

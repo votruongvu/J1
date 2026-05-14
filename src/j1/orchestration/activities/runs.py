@@ -232,8 +232,9 @@ class RunsActivities:
         # run to active on terminal success" hook (Phase 4 of the
         # document-centric refactor). When None, the hook is a
         # no-op — the run still transitions cleanly, just no
-        # `document.active_run_id` update. Deployments that haven't
-        # adopted the document-centric flow keep working unchanged.
+        # `document.active_snapshot_id` update. Deployments that
+        # haven't adopted the document-centric flow keep working
+        # unchanged.
         self._source_registry = source_registry
         # `artifact_registry` powers the post-promotion supersede
         # sweep: when a new run becomes the document's active, the
@@ -534,8 +535,8 @@ class RunsActivities:
         # as the current "active" result. Failed / cancelled /
         # warning-only runs do NOT promote, which is exactly what
         # makes "failed reindex doesn't clobber the previous
-        # successful run" true: the previous active_run_id stays
-        # pointing at the prior good run.
+        # successful run" true: the previous active_snapshot_id
+        # stays pointing at the prior good snapshot.
         self._maybe_promote_to_active(ctx, run)
 
         # Phase-1 ingestion diagnostics. Materialise the in-memory
@@ -559,23 +560,21 @@ class RunsActivities:
                 pass
 
     def _maybe_promote_to_active(self, ctx, run) -> None:
-        """CAS-promote ``document.active_run_id`` to this run when
-        it reached a usable terminal state.
+        """Promote this run's snapshot to ``document.active_snapshot_id``
+        when the run reached a usable terminal state.
 
-        Definition of "usable" matches the Phase 1 backfill's tier-1
-        rule (`SUCCEEDED` + `SUCCEEDED_WITH_WARNINGS`). Anything
-        else — including failures with a compile checkpoint — does
-        NOT promote, because a failed reindex must preserve the
-        previous good active for retrieval / answer generation.
+        Definition of "usable" is `SUCCEEDED` + `SUCCEEDED_WITH_WARNINGS`.
+        Anything else — including failures with a compile checkpoint
+        — does NOT promote, because a failed reindex must preserve
+        the previous good snapshot for retrieval / answer generation.
 
-        Promotion is CAS: the candidate's ``parent_run_id`` (for
-        reindex/refresh runs) or ``None`` (for an initial run) is
-        passed as the expected current ``active_run_id``. If
-        another reindex won the slot first, OR the document was
-        removed mid-run, the CAS returns ``None`` and we skip
-        promotion — the candidate is now orphan and the caller
-        side-effects cleanup. Without CAS we'd silently overwrite
-        the winner OR re-promote a run onto a removed document.
+        Promotion is CAS-guarded by the snapshot service against the
+        document's current ``active_snapshot_id``. If another reindex
+        won the slot first, OR the document was removed mid-run, the
+        CAS fails and we skip promotion — the candidate is now orphan
+        and the caller side-effects cleanup. Without CAS we'd
+        silently overwrite the winner OR re-promote onto a removed
+        document.
 
         Quiet on every failure path (no registry wired, lookup
         miss, write fails): the run-status update is the
