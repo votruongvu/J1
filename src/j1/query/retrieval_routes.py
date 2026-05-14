@@ -134,6 +134,15 @@ class RAGAnythingAdapter:
 
     Routes never call the LLM directly — RAGAnything's own LLM
     calls are limited by the retrieval graph, not the synthesizer.
+
+    **Snapshot scoping (the load-bearing invariant)**: the LightRAG
+    working-dir is keyed by ``(document_id, snapshot_id)`` (see
+    ``j1.providers.raganything._bridge._snapshot_workspace_path``).
+    The adapter resolves the eligible ``(document_id, snapshot_id)``
+    pairs *before* calling the provider and fans out one query per
+    pair, merging results. The provider raises
+    ``WorkspaceScopeMissing`` if the adapter forgets — global
+    fallback is never used on the active query path.
     """
 
     kind: RetrievalRouteKind = RetrievalRouteKind.RAGANYTHING
@@ -143,23 +152,122 @@ class RAGAnythingAdapter:
         provider: Any,
         *,
         chunk_kind_default: str = "chunk",
+        eligible_snapshot_pairs_resolver: (
+            Callable[
+                [ProjectContext, QueryScope],
+                frozenset[tuple[str, str]] | None,
+            ] | None
+        ) = None,
     ) -> None:
         self._provider = provider
         self._chunk_kind_default = chunk_kind_default
+        self._eligible_snapshot_pairs_resolver = (
+            eligible_snapshot_pairs_resolver
+        )
 
     def execute(
         self,
         job: RetrievalJob,
         context: RouteContext,
     ) -> list[EvidenceCandidate]:
+        from j1.providers.errors import WorkspaceScopeMissing
         run_id = _resolve_run_id(context.scope, context.run_id)
-        result = self._provider.query(
-            context.ctx,
-            job.query,
-            max_results=job.max_results,
-            document_id=context.document_id,
-            run_id=run_id,
-        )
+        pairs = self._resolve_snapshot_pairs(context)
+        if not pairs:
+            # No eligible snapshot for this scope — fail closed.
+            # Surface a single trace candidate so operators can see
+            # the adapter ran and refused, with the reason. Score=0
+            # so this never drives an answer.
+            return [_no_eligible_snapshot_candidate(job, context, run_id)]
+
+        # Per-snapshot fan-out: one provider call per (document, snapshot)
+        # pair. The bridge's working_dir is keyed on both; a project-wide
+        # query against N documents issues N RAGAnything queries.
+        candidates: list[EvidenceCandidate] = []
+        queried_snapshot_ids: list[str] = []
+        scope_errors: list[str] = []
+        for document_id, snapshot_id in sorted(pairs):
+            try:
+                result = self._provider.query(
+                    context.ctx,
+                    job.query,
+                    max_results=job.max_results,
+                    document_id=document_id,
+                    run_id=run_id,
+                    snapshot_id=snapshot_id,
+                )
+            except WorkspaceScopeMissing as exc:
+                # Should be unreachable now — fan-out passes snapshot_id
+                # explicitly — but if a future bridge path raises this
+                # for a different reason, the trace records it.
+                scope_errors.append(
+                    f"{document_id}/{snapshot_id}: {exc}"
+                )
+                continue
+            queried_snapshot_ids.append(snapshot_id)
+            candidates.extend(
+                self._candidates_from_result(
+                    result, job, context, run_id,
+                    document_id=document_id,
+                    snapshot_id=snapshot_id,
+                )
+            )
+        # If every fan-out call hit WorkspaceScopeMissing, return a
+        # marker. Normal path returns the merged candidate list.
+        if not candidates and scope_errors:
+            return [_workspace_scope_missing_candidate(
+                job, context, run_id, scope_errors,
+            )]
+        return candidates
+
+    def _resolve_snapshot_pairs(
+        self, context: RouteContext,
+    ) -> frozenset[tuple[str, str]]:
+        """Resolve ``(document_id, snapshot_id)`` pairs for this query.
+
+        Preference order:
+          1. ``context.document_id`` + matching pair from the resolver
+             — single-document query.
+          2. Resolver-supplied pairs filtered by
+             ``context.eligible_snapshot_ids`` (the orchestrator
+             may have narrowed the set).
+          3. Resolver-supplied pairs as-is (full workspace fan-out).
+        """
+        pairs: frozenset[tuple[str, str]] | None = None
+        if self._eligible_snapshot_pairs_resolver is not None:
+            try:
+                pairs = self._eligible_snapshot_pairs_resolver(
+                    context.ctx, context.scope,
+                )
+            except Exception:  # noqa: BLE001 — resolver failure → no scope
+                pairs = None
+        if not pairs:
+            return frozenset()
+        # Narrow by the orchestrator-supplied snapshot id set when
+        # present. This lets the orchestrator pre-resolve eligibility
+        # once and keeps BM25 + RAGAnything on the same allowlist.
+        eligible = context.eligible_snapshot_ids
+        if eligible:
+            pairs = frozenset(
+                p for p in pairs if p[1] in eligible
+            )
+        # Narrow to a single document when the caller pinned one.
+        if context.document_id:
+            pairs = frozenset(
+                p for p in pairs if p[0] == context.document_id
+            )
+        return pairs
+
+    def _candidates_from_result(
+        self,
+        result: Any,
+        job: RetrievalJob,
+        context: RouteContext,
+        run_id: str | None,
+        *,
+        document_id: str,
+        snapshot_id: str,
+    ) -> list[EvidenceCandidate]:
         candidates: list[EvidenceCandidate] = []
         # Preferred shape: bridge exposes structured chunks under
         # ``metadata['evidence_chunks']``. When LightRAG / the
@@ -222,7 +330,7 @@ class RAGAnythingAdapter:
                 score=0.0,
                 matched_anchors=(),
                 run_id=run_id,
-                document_id=context.document_id,
+                document_id=document_id,
                 project_id=context.ctx.project_id,
                 extra={
                     "body": "",
@@ -235,6 +343,7 @@ class RAGAnythingAdapter:
                     "raganything_result_error": getattr(
                         result, "error", None,
                     ),
+                    "snapshot_id": snapshot_id,
                 },
             ))
             return candidates
@@ -247,16 +356,81 @@ class RAGAnythingAdapter:
             score=0.5,  # advisory — lower than real BM25 / chunk
             matched_anchors=(),
             run_id=run_id,
-            document_id=context.document_id,
+            document_id=document_id,
             project_id=context.ctx.project_id,
             extra={
                 "body": native_answer,
                 "raganything_native_answer": True,
                 "advisory_only": True,
                 "raganything_working_dir": working_dir,
+                "snapshot_id": snapshot_id,
             },
         ))
         return candidates
+
+
+def _no_eligible_snapshot_candidate(
+    job: RetrievalJob,
+    context: RouteContext,
+    run_id: str | None,
+) -> EvidenceCandidate:
+    """Marker for the trace when the adapter could not resolve any
+    eligible ``(document_id, snapshot_id)`` pair. Score 0 so the
+    sufficiency gate sees a clean "retrieval returned nothing" and
+    the synthesizer is never called."""
+    return EvidenceCandidate(
+        route=job.route,
+        artifact_id="raganything.no_eligible_snapshot",
+        artifact_kind="raganything.no_eligible_snapshot",
+        chunk_id=None,
+        text_preview=(
+            "RAGAnything adapter refused: no eligible snapshot for "
+            "the current scope. Project may have no attached documents "
+            "with an active snapshot, or the resolver was unwired."
+        ),
+        score=0.0,
+        matched_anchors=(),
+        run_id=run_id,
+        document_id=context.document_id,
+        project_id=context.ctx.project_id,
+        extra={
+            "body": "",
+            "raganything_refused": "no_eligible_snapshot",
+            "advisory_only": True,
+        },
+    )
+
+
+def _workspace_scope_missing_candidate(
+    job: RetrievalJob,
+    context: RouteContext,
+    run_id: str | None,
+    errors: list[str],
+) -> EvidenceCandidate:
+    """Marker for the trace when every fan-out call hit
+    ``WorkspaceScopeMissing``. Operator-visible reason so the cause
+    isn't reverse-engineered from a generic FAILED route."""
+    return EvidenceCandidate(
+        route=job.route,
+        artifact_id="raganything.workspace_scope_missing",
+        artifact_kind="raganything.workspace_scope_missing",
+        chunk_id=None,
+        text_preview=(
+            "RAGAnything bridge raised WorkspaceScopeMissing for every "
+            f"eligible snapshot ({len(errors)} attempted)."
+        ),
+        score=0.0,
+        matched_anchors=(),
+        run_id=run_id,
+        document_id=context.document_id,
+        project_id=context.ctx.project_id,
+        extra={
+            "body": "",
+            "raganything_refused": "workspace_scope_missing",
+            "advisory_only": True,
+            "errors": errors,
+        },
+    )
 
 
 def _candidate_from_evidence_chunk(

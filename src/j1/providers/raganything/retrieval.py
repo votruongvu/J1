@@ -12,7 +12,7 @@ from typing import Any
 from j1.llm.registry import LLMProviderRegistry
 from j1.processing.results import QueryResult, ResultStatus
 from j1.projects.context import ProjectContext
-from j1.providers.errors import ProviderUnavailable
+from j1.providers.errors import ProviderUnavailable, WorkspaceScopeMissing
 from j1.providers.raganything.compiler import PROVIDER_NAME
 from j1.providers.raganything.settings import RAGAnythingSettings
 
@@ -114,7 +114,11 @@ class RAGAnythingQueryProvider:
         )
         try:
             return self._query_callable(request)
-        except ProviderUnavailable:
+        except (ProviderUnavailable, WorkspaceScopeMissing):
+            # Missing workspace scope is a caller bug — surface it to
+            # the adapter so the trace can render the actual reason
+            # instead of converting to a generic FAILED result that
+            # operators have to reverse-engineer.
             raise
         except Exception as exc:
             return QueryResult(

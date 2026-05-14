@@ -61,6 +61,38 @@ from j1.query.retrieval_routes import (
 from j1.query.scope import QueryScope, default_scope
 
 
+def _collect_snapshot_ids(
+    records: tuple, *, route_kind: str,
+) -> tuple[str, ...]:
+    """Pull the ``snapshot_id`` values stamped in candidate ``extra``
+    metadata for a given route kind. Empty when the route didn't run
+    or didn't stamp the field — both reasons are operator-visible in
+    the routes_executed section of the trace."""
+    seen: set[str] = set()
+    for rec in records:
+        rec_kind = getattr(rec.route, "value", None) or str(rec.route)
+        if rec_kind != route_kind:
+            continue
+        for cand in rec.candidates:
+            sid = (cand.extra or {}).get("snapshot_id")
+            if sid:
+                seen.add(str(sid))
+    return tuple(sorted(seen))
+
+
+def _any_global_workspace(records: tuple) -> bool:
+    """True if any RAGAnything candidate reported a working_dir that
+    looks unscoped (no ``/snapshots/`` segment). Heuristic — surfaced
+    in the trace so operators can spot a regression that re-introduces
+    global fallback. Strict enforcement lives in the bridge."""
+    for rec in records:
+        for cand in rec.candidates:
+            wd = (cand.extra or {}).get("raganything_working_dir")
+            if wd and "/snapshots/" not in str(wd):
+                return True
+    return False
+
+
 # ---- Public request / result ---------------------------------
 
 
@@ -69,9 +101,13 @@ class OrchestratorRequest:
     """Everything ``SmartQueryOrchestrator.run`` needs.
 
     ``profile`` is optional — None → generic mode. ``eligible_run_ids``
-    is the strict scoping set (post-refactor eligibility gate);
-    callers that don't pre-compute it pass None and the BM25
-    adapter's resolver fills in.
+    is the legacy scoping set (run-keyed FTS / validation diagnostic
+    paths). ``eligible_snapshot_ids`` is the Phase 9 visibility key;
+    every retrieval adapter that consults persisted knowledge MUST
+    filter by it.
+
+    Callers that don't pre-compute eligibility pass ``None`` for
+    both — the adapters' resolver callbacks fill in.
     """
 
     ctx: ProjectContext
@@ -81,6 +117,7 @@ class OrchestratorRequest:
     document_id: str | None = None
     run_id: str | None = None
     eligible_run_ids: frozenset[str] | None = None
+    eligible_snapshot_ids: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +198,7 @@ class SmartQueryOrchestrator:
             ctx=request.ctx,
             scope=request.scope,
             eligible_run_ids=request.eligible_run_ids,
+            eligible_snapshot_ids=request.eligible_snapshot_ids,
             document_id=request.document_id,
             run_id=request.run_id,
         )
@@ -169,6 +207,22 @@ class SmartQueryOrchestrator:
         )
         trace = trace.with_routes(records)
         all_cands = trace.all_candidates
+        # Stamp snapshot-scope diagnostics so the trace proves BM25 +
+        # RAGAnything used the same eligibility boundary. Empty
+        # eligibility set is a valid answer (no attached documents);
+        # the trace surface shows it explicitly.
+        trace = trace.with_snapshot_scope(
+            eligible_snapshot_ids=tuple(sorted(
+                request.eligible_snapshot_ids or ()
+            )),
+            queried_raganything_snapshot_ids=_collect_snapshot_ids(
+                records, route_kind="raganything",
+            ),
+            bm25_allowed_snapshot_ids=_collect_snapshot_ids(
+                records, route_kind="bm25",
+            ),
+            used_global_workspace=_any_global_workspace(records),
+        )
 
         # 3. Evidence pack.
         scope_run_id = request.run_id

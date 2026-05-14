@@ -130,6 +130,86 @@ def _terminate(
     )
 
 
+# ---- Validation-before-promotion gate (audit fix) ----------------
+
+
+def test_validation_gate_off_by_default(
+    activities, run_store, registry, ctx, snapshot_service, monkeypatch,
+):
+    """When ``J1_REQUIRE_VALIDATION_BEFORE_PROMOTION`` is unset, the
+    gate is bypassed and a successful run promotes as before."""
+    monkeypatch.delenv(
+        "J1_REQUIRE_VALIDATION_BEFORE_PROMOTION", raising=False,
+    )
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
+    _seed_run(
+        run_store, ctx, run_id="r-1", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
+    _terminate(activities, ctx, "r-1", final_status="succeeded")
+    doc = registry.get(ctx, "doc-1")
+    assert doc.active_snapshot_id is not None
+
+
+def test_validation_gate_enabled_but_unwired_fails_closed(
+    activities, run_store, registry, ctx, snapshot_service, monkeypatch,
+):
+    """When the env flag requires validation but no validator is
+    wired, promotion MUST refuse (fail closed). A misconfigured
+    deployment shouldn't silently bypass the gate."""
+    monkeypatch.setenv("J1_REQUIRE_VALIDATION_BEFORE_PROMOTION", "true")
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
+    _seed_run(
+        run_store, ctx, run_id="r-1", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
+    _terminate(activities, ctx, "r-1", final_status="succeeded")
+    doc = registry.get(ctx, "doc-1")
+    assert doc.active_snapshot_id is None, (
+        "promotion should have been refused because the gate is "
+        "required but no validator is wired"
+    )
+
+
+def test_validation_gate_passes_through_wired_validator(
+    activities, run_store, registry, ctx, snapshot_service, monkeypatch,
+):
+    """When the env flag requires validation and a validator returns
+    True, promotion proceeds normally."""
+    monkeypatch.setenv("J1_REQUIRE_VALIDATION_BEFORE_PROMOTION", "true")
+    activities._validation_gate = (
+        lambda ctx, run, snap_id: True
+    )
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
+    _seed_run(
+        run_store, ctx, run_id="r-1", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
+    _terminate(activities, ctx, "r-1", final_status="succeeded")
+    doc = registry.get(ctx, "doc-1")
+    assert doc.active_snapshot_id is not None
+
+
+def test_validation_gate_failing_validator_blocks_promotion(
+    activities, run_store, registry, ctx, snapshot_service, monkeypatch,
+):
+    """A validator that returns False blocks promotion — the previous
+    active snapshot stays in place (here: ``None`` because nothing
+    was active before this run)."""
+    monkeypatch.setenv("J1_REQUIRE_VALIDATION_BEFORE_PROMOTION", "true")
+    activities._validation_gate = (
+        lambda ctx, run, snap_id: False
+    )
+    _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
+    _seed_run(
+        run_store, ctx, run_id="r-1", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
+    _terminate(activities, ctx, "r-1", final_status="succeeded")
+    doc = registry.get(ctx, "doc-1")
+    assert doc.active_snapshot_id is None
+
+
 # ---- Promotion-on-success ---------------------------------------
 
 

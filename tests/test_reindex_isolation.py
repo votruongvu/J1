@@ -350,3 +350,98 @@ def test_H_reindex_fails_when_original_file_missing_on_disk(
     assert "doc-H.pdf" in msg
     # No run was created for the failed re-index.
     assert run_store.list_runs(_CTX, document_id="doc-H") == []
+
+
+# ---- Atomic reindex lock (audit fix) ------------------------------
+
+
+def test_reindex_lock_rejects_second_concurrent_request(
+    client, registry, run_store, workspace,
+):
+    """Two reindex POSTs for the same document cannot both succeed.
+
+    The first acquires the per-document ``pending_operation`` lock
+    via CAS on ``DocumentRecord``. The second sees the lock held and
+    returns HTTP 409 with a clear message. Without this guard, both
+    requests would create parallel runs that race on snapshot
+    allocation and promotion CAS — a class of bug the audit flagged
+    as the list-and-check pattern's blast radius.
+    """
+    _seed_doc(
+        registry=registry, workspace=workspace,
+        document_id="doc-LOCK", active_snapshot_id="snap-1",
+    )
+    _seed_run(
+        run_store=run_store, document_id="doc-LOCK", run_id="run-1",
+        target_snapshot_id="snap-1",
+    )
+
+    # First reindex acquires the lock.
+    first = client.post(
+        "/documents/doc-LOCK/reindex", headers=_HEADERS,
+    )
+    assert first.status_code == 200, first.text
+
+    # Second reindex finds ``pending_operation == "reindex"`` and
+    # refuses. The first lock is released by the workflow's terminal
+    # activity, but in this test harness the workflow doesn't actually
+    # complete — so the lock stays held.
+    second = client.post(
+        "/documents/doc-LOCK/reindex", headers=_HEADERS,
+    )
+    assert second.status_code == 409, second.text
+    msg = second.json()["error"]["message"]
+    assert "pending operation" in msg.lower()
+
+
+def test_reindex_lock_released_after_workflow_terminal(
+    application_facade, run_store, registry, workspace,
+):
+    """After the workflow reports terminal status, the per-document
+    ``pending_operation`` lock is released — operators can start a
+    new reindex without manual intervention. The release runs on
+    every terminal status (success, failure, cancel)."""
+    _seed_doc(
+        registry=registry, workspace=workspace,
+        document_id="doc-REL", active_snapshot_id="snap-1",
+    )
+    sources_raw = application_facade.source_lookup._sources
+    # Manually acquire the lock as the REST handler would.
+    acquired = sources_raw.try_acquire_operation_lock(
+        _CTX, "doc-REL", operation="reindex", run_id="run-REL",
+    )
+    assert acquired is not None
+    doc_locked = sources_raw.get(_CTX, "doc-REL")
+    assert doc_locked.pending_operation == "reindex"
+    assert doc_locked.pending_operation_run_id == "run-REL"
+
+    # Simulate the workflow's terminal-release path.
+    sources_raw.release_operation_lock(
+        _CTX, "doc-REL", expected_run_id="run-REL",
+    )
+    doc_unlocked = sources_raw.get(_CTX, "doc-REL")
+    assert doc_unlocked.pending_operation is None
+    assert doc_unlocked.pending_operation_run_id is None
+
+
+def test_reindex_lock_release_is_cas_guarded(
+    application_facade, registry, workspace,
+):
+    """A stale handler that calls release with the wrong run_id MUST
+    NOT clear someone else's lock."""
+    _seed_doc(
+        registry=registry, workspace=workspace,
+        document_id="doc-CAS", active_snapshot_id="snap-1",
+    )
+    sources_raw = application_facade.source_lookup._sources
+    sources_raw.try_acquire_operation_lock(
+        _CTX, "doc-CAS", operation="reindex", run_id="run-real",
+    )
+
+    # Stale release with wrong run id is a no-op.
+    sources_raw.release_operation_lock(
+        _CTX, "doc-CAS", expected_run_id="run-stale",
+    )
+    doc = sources_raw.get(_CTX, "doc-CAS")
+    assert doc.pending_operation == "reindex"
+    assert doc.pending_operation_run_id == "run-real"

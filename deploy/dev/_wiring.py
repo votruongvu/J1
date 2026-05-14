@@ -459,11 +459,6 @@ def build_smart_query_orchestrator(
     artifacts = JsonArtifactRegistry(workspace)
     sources = JsonSourceRegistry(workspace)
 
-    routes: dict = {}
-    if raganything_provider is not None:
-        routes[RetrievalRouteKind.RAGANYTHING] = RAGAnythingAdapter(
-            raganything_provider,
-        )
     def _resolve_eligible_snapshots(ctx, scope):
         """The lexical adapter wants ``frozenset[str] | None``;
         ``resolve_eligible_active_run_ids`` returns ``EligibilityResult``.
@@ -475,6 +470,27 @@ def build_smart_query_orchestrator(
             return result.snapshot_ids
         except Exception:  # noqa: BLE001 — gate failure → unfiltered
             return None
+
+    def _resolve_eligible_snapshot_pairs(ctx, scope):
+        """RAGAnything adapter needs ``(document_id, snapshot_id)``
+        tuples so the bridge can compute per-snapshot workspace paths
+        (``{workdir}/snapshots/{t}/{p}/{document_id}/{snapshot_id}``).
+        Mirrors ``_resolve_eligible_snapshots`` but returns the
+        pairs side of the eligibility result."""
+        try:
+            result = resolve_eligible_active_run_ids(
+                ctx=ctx, scope=scope, registry=sources,
+            )
+            return result.snapshot_pairs
+        except Exception:  # noqa: BLE001 — gate failure → no fan-out
+            return None
+
+    routes: dict = {}
+    if raganything_provider is not None:
+        routes[RetrievalRouteKind.RAGANYTHING] = RAGAnythingAdapter(
+            raganything_provider,
+            eligible_snapshot_pairs_resolver=_resolve_eligible_snapshot_pairs,
+        )
 
     # Phase 6: build the lexical-recall route on top of the canonical
     # evidence adapter (Postgres FTS by default). Ranking is

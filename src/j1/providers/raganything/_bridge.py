@@ -1212,7 +1212,8 @@ def _resolve_bridge_workspace(
         return Path(
             request.settings.storage_dir or request.settings.workdir
         ).expanduser()
-    raise RuntimeError(
+    from j1.providers.errors import WorkspaceScopeMissing
+    raise WorkspaceScopeMissing(
         "RAGAnything bridge requires either ``working_dir_override`` "
         "or ``snapshot_id`` on the request. Phase 6 deleted the "
         "run-keyed workspace fallback; the active compile path goes "

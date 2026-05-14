@@ -93,7 +93,10 @@ def test_bridge_resolver_raises_when_neither_override_nor_snapshot_given(ctx):
             workdir = "/tmp/x"
             storage_dir = None
 
-    with pytest.raises(RuntimeError, match="working_dir_override.*snapshot_id"):
+    from j1.providers.errors import WorkspaceScopeMissing
+    with pytest.raises(
+        WorkspaceScopeMissing, match="working_dir_override.*snapshot_id",
+    ):
         _resolve_bridge_workspace(_Request(), fallback_to_global=False)
 
 

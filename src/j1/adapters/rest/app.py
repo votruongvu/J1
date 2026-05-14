@@ -488,6 +488,15 @@ def create_rest_api(
         reindex / refresh-enrich the previous-run lookup just needs
         the most recent succeeded run, which the projector's
         ``_find_active_run`` already computes the same way.
+
+        WARNING: this is a heuristic. For *visibility* / *delete
+        safety* the source of truth is the snapshot store — use
+        ``_protected_run_id_for_document`` instead, which derives
+        the protected run from ``DocumentSnapshot.created_by_run_id``
+        of the document's ``active_snapshot_id``. The heuristic
+        survives here only for the reindex parent-pointer + refresh-
+        enrich settings-inheritance lookups, which don't need
+        promotion correctness.
         """
         store = _require_run_store()
         prior = store.list_runs(ctx, document_id=document_id)
@@ -502,6 +511,43 @@ def create_rest_api(
             ):
                 return r.run_id
         return None
+
+    def _protected_run_id_for_document(
+        ctx: ProjectContext, document_id: str,
+    ) -> str | None:
+        """Phase 9 / audit fix: the run that produced the document's
+        currently active snapshot. Delete-run guards MUST use this
+        instead of the latest-succeeded-run heuristic — a later
+        successful but non-promoting run (e.g. CAS conflict, refresh-
+        enrich that hasn't yet promoted) would otherwise mask the
+        producing run from the guard, leaving the active snapshot's
+        producer deletable.
+
+        Returns ``None`` when:
+          * the snapshot service / source registry isn't wired
+            (legacy / test harness paths);
+          * the document has no ``active_snapshot_id``;
+          * the snapshot lookup fails for any reason (treated as
+            "no protected run" — the guard falls back to the
+            heuristic; see the delete handler).
+        """
+        if snapshot_service is None:
+            return None
+        try:
+            lookup = _require_source_registry()
+            doc = lookup._sources.get(ctx, document_id)
+        except Exception:  # noqa: BLE001 — registry transient → no guard hit
+            return None
+        active_snap_id = getattr(doc, "active_snapshot_id", None)
+        if not active_snap_id:
+            return None
+        try:
+            snap = snapshot_service.store.get(ctx, active_snap_id)
+        except Exception:  # noqa: BLE001 — store transient → no guard hit
+            return None
+        if snap is None:
+            return None
+        return getattr(snap, "created_by_run_id", None)
 
     policy = SecurityPolicy(
         authenticator=authenticator,
@@ -1427,13 +1473,25 @@ def create_rest_api(
                     f"{run.document_id!r}. Remove the document via "
                     "POST /documents/{id}/remove instead.",
                 )
-            active_run_id = _latest_succeeded_run_id(ctx, run.document_id)
-            if active_run_id == run_id:
+            # Primary guard: the run that produced the document's
+            # currently active snapshot is protected, regardless of
+            # which run is "latest succeeded". Falls back to the
+            # heuristic when the snapshot store isn't wired (test
+            # harness) so legacy fixtures still see the guard.
+            protected_run_id = _protected_run_id_for_document(
+                ctx, run.document_id,
+            )
+            if protected_run_id is None:
+                protected_run_id = _latest_succeeded_run_id(
+                    ctx, run.document_id,
+                )
+            if protected_run_id == run_id:
                 raise HTTPException(
                     409,
-                    f"run {run_id!r} is the active run for document "
-                    f"{run.document_id!r}. Re-index or remove the "
-                    "document to replace it before deleting this run.",
+                    f"run {run_id!r} produced the active snapshot for "
+                    f"document {run.document_id!r}. Re-index or "
+                    "remove the document to replace it before "
+                    "deleting this run.",
                 )
 
         try:
@@ -1906,6 +1964,13 @@ def create_rest_api(
         # mid-flight reindex can't kick off a second concurrent
         # attempt. Settings inheritance pulls from the latest
         # succeeded run.
+        #
+        # The list-and-check below is the user-friendly soft guard
+        # (better error message when an obvious in-flight run
+        # exists). The *atomic* guard is
+        # ``try_acquire_operation_lock`` below — two near-concurrent
+        # reindex POSTs that both pass the soft check still race on
+        # the lock CAS, and the loser gets HTTP 409.
         active_states = {
             RunStatus.RUNNING.value, RunStatus.PAUSED.value,
             RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
@@ -1937,6 +2002,42 @@ def create_rest_api(
 
         actor = security.subject if security else "system"
         new_run_id = uuid.uuid4().hex
+
+        # Atomic reindex lock (audit fix). Two concurrent reindex
+        # POSTs that both pass the soft in-flight check above still
+        # race here — the CAS on ``DocumentRecord.pending_operation``
+        # picks exactly one winner. The loser sees HTTP 409 instead
+        # of silently dispatching a parallel run. The workflow's
+        # ``report_run_terminal`` activity releases the lock at every
+        # terminal status; see
+        # ``RunsActivities._release_operation_lock_for_run``.
+        try:
+            lookup_for_lock = _require_source_registry()
+            sources_raw = getattr(lookup_for_lock, "_sources", None)
+            try_acquire = (
+                getattr(sources_raw, "try_acquire_operation_lock", None)
+                if sources_raw is not None else None
+            )
+            if try_acquire is not None:
+                acquired = try_acquire(
+                    ctx, document_id,
+                    operation="reindex", run_id=new_run_id,
+                )
+                if acquired is None:
+                    raise HTTPException(
+                        409,
+                        f"document {document_id!r} already has a "
+                        "pending operation (reindex / refresh-enrich "
+                        "/ attach / detach / remove). Wait for it to "
+                        "complete before starting a new reindex.",
+                    )
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 — lock unavailable → no atomic guard
+            # Best-effort: legacy / test wirings without the lock
+            # helper fall back to the soft in-flight check above.
+            pass
+
         now = datetime.now(timezone.utc)
         from j1.runs.models import allocate_display_version
         prior_runs = store.list_runs(ctx, document_id=document_id)
@@ -2044,7 +2145,25 @@ def create_rest_api(
             reindex_of=active_run_id or None,
             target_snapshot_id=new_run.target_snapshot_id,
         )
-        workflow_id = await starter(ctx, document_id, body)
+        try:
+            workflow_id = await starter(ctx, document_id, body)
+        except Exception:
+            # Workflow dispatch failed before the activity layer
+            # could release the lock on a terminal status. Release
+            # here so the document doesn't stay wedged in
+            # ``pending_operation=reindex`` forever.
+            try:
+                sources_raw = getattr(
+                    _require_source_registry(), "_sources", None,
+                )
+                release = getattr(
+                    sources_raw, "release_operation_lock", None,
+                ) if sources_raw is not None else None
+                if release is not None:
+                    release(ctx, document_id, expected_run_id=new_run_id)
+            except Exception:  # noqa: BLE001 — release is best-effort
+                pass
+            raise
         new_run.workflow_id = workflow_id
         new_run.updated_at = datetime.now(timezone.utc)
         store.upsert(ctx, new_run)

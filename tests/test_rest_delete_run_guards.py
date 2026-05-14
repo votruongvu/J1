@@ -173,7 +173,11 @@ def test_delete_run_rejects_active_run(client, registry, run_store, ctx):
     resp = client.delete("/ingestion-runs/r-active", headers=_headers(ctx))
     assert resp.status_code == 409, resp.text
     msg = resp.json()["error"]["message"]
-    assert "active run" in msg.lower()
+    # Phase 9 guard: protection comes from the active snapshot's
+    # producing run, not the latest-succeeded heuristic. The message
+    # now says "produced the active snapshot" — fall back to "active"
+    # to keep the assertion intent-compatible with either wording.
+    assert "active" in msg.lower()
     assert run_store.get(ctx, "r-active") is not None
 
 

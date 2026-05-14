@@ -89,6 +89,14 @@ class QueryTrace:
     # Total wall-clock for the whole orchestrator call. Surfaced for
     # the manual view's perf column; not used by gates.
     duration_ms: int = 0
+    # Snapshot scope diagnostics — populated by the orchestrator /
+    # routes so operators can verify that BM25 + RAGAnything queried
+    # the same eligible boundary. Empty when the trace was built by
+    # a legacy caller; the manual view treats empty as "unknown".
+    eligible_snapshot_ids: tuple[str, ...] = ()
+    queried_raganything_snapshot_ids: tuple[str, ...] = ()
+    bm25_allowed_snapshot_ids: tuple[str, ...] = ()
+    used_global_workspace: bool = False
 
     @classmethod
     def empty_with_plan(cls, question: str, plan: QueryPlan) -> "QueryTrace":
@@ -160,6 +168,25 @@ class QueryTrace:
     def with_duration(self, duration_ms: int) -> "QueryTrace":
         return _replace(self, duration_ms=duration_ms)
 
+    def with_snapshot_scope(
+        self,
+        *,
+        eligible_snapshot_ids: tuple[str, ...] = (),
+        queried_raganything_snapshot_ids: tuple[str, ...] = (),
+        bm25_allowed_snapshot_ids: tuple[str, ...] = (),
+        used_global_workspace: bool = False,
+    ) -> "QueryTrace":
+        """Stamp snapshot-scope diagnostics. Called by the
+        orchestrator after route execution so operators can verify
+        BM25 + RAGAnything used the same eligibility boundary."""
+        return _replace(
+            self,
+            eligible_snapshot_ids=eligible_snapshot_ids,
+            queried_raganything_snapshot_ids=queried_raganything_snapshot_ids,
+            bm25_allowed_snapshot_ids=bm25_allowed_snapshot_ids,
+            used_global_workspace=used_global_workspace,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-friendly shape rendered by the manual-test endpoint
         verbatim. Keys are stable; new ones land at the end so
@@ -184,6 +211,16 @@ class QueryTrace:
             "gate_results": [g.to_dict() for g in self.gate_results],
             "final_status": self.final_status,
             "duration_ms": self.duration_ms,
+            "snapshot_scope": {
+                "eligible_snapshot_ids": list(self.eligible_snapshot_ids),
+                "queried_raganything_snapshot_ids": list(
+                    self.queried_raganything_snapshot_ids,
+                ),
+                "bm25_allowed_snapshot_ids": list(
+                    self.bm25_allowed_snapshot_ids,
+                ),
+                "used_global_workspace": self.used_global_workspace,
+            },
         }
 
 

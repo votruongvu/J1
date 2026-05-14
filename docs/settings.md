@@ -150,6 +150,12 @@ forward compatibility.
 | `J1_ASSESSMENT_ENABLED` | `true` | no | bool | dev/api wiring → workflow request | Run the profile + AssessmentPlan stage before compile. | Disable to fall back to `J1_RAGANYTHING_PARSE_METHOD`. |
 | `J1_ASSESSMENT_FAILURE_POLICY` | `fail_open` | no | `fail_open` / `fail_closed` | workflow | Whether assessment failure aborts the run. | `fail_closed` when you'd rather fail than fall back to a generic parse. |
 
+### Snapshot promotion (blue/green publish)
+
+| Setting | Default | Required | Valid values | Used by | Description | When to change |
+| --- | --- | --- | --- | --- | --- | --- |
+| `J1_REQUIRE_VALIDATION_BEFORE_PROMOTION` | `false` | no | bool | `RunsActivities._maybe_promote_to_active` | Gate snapshot promotion behind a validator. When `true`, the activity calls `self._validation_gate(ctx, run, snapshot_id)` (if wired) and only promotes when it returns truthy; an unwired validator + `true` fails closed (refuses promotion). When `false` (default), the existing decoupled validation flow stays in place — workflow terminal success promotes immediately, and validation happens post-promotion via the CSV-import / manual-test-query surfaces. | Flip to `true` once a validator is wired (currently a structural hook; validator implementation is deferred — see audit follow-up). |
+
 ### Compile (RAGAnything black box)
 
 | Setting | Default | Required | Valid values | Used by | Description |

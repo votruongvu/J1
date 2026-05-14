@@ -63,14 +63,27 @@ class _StubRAGProvider:
         self.result = result
         self.calls: list[dict[str, Any]] = []
 
-    def query(self, ctx, question, *, max_results, document_id, run_id):
+    def query(
+        self, ctx, question, *,
+        max_results, document_id, run_id, snapshot_id=None,
+    ):
         self.calls.append({
             "question": question,
             "max_results": max_results,
             "document_id": document_id,
             "run_id": run_id,
+            "snapshot_id": snapshot_id,
         })
         return self.result
+
+
+def _pairs_resolver(*pairs: tuple[str, str]):
+    """Build an ``eligible_snapshot_pairs_resolver`` for tests that
+    don't care about the resolver mechanics — they just need the
+    adapter to fan out against a known ``(document_id, snapshot_id)``
+    pair so the provider's ``query`` gets called."""
+    frozen = frozenset(pairs)
+    return lambda ctx, scope: frozen
 
 
 def test_raganything_adapter_projects_evidence_chunks(route_ctx):
@@ -93,7 +106,10 @@ def test_raganything_adapter_projects_evidence_chunks(route_ctx):
             ],
         },
     ))
-    adapter = RAGAnythingAdapter(provider)
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(("doc-1", "snap-1")),
+    )
     job = RetrievalJob(
         route=RetrievalRouteKind.RAGANYTHING,
         query="deliverables 60% 90% 100% design cost estimate",
@@ -123,7 +139,10 @@ def test_raganything_adapter_falls_back_to_citations(route_ctx):
         citations=["a1", "a2"],
         metadata={},
     ))
-    adapter = RAGAnythingAdapter(provider)
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(("doc-1", "snap-1")),
+    )
     job = RetrievalJob(
         route=RetrievalRouteKind.RAGANYTHING,
         query="q", max_results=5,
@@ -146,7 +165,10 @@ def test_raganything_adapter_prefers_chunks_over_native_answer(route_ctx):
              "text": "real chunk body", "score": 0.9},
         ]},
     ))
-    adapter = RAGAnythingAdapter(provider)
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(("doc-1", "snap-1")),
+    )
     candidates = adapter.execute(
         RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
         route_ctx,
@@ -172,7 +194,10 @@ def test_raganything_adapter_surfaces_native_answer_as_advisory(route_ctx):
         citations=[],
         metadata={"evidence_chunks": []},
     ))
-    adapter = RAGAnythingAdapter(provider)
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(("doc-1", "snap-1")),
+    )
     candidates = adapter.execute(
         RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
         route_ctx,
@@ -194,7 +219,10 @@ def test_raganything_adapter_marks_empty_response_for_diagnostics(route_ctx):
         citations=[],
         metadata={"working_dir": "/var/lib/j1/raganything/runs/x"},
     ))
-    adapter = RAGAnythingAdapter(provider)
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(("doc-1", "snap-1")),
+    )
     candidates = adapter.execute(
         RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
         route_ctx,
@@ -206,6 +234,162 @@ def test_raganything_adapter_marks_empty_response_for_diagnostics(route_ctx):
         candidates[0].extra["raganything_working_dir"]
         == "/var/lib/j1/raganything/runs/x"
     )
+
+
+# ---- RAGAnything snapshot-scope guarantees (audit-fix) ----------
+
+
+def test_raganything_adapter_passes_snapshot_id_to_provider(route_ctx):
+    """The adapter MUST pass ``snapshot_id`` (not just ``run_id``) into
+    the provider's query call. The bridge keys its working_dir on
+    snapshot_id; without it the bridge raises ``WorkspaceScopeMissing``
+    and the query silently falls back to global."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="ok", citations=[], metadata={},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(
+            ("doc-1", "snap-active"),
+        ),
+    )
+    adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        route_ctx,
+    )
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["snapshot_id"] == "snap-active"
+    assert provider.calls[0]["document_id"] == "doc-1"
+
+
+def test_raganything_adapter_fans_out_per_eligible_snapshot(ctx):
+    """Project-wide query with two attached documents → one provider
+    call per ``(document_id, snapshot_id)`` pair. Each call sees the
+    correct pair so the bridge resolves the per-snapshot workdir."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={"evidence_chunks": []},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(
+            ("doc-A", "snap-A"), ("doc-B", "snap-B"),
+        ),
+    )
+    # Workspace-wide scope, no pinned document_id.
+    workspace_ctx = RouteContext(ctx=ctx, scope=WorkspaceScope())
+    adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        workspace_ctx,
+    )
+    assert len(provider.calls) == 2
+    pairs_called = {
+        (c["document_id"], c["snapshot_id"]) for c in provider.calls
+    }
+    assert pairs_called == {("doc-A", "snap-A"), ("doc-B", "snap-B")}
+
+
+def test_raganything_adapter_refuses_when_no_eligible_snapshot(route_ctx):
+    """No resolver → empty pair set → adapter refuses (no provider
+    call) and surfaces a marker candidate for the trace. This is the
+    fail-closed invariant: the adapter NEVER falls back to a global
+    workspace just because eligibility came back empty."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="should never see this", citations=[], metadata={},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(),  # empty
+    )
+    candidates = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        route_ctx,
+    )
+    assert provider.calls == []
+    assert len(candidates) == 1
+    assert candidates[0].artifact_kind == "raganything.no_eligible_snapshot"
+    assert candidates[0].score == 0.0
+
+
+def test_raganything_adapter_narrows_to_pinned_document_id(ctx):
+    """When ``RouteContext.document_id`` is set, only the matching
+    pair is queried — a single-document detail page must not fan
+    out to other documents' snapshots."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={"evidence_chunks": []},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(
+            ("doc-A", "snap-A"), ("doc-B", "snap-B"),
+        ),
+    )
+    pinned = RouteContext(
+        ctx=ctx, scope=WorkspaceScope(), document_id="doc-A",
+    )
+    adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        pinned,
+    )
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["document_id"] == "doc-A"
+    assert provider.calls[0]["snapshot_id"] == "snap-A"
+
+
+def test_raganything_adapter_respects_eligible_snapshot_id_allowlist(ctx):
+    """When the orchestrator pre-resolves ``eligible_snapshot_ids``,
+    the adapter narrows the resolver's pairs to that allowlist. Lets
+    one eligibility computation feed both BM25 and RAGAnything
+    instead of resolving twice."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={"evidence_chunks": []},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(
+            ("doc-A", "snap-A"), ("doc-B", "snap-B"),
+        ),
+    )
+    # Orchestrator narrowed eligibility to only snap-A.
+    narrow = RouteContext(
+        ctx=ctx, scope=WorkspaceScope(),
+        eligible_snapshot_ids=frozenset({"snap-A"}),
+    )
+    adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        narrow,
+    )
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["snapshot_id"] == "snap-A"
+
+
+def test_raganything_provider_propagates_workspace_scope_missing():
+    """The provider MUST re-raise ``WorkspaceScopeMissing`` from the
+    bridge, not swallow it as a generic FAILED result. Operators need
+    the scope-missing reason to surface in the trace."""
+    from j1.providers.errors import WorkspaceScopeMissing
+    from j1.providers.raganything.retrieval import (
+        RAGAnythingQueryProvider, RAGAnythingQueryRequest,
+    )
+    from j1.providers.raganything.settings import RAGAnythingSettings
+
+    class _StubLLMRegistry:
+        def text(self): return None
+        def try_embedding(self): return None
+
+    def _raising_callable(request: RAGAnythingQueryRequest):
+        raise WorkspaceScopeMissing("no snapshot id supplied")
+
+    settings = RAGAnythingSettings()
+    provider = RAGAnythingQueryProvider(
+        llm_registry=_StubLLMRegistry(),
+        settings=settings,
+        query_callable=_raising_callable,
+    )
+    with pytest.raises(WorkspaceScopeMissing):
+        provider.query(
+            ProjectContext(tenant_id="t", project_id="p", profile=None),
+            "q",
+        )
 
 
 # ---- Lexical evidence adapter (was: BM25 adapter) ----------------

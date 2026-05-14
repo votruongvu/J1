@@ -55,6 +55,12 @@ class EligibilityResult:
     yet — both fields are filled in for every result so neither
     side has to look up the other set.
 
+    ``snapshot_pairs`` carries ``(document_id, snapshot_id)`` tuples
+    for routes (RAGAnything) that need per-document workspace paths
+    on top of the flat snapshot set. Order matches the corresponding
+    snapshot in ``snapshot_ids`` is not promised; consumers should
+    treat both as set-like.
+
     ``unchecked`` is true when the caller bypassed the gate via
     ``ScopeOverride`` (validation diagnostic path).
     """
@@ -62,6 +68,7 @@ class EligibilityResult:
     snapshot_ids: frozenset[str]
     run_ids: frozenset[str]
     document_ids: frozenset[str]
+    snapshot_pairs: frozenset[tuple[str, str]] = frozenset()
     unchecked: bool = False
 
     @property
@@ -137,15 +144,18 @@ def _resolve_workspace_scope(
     docs = registry.list_documents(ctx)
     eligible_snaps: set[str] = set()
     eligible_docs: set[str] = set()
+    pairs: set[tuple[str, str]] = set()
     for doc in docs:
         if not _is_document_eligible(doc):
             continue
         eligible_docs.add(doc.document_id)
         eligible_snaps.add(doc.active_snapshot_id)
+        pairs.add((doc.document_id, doc.active_snapshot_id))
     return EligibilityResult(
         snapshot_ids=frozenset(eligible_snaps),
         run_ids=frozenset(),
         document_ids=frozenset(eligible_docs),
+        snapshot_pairs=frozenset(pairs),
     )
 
 
@@ -170,6 +180,9 @@ def _resolve_active_scope(
         snapshot_ids=frozenset({doc.active_snapshot_id}),
         run_ids=frozenset(),
         document_ids=frozenset({doc.document_id}),
+        snapshot_pairs=frozenset(
+            {(doc.document_id, doc.active_snapshot_id)},
+        ),
     )
 
 

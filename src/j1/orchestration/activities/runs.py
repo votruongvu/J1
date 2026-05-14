@@ -624,6 +624,14 @@ class RunsActivities:
         # successful run" true: the previous active_snapshot_id
         # stays pointing at the prior good snapshot.
         self._maybe_promote_to_active(ctx, run)
+        # Audit-fix: release the per-document operation lock that the
+        # REST reindex handler acquired before workflow start. Release
+        # runs on *every* terminal status (success, failure, cancel)
+        # so the document doesn't stay wedged in ``pending_operation``
+        # after a failed reindex. CAS-guarded by run_id so a stale
+        # workflow can't clear someone else's lock; safe to call
+        # unconditionally — release is a no-op when no lock is held.
+        self._release_operation_lock_for_run(ctx, run)
 
         # Phase-1 ingestion diagnostics. Materialise the in-memory
         # collector into a ``compiled.ingestion_diagnostic_report``
@@ -644,6 +652,75 @@ class RunsActivities:
                 # Recorder already logs internally; never let a
                 # diagnostic IO failure break the terminal path.
                 pass
+
+    def _validation_gate_passed_for_promotion(
+        self, ctx, run, target_snapshot_id: str,
+    ) -> bool:
+        """Pre-promotion validation gate (structural hook).
+
+        Default behaviour when ``J1_REQUIRE_VALIDATION_BEFORE_PROMOTION``
+        is unset / "false" → return ``True`` (gate is bypassed; the
+        current decoupled validation flow stays in place).
+
+        When the env flag is "true" and a validator callable is
+        wired on ``self._validation_gate``, defer to it. When the
+        flag is "true" but no validator is wired, refuse promotion
+        (fail closed) so a misconfigured deployment doesn't silently
+        bypass the gate.
+
+        The validator contract is intentionally minimal — receives
+        ``(ctx, run, target_snapshot_id)`` and returns a bool. The
+        full validator (lightweight workspace/artifact checks per
+        the audit Part 2 spec) is deferred to a follow-up; this
+        hook exists so the gating *flow* can land without coupling
+        to a validation implementation.
+        """
+        import os
+        flag = os.environ.get(
+            "J1_REQUIRE_VALIDATION_BEFORE_PROMOTION", "false",
+        ).strip().lower()
+        if flag not in ("true", "1", "yes", "on"):
+            return True
+        validator = getattr(self, "_validation_gate", None)
+        if validator is None:
+            # Fail closed: env says "require" but no validator
+            # supplied means a deployment wiring error; refusing
+            # promotion is safer than silently bypassing.
+            return False
+        try:
+            return bool(validator(ctx, run, target_snapshot_id))
+        except Exception:  # noqa: BLE001 — validator failure → fail closed
+            return False
+
+    def _release_operation_lock_for_run(self, ctx, run) -> None:
+        """Release the per-document ``pending_operation`` lock that
+        the REST reindex/refresh-enrich handler acquired before
+        workflow dispatch. Idempotent — release is a no-op when no
+        lock is held, and CAS-guarded by ``expected_run_id`` so a
+        stale handler cannot clear another reindex's lock.
+
+        Always runs at workflow terminal regardless of status: a
+        failed reindex still needs to clear the lock so the operator
+        can retry from the UI without manual intervention. Best-
+        effort — the run status update is the load-bearing
+        operation; lock release failures log to the activity layer
+        and don't fail the workflow.
+        """
+        if self._source_registry is None:
+            return
+        document_id = getattr(run, "document_id", None)
+        if not document_id:
+            return
+        run_id = getattr(run, "run_id", None)
+        release = getattr(
+            self._source_registry, "release_operation_lock", None,
+        )
+        if release is None:
+            return
+        try:
+            release(ctx, document_id, expected_run_id=run_id)
+        except Exception:  # noqa: BLE001 — best-effort
+            return
 
     def _maybe_promote_to_active(self, ctx, run) -> None:
         """Promote this run's snapshot to ``document.active_snapshot_id``
@@ -702,6 +779,24 @@ class RunsActivities:
             # bulk-job per-document loop. A run with no snapshot is
             # a wiring error — skip promotion so corrupt lineage
             # doesn't leak into the document record.
+            return
+
+        # Validation-before-promotion gate (audit fix, default off).
+        # When ``J1_REQUIRE_VALIDATION_BEFORE_PROMOTION=true`` the
+        # gate runs *before* the snapshot CAS — a candidate that
+        # fails validation does not promote, so the previous active
+        # snapshot remains queryable. Current implementation is a
+        # placeholder that always passes when no validator is wired;
+        # this exists so the gating *contract* can be added without
+        # the actual validation logic (see audit Part 2 — full
+        # validator implementation is deferred). When wired, the
+        # validator MUST return ``True`` to promote.
+        if not self._validation_gate_passed_for_promotion(
+            ctx, run, target_snapshot_id,
+        ):
+            # Gate refused: skip promotion, leave previous active
+            # snapshot in place, mark candidate as orphan for cleanup.
+            self._cleanup_orphan_candidate(ctx, run)
             return
 
         snapshot_promoted = False

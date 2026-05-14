@@ -80,6 +80,41 @@ def test_workspace_scope_unions_eligible_active_snapshots(ctx):
     assert result.document_ids == frozenset({"d1", "d2"})
 
 
+def test_workspace_scope_returns_snapshot_pairs_for_fan_out(ctx):
+    """RAGAnything needs ``(document_id, snapshot_id)`` tuples so the
+    bridge can compute per-snapshot workspace paths. The eligibility
+    result MUST carry pairs alongside the flat snapshot-id set."""
+    registry = _StubRegistry([
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
+        _doc(ctx=ctx, document_id="d2", active_snapshot_id="r2"),
+        _doc(ctx=ctx, document_id="d3", state="detached",
+             active_snapshot_id="r3"),
+    ])
+    result = resolve_eligible_active_run_ids(
+        ctx=ctx, scope=WorkspaceScope(), registry=registry,
+    )
+    assert result.snapshot_pairs == frozenset({
+        ("d1", "r1"), ("d2", "r2"),
+    })
+    # Detached document's pair is excluded — same gate as the flat
+    # snapshot_ids set.
+    assert ("d3", "r3") not in result.snapshot_pairs
+
+
+def test_active_scope_returns_single_snapshot_pair_for_eligible_doc(ctx):
+    """ActiveScope on an eligible document returns a one-element
+    pair set — the RAGAnything adapter uses it for the single-doc
+    detail page path."""
+    registry = _StubRegistry([
+        _doc(ctx=ctx, document_id="d1", active_snapshot_id="s1"),
+    ])
+    from j1.query.scope import ActiveScope as _ActiveScope
+    result = resolve_eligible_active_run_ids(
+        ctx=ctx, scope=_ActiveScope(document_id="d1"), registry=registry,
+    )
+    assert result.snapshot_pairs == frozenset({("d1", "s1")})
+
+
 def test_workspace_scope_drops_detached_and_removed(ctx):
     registry = _StubRegistry([
         _doc(ctx=ctx, document_id="d1", active_snapshot_id="r1"),
