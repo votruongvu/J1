@@ -72,9 +72,9 @@ class IngestRequest(CamelModel):
     # candidate ``DocumentSnapshot`` at run-creation time and
     # threads the id through here so the JobStarter can wire it
     # onto `ProjectProcessingRequest.target_snapshot_id`. None for
-    # legacy callers / bulk-job dispatch that doesn't allocate
-    # up-front; the workflow falls back to the deprecated lazy
-    # ``get_or_create_for_run`` allocator in that case.
+    # bulk-job dispatch that processes multiple documents in one
+    # workflow; the workflow allocates per-document inside the
+    # processing loop via the ``allocate_target_snapshot`` activity.
     target_snapshot_id: str | None = None
 
 

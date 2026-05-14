@@ -191,16 +191,24 @@ def test_promotion_writes_only_active_snapshot_id(workspace, ctx, registry):
         status=ProcessingStatus.SUCCEEDED, created_at=now,
     ))
 
+    snapshot_service = DocumentSnapshotService(
+        store=JsonlDocumentSnapshotStore(workspace),
+    )
+    # Phase 9 follow-up: allocate the candidate snapshot up-front
+    # (matches REST allocation) and stamp ``target_snapshot_id`` on
+    # the run so the promotion path can validate via
+    # ``require_existing_target_snapshot``.
+    candidate = snapshot_service.create_candidate(
+        ctx, document_id="doc-7", created_by_run_id="r-7",
+    )
     run_store = JsonlIngestionRunStore(workspace)
     run_store.upsert(ctx, IngestionRun(
         run_id="r-7", document_id="doc-7",
         workflow_id="wf-7", workflow_run_id=None,
         status=RunStatus.RUNNING, started_at=now, updated_at=now,
+        target_snapshot_id=candidate.snapshot_id,
     ))
 
-    snapshot_service = DocumentSnapshotService(
-        store=JsonlDocumentSnapshotStore(workspace),
-    )
     activities = RunsActivities(
         progress_reporter=None,
         run_store=run_store,
@@ -225,8 +233,9 @@ def test_promotion_writes_only_active_snapshot_id(workspace, ctx, registry):
 
 def test_knowledge_activity_threads_snapshot_id_to_compile(workspace, ctx, registry):
     """Phase 7: when the compiler accepts ``snapshot_id``, the
-    activity resolves it (via ``get_or_create_for_run``) and
-    passes it through."""
+    activity resolves it (via the workflow-supplied
+    ``target_snapshot_id`` + ``require_existing_target_snapshot``)
+    and passes it through."""
     from datetime import datetime, timezone
     from j1.audit.recorder import DefaultAuditRecorder
     from j1.audit.sink import JsonlAuditSink
@@ -272,6 +281,11 @@ def test_knowledge_activity_threads_snapshot_id_to_compile(workspace, ctx, regis
     snapshot_service = DocumentSnapshotService(
         store=JsonlDocumentSnapshotStore(workspace),
     )
+    # Phase 9 follow-up: workflow allocates up-front and threads via
+    # ``target_snapshot_id`` on the activity input.
+    candidate = snapshot_service.create_candidate(
+        ctx, document_id="doc-1", created_by_run_id="run-1",
+    )
     activities = KnowledgeProcessingActivities(
         workspace=workspace,
         sources=registry,
@@ -287,6 +301,7 @@ def test_knowledge_activity_threads_snapshot_id_to_compile(workspace, ctx, regis
             document_id="doc-1",
             processor_kind="stub.compiler",
             correlation_id="run-1",
+            target_snapshot_id=candidate.snapshot_id,
         ),
     )
     assert captured["run_id"] == "run-1"

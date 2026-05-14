@@ -20,7 +20,11 @@ from temporalio import activity
 
 from j1.artifacts.registry import ArtifactRegistry
 from j1.intake.registry import SourceRegistry
-from j1.orchestration.activities.payloads import ProjectScope
+from j1.orchestration.activities.payloads import (
+    AllocateTargetSnapshotInput,
+    AllocateTargetSnapshotResult,
+    ProjectScope,
+)
 from j1.runs.models import RunStatus
 from j1.runs.reporter import ProgressReporter
 from j1.runs.store import IngestionRunStore
@@ -31,8 +35,10 @@ ACTIVITY_REPORT_PLAN_GENERATED = "j1.runs.report_plan_generated"
 ACTIVITY_REPORT_PLAN_REVISED = "j1.runs.report_plan_revised"
 ACTIVITY_REPORT_STEP_LIFECYCLE = "j1.runs.report_step_lifecycle"
 ACTIVITY_REPORT_ATTEMPT = "j1.runs.report_attempt"
+ACTIVITY_ALLOCATE_TARGET_SNAPSHOT = "j1.runs.allocate_target_snapshot"
 
 __all__ = [
+    "ACTIVITY_ALLOCATE_TARGET_SNAPSHOT",
     "ACTIVITY_REPORT_ATTEMPT",
     "ACTIVITY_REPORT_PLAN_GENERATED",
     "ACTIVITY_REPORT_PLAN_REVISED",
@@ -272,7 +278,53 @@ class RunsActivities:
             self.report_plan_generated,
             self.report_plan_revised,
             self.report_attempt,
+            self.allocate_target_snapshot,
         ]
+
+    @activity.defn(name=ACTIVITY_ALLOCATE_TARGET_SNAPSHOT)
+    def allocate_target_snapshot(
+        self, input: AllocateTargetSnapshotInput,
+    ) -> AllocateTargetSnapshotResult:
+        """Allocate a fresh candidate ``DocumentSnapshot`` for the
+        bulk-job per-document loop.
+
+        Single-document REST flows pre-allocate at the REST boundary
+        and thread the id via ``ProjectProcessingRequest.target_snapshot_id``.
+        Bulk-job flows can't pre-allocate (multiple documents per
+        workflow), so the workflow calls this activity at the start
+        of each document's processing.
+
+        Idempotent across retries: the snapshot store is content-
+        keyed on ``(document_id, created_by_run_id)`` via the
+        ``DocumentSnapshotService``'s lookup-before-create path here,
+        so two activations for the same (document_id, run_id) return
+        the same snapshot_id. This is the ONLY remaining caller of
+        the deprecated lookup-or-create logic; the production
+        single-doc path uses ``require_existing_target_snapshot``.
+        """
+        if self._snapshot_service is None:
+            raise RuntimeError(
+                "allocate_target_snapshot called without a snapshot "
+                "service wired. Worker config must inject "
+                "DocumentSnapshotService into RunsActivities.",
+            )
+        ctx = input.scope.to_context()
+        # Look up an existing candidate first so retries idempotently
+        # return the same snapshot_id. Falls back to creating a fresh
+        # candidate when none exists yet.
+        for snap in self._snapshot_service.store.list_for_document(
+            ctx, document_id=input.document_id,
+        ):
+            if snap.created_by_run_id == input.run_id:
+                return AllocateTargetSnapshotResult(
+                    snapshot_id=snap.snapshot_id,
+                )
+        snap = self._snapshot_service.create_candidate(
+            ctx,
+            document_id=input.document_id,
+            created_by_run_id=input.run_id,
+        )
+        return AllocateTargetSnapshotResult(snapshot_id=snap.snapshot_id)
 
     @activity.defn(name=ACTIVITY_REPORT_ATTEMPT)
     def report_attempt(self, input: ReportAttemptInput) -> None:
@@ -607,11 +659,22 @@ class RunsActivities:
         # promotion path). When the snapshot service isn't wired,
         # the run-status update is still the load-bearing
         # operation; the promotion is a best-effort side effect.
+        target_snapshot_id = getattr(run, "target_snapshot_id", None)
+        if not target_snapshot_id:
+            # Phase 9: every run reaching terminal-success MUST carry
+            # a ``target_snapshot_id``. REST allocates at the boundary
+            # for single-doc flows; the workflow's
+            # ``allocate_target_snapshot`` activity allocates for the
+            # bulk-job per-document loop. A run with no snapshot is
+            # a wiring error — skip promotion so corrupt lineage
+            # doesn't leak into the document record.
+            return
+
         snapshot_promoted = False
         if self._snapshot_service is not None:
             snapshot_promoted = self._promote_snapshot(
                 ctx, run.document_id, run.run_id,
-                target_snapshot_id=getattr(run, "target_snapshot_id", None),
+                target_snapshot_id=target_snapshot_id,
                 previous_active_snapshot_id=previous_active_snapshot_id,
             )
         if not snapshot_promoted:
@@ -627,18 +690,12 @@ class RunsActivities:
         # them. The supersede helper keys on snapshot_id (Phase 6).
         if self._artifact_registry is None or self._snapshot_service is None:
             return
-        target_snapshot_id = getattr(run, "target_snapshot_id", None)
         try:
-            if target_snapshot_id:
-                new_snap = self._snapshot_service.require_existing_target_snapshot(
-                    ctx,
-                    document_id=run.document_id,
-                    snapshot_id=target_snapshot_id,
-                )
-            else:
-                new_snap = self._snapshot_service.get_or_create_for_run(
-                    ctx, document_id=run.document_id, run_id=run.run_id,
-                )
+            new_snap = self._snapshot_service.require_existing_target_snapshot(
+                ctx,
+                document_id=run.document_id,
+                snapshot_id=target_snapshot_id,
+            )
         except Exception:  # noqa: BLE001 — best-effort
             return
         try:
@@ -663,32 +720,24 @@ class RunsActivities:
         document_id: str,
         run_id: str,
         *,
-        target_snapshot_id: str | None,
+        target_snapshot_id: str,
         previous_active_snapshot_id: str | None,
     ) -> bool:
         """Phase 9: snapshot-side promotion is the CANONICAL
-        promotion path. When the run carries ``target_snapshot_id``
-        (the up-front allocation threaded through
-        ``ProjectProcessingRequest``), load it via
-        ``require_existing_target_snapshot``. Falls back to the
-        deprecated lazy ``get_or_create_for_run`` for legacy
-        bulk-job runs that haven't been migrated yet.
+        promotion path. ``target_snapshot_id`` is the up-front
+        allocation threaded through ``ProjectProcessingRequest`` /
+        ``IngestionRun.target_snapshot_id`` — required.
 
         Returns True on success, False when the snapshot service
         refused (CAS conflict, snapshot missing, store error). On
         False, the caller triggers orphan cleanup.
         """
         try:
-            if target_snapshot_id:
-                snap = self._snapshot_service.require_existing_target_snapshot(
-                    ctx,
-                    document_id=document_id,
-                    snapshot_id=target_snapshot_id,
-                )
-            else:
-                snap = self._snapshot_service.get_or_create_for_run(
-                    ctx, document_id=document_id, run_id=run_id,
-                )
+            snap = self._snapshot_service.require_existing_target_snapshot(
+                ctx,
+                document_id=document_id,
+                snapshot_id=target_snapshot_id,
+            )
         except Exception:  # noqa: BLE001 — best-effort
             return False
         # Phase 7: caller already resolved the previous active

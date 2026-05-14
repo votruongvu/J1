@@ -60,9 +60,11 @@ def test_rest_app_allocator_returns_snapshot_id_when_service_wired(
         ctx, document_id="d-1", created_by_run_id="run-X",
     )
     assert snap.snapshot_id.startswith("snap_")
-    # Re-call returns the same snapshot for an existing (doc, run) pair.
-    again = service.get_or_create_for_run(
-        ctx, document_id="d-1", run_id="run-X",
+    # Phase 9 follow-up: ``require_existing_target_snapshot`` is the
+    # canonical lookup. It returns the existing candidate when the
+    # caller already has its id.
+    again = service.require_existing_target_snapshot(
+        ctx, document_id="d-1", snapshot_id=snap.snapshot_id,
     )
     assert again.snapshot_id == snap.snapshot_id
 

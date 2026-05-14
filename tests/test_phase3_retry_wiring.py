@@ -129,7 +129,10 @@ def test_build_worker_spec_passes_snapshot_service_into_activities(tmp_path):
     # The builder must produce a real service. The next assertion
     # locks the public surface the activities consume.
     assert snapshot_service is not None
-    assert hasattr(snapshot_service, "get_or_create_for_run")
+    # Phase 9 follow-up: ``get_or_create_for_run`` is gone;
+    # ``require_existing_target_snapshot`` is the canonical
+    # activity-layer lookup.
+    assert hasattr(snapshot_service, "require_existing_target_snapshot")
     assert hasattr(snapshot_service, "promote")
     assert hasattr(snapshot_service, "mark_ready")
 

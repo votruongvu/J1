@@ -294,54 +294,11 @@ def ctx_object():
 
 
 # ---- Snapshot allocation idempotency ---------------------------
-
-
-def test_get_or_create_for_run_is_idempotent_across_retries(tmp_path):
-    """Phase 4 lazy-allocation contract: calling
-    ``get_or_create_for_run`` twice for the same (document_id,
-    run_id) returns the SAME snapshot. Activity retries don't
-    create duplicate snapshots."""
-    from j1.config.settings import Settings
-    from j1.documents.snapshot_service import DocumentSnapshotService
-    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
-    from j1.workspace.resolver import WorkspaceResolver
-
-    workspace = WorkspaceResolver(Settings(data_root=tmp_path))
-    store = JsonlDocumentSnapshotStore(workspace)
-    service = DocumentSnapshotService(store=store)
-    ctx = ctx_object()
-
-    snap_a = service.get_or_create_for_run(
-        ctx, document_id="d-1", run_id="run-X",
-    )
-    snap_b = service.get_or_create_for_run(
-        ctx, document_id="d-1", run_id="run-X",
-    )
-    snap_c = service.get_or_create_for_run(
-        ctx, document_id="d-1", run_id="run-X",
-    )
-    assert snap_a.snapshot_id == snap_b.snapshot_id == snap_c.snapshot_id
-
-
-def test_get_or_create_for_run_distinguishes_different_run_ids(tmp_path):
-    """Two runs for the same document → two different snapshots."""
-    from j1.config.settings import Settings
-    from j1.documents.snapshot_service import DocumentSnapshotService
-    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
-    from j1.workspace.resolver import WorkspaceResolver
-
-    workspace = WorkspaceResolver(Settings(data_root=tmp_path))
-    store = JsonlDocumentSnapshotStore(workspace)
-    service = DocumentSnapshotService(store=store)
-    ctx = ctx_object()
-
-    snap_x = service.get_or_create_for_run(
-        ctx, document_id="d-1", run_id="run-X",
-    )
-    snap_y = service.get_or_create_for_run(
-        ctx, document_id="d-1", run_id="run-Y",
-    )
-    assert snap_x.snapshot_id != snap_y.snapshot_id
+#
+# Phase 9 follow-up deleted ``get_or_create_for_run``; the
+# allocate_target_snapshot activity (RunsActivities) owns
+# idempotency now. See tests/test_allocate_target_snapshot_activity.py
+# for the activity-level idempotency contract.
 
 
 # ---- Default facade wiring uses canonical adapter ---------------

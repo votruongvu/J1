@@ -39,6 +39,9 @@ with workflow.unsafe.imports_passed_through():
         ProfilingActivities,
     )
     from j1.orchestration.activities.project import ProjectActivities
+    from j1.orchestration.activities.payloads import (
+        AllocateTargetSnapshotInput,
+    )
     from j1.orchestration.activities.runs import (
         ReportAttemptInput,
         ReportRunTerminalInput,
@@ -401,9 +404,10 @@ class ProjectProcessingRequest:
     # through here so every downstream activity can address its
     # output paths under
     # ``{workdir}/tenants/{t}/projects/{p}/documents/{d}/snapshots/{s}/``
-    # without round-tripping through ``get_or_create_for_run``.
-    # ``None`` only for the legacy bulk-job path that pre-dates
-    # snapshot-centered processing; new flows always supply this.
+    # via ``require_existing_target_snapshot``. ``None`` for
+    # bulk-job dispatch (multiple documents per workflow); the
+    # workflow allocates per-document inside ``_process_document``
+    # via the ``allocate_target_snapshot`` activity instead.
     target_snapshot_id: str | None = None
 
 
@@ -851,6 +855,24 @@ class ProjectProcessingWorkflow:
         # `wait_condition(self._compile_triggered or self._cancelled)`
         # and a fresh False at gate-entry means "wait again".
         self._compile_triggered: bool = False
+        # Per-document target snapshot id, populated at the top of
+        # ``_process_document``. Single-doc REST flows pre-allocate
+        # at the REST boundary and thread the id via
+        # ``ProjectProcessingRequest.target_snapshot_id``; bulk-job
+        # flows allocate one snapshot per document via the
+        # ``allocate_target_snapshot`` activity. The resolved value
+        # is threaded into Compile / Enrich / Graph activity inputs
+        # so the snapshot service can address its outputs via
+        # ``require_existing_target_snapshot``.
+        self._resolved_target_snapshot_id: str | None = None
+        # Per-document mapping of (document_id → snapshot_id) for the
+        # bulk-job multi-document path. ``_index_all`` runs ONCE at
+        # workflow end against artifacts from all documents; for the
+        # bulk path it can't carry a single target_snapshot_id, so
+        # the search activity looks up the per-document snapshot via
+        # this mapping (threaded onto the artifact metadata at
+        # materialise time, not on the input).
+        self._snapshots_by_document: dict[str, str] = {}
         self._current_operation: str | None = None
         self._pending_operation: str | None = None
         self._completed_operations: list[str] = []
@@ -2788,6 +2810,51 @@ class ProjectProcessingWorkflow:
         # Unknown stage — caller-driven by default.
         return True, None, StepSource.CALLER
 
+    async def _resolve_target_snapshot_id(
+        self,
+        request: ProjectProcessingRequest,
+        document_id: str,
+    ) -> str | None:
+        """Phase 9 follow-up: pick the snapshot id to thread through
+        the per-document activity inputs.
+
+        Single-doc REST flows pre-allocate at the REST boundary —
+        the request carries ``target_snapshot_id`` and the workflow
+        forwards it as-is. Bulk-job flows process N documents in
+        one workflow and can't pre-allocate; the workflow calls
+        ``RunsActivities.allocate_target_snapshot`` to mint a
+        per-document candidate. ``correlation_id`` is the workflow
+        run id used as ``created_by_run_id`` on the snapshot record.
+        Returns None when no snapshot service is wired (legacy
+        deployments) — downstream activities then materialise
+        artifacts without a snapshot_id, exactly as they did
+        pre-snapshot-refactor.
+        """
+        if request.target_snapshot_id:
+            return request.target_snapshot_id
+        if not request.correlation_id:
+            return None
+        try:
+            result = await workflow.execute_activity_method(
+                RunsActivities.allocate_target_snapshot,
+                AllocateTargetSnapshotInput(
+                    scope=request.scope,
+                    document_id=document_id,
+                    run_id=request.correlation_id,
+                ),
+                start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                retry_policy=DEFAULT_RETRY.to_temporal(),
+            )
+        except Exception:  # noqa: BLE001 — snapshot allocation is best-effort
+            # Legacy deployments without a snapshot service raise
+            # RuntimeError; fall through to None so the rest of the
+            # per-document loop behaves as it did pre-snapshot.
+            return None
+        # Stub workers in tests may return None; treat as "not wired".
+        if result is None:
+            return None
+        return getattr(result, "snapshot_id", None)
+
     async def _process_document(
         self, request: ProjectProcessingRequest, document_id: str
     ) -> None:
@@ -2802,6 +2869,22 @@ class ProjectProcessingWorkflow:
         self._set_search_attribute(SEARCH_ATTR_WORKSPACE_ID, request.scope.project_id)
         if request.compiler_kind:
             self._set_search_attribute(SEARCH_ATTR_PARSER_NAME, request.compiler_kind)
+
+        # Phase 9 follow-up: resolve the target snapshot id for this
+        # document. Single-doc REST flows allocate at the REST
+        # boundary; bulk-job flows call the allocate activity here
+        # to mint a per-document candidate. The resolved id is
+        # threaded into every per-document activity input below
+        # AND cached on ``self._snapshots_by_document`` so the
+        # workflow-end indexer pass (which sees artifacts from many
+        # documents) can resolve the per-document snapshot.
+        self._resolved_target_snapshot_id = (
+            await self._resolve_target_snapshot_id(request, document_id)
+        )
+        if self._resolved_target_snapshot_id is not None:
+            self._snapshots_by_document[document_id] = (
+                self._resolved_target_snapshot_id
+            )
 
         # Compile-first: the only pre-compile work is a cheap
         # deterministic profile (pypdf-based, no LLM, no IngestPlanner)
@@ -3061,7 +3144,7 @@ class ProjectProcessingWorkflow:
                     actor=request.actor,
                     correlation_id=request.correlation_id,
                     assessment_plan_payload=current_assessment_payload,
-                    target_snapshot_id=request.target_snapshot_id,
+                    target_snapshot_id=self._resolved_target_snapshot_id,
                 ),
                 # Compile is the most expensive activity (MinerU parse
                 # is minutes per real PDF). Wider timeout absorbs
@@ -3474,7 +3557,7 @@ class ProjectProcessingWorkflow:
                             # scoped audit consumers can't attribute
                             # an enrich event to a document.
                             document_id=document_id,
-                            target_snapshot_id=request.target_snapshot_id,
+                            target_snapshot_id=self._resolved_target_snapshot_id,
                         ),
                         start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                         # Long enrich children — vision / table-LLM
@@ -3633,7 +3716,7 @@ class ProjectProcessingWorkflow:
                         # — which then trips the registry-level
                         # ``RegistryLineageError`` guard.
                         document_id=document_id,
-                        target_snapshot_id=request.target_snapshot_id,
+                        target_snapshot_id=self._resolved_target_snapshot_id,
                     ),
                     start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=HEARTBEAT_TIMEOUT,
@@ -3686,7 +3769,7 @@ class ProjectProcessingWorkflow:
                         request.target_document_ids[0]
                         if len(request.target_document_ids) == 1 else None
                     ),
-                    target_snapshot_id=request.target_snapshot_id,
+                    target_snapshot_id=self._resolved_target_snapshot_id,
                 ),
                 start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                 retry_policy=DEFAULT_RETRY.to_temporal(),

@@ -163,12 +163,12 @@ class KnowledgeProcessingActivities:
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         # Phase 9: when wired, every materialised artifact gets a
         # ``snapshot_id`` stamped on the typed field + metadata
-        # mirror. The activity prefers the up-front-allocated
-        # ``target_snapshot_id`` via
-        # ``require_existing_target_snapshot``; falls back to the
-        # deprecated lazy ``get_or_create_for_run`` allocator for
-        # legacy bulk-job runs that don't carry the snapshot id.
-        # ``None`` keeps the legacy run-keyed path active.
+        # mirror. The activity resolves the snapshot via
+        # ``require_existing_target_snapshot`` using the
+        # ``target_snapshot_id`` threaded by the workflow (REST
+        # boundary for single-doc, ``allocate_target_snapshot``
+        # activity for bulk-job per-document). ``None`` keeps the
+        # pre-snapshot path active for legacy test fixtures.
         self._snapshot_service = snapshot_service
 
     def all_activities(self) -> list:
@@ -219,28 +219,26 @@ class KnowledgeProcessingActivities:
                 compile_kwargs["run_id"] = input.correlation_id
             # Phase 9: thread the snapshot id through to the
             # compiler so the bridge's snapshot-aware workspace
-            # resolver picks up the snapshot-scoped path. REST
-            # allocates the candidate up-front, so the activity
-            # only needs ``require_existing_target_snapshot`` —
-            # the lazy ``get_or_create_for_run`` fallback is kept
-            # for legacy bulk-job runs that pre-date Phase 9.
-            if "snapshot_id" in sig.parameters and self._snapshot_service is not None:
-                target_snapshot_id = getattr(
-                    input, "target_snapshot_id", None,
-                )
+            # resolver picks up the snapshot-scoped path. The
+            # workflow allocates the snapshot up-front (REST
+            # boundary for single-doc, ``allocate_target_snapshot``
+            # activity for bulk-job per-document) and threads the id
+            # through ``input.target_snapshot_id``. Validate via
+            # ``require_existing_target_snapshot`` — no lazy create.
+            target_snapshot_id = getattr(
+                input, "target_snapshot_id", None,
+            )
+            if (
+                "snapshot_id" in sig.parameters
+                and self._snapshot_service is not None
+                and target_snapshot_id
+            ):
                 try:
-                    if target_snapshot_id:
-                        snap = self._snapshot_service.require_existing_target_snapshot(
-                            ctx,
-                            document_id=input.document_id,
-                            snapshot_id=target_snapshot_id,
-                        )
-                    else:
-                        snap = self._snapshot_service.get_or_create_for_run(
-                            ctx,
-                            document_id=input.document_id,
-                            run_id=input.correlation_id,
-                        )
+                    snap = self._snapshot_service.require_existing_target_snapshot(
+                        ctx,
+                        document_id=input.document_id,
+                        snapshot_id=target_snapshot_id,
+                    )
                     compile_kwargs["snapshot_id"] = snap.snapshot_id
                 except Exception:  # noqa: BLE001 — best-effort
                     pass
@@ -603,10 +601,11 @@ class KnowledgeProcessingActivities:
         if run_id and "run_id" not in merged_metadata:
             merged_metadata["run_id"] = run_id
         # Phase 9: resolve the snapshot the artifact belongs to.
-        # Prefer the up-front-allocated ``target_snapshot_id``
-        # threaded by the workflow; fall back to the lazy
-        # ``get_or_create_for_run`` allocator for legacy bulk-job
-        # runs that don't carry the snapshot id yet.
+        # The workflow allocated the candidate up-front (REST
+        # boundary for single-doc, ``allocate_target_snapshot``
+        # activity for bulk-job per-doc) and threaded the id through
+        # ``target_snapshot_id``. We validate via
+        # ``require_existing_target_snapshot`` — no lazy create.
         snapshot_id: str | None = None
         primary_doc_id = (
             (draft.source_document_ids or source_document_ids or [None])[0]
@@ -614,20 +613,14 @@ class KnowledgeProcessingActivities:
         if (
             self._snapshot_service is not None
             and primary_doc_id
+            and target_snapshot_id
         ):
             try:
-                if target_snapshot_id:
-                    snap = self._snapshot_service.require_existing_target_snapshot(
-                        ctx,
-                        document_id=primary_doc_id,
-                        snapshot_id=target_snapshot_id,
-                    )
-                elif run_id:
-                    snap = self._snapshot_service.get_or_create_for_run(
-                        ctx, document_id=primary_doc_id, run_id=run_id,
-                    )
-                else:
-                    snap = None
+                snap = self._snapshot_service.require_existing_target_snapshot(
+                    ctx,
+                    document_id=primary_doc_id,
+                    snapshot_id=target_snapshot_id,
+                )
             except Exception:  # noqa: BLE001 — best-effort
                 snap = None
             if snap is not None:

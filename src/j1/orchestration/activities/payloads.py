@@ -485,6 +485,34 @@ class SetDocumentStatusInput:
 
 
 @dataclass(frozen=True)
+class AllocateTargetSnapshotInput:
+    """Phase 9 follow-up: allocate a candidate ``DocumentSnapshot``
+    for the bulk-job per-document loop.
+
+    Single-document REST flows allocate the candidate UP-FRONT at the
+    REST boundary and thread the id through
+    ``ProjectProcessingRequest.target_snapshot_id``. Bulk-job flows
+    (``POST /ingestion-jobs``) process N documents in one workflow,
+    so they can't pre-allocate a single snapshot — instead, the
+    workflow calls this activity at the start of each document's
+    processing and threads the per-document snapshot id into the
+    document's Compile/Enrich/Graph/Index activity inputs.
+
+    Returns the new snapshot's id. ``run_id`` is recorded as
+    ``created_by_run_id`` on the snapshot record so the lineage
+    chain stays intact."""
+
+    scope: ProjectScope
+    document_id: str
+    run_id: str
+
+
+@dataclass(frozen=True)
+class AllocateTargetSnapshotResult:
+    snapshot_id: str
+
+
+@dataclass(frozen=True)
 class SpendSummary:
     total_amount: str
     currency: str
@@ -611,12 +639,12 @@ class KnowledgeCompilationInput:
     processor_kind: str
     actor: str = "system"
     correlation_id: str | None = None
-    # Phase 9: up-front snapshot allocation. The REST adapter
-    # allocates the candidate ``DocumentSnapshot`` at workflow
-    # dispatch time and threads the id through so this activity
-    # can address its output paths under the snapshot-scoped
-    # workspace without ever calling ``get_or_create_for_run``.
-    # ``None`` only for legacy bulk-job runs that pre-date Phase 9.
+    # Phase 9: up-front snapshot allocation. The workflow allocates
+    # the candidate ``DocumentSnapshot`` (REST boundary for single-
+    # doc flows; ``allocate_target_snapshot`` activity for bulk-job
+    # per-document) and threads the id through so this activity
+    # validates via ``require_existing_target_snapshot`` and
+    # addresses outputs under the snapshot-scoped workspace.
     target_snapshot_id: str | None = None
 
 

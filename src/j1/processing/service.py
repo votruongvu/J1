@@ -157,8 +157,9 @@ class ProcessingService:
         #
         # ``snapshot_id`` (Phase 9): when provided, lets the
         # compiler land outputs under the snapshot-scoped workspace
-        # directly, instead of round-tripping through
-        # ``get_or_create_for_run``.
+        # directly. The workflow always supplies it via the
+        # ``target_snapshot_id`` plumbing (REST single-doc) or the
+        # ``allocate_target_snapshot`` activity (bulk-job per-doc).
         compile_kwargs: dict = {}
         try:
             import inspect

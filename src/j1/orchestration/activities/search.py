@@ -102,12 +102,19 @@ class SearchActivities:
             return 0
         if not artifact_ids or not correlation_id:
             return 0
-        # Group artifact ids by the document they belong to so each
-        # snapshot's evidence write is scoped correctly. One write
-        # per (document, snapshot) — adapters de-dupe by their
-        # natural key.
+        # Group artifact ids by the (document, snapshot) pair they
+        # belong to so each evidence write is scoped correctly.
+        # Artifacts carry ``metadata["snapshot_id"]`` stamped at
+        # materialise time — the workflow allocated the per-document
+        # candidate up-front (single-doc REST flows) or via the
+        # ``allocate_target_snapshot`` activity (bulk-job per-doc
+        # loop), so EVERY artifact written by post-Phase-9 code has
+        # the snapshot id on its metadata. We read it from there
+        # rather than asking the snapshot service to look up by
+        # (document_id, run_id), which preserves the snapshot-id-is-
+        # canonical invariant for the index pass.
         from collections import defaultdict
-        by_doc: dict[str, list[str]] = defaultdict(list)
+        by_key: dict[tuple[str, str], list[str]] = defaultdict(list)
         for art_id in artifact_ids:
             try:
                 record = self._artifact_registry.get(ctx, art_id)
@@ -117,7 +124,14 @@ class SearchActivities:
             doc_id = doc_ids[0] if doc_ids else None
             if not doc_id:
                 continue
-            by_doc[doc_id].append(art_id)
+            snapshot_id = (record.metadata or {}).get("snapshot_id")
+            if not snapshot_id:
+                # Artifact without a snapshot stamp = pre-Phase-9
+                # data or a degenerate test fixture. Skip rather
+                # than allocating a fresh snapshot here — the
+                # workflow side is responsible for stamping.
+                continue
+            by_key[(doc_id, snapshot_id)].append(art_id)
 
         # Phase 4 memoization: a single chunk body is shared by
         # multiple downstream writes when a document spans several
@@ -130,28 +144,23 @@ class SearchActivities:
         cache.clear()
 
         from j1.search.evidence_adapter import EvidenceIndexRequest
-        target_snapshot_id = getattr(input, "target_snapshot_id", None)
         indexed_total = 0
-        for document_id, ids in by_doc.items():
+        for (document_id, snapshot_id), ids in by_key.items():
+            # Validate the snapshot exists + belongs to the document.
+            # This is the canonical Phase 9 lookup — no lazy create.
             try:
-                if target_snapshot_id:
-                    snap = self._snapshot_service.require_existing_target_snapshot(
-                        ctx,
-                        document_id=document_id,
-                        snapshot_id=target_snapshot_id,
-                    )
-                else:
-                    snap = self._snapshot_service.get_or_create_for_run(
-                        ctx, document_id=document_id,
-                        run_id=correlation_id,
-                    )
+                self._snapshot_service.require_existing_target_snapshot(
+                    ctx,
+                    document_id=document_id,
+                    snapshot_id=snapshot_id,
+                )
             except Exception:  # noqa: BLE001 — best-effort
                 continue
             try:
                 result = self._evidence_adapter.index(EvidenceIndexRequest(
                     ctx=ctx,
                     document_id=document_id,
-                    snapshot_id=snap.snapshot_id,
+                    snapshot_id=snapshot_id,
                     created_by_run_id=correlation_id,
                     artifact_ids=tuple(ids),
                 ))

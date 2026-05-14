@@ -36,16 +36,23 @@ def run_store(workspace):
 
 
 @pytest.fixture
-def activities(run_store, registry, workspace):
+def snapshot_service(workspace):
+    """Shared snapshot service so ``_seed_run`` and ``activities``
+    both write through the same store."""
+    from j1.documents.snapshot_service import DocumentSnapshotService
+    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
+
+    return DocumentSnapshotService(
+        store=JsonlDocumentSnapshotStore(workspace),
+    )
+
+
+@pytest.fixture
+def activities(run_store, registry, snapshot_service):
     # Phase 7: promotion writes ``active_snapshot_id`` only —
     # ``active_run_id`` is no longer written. The activity needs a
     # ``DocumentSnapshotService`` wired so the snapshot-side
     # promotion runs.
-    from j1.documents.snapshot_service import DocumentSnapshotService
-    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
-
-    snapshot_store = JsonlDocumentSnapshotStore(workspace)
-    snapshot_service = DocumentSnapshotService(store=snapshot_store)
     return RunsActivities(
         progress_reporter=None,
         run_store=run_store,
@@ -81,7 +88,18 @@ def _seed_run(
     *, run_id: str, document_id: str,
     status: RunStatus = RunStatus.RUNNING,
     parent_run_id: str | None = None,
+    snapshot_service=None,
 ) -> None:
+    # Phase 9 follow-up: every run carries a ``target_snapshot_id``
+    # — the promotion hook short-circuits when it's missing. Tests
+    # that want to exercise promotion must pass a snapshot service
+    # so this helper can pre-allocate the candidate.
+    target_snapshot_id: str | None = None
+    if snapshot_service is not None:
+        snap = snapshot_service.create_candidate(
+            ctx, document_id=document_id, created_by_run_id=run_id,
+        )
+        target_snapshot_id = snap.snapshot_id
     store.upsert(ctx, IngestionRun(
         run_id=run_id,
         document_id=document_id,
@@ -91,6 +109,7 @@ def _seed_run(
         started_at=_NOW,
         updated_at=_NOW,
         parent_run_id=parent_run_id,
+        target_snapshot_id=target_snapshot_id,
     ))
 
 
@@ -115,14 +134,17 @@ def _terminate(
 
 
 def test_succeeded_run_becomes_documents_active_snapshot(
-    activities, run_store, registry, ctx,
+    activities, run_store, registry, ctx, snapshot_service,
 ):
     """Phase 7 headline contract: a usable-terminal run gets
     promoted on the SNAPSHOT side. ``active_snapshot_id`` is the
     canonical visibility key; ``active_run_id`` is no longer
     written by the promotion path."""
     _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
-    _seed_run(run_store, ctx, run_id="r-1", document_id="doc-1")
+    _seed_run(
+        run_store, ctx, run_id="r-1", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
 
     _terminate(activities, ctx, "r-1", final_status="succeeded")
 
@@ -135,12 +157,15 @@ def test_succeeded_run_becomes_documents_active_snapshot(
 
 
 def test_succeeded_with_warnings_also_promotes(
-    activities, run_store, registry, ctx,
+    activities, run_store, registry, ctx, snapshot_service,
 ):
     """`succeeded` and `succeeded_with_warnings` are both usable
  results — both promote the snapshot."""
     _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
-    _seed_run(run_store, ctx, run_id="r-1", document_id="doc-1")
+    _seed_run(
+        run_store, ctx, run_id="r-1", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
 
     _terminate(
         activities, ctx, "r-1",
@@ -195,13 +220,16 @@ def test_timed_out_run_does_not_promote(
 
 
 def test_failed_reindex_preserves_previous_successful_active(
-    activities, run_store, registry, ctx,
+    activities, run_store, registry, ctx, snapshot_service,
 ):
     """Phase 7: failed re-index doesn't replace the previously
     promoted snapshot."""
     _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
     # First run: succeeds and becomes active.
-    _seed_run(run_store, ctx, run_id="r-initial", document_id="doc-1")
+    _seed_run(
+        run_store, ctx, run_id="r-initial", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
     _terminate(activities, ctx, "r-initial", final_status="succeeded")
     promoted_snapshot = registry.get(ctx, "doc-1").active_snapshot_id
     assert promoted_snapshot is not None
@@ -213,11 +241,14 @@ def test_failed_reindex_preserves_previous_successful_active(
 
 
 def test_successful_reindex_promotes_to_new_active(
-    activities, run_store, registry, ctx,
+    activities, run_store, registry, ctx, snapshot_service,
 ):
     """Phase 7: a SUCCESSFUL reindex flips the snapshot side."""
     _seed_document(registry, ctx, document_id="doc-1", active_snapshot_id=None)
-    _seed_run(run_store, ctx, run_id="r-old", document_id="doc-1")
+    _seed_run(
+        run_store, ctx, run_id="r-old", document_id="doc-1",
+        snapshot_service=snapshot_service,
+    )
     _terminate(activities, ctx, "r-old", final_status="succeeded")
     first_snapshot = registry.get(ctx, "doc-1").active_snapshot_id
     assert first_snapshot is not None
@@ -226,6 +257,7 @@ def test_successful_reindex_promotes_to_new_active(
         run_store, ctx,
         run_id="r-new", document_id="doc-1",
         parent_run_id="r-old",
+        snapshot_service=snapshot_service,
     )
 
     _terminate(activities, ctx, "r-new", final_status="succeeded")

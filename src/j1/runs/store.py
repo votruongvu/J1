@@ -318,4 +318,5 @@ def _run_from_payload(payload: dict) -> IngestionRun:
         display_version=payload.get("display_version"),
         superseded_at=_parse_dt(payload.get("superseded_at")),
         cleanup_status=raw_cleanup,  # type: ignore[arg-type]
+        target_snapshot_id=payload.get("target_snapshot_id"),
     )

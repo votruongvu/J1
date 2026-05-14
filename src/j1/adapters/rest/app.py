@@ -470,11 +470,11 @@ def create_rest_api(
 
     # Phase 5: Allocate a candidate ``DocumentSnapshot`` BEFORE the
     # Temporal workflow starts. Returns the new snapshot's id (or
-    # ``None`` when the snapshot service isn't wired — the activity
-    # layer's deprecated ``get_or_create_for_run`` fallback handles
-    # that case for legacy bulk-job runs). Best-effort: any failure
-    # here returns ``None`` so the run creation isn't blocked by a
-    # snapshot-store hiccup.
+    # ``None`` when the snapshot service isn't wired — bulk-job
+    # flows allocate per-document inside the workflow via the
+    # ``allocate_target_snapshot`` activity instead). Best-effort:
+    # any failure here returns ``None`` so the run creation isn't
+    # blocked by a snapshot-store hiccup.
     def _allocate_target_snapshot(
         ctx: ProjectContext, document_id: str, run_id: str,
     ) -> str | None:

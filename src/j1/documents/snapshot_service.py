@@ -103,18 +103,21 @@ class DocumentSnapshotService:
 
         Returns the snapshot identified by ``snapshot_id`` after
         validating that it belongs to ``document_id``. The candidate
-        is allocated up-front at REST/dispatch time (see
-        ``_allocate_target_snapshot``) and threaded through the
-        workflow as ``ProjectProcessingRequest.target_snapshot_id``,
-        so activities can address their output paths without ever
-        creating a new candidate at activity-time.
+        is allocated up-front by the workflow dispatch layer:
 
-        Phase 9 deliberately removed the lazy
-        ``get_or_create_for_run`` helper: silent creation inside an
-        activity hid the real allocation site and made the snapshot
-        identity ambiguous across retries. The activity layer is
-        now structurally unable to allocate snapshots — it can only
-        load the one the caller already provisioned.
+          * Single-doc REST flows → ``_allocate_target_snapshot``
+            at the REST boundary; the id is threaded through
+            ``IngestRequest.target_snapshot_id`` ↔
+            ``ProjectProcessingRequest.target_snapshot_id``.
+          * Bulk-job per-document loop → the
+            ``allocate_target_snapshot`` activity at the start of
+            ``_process_document``; the id is cached in the workflow's
+            ``_snapshots_by_document`` mapping.
+
+        Activities address their output paths via this method only —
+        the lazy ``get_or_create_for_run`` helper that previous
+        phases left behind was deleted in this Phase 9 follow-up to
+        keep snapshot identity unambiguous across activity retries.
         """
         snap = self.store.get(ctx, snapshot_id)
         if snap is None:
@@ -129,34 +132,6 @@ class DocumentSnapshotService:
                 f"document {snap.document_id!r}, not {document_id!r}"
             )
         return snap
-
-    def get_or_create_for_run(
-        self,
-        ctx: ProjectContext,
-        *,
-        document_id: str,
-        run_id: str,
-    ) -> DocumentSnapshot:
-        """Deprecated lazy allocator. Phase 9 forbids new callers.
-
-        Kept temporarily to satisfy a small number of activity-layer
-        callsites that have not yet been migrated to threading
-        ``target_snapshot_id`` through ``ProjectProcessingRequest``.
-        Once the workflow + activity inputs carry the snapshot id
-        end-to-end, this method should be deleted in a follow-up
-        pass; the structural plumbing in this Phase 9 step is the
-        prerequisite.
-        """
-        for snap in self.store.list_for_document(
-            ctx, document_id=document_id,
-        ):
-            if snap.created_by_run_id == run_id:
-                return snap
-        return self.create_candidate(
-            ctx,
-            document_id=document_id,
-            created_by_run_id=run_id,
-        )
 
     # ---- Transitions --------------------------------------------
 
