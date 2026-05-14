@@ -88,7 +88,9 @@ export function PipelineOutputPanel({
               : `${stageCount} stage${stageCount === 1 ? "" : "s"} complete · auto-scrolling to newest`}
           </p>
         </div>
-        <StreamPill status={streamStatus} />
+        {(streamStatus === "open" || streamStatus === "reconnecting") && (
+          <StreamPill status={streamStatus} />
+        )}
       </div>
 
       <div ref={scrollRef} className="pipeline-stream__body">

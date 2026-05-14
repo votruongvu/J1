@@ -8,9 +8,9 @@
  * its action set into two tiers:
  *
  *  * **Primary controls** — workflow lifecycle (pause / resume /
- *    cancel), the "Continue from compiled result" affordance, and
- *    rebuild-index. These are run-scoped concerns that legitimately
- *    operate on a specific attempt, not the document as a whole.
+ *    cancel). The earlier "Continue from compiled result" and
+ *    "Rebuild index" buttons were removed once re-ingest moved to
+ *    the document page — those flows live there now.
  *
  *  * **Advanced (debug)** — the old run-level destructive actions
  *    (re-process / soft-delete / purge). Hidden behind an
@@ -49,7 +49,7 @@ import { Icon } from "@/components/icons";
 
 type ControlAction =
   | "pause" | "resume" | "cancel"
-  | "reindex" | "delete" | "resumeCheckpoint" | "rebuildIndex" | "purge";
+  | "reindex" | "delete" | "purge";
 
 interface RunControlsProps {
   run: IngestionRun | null;
@@ -114,30 +114,6 @@ export function RunControls({
         );
         if (!ok) return;
       }
-      if (action === "resumeCheckpoint") {
-        // Operator-friendly relabel per spec: "Continue from
-        // compiled result" tells the user exactly where the
-        // workflow picks up, vs. the generic "Resume" which
-        // collided with the paused→running button.
-        const ok = window.confirm(
-          `Continue "${run.document_name}" from the compiled result?\n\n` +
-            `Skips enrich + graph stages that already completed in ` +
-            `the prior run; compile and chunk-generation always re-run. ` +
-            `Refused (412) if settings drifted since the prior run — ` +
-            `use Re-process in that case.`,
-        );
-        if (!ok) return;
-      }
-      if (action === "rebuildIndex") {
-        const ok = window.confirm(
-          `Rebuild the retrieval index for "${run.document_name}"?\n\n` +
-            `Re-runs ONLY the index activity against the chunks the ` +
-            `prior run already produced. Use when the vector store ` +
-            `was cleared or the embedding model upgraded.\n\n` +
-            `Refused (412) if no chunks exist — use Re-process instead.`,
-        );
-        if (!ok) return;
-      }
       if (action === "purge") {
         const ok = window.confirm(
           `PERMANENTLY purge "${run.document_name}"?\n\n` +
@@ -174,22 +150,6 @@ export function RunControls({
           toastTitle = "Re-process started";
           toastBody = `New run ${result.reindexRunId.slice(0, 8)} created.`;
           newRunId = result.reindexRunId;
-        } else if (action === "resumeCheckpoint") {
-          const result = await client.resumeFromCheckpoint(run.runId);
-          toastTitle = "Resume started";
-          const skipped =
-            result.resumedSteps.length > 0
-              ? ` (skipping ${result.resumedSteps.join(", ")})`
-              : "";
-          toastBody = `New run ${result.resumeRunId.slice(0, 8)} created${skipped}.`;
-          newRunId = result.resumeRunId;
-        } else if (action === "rebuildIndex") {
-          const result = await client.rebuildIndex(run.runId);
-          toastTitle = "Index rebuild started";
-          toastBody =
-            `New run ${result.rebuildRunId.slice(0, 8)} created — ` +
-            `re-indexing ${result.carryForwardChunkCount} chunk(s).`;
-          newRunId = result.rebuildRunId;
         } else if (action === "purge") {
           const result = await client.purgeRun(run.runId);
           toastTitle = "Purged";
@@ -225,15 +185,12 @@ export function RunControls({
   const showPause = PAUSE_FROM.has(status);
   const showResume = RESUME_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
-  // "Continue from compiled result" — only on FAILED runs (the
-  // resume snapshot is persisted on SUCCEEDED / FAILED paths;
-  // CANCELLED isn't a meaningful resume point). The backend
-  // returns 412 if the snapshot is absent or settings drifted.
-  const showResumeCheckpoint = status === RUN_STATUS.FAILED;
-  // Rebuild index is a niche-but-legitimate run-level action
-  // (run-scoped retry of the index activity only). Stays in the
-  // primary surface because there's no document-level equivalent.
-  const showRebuildIndex = !isActive && !isDeleted;
+  // Post-refactor: "Continue from compiled result" and
+  // "Rebuild index" were removed from the run-level surface. Both
+  // actions are now driven from the Document page, where reindex /
+  // refresh-enrich is the canonical entry point. The corresponding
+  // REST endpoints stay on the backend for now (used by the
+  // document-level handlers + tests).
 
   // ---- Advanced (debug) — run-level destructive actions.
   // Document-centric refactor moved these up to the document
@@ -247,7 +204,6 @@ export function RunControls({
 
   if (
     !showPause && !showResume && !showCancel
-    && !showResumeCheckpoint && !showRebuildIndex
     && !hasAdvanced
     && status !== RUN_STATUS.CANCELLING
   ) {
@@ -314,50 +270,6 @@ export function RunControls({
           {!compact && <span style={{ marginLeft: 4 }}>Cancel</span>}
         </button>
       )}
-      {showResumeCheckpoint && (
-        <button
-          type="button"
-          className={btnClass}
-          disabled={anyPending}
-          onClick={() => void dispatch("resumeCheckpoint")}
-          aria-label="Continue from compiled result"
-          title={
-            "Continue from the compiled result — skips enrich + graph " +
-            "stages completed by this run. Compile + chunks always re-run."
-          }
-          data-testid="run-controls-continue"
-        >
-          {isPending("resumeCheckpoint") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.Play className="icon-sm" />
-          )}
-          {!compact && (
-            <span style={{ marginLeft: 4 }}>Continue from compiled result</span>
-          )}
-        </button>
-      )}
-      {showRebuildIndex && (
-        <button
-          type="button"
-          className={btnClass}
-          disabled={anyPending}
-          onClick={() => void dispatch("rebuildIndex")}
-          aria-label="Rebuild retrieval index from existing chunks"
-          title={
-            "Re-run ONLY the index activity against existing chunks. " +
-            "Use after vector store outages or embedding-model upgrades."
-          }
-        >
-          {isPending("rebuildIndex") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.Code className="icon-sm" />
-          )}
-          {!compact && <span style={{ marginLeft: 4 }}>Rebuild index</span>}
-        </button>
-      )}
-
       {/* Advanced (debug) — collapsed by default. Detail view
           only — list-row compact mode skips the advanced section
           entirely because there's no room for a disclosure. */}

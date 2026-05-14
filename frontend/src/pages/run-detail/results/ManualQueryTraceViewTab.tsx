@@ -51,11 +51,7 @@ export function ManualQueryTraceViewTab(
   { runId }: ManualQueryTraceViewTabProps,
 ) {
   const client = useClient();
-  const [question, setQuestion] = useState(
-    "How do the deliverables evolve from conceptual engineering " +
-      "through 60%, 90%, and 100% design, and which cost estimate " +
-      "class is associated with each design stage?",
-  );
+  const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<QueryTracePayload | null>(null);

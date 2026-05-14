@@ -31,6 +31,7 @@ import type {
   InitialExecutionPlanPayload,
 } from "@/types/review";
 import type { EnrichmentSignals } from "@/lib/runState";
+import { isTerminalStatus } from "@/lib/runState";
 
 interface RunDetailPageProps {
   runId: string;
@@ -202,7 +203,16 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
           lastEventIdRef.current = e.eventId;
         }
         setEvents(hist);
-        openStream();
+        // Only open the SSE stream when the run is still in flight.
+        // Terminal runs never emit new events — keeping a live stream
+        // open just to receive nothing wastes a connection and makes
+        // the "Live" badge misleading.
+        if (isTerminalStatus(r.status)) {
+          terminalRef.current = true;
+          setStreamStatus("idle");
+        } else {
+          openStream();
+        }
       } catch (e) {
         if (cancelled) return;
         const status = e instanceof ApiError ? e.status : 500;
@@ -368,12 +378,7 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
             // bounce back to the list so the user doesn't sit on a
             // page for something that no longer exists.
             onBack();
-          } else if (
-            (action === "reindex"
-              || action === "resumeCheckpoint"
-              || action === "rebuildIndex")
-            && newRunId
-          ) {
+          } else if (action === "reindex" && newRunId) {
             try {
               window.history.pushState({}, "", `?run=${newRunId}`);
             } catch {

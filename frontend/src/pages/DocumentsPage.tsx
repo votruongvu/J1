@@ -1,13 +1,11 @@
 /**
- * Documents page — the document-centric replacement for the
- * legacy run-list. Each row is a user-facing file (`Bridge Report.pdf`)
- * with its knowledge state badge, current-result summary, and the
- * server-computed available actions.
+ * Documents page — list view.
  *
- * The action matrix lives on the server (see
- * `j1.documents.projector.compute_available_actions`); this page
- * just iterates `availableActions` and renders whatever's there.
- * Adding/removing actions backend-side is a no-FE-change operation.
+ * Each row is a single click-through to the document detail page;
+ * lifecycle actions (re-index, detach, remove) live there, not here.
+ * That keeps destructive operations one step away from the list
+ * scroll and gives the row the room to surface richer status info
+ * inline (knowledge state, stage health, active run, last update).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -16,28 +14,20 @@ import { Banner } from "@/components/Banner";
 import { useClient } from "@/lib/hooks/useClient";
 import { relativeTime } from "@/lib/format";
 import {
-  ConfirmDetachDialog,
-  ConfirmRemoveDialog,
-} from "./documents/DocumentLifecycleDialogs";
-import {
   KnowledgeStateBadge,
   ResultStatusBadge,
 } from "./documents/DocumentBadges";
-import type {
-  DocumentAction,
-  DocumentListItem,
-} from "@/types/documents";
-import type { ProjectContext, Toast } from "@/types/ui";
+import type { DocumentListItem } from "@/types/documents";
+import type { ProjectContext } from "@/types/ui";
 
 interface DocumentsPageProps {
   ctx: ProjectContext;
   onOpenDocument: (documentId: string) => void;
   onNewDocument: () => void;
-  pushToast?: (toast: Omit<Toast, "id">) => void;
 }
 
 export function DocumentsPage({
-  ctx, onOpenDocument, onNewDocument, pushToast,
+  ctx, onOpenDocument, onNewDocument,
 }: DocumentsPageProps) {
   const client = useClient();
   const ready = !!ctx.tenant && !!ctx.project;
@@ -45,12 +35,6 @@ export function DocumentsPage({
   const [items, setItems] = useState<DocumentListItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
-  // Pending-action target document. Drives the confirmation dialogs
-  // — null means "no dialog open". Per the spec's section 10, detach
-  // + remove get dedicated confirmation copy.
-  const [pendingDetach, setPendingDetach] = useState<DocumentListItem | null>(null);
-  const [pendingRemove, setPendingRemove] = useState<DocumentListItem | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);  // document_id of in-flight action
 
   const load = useCallback(async () => {
     if (!ready) {
@@ -73,109 +57,6 @@ export function DocumentsPage({
 
   useEffect(() => { void load(); }, [load]);
 
-  const handleAction = async (
-    document: DocumentListItem, action: DocumentAction,
-  ) => {
-    if (action === "view") {
-      onOpenDocument(document.documentId);
-      return;
-    }
-    // Detach + remove require confirmation per spec section 10.
-    if (action === "detach") {
-      setPendingDetach(document);
-      return;
-    }
-    if (action === "remove") {
-      setPendingRemove(document);
-      return;
-    }
-    // Attach + reindex don't need a confirmation dialog — both are
-    // reversible from the operator's perspective.
-    setBusy(document.documentId);
-    try {
-      if (action === "attach") {
-        await client.attachDocument(document.documentId);
-        pushToast?.({ kind: "success", title: "Document attached to knowledge base" });
-      } else if (action === "reindex") {
-        const r = await client.reindexDocument(document.documentId);
-        pushToast?.({
-          kind: "success",
-          title: "Re-index started",
-          body: `New run: ${r.reindexRunId.slice(0, 12)}`,
-        });
-      } else if (action === "refresh_enrich") {
-        const r = await client.refreshEnrichDocument(
-          document.documentId,
-        );
-        pushToast?.({
-          kind: "success",
-          title: "Refresh enrichment started",
-          body: `Reusing compile from ${
-            r.reusedCompileFromRunId.slice(0, 12)
-          }; new run: ${r.refreshRunId.slice(0, 12)}`,
-        });
-      } else if (action === "resume") {
-        // Resume operates on a run, not the document. The detail
-        // page is where this lives; the list-level button just
-        // takes the user there.
-        onOpenDocument(document.documentId);
-        return;
-      }
-      await load();
-    } catch (e) {
-      const msg = e instanceof ApiError
-        ? `${e.message} (HTTP ${e.status})`
-        : (e instanceof Error ? e.message : "Action failed");
-      pushToast?.({ kind: "error", title: `${action} failed`, body: msg });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const confirmDetach = async () => {
-    if (!pendingDetach) return;
-    const doc = pendingDetach;
-    setPendingDetach(null);
-    setBusy(doc.documentId);
-    try {
-      await client.detachDocument(doc.documentId);
-      pushToast?.({
-        kind: "success",
-        title: "Document detached from knowledge base",
-      });
-      await load();
-    } catch (e) {
-      const msg = e instanceof ApiError
-        ? `${e.message} (HTTP ${e.status})`
-        : (e instanceof Error ? e.message : "Detach failed");
-      pushToast?.({ kind: "error", title: "Detach failed", body: msg });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const confirmRemove = async () => {
-    if (!pendingRemove) return;
-    const doc = pendingRemove;
-    setPendingRemove(null);
-    setBusy(doc.documentId);
-    try {
-      await client.removeDocument(doc.documentId);
-      pushToast?.({
-        kind: "success",
-        title: "Document removed from knowledge base",
-      });
-      await load();
-    } catch (e) {
-      const msg = e instanceof ApiError
-        ? `${e.message} (HTTP ${e.status})`
-        : (e instanceof Error ? e.message : "Remove failed");
-      pushToast?.({ kind: "error", title: "Remove failed", body: msg });
-    } finally {
-      setBusy(null);
-    }
-  };
-
   if (!ready) {
     return (
       <div className="documents-page">
@@ -193,8 +74,8 @@ export function DocumentsPage({
         <div>
           <h2 className="documents-page__title">Documents</h2>
           <p className="documents-page__subtitle">
-            Files in this project's knowledge base. Manage the
-            lifecycle here — attach, detach, re-index, or remove.
+            Files in this project's knowledge base. Open a document to
+            re-index, detach, or remove it.
           </p>
         </div>
         <button
@@ -228,23 +109,11 @@ export function DocumentsPage({
             <DocumentRow
               key={doc.documentId}
               document={doc}
-              busy={busy === doc.documentId}
-              onAction={(action) => handleAction(doc, action)}
+              onOpen={() => onOpenDocument(doc.documentId)}
             />
           ))}
         </ul>
       )}
-
-      <ConfirmDetachDialog
-        document={pendingDetach}
-        onConfirm={() => void confirmDetach()}
-        onCancel={() => setPendingDetach(null)}
-      />
-      <ConfirmRemoveDialog
-        document={pendingRemove}
-        onConfirm={() => void confirmRemove()}
-        onCancel={() => setPendingRemove(null)}
-      />
     </div>
   );
 }
@@ -252,103 +121,120 @@ export function DocumentsPage({
 
 interface DocumentRowProps {
   document: DocumentListItem;
-  busy: boolean;
-  onAction: (action: DocumentAction) => void;
+  onOpen: () => void;
 }
 
-function DocumentRow({ document, busy, onAction }: DocumentRowProps) {
-  // The "view" action shows up in every state's matrix; the rest
-  // depend on knowledge state + active run + compile checkpoint.
-  // We split it out so it becomes the row's click target while the
-  // other actions render as explicit buttons.
-  const actions = document.availableActions.filter((a) => a !== "view");
+function DocumentRow({ document, onOpen }: DocumentRowProps) {
+  const summary = document.currentResultSummary;
+  const failureCode = summary.failureCode;
+  const runCount = document.runHistorySummary.length;
+  const activeRun = document.runHistorySummary.find((r) => r.isActive);
+  const lastRun =
+    activeRun ?? document.runHistorySummary[0] ?? null;
   return (
     <li className="documents-list__row" data-testid="document-row">
       <button
         type="button"
         className="documents-list__open"
-        onClick={() => onAction("view")}
+        onClick={onOpen}
+        aria-label={`Open ${document.displayName}`}
       >
         <div className="documents-list__primary">
           <span className="documents-list__name">{document.displayName}</span>
           <KnowledgeStateBadge state={document.knowledgeState} />
+          <ResultStatusBadge summary={summary} />
         </div>
-        <div className="documents-list__meta">
-          <ResultStatusBadge summary={document.currentResultSummary} />
-          <span className="documents-list__id mono">
-            {document.documentId.slice(0, 12)}…
-          </span>
-          {document.runHistorySummary.length > 0 && (
-            <span className="documents-list__history">
-              {document.runHistorySummary.length} run{
-                document.runHistorySummary.length === 1 ? "" : "s"
-              }
+
+        <div className="documents-list__stages">
+          <StageChip label="Compile" status={summary.compileStatus} />
+          <StageChip label="Enrich" status={summary.enrichmentStatus} />
+          <StageChip label="Validation" status={summary.validationStatus} />
+          {failureCode && (
+            <span
+              className="documents-list__chip documents-list__chip--err"
+              title="Last run failure code"
+            >
+              {failureCode}
             </span>
           )}
+        </div>
+
+        <div className="documents-list__meta">
+          <span className="documents-list__id mono" title={document.documentId}>
+            {document.documentId.slice(0, 12)}…
+          </span>
+          <span className="documents-list__sep" aria-hidden>·</span>
+          <span className="documents-list__runs">
+            {runCount === 0
+              ? "no runs yet"
+              : `${runCount} run${runCount === 1 ? "" : "s"}`}
+          </span>
+          {lastRun?.startedAt && (
+            <>
+              <span className="documents-list__sep" aria-hidden>·</span>
+              <span className="documents-list__last-run">
+                last run {relativeTime(lastRun.startedAt)}
+              </span>
+            </>
+          )}
           {document.updatedAt && (
-            <span className="documents-list__updated">
-              updated {relativeTime(document.updatedAt)}
-            </span>
+            <>
+              <span className="documents-list__sep" aria-hidden>·</span>
+              <span className="documents-list__updated">
+                updated {relativeTime(document.updatedAt)}
+              </span>
+            </>
           )}
         </div>
       </button>
-      <div className="documents-list__actions">
-        {actions.map((action) => (
-          <ActionButton
-            key={action}
-            action={action}
-            disabled={busy}
-            onClick={() => onAction(action)}
-          />
-        ))}
-      </div>
     </li>
   );
 }
 
 
-function ActionButton({
-  action, disabled, onClick,
+function StageChip({
+  label, status,
 }: {
-  action: DocumentAction;
-  disabled: boolean;
-  onClick: () => void;
+  label: string;
+  status: string | null;
 }) {
-  const meta = ACTION_META[action];
+  const tone = chipTone(status);
+  const display = status ?? "—";
   return (
-    <button
-      type="button"
-      className={`btn btn--${meta.variant}`}
-      onClick={onClick}
-      disabled={disabled}
-      title={meta.title}
+    <span
+      className={`documents-list__chip documents-list__chip--${tone}`}
+      title={`${label}: ${display}`}
     >
-      {meta.label}
-    </button>
+      <span className="documents-list__chip-label">{label}</span>
+      <span className="documents-list__chip-value">
+        {display.replace(/_/g, " ")}
+      </span>
+    </span>
   );
 }
 
 
-// Centralised action-label config. Single source of truth for the
-// UI strings; matches the operator-friendly wording from the spec.
-// Adding a new action server-side requires extending this map — but
-// failing soft (showing the raw string) would be a poor UX, so we
-// gate the type system instead.
-const ACTION_META: Record<DocumentAction, {
-  label: string; variant: "primary" | "ghost" | "danger"; title: string;
-}> = {
-  view:    { label: "View",       variant: "ghost",  title: "Open document detail" },
-  reindex: { label: "Re-index",   variant: "ghost",  title: "Rebuild knowledge for this document" },
-  refresh_enrich: {
-    label: "Refresh enrichment",
-    variant: "ghost",
-    title: (
-      "Re-run enrichment + graph + index, reusing the previous "
-      + "active run's compile output"
-    ),
-  },
-  detach:  { label: "Detach",     variant: "ghost",  title: "Stop using this document for retrieval" },
-  attach:  { label: "Attach",     variant: "primary", title: "Use this document for retrieval again" },
-  remove:  { label: "Remove",     variant: "danger", title: "Remove this document's generated knowledge" },
-  resume:  { label: "Continue",   variant: "primary", title: "Continue from the compiled result" },
-};
+type ChipTone = "ok" | "warn" | "err" | "running" | "neutral";
+
+
+function chipTone(status: string | null): ChipTone {
+  if (!status) return "neutral";
+  const s = status.toLowerCase();
+  if (s === "succeeded" || s === "completed" || s === "passed") return "ok";
+  if (
+    s === "succeeded_with_warnings"
+    || s === "completed_with_warnings"
+    || s === "passed_with_warnings"
+    || s === "warnings"
+  ) {
+    return "warn";
+  }
+  if (s === "failed" || s === "error") return "err";
+  if (s === "cancelled" || s === "canceled" || s === "inconclusive") {
+    return "warn";
+  }
+  if (s === "none" || s === "skipped") return "neutral";
+  return "running";
+}
+
+

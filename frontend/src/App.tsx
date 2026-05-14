@@ -115,7 +115,6 @@ export function App() {
                 setRoute({ name: "document", documentId })
               }
               onNewDocument={() => setRoute({ name: "upload" })}
-              pushToast={pushToast}
             />
           )}
           {route.name === "document" && (

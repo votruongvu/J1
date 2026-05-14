@@ -369,7 +369,7 @@ function RunHistoryTable({
           <th>Status</th>
           <th>Started</th>
           <th>Completed</th>
-          <th></th>
+          <th className="run-history-row__action"></th>
         </tr>
       </thead>
       <tbody>
@@ -379,27 +379,37 @@ function RunHistoryTable({
             className={run.runId === activeRunId ? "run-history-row--active" : ""}
           >
             <td>
-              <code className="mono">{run.runId.slice(0, 12)}…</code>
-              {run.runId === activeRunId && (
-                <span className="run-history-row__active-badge">active</span>
-              )}
-              {run.displayVersion && (
-                <span
-                  className="run-history-row__version-chip"
-                  title="Operator-facing version (DDMMYYYY-NN)"
-                >
-                  v{run.displayVersion}
+              <span className="run-history-row__id">
+                <span className="run-history-row__id-text">
+                  {run.runId.slice(0, 12)}…
                 </span>
-              )}
+                {run.runId === activeRunId && (
+                  <span className="run-history-row__active-badge">active</span>
+                )}
+                {run.displayVersion && (
+                  <span
+                    className="run-history-row__version-chip"
+                    title="Operator-facing version (DDMMYYYY-NN)"
+                  >
+                    v{run.displayVersion}
+                  </span>
+                )}
+              </span>
             </td>
-            <td>{run.runType}</td>
-            <td>{run.status}</td>
-            <td>{run.startedAt ? relativeTime(run.startedAt) : "—"}</td>
-            <td>{run.completedAt ? relativeTime(run.completedAt) : "—"}</td>
+            <td className="run-history-row__type">{run.runType}</td>
             <td>
+              <RunStatusPill status={run.status} />
+            </td>
+            <td className="run-history-row__time">
+              {run.startedAt ? relativeTime(run.startedAt) : "—"}
+            </td>
+            <td className="run-history-row__time">
+              {run.completedAt ? relativeTime(run.completedAt) : "—"}
+            </td>
+            <td className="run-history-row__action">
               <button
                 type="button"
-                className="btn btn--ghost"
+                className="btn btn--ghost btn--sm"
                 onClick={() => onOpenRun(run.runId)}
               >
                 Open
@@ -410,6 +420,39 @@ function RunHistoryTable({
       </tbody>
     </table>
   );
+}
+
+
+function RunStatusPill({ status }: { status: string }) {
+  const normalised = (status || "").toLowerCase();
+  let tone: "ok" | "warn" | "err" | "running" | "default" = "default";
+  let label = status || "—";
+  if (
+    normalised === "succeeded" || normalised === "completed"
+  ) {
+    tone = "ok";
+    label = "succeeded";
+  } else if (
+    normalised === "succeeded_with_warnings"
+    || normalised === "completed_with_warnings"
+  ) {
+    tone = "warn";
+    label = "warnings";
+  } else if (normalised === "failed") {
+    tone = "err";
+    label = "failed";
+  } else if (normalised === "cancelled" || normalised === "canceled") {
+    tone = "warn";
+    label = "cancelled";
+  } else if (normalised) {
+    tone = "running";
+    label = normalised.replace(/_/g, " ");
+  }
+  const className =
+    tone === "default"
+      ? "run-history-status"
+      : `run-history-status run-history-status--${tone}`;
+  return <span className={className}>{label}</span>;
 }
 
 

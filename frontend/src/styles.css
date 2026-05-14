@@ -1318,6 +1318,19 @@ pre,
   justify-content: space-between;
   gap: 24px;
   margin-bottom: 24px;
+  /* Wrap onto a second line when the title + action buttons together
+     overflow the hero width (long filenames, dense action sets like
+     the Document page's Re-index / Detach / Remove triple). The
+     title column shrinks via its own `min-width: 0` rule below so
+     it doesn't push the action group off-screen. */
+  flex-wrap: wrap;
+}
+.run-hero__top > div:first-child {
+  /* Title / breadcrumb column. ``flex: 1 1 0`` + ``min-width: 0``
+     lets the long filename shrink (with text-ellipsis) instead of
+     elbowing the actions out of the viewport. */
+  flex: 1 1 0;
+  min-width: 0;
 }
 .run-hero__crumb {
   display: flex;
@@ -4330,12 +4343,17 @@ pre.json .b {
 }
 .documents-list__row {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
+  align-items: stretch;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface, #fff);
+  border-radius: 10px;
+  background: var(--surface, var(--bg-elev, #fff));
+  transition: border-color 0.12s ease, box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+.documents-list__row:hover {
+  border-color: var(--accent, #5b8def);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04),
+    0 4px 12px rgba(91, 141, 239, 0.06);
 }
 .documents-list__open {
   flex: 1;
@@ -4343,16 +4361,17 @@ pre.json .b {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 10px;
   background: transparent;
   border: none;
   text-align: left;
   cursor: pointer;
-  padding: 0;
+  padding: 14px 18px;
 }
 .documents-list__primary {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   font-weight: 600;
   font-size: 15px;
@@ -4360,22 +4379,93 @@ pre.json .b {
 .documents-list__name {
   color: var(--fg);
 }
+.documents-list__stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .documents-list__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-muted);
   align-items: center;
+}
+.documents-list__sep {
+  color: var(--text-subtle);
 }
 .documents-list__id {
   font-size: 11px;
   color: var(--text-muted);
 }
-.documents-list__actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+
+/* Stage chips on the list row. Compact ``label: value`` pill that
+   shows compile / enrich / validation health at a glance. Tones
+   mirror the run-history-status palette so the eye learns one set
+   of colours across the surface. */
+.documents-list__chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.04));
+  color: var(--text-muted, var(--text-subtle));
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.documents-list__chip-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9.5px;
+  color: var(--text-subtle);
+}
+.documents-list__chip-value {
+  font-weight: 500;
+  text-transform: capitalize;
+}
+.documents-list__chip--ok {
+  background: oklch(94% 0.06 145 / 0.7);
+  color: oklch(35% 0.12 145);
+}
+.documents-list__chip--ok .documents-list__chip-label { color: inherit; opacity: 0.75; }
+.documents-list__chip--warn {
+  background: oklch(94% 0.08 80 / 0.7);
+  color: oklch(40% 0.14 80);
+}
+.documents-list__chip--warn .documents-list__chip-label { color: inherit; opacity: 0.75; }
+.documents-list__chip--err {
+  background: oklch(94% 0.08 25 / 0.7);
+  color: oklch(40% 0.16 25);
+  font-family: var(--font-mono, monospace);
+}
+.documents-list__chip--err .documents-list__chip-label { color: inherit; opacity: 0.75; }
+.documents-list__chip--running {
+  background: oklch(94% 0.06 240 / 0.7);
+  color: oklch(40% 0.14 240);
+}
+.documents-list__chip--running .documents-list__chip-label { color: inherit; opacity: 0.75; }
+.documents-list__chip--neutral {
+  /* Default tone — keep the muted look. */
+}
+[data-theme="dark"] .documents-list__chip--ok {
+  background: oklch(28% 0.06 145 / 0.55);
+  color: oklch(85% 0.12 145);
+}
+[data-theme="dark"] .documents-list__chip--warn {
+  background: oklch(28% 0.08 80 / 0.55);
+  color: oklch(85% 0.14 80);
+}
+[data-theme="dark"] .documents-list__chip--err {
+  background: oklch(28% 0.08 25 / 0.55);
+  color: oklch(85% 0.16 25);
+}
+[data-theme="dark"] .documents-list__chip--running {
+  background: oklch(28% 0.06 240 / 0.55);
+  color: oklch(85% 0.14 240);
 }
 
 /* Knowledge-state pill */
@@ -4454,34 +4544,133 @@ pre.json .b {
 }
 .run-history-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
+  background: var(--bg-elev, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 10px);
+  overflow: hidden;
 }
 .run-history-table th,
 .run-history-table td {
-  padding: 8px 10px;
+  padding: 12px 16px;
   text-align: left;
   border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.run-history-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 .run-history-table th {
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  color: var(--text-muted, var(--text-subtle));
+  background: var(--bg-soft, rgba(0, 0, 0, 0.02));
+  white-space: nowrap;
+}
+.run-history-table tbody tr {
+  transition: background 0.12s ease;
+}
+.run-history-table tbody tr:hover {
+  background: var(--bg-soft, rgba(0, 0, 0, 0.025));
 }
 .run-history-row--active {
   background: var(--accent-soft, rgba(70, 130, 220, 0.06));
 }
+.run-history-row--active:hover {
+  background: var(--accent-soft, rgba(70, 130, 220, 0.09));
+}
+.run-history-row__id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.run-history-row__id-text {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text, inherit);
+}
 .run-history-row__active-badge {
   font-size: 10px;
-  margin-left: 8px;
-  padding: 1px 6px;
+  padding: 2px 8px;
   border-radius: 999px;
   background: var(--accent, #5b8def);
   color: white;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.run-history-row__version-chip {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.05));
+  color: var(--text-muted, var(--text-subtle));
+  font-family: var(--font-mono, monospace);
+  font-weight: 500;
+}
+.run-history-row__type {
+  font-size: 12px;
+  color: var(--text-muted, var(--text-subtle));
+  text-transform: capitalize;
+}
+.run-history-row__time {
+  font-size: 12px;
+  color: var(--text-muted, var(--text-subtle));
+}
+/* Compact status pill so the run table shows colour at a glance.
+   Vocabulary matches RunStatus values the projector surfaces:
+   succeeded / succeeded_with_warnings / failed / cancelled /
+   anything-else (treated as in-progress).  */
+.run-history-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.05));
+  color: var(--text-muted, var(--text-subtle));
+  white-space: nowrap;
+}
+.run-history-status--ok {
+  background: oklch(94% 0.06 145 / 0.7);
+  color: oklch(35% 0.12 145);
+}
+.run-history-status--warn {
+  background: oklch(94% 0.08 80 / 0.7);
+  color: oklch(40% 0.14 80);
+}
+.run-history-status--err {
+  background: oklch(94% 0.08 25 / 0.7);
+  color: oklch(40% 0.16 25);
+}
+.run-history-status--running {
+  background: oklch(94% 0.06 240 / 0.7);
+  color: oklch(40% 0.14 240);
+}
+[data-theme="dark"] .run-history-status--ok {
+  background: oklch(28% 0.06 145 / 0.55);
+  color: oklch(85% 0.12 145);
+}
+[data-theme="dark"] .run-history-status--warn {
+  background: oklch(28% 0.08 80 / 0.55);
+  color: oklch(85% 0.14 80);
+}
+[data-theme="dark"] .run-history-status--err {
+  background: oklch(28% 0.08 25 / 0.55);
+  color: oklch(85% 0.16 25);
+}
+[data-theme="dark"] .run-history-status--running {
+  background: oklch(28% 0.06 240 / 0.55);
+  color: oklch(85% 0.14 240);
+}
+.run-history-row__action {
+  text-align: right;
 }
 
 /* Confirmation modal — minimal vanilla implementation */

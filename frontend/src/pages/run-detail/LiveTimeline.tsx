@@ -62,6 +62,13 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
     [visibleEvents],
   );
 
+  // Hide the stream-status badge entirely for terminal/idle runs.
+  // The badge only signals "we're listening for live updates"; for
+  // a processed/failed document there's nothing to listen to, so
+  // showing "Live" or "Closed" is just noise.
+  const showStreamStatus =
+    streamStatus === "open" || streamStatus === "reconnecting";
+
   return (
     <div className="card live-timeline-card">
       <div className="card__header">
@@ -71,7 +78,7 @@ export function LiveTimeline({ events, streamStatus, onSelectEvent }: LiveTimeli
             {visibleEvents.length} event{visibleEvents.length === 1 ? "" : "s"}
           </p>
         </div>
-        <StreamStatus status={streamStatus} />
+        {showStreamStatus && <StreamStatus status={streamStatus} />}
       </div>
       <div className="card__body" ref={scrollRef}>
         {visibleEvents.length === 0 ? (

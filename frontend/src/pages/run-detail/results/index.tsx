@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useClient } from "@/lib/hooks/useClient";
 import type { IngestionRun, ProgressEvent } from "@/types/ingestion";
+import { COMPLETED_STATUSES } from "@/lib/constants/runStatus";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ReviewQualityReport, ReviewRunSummary } from "@/types/review";
 import { AssetsTab } from "./AssetsTab";
@@ -211,13 +212,20 @@ export function ResultsSection({
       reason: views?.rawArtifacts?.reason ?? "Loading…",
     },
     {
-      // SmartQueryOrchestrator trace surface — always available
-      // (no artifact preconditions). The orchestrator answers
-      // "why did this query fail" at the operator level; works
-      // regardless of summary load state.
+      // SmartQueryOrchestrator trace surface — gated on the run
+      // reaching a completed status. Querying before the index is
+      // built produces a misleading "no answer" result, so we hide
+      // the tab until the document is actually processed.
       key: "manual-trace",
       label: "Manual Query Trace",
-      available: true,
+      available:
+        run !== null && COMPLETED_STATUSES.has(run.status),
+      reason:
+        run === null
+          ? "Loading run…"
+          : COMPLETED_STATUSES.has(run.status)
+            ? undefined
+            : "Available once the document is processed.",
     },
     {
       key: "validation",
