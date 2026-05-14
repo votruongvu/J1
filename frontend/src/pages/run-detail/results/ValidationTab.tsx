@@ -38,9 +38,15 @@ import {
 interface ValidationTabProps {
   runId: string;
   documentId: string | null;
+  /** Snapshot this run produced — drives the snapshot_explicit default
+   * for ManualQueryConsole. ``null`` for legacy runs predating the
+   * snapshot model; the console falls back to document_active. */
+  targetSnapshotId: string | null;
 }
 
-export function ValidationTab({ runId, documentId }: ValidationTabProps) {
+export function ValidationTab(
+  { runId, documentId, targetSnapshotId }: ValidationTabProps,
+) {
   const client = useClient();
   const manualQueryRef = useRef<ManualQueryConsoleHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -171,7 +177,12 @@ export function ValidationTab({ runId, documentId }: ValidationTabProps) {
         <div className="banner banner--ok" role="status">{info}</div>
       )}
 
-      <ManualQueryConsole ref={manualQueryRef} runId={runId} />
+      <ManualQueryConsole
+        ref={manualQueryRef}
+        runId={runId}
+        documentId={documentId}
+        targetSnapshotId={targetSnapshotId}
+      />
     </div>
   );
 }

@@ -290,6 +290,7 @@ export function ResultsSection({
           <ValidationTab
             runId={runId}
             documentId={run?.document_id ?? null}
+            targetSnapshotId={run?.target_snapshot_id ?? null}
           />
         )}
       </div>

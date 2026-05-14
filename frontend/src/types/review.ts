@@ -641,6 +641,22 @@ export type ValidationStatus =
   | "failed"
   | "inconclusive";
 
+/**
+ * Snapshot-centric query scope (wire shape).
+ *
+ *   - "project_active"     → every attached document's active snapshot
+ *   - "document_active"    → one document's active snapshot
+ *   - "snapshot_explicit"  → a fixed allowlist of snapshot ids
+ *
+ * Run is intentionally not a scope. The FE resolves a run to its
+ * producing snapshot (``run.targetSnapshotId``) and sends
+ * ``snapshot_explicit`` with that single id.
+ */
+export type QueryScope =
+  | { type: "project_active" }
+  | { type: "document_active"; documentId: string }
+  | { type: "snapshot_explicit"; snapshotIds: string[] };
+
 export interface ManualTestQueryRequest {
   question: string;
   topK?: number;
@@ -651,10 +667,24 @@ export interface ManualTestQueryRequest {
   // Set false for fast retrieval-only debug runs (skips the LLM call
   // entirely, response carries `llm.called=false`, `synthesizedAnswer=null`).
   synthesize?: boolean;
-  // Validation scope. `"run"` (default) targets the run named in
-  // the URL — useful immediately after ingestion/reindex.
-  // `"active"` targets the document's currently-promoted run —
-  // useful for testing what users can actually search right now.
+  /**
+   * Snapshot-centric scope. UI callers MUST send this; the legacy
+   * ``validationScope`` text token is only honoured server-side for
+   * back-compat and is REFUSED for the ``"run"`` value (Run is
+   * execution metadata, not a knowledge unit).
+   */
+  scope?: QueryScope;
+  /**
+   * Diagnostic escape hatch. When ``true``, the server allows
+   * ``validationScope="run"`` for operators inspecting raw
+   * run-keyed artifacts. UI paths NEVER set this — the typed
+   * ``scope`` field is the supported route.
+   */
+  allowRunScope?: boolean;
+  /**
+   * @deprecated Use ``scope`` instead. Kept for the diagnostic
+   * surfaces that still send the legacy string token.
+   */
   validationScope?: "run" | "active";
 }
 

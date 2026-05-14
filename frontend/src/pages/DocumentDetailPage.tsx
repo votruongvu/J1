@@ -29,6 +29,7 @@ import {
   KnowledgeStateBadge,
   ResultStatusBadge,
 } from "./documents/DocumentBadges";
+import { TestActiveKnowledgePanel } from "./documents/TestActiveKnowledgePanel";
 import type {
   DocumentAction,
   DocumentDetail,
@@ -354,6 +355,22 @@ export function DocumentDetailPage({
           detail={detail}
           producingRun={activeProducingRun ?? null}
           activeSnapshot={activeSnapshot}
+        />
+      </section>
+
+      <section className="document-detail__section">
+        <h3>Test Active Knowledge</h3>
+        <p className="muted document-detail__hint">
+          Ask a question scoped to this document's active snapshot.
+          Run is not a query scope — the request uses
+          <code className="mono"> document_active </code>
+          and the backend resolves the active snapshot id.
+        </p>
+        <TestActiveKnowledgePanel
+          documentId={detail.documentId}
+          activeSnapshotId={detail.activeSnapshotId}
+          producingRunId={activeRunId}
+          onOpenRun={onOpenRun}
         />
       </section>
 

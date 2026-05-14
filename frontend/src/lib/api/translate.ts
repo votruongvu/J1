@@ -60,6 +60,10 @@ export interface ApiRunRecord {
   warningCount?: number;
   failureCode?: string | null;
   failureMessage?: string | null;
+  /** Snapshot this run produced / was building. Threaded through
+   * so the Run Detail "Validate Produced Snapshot" widget can
+   * default its query to ``snapshot_explicit=[targetSnapshotId]``. */
+  targetSnapshotId?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -193,6 +197,7 @@ export function runFromApi(api: ApiRunRecord): IngestionRun {
     runId: api.runId,
     document_name: documentName,
     document_id: api.documentId ?? undefined,
+    target_snapshot_id: api.targetSnapshotId ?? null,
     mode,
     policy,
     status: translateStatus(api.status),

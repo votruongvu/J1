@@ -108,6 +108,28 @@ class RetrievedChunkRefDTO:
 
 
 @dataclass(frozen=True)
+class QueryScopeDTO:
+    """Explicit snapshot-centric scope (internal representation).
+
+    Mirrors the wire-side ``QueryScopeRecord``. Three valid shapes:
+
+      * ``type="project_active"`` — every attached document's active
+        snapshot. ``document_id`` and ``snapshot_ids`` are unused.
+      * ``type="document_active"`` — one document's active snapshot.
+        ``document_id`` required; ``snapshot_ids`` unused.
+      * ``type="snapshot_explicit"`` — a fixed allowlist.
+        ``snapshot_ids`` required; ``document_id`` unused.
+
+    Run is intentionally not a scope. The caller resolves run →
+    target snapshot before constructing this DTO.
+    """
+
+    type: Literal["project_active", "document_active", "snapshot_explicit"]
+    document_id: str | None = None
+    snapshot_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ManualTestQueryRequest:
     """Inbound shape for ``POST /ingestion-runs/{run_id}/test-query``.
 
@@ -121,10 +143,15 @@ class ManualTestQueryRequest:
     configured ``TextLLMClient`` and exposes the result as
     ``synthesized_answer`` on the response.
 
-    ``validation_scope`` (spec section 9). ``"run"`` (default)
-    validates the run named in the URL — useful immediately after
-    ingest/reindex. ``"active"`` validates the document's currently
-    promoted run — useful for "what users can actually search now".
+    ``scope`` (preferred): explicit snapshot-centric scope. UI callers
+    set this; the legacy ``validation_scope`` token is honoured only
+    when ``scope`` is None.
+
+    ``validation_scope`` (legacy). Kept for backward-compat with
+    callers that haven't migrated to the typed ``scope`` field. UI
+    paths set ``scope`` and never rely on ``validation_scope="run"``
+    — the handler refuses run-keyed scope unless ``allow_run_scope``
+    is explicitly true (diagnostic surfaces only).
     """
 
     question: str
@@ -133,7 +160,9 @@ class ManualTestQueryRequest:
     citation_required: bool = False
     include_raw: bool = False
     synthesize: bool = True
+    scope: QueryScopeDTO | None = None
     validation_scope: Literal["run", "active"] = "run"
+    allow_run_scope: bool = False
 
 
 @dataclass(frozen=True)

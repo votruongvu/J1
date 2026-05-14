@@ -66,6 +66,12 @@ export interface IngestionRun {
    * the run-hero to render the parent document reference alongside
    * the run id. */
   document_id?: string;
+  /** The snapshot this run was building / built. The Run Detail
+   * "Validate Produced Snapshot" widget defaults its query scope
+   * to ``snapshot_explicit=[targetSnapshotId]`` — the only valid
+   * way to query a run's output. ``null`` for legacy runs that
+   * predate the snapshot model. */
+  target_snapshot_id?: string | null;
   mode: string;
   policy: string;
   status: RunStatus;

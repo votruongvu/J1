@@ -27,12 +27,31 @@ import type {
   LLMTrace,
   ManualQueryDebug,
   ManualTestQueryResponse,
+  QueryScope,
   ValidationCheck,
 } from "@/types/review";
 
 interface ManualQueryConsoleProps {
   runId: string;
+  /**
+   * The snapshot this run produced. Drives the default
+   * ``snapshot_explicit`` scope so the manual query validates the
+   * run's *output* (the snapshot), not the run record itself. When
+   * ``null`` (legacy runs predating the snapshot model), the
+   * console falls back to ``document_active`` scope so the query
+   * still has a coherent target.
+   */
+  targetSnapshotId: string | null;
+  /**
+   * The document this run is for. Used as the fallback scope
+   * (``document_active``) when ``targetSnapshotId`` is unavailable.
+   * When also ``null``, the console disables the submit button —
+   * there's no meaningful scope to query.
+   */
+  documentId: string | null;
 }
+
+type ScopeChoice = "produced_snapshot" | "document_active";
 
 export interface ManualQueryConsoleHandle {
   /** Imperatively load a question into the textarea + focus it. */
@@ -42,7 +61,9 @@ export interface ManualQueryConsoleHandle {
 export const ManualQueryConsole = forwardRef<
   ManualQueryConsoleHandle,
   ManualQueryConsoleProps
->(function ManualQueryConsole({ runId }, ref) {
+>(function ManualQueryConsole(
+  { runId, targetSnapshotId, documentId }, ref,
+) {
   const client = useClient();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [question, setQuestion] = useState("");
@@ -66,11 +87,21 @@ export const ManualQueryConsole = forwardRef<
   // smoke (skips the LLM entirely so the response lands instantly
   // and isn't blocked on a slow local model).
   const [synthesize, setSynthesize] = useState(true);
-  // Validation scope — `run` matches the endpoint's URL run id
-  // (default); `active` redirects to the document's currently-
-  // promoted run. Useful for "test what users can search now"
-  // vs. "test this specific reindex's output".
-  const [scope, setScope] = useState<"run" | "active">("run");
+  // Snapshot-centric scope (Phase 9):
+  //
+  //   "produced_snapshot" — validate the snapshot this run produced
+  //       (``snapshot_explicit=[run.targetSnapshotId]``). This is the
+  //       primary purpose of Run Detail validation: "is the candidate
+  //       knowledge this run built good?"
+  //   "document_active"   — validate the document's currently active
+  //       snapshot. The legacy "test what users can search now" choice.
+  //
+  // Run is intentionally NOT a scope option. Run is execution
+  // metadata; the snapshot is the knowledge unit. The console
+  // resolves the run's producing snapshot client-side before sending.
+  const [scopeChoice, setScopeChoice] = useState<ScopeChoice>(
+    targetSnapshotId ? "produced_snapshot" : "document_active",
+  );
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<ManualTestQueryResponse | null>(
@@ -84,6 +115,32 @@ export const ManualQueryConsole = forwardRef<
       setError("Enter a question to run a manual test query.");
       return;
     }
+    // Resolve the typed scope client-side. Run is never a scope —
+    // we always either query the snapshot this run produced or the
+    // document's active snapshot.
+    let queryScope: QueryScope;
+    if (scopeChoice === "produced_snapshot") {
+      if (!targetSnapshotId) {
+        setError(
+          "This run has no produced snapshot to validate. Pick " +
+          "\"document active\" instead.",
+        );
+        return;
+      }
+      queryScope = {
+        type: "snapshot_explicit",
+        snapshotIds: [targetSnapshotId],
+      };
+    } else {
+      if (!documentId) {
+        setError(
+          "This run has no parent document. Cannot resolve " +
+          "document-active scope.",
+        );
+        return;
+      }
+      queryScope = { type: "document_active", documentId };
+    }
     setRunning(true);
     setError(null);
     try {
@@ -92,7 +149,7 @@ export const ManualQueryConsole = forwardRef<
         topK,
         citationRequired,
         synthesize,
-        validationScope: scope,
+        scope: queryScope,
         // Always request raw — the drawer is gated on the toggle so
         // turning it on doesn't require re-querying.
         includeRaw: true,
@@ -109,7 +166,10 @@ export const ManualQueryConsole = forwardRef<
     } finally {
       setRunning(false);
     }
-  }, [client, runId, question, topK, citationRequired, synthesize, scope]);
+  }, [
+    client, runId, question, topK, citationRequired, synthesize,
+    scopeChoice, targetSnapshotId, documentId,
+  ]);
 
   return (
     <div className="manual-query-console">
@@ -177,19 +237,37 @@ export const ManualQueryConsole = forwardRef<
             </label>
             <label
               style={{ display: "flex", alignItems: "center", gap: 8 }}
-              title="Scope: `run` targets this specific attempt; `active` targets the document's currently-promoted run (useful after reindex)."
+              title={
+                "Scope: 'Produced snapshot' validates the candidate " +
+                "knowledge this run built. 'Document active' " +
+                "validates what users can currently search."
+              }
             >
               <span>Scope</span>
               <select
-                value={scope}
+                value={scopeChoice}
                 onChange={(e) =>
-                  setScope(e.target.value as "run" | "active")
+                  setScopeChoice(e.target.value as ScopeChoice)
                 }
                 disabled={running}
                 style={{ padding: "2px 4px" }}
+                data-testid="manual-query-scope"
               >
-                <option value="run">This run</option>
-                <option value="active">Active knowledge</option>
+                <option
+                  value="produced_snapshot"
+                  disabled={!targetSnapshotId}
+                >
+                  Produced snapshot{" "}
+                  {targetSnapshotId
+                    ? `(${targetSnapshotId.slice(0, 12)}…)`
+                    : "(unavailable)"}
+                </option>
+                <option
+                  value="document_active"
+                  disabled={!documentId}
+                >
+                  Document active snapshot
+                </option>
               </select>
             </label>
             <button

@@ -131,6 +131,10 @@ class IngestionRunRecord(CamelModel):
     # at without reading the raw event timeline. Derived server-side
     # from the audit log on read.
     last_event_type: str | None = None
+    # Snapshot this run produced / was building (Phase 9). Threaded
+    # to the FE so the Run Detail "Validate Produced Snapshot" widget
+    # defaults its query scope to ``snapshot_explicit=[targetSnapshotId]``.
+    target_snapshot_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -397,6 +401,33 @@ class AnswerRecord(CamelModel):
 # ---- Validation (post-ingestion manual test query) -------------------
 
 
+class QueryScopeRecord(CamelModel):
+    """Explicit query scope contract (wire shape, FE → BE).
+
+    Snapshot-centric: callers select *which knowledge* to query, never
+    *which run*. The three valid shapes map to ``j1.query.scope``:
+
+      * ``type="project_active"`` — query every attached document's
+        active snapshot. The user's "Ask Knowledge Base" / Home flow.
+      * ``type="document_active"`` — query a single document's active
+        snapshot. Backs the Document Detail "Test Active Knowledge"
+        widget. Requires ``documentId``.
+      * ``type="snapshot_explicit"`` — query a fixed set of snapshot
+        ids. Backs the Run Detail "Validate Produced Snapshot" widget,
+        which pre-resolves ``run.targetSnapshotId`` and sends it
+        here. Requires ``snapshotIds``.
+
+    There is intentionally NO ``"run"`` scope. Run is execution
+    metadata, not a knowledge unit. The FE resolves the producing
+    snapshot for the run and sends ``snapshot_explicit`` with that
+    snapshot id.
+    """
+
+    type: Literal["project_active", "document_active", "snapshot_explicit"]
+    document_id: str | None = None
+    snapshot_ids: list[str] | None = None
+
+
 class ManualTestQueryRequestRecord(CamelModel):
     """Body for POST /ingestion-runs/{run_id}/test-query.
 
@@ -408,6 +439,15 @@ class ManualTestQueryRequestRecord(CamelModel):
  on/off. `synthesize` opts into LLM-backed answer synthesis on
  top of the retrieval preview (default on; set false for fast
  retrieval-only debug runs).
+
+ ``scope`` is the explicit snapshot-centric query scope (see
+ ``QueryScopeRecord``). When omitted the legacy ``validationScope``
+ string is honoured for backward compat — but UI callers MUST send
+ ``scope`` because the FE has stopped treating ``run`` as a scope.
+ The legacy ``validation_scope="run"`` path is rejected at the
+ boundary for any request that didn't explicitly set it (i.e.
+ callers that simply didn't supply ``scope`` and accepted the
+ legacy default fall through to scope inference described below).
  """
 
     question: str = Field(min_length=1)
@@ -416,12 +456,19 @@ class ManualTestQueryRequestRecord(CamelModel):
     citation_required: bool = False
     include_raw: bool = False
     synthesize: bool = True
-    # Validation scope (spec section 9). Default ``"run"`` keeps
-    # behaviour unchanged for legacy callers. ``"active"`` switches
-    # the engine to ``ActiveScope(document_id)`` — useful for
-    # testing what users can search RIGHT NOW (post-reindex
-    # promotion).
+    # Preferred (snapshot-centric) scope. When set, ``validation_scope``
+    # below is ignored.
+    scope: QueryScopeRecord | None = None
+    # LEGACY: the pre-snapshot scope token. Kept for backward compat
+    # while callers migrate to the typed ``scope`` field. The handler
+    # rejects ``validation_scope="run"`` unless the caller also opts in
+    # via an explicit ``allowRunScope`` flag for diagnostic paths.
     validation_scope: Literal["run", "active"] = "run"
+    # Explicit opt-in to the diagnostic ``run`` scope. Surfaced as an
+    # escape hatch for operators who want to inspect a specific run's
+    # raw artifacts (e.g. a failed candidate snapshot). UI callers
+    # never set this; it exists for ``/dev/*`` diagnostic surfaces.
+    allow_run_scope: bool = False
 
 
 class ValidationCheckRecord(CamelModel):

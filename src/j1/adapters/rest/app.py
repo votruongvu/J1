@@ -3191,6 +3191,33 @@ def create_rest_api(
         ctx: ProjectContext = Depends(get_ctx),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        # Snapshot-centric scope contract. UI callers send the typed
+        # ``scope`` field; legacy callers fall through to the string
+        # ``validation_scope`` token. The diagnostic ``"run"`` scope
+        # is REFUSED on this endpoint unless the caller explicitly
+        # opts in via ``allowRunScope=true`` — Run is execution
+        # metadata, not a knowledge unit. The guard runs BEFORE
+        # ``_require_validation_service`` so a misconfigured
+        # deployment returns the actionable 400 (which the caller
+        # can fix) instead of a 503 that hides the real cause.
+        from j1.validation.dtos import QueryScopeDTO as _ScopeDTO
+        scope_dto: _ScopeDTO | None = None
+        if body.scope is not None:
+            scope_dto = _ScopeDTO(
+                type=body.scope.type,
+                document_id=body.scope.document_id,
+                snapshot_ids=tuple(body.scope.snapshot_ids or ()),
+            )
+        elif body.validation_scope == "run" and not body.allow_run_scope:
+            raise HTTPException(
+                400,
+                "validation_scope=\"run\" is no longer accepted on "
+                "this endpoint. Pass a typed `scope` instead: "
+                "{ type: 'document_active', documentId } or "
+                "{ type: 'snapshot_explicit', snapshotIds: [...] }. "
+                "Set `allowRunScope=true` only for diagnostic "
+                "tooling that needs raw run-keyed artifact lookup.",
+            )
         service = _require_validation_service()
         dto_request = ManualTestQueryRequestDTO(
             question=body.question,
@@ -3199,7 +3226,9 @@ def create_rest_api(
             citation_required=body.citation_required,
             include_raw=body.include_raw,
             synthesize=body.synthesize,
+            scope=scope_dto,
             validation_scope=body.validation_scope,
+            allow_run_scope=body.allow_run_scope,
         )
         # `_load_run` inside the service raises `ReviewNotFound` on
         # cross-tenant / cross-project access — caught by the
@@ -5441,6 +5470,7 @@ def _ingestion_run_to_record(
         failure_message=run.failure_message,
         warning_count=run.warning_count,
         last_event_type=last_event_type,
+        target_snapshot_id=getattr(run, "target_snapshot_id", None),
         metadata=dict(run.metadata),
     )
 

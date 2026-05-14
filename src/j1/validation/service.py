@@ -35,7 +35,7 @@ from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
 from j1.ingestion_review.exceptions import ReviewNotFound
 from j1.projects.context import ProjectContext
-from j1.query.scope import ActiveScope, QueryScope, RunScope
+from j1.query.scope import ActiveScope, QueryScope, RunScope, WorkspaceScope
 from j1.runs.models import IngestionRun, RunStatus
 from j1.runs.store import IngestionRunStore
 from j1.validation.dtos import (
@@ -457,8 +457,8 @@ class IngestionValidationService:
         """
         from j1.query.orchestrator import OrchestratorRequest
 
-        engine_scope = self._resolve_query_scope(
-            ctx=ctx, run=run, validation_scope=request.validation_scope,
+        engine_scope, eligible_snapshot_ids = self._resolve_query_scope(
+            ctx=ctx, run=run, request=request,
         )
         result = self._smart_query_orchestrator.run(OrchestratorRequest(
             ctx=ctx,
@@ -466,6 +466,7 @@ class IngestionValidationService:
             scope=engine_scope,
             run_id=run.run_id,
             document_id=run.document_id,
+            eligible_snapshot_ids=eligible_snapshot_ids,
         ))
 
         retrieved_chunks = _retrieved_chunks_from_trace(result.trace)
@@ -521,28 +522,71 @@ class IngestionValidationService:
         *,
         ctx: ProjectContext,
         run: IngestionRun,
-        validation_scope: str,
-    ) -> QueryScope:
-        """Map ``validation_scope`` to a concrete ``QueryScope``.
+        request: "ManualTestQueryRequest",
+    ) -> tuple[QueryScope, "frozenset[str] | None"]:
+        """Map the request's scope to a concrete ``(QueryScope, eligible_snapshot_ids)``.
 
-        * ``"run"``    — ``RunScope(run.run_id)``.
-        * ``"active"`` — ``ActiveScope(document_id)``, resolved by the
-          source registry to a concrete scope. Falls back to
-          ``RunScope(run.run_id)`` when no source registry is wired.
+        Preference order:
+
+          1. ``request.scope`` (the typed snapshot-centric contract).
+             * ``project_active``     → ``WorkspaceScope`` (eligibility
+               resolver narrows to attached docs).
+             * ``document_active``    → ``ActiveScope(document_id)``.
+             * ``snapshot_explicit``  → ``WorkspaceScope`` +
+               pre-resolved ``eligible_snapshot_ids`` allowlist. The
+               orchestrator + adapters honour the allowlist over any
+               eligibility resolution.
+
+          2. Legacy ``request.validation_scope`` token. ``"active"``
+             still maps to ``ActiveScope``. ``"run"`` is REJECTED for
+             UI paths — the handler raises before we get here unless
+             ``request.allow_run_scope`` is explicitly true (the
+             diagnostic escape hatch).
+
+        Run is never a primary query scope. Even with
+        ``allow_run_scope=True``, the diagnostic ``RunScope`` is only
+        for operators who want raw run-keyed artifact inspection.
         """
-        if (
-            validation_scope == "active"
-            and self._source_registry is not None
-        ):
-            from j1.query.active_scope import resolve_to_concrete_scope
-            active = ActiveScope(document_id=run.document_id)
-            return resolve_to_concrete_scope(
-                active,
-                registry=self._source_registry,
-                ctx=ctx,
-                snapshot_store=self._snapshot_store,
-            )
-        return RunScope(run_id=run.run_id)
+        from j1.validation.dtos import (
+            ManualTestQueryRequest as _MTQR,  # noqa: F401 — for narrow imports
+        )
+
+        scope_dto = getattr(request, "scope", None)
+        if scope_dto is not None:
+            if scope_dto.type == "project_active":
+                return WorkspaceScope(), None
+            if scope_dto.type == "document_active":
+                doc_id = scope_dto.document_id or run.document_id
+                return ActiveScope(document_id=doc_id), None
+            if scope_dto.type == "snapshot_explicit":
+                ids = tuple(scope_dto.snapshot_ids or ())
+                if not ids:
+                    raise ValueError(
+                        "scope.type='snapshot_explicit' requires at "
+                        "least one snapshotId"
+                    )
+                return WorkspaceScope(), frozenset(ids)
+            raise ValueError(f"unknown scope type {scope_dto.type!r}")
+
+        # Legacy path: ``validation_scope`` string token.
+        if request.validation_scope == "active":
+            if self._source_registry is not None:
+                from j1.query.active_scope import resolve_to_concrete_scope
+                active = ActiveScope(document_id=run.document_id)
+                return (
+                    resolve_to_concrete_scope(
+                        active,
+                        registry=self._source_registry,
+                        ctx=ctx,
+                        snapshot_store=self._snapshot_store,
+                    ),
+                    None,
+                )
+            return ActiveScope(document_id=run.document_id), None
+
+        # ``validation_scope="run"`` — only the diagnostic escape
+        # hatch reaches this branch (handler refuses UI traffic).
+        return RunScope(run_id=run.run_id), None
 
     def _run_native_query(
         self,
