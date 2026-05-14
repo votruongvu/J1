@@ -95,7 +95,6 @@ export interface DocumentListItem {
   documentId: string;
   displayName: string;
   knowledgeState: KnowledgeState;
-  activeRunId: string | null;
   latestVersionId: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -109,12 +108,16 @@ export interface DocumentListItem {
  * Detail-view projection — what `GET /documents/{id}/detail`
  * returns. Same shape as the list item but with the full
  * run history (uncapped) instead of just a 3-row tail.
+ *
+ * The display-active run is derived from `runHistory.find(r =>
+ * r.isActive)`. The backend stores the canonical visibility key as
+ * `activeSnapshotId`; the active run id is intentionally not on the
+ * wire — it's a UI-display concept that the projector marks per-run.
  */
 export interface DocumentDetail {
   documentId: string;
   displayName: string;
   knowledgeState: KnowledgeState;
-  activeRunId: string | null;
   latestVersionId: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -128,7 +131,6 @@ export interface DocumentDetail {
 export interface DocumentLifecycleResponse {
   documentId: string;
   knowledgeState: KnowledgeState;
-  activeRunId: string | null;
   latestVersionId: string | null;
   removedAt: string | null;
   updatedAt: string | null;

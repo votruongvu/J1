@@ -82,7 +82,6 @@ export function DocumentDetailPage({
     documentId: d.documentId,
     displayName: d.displayName,
     knowledgeState: d.knowledgeState,
-    activeRunId: d.activeRunId,
     latestVersionId: d.latestVersionId,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -181,6 +180,11 @@ export function DocumentDetailPage({
 
   const otherActions = detail.availableActions.filter((a) => a !== "view");
   const summary = detail.currentResultSummary;
+  // Display-active run id is derived from the per-run `isActive`
+  // flag the projector stamps server-side. The wire shape no longer
+  // carries a top-level `activeRunId` — `activeSnapshotId` is the
+  // canonical visibility key and the run pointer is UI sugar.
+  const activeRunId = detail.runHistory.find((r) => r.isActive)?.runId ?? null;
 
   return (
     <div className="document-detail">
@@ -254,8 +258,8 @@ export function DocumentDetailPage({
           <div className="run-stats__item">
             <label>Active run</label>
             <div className="v mono">
-              {detail.activeRunId
-                ? `${detail.activeRunId.slice(0, 12)}…`
+              {activeRunId
+                ? `${activeRunId.slice(0, 12)}…`
                 : "none yet"}
             </div>
           </div>
@@ -295,7 +299,7 @@ export function DocumentDetailPage({
         </h3>
         <RunHistoryTable
           runs={detail.runHistory}
-          activeRunId={detail.activeRunId}
+          activeRunId={activeRunId}
           onOpenRun={onOpenRun}
         />
       </section>

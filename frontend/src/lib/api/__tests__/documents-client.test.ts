@@ -63,7 +63,6 @@ describe("listDocuments", () => {
               documentId: "doc-1",
               displayName: "Bridge Report.pdf",
               knowledgeState: "attached",
-              activeRunId: "r-1",
               latestVersionId: null,
               createdAt: "2026-05-12T00:00:00Z",
               updatedAt: null,
@@ -125,7 +124,6 @@ describe("getDocumentDetail", () => {
           documentId: "doc-1",
           displayName: "Bridge Report.pdf",
           knowledgeState: "attached",
-          activeRunId: "r-1",
           latestVersionId: null,
           createdAt: "2026-05-12T00:00:00Z",
           updatedAt: null,
@@ -213,7 +211,6 @@ describe("lifecycle actions (attach/detach/remove)", () => {
       data: {
         documentId: "doc-1",
         knowledgeState: "detached",
-        activeRunId: "r-1",
         latestVersionId: null,
         removedAt: null,
         updatedAt: "2026-05-12T01:00:00Z",

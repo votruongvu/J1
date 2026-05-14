@@ -369,15 +369,15 @@ export interface IngestionClient {
 
   /**
  * POST /documents/{id}/remove — disown the document's generated
- * knowledge. Clears active_run_id; the document is hidden from
- * the normal list. Re-attach requires re-upload.
+ * knowledge. Clears active_snapshot_id; the document is hidden
+ * from the normal list. Re-attach requires re-upload.
  */
   removeDocument(documentId: string): Promise<DocumentLifecycleResponse>;
 
   /**
  * POST /documents/{id}/reindex — start a new ingestion attempt.
  * The new run carries `runType="reindex"`. The document's
- * activeRunId only flips when the new run reaches a usable
+ * activeSnapshotId only flips when the new run reaches a usable
  * terminal state — a failed reindex preserves the previous good
  * result.
  */
