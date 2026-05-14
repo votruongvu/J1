@@ -49,6 +49,12 @@ class CompileActivityInput:
     # ``require_existing_target_snapshot`` instead of lazily
     # creating one inside the activity.
     target_snapshot_id: str | None = None
+    # When set, this compile is part of an explicit reindex of a prior
+    # run. The activity uses this to bypass the processing-result
+    # cache so the documented "reindex ALWAYS re-parses" contract is
+    # honoured even when a prior successful entry exists for the same
+    # (document_hash, processor_kind, processor_version, mode) key.
+    reindex_of: str | None = None
 
 
 @dataclass(frozen=True)

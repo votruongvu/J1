@@ -155,6 +155,7 @@ def make_per_document_starter(
                 target_snapshot_id=getattr(
                     body, "target_snapshot_id", None,
                 ),
+                reindex_of=getattr(body, "reindex_of", None),
             ),
             id=workflow_id,
             task_queue=task_queue,

@@ -299,6 +299,97 @@ def test_compile_activity_skips_processor_when_cache_hit(
     )
 
 
+def test_compile_activity_bypasses_cache_on_reindex(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """An explicit reindex (``input.reindex_of`` set) MUST re-run the
+    compile even when a prior completed cache entry exists for the
+    same (document_hash, processor_kind, …) key. The REST contract
+    documents that "reindex ALWAYS re-parses"; the cache hit would
+    silently violate that and propagate the prior run's artifact ids
+    — which may no longer exist in the registry — into enrich/graph.
+    """
+    from j1.processing.cache import JsonlProcessingResultCache
+
+    registry.add(_document(ctx))
+    compiler = _CountingCompiler()
+    cache = JsonlProcessingResultCache(workspace)
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=compiler,
+        cache=cache,
+    )
+
+    first = activities.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+    ))
+    assert first.status == "succeeded"
+    assert compiler.calls == 1
+
+    reindex = activities.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+        reindex_of="prior-run-id",
+    ))
+    assert reindex.status == "succeeded"
+    assert compiler.calls == 2, (
+        "reindex_of must bypass the processing-result cache and re-run "
+        "the compiler"
+    )
+    assert reindex.artifact_ids != first.artifact_ids, (
+        "reindex re-parse produced the same artifact ids as the prior "
+        "run — the cache short-circuit was not bypassed"
+    )
+
+
+def test_compile_activity_treats_cache_with_missing_artifacts_as_miss(
+    processing_service, registry, artifact_registry, ctx, workspace,
+):
+    """A completed cache entry whose artifacts have been pruned from
+    the registry MUST be treated as a cache miss — returning stale
+    ids here makes enrich/graph fail with ``ArtifactNotFoundError``
+    half a pipeline later."""
+    from j1.processing.cache import JsonlProcessingResultCache
+
+    registry.add(_document(ctx))
+    compiler = _CountingCompiler()
+    cache = JsonlProcessingResultCache(workspace)
+    activities = _activities_with_cache(
+        processing_service=processing_service,
+        registry=registry,
+        artifact_registry=artifact_registry,
+        compiler=compiler,
+        cache=cache,
+    )
+
+    first = activities.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+    ))
+    assert first.status == "succeeded"
+    assert compiler.calls == 1
+
+    for aid in first.artifact_ids:
+        artifact_registry.delete_by_artifact_id(ctx, aid)
+
+    second = activities.compile(CompileActivityInput(
+        scope=_scope(ctx), document_id="doc-1",
+        processor_kind="mock.compiler",
+    ))
+    assert second.status == "succeeded"
+    assert compiler.calls == 2, (
+        "compile cache hit returned ids for artifacts that no longer "
+        "exist; should have fallen through to a re-compile"
+    )
+    for aid in second.artifact_ids:
+        assert aid not in first.artifact_ids, (
+            "re-compile reused the pruned artifact ids"
+        )
+
+
 def test_compile_activity_records_failure_in_cache(
     processing_service, registry, artifact_registry, ctx, workspace,
 ):

@@ -608,23 +608,53 @@ class ProcessingActivities:
         # interface when implementations expose them; the empty
         # default keeps existing compilers working without changes.
         cache_key_parts = _compile_cache_key_parts(input, compiler, document)
+        # An explicit reindex bypasses the cache: the REST contract
+        # documents that "reindex ALWAYS re-parses the original
+        # uploaded file" (adapters/rest/app.py docstring on
+        # ``POST /documents/{id}/reindex``). The cache key omits
+        # ``run_id`` / ``target_snapshot_id``, so without this guard a
+        # prior successful entry would short-circuit the parse and
+        # propagate stale artifact ids that may no longer exist in the
+        # registry (the failure surfaces in enrich/graph as
+        # ``ArtifactNotFoundError``).
+        reindex_skip_cache = bool(getattr(input, "reindex_of", None))
         cached = (
             self._cache.lookup(ctx, **cache_key_parts)
-            if self._cache is not None
+            if self._cache is not None and not reindex_skip_cache
             else None
         )
         if cached is not None and cached.status == CACHE_STATUS_COMPLETED:
-            _safe_heartbeat({
-                "stage": "compile",
-                "document_id": input.document_id,
-                "status": "succeeded",
-                "cache": "hit",
-            })
-            return ArtifactActivityResult(
-                status="succeeded",
-                artifact_ids=list(cached.artifact_ids),
-                message="reused from processing-result cache",
-            )
+            # Defense in depth: a cache hit is only honoured when EVERY
+            # cached artifact still resolves in the registry. A prior
+            # successful run can have its artifacts pruned, invalidated,
+            # or moved across snapshots; returning their ids here makes
+            # the compile look like a no-op while the downstream stages
+            # blow up with ArtifactNotFoundError. Verifying up-front
+            # turns this into a clean cache miss → re-compile.
+            missing_cached_artifacts = [
+                aid for aid in cached.artifact_ids
+                if not self._cached_artifact_exists(ctx, aid)
+            ]
+            if missing_cached_artifacts:
+                _safe_heartbeat({
+                    "stage": "compile",
+                    "document_id": input.document_id,
+                    "status": "cache_stale",
+                    "missing_artifacts": len(missing_cached_artifacts),
+                })
+                cached = None
+            else:
+                _safe_heartbeat({
+                    "stage": "compile",
+                    "document_id": input.document_id,
+                    "status": "succeeded",
+                    "cache": "hit",
+                })
+                return ArtifactActivityResult(
+                    status="succeeded",
+                    artifact_ids=list(cached.artifact_ids),
+                    message="reused from processing-result cache",
+                )
 
         # ---- Refresh-enrich compile reuse -----------------------------
         # Refresh-enrich runs (``run_type="refresh_enrich"``) carry
@@ -953,6 +983,21 @@ class ProcessingActivities:
                 f"from run {source_run_id} (refresh-enrich)"
             ),
         )
+
+    def _cached_artifact_exists(self, ctx, artifact_id: str) -> bool:
+        """True iff ``artifact_id`` still resolves in the registry for
+        this project. Used by the compile cache-hit path to detect a
+        stale entry (artifacts pruned / invalidated since the original
+        run) before returning ids whose downstream lookup would raise
+        ``ArtifactNotFoundError`` mid-pipeline."""
+        from j1.artifacts.registry import ArtifactNotFoundError
+        try:
+            self._artifacts.get(ctx, artifact_id)
+        except ArtifactNotFoundError:
+            return False
+        except Exception:  # noqa: BLE001 — registry transient -> treat as stale
+            return False
+        return True
 
     def _record_cache_processing(
         self,

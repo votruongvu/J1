@@ -388,6 +388,14 @@ class ProjectProcessingRequest:
     # workflow allocates per-document inside ``_process_document``
     # via the ``allocate_target_snapshot`` activity instead.
     target_snapshot_id: str | None = None
+    # Parent run id when this workflow is a reindex of a prior run.
+    # Threaded into ``CompileActivityInput.reindex_of`` so the compile
+    # activity can bypass the processing-result cache and honour the
+    # REST-documented "reindex ALWAYS re-parses" contract — otherwise
+    # a cache hit on the same (document_hash, processor_kind, …) key
+    # short-circuits the parse and the downstream stages inherit
+    # stale artifact ids whose registry records may no longer exist.
+    reindex_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3036,6 +3044,7 @@ class ProjectProcessingWorkflow:
                     correlation_id=request.correlation_id,
                     assessment_plan_payload=current_assessment_payload,
                     target_snapshot_id=self._resolved_target_snapshot_id,
+                    reindex_of=request.reindex_of,
                 ),
                 # Compile is the most expensive activity (MinerU parse
                 # is minutes per real PDF). Wider timeout absorbs
