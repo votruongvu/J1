@@ -33,6 +33,7 @@ import type {
   DocumentAction,
   DocumentDetail,
   DocumentListItem,
+  DocumentSnapshotSummary,
 } from "@/types/documents";
 import type { ProjectContext, Toast } from "@/types/ui";
 
@@ -51,6 +52,7 @@ export function DocumentDetailPage({
   const ready = !!ctx.tenant && !!ctx.project;
 
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
+  const [snapshots, setSnapshots] = useState<DocumentSnapshotSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
   const [pendingDetach, setPendingDetach] = useState<DocumentListItem | null>(null);
@@ -62,8 +64,18 @@ export function DocumentDetailPage({
     setLoading(true);
     setError(null);
     try {
-      const result = await client.getDocumentDetail(documentId);
+      // Snapshot list is parallel-fetched so the Candidate Knowledge
+      // / Active Knowledge sections render state badges without a
+      // second round-trip. Failure here is non-fatal — the page
+      // still works without snapshot state; the badges just don't
+      // show. Deployments that don't wire snapshot_service return
+      // 503 and the client adapter converts that to an empty list.
+      const [result, snapsResult] = await Promise.all([
+        client.getDocumentDetail(documentId),
+        client.listDocumentSnapshots(documentId).catch(() => []),
+      ]);
       setDetail(result);
+      setSnapshots(snapsResult);
     } catch (e) {
       const status = e instanceof ApiError ? e.status : 500;
       const message = e instanceof Error ? e.message : "Failed to load document.";
@@ -192,6 +204,15 @@ export function DocumentDetailPage({
   // copy. Falls back to ``r.isActive`` on legacy runs that don't
   // carry ``targetSnapshotId`` yet.
   const activeSnapshotId = detail.activeSnapshotId;
+  // Snapshot lookup map keyed by snapshot id. Empty when the
+  // snapshot service isn't wired or the second fetch failed; in
+  // that case the Candidate / Active sections fall back to
+  // run-status-only rendering.
+  const snapshotsById: Record<string, DocumentSnapshotSummary> =
+    Object.fromEntries(snapshots.map((s) => [s.snapshotId, s]));
+  const activeSnapshot = activeSnapshotId
+    ? snapshotsById[activeSnapshotId] ?? null
+    : null;
   const activeProducingRun = activeSnapshotId
     ? detail.runHistory.find(
         (r) => r.targetSnapshotId === activeSnapshotId,
@@ -332,6 +353,7 @@ export function DocumentDetailPage({
         <ActiveKnowledgePanel
           detail={detail}
           producingRun={activeProducingRun ?? null}
+          activeSnapshot={activeSnapshot}
         />
       </section>
 
@@ -352,6 +374,7 @@ export function DocumentDetailPage({
           </p>
           <CandidateKnowledgeList
             runs={candidateRuns}
+            snapshotsById={snapshotsById}
             onOpenRun={onOpenRun}
           />
         </section>
@@ -409,11 +432,12 @@ function BackLink({ onBack }: { onBack: () => void }) {
 }
 
 
-function ActiveKnowledgePanel({
-  detail, producingRun,
+export function ActiveKnowledgePanel({
+  detail, producingRun, activeSnapshot,
 }: {
   detail: DocumentDetail;
   producingRun: DocumentDetail["runHistory"][number] | null;
+  activeSnapshot: DocumentSnapshotSummary | null;
 }) {
   if (!detail.activeSnapshotId) {
     return (
@@ -432,6 +456,16 @@ function ActiveKnowledgePanel({
           <dt>Snapshot ID</dt>
           <dd className="mono" title={detail.activeSnapshotId}>
             {detail.activeSnapshotId.slice(0, 16)}…
+          </dd>
+        </div>
+        <div>
+          <dt>State</dt>
+          <dd>
+            {activeSnapshot?.state ? (
+              <SnapshotStateBadge state={activeSnapshot.state} />
+            ) : (
+              <span className="muted">—</span>
+            )}
           </dd>
         </div>
         <div>
@@ -458,6 +492,14 @@ function ActiveKnowledgePanel({
           </dd>
         </div>
         <div>
+          <dt>Promoted</dt>
+          <dd className="vsmall">
+            {activeSnapshot?.promotedAt
+              ? relativeTime(activeSnapshot.promotedAt)
+              : <span className="muted">—</span>}
+          </dd>
+        </div>
+        <div>
           <dt>Knowledge state</dt>
           <dd><KnowledgeStateBadge state={detail.knowledgeState} /></dd>
         </div>
@@ -473,10 +515,11 @@ function ActiveKnowledgePanel({
 }
 
 
-function CandidateKnowledgeList({
-  runs, onOpenRun,
+export function CandidateKnowledgeList({
+  runs, snapshotsById, onOpenRun,
 }: {
   runs: DocumentDetail["runHistory"];
+  snapshotsById: Record<string, DocumentSnapshotSummary>;
   onOpenRun: (runId: string) => void;
 }) {
   if (runs.length === 0) {
@@ -488,10 +531,15 @@ function CandidateKnowledgeList({
   }
   return (
     <ul className="candidate-knowledge-list">
-      {runs.slice(0, 5).map((run) => (
+      {runs.slice(0, 5).map((run) => {
+        const snap = run.targetSnapshotId
+          ? snapshotsById[run.targetSnapshotId] ?? null
+          : null;
+        return (
         <li key={run.runId} className="candidate-knowledge-list__row">
           <div className="candidate-knowledge-list__head">
             <RunStatusPill status={run.status} />
+            {snap?.state && <SnapshotStateBadge state={snap.state} />}
             <span className="mono" title={run.runId}>
               {run.runId.slice(0, 12)}…
             </span>
@@ -525,8 +573,42 @@ function CandidateKnowledgeList({
             </button>
           </div>
         </li>
-      ))}
+        );
+      })}
     </ul>
+  );
+}
+
+
+/**
+ * Snapshot state badge — building / ready / superseded / failed.
+ * Tone matches the snapshot's lifecycle role:
+ *   building     → neutral / running
+ *   ready        → ok (active or promotable)
+ *   superseded   → muted (kept for audit)
+ *   failed       → err
+ */
+export function SnapshotStateBadge({
+  state,
+}: {
+  state: NonNullable<DocumentSnapshotSummary["state"]>;
+}) {
+  const labels: Record<typeof state, string> = {
+    building: "Building",
+    ready: "Ready",
+    superseded: "Superseded",
+    failed: "Failed",
+  };
+  const tones: Record<typeof state, string> = {
+    building: "running",
+    ready: "ok",
+    superseded: "neutral",
+    failed: "err",
+  };
+  return (
+    <span className={`badge badge--${tones[state]}`}>
+      {labels[state]}
+    </span>
   );
 }
 

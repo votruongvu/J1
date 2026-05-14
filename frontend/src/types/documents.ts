@@ -153,6 +153,34 @@ export interface DocumentDetail {
   runHistory: DocumentRunSummary[];
 }
 
+/**
+ * Snapshot lifecycle states (mirror of
+ * ``j1.documents.snapshot.SnapshotState``). Renders as a colored
+ * pill on the Candidate Knowledge section + the Active Knowledge
+ * panel so users can tell whether a snapshot is being built, ready
+ * for promotion, already published, or has failed.
+ */
+export type SnapshotState =
+  | "building"
+  | "ready"
+  | "superseded"
+  | "failed";
+
+/** One row of ``GET /documents/{id}/snapshots``. */
+export interface DocumentSnapshotSummary {
+  snapshotId: string;
+  documentId: string;
+  createdByRunId: string | null;
+  state: SnapshotState | null;
+  createdAt: string | null;
+  promotedAt: string | null;
+  supersededAt: string | null;
+  /** True iff this snapshot id matches ``DocumentDetail.activeSnapshotId``. */
+  isActive: boolean;
+  /** Index kinds attached (vector / graph / evidence / rag). */
+  indexKinds: string[];
+}
+
 /** Minimal payload returned by attach / detach / remove. */
 export interface DocumentLifecycleResponse {
   documentId: string;

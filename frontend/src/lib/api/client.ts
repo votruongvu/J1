@@ -41,6 +41,7 @@ import type {
   RunRefreshEnrichmentResponse,
   DocumentReindexResponse,
   DocumentRunSummary,
+  DocumentSnapshotSummary,
 } from "@/types/documents";
 
 /** Handlers passed to `openStream`. */
@@ -353,6 +354,17 @@ export interface IngestionClient {
 
   /** GET /documents/{id}/runs — run history only (most recent first). */
   listDocumentRuns(documentId: string): Promise<DocumentRunSummary[]>;
+
+  /**
+   * GET /documents/{id}/snapshots — per-snapshot rows for the
+   * Candidate Knowledge / Active Knowledge sections on Document
+   * Detail. Most recent first. The active snapshot is flagged
+   * via ``isActive``. Returns 503 if the deployment doesn't wire
+   * the snapshot service.
+   */
+  listDocumentSnapshots(
+    documentId: string,
+  ): Promise<DocumentSnapshotSummary[]>;
 
   /**
  * POST /documents/{id}/attach — restore knowledge usage. 409

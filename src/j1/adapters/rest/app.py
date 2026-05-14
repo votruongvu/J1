@@ -2468,6 +2468,47 @@ def create_rest_api(
             "failureCode": summary.failure_code,
         }
 
+    def _snapshot_summary_payload(s, active_snapshot_id: str | None) -> dict[str, Any]:
+        """One row of the snapshot-history endpoint. Mirrors the
+        DocumentSnapshot dataclass to the wire camelCase shape and
+        marks the active snapshot for FE highlighting."""
+        state = getattr(s, "state", None)
+        state_value = (
+            state.value if hasattr(state, "value") else str(state) if state else None
+        )
+        index_kinds = []
+        try:
+            for ref in (getattr(s, "index_refs", ()) or ()):
+                kind = getattr(ref, "kind", None)
+                index_kinds.append(
+                    kind.value if hasattr(kind, "value") else str(kind)
+                )
+        except Exception:  # noqa: BLE001 — defensive against shape drift
+            pass
+        return {
+            "snapshotId": s.snapshot_id,
+            "documentId": getattr(s, "document_id", None),
+            "createdByRunId": getattr(s, "created_by_run_id", None),
+            "state": state_value,
+            "createdAt": (
+                s.created_at.isoformat()
+                if getattr(s, "created_at", None) else None
+            ),
+            "promotedAt": (
+                s.promoted_at.isoformat()
+                if getattr(s, "promoted_at", None) else None
+            ),
+            "supersededAt": (
+                s.superseded_at.isoformat()
+                if getattr(s, "superseded_at", None) else None
+            ),
+            "isActive": (
+                active_snapshot_id is not None
+                and s.snapshot_id == active_snapshot_id
+            ),
+            "indexKinds": index_kinds,
+        }
+
     def _run_summary_payload(r) -> dict[str, Any]:
         return {
             "runId": r.run_id,
@@ -2607,6 +2648,53 @@ def create_rest_api(
         history = project_run_history(document=record, runs=runs)
         return envelope(
             {"runs": [_run_summary_payload(r) for r in history]},
+            _req_id(request),
+        )
+
+    @app.get(
+        "/documents/{document_id}/snapshots",
+        tags=["documents"],
+        summary="Snapshot history for a document, most recent first",
+        description=(
+            "Per-snapshot rows backing the snapshot-centric Document "
+            "Detail UI: ``snapshotId``, ``state`` "
+            "(building/ready/superseded/failed), ``createdByRunId``, "
+            "promotion timestamps, and the ``isActive`` flag (snapshot "
+            "id == document's ``activeSnapshotId``). Lets the FE "
+            "render snapshot state badges on candidate-knowledge "
+            "entries without a separate per-snapshot detail call."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_document_snapshots(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        if snapshot_service is None:
+            raise HTTPException(
+                503,
+                "snapshot service not configured (pass it via "
+                "create_rest_api(snapshot_service=...))",
+            )
+        lookup = _require_source_registry()
+        try:
+            record = lookup._sources.get(ctx, document_id)
+        except Exception:
+            raise HTTPException(404, f"document {document_id!r} not found")
+        active_snapshot_id = getattr(record, "active_snapshot_id", None)
+        try:
+            snapshots = snapshot_service.store.list_for_document(
+                ctx, document_id=document_id,
+            )
+        except Exception:  # noqa: BLE001 — store transient → empty list
+            snapshots = []
+        rows = [
+            _snapshot_summary_payload(s, active_snapshot_id)
+            for s in snapshots
+        ]
+        return envelope(
+            {"documentId": document_id, "snapshots": rows},
             _req_id(request),
         )
 

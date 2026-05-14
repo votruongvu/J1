@@ -53,6 +53,7 @@ import type {
   DocumentListItem,
   DocumentReindexResponse,
   DocumentRunSummary,
+  DocumentSnapshotSummary,
   RunRefreshEnrichmentResponse,
 } from "@/types/documents";
 import {
@@ -801,6 +802,24 @@ export class ApiClient implements IngestionClient {
     );
     const data = await this.json<{ runs?: DocumentRunSummary[] }>(resp);
     return data.runs ?? [];
+  }
+
+  async listDocumentSnapshots(
+    documentId: string,
+  ): Promise<DocumentSnapshotSummary[]> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/snapshots`),
+      { headers: this.headers() },
+    );
+    // 503 → snapshot service not wired in this deployment. Treat as
+    // "no snapshot detail available" and let the caller render
+    // gracefully (the Candidate Knowledge section already handles
+    // empty snapshot data).
+    if (resp.status === 503) return [];
+    const data = await this.json<{
+      snapshots?: DocumentSnapshotSummary[];
+    }>(resp);
+    return data.snapshots ?? [];
   }
 
   async attachDocument(documentId: string): Promise<DocumentLifecycleResponse> {
