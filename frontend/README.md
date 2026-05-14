@@ -100,7 +100,3 @@ docker compose -f deploy/dev/docker-compose.yml up --build frontend
 
 The host port and API base URL are controlled by `J1_FRONTEND_PORT`
 and `J1_FRONTEND_API_BASE_URL` in [`../.env`](../.env).
-
-## Reference snapshot
-
-The original Babel-standalone HTML/JSX prototype is preserved verbatim under [`frontend.prototype/`](../frontend.prototype/) for design reference.
