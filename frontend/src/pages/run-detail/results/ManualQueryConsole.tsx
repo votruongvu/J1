@@ -12,7 +12,13 @@
  * whether the query succeeded transport-side.
  */
 
-import { useCallback, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { useClient } from "@/lib/hooks/useClient";
 import { ApiError } from "@/lib/api/client";
 import { validationStatusMeta } from "@/lib/display";
@@ -28,9 +34,31 @@ interface ManualQueryConsoleProps {
   runId: string;
 }
 
-export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
+export interface ManualQueryConsoleHandle {
+  /** Imperatively load a question into the textarea + focus it. */
+  loadQuestion(text: string): void;
+}
+
+export const ManualQueryConsole = forwardRef<
+  ManualQueryConsoleHandle,
+  ManualQueryConsoleProps
+>(function ManualQueryConsole({ runId }, ref) {
   const client = useClient();
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [question, setQuestion] = useState("");
+  useImperativeHandle(ref, () => ({
+    loadQuestion(text: string) {
+      setQuestion(text);
+      // Defer focus so the textarea has re-rendered with the new
+      // value before we drop the caret into it.
+      window.setTimeout(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.scrollIntoView({
+          behavior: "smooth", block: "center",
+        });
+      }, 0);
+    },
+  }), []);
   const [topK, setTopK] = useState(10);
   const [citationRequired, setCitationRequired] = useState(false);
   // LLM answer synthesis is on by default — that's the "full RAG"
@@ -99,6 +127,7 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
           <label htmlFor="manual-query-question">Question</label>
           <textarea
             id="manual-query-question"
+            ref={textareaRef}
             rows={3}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
@@ -189,7 +218,7 @@ export function ManualQueryConsole({ runId }: ManualQueryConsoleProps) {
       )}
     </div>
   );
-}
+});
 
 interface ResultPanelProps {
   response: ManualTestQueryResponse;

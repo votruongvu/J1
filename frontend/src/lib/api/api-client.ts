@@ -24,7 +24,8 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
-  GenerateValidationSetRequest,
+  ImportedTestCaseExecution,
+  ImportedTestCaseSet,
   ManualTestQueryRequest,
   ContentInventory,
   ManualTestQueryResponse,
@@ -44,11 +45,6 @@ import type {
   RunEnrichPlanResponse,
   RunEnrichmentResultResponse,
   RunInitialExecutionPlanResponse,
-  StartValidationRunRequest,
-  ValidationRun,
-  ValidationRunListItem,
-  ValidationSet,
-  ValidationSetListItem,
 } from "@/types/review";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import type {
@@ -516,137 +512,81 @@ export class ApiClient implements IngestionClient {
 
   // ---- Validation sets + runs ----------------------------
 
-  async generateValidationSet(
-    runId: string,
-    request: GenerateValidationSetRequest = {},
-  ): Promise<ValidationSet> {
+  // ---- Imported test cases (auxiliary Validation Tab helper) ----
+
+  async importTestCases(
+    documentId: string,
+    file: File,
+  ): Promise<ImportedTestCaseSet> {
+    const form = new FormData();
+    form.append("file", file);
     const resp = await fetch(
       this.url(
-        `/ingestion-runs/${encodeURIComponent(runId)}/validation-sets/generate`,
+        `/documents/${encodeURIComponent(documentId)}/imported-test-cases/import`,
       ),
       {
         method: "POST",
-        headers: this.headers({ "Content-Type": "application/json" }),
-        body: JSON.stringify(request),
+        // NOTE: no Content-Type header — fetch sets the multipart
+        // boundary itself when given a FormData body.
+        headers: this.headers(),
+        body: form,
       },
     );
-    return await this.json<ValidationSet>(resp);
+    return await this.json<ImportedTestCaseSet>(resp);
   }
 
-  async listValidationSets(runId: string): Promise<ValidationSetListItem[]> {
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/validation-sets`),
-      { headers: this.headers() },
-    );
-    const body = await this.json<{ items: ValidationSetListItem[] }>(resp);
-    return body.items;
-  }
-
-  async getValidationSet(
-    runId: string,
-    validationSetId: string,
-  ): Promise<ValidationSet> {
+  async getImportedTestCases(
+    documentId: string,
+  ): Promise<ImportedTestCaseSet | null> {
     const resp = await fetch(
       this.url(
-        `/ingestion-runs/${encodeURIComponent(runId)}/validation-sets/${encodeURIComponent(validationSetId)}`,
+        `/documents/${encodeURIComponent(documentId)}/imported-test-cases`,
       ),
       { headers: this.headers() },
     );
-    return await this.json<ValidationSet>(resp);
-  }
-
-  async runValidation(
-    runId: string,
-    request: StartValidationRunRequest,
-  ): Promise<ValidationRun> {
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/validation-runs`),
-      {
-        method: "POST",
-        headers: this.headers({ "Content-Type": "application/json" }),
-        body: JSON.stringify(request),
-      },
-    );
-    return await this.json<ValidationRun>(resp);
-  }
-
-  async listValidationRuns(runId: string): Promise<ValidationRunListItem[]> {
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/validation-runs`),
-      { headers: this.headers() },
-    );
-    const body = await this.json<{ items: ValidationRunListItem[] }>(resp);
-    return body.items;
-  }
-
-  async getValidationRun(
-    runId: string,
-    validationRunId: string,
-  ): Promise<ValidationRun> {
-    const resp = await fetch(
-      this.url(
-        `/ingestion-runs/${encodeURIComponent(runId)}/validation-runs/${encodeURIComponent(validationRunId)}`,
-      ),
-      { headers: this.headers() },
-    );
-    return await this.json<ValidationRun>(resp);
-  }
-
-  // ---- Tester verdict + report ---------------------------
-
-  async recordTesterVerdict(
-    runId: string,
-    validationRunId: string,
-    resultId: string,
-    body: { verdict: "pass" | "warning" | "fail"; notes?: string | null },
-  ): Promise<ValidationRun> {
-    const resp = await fetch(
-      this.url(
-        `/ingestion-runs/${encodeURIComponent(runId)}/validation-runs/${encodeURIComponent(validationRunId)}/results/${encodeURIComponent(resultId)}/verdict`,
-      ),
-      {
-        method: "POST",
-        headers: this.headers({ "Content-Type": "application/json" }),
-        body: JSON.stringify(body),
-      },
-    );
-    return await this.json<ValidationRun>(resp);
-  }
-
-  async downloadValidationReport(
-    runId: string,
-    validationRunId: string,
-    format: "markdown" | "json" = "markdown",
-  ): Promise<{ content: string; mediaType: string; filename: string }> {
-    const params = new URLSearchParams({ format });
-    const resp = await fetch(
-      this.url(
-        `/ingestion-runs/${encodeURIComponent(runId)}/validation-runs/${encodeURIComponent(validationRunId)}/report?${params}`,
-      ),
-      { headers: this.headers() },
-    );
-    if (!resp.ok) {
-      // Reuse the standard envelope-error path for non-2xx so the
-      // caller sees the same `ApiError` shape as every other
-      // endpoint, even though the success path returns raw text.
-      let message = `HTTP ${resp.status}`;
-      try {
-        const body = await resp.json();
-        message = body?.error?.message ?? message;
-      } catch {
-        // not JSON — fall back to status code
-      }
-      throw new ApiError(resp.status, message);
+    if (resp.status === 404) {
+      return null;
     }
-    const content = await resp.text();
-    const mediaType = resp.headers.get("Content-Type") ?? "text/plain";
-    // Parse the suggested filename from `Content-Disposition`. The
-    // backend always sends one; defensive parse falls back to a
-    // sensible default if the header is malformed.
-    const disposition = resp.headers.get("Content-Disposition") ?? "";
-    const match = /filename="([^"]+)"/.exec(disposition);
-    const filename = match?.[1] ?? `validation-${validationRunId}.${format === "json" ? "json" : "md"}`;
-    return { content, mediaType, filename };
+    return await this.json<ImportedTestCaseSet>(resp);
+  }
+
+  async deleteImportedTestCases(documentId: string): Promise<void> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/imported-test-cases`,
+      ),
+      { method: "DELETE", headers: this.headers() },
+    );
+    if (!resp.ok && resp.status !== 204) {
+      throw new ApiError(resp.status, `HTTP ${resp.status}`);
+    }
+  }
+
+  async executeImportedTestCases(
+    documentId: string,
+  ): Promise<ImportedTestCaseExecution> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/imported-test-cases/execute`,
+      ),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<ImportedTestCaseExecution>(resp);
+  }
+
+  async getImportedTestCaseExecution(
+    documentId: string,
+  ): Promise<ImportedTestCaseExecution | null> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/imported-test-cases/execution`,
+      ),
+      { headers: this.headers() },
+    );
+    if (resp.status === 404) {
+      return null;
+    }
+    return await this.json<ImportedTestCaseExecution>(resp);
   }
 
   // ---- openStream --------------------------------------------------

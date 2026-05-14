@@ -364,46 +364,6 @@ class DomainValidationRules:
 
 
 @dataclass(frozen=True)
-class DomainValidationGuidance:
-    """Per-domain guidance for the post-ingestion validation
- question generator.
-
- IMPORTANT: this is a TESTING LENS, not factual evidence. The
- generator uses it only to decide what kinds of questions are
- useful for a domain. Important fields the document doesn't
- cover become `negative_check` questions; the generator never
- fabricates expected answers from this guidance.
-
- Pure data — no LLM coupling, no business logic on the
- dataclass. Defaults are all empty so packs without a
- `validation:` block in `domain.yaml` are no-op."""
-
-    enabled: bool = True
-    max_questions: int = 8
-    question_types: tuple[str, ...] = ()
-    important_fields: tuple[str, ...] = ()
-    negative_check_fields: tuple[str, ...] = ()
-    require_evidence_quote_for_positive_answers: bool = True
-    allow_negative_checks_from_domain_checklist: bool = True
-    document_artifacts_are_source_of_truth: bool = True
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "max_questions": self.max_questions,
-            "question_types": list(self.question_types),
-            "important_fields": list(self.important_fields),
-            "negative_check_fields": list(self.negative_check_fields),
-            "require_evidence_quote_for_positive_answers":
-                self.require_evidence_quote_for_positive_answers,
-            "allow_negative_checks_from_domain_checklist":
-                self.allow_negative_checks_from_domain_checklist,
-            "document_artifacts_are_source_of_truth":
-                self.document_artifacts_are_source_of_truth,
-        }
-
-
-@dataclass(frozen=True)
 class DomainPromptPack:
     """Per-domain prompt template strings consumed by enrichers.
 
@@ -500,13 +460,6 @@ class DomainPack:
     # extra low-quality conditions, and enrichment triggers.
     validation_rules: DomainValidationRules = field(
         default_factory=DomainValidationRules,
-    )
-    # Configuration for the post-ingestion validation question
-    # generator. Drives important-field checklist + negative-check
-    # field list. Treated as a testing lens only — never as factual
-    # evidence. Defaults: empty / disabled.
-    validation_guidance: DomainValidationGuidance = field(
-        default_factory=DomainValidationGuidance,
     )
     # Per-enricher prompt overrides (table / image / metadata /
     # classification / validation / text). None means "use the

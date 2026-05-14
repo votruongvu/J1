@@ -13,7 +13,7 @@ import type {
   Severity,
   Stage,
 } from "@/types/ingestion";
-import type { ValidationStatus, ValidationResultStatus } from "@/types/review";
+import type { ValidationStatus } from "@/types/review";
 
 // ---- Status display -------------------------------------------------
 
@@ -141,10 +141,10 @@ export function eventTypeLabel(type: string): string {
 
 // ---- Validation status display --------------------------------------
 //
-// `ValidationStatus` is the run-level outcome (passed / failed / etc).
-// `ValidationResultStatus` is the per-test-case outcome. The two
-// vocabularies overlap but are distinct types — keep both maps so a
-// rename only touches this file.
+// ``ValidationStatus`` is the manual-query outcome (passed / failed
+// / etc). Generated-test-case run statuses were removed in the
+// 2026-05-14 product change; the imported-test-case section has its
+// own status vocabulary that lives next to the component.
 
 export interface ValidationStatusMeta {
   label: string;
@@ -155,9 +155,8 @@ const _NOT_RUN_LABEL = "Not run";
 
 /**
  * Run-level validation outcome. The "not_run" key isn't part of the
- * `ValidationStatus` union — it's the synthetic value for a run that
- * has no validation attached yet. Look it up via
- * `validationStatusMeta(undefined | "not_run")`.
+ * `ValidationStatus` union — it's the synthetic value for a query
+ * that didn't reach the gate.
  */
 export const ValidationStatusDisplay: Readonly<
   Record<ValidationStatus, ValidationStatusMeta>
@@ -177,30 +176,9 @@ export function validationStatusMeta(
   if (!status || status === "not_run") {
     return { label: _NOT_RUN_LABEL, className: "validation-status--unknown" };
   }
-  if (status in ValidationStatusDisplay) {
-    return ValidationStatusDisplay[status as ValidationStatus];
-  }
-  return { label: status, className: "validation-status--unknown" };
-}
-
-/** Per-test-case outcome — the table-row status. */
-export const ValidationResultDisplay: Readonly<
-  Record<ValidationResultStatus, ValidationStatusMeta>
-> = {
-  passed: { label: "Passed", className: "validation-status--ok" },
-  warning: { label: "Warning", className: "validation-status--warn" },
-  failed: { label: "Failed", className: "validation-status--fail" },
-  skipped: { label: "Skipped", className: "validation-status--unknown" },
-};
-
-export function validationResultMeta(
-  status: ValidationResultStatus | null | undefined,
-): ValidationStatusMeta {
-  if (!status) {
-    return { label: "—", className: "validation-status--unknown" };
-  }
-  if (status in ValidationResultDisplay) {
-    return ValidationResultDisplay[status as ValidationResultStatus];
+  const meta = ValidationStatusDisplay[status as ValidationStatus];
+  if (meta) {
+    return meta;
   }
   return { label: status, className: "validation-status--unknown" };
 }

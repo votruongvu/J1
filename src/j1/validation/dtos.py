@@ -1,8 +1,10 @@
 """DTOs for the post-ingestion validation surface.
 
-All cross-boundary objects live here so the service layer stays
-pure-Python and the REST layer translates dataclasses → Pydantic
-without leaking REST schema into the service.
+After the 2026-05-14 product decision, this module ONLY carries the
+shapes for the *Manual Test Query* surface — the detailed inspection
+tool inside the Validation Tab. Imported test cases live in their
+own module (``j1.validation.imported_test_cases``) and never share
+shapes with manual query.
 
 Architecture rule: this module is core (`j1.validation`), so it
 cannot import from `j1.integration` or `j1.adapters`. Any citation
@@ -15,11 +17,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-# `executionStatus` and `validationStatus` are split deliberately
-# (per the implementation plan): a manual test query that ran
-# successfully (HTTP 200) can still report `validationStatus="failed"`
-# when the deterministic checks failed. Callers must not collapse
-# the two concepts into one field.
+# `executionStatus` and `validationStatus` are split deliberately:
+# a manual test query that ran successfully (HTTP 200) can still
+# report `validationStatus="failed"` when the deterministic checks
+# failed. Callers must not collapse the two concepts into one field.
 ValidationStatus = Literal[
     "passed",
     "passed_with_warnings",
@@ -33,23 +34,20 @@ CheckSeverity = Literal["required", "optional"]
 
 @dataclass(frozen=True)
 class ValidationCheckDTO:
-    """Outcome of a single deterministic check.
+    """Outcome of a single deterministic check on a manual test query.
 
- ships only `required`-severity checks (a failure of any
- of them flips `validationStatus` to `failed`). `optional` is
- reserved so future judge / heuristic checks can downgrade to
- `warning` instead of failing the whole result.
+    Only ``required``-severity checks ship — failing any flips
+    ``validationStatus`` to ``failed``. ``optional`` is reserved so
+    future heuristic checks can downgrade to ``warning`` without
+    failing the whole response.
 
- ``skipped=True`` means "this check did not run because its
- precondition wasn't met" (e.g. zero retrieved chunks for the
- chunks-belong-to-run check). Skipped checks NEVER count
- towards pass or fail in ``aggregate_status`` — that prevents
- the misleading "passed because there was nothing to check"
- outcome the operator flagged on the Validation tab. When
- ``skipped=True``, ``passed`` is forced to ``False`` so a UI
- that only reads ``passed`` doesn't render a green check; the
- ``skipped`` field is the authoritative renderer signal.
- """
+    ``skipped=True`` means "this check did not run because its
+    precondition wasn't met" (e.g. zero retrieved chunks for the
+    chunks-belong-to-run check). Skipped checks never count toward
+    pass or fail. When ``skipped=True``, ``passed`` is forced to
+    ``False`` so a UI that only reads ``passed`` doesn't render a
+    green check.
+    """
 
     name: str
     severity: CheckSeverity
@@ -63,14 +61,14 @@ class ValidationCheckDTO:
 
 @dataclass(frozen=True)
 class ValidationCitationDTO:
-    """Server-side citation projection used by the deterministic checks.
+    """Server-side citation projection used by manual-query checks.
 
- Mirrors the wire shape (`CitationRecord` / `CitationDTO`) but
- lives inside the validation module so checks/service can reason
- about citations without importing from `j1.integration`. The
- REST layer translates this to its Pydantic record on the way
- out — see `_citation_to_dict` in `service.py`.
- """
+    Mirrors the wire shape (``CitationRecord`` / ``CitationDTO``) but
+    lives inside the validation module so checks/service can reason
+    about citations without importing from ``j1.integration``. The
+    REST layer translates this to its Pydantic record on the way
+    out — see ``_citation_to_dict`` in ``service.py``.
+    """
 
     artifact_id: str
     artifact_type: str
@@ -79,13 +77,8 @@ class ValidationCitationDTO:
     chunk_id: str | None = None
     run_id: str | None = None
     # Body excerpt the groundedness judge uses to verify claims
-    # against. When empty (legacy callers / no workspace), the
-    # judge sees lineage-only citations and over-flags claims as
-    # unsupported because it has nothing to compare against —
-    # exactly the validation-report failure mode operators saw
-    # (3 unsupported-claims warnings on otherwise-grounded
-    # answers). Populated by the runner via the evidence builder
-    # so the judge sees the same prose the synthesizer did.
+    # against. Populated by the synthesizer so callers see the same
+    # prose the LLM saw at synthesis time.
     preview: str | None = None
 
 
@@ -93,17 +86,16 @@ class ValidationCitationDTO:
 class RetrievedChunkRefDTO:
     """Compact reference to one retrieved chunk in the response.
 
- `chunk_id` is `None` for non-chunk artifacts (e.g. graph_json
- hits surfaced through the same retrieval pipeline). `run_id`
- is the server-derived value the indexer wrote at index time —
- consumers can trust it for ownership checks.
+    ``chunk_id`` is ``None`` for non-chunk artifacts (e.g. graph_json
+    hits surfaced through the same retrieval pipeline). ``run_id`` is
+    the server-derived value the indexer wrote at index time —
+    consumers can trust it for ownership checks.
 
- `artifact_kind` carries the matched artifact's `kind`
- string verbatim from the FTS row. Used by the modality-aware
- checks (e.g. `evidence_flags.tables_used` ⇔ at least one
- retrieved item has kind `enriched.tables`) and by future
- UI surfaces that need to colour-by-modality.
- """
+    ``artifact_kind`` carries the matched artifact's ``kind`` string
+    verbatim from the FTS row. Used by the modality-aware checks
+    (e.g. ``evidence_flags.tables_used`` ⇔ at least one retrieved
+    item has kind ``enriched.tables``) and by future UI surfaces.
+    """
 
     artifact_id: str
     chunk_id: str | None
@@ -117,22 +109,23 @@ class RetrievedChunkRefDTO:
 
 @dataclass(frozen=True)
 class ManualTestQueryRequest:
-    """Inbound shape for `POST /ingestion-runs/{run_id}/test-query`.
+    """Inbound shape for ``POST /ingestion-runs/{run_id}/test-query``.
 
- `mode` is forwarded to the underlying `HybridQueryEngine` verbatim.
- `citation_required` toggles the conditional `citation_present`
- check — when False, the check is skipped (not run, not in
- `checks[]`), so it can't fail the validation.
+    ``mode`` is forwarded to the underlying query engine verbatim.
+    ``citation_required`` toggles the conditional ``citation_present``
+    check — when False, the check is skipped (not run, not in
+    ``checks[]``), so it can't fail the validation.
 
- `synthesize` opts into the LLM answer-synthesis step. When True
- (default), the service runs the retrieved chunks through the
- configured `TextLLMClient` and exposes the result as
- `synthesized_answer` on the response. When False (or when no LLM
- client is wired), the response carries `synthesized_answer=None`
- and `llm.called=False`; the existing retrieval-snippet `answer`
- field is unchanged. Determinism-sensitive batch runs do not flow
- through this path.
- """
+    ``synthesize`` opts into the LLM answer-synthesis step. When True
+    (default), the service runs the retrieved chunks through the
+    configured ``TextLLMClient`` and exposes the result as
+    ``synthesized_answer`` on the response.
+
+    ``validation_scope`` (spec section 9). ``"run"`` (default)
+    validates the run named in the URL — useful immediately after
+    ingest/reindex. ``"active"`` validates the document's currently
+    promoted run — useful for "what users can actually search now".
+    """
 
     question: str
     top_k: int = 10
@@ -140,13 +133,6 @@ class ManualTestQueryRequest:
     citation_required: bool = False
     include_raw: bool = False
     synthesize: bool = True
-    # Validation scope (spec section 9). Default ``"run"`` matches
-    # the existing behavior: validate the specific run named in
-    # the URL — useful immediately after ingestion/reindex/resume.
-    # ``"active"`` validates the document's currently promoted
-    # run (its `active_run_id`) — useful for testing "what users
-    # can actually search right now." The two scopes are never
-    # mixed implicitly: the caller picks one per request.
     validation_scope: Literal["run", "active"] = "run"
 
 
@@ -154,18 +140,15 @@ class ManualTestQueryRequest:
 class EvidenceBlockDTO:
     """One block of evidence as actually sent to the LLM.
 
- Distinct from `RetrievedChunkRefDTO` (which is the engine's
- metadata-only hit projection) because the synthesizer needs the
- real chunk body — not the artifact's display title. The service
- builds these by loading each retrieved chunk's body via the
- chunk projector / artifact registry, then deduplicating and
- budgeting before the LLM call.
+    Distinct from ``RetrievedChunkRefDTO`` (which is the engine's
+    metadata-only hit projection) because the synthesizer needs the
+    real chunk body. The service builds these by loading each
+    retrieved chunk's body via the chunk projector / artifact
+    registry, then deduplicating and budgeting before the LLM call.
 
- Returned verbatim on the response as `evidenceSentToLlm[]` so
- the FE can render "exactly what the model received" for
- debugging — distinct from the existing `retrievedChunks[]` which
- stays as the raw retrieval projection.
- """
+    Returned verbatim on the response as ``evidenceSentToLlm[]`` so
+    the FE can render "exactly what the model received".
+    """
 
     artifact_id: str
     artifact_type: str
@@ -182,13 +165,10 @@ class EvidenceBlockDTO:
 class LLMTraceDTO:
     """Per-call LLM trace attached to manual test query responses.
 
- `called=False` means synthesis was disabled (request opt-out) or
- unavailable (no client wired). When `called=True` the remaining
- fields are populated best-effort; `error` is non-None iff the
- client raised — in that case `provider`/`model` are still set so
- the FE can show which client failed, but `latency_ms` /
- token counts may be `None`.
- """
+    ``called=False`` means synthesis was disabled (request opt-out)
+    or unavailable (no client wired). When ``called=True`` the
+    remaining fields are populated best-effort.
+    """
 
     called: bool
     provider: str | None = None
@@ -204,30 +184,11 @@ class NativeDebugQueryResponseDTO:
     """Outbound shape for ``POST /ingestion-runs/{run_id}/native-debug-query``.
 
     The native-debug surface is the audit-driven diagnostic: it calls
-    LightRAG ``aquery`` directly, scoped to this run's workspace, with
-    **no BM25 involvement at all**. Operators use it to answer
-    "is the index actually working for this run?" without the
-    confounding effect of the BM25 + reranker + coverage selection
-    that the regular ``test-query`` endpoint layers on top.
-
-    Fields:
-      * ``request_id`` — server-issued id; mirrored in the audit row.
-      * ``run_id`` / ``document_id`` — the scope this query ran against.
-      * ``question`` — echoed input.
-      * ``answer`` — native answer or empty string when native failed.
-      * ``workspace_path`` — absolute path to the per-run LightRAG
-        workspace the call read from. ``None`` when not derivable
-        (legacy unscoped storage / native provider not wired).
-      * ``workspace_id`` — namespace identifier
-        (``{tenant}/{project}/{document}/{run}``) or empty string.
-      * ``native_query_used`` — true when the call SUCCEEDED.
-      * ``native_query_failed_reason`` — short error tag when the
-        call did not produce an answer.
-      * ``native_latency_ms`` — wall-clock duration of the call
-        (populated even on failure).
-      * ``provider_wired`` — whether a native provider was wired
-        into the service at construction time; false means the
-        endpoint reported failure without ever attempting a call.
+    LightRAG ``aquery`` directly, scoped to this run's workspace,
+    with **no BM25 involvement**. Operators use it to answer "is the
+    index actually working for this run?" without the confounding
+    effect of BM25 + reranker + coverage selection that the regular
+    ``test-query`` endpoint layers on top.
     """
 
     request_id: str
@@ -247,17 +208,16 @@ class NativeDebugQueryResponseDTO:
 class ManualTestQueryResponseDTO:
     """Outbound shape. Body of the 200 response.
 
- `validation_status` aggregates `checks[]` per the rules in
- `j1.validation.checks._aggregate_status`. It is NOT the HTTP
- outcome — a 200 with `validation_status="failed"` is the
- canonical "the job ran but the answer didn't pass" case.
+    ``validation_status`` aggregates ``checks[]`` per the rules in
+    ``j1.validation.checks._aggregate_status``. It is NOT the HTTP
+    outcome — a 200 with ``validation_status="failed"`` is the
+    canonical "the job ran but the answer didn't pass" case.
 
- `answer` is the deterministic retrieval-preview snippet bundle
- that's been here since day one — kept stable so existing checks
- keep their semantics. `synthesized_answer` is the new LLM-
- generated final answer; the FE renders it in a "Final Answer"
- panel above the retrieval evidence.
- """
+    ``answer`` is the deterministic retrieval-preview snippet bundle
+    — kept stable so existing checks keep their semantics.
+    ``synthesized_answer`` is the LLM-generated final answer; the FE
+    renders it in a "Final Answer" panel above the retrieval evidence.
+    """
 
     request_id: str
     run_id: str
@@ -273,358 +233,11 @@ class ManualTestQueryResponseDTO:
     synthesized_answer: str | None = None
     llm: LLMTraceDTO | None = None
     # The clean evidence blocks (with real text) actually passed to
-    # the LLM. Empty when synthesis was skipped. Distinct from
-    # `retrieved_chunks[]` (which is the engine's metadata-only
-    # projection — preview is artifact-title, not body).
+    # the LLM. Empty when synthesis was skipped.
     evidence_sent_to_llm: list[EvidenceBlockDTO] = field(default_factory=list)
     # Lineage-hardening debug surfaces. When a tester sees "Not in
     # retrieved evidence" they should be able to tell WHY at a
     # glance — was retrieval empty? Were all hits filtered out by
     # the knowledge-state gate? Did the synthesizer get evidence
-    # but the LLM still abstained? These counters answer that
-    # without forcing operators to open the raw payload drawer.
+    # but the LLM still abstained? These counters answer that.
     debug: dict[str, Any] = field(default_factory=dict)
-
-
-# ---- validation sets, runs, summaries ---------------------
-
-
-# Source of a validation set. `generated` means the LLM produced it
-# (treat as smoke/regression material, NOT gold truth). `manual`
-# means a human authored it. `imported` means it came
-# from a CSV/JSON upload. For only `generated`
-# ships, but the field exists now so the wire shape doesn't churn.
-ValidationSetSource = Literal["generated", "manual", "imported"]
-
-
-# Lifecycle of a validation set. `draft` means generation just
-# finished and a tester hasn't reviewed it yet; `ready` means it's
-# considered approved-for-use (currently a no-op flag — editing /
-# approval workflows arrive ). `archived` is a tombstone.
-ValidationSetStatus = Literal["draft", "ready", "archived"]
-
-
-# Type of test case. Used by both the generator (which kinds to
-# emit) and the runner (which checks to apply). actively
-# emits `retrieval` and `answer`. `negative` ships,
-# `table` / `image` / `graph`. `citation` is reserved.
-ValidationTestType = Literal[
-    "retrieval", "answer", "citation",
-    "negative", "table", "image", "graph",
-]
-
-
-# Question-type the generator-LLM tagged the case as. Drives FE
-# grouping and operator-friendly badges on the generated set
-# (separate from `type`, which is the runner-facing kind that
-# determines which deterministic checks apply).
-ValidationQuestionType = Literal[
-    "fact_retrieval",
-    "list_extraction",
-    "table_extraction",
-    "summary",
-    "risk_extraction",
-    "constraint_extraction",
-    "reasoning_from_context",
-    "domain_enrichment_check",
-    "missing_information_check",
-]
-
-
-# Scope tag the FE uses to badge generated cases. The vocabulary
-# was expanded in the question-context refactor: scopes now record
-# the CATEGORY of validation each case tests, not just "domain or
-# not".
-#
-#   document       — fact lookup against the document body
-#                    (replaces the prior fully-generic catch-all
-#                    when document context is available).
-#   domain         — uses domain pack guidance as the testing
-#                    lens (previously ``domain_evidence``).
-#   domain_enrichment — checks the enrichment-pipeline output
-#                       (preserved).
-#   graph          — entity / relationship retrieval against the
-#                    LightRAG / graph-builder output.
-#   retrieval      — retrieval-path smoke: "does the index
-#                    surface anything relevant?"
-#   workflow       — section / stage / process structure of the
-#                    document.
-#   evidence       — answer-grounding contract: response must
-#                    cite specific evidence.
-#   guardrail      — negative / off-topic / domain-trivia. The
-#                    answer must abstain rather than fabricate.
-#                    Replaces ``negative_check`` going forward;
-#                    the old value is still emitted for
-#                    backward-compat by the legacy modality cases.
-#   generic        — no document context AND no other category
-#                    applies. Should be the EXCEPTION, not the
-#                    default — testers reading a set of all-
-#                    generic questions is the bug operators
-#                    flagged for domain-specific document
-#                    validation packets.
-#   domain_evidence  — legacy alias of ``domain``. Kept so
-#                      existing test sets in the store still
-#                      validate.
-#   negative_check   — legacy alias of ``guardrail``. Same.
-ValidationScope = Literal[
-    "generic",
-    "document",
-    "domain",
-    "domain_evidence",
-    "domain_enrichment",
-    "graph",
-    "retrieval",
-    "workflow",
-    "evidence",
-    "guardrail",
-    "negative_check",
-]
-
-
-# Test priority. ``smoke`` runs first and must pass to claim basic
-# index health. ``normal`` is the bulk coverage. ``critical`` are
-# tied to core document facts / known failure surfaces (e.g. the
-# planner produced specific stage names — the document had better
-# answer questions about those). ``edge`` is for guardrail /
-# negative cases — failures here flag fabrication risk.
-# ``deep`` is reserved for expensive long-tail checks (judge-
-# driven, modality-aware).
-ValidationPriority = Literal["smoke", "normal", "critical", "edge", "deep"]
-
-
-# Expected behaviour the test asserts. The runner picks which
-# checks to apply based on this. `answer_with_citations` is the
-# default; the others land with later phases as their checks ship.
-ExpectedBehavior = Literal[
-    "answer_with_citations",
-    "abstain",
-    "retrieve_evidence",
-    "validate_relationship",
-]
-
-
-# Execution status of a validation run — does NOT collapse with
-# validationStatus. A run can be `executionStatus=completed` and
-# `validationStatus=failed` (the runner finished but the test
-# cases didn't all pass).
-ExecutionStatus = Literal[
-    "pending", "running", "completed", "failed", "cancelled",
-]
-
-
-@dataclass(frozen=True)
-class ValidationTestCaseDTO:
-    """One test case inside a validation set.
-
- Carries everything the runner needs to execute the case + judge
- the result. emits cases of type `retrieval` (does the
- expected chunk show up in topK?) and `answer` (does the engine
- produce a non-empty answer with valid citations?). Other types
- are reserved for later phases.
-
- `expected_*` fields are advisory — the deterministic check
- engine uses them to compute pass/fail. Empty lists mean "no
- check on this dimension," not "must be empty."
- """
-
-    test_case_id: str
-    question: str
-    type: ValidationTestType
-    priority: ValidationPriority
-    expected_behavior: ExpectedBehavior
-    expected_answer_points: list[str] = field(default_factory=list)
-    expected_chunks: list[str] = field(default_factory=list)
-    expected_pages: list[int] = field(default_factory=list)
-    expected_artifacts: list[str] = field(default_factory=list)
-    expected_graph_nodes: list[str] = field(default_factory=list)
-    expected_graph_edges: list[str] = field(default_factory=list)
-    citation_required: bool = False
-    # IDs of the chunks/artifacts the GENERATOR consulted to author
-    # this case. Lets a tester audit "where did this question come
-    # from?" without re-running the generator.
-    source_traceability: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    # Operator-readable single-sentence expected answer. Populated
-    # by the LLM generator from the evidence; empty for the heuristic
-    # fallback path (which only knows the chunk's first sentence).
-    # Distinct from `expected_answer_points` — that's the bullet-list
-    # the answer-coverage check scores against.
-    expected_answer: str | None = None
-    # Verbatim text quote from the evidence that supports the
-    # expected answer. Required for non-negative LLM-generated cases
-    # (grounding contract); empty/None for heuristics + negative
-    # checks (the latter intentionally cites no evidence).
-    evidence_quote: str | None = None
-    # Artifact id the evidence quote was lifted from. Pairs with
-    # `evidence_quote` so a tester can click through to the source.
-    source_artifact_id: str | None = None
-    # Mirrors `EvidenceBlockDTO.artifact_type` so the FE can render
-    # the source's modality badge alongside the question.
-    source_artifact_type: str | None = None
-    # The generator-LLM's question-type tag (fact_retrieval,
-    # list_extraction, risk_extraction, missing_information_check,
-    # ...). Drives FE grouping; falls back to `None` for legacy /
-    # heuristic cases.
-    question_type: ValidationQuestionType | None = None
-    # Domain-aware lens tag. See `ValidationScope` literal docs.
-    # Defaults to `generic`.
-    validation_scope: ValidationScope = "generic"
-    # Difficulty hint the LLM emits ("easy" / "medium" / "hard").
-    # Surfaces in the FE as a small badge; runner ignores it.
-    difficulty: str | None = None
-    # The domain pack id that was active when this case was
-    # generated. None for domain-agnostic generation.
-    domain_id: str | None = None
-    # Operator-facing provenance: which seed material did this
-    # case come from? Drives FE rendering of "Generated from"
-    # badge so a tester can audit a suspicious case quickly.
-    # Values: ``fact`` (clean chunk-derived fact), ``entity``,
-    # ``relationship``, ``section``, ``workflow_stage``,
-    # ``domain_rule``, ``modality_table`` / ``modality_image`` /
-    # ``modality_graph``, ``smoke``, ``fallback``, ``llm``.
-    generated_from: str | None = None
-    # Confidence (0-1). For LLM cases, mirrors the model's
-    # self-rated difficulty inverted. For heuristic cases, a
-    # fixed prior based on how strong the seed material was
-    # (entity from graph: high; chunk-derived noun-run: medium).
-    confidence: float | None = None
-    # Why was this question generated — a single line a tester
-    # can read without expanding the row. E.g. "Targets the
-    # 'Stage 1 Risk Assessment' entity from the document graph."
-    reason: str | None = None
-    # FE-renderable evidence pointer hints. Independent of the
-    # internal ``source_artifact_id`` plumbing: this is a short
-    # human string ("page 3, section 'Risk Register'") that the
-    # tester sees in the case row.
-    expected_evidence: str | None = None
-
-
-@dataclass(frozen=True)
-class ValidationSetDTO:
-    """A bundle of test cases produced for one ingestion run.
-
- generates these synchronously when the tester clicks
- "Generate test set." Idempotent on `(run_id, generator_version,
- artifacts_content_hash)` — same run + same artifacts returns
- the existing set unless `force=true`. The hash composition is
- decided by the generator; the store treats it as opaque.
- """
-
-    validation_set_id: str
-    run_id: str
-    document_ids: list[str]
-    source: ValidationSetSource
-    status: ValidationSetStatus
-    created_at: str  # ISO-8601 UTC
-    created_by: str | None
-    generator_version: str | None
-    artifacts_content_hash: str | None
-    test_cases: list[ValidationTestCaseDTO]
-    metadata: dict[str, Any] = field(default_factory=dict)
-    # Domain pack id used when generating this set. None when no
-    # domain pack was active; `"general"` for the generic fallback.
-    domain_id: str | None = None
-    # LLM trace from the single whole-document call. None when the
-    # generator fell back to the heuristic path (no LLM wired).
-    # Surfaces in the FE alongside the set so testers can see
-    # provider/model/latency/tokens for the generation step.
-    llm: LLMTraceDTO | None = None
-    # What the generator passed to the LLM (sources + sizes +
-    # whether domain guidance was applied). Lets a tester verify
-    # "the model actually saw the document" without re-running.
-    context_summary: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ValidationCoverageDTO:
-    """Coverage breakdown shown on the run summary.
-
- `by_type` and `by_priority` are simple counters. `by_section`
- is reserved for the generator will surface a
- `section` hint per case once it reads structured chunk
- metadata. For it stays empty rather than fabricating
- false-precision counts.
- """
-
-    by_type: dict[str, int] = field(default_factory=dict)
-    by_priority: dict[str, int] = field(default_factory=dict)
-    by_section: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ValidationSummaryDTO:
-    """Roll-up shown on the Knowledge Readiness card.
-
- Counters are mutually-exclusive — every result lands in exactly
- one of `passed/warning/failed/skipped` so totals always reconcile
- with `total`. `recommended_action` is a human-readable string
- derived from the counts (FE renders it as the card subtitle).
- """
-
-    total: int = 0
-    passed: int = 0
-    warning: int = 0
-    failed: int = 0
-    skipped: int = 0
-    coverage: ValidationCoverageDTO = field(default_factory=ValidationCoverageDTO)
-    main_issues: list[str] = field(default_factory=list)
-    recommended_action: str | None = None
-
-
-@dataclass(frozen=True)
-class ValidationResultDTO:
-    """Outcome of one test case execution.
-
- `status` is the per-case roll-up — same vocabulary as the
- summary counters. Distinct from `executionStatus` on the parent
- `ValidationRun`. `tester_verdict` / `tester_notes` are
- placeholders for (human override workflow).
- """
-
-    result_id: str
-    test_case_id: str
-    status: Literal["passed", "warning", "failed", "skipped"]
-    question: str
-    answer: str
-    retrieved_chunks: list[RetrievedChunkRefDTO]
-    citations: list[ValidationCitationDTO]
-    checks: list[ValidationCheckDTO]
-    judge_notes: str | None = None
-    failure_reason: str | None = None
-    tester_verdict: Literal["pass", "warning", "fail"] | None = None
-    tester_notes: str | None = None
-    # The provider's deterministic composed answer (e.g. "Knowledge
-    # results for: ..."). Preserved alongside `answer` when the
-    # runner replaces `answer` with an LLM-synthesized version so a
-    # tester can compare what the LLM produced vs. what the engine
-    # returned raw. None when no synthesis happened (raw answer is
-    # still in `answer`).
-    raw_answer: str | None = None
-    # LLM trace for the synthesis call. None when no synthesizer was
-    # wired or the synthesizer was opted out per-run.
-    llm: LLMTraceDTO | None = None
-
-
-@dataclass(frozen=True)
-class ValidationRunDTO:
-    """A single execution of a validation set against an ingestion run.
-
- Note the split: `execution_status` reports whether the runner
- job completed; `validation_status` reports the aggregate of
- test-case outcomes. `execution_status="completed"` +
- `validation_status="failed"` is the canonical "the job ran
- successfully but the document didn't pass" case.
- """
-
-    validation_run_id: str
-    validation_set_id: str
-    run_id: str
-    execution_status: ExecutionStatus
-    validation_status: ValidationStatus
-    started_at: str
-    completed_at: str | None
-    actor: str
-    summary: ValidationSummaryDTO
-    results: list[ValidationResultDTO] = field(default_factory=list)
-    failure_message: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)

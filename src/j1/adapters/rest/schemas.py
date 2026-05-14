@@ -612,199 +612,75 @@ class NativeDebugQueryResponseRecord(CamelModel):
 # ---- Validation sets / runs -------------------------------
 
 
-class ValidationTestCaseRecord(CamelModel):
-    """One generated/imported test case. Wire shape mirrors
- `ValidationTestCaseDTO` field-for-field.
- """
+# ---- Imported test cases (auxiliary Validation Tab helper) ---------
+#
+# Generated test cases were deleted in the 2026-05-14 product change.
+# The Validation Tab now hosts a compact Imported Test Cases section:
+# the user uploads a CSV per document, the server replaces the prior
+# set, and an Execute button runs each question against the document's
+# latest succeeded run. The UI shows summary cards + per-question
+# status; per-question detail routes through Manual Test Query.
+
+
+class ImportedTestCaseRecord(CamelModel):
+    """One question parsed from an uploaded CSV row."""
 
     test_case_id: str
     question: str
-    type: str
-    priority: str
-    expected_behavior: str
-    expected_answer_points: list[str] = Field(default_factory=list)
-    expected_chunks: list[str] = Field(default_factory=list)
-    expected_pages: list[int] = Field(default_factory=list)
-    expected_artifacts: list[str] = Field(default_factory=list)
-    expected_graph_nodes: list[str] = Field(default_factory=list)
-    expected_graph_edges: list[str] = Field(default_factory=list)
-    citation_required: bool = False
-    source_traceability: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    # New fields from the evidence-grounded generator. The FE uses
-    # these to render the scope badge ("Generic / Domain-aware /
-    # Negative-check"), the expected-answer block, and the evidence
-    # quote that supported the answer.
     expected_answer: str | None = None
-    evidence_quote: str | None = None
-    source_artifact_id: str | None = None
-    source_artifact_type: str | None = None
-    question_type: str | None = None
-    validation_scope: str = "generic"
-    difficulty: str | None = None
-    domain_id: str | None = None
-    # Post-refactor provenance + UX-facing fields. ``generated_from``
-    # is a single tag (``fact``, ``entity``, ``smoke``, etc.) the FE
-    # shows as a small chip. ``confidence`` drives a confidence
-    # badge. ``reason`` is the one-sentence "why was this question
-    # useful?" tooltip. ``expected_evidence`` is a tester-readable
-    # pointer ("page 3, section 'Risk Register'") distinct from the
-    # internal ``source_artifact_id``.
-    generated_from: str | None = None
-    confidence: float | None = None
-    reason: str | None = None
-    expected_evidence: str | None = None
+    expected_sources: list[str] = Field(default_factory=list)
+    test_type: str | None = None
+    notes: str | None = None
 
 
-class ValidationSetRecord(CamelModel):
-    validation_set_id: str
-    run_id: str
-    document_ids: list[str]
-    source: str
-    status: str
-    created_at: str
-    created_by: str | None = None
-    generator_version: str | None = None
-    artifacts_content_hash: str | None = None
-    test_cases: list[ValidationTestCaseRecord]
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    # Domain pack used while generating (None when generic mode).
-    domain_id: str | None = None
-    # LLM trace from the single whole-document call. None when the
-    # generator fell back to the heuristic path (no LLM wired).
-    llm: LLMTraceRecord | None = None
-    # What was actually sent to the LLM. Operator-readable summary
-    # so testers can verify the generator wasn't fed garbage.
-    context_summary: dict[str, Any] = Field(default_factory=dict)
+class ImportedTestCaseSetRecord(CamelModel):
+    """The current imported set for one document. Replaced on every
+    import; never accumulates."""
+
+    document_id: str
+    imported_at: str
+    source_filename: str | None = None
+    cases: list[ImportedTestCaseRecord] = Field(default_factory=list)
 
 
-class GenerateValidationSetRequestRecord(CamelModel):
-    """POST /ingestion-runs/{id}/validation-sets/generate body.
+class ImportedTestCaseResultRecord(CamelModel):
+    """Per-question execution outcome.
 
- `force` bypasses the (run, hash) idempotency cache.
- `maxCases` is server-clamped to MAX_CASES_PER_RUN (50).
- """
+    ``status`` vocabulary: ``not_run`` / ``answered`` / ``no_answer`` /
+    ``no_sources`` / ``scope_error`` / ``error``.
+    """
 
-    max_cases: int = Field(default=25, ge=1, le=50)
-    citation_required: bool = False
-    force: bool = False
-
-
-class ValidationSetListItem(CamelModel):
-    """Lightweight projection for the list endpoint — drops the full
- test_cases array so a project with many sets doesn't pay the
- full payload on each list call."""
-
-    validation_set_id: str
-    run_id: str
-    source: str
-    status: str
-    created_at: str
-    created_by: str | None = None
-    case_count: int
-
-
-class ValidationSetListRecord(CamelModel):
-    items: list[ValidationSetListItem]
-
-
-class ValidationCoverageRecord(CamelModel):
-    by_type: dict[str, int] = Field(default_factory=dict)
-    by_priority: dict[str, int] = Field(default_factory=dict)
-    by_section: dict[str, int] = Field(default_factory=dict)
-
-
-class ValidationSummaryRecord(CamelModel):
-    total: int = 0
-    passed: int = 0
-    warning: int = 0
-    failed: int = 0
-    skipped: int = 0
-    coverage: ValidationCoverageRecord = Field(default_factory=ValidationCoverageRecord)
-    main_issues: list[str] = Field(default_factory=list)
-    recommended_action: str | None = None
-
-
-class ValidationCitationRecord(CamelModel):
-    """Citation projection on validation results. Same wire shape
- as the manual-query CitationRecord but lives here to keep the
- REST schemas internally consistent (no cross-references
- to other regions of the schema file)."""
-
-    artifact_id: str
-    artifact_type: str
-    source_document_id: str | None = None
-    source_location: str | None = None
-    chunk_id: str | None = None
+    test_case_id: str
+    question: str
+    status: Literal[
+        "not_run", "answered", "no_answer", "no_sources",
+        "scope_error", "error",
+    ]
+    has_sources: bool
+    scope_ok: bool
+    error: str | None = None
     run_id: str | None = None
 
 
-class ValidationResultRecord(CamelModel):
-    result_id: str
-    test_case_id: str
-    status: str
-    question: str
-    answer: str
-    retrieved_chunks: list[RetrievedChunkRefRecord]
-    citations: list[ValidationCitationRecord]
-    checks: list[ValidationCheckRecord]
-    judge_notes: str | None = None
-    failure_reason: str | None = None
-    tester_verdict: str | None = None
-    tester_notes: str | None = None
+class ImportedTestCaseSummaryRecord(CamelModel):
+    """Aggregate counts the Validation Tab renders as summary cards."""
+
+    total: int = 0
+    answered: int = 0
+    with_sources: int = 0
+    scope_issues: int = 0
+    errors: int = 0
+    overall: Literal["good", "needs_review", "poor"] = "needs_review"
 
 
-class ValidationRunRecord(CamelModel):
-    """Body of GET /ingestion-runs/{id}/validation-runs/{vrunId}.
+class ImportedTestCaseExecutionRecord(CamelModel):
+    """Latest execution snapshot for one document's imported set."""
 
- Carries every per-case result inline. For runs with many cases
- this can be large; the FE caches per-`vrunId` since validation
- runs are immutable once terminal."""
-
-    validation_run_id: str
-    validation_set_id: str
-    run_id: str
-    execution_status: str
-    validation_status: str
-    started_at: str
-    completed_at: str | None = None
-    actor: str
-    summary: ValidationSummaryRecord
-    results: list[ValidationResultRecord] = Field(default_factory=list)
-    failure_message: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ValidationRunListItem(CamelModel):
-    """Lightweight projection for the list endpoint."""
-
-    validation_run_id: str
-    validation_set_id: str
-    run_id: str
-    execution_status: str
-    validation_status: str
-    started_at: str
-    completed_at: str | None = None
-    summary: ValidationSummaryRecord
-
-
-class ValidationRunListRecord(CamelModel):
-    items: list[ValidationRunListItem]
-
-
-class StartValidationRunRequestRecord(CamelModel):
-    validation_set_id: str = Field(min_length=1)
-
-
-class TesterVerdictRequestRecord(CamelModel):
-    """Body for POST /validation-results/{id}/verdict.
-
- `verdict` is constrained at the boundary so a typo fails fast.
- `notes` is free-form, capped at a sensible 4 KB so a tester
- pasting a wall of text can't blow up audit-log lines."""
-
-    verdict: Literal["pass", "warning", "fail"]
-    notes: str | None = Field(default=None, max_length=4096)
+    document_id: str
+    executed_at: str
+    run_id: str | None = None
+    summary: ImportedTestCaseSummaryRecord
+    results: list[ImportedTestCaseResultRecord] = Field(default_factory=list)
 
 
 # ---- Citations / sources ---------------------------------------------

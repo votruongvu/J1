@@ -25,7 +25,6 @@ from j1.domains.models import (
     DomainPack,
     DomainPlanningOverlay,
     DomainPromptPack,
-    DomainValidationGuidance,
     DomainValidationRules,
     KeywordSignal,
     UnsupportedCapability,
@@ -100,7 +99,6 @@ def build_civil_engineering_pack() -> DomainPack:
         enrichment_policy=_parse_enrichment_policy(data.get("enrichment_policy")),
         extraction_hints=_parse_extraction_hints(data.get("extraction_hints")),
         validation_rules=_parse_validation_rules(data.get("validation_rules")),
-        validation_guidance=_parse_validation_guidance(data.get("validation")),
         prompt_pack=_parse_prompt_pack(data.get("prompt_pack")),
         detect=_make_detector(
             keyword_signals=keyword_signals,
@@ -153,45 +151,6 @@ def _parse_validation_rules(raw: Any) -> DomainValidationRules:
         expected_document_structure=_tuple("expected_document_structure"),
         low_quality_warning_conditions=_tuple("low_quality_warning_conditions"),
         enrichment_triggers=_tuple("enrichment_triggers"),
-    )
-
-
-def _parse_validation_guidance(raw: Any) -> DomainValidationGuidance:
-    """Build a `DomainValidationGuidance` from the YAML `validation:`
- block.
-
- Reads the three nested sub-blocks: `question_generation`,
- `grounding_policy`, `domain_checklist`. Tolerant of missing /
- malformed entries — anything not present falls back to dataclass
- defaults (empty tuples, generator effectively no-op)."""
-    if not isinstance(raw, dict) or not raw:
-        return DomainValidationGuidance()
-
-    qg = raw.get("question_generation") or {}
-    gp = raw.get("grounding_policy") or {}
-    dc = raw.get("domain_checklist") or {}
-
-    def _tuple(source: dict, key: str) -> tuple[str, ...]:
-        items = source.get(key) or ()
-        if not isinstance(items, (list, tuple)):
-            return ()
-        return tuple(str(s).strip() for s in items if str(s).strip())
-
-    return DomainValidationGuidance(
-        enabled=bool(qg.get("enabled", True)),
-        max_questions=int(qg.get("max_questions") or 8),
-        question_types=_tuple(qg, "question_types"),
-        important_fields=_tuple(dc, "important_fields"),
-        negative_check_fields=_tuple(dc, "negative_check_fields"),
-        require_evidence_quote_for_positive_answers=bool(
-            gp.get("require_evidence_quote_for_positive_answers", True),
-        ),
-        allow_negative_checks_from_domain_checklist=bool(
-            gp.get("allow_negative_checks_from_domain_checklist", True),
-        ),
-        document_artifacts_are_source_of_truth=bool(
-            gp.get("document_artifacts_are_source_of_truth", True),
-        ),
     )
 
 

@@ -32,7 +32,6 @@ from j1.domains.models import (
     DomainPack,
     DomainPlanningOverlay,
     DomainSelectionSource,
-    DomainValidationGuidance,
     KeywordSignal,
     UnsupportedCapability,
 )
@@ -51,7 +50,6 @@ __all__ = [
     "DomainPlanningOverlay",
     "DomainRegistry",
     "DomainSelectionSource",
-    "DomainValidationGuidance",
     "KeywordSignal",
     "UnsupportedCapability",
     "default_registry",

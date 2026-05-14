@@ -109,38 +109,12 @@ def _record(snapshot_id=None, metadata=None):
     )
 
 
-def test_validation_matches_only_when_snapshot_ids_match():
-    """Phase 5: snapshot id is the ONLY lineage key. An artifact
-    with a matching snapshot_id participates; everything else
-    is excluded."""
-    from j1.validation.service import _artifact_belongs_to_run
-    a = _record(snapshot_id="snap-1")
-    assert _artifact_belongs_to_run(a, "run-1", "snap-1") is True
-
-
-def test_validation_excludes_artifact_with_only_legacy_run_id_metadata():
-    """Phase 5: the ``metadata["run_id"]`` fallback is REMOVED.
-    Legacy artifacts that pre-date the snapshot stamping are NOT
-    validated — operators reset and re-ingest."""
-    from j1.validation.service import _artifact_belongs_to_run
-    a = _record(snapshot_id=None, metadata={"run_id": "run-1"})
-    assert _artifact_belongs_to_run(a, "run-1", "snap-1") is False
-
-
-def test_validation_excludes_when_snapshot_id_is_none():
-    """Phase 5: without a snapshot_id from the caller, the
-    function returns False — no implicit run-id filtering."""
-    from j1.validation.service import _artifact_belongs_to_run
-    a = _record(snapshot_id="snap-1")
-    assert _artifact_belongs_to_run(a, "run-1", None) is False
-
-
-def test_validation_excludes_artifact_with_different_snapshot():
-    """A different snapshot's artifact NEVER matches, even if the
-    caller's run_id matches the typed ``created_by_run_id``."""
-    from j1.validation.service import _artifact_belongs_to_run
-    a = _record(snapshot_id="snap-other")
-    assert _artifact_belongs_to_run(a, "run-1", "snap-1") is False
+# Phase 9 follow-up (2026-05-14 product change): the
+# ``_artifact_belongs_to_run`` helper was only consumed by the
+# now-deleted generated-test-case path. Its tests went with it.
+# Snapshot lineage on artifacts is still enforced — see the
+# tests further down this file that exercise the wire shape +
+# the registry-level lineage guard.
 
 
 # ---- REST /search snapshot_id on the wire ----------------------

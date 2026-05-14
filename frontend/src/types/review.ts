@@ -863,210 +863,68 @@ export interface QueryTracePayload {
   trace: QueryTraceShape;
 }
 
-// ---- Validation sets and runs -------------------------
+// ---- Imported test cases (auxiliary Validation Tab helper) ----
+//
+// Generated test cases were deleted in the 2026-05-14 product
+// change. The Validation Tab now hosts a compact Imported Test
+// Cases section: upload a CSV per document, execute it against the
+// document's latest succeeded run, and render summary cards +
+// per-question status. Detail lives in Manual Test Query.
 
-export type ValidationTestType =
-  | "retrieval"
-  | "answer"
-  | "citation"
-  | "negative"
-  | "table"
-  | "image"
-  | "graph";
+export type ImportedTestCaseStatus =
+  | "not_run"
+  | "answered"
+  | "no_answer"
+  | "no_sources"
+  | "scope_error"
+  | "error";
 
-export type ValidationPriority =
-  | "smoke"
-  | "normal"
-  | "critical"
-  | "edge"
-  | "deep";
+export type ImportedTestCaseOverallStatus =
+  | "good"
+  | "needs_review"
+  | "poor";
 
-export type ExpectedBehavior =
-  | "answer_with_citations"
-  | "abstain"
-  | "retrieve_evidence"
-  | "validate_relationship";
-
-export type ValidationSetSource = "generated" | "manual" | "imported";
-export type ValidationSetStatus = "draft" | "ready" | "archived";
-
-export type ExecutionStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-// Question-type tag from the evidence-grounded generator. Drives FE
-// grouping + badges on the generated set view.
-export type ValidationQuestionType =
-  | "fact_retrieval"
-  | "list_extraction"
-  | "table_extraction"
-  | "summary"
-  | "risk_extraction"
-  | "constraint_extraction"
-  | "reasoning_from_context"
-  | "domain_enrichment_check"
-  | "missing_information_check";
-
-// Scope tag the FE uses to badge generated cases. Mirrors the
-// server's `ValidationScope` literal.
-// Scope tag the FE renders as a badge. The expanded vocabulary
-// (post question-context refactor) lets testers filter by the
-// VALIDATION CATEGORY each case tests — document, domain,
-// graph, retrieval, workflow, evidence, guardrail — instead of
-// the prior "everything is generic" bucket.
-export type ValidationScope =
-  | "generic"
-  | "document"
-  | "domain"
-  | "domain_evidence"
-  | "domain_enrichment"
-  | "graph"
-  | "retrieval"
-  | "workflow"
-  | "evidence"
-  | "guardrail"
-  | "negative_check";
-
-export interface ValidationTestCase {
+export interface ImportedTestCase {
   testCaseId: string;
   question: string;
-  type: ValidationTestType;
-  priority: ValidationPriority;
-  expectedBehavior: ExpectedBehavior;
-  expectedAnswerPoints: string[];
-  expectedChunks: string[];
-  expectedPages: number[];
-  expectedArtifacts: string[];
-  expectedGraphNodes: string[];
-  expectedGraphEdges: string[];
-  citationRequired: boolean;
-  sourceTraceability: string[];
-  metadata: Record<string, unknown>;
-  // New fields from the evidence-grounded generator.
   expectedAnswer?: string | null;
-  evidenceQuote?: string | null;
-  sourceArtifactId?: string | null;
-  sourceArtifactType?: string | null;
-  questionType?: ValidationQuestionType | null;
-  validationScope?: ValidationScope;
-  difficulty?: string | null;
-  domainId?: string | null;
-  // Post-refactor provenance + UX-facing fields. The FE renders
-  // ``generatedFrom`` as a small chip and ``reason`` as a
-  // tooltip so testers can audit "why was this question useful?"
-  // without expanding the row.
-  generatedFrom?: string | null;
-  confidence?: number | null;
-  reason?: string | null;
-  expectedEvidence?: string | null;
+  expectedSources: string[];
+  testType?: string | null;
+  notes?: string | null;
 }
 
-export interface ValidationSet {
-  validationSetId: string;
-  runId: string;
-  documentIds: string[];
-  source: ValidationSetSource;
-  status: ValidationSetStatus;
-  createdAt: string;
-  createdBy?: string | null;
-  generatorVersion?: string | null;
-  artifactsContentHash?: string | null;
-  testCases: ValidationTestCase[];
-  metadata: Record<string, unknown>;
-  domainId?: string | null;
-  llm?: LLMTrace | null;
-  contextSummary?: Record<string, unknown>;
+export interface ImportedTestCaseSet {
+  documentId: string;
+  importedAt: string;
+  sourceFilename?: string | null;
+  cases: ImportedTestCase[];
 }
 
-export interface ValidationSetListItem {
-  validationSetId: string;
-  runId: string;
-  source: ValidationSetSource;
-  status: ValidationSetStatus;
-  createdAt: string;
-  createdBy?: string | null;
-  caseCount: number;
-}
-
-export interface ValidationCoverage {
-  byType: Record<string, number>;
-  byPriority: Record<string, number>;
-  bySection: Record<string, number>;
-}
-
-export interface ValidationSummary {
-  total: number;
-  passed: number;
-  warning: number;
-  failed: number;
-  skipped: number;
-  coverage: ValidationCoverage;
-  mainIssues: string[];
-  recommendedAction?: string | null;
-}
-
-export type ValidationResultStatus =
-  | "passed"
-  | "warning"
-  | "failed"
-  | "skipped";
-
-export interface ValidationResult {
-  resultId: string;
+export interface ImportedTestCaseResult {
   testCaseId: string;
-  status: ValidationResultStatus;
   question: string;
-  answer: string;
-  retrievedChunks: ValidationRetrievedChunk[];
-  citations: ValidationCitation[];
-  checks: ValidationCheck[];
-  judgeNotes?: string | null;
-  failureReason?: string | null;
-  testerVerdict?: "pass" | "warning" | "fail" | null;
-  testerNotes?: string | null;
+  status: ImportedTestCaseStatus;
+  hasSources: boolean;
+  scopeOk: boolean;
+  error?: string | null;
+  runId?: string | null;
 }
 
-export interface ValidationRun {
-  validationRunId: string;
-  validationSetId: string;
-  runId: string;
-  // The split: executionStatus is the JOB status; validationStatus is
-  // the TEST OUTCOME. A `completed` + `failed` pair means "the runner
-  // job finished, but the document didn't pass". They MUST NOT be
-  // collapsed in the UI.
-  executionStatus: ExecutionStatus;
-  validationStatus: ValidationStatus;
-  startedAt: string;
-  completedAt?: string | null;
-  actor: string;
-  summary: ValidationSummary;
-  results: ValidationResult[];
-  failureMessage?: string | null;
-  metadata: Record<string, unknown>;
+export interface ImportedTestCaseSummary {
+  total: number;
+  answered: number;
+  withSources: number;
+  scopeIssues: number;
+  errors: number;
+  overall: ImportedTestCaseOverallStatus;
 }
 
-export interface ValidationRunListItem {
-  validationRunId: string;
-  validationSetId: string;
-  runId: string;
-  executionStatus: ExecutionStatus;
-  validationStatus: ValidationStatus;
-  startedAt: string;
-  completedAt?: string | null;
-  summary: ValidationSummary;
-}
-
-export interface GenerateValidationSetRequest {
-  maxCases?: number;
-  citationRequired?: boolean;
-  force?: boolean;
-}
-
-export interface StartValidationRunRequest {
-  validationSetId: string;
+export interface ImportedTestCaseExecution {
+  documentId: string;
+  executedAt: string;
+  runId?: string | null;
+  summary: ImportedTestCaseSummary;
+  results: ImportedTestCaseResult[];
 }
 
 // ---- Run summary -------------------------------------------------

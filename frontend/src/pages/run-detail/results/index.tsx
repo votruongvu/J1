@@ -36,11 +36,10 @@ type ResultsTab =
   | "manual-trace"
   | "validation";
 
-// Temporary kill-switch for the Validation tab. The new
-// SmartQueryOrchestrator surface (Manual Query Trace) replaces it
-// for now — the batch validation flow is paused while the
-// orchestrator beds in. Flip back to ``false`` to restore the tab.
-const VALIDATION_TAB_DISABLED = true;
+// Post 2026-05-14 refactor: the Validation tab is the home of two
+// flows — imported test cases (CSV → execute → summary) and the
+// existing Manual Test Query. Both are always available once the
+// run reaches a state that supports queries.
 
 interface ResultsSectionProps {
   run: IngestionRun | null;
@@ -223,12 +222,8 @@ export function ResultsSection({
     {
       key: "validation",
       label: "Validation",
-      available: VALIDATION_TAB_DISABLED
-        ? false
-        : (views?.validation?.available ?? false),
-      reason: VALIDATION_TAB_DISABLED
-        ? "Validation tab is temporarily disabled — use Manual Query Trace instead."
-        : (views?.validation?.reason ?? "Loading…"),
+      available: views?.validation?.available ?? false,
+      reason: views?.validation?.reason ?? "Loading…",
     },
   ];
 
@@ -283,7 +278,12 @@ export function ResultsSection({
         {tab === "graph" && <GraphTab runId={runId} />}
         {tab === "raw" && <RawArtifactsTab runId={runId} />}
         {tab === "manual-trace" && <ManualQueryTraceViewTab runId={runId} />}
-        {tab === "validation" && <ValidationTab runId={runId} />}
+        {tab === "validation" && (
+          <ValidationTab
+            runId={runId}
+            documentId={run?.document_id ?? null}
+          />
+        )}
       </div>
     </section>
   );

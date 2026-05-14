@@ -602,222 +602,71 @@ def build_review_service(workspace: WorkspaceResolver):
 def build_validation_service(workspace: WorkspaceResolver):
     """Build the `IngestionValidationService` for the REST adapter.
 
- surface: synchronous manual test queries scoped to one
- ingestion run. generated set / set-execution.
- Reuses the same `HybridQueryEngine` providers the facade builds
- for the public `/answer` endpoint, but invokes them with
- `RunScope` so retrieval is restricted to artifacts produced by
- the run under test.
+    Two surfaces post the 2026-05-14 refactor:
 
- Returns `None` when the deployment doesn't have a profile loaded
- — the engine needs a profile for `ReportGenerator`'s template
- lookup, and without it we can't construct the engine. The REST
- adapter degrades `/ingestion-runs/{id}/test-query` to 503 in
- that case, mirroring the `/answer` degradation pattern.
+    * Manual Test Query — synchronous one-off questions through the
+      SmartQueryOrchestrator (the detailed inspection tool).
+    * Imported Test Cases — CSV upload + execute-against-active-run
+      (the auxiliary Validation Tab summary).
 
- dependencies (set/run stores + generator) are always
- wired when the validation service is constructible — there's no
- failure mode where the manual-query path works but the set/run
- path doesn't, given a profile is present. The FAST/text LLM is
- optional (the generator falls back to the heuristic question
- producer when no client is supplied).
- """
+    Returns ``None`` when the deployment doesn't have a profile
+    loaded — without one, the REST adapter degrades the validation
+    endpoints to 503, mirroring the ``/answer`` degradation pattern.
+    """
     from j1.audit.recorder import DefaultAuditRecorder
     from j1.audit.sink import JsonlAuditSink
-    from j1.compose import bootstrap_from_env
     from j1.profiles.loader import ProfileLoader
     from j1.validation import (
-        DefaultAnswerSynthesizer,
-        DefaultLLMJudge,
-        DefaultTestCaseGenerator,
+        ImportedTestCaseExecutor,
         IngestionValidationService,
-        JsonlValidationRunStore,
-        JsonlValidationSetStore,
+        JsonlImportedTestCaseStore,
     )
 
     try:
-        profile = ProfileLoader().load(DEFAULT_PROFILE_ID)
+        ProfileLoader().load(DEFAULT_PROFILE_ID)
     except Exception:  # noqa: BLE001 — profile is optional for validation
         return None
 
-    sources = JsonSourceRegistry(workspace)
     artifacts = JsonArtifactRegistry(workspace)
-    # Phase 7: the validation service constructor never consumed
-    # the SQLite indexer — the unused ``indexer = SqliteSearchIndexer(...)``
-    # construction was a relic. Removed to keep the legacy class
-    # out of normal wiring.
 
-    # Best-effort LLM client for the test-case generator. Prefer
-    # FAST role (cheap structured output) and fall back to text;
-    # the generator gracefully degrades to its heuristic question
-    # producer if no client is wired.
-    #
-    # Failures are LOGGED (not swallowed) so an operator who sees
-    # "heuristic (no LLM)" on the FE can diagnose without
-    # restarting in a debug shell. Common causes:
-    #   * .env not loaded (running outside docker without
-    #     ``load_dotenv`` — fixed in deploy/dev/api.py);
-    #   * J1_TEXT_LLM_PROVIDER unset (no client registered for
-    #     either role);
-    #   * Provider URL/credentials rejected at construction time.
-    import logging as _logging
-    _wire_log = _logging.getLogger("j1.deploy.dev.validation")
-    llm_client = None
-    try:
-        boot = bootstrap_from_env()
-        if hasattr(boot, "llm_registry"):
-            try_fast = getattr(boot.llm_registry, "try_fast", None)
-            try_text = getattr(boot.llm_registry, "try_text", None)
-            if callable(try_fast):
-                llm_client = try_fast()
-            if llm_client is None and callable(try_text):
-                llm_client = try_text()
-            if llm_client is None:
-                _wire_log.warning(
-                    "validation generator: no LLM client registered "
-                    "(registered roles: %s). Set J1_FAST_LLM_PROVIDER "
-                    "or J1_TEXT_LLM_PROVIDER and restart to enable "
-                    "LLM-backed question generation.",
-                    boot.llm_registry.list()
-                    if hasattr(boot.llm_registry, "list") else "unknown",
-                )
-            else:
-                _wire_log.info(
-                    "validation generator: LLM wired (provider=%s "
-                    "model=%s)",
-                    getattr(llm_client, "provider", None),
-                    getattr(llm_client, "model", None),
-                )
-    except Exception as exc:  # noqa: BLE001
-        _wire_log.warning(
-            "validation generator: bootstrap failed; falling back to "
-            "heuristic question producer. Reason: %s: %s",
-            type(exc).__name__, exc,
-        )
-        llm_client = None
-
-    #  LLM judge — uses the same FAST/text client as the
-    # generator. Optional: if no LLM is configured, the runner
-    # simply omits the optional semantic checks (`answer_covers_*`,
-    # `answer_grounded_*`, `negative_no_fabrication`) and the
-    # validation status reflects the deterministic checks only.
-    judge = (
-        DefaultLLMJudge(text_client=llm_client) if llm_client else None
-    )
-
-    # Manual-query LLM answer synthesizer. Same client as the judge —
-    # we reuse rather than instantiating a second so concurrency
-    # limiters / token budgets in the LLM client apply uniformly to
-    # both surfaces. None → manual queries fall back to retrieval-
-    # only mode (the FE shows the retrieval preview and notes "LLM
-    # client not configured" in the trace strip).
-    synthesizer = (
-        DefaultAnswerSynthesizer(text_client=llm_client) if llm_client else None
-    )
-
-    # Native query provider (LightRAG's hybrid `aquery`). Built
-    # best-effort: when RAGAnything settings can't be loaded
-    # (vendor not installed in this deployment, missing workdir,
-    # bootstrap unavailable, etc.) we leave the provider as
-    # ``None`` and the service silently falls back to BM25 even
-    # if the operator set ``J1_QUERY_PROVIDER_MODE`` to a
-    # native mode. The service logs a warning so the
-    # misconfiguration is visible.
+    # Native query provider (LightRAG's hybrid ``aquery``). Built
+    # best-effort: when RAGAnything settings can't be loaded the
+    # native-debug endpoint reports the provider as unwired and
+    # surfaces an honest "no answer attempted" response.
     native_query_provider = _build_native_query_provider_or_none()
 
-    # Env-driven retrieval knobs.
-    #
-    # ``J1_QUERY_ENGINE`` is the canonical post-audit name; the
-    # legacy ``J1_QUERY_PROVIDER_MODE`` is still accepted for one
-    # release while existing deployments migrate. When both are
-    # set the canonical name wins.
-    #
-    # Default is ``lightrag_native`` (pure native, no BM25). This
-    # is the audit-driven default — BM25 involvement now requires
-    # an explicit opt-in via ``J1_ENABLE_BM25_EVIDENCE`` or
-    # ``J1_ENABLE_BM25_FALLBACK``. See ``.env.example`` for
-    # the canonical mode catalogue.
-    query_engine_env = (
-        os.environ.get("J1_QUERY_ENGINE", "").strip()
-        or os.environ.get("J1_QUERY_PROVIDER_MODE", "").strip()
-        or "lightrag_native"
+    native_query_timeout_seconds = _env_float(
+        "J1_RAG_NATIVE_QUERY_TIMEOUT_SECONDS", default=30.0,
     )
     validation_candidate_top_k = _env_int(
         "J1_VALIDATION_CANDIDATE_TOP_K", default=20,
     )
-    validation_evidence_max_blocks = _env_int(
-        "J1_VALIDATION_EVIDENCE_MAX_BLOCKS", default=5,
+
+    orchestrator = _build_orchestrator_or_none(workspace)
+    run_store = JsonlIngestionRunStore(workspace)
+    imported_store = JsonlImportedTestCaseStore(workspace)
+    imported_executor = (
+        ImportedTestCaseExecutor(
+            smart_query_orchestrator=orchestrator,
+            run_store=run_store,
+        ) if orchestrator is not None else None
     )
-    native_query_timeout_seconds = _env_float(
-        "J1_RAG_NATIVE_QUERY_TIMEOUT_SECONDS", default=30.0,
-    )
-    enable_bm25_evidence = _env_bool(
-        "J1_ENABLE_BM25_EVIDENCE", default=False,
-    )
-    enable_bm25_fallback = _env_bool(
-        "J1_ENABLE_BM25_FALLBACK", default=False,
-    )
-    # Legacy fallback flag — when explicitly set, overrides the
-    # new canonical ``J1_ENABLE_BM25_FALLBACK`` so existing
-    # deployments don't silently switch behaviour. ``None`` means
-    # "unset" so the service falls through to the new flag.
-    if "J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25" in os.environ:
-        native_query_fallback_to_bm25 = _env_bool(
-            "J1_RAG_NATIVE_QUERY_FALLBACK_TO_BM25", default=False,
-        )
-    else:
-        native_query_fallback_to_bm25 = None
 
     return IngestionValidationService(
-        run_store=JsonlIngestionRunStore(workspace),
+        run_store=run_store,
         artifact_registry=artifacts,
-        # Audit recorder writes one `j1.validation.manual_query.completed`
-        # event per call — same JSONL stream the `/events` endpoint
-        # tails, so manual queries show up in the live timeline.
         audit=DefaultAuditRecorder(JsonlAuditSink(workspace)),
-        #  dependencies — always wire them when we get this
-        # far so generate / run aren't 503'd separately from
-        # manual query.
         workspace=workspace,
-        validation_set_store=JsonlValidationSetStore(workspace),
-        validation_run_store=JsonlValidationRunStore(workspace),
-        test_case_generator=DefaultTestCaseGenerator(text_client=llm_client),
-        # optional. Off when no LLM client is wired.
-        judge=judge,
-        answer_synthesizer=synthesizer,
-        # Domain registry — the set generator looks up the run's
-        # domain pack here and threads the pack's `validation_guidance`
-        # into the LLM prompt as a TESTING LENS (never evidence).
-        # `default_registry()` ships the general + civil_engineering
-        # packs. None-able: when no registry is wired the generator
-        # falls back to generic mode (no domain-driven negatives).
-        domain_registry=_domain_registry_or_none(),
-        # Source registry — enables `validation_scope="active"` on
-        # the manual-query endpoint. The service uses it to resolve
-        # `ActiveScope(document_id)` → `RunScope(active_run_id)`
-        # before dispatching the query. Without it, "active" silently
-        # falls back to RunScope(this run id), which matches the
-        # spec's "if no scope explicit, behave as run-scoped".
+        # Enables ``validation_scope="active"`` on the manual-query
+        # endpoint by resolving ``ActiveScope(document_id)`` against
+        # the source registry.
         source_registry=JsonSourceRegistry(workspace),
-        # Retrieval quality knobs (env-driven).
-        validation_candidate_top_k=validation_candidate_top_k,
-        validation_evidence_max_blocks=validation_evidence_max_blocks,
-        # Native-query provider. Post-audit default
-        # (``lightrag_native``) drives this for every query;
-        # operators opt out of native by setting
-        # ``J1_QUERY_ENGINE=bm25_debug``.
+        smart_query_orchestrator=orchestrator,
         native_query_provider=native_query_provider,
-        query_engine_mode=query_engine_env,
         native_query_timeout_seconds=native_query_timeout_seconds,
-        enable_bm25_evidence=enable_bm25_evidence,
-        enable_bm25_fallback=enable_bm25_fallback,
-        native_query_fallback_to_bm25=native_query_fallback_to_bm25,
-        # SmartQueryOrchestrator — required by run_manual_test_query
-        # (the legacy path was removed). Built once at the
-        # deployment boundary; the validation service threads it
-        # into every per-case execution via DefaultValidationRunner
-        # too.
-        smart_query_orchestrator=_build_orchestrator_or_none(workspace),
+        validation_candidate_top_k=validation_candidate_top_k,
+        imported_test_case_store=imported_store,
+        imported_test_case_executor=imported_executor,
     )
 
 

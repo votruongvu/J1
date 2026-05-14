@@ -12,7 +12,8 @@ import type {
 } from "@/types/ingestion";
 import type {
   ContentInventory,
-  GenerateValidationSetRequest,
+  ImportedTestCaseExecution,
+  ImportedTestCaseSet,
   ManualTestQueryRequest,
   ManualTestQueryResponse,
   QueryTracePayload,
@@ -31,11 +32,6 @@ import type {
   RunEnrichPlanResponse,
   RunEnrichmentResultResponse,
   RunInitialExecutionPlanResponse,
-  StartValidationRunRequest,
-  ValidationRun,
-  ValidationRunListItem,
-  ValidationSet,
-  ValidationSetListItem,
 } from "@/types/review";
 import type { ProjectContext } from "@/types/ui";
 import type {
@@ -245,71 +241,48 @@ export interface IngestionClient {
     question: string,
   ): Promise<QueryTracePayload>;
 
-  // ---- Validation sets + runs --------------------------
+  // ---- Imported test cases (auxiliary Validation Tab helper) -
 
   /**
- * Generate a validation set from this run's chunks. Idempotent on
- * `(runId, hash)` — repeated calls with the same chunks return
- * the same set unless `force` is set.
- */
-  generateValidationSet(
-    runId: string,
-    request?: GenerateValidationSetRequest,
-  ): Promise<ValidationSet>;
-
-  /** List validation sets for this run (lightweight projections). */
-  listValidationSets(runId: string): Promise<ValidationSetListItem[]>;
-
-  /** Fetch one set with its full test_cases array. */
-  getValidationSet(runId: string, validationSetId: string): Promise<ValidationSet>;
+   * Upload a CSV per document. Replaces the prior set + the prior
+   * execution snapshot. Required CSV column: ``question``. Optional
+   * columns: ``expected_answer``, ``expected_sources``, ``test_type``,
+   * ``notes``.
+   */
+  importTestCases(
+    documentId: string,
+    file: File,
+  ): Promise<ImportedTestCaseSet>;
 
   /**
- * POST to execute a validation set against this run. Synchronous
- * in v1. Returns the terminal snapshot — `executionStatus`
- * (`completed`/`failed`) and `validationStatus` (the answer
- * outcome) are independent fields.
- */
-  runValidation(
-    runId: string,
-    request: StartValidationRunRequest,
-  ): Promise<ValidationRun>;
-
-  /** List validation runs for this run (lightweight projections). */
-  listValidationRuns(runId: string): Promise<ValidationRunListItem[]>;
-
-  /** Fetch one validation run with its full per-case results array. */
-  getValidationRun(
-    runId: string,
-    validationRunId: string,
-  ): Promise<ValidationRun>;
-
-  // ---- tester verdict + report --------------------------
+   * Get the current imported set for a document, or null when none
+   * has been imported.
+   */
+  getImportedTestCases(
+    documentId: string,
+  ): Promise<ImportedTestCaseSet | null>;
 
   /**
- * Record a human override on a single validation result. The
- * automated `status` is unchanged — verdict is a separate
- * signal recorded on the result. Returns the full updated
- * validation run snapshot so the caller can refresh local
- * state without an extra GET.
- */
-  recordTesterVerdict(
-    runId: string,
-    validationRunId: string,
-    resultId: string,
-    body: { verdict: "pass" | "warning" | "fail"; notes?: string | null },
-  ): Promise<ValidationRun>;
+   * Remove the imported set + its execution snapshot. Idempotent.
+   */
+  deleteImportedTestCases(documentId: string): Promise<void>;
 
   /**
- * Download a validation run report. Returns the raw text body
- * (Markdown or JSON depending on `format`) plus the suggested
- * filename from the backend's Content-Disposition header. The
- * caller decides whether to render inline or trigger a download.
- */
-  downloadValidationReport(
-    runId: string,
-    validationRunId: string,
-    format?: "markdown" | "json",
-  ): Promise<{ content: string; mediaType: string; filename: string }>;
+   * Run every imported question against the document's latest
+   * succeeded run. Returns the execution snapshot (summary cards +
+   * per-question status).
+   */
+  executeImportedTestCases(
+    documentId: string,
+  ): Promise<ImportedTestCaseExecution>;
+
+  /**
+   * Get the latest imported-test-case execution snapshot, or null
+   * when no execution has been run yet.
+   */
+  getImportedTestCaseExecution(
+    documentId: string,
+  ): Promise<ImportedTestCaseExecution | null>;
 
   /**
  * GET cached LLM connectivity status from the API. Drives the

@@ -514,269 +514,118 @@ describe("ApiClient.runQueryTrace", () => {
 });
 
 
-describe("ApiClient validation set methods ", () => {
+describe("ApiClient imported test cases ", () => {
   const _SET_PAYLOAD = {
     data: {
-      validationSetId: "vs-1",
-      runId: "run-1",
-      documentIds: ["doc-1"],
-      source: "generated",
-      status: "draft",
-      createdAt: "2026-05-07T10:00:00Z",
-      createdBy: null,
-      generatorVersion: "v1",
-      artifactsContentHash: "sha256:abcd",
-      testCases: [],
-      metadata: {},
+      documentId: "doc-1",
+      importedAt: "2026-05-14T10:00:00Z",
+      sourceFilename: "tests.csv",
+      cases: [
+        {
+          testCaseId: "itc-1",
+          question: "What is X?",
+          expectedAnswer: null,
+          expectedSources: [],
+          testType: null,
+          notes: null,
+        },
+      ],
     },
   };
 
-  const _RUN_PAYLOAD = {
+  const _EXECUTION_PAYLOAD = {
     data: {
-      validationRunId: "vrun-1",
-      validationSetId: "vs-1",
+      documentId: "doc-1",
+      executedAt: "2026-05-14T10:05:00Z",
       runId: "run-1",
-      executionStatus: "completed",
-      validationStatus: "passed",
-      startedAt: "2026-05-07T10:00:00Z",
-      completedAt: "2026-05-07T10:00:05Z",
-      actor: "tester",
       summary: {
-        total: 0, passed: 0, warning: 0, failed: 0, skipped: 0,
-        coverage: { byType: {}, byPriority: {}, bySection: {} },
-        mainIssues: [],
-        recommendedAction: "ready",
-      },
-      results: [],
-      failureMessage: null,
-      metadata: {},
-    },
-  };
-
-  it("POSTs generate to the run-scoped path with auth headers", async () => {
-    const { calls } = withFetch(() => jsonResponse(_SET_PAYLOAD, 201));
-    await makeClient().generateValidationSet("run-1", { force: true });
-
-    expect(calls[0]!.url).toBe(
-      "https://api.test.j1.local/ingestion-runs/run-1/validation-sets/generate",
-    );
-    expect(calls[0]!.init.method).toBe("POST");
-    const headers = calls[0]!.init.headers as Record<string, string>;
-    expect(headers["X-Tenant-Id"]).toBe("acme");
-    expect(headers["X-Project-Id"]).toBe("alpha");
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.force).toBe(true);
-  });
-
-  it("listValidationSets unwraps the items array", async () => {
-    withFetch(() =>
-      jsonResponse({
-        data: {
-          items: [
-            {
-              validationSetId: "vs-1",
-              runId: "run-1",
-              source: "generated",
-              status: "draft",
-              createdAt: "2026-05-07T10:00:00Z",
-              createdBy: null,
-              caseCount: 3,
-            },
-          ],
-        },
-      }),
-    );
-    const items = await makeClient().listValidationSets("run-1");
-    expect(items).toHaveLength(1);
-    expect(items[0]!.validationSetId).toBe("vs-1");
-    expect(items[0]!.caseCount).toBe(3);
-  });
-
-  it("getValidationSet returns the full set", async () => {
-    withFetch(() => jsonResponse(_SET_PAYLOAD));
-    const out = await makeClient().getValidationSet("run-1", "vs-1");
-    expect(out.validationSetId).toBe("vs-1");
-    expect(out.source).toBe("generated");
-  });
-
-  it("runValidation POSTs the validationSetId in the body", async () => {
-    const { calls } = withFetch(() => jsonResponse(_RUN_PAYLOAD, 201));
-    await makeClient().runValidation("run-1", { validationSetId: "vs-1" });
-    expect(calls[0]!.init.method).toBe("POST");
-    expect(calls[0]!.url).toBe(
-      "https://api.test.j1.local/ingestion-runs/run-1/validation-runs",
-    );
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.validationSetId).toBe("vs-1");
-  });
-
-  it("runValidation returns the terminal snapshot with split status", async () => {
-    withFetch(() =>
-      jsonResponse({
-        data: {
-          ..._RUN_PAYLOAD.data,
-          executionStatus: "completed",
-          validationStatus: "failed",
-        },
-      }, 201),
-    );
-    const out = await makeClient().runValidation("run-1", {
-      validationSetId: "vs-1",
-    });
-    // Critical: split status must round-trip end-to-end so the FE
-    // can render `validationStatus=failed` even when HTTP=201.
-    expect(out.executionStatus).toBe("completed");
-    expect(out.validationStatus).toBe("failed");
-  });
-
-  it("listValidationRuns unwraps items + getValidationRun returns full payload", async () => {
-    withFetch(() =>
-      jsonResponse({
-        data: {
-          items: [
-            {
-              validationRunId: "vrun-1",
-              validationSetId: "vs-1",
-              runId: "run-1",
-              executionStatus: "completed",
-              validationStatus: "passed",
-              startedAt: "2026-05-07T10:00:00Z",
-              completedAt: "2026-05-07T10:00:05Z",
-              summary: {
-                total: 0, passed: 0, warning: 0, failed: 0, skipped: 0,
-                coverage: { byType: {}, byPriority: {}, bySection: {} },
-                mainIssues: [], recommendedAction: "ready",
-              },
-            },
-          ],
-        },
-      }),
-    );
-    const items = await makeClient().listValidationRuns("run-1");
-    expect(items).toHaveLength(1);
-    expect(items[0]!.validationRunId).toBe("vrun-1");
-  });
-
-  it("404 envelopes from validation endpoints surface as ApiError", async () => {
-    withFetch(() =>
-      jsonResponse({ error: { code: "REVIEW_NOT_FOUND", message: "missing" } }, 404),
-    );
-    await expect(
-      makeClient().getValidationSet("run-1", "vs-ghost"),
-    ).rejects.toBeInstanceOf(ApiError);
-  });
-});
-
-describe("ApiClient tester verdict + report ", () => {
-  const _RUN_PAYLOAD = {
-    data: {
-      validationRunId: "vrun-1",
-      validationSetId: "vs-1",
-      runId: "run-1",
-      executionStatus: "completed",
-      validationStatus: "failed",
-      startedAt: "2026-05-07T10:00:00Z",
-      completedAt: "2026-05-07T10:00:05Z",
-      actor: "tester",
-      summary: {
-        total: 1, passed: 0, warning: 0, failed: 1, skipped: 0,
-        coverage: { byType: {}, byPriority: {}, bySection: {} },
-        mainIssues: [], recommendedAction: "block release until resolved",
+        total: 1, answered: 1, withSources: 1, scopeIssues: 0,
+        errors: 0, overall: "good",
       },
       results: [
         {
-          resultId: "vr-1",
-          testCaseId: "tc-1",
-          status: "failed",
-          question: "?",
-          answer: "",
-          retrievedChunks: [],
-          citations: [],
-          checks: [],
-          testerVerdict: "pass",
-          testerNotes: "ok",
+          testCaseId: "itc-1",
+          question: "What is X?",
+          status: "answered",
+          hasSources: true,
+          scopeOk: true,
+          error: null,
+          runId: "run-1",
         },
       ],
-      failureMessage: null,
-      metadata: {},
     },
   };
 
-  it("recordTesterVerdict POSTs to the verdict path with JSON body", async () => {
-    const { calls } = withFetch(() => jsonResponse(_RUN_PAYLOAD));
-    await makeClient().recordTesterVerdict(
-      "run-1", "vrun-1", "vr-1",
-      { verdict: "pass", notes: "ok" },
-    );
+  it("importTestCases POSTs multipart to the document-scoped path", async () => {
+    const { calls } = withFetch(() => jsonResponse(_SET_PAYLOAD, 201));
+    const file = new File(["question\nWhat?\n"], "tests.csv", {
+      type: "text/csv",
+    });
+    const set = await makeClient().importTestCases("doc-1", file);
     expect(calls[0]!.url).toBe(
-      "https://api.test.j1.local/ingestion-runs/run-1/validation-runs/vrun-1/results/vr-1/verdict",
+      "https://api.test.j1.local/documents/doc-1/imported-test-cases/import",
     );
     expect(calls[0]!.init.method).toBe("POST");
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body).toEqual({ verdict: "pass", notes: "ok" });
+    // No Content-Type header — fetch + FormData set the boundary.
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Tenant-Id"]).toBe("acme");
+    expect(headers["Content-Type"]).toBeUndefined();
+    expect(set.documentId).toBe("doc-1");
+    expect(set.cases).toHaveLength(1);
   });
 
-  it("recordTesterVerdict returns the updated run with verdict surfaced", async () => {
-    withFetch(() => jsonResponse(_RUN_PAYLOAD));
-    const out = await makeClient().recordTesterVerdict(
-      "run-1", "vrun-1", "vr-1",
-      { verdict: "pass" },
-    );
-    // Critical wire-shape regression — the FE relies on the
-    // response containing the updated verdict so it can
-    // re-render without an extra GET.
-    expect(out.results[0]!.testerVerdict).toBe("pass");
-    // Auto status must NOT change on a verdict POST.
-    expect(out.results[0]!.status).toBe("failed");
-  });
-
-  it("downloadValidationReport returns text body + filename + mediaType", async () => {
-    const markdownBody = "# Validation Report\n";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(markdownBody, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/markdown",
-            "Content-Disposition": 'attachment; filename="validation-vrun-1.md"',
-          },
-        }),
-      ),
-    );
-    const out = await makeClient().downloadValidationReport(
-      "run-1", "vrun-1", "markdown",
-    );
-    expect(out.content).toBe(markdownBody);
-    expect(out.mediaType).toBe("text/markdown");
-    expect(out.filename).toBe("validation-vrun-1.md");
-  });
-
-  it("downloadValidationReport surfaces 4xx envelopes as ApiError", async () => {
+  it("getImportedTestCases returns null on 404", async () => {
     withFetch(() =>
-      jsonResponse({ error: { code: "REVIEW_NOT_FOUND", message: "missing" } }, 404),
-    );
-    await expect(
-      makeClient().downloadValidationReport("run-1", "vrun-ghost"),
-    ).rejects.toBeInstanceOf(ApiError);
-  });
-
-  it("downloadValidationReport falls back to a sensible filename if the header is absent", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response("# x", {
-          status: 200,
-          headers: { "Content-Type": "text/markdown" },
-        }),
+      jsonResponse(
+        { error: { code: "HTTP_404", message: "missing" } }, 404,
       ),
     );
-    const out = await makeClient().downloadValidationReport(
-      "run-1", "vrun-1",
+    const out = await makeClient().getImportedTestCases("doc-1");
+    expect(out).toBeNull();
+  });
+
+  it("getImportedTestCases returns the set on 200", async () => {
+    withFetch(() => jsonResponse(_SET_PAYLOAD));
+    const out = await makeClient().getImportedTestCases("doc-1");
+    expect(out?.cases[0]!.testCaseId).toBe("itc-1");
+  });
+
+  it("deleteImportedTestCases issues DELETE and tolerates 204", async () => {
+    const { calls } = withFetch(() =>
+      new Response(null, { status: 204 }),
     );
-    // Defensive default: the FE should never render an empty
-    // download filename. Locked here so a producer that drops the
-    // header doesn't silently break the download UX.
-    expect(out.filename).toBe("validation-vrun-1.md");
+    await makeClient().deleteImportedTestCases("doc-1");
+    expect(calls[0]!.init.method).toBe("DELETE");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc-1/imported-test-cases",
+    );
+  });
+
+  it("executeImportedTestCases POSTs to the execute path", async () => {
+    const { calls } = withFetch(() => jsonResponse(_EXECUTION_PAYLOAD, 201));
+    const execution = await makeClient().executeImportedTestCases("doc-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc-1/imported-test-cases/execute",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(execution.summary.overall).toBe("good");
+    expect(execution.results[0]!.status).toBe("answered");
+  });
+
+  it("getImportedTestCaseExecution returns null on 404", async () => {
+    withFetch(() =>
+      jsonResponse(
+        { error: { code: "HTTP_404", message: "missing" } }, 404,
+      ),
+    );
+    const out = await makeClient().getImportedTestCaseExecution("doc-1");
+    expect(out).toBeNull();
+  });
+
+  it("getImportedTestCaseExecution returns the snapshot on 200", async () => {
+    withFetch(() => jsonResponse(_EXECUTION_PAYLOAD));
+    const out = await makeClient().getImportedTestCaseExecution("doc-1");
+    expect(out?.summary.total).toBe(1);
+    expect(out?.runId).toBe("run-1");
   });
 });

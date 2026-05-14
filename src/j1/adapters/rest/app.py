@@ -68,14 +68,16 @@ from j1.adapters.rest.schemas import (
     JobStartRecord,
     JobStatusRecord,
     EvidenceBlockRecord,
-    GenerateValidationSetRequestRecord,
+    ImportedTestCaseExecutionRecord,
+    ImportedTestCaseRecord,
+    ImportedTestCaseResultRecord,
+    ImportedTestCaseSetRecord,
+    ImportedTestCaseSummaryRecord,
     LLMTraceRecord,
     ManualTestQueryRequestRecord,
     ManualTestQueryResponseRecord,
     NativeDebugQueryRequestRecord,
     NativeDebugQueryResponseRecord,
-    StartValidationRunRequestRecord,
-    TesterVerdictRequestRecord,
     ProgressEventRecord,
     ProgressEventsRecord,
     ProjectCreateRequest,
@@ -93,17 +95,6 @@ from j1.adapters.rest.schemas import (
     SearchResultRecord,
     SourceDetailRecord,
     ValidationCheckRecord,
-    ValidationCitationRecord,
-    ValidationCoverageRecord,
-    ValidationResultRecord,
-    ValidationRunListItem,
-    ValidationRunListRecord,
-    ValidationRunRecord,
-    ValidationSetListItem,
-    ValidationSetListRecord,
-    ValidationSetRecord,
-    ValidationSummaryRecord,
-    ValidationTestCaseRecord,
     VersionRecord,
 )
 from j1.artifacts.registry import ArtifactNotFoundError
@@ -3627,260 +3618,176 @@ def create_rest_api(
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
-    # ---- Validation: generated sets + runs ----------------
+    # ---- Validation: imported test cases (auxiliary helper) ----
+    #
+    # Per the 2026-05-14 product decision, generated test cases were
+    # deleted entirely. The Validation Tab now hosts a small
+    # "Imported Test Cases" section: upload a CSV per document,
+    # execute against the document's latest succeeded run, render
+    # only summary cards + compact statuses. Per-question detail is
+    # the existing Manual Test Query surface.
 
     @app.post(
-        "/ingestion-runs/{run_id}/validation-sets/generate",
+        "/documents/{document_id}/imported-test-cases/import",
         status_code=201,
-        tags=["ingestion-runs"],
-        summary="Generate a validation set from this run's chunks",
+        tags=["documents"],
+        summary="Import test cases from a CSV (replaces prior set)",
         description=(
-            "Generates a draft validation set: smoke + retrieval / "
-            "answer cases authored from sampled chunks. Idempotent "
-            "on `(runId, generatorVersion, artifactsContentHash)` — "
-            "re-calling with the same chunks returns the existing "
-            "set unless `force=true`. Generation is synchronous "
-            "(small case counts, ≤50). Returns 404 if the run "
-            "does not exist in the caller's tenant/project, or "
-            "503 if the validation service isn't configured."
+            "Replaces the document's current imported test case set "
+            "with rows parsed from the uploaded CSV. Every import "
+            "wipes the previous set AND the previous execution "
+            "snapshot — imported cases never accumulate.\n\n"
+            "Required CSV column: `question`. Optional columns: "
+            "`expected_answer`, `expected_sources`, `test_type`, "
+            "`notes`. UTF-8 BOMs are tolerated.\n\n"
+            "Returns 400 on malformed CSV; 503 when the validation "
+            "service isn't wired."
         ),
         dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
     )
-    def post_validation_set_generate(
+    async def post_imported_test_cases_import(
         request: Request,
-        run_id: str,
-        body: GenerateValidationSetRequestRecord,
+        document_id: str,
+        file: UploadFile = File(...),
         ctx: ProjectContext = Depends(get_ctx),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        from j1.validation.imported_test_cases import CSVImportError
         service = _require_validation_service()
+        raw = await file.read()
         try:
-            vset = service.generate_validation_set(
-                ctx, run_id,
-                max_cases=body.max_cases,
-                citation_required=body.citation_required,
-                force=body.force,
+            imported_set = service.import_test_cases(
+                ctx, document_id, raw,
+                source_filename=file.filename,
                 actor=security.subject,
             )
-        except RuntimeError as exc:
-            #  dependencies not wired (set store / generator
-            # missing). Surfaces as 503 — uniform with the rest of
-            # the optional-service degradation pattern.
-            raise HTTPException(503, str(exc)) from exc
-        return envelope(_set_to_record(vset).model_dump(by_alias=True), _req_id(request))
-
-    @app.get(
-        "/ingestion-runs/{run_id}/validation-sets",
-        tags=["ingestion-runs"],
-        summary="List validation sets for this run",
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
-    )
-    def get_validation_sets(
-        request: Request,
-        run_id: str,
-        ctx: ProjectContext = Depends(get_ctx),
-    ) -> dict[str, Any]:
-        service = _require_validation_service()
-        sets = service.list_validation_sets(ctx, run_id)
-        items = [
-            ValidationSetListItem(
-                validation_set_id=v.validation_set_id,
-                run_id=v.run_id,
-                source=v.source,
-                status=v.status,
-                created_at=v.created_at,
-                created_by=v.created_by,
-                case_count=len(v.test_cases),
-            )
-            for v in sets
-        ]
-        record = ValidationSetListRecord(items=items)
-        return envelope(record.model_dump(by_alias=True), _req_id(request))
-
-    @app.get(
-        "/ingestion-runs/{run_id}/validation-sets/{validation_set_id}",
-        tags=["ingestion-runs"],
-        summary="Get a validation set with its test cases",
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
-    )
-    def get_validation_set(
-        request: Request,
-        run_id: str,
-        validation_set_id: str,
-        ctx: ProjectContext = Depends(get_ctx),
-    ) -> dict[str, Any]:
-        service = _require_validation_service()
-        vset = service.get_validation_set(ctx, run_id, validation_set_id)
-        return envelope(_set_to_record(vset).model_dump(by_alias=True), _req_id(request))
-
-    @app.post(
-        "/ingestion-runs/{run_id}/validation-runs",
-        status_code=201,
-        tags=["ingestion-runs"],
-        summary="Execute a validation set against this run",
-        description=(
-            "Runs every test case in the named set against the run "
-            "under test. Synchronous in v1 — blocks until every "
-            "case has executed. Persists three lifecycle snapshots "
-            "(pending → running → terminal) so a polling client "
-            "sees progressive state.\n\n"
-            "HTTP 201 means the runner job FINISHED (it always "
-            "does in v1 — caps + synchronous). The body's "
-            "`validationStatus` reports whether the document "
-            "PASSED. The two are independent — a 201 with "
-            "`validationStatus=\"failed\"` is the canonical "
-            "'job ran but the document didn't pass' case."
-        ),
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
-    )
-    def post_validation_run(
-        request: Request,
-        run_id: str,
-        body: StartValidationRunRequestRecord,
-        ctx: ProjectContext = Depends(get_ctx),
-        security: SecurityContext = Depends(get_security),
-    ) -> dict[str, Any]:
-        service = _require_validation_service()
-        try:
-            vrun = service.run_validation(
-                ctx, run_id, body.validation_set_id,
-                actor=security.subject,
-            )
+        except CSVImportError as exc:
+            raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(503, str(exc)) from exc
-        return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
+        return envelope(
+            _imported_set_to_record(imported_set).model_dump(by_alias=True),
+            _req_id(request),
+        )
 
     @app.get(
-        "/ingestion-runs/{run_id}/validation-runs",
-        tags=["ingestion-runs"],
-        summary="List validation runs for this ingestion run",
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
-    )
-    def get_validation_runs(
-        request: Request,
-        run_id: str,
-        ctx: ProjectContext = Depends(get_ctx),
-    ) -> dict[str, Any]:
-        service = _require_validation_service()
-        vruns = service.list_validation_runs(ctx, run_id)
-        items = [
-            ValidationRunListItem(
-                validation_run_id=v.validation_run_id,
-                validation_set_id=v.validation_set_id,
-                run_id=v.run_id,
-                execution_status=v.execution_status,
-                validation_status=v.validation_status,
-                started_at=v.started_at,
-                completed_at=v.completed_at,
-                summary=_summary_to_record(v.summary),
-            )
-            for v in vruns
-        ]
-        record = ValidationRunListRecord(items=items)
-        return envelope(record.model_dump(by_alias=True), _req_id(request))
-
-    @app.get(
-        "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}",
-        tags=["ingestion-runs"],
-        summary="Get a validation run with full per-case results",
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
-    )
-    def get_validation_run(
-        request: Request,
-        run_id: str,
-        validation_run_id: str,
-        ctx: ProjectContext = Depends(get_ctx),
-    ) -> dict[str, Any]:
-        service = _require_validation_service()
-        vrun = service.get_validation_run(ctx, run_id, validation_run_id)
-        return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
-
-    # ---- Tester verdict -----------------------------------
-
-    @app.post(
-        "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}/results/{result_id}/verdict",
-        tags=["ingestion-runs"],
-        summary="Record a tester verdict on a validation result",
+        "/documents/{document_id}/imported-test-cases",
+        tags=["documents"],
+        summary="Get the imported test case set for this document",
         description=(
-            "Layered human override on top of the deterministic "
-            "`status`. The auto status NEVER changes — the verdict "
-            "is a separate signal recorded on the result. Operators "
-            "see both side-by-side; downstream tooling picks the "
-            "axis it prefers.\n\n"
-            "Valid `verdict` values: `pass` / `warning` / `fail`. "
-            "Returns the full updated validation run snapshot."
+            "Returns the current imported set (cases plus import "
+            "metadata) for the document, or 404 when no set has "
+            "been imported."
         ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_imported_test_cases(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        imported_set = service.get_imported_test_cases(ctx, document_id)
+        if imported_set is None:
+            raise HTTPException(
+                404,
+                f"document {document_id!r} has no imported test cases",
+            )
+        return envelope(
+            _imported_set_to_record(imported_set).model_dump(by_alias=True),
+            _req_id(request),
+        )
+
+    @app.delete(
+        "/documents/{document_id}/imported-test-cases",
+        tags=["documents"],
+        summary="Delete the imported test case set for this document",
+        description=(
+            "Clears the imported set (and its execution snapshot) "
+            "so the Validation Tab returns to a clean slate. "
+            "Idempotent: a 204 is returned regardless of whether a "
+            "set existed."
+        ),
+        status_code=204,
         dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
     )
-    def post_validation_result_verdict(
+    def delete_imported_test_cases(
         request: Request,
-        run_id: str,
-        validation_run_id: str,
-        result_id: str,
-        body: TesterVerdictRequestRecord,
-        ctx: ProjectContext = Depends(get_ctx),
-        security: SecurityContext = Depends(get_security),
-    ) -> dict[str, Any]:
-        service = _require_validation_service()
-        try:
-            vrun = service.record_tester_verdict(
-                ctx, run_id, validation_run_id, result_id,
-                verdict=body.verdict,
-                notes=body.notes,
-                actor=security.subject,
-            )
-        except ValueError as exc:
-            # Service raises ValueError on an unknown verdict
-            # string. Pydantic should already block this at the
-            # boundary, but the service guard exists for stand-
-            # alone callers; surface as 422 so the wire shape
-            # stays consistent.
-            raise HTTPException(422, str(exc)) from exc
-        return envelope(_run_to_record(vrun).model_dump(by_alias=True), _req_id(request))
-
-    # ---- Validation report export -------------------------
-
-    @app.get(
-        "/ingestion-runs/{run_id}/validation-runs/{validation_run_id}/report",
-        tags=["ingestion-runs"],
-        summary="Export a validation run report (Markdown or JSON)",
-        description=(
-            "Renders the validation run as a tester-friendly "
-            "report. Default `format=markdown` for copy-paste; "
-            "`format=json` for downstream automation. The "
-            "Markdown surface explicitly distinguishes "
-            "executionStatus from validationStatus and surfaces "
-            "tester-verdict overrides next to the auto status."
-        ),
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
-    )
-    def get_validation_run_report(
-        request: Request,
-        run_id: str,
-        validation_run_id: str,
-        format: str = Query(default="markdown", alias="format"),
+        document_id: str,
         ctx: ProjectContext = Depends(get_ctx),
     ) -> Response:
         service = _require_validation_service()
+        service.delete_imported_test_cases(ctx, document_id)
+        return Response(status_code=204)
+
+    @app.post(
+        "/documents/{document_id}/imported-test-cases/execute",
+        status_code=201,
+        tags=["documents"],
+        summary="Run the imported test cases against the active run",
+        description=(
+            "Runs every imported question through the normal J1 "
+            "query path against the document's latest succeeded "
+            "run. Returns a compact summary + per-question status "
+            "the Validation Tab renders directly.\n\n"
+            "Does NOT affect ingestion / compile / enrichment / "
+            "document active status — results are observational "
+            "only.\n\n"
+            "Returns 404 when no imported set exists or no "
+            "succeeded run is available; 503 when the validation "
+            "service isn't wired."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_imported_test_cases_execute(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
         try:
-            content, media = service.export_validation_run_report(
-                ctx, run_id, validation_run_id, format=format,
+            execution = service.execute_imported_test_cases(
+                ctx, document_id, actor=security.subject,
             )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        # Plain Response (not envelope-wrapped) so the body stays
-        # downloadable as `report.md` / `report.json` directly.
-        # The Content-Disposition header gives the FE a sensible
-        # default filename when the user clicks "Download report."
-        ext = "md" if media.startswith("text/markdown") else "json"
-        return Response(
-            content=content,
-            media_type=media,
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="validation-{validation_run_id}.{ext}"'
-                ),
-            },
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return envelope(
+            _imported_execution_to_record(execution).model_dump(
+                by_alias=True,
+            ),
+            _req_id(request),
+        )
+
+    @app.get(
+        "/documents/{document_id}/imported-test-cases/execution",
+        tags=["documents"],
+        summary="Get the latest imported-test-case execution snapshot",
+        description=(
+            "Returns the most recent execution snapshot for this "
+            "document's imported set, or 404 when no execution has "
+            "happened yet. The Validation Tab calls this on load to "
+            "render summary cards without re-running."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_READ))],
+    )
+    def get_imported_test_cases_execution(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        service = _require_validation_service()
+        execution = service.get_latest_imported_execution(ctx, document_id)
+        if execution is None:
+            raise HTTPException(
+                404,
+                f"document {document_id!r} has no execution snapshot",
+            )
+        return envelope(
+            _imported_execution_to_record(execution).model_dump(
+                by_alias=True,
+            ),
+            _req_id(request),
         )
 
     @app.post(
@@ -6008,148 +5915,56 @@ def _format_progress_sse(event: ProgressEventRecord) -> bytes:
     ).encode("utf-8")
 
 
-# ---- Validation DTO → Pydantic record translators ---------
-# Kept at module scope so both the GET and POST handlers reuse the
-# same projection. The validation service deals in dataclasses; the
-# REST adapter's job is to translate to the wire schema.
+# ---- Imported test cases DTO → record translators ----------
+# The validation service deals in dataclasses; these helpers project
+# the imported-test-case shape into the REST wire schema.
 
 
-def _set_to_record(vset) -> ValidationSetRecord:
-    return ValidationSetRecord(
-        validation_set_id=vset.validation_set_id,
-        run_id=vset.run_id,
-        document_ids=list(vset.document_ids),
-        source=vset.source,
-        status=vset.status,
-        created_at=vset.created_at,
-        created_by=vset.created_by,
-        generator_version=vset.generator_version,
-        artifacts_content_hash=vset.artifacts_content_hash,
-        test_cases=[
-            ValidationTestCaseRecord(
-                test_case_id=tc.test_case_id,
-                question=tc.question,
-                type=tc.type,
-                priority=tc.priority,
-                expected_behavior=tc.expected_behavior,
-                expected_answer_points=list(tc.expected_answer_points),
-                expected_chunks=list(tc.expected_chunks),
-                expected_pages=list(tc.expected_pages),
-                expected_artifacts=list(tc.expected_artifacts),
-                expected_graph_nodes=list(tc.expected_graph_nodes),
-                expected_graph_edges=list(tc.expected_graph_edges),
-                citation_required=tc.citation_required,
-                source_traceability=list(tc.source_traceability),
-                metadata=dict(tc.metadata),
-                expected_answer=tc.expected_answer,
-                evidence_quote=tc.evidence_quote,
-                source_artifact_id=tc.source_artifact_id,
-                source_artifact_type=tc.source_artifact_type,
-                question_type=tc.question_type,
-                validation_scope=tc.validation_scope,
-                difficulty=tc.difficulty,
-                domain_id=tc.domain_id,
-                generated_from=tc.generated_from,
-                confidence=tc.confidence,
-                reason=tc.reason,
-                expected_evidence=tc.expected_evidence,
+def _imported_set_to_record(imported_set) -> ImportedTestCaseSetRecord:
+    return ImportedTestCaseSetRecord(
+        document_id=imported_set.document_id,
+        imported_at=imported_set.imported_at.isoformat(),
+        source_filename=imported_set.source_filename,
+        cases=[
+            ImportedTestCaseRecord(
+                test_case_id=c.test_case_id,
+                question=c.question,
+                expected_answer=c.expected_answer,
+                expected_sources=list(c.expected_sources),
+                test_type=c.test_type,
+                notes=c.notes,
             )
-            for tc in vset.test_cases
+            for c in imported_set.cases
         ],
-        metadata=dict(vset.metadata),
-        domain_id=vset.domain_id,
-        llm=LLMTraceRecord(
-            called=vset.llm.called,
-            provider=vset.llm.provider,
-            model=vset.llm.model,
-            latency_ms=vset.llm.latency_ms,
-            prompt_tokens=vset.llm.prompt_tokens,
-            completion_tokens=vset.llm.completion_tokens,
-            error=vset.llm.error,
-        ) if vset.llm is not None else None,
-        context_summary=dict(vset.context_summary or {}),
     )
 
 
-def _summary_to_record(summary) -> ValidationSummaryRecord:
-    return ValidationSummaryRecord(
-        total=summary.total,
-        passed=summary.passed,
-        warning=summary.warning,
-        failed=summary.failed,
-        skipped=summary.skipped,
-        coverage=ValidationCoverageRecord(
-            by_type=dict(summary.coverage.by_type),
-            by_priority=dict(summary.coverage.by_priority),
-            by_section=dict(summary.coverage.by_section),
+def _imported_execution_to_record(
+    execution,
+) -> ImportedTestCaseExecutionRecord:
+    summary = execution.summary
+    return ImportedTestCaseExecutionRecord(
+        document_id=execution.document_id,
+        executed_at=execution.executed_at.isoformat(),
+        run_id=execution.run_id,
+        summary=ImportedTestCaseSummaryRecord(
+            total=summary.total,
+            answered=summary.answered,
+            with_sources=summary.with_sources,
+            scope_issues=summary.scope_issues,
+            errors=summary.errors,
+            overall=summary.overall,
         ),
-        main_issues=list(summary.main_issues),
-        recommended_action=summary.recommended_action,
-    )
-
-
-def _run_to_record(vrun) -> ValidationRunRecord:
-    return ValidationRunRecord(
-        validation_run_id=vrun.validation_run_id,
-        validation_set_id=vrun.validation_set_id,
-        run_id=vrun.run_id,
-        execution_status=vrun.execution_status,
-        validation_status=vrun.validation_status,
-        started_at=vrun.started_at,
-        completed_at=vrun.completed_at,
-        actor=vrun.actor,
-        summary=_summary_to_record(vrun.summary),
         results=[
-            ValidationResultRecord(
-                result_id=r.result_id,
+            ImportedTestCaseResultRecord(
                 test_case_id=r.test_case_id,
-                status=r.status,
                 question=r.question,
-                answer=r.answer,
-                retrieved_chunks=[
-                    RetrievedChunkRefRecord(
-                        artifact_id=c.artifact_id,
-                        chunk_id=c.chunk_id,
-                        run_id=c.run_id,
-                        document_id=c.document_id,
-                        source_location=c.source_location,
-                        score=c.score,
-                        preview=c.preview,
-                        artifact_kind=c.artifact_kind,
-                    )
-                    for c in r.retrieved_chunks
-                ],
-                citations=[
-                    ValidationCitationRecord(
-                        artifact_id=c.artifact_id,
-                        artifact_type=c.artifact_type,
-                        source_document_id=c.source_document_id,
-                        source_location=c.source_location,
-                        chunk_id=c.chunk_id,
-                        run_id=c.run_id,
-                    )
-                    for c in r.citations
-                ],
-                checks=[
-                    ValidationCheckRecord(
-                        name=chk.name,
-                        severity=chk.severity,
-                        passed=chk.passed,
-                        detail=chk.detail,
-                        expected=chk.expected,
-                        actual=chk.actual,
-                        skipped=chk.skipped,
-                        skipped_reason=chk.skipped_reason,
-                    )
-                    for chk in r.checks
-                ],
-                judge_notes=r.judge_notes,
-                failure_reason=r.failure_reason,
-                tester_verdict=r.tester_verdict,
-                tester_notes=r.tester_notes,
+                status=r.status,
+                has_sources=r.has_sources,
+                scope_ok=r.scope_ok,
+                error=r.error,
+                run_id=r.run_id,
             )
-            for r in vrun.results
+            for r in execution.results
         ],
-        failure_message=vrun.failure_message,
-        metadata=dict(vrun.metadata),
     )
