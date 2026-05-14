@@ -78,33 +78,29 @@ def supersede_previous_active_artifacts(
     ctx: ProjectContext,
     artifacts: ArtifactRegistry,
     document_id: str,
-    new_run_id: str,
-    previous_run_id: str | None,
+    new_snapshot_id: str,
+    previous_snapshot_id: str | None,
 ) -> int:
-    """Flip the previous active run's artifacts to ``search_state=
-    superseded`` for one document.
+    """Phase 6: flip the previous active SNAPSHOT's artifacts to
+    ``search_state=superseded`` for one document.
 
     Triggered by the post-promotion hook in
-    ``RunsActivities._maybe_promote_to_active``: when a new run
-    successfully terminates and becomes the document's active run,
-    we want retrieval / answer synthesis / validation to stop
-    surfacing the previous run's artifacts immediately. Without
-    this stamp, a follow-up retrieval call would return artifacts
-    from BOTH runs (the new active and the leftover previous one),
-    producing the "mixed-run results" failure mode the lineage
-    test reports keep flagging.
+    ``RunsActivities._maybe_promote_to_active`` AFTER the snapshot
+    service has promoted the new snapshot. Retrieval / answer
+    synthesis / validation read ``active_snapshot_id`` for
+    visibility; this helper makes sure the artifacts from the
+    previously-active snapshot also stop appearing in legacy
+    metadata-based filters.
 
     No-op when:
-      * ``previous_run_id`` is None (first run for this document —
-        nothing to supersede).
-      * ``previous_run_id == new_run_id`` (same run is being
-        re-promoted on a continue-as-new boundary).
+      * ``previous_snapshot_id`` is None (first snapshot for this
+        document — nothing to supersede).
+      * ``previous_snapshot_id == new_snapshot_id``.
 
-    Returns the number of artifacts re-stamped (useful for the
-    audit payload + tests). Artifacts already in any non-active
-    state are skipped to avoid double-stamping (idempotent).
+    Returns the number of artifacts re-stamped. Idempotent:
+    artifacts already in a non-active search state are skipped.
     """
-    if not previous_run_id or previous_run_id == new_run_id:
+    if not previous_snapshot_id or previous_snapshot_id == new_snapshot_id:
         return 0
 
     update = getattr(artifacts, "update_metadata", None)
@@ -122,17 +118,16 @@ def supersede_previous_active_artifacts(
 
     stamped = 0
     for artifact in records:
-        if not _belongs_to(artifact, document_id=document_id, run_id=previous_run_id):
+        if not _belongs_to_snapshot(
+            artifact, document_id=document_id,
+            snapshot_id=previous_snapshot_id,
+        ):
             continue
         meta = dict(getattr(artifact, "metadata", None) or {})
-        # Skip artifacts that are already non-active — keeps the
-        # operation idempotent. A previously-invalidated artifact
-        # stays invalid; a previously-superseded one doesn't
-        # re-stamp.
         if meta.get("search_state") and meta["search_state"] != SEARCH_STATE_ACTIVE:
             continue
         meta["search_state"] = SEARCH_STATE_SUPERSEDED
-        meta["superseded_by_run_id"] = new_run_id
+        meta["superseded_by_snapshot_id"] = new_snapshot_id
         try:
             update(ctx, artifact.artifact_id, meta)
             stamped += 1
@@ -270,21 +265,21 @@ def invalidate_lineage_missing_artifacts(
     return stamped
 
 
-def _belongs_to(
-    artifact: ArtifactRecord, *, document_id: str, run_id: str,
+def _belongs_to_snapshot(
+    artifact: ArtifactRecord, *, document_id: str, snapshot_id: str,
 ) -> bool:
-    """Cheap "is this artifact for the document+run pair?" check.
+    """Phase 6 lineage check: does this artifact belong to the
+    document + snapshot pair?
 
-    Matches on ``source_document_ids`` (the registry's structural
-    link) AND ``metadata.run_id`` (the lineage stamp). Both must
-    align — an artifact tagged for a different run shouldn't be
-    flipped by another run's supersede pass even if document ids
-    overlap.
+    Matches on ``source_document_ids`` (structural link) AND
+    typed ``snapshot_id`` (Phase-3 lineage stamp). An artifact
+    written before Phase 3 has no ``snapshot_id`` field and is
+    excluded — operators must reset + re-ingest after the
+    cutover.
     """
     if document_id not in (artifact.source_document_ids or []):
         return False
-    meta = artifact.metadata if isinstance(artifact.metadata, dict) else {}
-    return meta.get("run_id") == run_id
+    return getattr(artifact, "snapshot_id", None) == snapshot_id
 
 
 __all__ = [

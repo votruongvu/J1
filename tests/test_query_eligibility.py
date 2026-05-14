@@ -41,8 +41,15 @@ def _doc(
     document_id: str = "doc-1",
     state: str = "attached",
     active_run_id: str | None = "r-1",
+    active_snapshot_id: str | None = None,
     lifecycle: str | None = None,
 ) -> DocumentRecord:
+    # Phase 3 retry: ``active_snapshot_id`` is the visibility key.
+    # Test helper synthesises one from the run id when the caller
+    # doesn't supply one so existing tests written against
+    # ``active_run_id`` keep working.
+    if active_snapshot_id is None and active_run_id is not None:
+        active_snapshot_id = f"snap-from-{active_run_id}"
     doc = DocumentRecord(
         document_id=document_id,
         project=ctx,
@@ -55,6 +62,7 @@ def _doc(
         created_at=_NOW,
         knowledge_state=state,  # type: ignore[arg-type]
         active_run_id=active_run_id,
+        active_snapshot_id=active_snapshot_id,
     )
     # ``lifecycle_status`` field is being added in a subsequent
     # step of the refactor; the eligibility module reads it via

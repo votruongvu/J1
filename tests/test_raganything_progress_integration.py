@@ -124,6 +124,7 @@ def _build_request(
         text_client=_FakeText(),
         vision_client=None,
         embedding_client=_FakeEmbed(),
+        snapshot_id="snap-test",
         progress_reporter=progress_reporter,
         run_id=run_id,
     )

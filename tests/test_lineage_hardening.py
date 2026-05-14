@@ -85,6 +85,7 @@ def _artifact(
     *, ctx, artifact_id: str, kind: str = "chunk",
     metadata: dict | None = None,
     source_document_ids: list[str] | None = None,
+    snapshot_id: str | None = None,
 ) -> ArtifactRecord:
     return ArtifactRecord(
         artifact_id=artifact_id,
@@ -101,6 +102,7 @@ def _artifact(
         source_document_ids=source_document_ids or ["doc-1"],
         source_artifact_ids=[],
         metadata=metadata or {},
+        snapshot_id=snapshot_id,
     )
 
 
@@ -221,102 +223,92 @@ def test_filter_explicit_active_passes(ctx):
 # ============================================================
 
 
-def test_supersede_stamps_only_previous_run_artifacts(ctx):
-    """The hook flips search_state on the PREVIOUS active run's
- artifacts — never the new run's, never other documents'."""
+def test_supersede_stamps_only_previous_snapshot_artifacts(ctx):
+    """Phase 6: the hook flips search_state on the PREVIOUS active
+    SNAPSHOT's artifacts — never the new snapshot's, never other
+    documents'."""
     registry = _InMemoryArtifactRegistry()
-    # Previous active run: 2 artifacts on doc-1.
+    # Previous active snapshot: 2 artifacts on doc-1.
     registry.add(_artifact(
-        ctx=ctx, artifact_id="prev-1",
-        metadata={"run_id": "r-old"},
+        ctx=ctx, artifact_id="prev-1", snapshot_id="snap-old",
     ))
     registry.add(_artifact(
-        ctx=ctx, artifact_id="prev-2",
-        metadata={"run_id": "r-old"},
+        ctx=ctx, artifact_id="prev-2", snapshot_id="snap-old",
     ))
-    # New active run: 1 artifact on doc-1. Must NOT be stamped.
+    # New active snapshot: 1 artifact on doc-1. Must NOT be stamped.
     registry.add(_artifact(
-        ctx=ctx, artifact_id="new-1",
-        metadata={"run_id": "r-new"},
+        ctx=ctx, artifact_id="new-1", snapshot_id="snap-new",
     ))
     # Unrelated artifact on a different document.
     registry.add(_artifact(
-        ctx=ctx, artifact_id="other",
-        metadata={"run_id": "r-old"},
+        ctx=ctx, artifact_id="other", snapshot_id="snap-old",
         source_document_ids=["doc-other"],
     ))
 
     stamped = supersede_previous_active_artifacts(
         ctx=ctx, artifacts=registry,
         document_id="doc-1",
-        new_run_id="r-new",
-        previous_run_id="r-old",
+        new_snapshot_id="snap-new",
+        previous_snapshot_id="snap-old",
     )
 
     assert stamped == 2
     assert registry.get(ctx, "prev-1").metadata["search_state"] == SEARCH_STATE_SUPERSEDED
-    assert registry.get(ctx, "prev-1").metadata["superseded_by_run_id"] == "r-new"
+    assert registry.get(ctx, "prev-1").metadata["superseded_by_snapshot_id"] == "snap-new"
     assert registry.get(ctx, "prev-2").metadata["search_state"] == SEARCH_STATE_SUPERSEDED
-    # New run + other-document artifacts untouched.
+    # New snapshot + other-document artifacts untouched.
     assert "search_state" not in registry.get(ctx, "new-1").metadata
     assert "search_state" not in registry.get(ctx, "other").metadata
 
 
 def test_supersede_is_idempotent(ctx):
     """Re-running the supersede sweep doesn't re-stamp already-
- superseded artifacts. Important: the workflow's continue-as-new
- boundary can re-fire the promotion hook, and we don't want it
- to bump audit churn."""
+ superseded artifacts."""
     registry = _InMemoryArtifactRegistry()
     registry.add(_artifact(
-        ctx=ctx, artifact_id="prev",
+        ctx=ctx, artifact_id="prev", snapshot_id="snap-old",
         metadata={
-            "run_id": "r-old",
             "search_state": SEARCH_STATE_SUPERSEDED,
-            "superseded_by_run_id": "r-new",
+            "superseded_by_snapshot_id": "snap-new",
         },
     ))
     stamped = supersede_previous_active_artifacts(
         ctx=ctx, artifacts=registry,
         document_id="doc-1",
-        new_run_id="r-new",
-        previous_run_id="r-old",
+        new_snapshot_id="snap-new",
+        previous_snapshot_id="snap-old",
     )
     assert stamped == 0
 
 
-def test_supersede_noop_when_no_previous_active_run(ctx):
-    """First run for a document has no previous active to
- supersede. Returns 0; doesn't crash."""
+def test_supersede_noop_when_no_previous_active_snapshot(ctx):
+    """First snapshot for a document has no previous active to
+ supersede."""
     registry = _InMemoryArtifactRegistry()
     registry.add(_artifact(
-        ctx=ctx, artifact_id="only",
-        metadata={"run_id": "r-1"},
+        ctx=ctx, artifact_id="only", snapshot_id="snap-1",
     ))
     stamped = supersede_previous_active_artifacts(
         ctx=ctx, artifacts=registry,
         document_id="doc-1",
-        new_run_id="r-1",
-        previous_run_id=None,
+        new_snapshot_id="snap-1",
+        previous_snapshot_id=None,
     )
     assert stamped == 0
     assert "search_state" not in registry.get(ctx, "only").metadata
 
 
-def test_supersede_skips_when_same_run_re_promoted(ctx):
-    """Same run promoting itself (continue-as-new boundary) is
- a no-op — we'd be marking the new run's own artifacts as
- superseded, which would defeat the purpose."""
+def test_supersede_skips_when_same_snapshot_re_promoted(ctx):
+    """Same snapshot promoting itself is a no-op."""
     registry = _InMemoryArtifactRegistry()
     registry.add(_artifact(
-        ctx=ctx, artifact_id="art",
-        metadata={"run_id": "r-1"},
+        ctx=ctx, artifact_id="art", snapshot_id="snap-1",
     ))
     stamped = supersede_previous_active_artifacts(
         ctx=ctx, artifacts=registry,
         document_id="doc-1",
-        new_run_id="r-1",
-        previous_run_id="r-1",
+        new_snapshot_id="snap-1",
+        previous_snapshot_id="snap-1",
     )
     assert stamped == 0
 
@@ -412,20 +404,16 @@ def test_debug_dict_populated_in_response_envelope():
 # ============================================================
 
 
-def test_supersede_then_filter_excludes_previous_run_artifacts(ctx):
-    """End-to-end: after a successful reindex promotes a new run,
- the previous run's artifacts get stamped superseded and disappear
- from retrieval results. Locks the spec's "after reindex, normal
- retrieval should only return artifacts from the active run"
- rule."""
+def test_supersede_then_filter_excludes_previous_snapshot_artifacts(ctx):
+    """Phase 6 end-to-end: after a successful reindex promotes a
+    new snapshot, the previous snapshot's artifacts get stamped
+    superseded and disappear from retrieval results."""
     registry = _InMemoryArtifactRegistry()
     prev_artifact = _artifact(
-        ctx=ctx, artifact_id="prev",
-        metadata={"run_id": "r-old"},
+        ctx=ctx, artifact_id="prev", snapshot_id="snap-old",
     )
     new_artifact = _artifact(
-        ctx=ctx, artifact_id="new",
-        metadata={"run_id": "r-new"},
+        ctx=ctx, artifact_id="new", snapshot_id="snap-new",
     )
     registry.add(prev_artifact)
     registry.add(new_artifact)
@@ -434,14 +422,14 @@ def test_supersede_then_filter_excludes_previous_run_artifacts(ctx):
     visible_before = filter_to_attached_artifacts(registry.list_artifacts(ctx))
     assert {a.artifact_id for a in visible_before} == {"prev", "new"}
 
-    # 2. Promotion hook fires: supersede the previous active.
+    # 2. Promotion hook fires: supersede the previous active snapshot.
     supersede_previous_active_artifacts(
         ctx=ctx, artifacts=registry,
         document_id="doc-1",
-        new_run_id="r-new",
-        previous_run_id="r-old",
+        new_snapshot_id="snap-new",
+        previous_snapshot_id="snap-old",
     )
 
-    # 3. Only the new run's artifact survives the filter.
+    # 3. Only the new snapshot's artifact survives the filter.
     visible_after = filter_to_attached_artifacts(registry.list_artifacts(ctx))
     assert {a.artifact_id for a in visible_after} == {"new"}

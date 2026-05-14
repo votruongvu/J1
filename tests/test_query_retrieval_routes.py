@@ -208,103 +208,139 @@ def test_raganything_adapter_marks_empty_response_for_diagnostics(route_ctx):
     )
 
 
-# ---- BM25 adapter ------------------------------------------------
+# ---- Lexical evidence adapter (was: BM25 adapter) ----------------
 
 
 @dataclass
-class _StubSearchHit:
+class _StubEvidenceHit:
+    """Mimics ``j1.search.postgres_fts.EvidenceHit``."""
     artifact_id: str
-    artifact_type: str
-    title: str = ""
-    source_document_id: str | None = None
-    source_location: str | None = None
-    confidence: float = 1.0
-    review_status: str = "not_required"
-    checksum: str = ""
-    created_at: str = ""
-    byte_size: int = 0
-    extracted_text: str = ""
+    chunk_id: str | None
+    snapshot_id: str
+    document_id: str
+    tenant_id: str = "t"
+    project_id: str = "p"
+    content: str = ""
     score: float = 0.0
+    created_by_run_id: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
-    run_id: str | None = None
-    chunk_id: str | None = None
 
 
-class _StubIndexer:
-    def __init__(self, hits: list[_StubSearchHit]) -> None:
+class _StubEvidenceAdapter:
+    """In-memory stand-in for the canonical evidence adapter."""
+    def __init__(self, hits: list[_StubEvidenceHit]) -> None:
         self.hits = hits
         self.calls: list[dict[str, Any]] = []
 
     def search(
-        self, ctx, query, *,
-        artifact_types=None, max_results=20,
-        scope=None, eligible_run_ids=None,
+        self, ctx, *, query, allowed_snapshot_ids, max_results,
     ):
         self.calls.append({
             "query": query,
-            "artifact_types": artifact_types,
+            "allowed_snapshot_ids": list(allowed_snapshot_ids),
             "max_results": max_results,
-            "scope": scope,
-            "eligible_run_ids": eligible_run_ids,
         })
         return self.hits
 
 
-def test_bm25_adapter_surfaces_lexical_hits(route_ctx):
-    """BM25 returns one candidate per SearchHit. Route metadata is
-    BM25 so the orchestrator can mark the answer as BM25-assisted
-    if it lands in synthesis evidence."""
-    indexer = _StubIndexer([
-        _StubSearchHit(
-            artifact_id="a3", artifact_type="chunk",
-            extracted_text="60% design submittal includes geotech report.",
-            score=12.4, run_id="run-1", chunk_id="c3",
-            source_document_id="doc-1",
+@pytest.fixture
+def snapshot_route_ctx(ctx):
+    """A context with an explicit snapshot allowlist — the canonical
+    Phase-6 path."""
+    return RouteContext(
+        ctx=ctx,
+        scope=WorkspaceScope(),
+        eligible_snapshot_ids=frozenset({"snap-1"}),
+    )
+
+
+def test_lexical_adapter_surfaces_evidence_hits(snapshot_route_ctx):
+    """Phase 6: the lexical adapter returns one candidate per
+    evidence hit. Score, snapshot lineage, and content all
+    propagate to the EvidenceCandidate."""
+    from j1.query.retrieval_routes import LexicalEvidenceAdapter
+
+    backend = _StubEvidenceAdapter([
+        _StubEvidenceHit(
+            artifact_id="a3", chunk_id="c3", snapshot_id="snap-1",
+            document_id="doc-1",
+            content="60% design submittal includes geotech report.",
+            score=12.4, created_by_run_id="run-1",
         ),
     ])
-    adapter = BM25Adapter(indexer)
+    adapter = LexicalEvidenceAdapter(backend)
     job = RetrievalJob(
         route=RetrievalRouteKind.BM25,
         query="60% design",
         max_results=5,
         label="bm25_anchor:60% design",
     )
-    candidates = adapter.execute(job, route_ctx)
+    candidates = adapter.execute(job, snapshot_route_ctx)
     assert len(candidates) == 1
-    assert candidates[0].route == RetrievalRouteKind.BM25
-    assert candidates[0].score == 12.4
-    assert "60% design" in candidates[0].matched_anchors
-    # Eligibility gate threaded through.
-    assert indexer.calls[0]["eligible_run_ids"] == frozenset({"run-1"})
+    cand = candidates[0]
+    assert cand.route == RetrievalRouteKind.BM25
+    assert cand.score == 12.4
+    assert "60% design" in cand.matched_anchors
+    assert cand.extra["snapshot_id"] == "snap-1"
+    assert cand.extra["lexical_ranker"] == "ts_rank_cd"
+    # Snapshot allowlist threaded through to the backend.
+    assert backend.calls[0]["allowed_snapshot_ids"] == ["snap-1"]
 
 
-def test_bm25_adapter_passes_artifact_kind_filter(route_ctx):
-    indexer = _StubIndexer([])
-    adapter = BM25Adapter(indexer)
-    adapter.execute(
-        RetrievalJob(
-            route=RetrievalRouteKind.BM25,
-            query="req",
-            filters={"artifact_kind": "enriched.requirements"},
+def test_lexical_adapter_refuses_with_empty_snapshot_allowlist(ctx):
+    """An empty allowlist → no visible snapshots → return [] without
+    consulting the backend. The adapter never falls through to an
+    unfiltered query."""
+    from j1.query.retrieval_routes import LexicalEvidenceAdapter
+
+    backend = _StubEvidenceAdapter([
+        _StubEvidenceHit(
+            artifact_id="a1", chunk_id=None, snapshot_id="snap-1",
+            document_id="doc-1", content="anything", score=1.0,
         ),
-        route_ctx,
+    ])
+    adapter = LexicalEvidenceAdapter(backend)
+    out = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.BM25, query="q"),
+        RouteContext(
+            ctx=ctx, scope=WorkspaceScope(),
+            eligible_snapshot_ids=frozenset(),
+        ),
     )
-    assert indexer.calls[0]["artifact_types"] == [
-        "enriched.requirements",
-    ]
+    assert out == []
+    assert backend.calls == []
 
 
-def test_bm25_adapter_workspace_scope_does_not_pass_run_filter(ctx):
-    """The legacy diagnostic path uses WorkspaceScope + no eligibility
-    set — verify the adapter forwards the scope without forcing a
-    run filter."""
-    indexer = _StubIndexer([])
-    adapter = BM25Adapter(indexer)
+def test_lexical_adapter_calls_resolver_when_context_has_no_allowlist(ctx):
+    """The resolver fallback handles the validation diagnostic path
+    where the orchestrator didn't pre-compute the allowlist."""
+    from j1.query.retrieval_routes import LexicalEvidenceAdapter
+
+    backend = _StubEvidenceAdapter([])
+
+    resolved = {"n": 0}
+
+    def _resolver(_ctx, _scope):
+        resolved["n"] += 1
+        return frozenset({"snap-resolved"})
+
+    adapter = LexicalEvidenceAdapter(
+        backend, eligible_snapshot_ids_resolver=_resolver,
+    )
     adapter.execute(
         RetrievalJob(route=RetrievalRouteKind.BM25, query="q"),
         RouteContext(ctx=ctx, scope=WorkspaceScope()),
     )
-    assert indexer.calls[0]["eligible_run_ids"] is None
+    assert resolved["n"] == 1
+    assert backend.calls[0]["allowed_snapshot_ids"] == ["snap-resolved"]
+
+
+def test_bm25_adapter_alias_still_works(snapshot_route_ctx):
+    """Phase 6 compat alias: ``BM25Adapter`` is now a synonym for
+    ``LexicalEvidenceAdapter``. External callers that imported the
+    old name keep working."""
+    from j1.query.retrieval_routes import BM25Adapter, LexicalEvidenceAdapter
+    assert BM25Adapter is LexicalEvidenceAdapter
 
 
 # ---- Artifact-lookup adapter -------------------------------------
@@ -417,15 +453,20 @@ def test_runner_reports_missing_adapter(route_ctx):
     assert "no adapter registered" in records[0].error
 
 
-def test_runner_dispatches_all_jobs(route_ctx):
-    indexer = _StubIndexer([
-        _StubSearchHit(
-            artifact_id="a", artifact_type="chunk",
-            extracted_text="x", score=1.0, run_id="run-1",
+def test_runner_dispatches_all_jobs(snapshot_route_ctx):
+    """Phase 6: the runner dispatches multiple jobs through the
+    lexical evidence adapter. Each job yields one candidate."""
+    from j1.query.retrieval_routes import LexicalEvidenceAdapter
+
+    backend = _StubEvidenceAdapter([
+        _StubEvidenceHit(
+            artifact_id="a", chunk_id=None, snapshot_id="snap-1",
+            document_id="doc-1", content="x", score=1.0,
+            created_by_run_id="run-1",
         ),
     ])
     runner = RouteRunner({
-        RetrievalRouteKind.BM25: BM25Adapter(indexer),
+        RetrievalRouteKind.BM25: LexicalEvidenceAdapter(backend),
     })
     records = runner.run_all(
         (
@@ -433,7 +474,7 @@ def test_runner_dispatches_all_jobs(route_ctx):
             RetrievalJob(route=RetrievalRouteKind.BM25, query="b"),
             RetrievalJob(route=RetrievalRouteKind.BM25, query="c"),
         ),
-        route_ctx,
+        snapshot_route_ctx,
     )
     assert len(records) == 3
     assert all(r.error is None for r in records)

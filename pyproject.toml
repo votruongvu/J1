@@ -79,6 +79,13 @@ langchain-openai = ["langchain-core>=0.2", "langchain-openai>=0.1"]
 langchain-anthropic = ["langchain-core>=0.2", "langchain-anthropic>=0.1"]
 langchain-google = ["langchain-core>=0.2", "langchain-google-genai>=1.0"]
 langchain-ollama = ["langchain-core>=0.2", "langchain-ollama>=0.1"]
+
+# Postgres FTS evidence index — Phase 3 strategic default. psycopg
+# (v3) provides sync + async drivers; the adapter uses the sync API
+# from worker activities. The ``[binary]`` extra ships precompiled
+# libpq wheels so the worker image doesn't need libpq-dev system
+# packages.
+postgres = ["psycopg[binary]>=3.1"]
 # Pulls every vendor adapter the framework supports out of the box.
 # Use this when you want a single image / venv that can switch
 # between providers via env config (`J1_DEFAULT_COMPILER`,
@@ -98,6 +105,7 @@ all-providers = [
     "langchain-anthropic>=0.1",
     "langchain-google-genai>=1.0",
     "langchain-ollama>=0.1",
+    "psycopg[binary]>=3.1", # Phase 3 Postgres FTS evidence
 ]
 
 [tool.hatch.build.targets.wheel]

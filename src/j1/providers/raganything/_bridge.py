@@ -439,17 +439,14 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # so the draft collectors (`_graph_drafts_from_storage`,
     # `_chunk_drafts_from_storage`) read from the right tree.
     #
-    # When no run_id is present (legacy / test callers), fall back
-    # to the historical default: `settings.storage_dir or
-    # settings.workdir` walked with rglob.
-    scoped = workspace_path_for_run(
-        request.settings, request.ctx, request.document_id, request.run_id,
-    )
-    storage_dir = (
-        scoped if scoped is not None
-        else Path(
-            request.settings.storage_dir or request.settings.workdir
-        ).expanduser()
+    # Phase 6: snapshot-scoped storage dir for draft collection.
+    # ``fallback_to_global=True`` lets the read-side path tolerate
+    # legacy / test callers that didn't supply a snapshot; the
+    # write-side path (LightRAG ``working_dir``) is set in
+    # ``_prepare_compile`` and DOES require a snapshot or
+    # ``working_dir_override``.
+    storage_dir = _resolve_bridge_workspace(
+        request, fallback_to_global=True,
     )
 
     # Detect LightRAG silent failures BEFORE we collect drafts. RAGAnything
@@ -717,11 +714,14 @@ def default_build_graph(request: "RAGAnythingGraphRequest") -> ArtifactProcessin
     # `process_document_complete` which can re-invoke the VLM
     # backend when the storage dir is regenerated.
     _apply_vlm_http_client_env(request.settings)
-    scoped = workspace_path_for_run(
-        request.settings, request.ctx, request.document_id, request.run_id,
-    )
-    # Graph path: no AssessmentPlan today (graph plans are stage-
-    # gating not compile-config); drop the dropped-overrides slot.
+    # Probe import first so a missing raganything package raises
+    # ProviderUnavailable before the workspace resolver runs.
+    _import_raganything()
+    # Phase 6: snapshot-scoped working dir for the graph stage.
+    # The write must land in the snapshot path so a re-index doesn't
+    # overwrite the previous active snapshot's graphml — raises
+    # when neither working_dir_override nor snapshot_id is supplied.
+    scoped = _resolve_bridge_workspace(request, fallback_to_global=False)
     rag, _ = _build_rag_instance(
         text_client=request.text_client,
         vision_client=None,
@@ -790,8 +790,13 @@ def default_query(request: "RAGAnythingQueryRequest") -> QueryResult:
     LightRAG instance." regardless of what's on disk.
     """
     # Query path: no AssessmentPlan-driven config_overrides.
-    working_dir_override = workspace_path_for_run(
-        request.settings, request.ctx, request.document_id, request.run_id,
+    # Probe import first so missing raganything raises
+    # ProviderUnavailable before the workspace resolver runs.
+    _import_raganything()
+    # Phase 6: snapshot-scoped working dir; raises when the request
+    # supplied neither working_dir_override nor snapshot_id.
+    working_dir_override = _resolve_bridge_workspace(
+        request, fallback_to_global=False,
     )
 
     # Pre-flight workspace check. LightRAG's ``aquery`` is happy to
@@ -1064,15 +1069,17 @@ def _prepare_compile(
  vendor version doesn't expose. None / empty when no overrides
  were supplied.
  """
-    # Per-run LightRAG workspace isolation. The compile request
-    # already carries `run_id`; together with the project context
-    # and document id we have everything needed to namespace the
-    # graph storage so two reindex runs for the same document do
-    # NOT overwrite each other's graphml. Returns None (and we fall
-    # back to the legacy unscoped workdir) only when run_id is
-    # missing — preserved for non-run callers / tests.
-    working_dir_override = workspace_path_for_run(
-        request.settings, request.ctx, request.document_id, request.run_id,
+    # Probe the vendor import FIRST so a missing ``raganything``
+    # package raises ``ProviderUnavailable`` with the actionable
+    # pip-install hint before the Phase-6 workspace resolver runs.
+    _import_raganything()
+    # Phase 6: snapshot-scoped LightRAG working dir. Two re-indexes
+    # of the same document write into DIFFERENT snapshot dirs so
+    # neither overwrites the other's graphml. Raises when the
+    # request supplied neither working_dir_override nor snapshot_id
+    # — the active path always supplies one of those.
+    working_dir_override = _resolve_bridge_workspace(
+        request, fallback_to_global=False,
     )
     rag, dropped_overrides = _build_rag_instance(
         text_client=request.text_client,
@@ -1131,42 +1138,29 @@ def _resolve_compile_output_dir(
     return base
 
 
-def workspace_path_for_run(
+def _snapshot_workspace_path(
     settings,
     ctx: "ProjectContext | None",
     document_id: str | None,
-    run_id: str | None,
+    snapshot_id: str | None,
 ) -> Path | None:
-    """Return the per-run LightRAG working directory path.
+    """**INTERNAL — DO NOT IMPORT.**
 
-    Returns ``None`` when any of the inputs are missing — the caller
-    then falls back to ``settings.workdir`` (legacy unscoped storage).
-    Only when *all four* (workdir + ctx + document_id + run_id) are
-    present do we build the namespaced path.
+    Phase 6 replacement for the deleted ``_legacy_workspace_path_for_run``.
+    Computes the snapshot-scoped LightRAG working directory:
 
-    Path shape:
+        {workdir}/snapshots/{tenant_id}/{project_id}/{document_id}/{snapshot_id}
 
-        {workdir}/runs/{tenant_id}/{project_id}/{document_id}/{run_id}
+    No ``runs/`` segment — the snapshot is the visibility boundary.
+    Returns ``None`` on any missing input so the bridge's fallback
+    chain can raise a clear error instead of writing into the
+    global workdir.
 
-    The four-level namespace mirrors the rest of J1's workspace
-    layout (tenant → project → document → run) so retention /
-    detach / remove can prune by deleting the appropriate subtree:
-
-      * detach document → can delete `{document_id}/` and lose every
-        run's graph in one rm -rf;
-      * remove document → same as detach;
-      * specific run prune (post-success → only retain active run) →
-        delete sibling `{run_id}/` directories;
-      * reindex (new run for same document) → write to a NEW
-        `{run_id}/` subdir; the previous active run's graph stays
-        intact for retrieval until the new run is promoted.
-
-    LightRAG itself doesn't read this path's structure — it just
-    writes its graphml + KV files at the path's leaf. The structural
-    invariant is purely on J1's side, enforced here.
-
+    Active callers MUST supply ``snapshot_id``. The bridge entry
+    points raise ``RuntimeError`` when both ``working_dir_override``
+    and ``snapshot_id`` are missing.
     """
-    if not run_id or not document_id or ctx is None:
+    if not snapshot_id or not document_id or ctx is None:
         return None
     workdir = getattr(settings, "workdir", None)
     if not workdir:
@@ -1177,8 +1171,60 @@ def workspace_path_for_run(
         return None
     return (
         Path(str(workdir)).expanduser()
-        / "runs" / str(tenant) / str(project) / str(document_id) / str(run_id)
+        / "snapshots" / str(tenant) / str(project)
+        / str(document_id) / str(snapshot_id)
     )
+
+
+def _resolve_bridge_workspace(
+    request,
+    *,
+    fallback_to_global: bool = False,
+) -> Path:
+    """Phase 6: single resolver every bridge entry point goes
+    through. Preference order:
+
+      1. ``request.working_dir_override`` (the canonical Phase-3
+         snapshot-aware path — ``RAGAnythingCompileAdapter`` sets
+         this from ``SnapshotLayout.compile``).
+      2. Snapshot-scoped path computed from ``request.snapshot_id``.
+      3. When ``fallback_to_global=True`` (read-only / draft-
+         collection paths), the bridge's historic
+         ``settings.storage_dir or settings.workdir``. The
+         legacy run-keyed path is GONE — Phase 6 deleted it.
+
+    Raises ``RuntimeError`` with an actionable message when no
+    valid path can be built (write paths only).
+    """
+    override = getattr(request, "working_dir_override", None)
+    if override is not None:
+        return Path(str(override)).expanduser()
+    snapshot_id = getattr(request, "snapshot_id", None)
+    snap_path = _snapshot_workspace_path(
+        request.settings,
+        request.ctx,
+        request.document_id,
+        snapshot_id,
+    )
+    if snap_path is not None:
+        return snap_path
+    if fallback_to_global:
+        return Path(
+            request.settings.storage_dir or request.settings.workdir
+        ).expanduser()
+    raise RuntimeError(
+        "RAGAnything bridge requires either ``working_dir_override`` "
+        "or ``snapshot_id`` on the request. Phase 6 deleted the "
+        "run-keyed workspace fallback; the active compile path goes "
+        "through ``RAGAnythingCompileAdapter`` which pins "
+        "``working_dir_override`` from ``SnapshotLayout.compile``."
+    )
+
+
+# Phase 5: ``workspace_path_for_run`` was DELETED.
+# Phase 6: ``_legacy_workspace_path_for_run`` is also DELETED.
+# New code MUST go through ``RAGAnythingCompileAdapter`` or supply
+# ``snapshot_id`` on the bridge request.
 
 
 def _build_rag_instance(

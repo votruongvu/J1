@@ -37,6 +37,9 @@ class RAGAnythingGraphRequest:
     embedding_client: Any | None
     document_id: str | None = None
     run_id: str | None = None
+    # Phase 6: snapshot-aware addressing — see RAGAnythingCompileRequest.
+    snapshot_id: str | None = None
+    working_dir_override: Any = None  # Path | None
 
 
 GraphCallable = Callable[[RAGAnythingGraphRequest], ArtifactProcessingResult]
@@ -82,6 +85,8 @@ class RAGAnythingGraphBuilder:
         *,
         document_id: str | None = None,
         run_id: str | None = None,
+        snapshot_id: str | None = None,
+        working_dir_override: Any = None,
     ) -> ArtifactProcessingResult:
         request = RAGAnythingGraphRequest(
             ctx=ctx,
@@ -91,6 +96,8 @@ class RAGAnythingGraphBuilder:
             embedding_client=self._llm_registry.try_embedding(),
             document_id=document_id,
             run_id=run_id,
+            snapshot_id=snapshot_id,
+            working_dir_override=working_dir_override,
         )
         try:
             return self._graph_callable(request)

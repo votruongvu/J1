@@ -118,10 +118,25 @@ class DocumentRecord:
 
     # ---- New document-centric fields (all optional + defaulted) ---
     knowledge_state: KnowledgeState = "attached"
-    active_run_id: str | None = None
     latest_version_id: str | None = None
     removed_at: datetime | None = None
     updated_at: datetime | None = None
+
+    # ---- Snapshot-centered visibility (Phase 8) -------------------
+    # ``active_snapshot_id`` is the ONLY active knowledge pointer.
+    # Phase 8 deleted the legacy ``active_run_id`` field — reset +
+    # re-ingest is the only supported migration path.
+    # ``None`` means the document has no promoted snapshot yet.
+    active_snapshot_id: str | None = None
+
+    # Phase 8 trace-only audit shim. Read-only diagnostic surface
+    # exposed by some projector/DTO paths so dashboards keep
+    # rendering. NEVER written by promotion or eligibility, NEVER
+    # used for visibility, cleanup, or storage. Phase 9 deletes
+    # this once every dashboard has migrated to displaying
+    # snapshot-side lineage (``created_by_run_id`` on the active
+    # snapshot record).
+    active_run_id: str | None = None
 
     # ---- Lifecycle + operation-lock fields -----------------------
     # ``lifecycle_status`` is the operational state (see literal

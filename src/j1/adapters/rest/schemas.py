@@ -321,6 +321,18 @@ class SearchHitRecord(CamelModel):
     source_location: str | None = None
     confidence: float = 0.0
     review_status: str = "not_required"
+    # Phase 5: snapshot lineage surfaced on the wire. The FE / API
+    # consumer can deep-link the hit back to a specific document
+    # snapshot; the citation binder can verify the hit came from
+    # the document's currently-active snapshot. ``chunk_id`` +
+    # ``created_by_run_id`` round out the lineage triple.
+    snapshot_id: str | None = None
+    chunk_id: str | None = None
+    created_by_run_id: str | None = None
+    # ``extracted_text`` is the chunk body that matched the query;
+    # included so the FE can render a snippet without a second
+    # round-trip to the artifact registry.
+    extracted_text: str = ""
 
 
 class SearchResultRecord(CamelModel):

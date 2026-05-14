@@ -49,13 +49,18 @@ class RouteContext:
     """The non-job inputs every route needs.
 
     ``ctx`` carries tenant/project; ``scope`` is the search-time
-    filter (default workspace-wide, validation passes a RunScope);
-    ``eligible_run_ids`` is the post-refactor eligibility gate.
+    filter (default workspace-wide, validation passes a RunScope).
+
+    Phase 6: ``eligible_snapshot_ids`` is now the canonical
+    visibility gate. ``eligible_run_ids`` is retained as a
+    trace/debug companion (legacy BM25 SQLite code may still read
+    it) but is NOT load-bearing on the active path.
     """
 
     ctx: ProjectContext
     scope: QueryScope = default_scope()
     eligible_run_ids: frozenset[str] | None = None
+    eligible_snapshot_ids: frozenset[str] | None = None
     document_id: str | None = None
     run_id: str | None = None
 
@@ -308,86 +313,115 @@ def _candidate_from_citation(
 # ---- BM25 adapter -----------------------------------------------
 
 
-class BM25Adapter:
-    """Auxiliary lexical recall via the existing
-    ``SqliteSearchIndexer``. Used for exact-phrase recall on anchor
-    terms ("60% design", "estimate class") that the semantic
-    retriever often ranks low.
+class LexicalEvidenceAdapter:
+    """Phase 6: auxiliary lexical recall via the canonical
+    ``EvidenceIndexAdapter`` (Postgres FTS by default).
 
-    BM25 NEVER drives the answer — the orchestrator marks BM25-only
-    candidates with their route so the answer-quality gate can flag
-    answers built entirely on lexical recall. The
-    ``EvidencePackBuilder`` may include BM25 candidates in the
-    synthesis-evidence set, but the route metadata travels with the
-    block."""
+    Ranking is whatever the underlying adapter implements —
+    Postgres FTS uses ``ts_rank_cd`` over the GIN-indexed tsvector,
+    which is a normalised cover-density rank, NOT true BM25.
+    Operators should not confuse the two: ``ts_rank_cd`` weights
+    by term frequency × inverse coverage gaps, while BM25 weights
+    by term frequency × inverse document frequency with length
+    normalisation. The route metadata travels with the block so
+    the answer-quality gate can flag answers built entirely on
+    lexical recall — the same contract the previous BM25 route had.
+
+    The class is named ``LexicalEvidenceAdapter`` to keep the
+    "auxiliary lexical recall" intent without the BM25 misnomer.
+    The route kind is still ``RetrievalRouteKind.BM25`` for
+    backward-compat with the orchestrator's job dispatch and the
+    trace JSON the FE renders; renaming the enum would touch every
+    workflow trace ever recorded and isn't worth the churn this
+    phase.
+
+    Input scope: ``RouteContext.eligible_snapshot_ids`` is the
+    canonical gate. ``RouteContext.eligible_run_ids`` is read only
+    when the Phase-6 snapshot set is missing AND the legacy SQLite
+    indexer is wired (a fully-deprecated test-only path).
+    """
 
     kind: RetrievalRouteKind = RetrievalRouteKind.BM25
 
     def __init__(
         self,
-        indexer: Any,
+        evidence_adapter: Any,
         *,
-        eligible_run_ids_resolver: (
-            Callable[[ProjectContext, QueryScope], frozenset[str] | None]
-            | None
+        eligible_snapshot_ids_resolver: (
+            Callable[
+                [ProjectContext, QueryScope],
+                frozenset[str] | None,
+            ] | None
         ) = None,
     ) -> None:
-        self._indexer = indexer
-        self._eligible_run_ids_resolver = eligible_run_ids_resolver
+        self._adapter = evidence_adapter
+        self._eligible_snapshot_ids_resolver = eligible_snapshot_ids_resolver
 
     def execute(
         self,
         job: RetrievalJob,
         context: RouteContext,
     ) -> list[EvidenceCandidate]:
-        # Prefer the explicit eligibility set on the context; fall
-        # back to the resolver when the orchestrator didn't pre-
-        # compute it. ``None`` means "no gate" — that's the legacy
-        # diagnostic path (validation_scope=run), not the default.
-        eligible = context.eligible_run_ids
-        if eligible is None and self._eligible_run_ids_resolver:
-            eligible = self._eligible_run_ids_resolver(
+        # Phase 6: snapshot-id allowlist is the canonical visibility
+        # key. Resolver fallback exists for the validation diagnostic
+        # path where the orchestrator didn't pre-compute it.
+        eligible = context.eligible_snapshot_ids
+        if eligible is None and self._eligible_snapshot_ids_resolver:
+            eligible = self._eligible_snapshot_ids_resolver(
                 context.ctx, context.scope,
             )
-        artifact_types = None
-        kind_filter = job.filters.get("artifact_kind")
-        if kind_filter:
-            artifact_types = [kind_filter]
-        hits = self._indexer.search(
-            context.ctx,
-            job.query,
-            artifact_types=artifact_types,
-            max_results=job.max_results,
-            scope=context.scope,
-            eligible_run_ids=eligible,
-        )
+        if not eligible:
+            # Empty allowlist → no visible snapshots → no results.
+            # Refusal short-circuits the adapter call entirely
+            # (matches the SearchService contract).
+            return []
+        try:
+            hits = self._adapter.search(
+                context.ctx,
+                query=job.query,
+                allowed_snapshot_ids=list(eligible),
+                max_results=job.max_results,
+            )
+        except Exception:  # noqa: BLE001 — auxiliary recall is best-effort
+            return []
         candidates: list[EvidenceCandidate] = []
         for hit in hits or []:
-            body = getattr(hit, "extracted_text", "") or ""
+            body = getattr(hit, "content", "") or ""
             candidates.append(EvidenceCandidate(
                 route=job.route,
                 artifact_id=hit.artifact_id,
-                artifact_kind=hit.artifact_type,
+                artifact_kind=getattr(hit, "artifact_type", None) or "evidence_chunk",
                 chunk_id=getattr(hit, "chunk_id", None),
                 text_preview=_truncate(body),
                 score=float(getattr(hit, "score", 0.0) or 0.0),
                 matched_anchors=_anchors_in(
                     body, (job.query,),
                 ),
-                run_id=getattr(hit, "run_id", None),
-                document_id=getattr(hit, "source_document_id", None),
+                run_id=getattr(hit, "created_by_run_id", None),
+                document_id=getattr(hit, "document_id", None),
                 project_id=context.ctx.project_id,
                 extra={
-                    "section_path": (hit.metadata or {}).get(
-                        "section_path"
-                    ) if getattr(hit, "metadata", None) else None,
+                    "section_path": (
+                        getattr(hit, "metadata", None) or {}
+                    ).get("section_path"),
                     "body": body,
+                    # Phase 6: keep the legacy ``bm25_score`` key for
+                    # back-compat with existing trace consumers; the
+                    # value is now ``ts_rank_cd``, not true BM25.
                     "bm25_score": float(
                         getattr(hit, "score", 0.0) or 0.0,
                     ),
+                    "snapshot_id": getattr(hit, "snapshot_id", None),
+                    "lexical_ranker": "ts_rank_cd",
                 },
             ))
         return candidates
+
+
+# Phase 6: backward-compat alias for any external code that still
+# imports ``BM25Adapter``. The class name is misleading; new code
+# should use ``LexicalEvidenceAdapter``. Phase 7 deletes the alias.
+BM25Adapter = LexicalEvidenceAdapter
 
 
 # ---- Artifact-lookup adapter ------------------------------------

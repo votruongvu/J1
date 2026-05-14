@@ -1,23 +1,171 @@
 # Local-development Docker Compose stack for J1.
 #
-# Brings up:
-#  - api : FastAPI server (`python -m deploy.dev.api`)
-#  - worker : Temporal worker (`python -m deploy.dev.worker`)
-#  - frontend : Static SPA (J1 Execution Console) served by nginx
-#  with `/api/*` proxied to the api service
-#  - temporal : Temporal server with in-memory persistence
-#  - temporal-ui : Browser UI for Temporal
+# Phase 1 (snapshot-centered refactor) — the stack now matches the
+# target provider seams:
 #
-# Intentionally NOT included (and why — see deploy/dev/README.md § 3):
-#  - PostgreSQL : the framework uses flat-file JSON registries +
-#  per-project SQLite FTS5; no relational store
-#  - Redis : not used anywhere in the framework
-#  - MinIO / S3 : workspace is filesystem-based, mounted as a
-#  Docker volume
+#  * postgres     — J1 application metadata + Postgres FTS (evidence)
+#                   AND Temporal's own storage (separate database).
+#  * redis        — cache provider.
+#  * minio        — S3-compatible artifact storage.
+#  * qdrant       — vector store.
+#  * neo4j        — graph store.
+#  * raganything  — the only retrieval orchestrator we ship (lives in
+#                   the worker process; persisted to a named volume).
+#  * temporal     — workflow runtime (uses the shared postgres).
+#  * temporal-ui  — browser UI for Temporal.
+#  * api / worker — J1 backend + Temporal worker.
+#  * frontend     — Vite static bundle served by nginx.
+#
+# Volume strategy
+# ---------------
+# Heavy runtime/index/temp paths live in NAMED volumes (fast Linux-VM
+# disk on macOS Docker Desktop, not a bind mount through gRPC FUSE).
+# Source code is bind-mounted ONLY for the api/worker so live edits
+# pick up without rebuilding the image.
+#
+# Reset
+# -----
+# Phase 1 ships ``scripts/dev/reset_docker.sh`` — it stops the stack
+# and ``docker volume rm`` every named volume below. Dev data is
+# throwaway by policy.
 
 name: j1-dev
 
 services:
+  # ─── Postgres ────────────────────────────────────────────────
+  # Shared between Temporal and J1 application metadata. The init
+  # script in ``postgres-init/`` creates two databases:
+  #
+  #   * ``temporal`` — Temporal's own storage (managed by auto-setup)
+  #   * ``j1``       — J1 application + Postgres FTS for evidence
+  #
+  # Phase 2 will add the j1 schema migrations here.
+  postgres:
+    image: postgres:16-alpine
+    container_name: j1-postgres
+    environment:
+      POSTGRES_USER: ${J1_POSTGRES_USER:-j1}
+      POSTGRES_PASSWORD: ${J1_POSTGRES_PASSWORD:-j1}
+      POSTGRES_DB: j1
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${J1_POSTGRES_PORT:-5432}:5432"
+    networks:
+      - j1-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${J1_POSTGRES_USER:-j1}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis ───────────────────────────────────────────────────
+  # Cache provider. No persistence configured (cache only); switch
+  # to ``redis-server --appendonly yes`` and add the named volume
+  # if you need durability.
+  redis:
+    image: redis:7-alpine
+    container_name: j1-redis
+    ports:
+      - "${J1_REDIS_PORT:-6379}:6379"
+    networks:
+      - j1-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── MinIO ───────────────────────────────────────────────────
+  # S3-compatible artifact storage. The init container below
+  # creates the default bucket so the api/worker doesn't have to
+  # bootstrap it.
+  minio:
+    image: minio/minio:latest
+    container_name: j1-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${J1_ARTIFACT_ACCESS_KEY:-j1-dev}
+      MINIO_ROOT_PASSWORD: ${J1_ARTIFACT_SECRET_KEY:-j1-dev-secret}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${J1_MINIO_PORT:-9000}:9000"
+      - "${J1_MINIO_CONSOLE_PORT:-9001}:9001"
+    networks:
+      - j1-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot bucket creation. Re-running on an already-bootstrapped
+  # MinIO is idempotent (``mb --ignore-existing``).
+  minio-init:
+    image: minio/mc:latest
+    container_name: j1-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - j1-net
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 \
+          "${J1_ARTIFACT_ACCESS_KEY:-j1-dev}" \
+          "${J1_ARTIFACT_SECRET_KEY:-j1-dev-secret}"
+        mc mb --ignore-existing local/${J1_ARTIFACT_BUCKET:-j1-artifacts}
+        echo "[minio-init] bucket ready: ${J1_ARTIFACT_BUCKET:-j1-artifacts}"
+
+  # ─── Qdrant ──────────────────────────────────────────────────
+  # Vector store. Phase 2 wires the adapter; Phase 1 just stands
+  # the service up so config + reset are end-to-end testable.
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: j1-qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "${J1_QDRANT_PORT:-6333}:6333"
+      - "${J1_QDRANT_GRPC_PORT:-6334}:6334"
+    networks:
+      - j1-net
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Neo4j ───────────────────────────────────────────────────
+  # Graph store. The community edition is sufficient for dev; swap
+  # for ``neo4j:5-enterprise`` if your prod parity demands it.
+  neo4j:
+    image: neo4j:5-community
+    container_name: j1-neo4j
+    environment:
+      NEO4J_AUTH: ${J1_GRAPH_USER:-neo4j}/${J1_GRAPH_PASSWORD:-neo4j-dev}
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    ports:
+      - "${J1_NEO4J_HTTP_PORT:-7474}:7474"
+      - "${J1_NEO4J_BOLT_PORT:-7687}:7687"
+    networks:
+      - j1-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ─── J1 backend ──────────────────────────────────────────────
   api:
     build:
       context: ../..
@@ -25,24 +173,35 @@ services:
     image: j1-dev:latest
     container_name: j1-api
     env_file: ../../.env
+    environment:
+      # Default the runtime profile to ``dev`` so the loader doesn't
+      # fail on missing prod-only providers.
+      J1_RUNTIME_PROFILE: ${J1_RUNTIME_PROFILE:-dev}
     ports:
       - "${J1_API_PORT:-8000}:8000"
     volumes:
-      - j1_workspace:/var/lib/j1
+      - j1_temp:/tmp/j1
+      - raganything_workdir:/var/lib/j1/raganything
+      - benchmark_output:/var/lib/j1/benchmarks
       # Bind-mount Python source so code edits land without rebuilding
-      # the image. `pip install -e.` (run during the image build)
-      # already symlinked the j1 package; the bind mount transparently
+      # the image. ``pip install -e .`` (run during the image build)
+      # symlinked the j1 package; the bind mount transparently
       # replaces the baked-in source files with the host copy. Restart
       # the container after edits — there's no auto-reload (Temporal
-      # workflow code is replay-sensitive, so a watcher could load
-      # half-edited modules into a running worker). Dependency
-      # changes in pyproject.toml STILL need a rebuild.
-      #
-      # Container path is /app/src and /app/deploy because the
-      # Dockerfile sets WORKDIR /app and copies into those subdirs.
+      # workflow code is replay-sensitive).
       - ../../src:/app/src
       - ../../deploy:/app/deploy
     depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
       temporal:
         condition: service_healthy
       temporal-init:
@@ -59,34 +218,32 @@ services:
       context: ../..
       dockerfile: deploy/dev/Dockerfile
     env_file: ../../.env
+    environment:
+      J1_RUNTIME_PROFILE: ${J1_RUNTIME_PROFILE:-dev}
     volumes:
-      # Persistent workspace state (audit JSONL, run records,
-      # artifact registry, FTS index, RAGAnything workdir under
-      # `/var/lib/j1/raganything`). Named volume → fast Linux-VM
-      # disk on macOS Docker Desktop, NOT a bind mount through
-      # gRPC FUSE. All ingestion writes (chunks, kv_store_*.json,
-      # MinerU per-document outputs) land here.
-      - j1_workspace:/var/lib/j1
-      # NOTE: no HuggingFace cache mount. J1 forces MinerU into
-      # vlm-http-client mode (see settings.py + Dockerfile note);
-      # local model downloads are explicitly rejected at startup
-      # so there's nothing to cache here.
-      # Source-code bind mounts. Read-mostly: the bind read costs
-      # are tolerable; write-heavy paths live elsewhere (see
-      # j1_workspace + tmpfs above/below). Restart the worker
-      # after editing — Temporal workflow code is replay-sensitive.
+      - j1_temp:/tmp/j1
+      - raganything_workdir:/var/lib/j1/raganything
+      - mineru_workdir:/var/lib/j1/mineru
+      - benchmark_output:/var/lib/j1/benchmarks
       - ../../src:/app/src
       - ../../deploy:/app/deploy
     tmpfs:
-      # RAM-backed `/tmp` for the worker. MinerU + RAGAnything
-      # touch a lot of small ephemeral files (intermediate page
-      # captures, soffice's `j1-soffice-*` mkdtemp, Python's
-      # default tempdir). Putting `/tmp` on tmpfs avoids both the
-      # Linux-VM disk hop AND any chance of operator misconfig
-      # routing tempfiles into a slow filesystem. 1 GiB cap stops
+      # RAM-backed `/tmp` for the worker. MinerU + RAGAnything touch
+      # a lot of small ephemeral files (intermediate page captures,
+      # soffice's mkdtemp, Python's default tempdir). 1 GiB cap stops
       # a runaway parse from OOM-ing the host.
       - /tmp:size=1g,mode=1777
     depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
       temporal:
         condition: service_healthy
       temporal-init:
@@ -96,28 +253,12 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "deploy.dev.worker"]
 
-  # Frontend SPA — Vite-built static bundle served by nginx with
-  # `/api/*` proxied to the `api` service over the Docker bridge.
-  # Browser stays single-origin so CORS is a non-issue.
-  #
-  # Code edits: the bundle is baked into the image at build time, so
-  # changes under `frontend/src/` need a rebuild:
-  #
-  #  docker compose -f deploy/dev/docker-compose.yml up --build frontend
-  #
-  # Or bypass the container entirely for HMR / fast iteration: run
-  # `npm run dev` on the host (`cd frontend && npm run dev`) and
-  # point your browser at http://localhost:5173 — the host-side dev
-  # server still talks to the api container on its published port.
+  # ─── Frontend ────────────────────────────────────────────────
   frontend:
     build:
       context: ../../frontend
       dockerfile: Dockerfile
       args:
-        # Build-time API base URL baked into the SPA. `/api` keeps
-        # the browser single-origin via nginx's proxy block. To point
-        # the bundle at a different backend (staging, etc.), override:
-        #  docker compose build --build-arg VITE_API_BASE_URL=https://api.example.com frontend
         VITE_API_BASE_URL: ${J1_FRONTEND_API_BASE_URL:-/api}
     image: j1-frontend:latest
     container_name: j1-frontend
@@ -129,57 +270,29 @@ services:
       - j1-net
     restart: unless-stopped
 
-  # Temporal's own storage. Postgres is here ONLY for Temporal — the
-  # J1 framework itself does NOT use a relational database (it uses
-  # flat-file JSON registries + per-project SQLite FTS5 under
-  # `J1_DATA_ROOT`). Temporal's auto-setup image only supports
-  # mysql8 / postgres12 / postgres12_pgx / cassandra; postgres is
-  # the lightest and most familiar of those.
-  postgresql:
-    image: postgres:15-alpine
-    container_name: j1-postgres
-    environment:
-      POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
-      POSTGRES_DB: temporal
-    volumes:
-      - j1_postgres:/var/lib/postgresql/data
-    networks:
-      - j1-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
+  # ─── Temporal ────────────────────────────────────────────────
+  # Uses the shared postgres (``temporal`` database created by the
+  # init script).
   temporal:
-    # The official auto-setup image: bundles the server + the
-    # admin-tools CLI + schema initialisation. On first boot it
-    # creates the Temporal schema in Postgres automatically.
     image: temporalio/auto-setup:1.24.2
     container_name: j1-temporal
     environment:
       - DB=postgres12_pgx
       - DB_PORT=5432
-      - POSTGRES_USER=temporal
-      - POSTGRES_PWD=temporal
-      - POSTGRES_SEEDS=postgresql
+      - POSTGRES_USER=${J1_POSTGRES_USER:-j1}
+      - POSTGRES_PWD=${J1_POSTGRES_PASSWORD:-j1}
+      - POSTGRES_SEEDS=postgres
+      - POSTGRES_DB=temporal
       - DEFAULT_NAMESPACE=default
       - SKIP_DEFAULT_NAMESPACE_CREATION=false
     ports:
-      - "7233:7233"      # gRPC (frontend)
+      - "7233:7233"
     depends_on:
-      postgresql:
+      postgres:
         condition: service_healthy
     networks:
       - j1-net
     healthcheck:
-      # `temporalio/auto-setup` ships `tctl` (the admin CLI), NOT the
-      # newer `temporal` binary — so the healthcheck has to use tctl.
-      # `tctl workflow list` succeeds only when the cluster is fully
-      # up (frontend + history + matching all reachable + the default
-      # namespace exists). Matches the recipe in Temporal's own
-      # docker-compose example repo.
       test:
         - "CMD"
         - "tctl"
@@ -192,23 +305,7 @@ services:
       retries: 30
       start_period: 30s
 
-  # One-shot init: registers J1's custom search attributes with the
-  # default namespace so the workflow's `J1IngestStage` /
-  # `J1IngestMode` upserts succeed at activation time. Without this,
-  # flipping `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true` causes
-  # every workflow activation to fail with `BadSearchAttributes` —
-  # see deploy/dev/README.md § "Temporal search attributes".
-  #
-  # Idempotent: re-running on an already-registered cluster is a
-  # warning, not a failure, so this stays correct across `up` /
-  # `down` / `up` cycles. Exits as soon as both attributes are
-  # registered (or already-present).
-  #
-  # Reuses the same `temporalio/auto-setup` image the server runs, so
-  # no extra image pull. `tctl admin cluster add-search-attributes`
-  # is the right command for Temporal 1.24 (the newer
-  # `temporal operator search-attribute create` ships in `temporal`,
-  # which `auto-setup` doesn't include).
+  # One-shot init: registers J1's custom search attributes.
   temporal-init:
     image: temporalio/auto-setup:1.24.2
     container_name: j1-temporal-init
@@ -219,18 +316,6 @@ services:
       - j1-net
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
-    # `--auto_confirm` skips the interactive prompt tctl shows on
-    # mutating cluster commands. The `|| true` swallows the
-    # "attribute already exists" error so the service is idempotent
-    # across `down` / `up` cycles. Each attribute is registered
-    # as a Keyword (exact-match string filter).
-    #
-    # Adding a new attribute below requires a matching upsert call
-    # in the workflow (`_set_search_attribute` in
-    # `project_processing.py`); registration alone has no operator-
-    # visible effect until the workflow writes values. Conversely,
-    # writing without registering crashes workflow activation when
-    # `J1_TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=true`.
     command:
       - |
         set -e
@@ -247,24 +332,22 @@ services:
             --name "$$1" --type Int \
           || echo "[temporal-init] $$1 already registered — skipping"
         }
-        # Stage / mode — written on every workflow.
         register_keyword J1IngestStage
         register_keyword J1IngestMode
-        # Document + workspace identity — written on every workflow.
         register_keyword J1DocumentId
         register_keyword J1WorkspaceId
-        # Parser identity — written when a compiler kind is chosen.
         register_keyword J1ParserName
-        # Adaptive-plan signals — written when the planner runs.
         register_keyword J1RequiresVision
         register_keyword J1RequiresPremiumLLM
-        # /9A — new pipeline surface.
         register_keyword J1DomainProfileId
         register_keyword J1EnrichmentPolicy
         register_keyword J1RequireEnrichmentSuccess
         register_keyword J1FinalStatus
         register_int     J1CompileRetryCount
         register_int     J1EnrichmentRetryCount
+        # Phase 1: snapshot lineage on workflows that promote snapshots.
+        register_keyword J1SnapshotId
+        register_keyword J1ActiveSnapshotId
         echo "[temporal-init] done."
 
   temporal-ui:
@@ -272,8 +355,6 @@ services:
     container_name: j1-temporal-ui
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
-      # CORS origin must match the published port — both derive from
-      # the same env var so an override flips both halves at once.
       - TEMPORAL_CORS_ORIGINS=http://localhost:${J1_TEMPORAL_UI_PORT:-8080}
     ports:
       - "${J1_TEMPORAL_UI_PORT:-8080}:8080"
@@ -287,6 +368,16 @@ networks:
   j1-net:
     driver: bridge
 
+# Named volumes. Heavy runtime + index + temp paths live here so
+# macOS Docker Desktop doesn't pay the FUSE penalty on every read /
+# write. ``scripts/dev/reset_docker.sh`` wipes all of them.
 volumes:
-  j1_workspace:          # framework state (per-project JSON registries, SQLite FTS5)
-  j1_postgres:           # Temporal's own storage — not used by J1 itself
+  pg_data:                  # postgres (temporal + j1 databases)
+  minio_data:               # S3 artifact storage
+  qdrant_data:              # vector store
+  neo4j_data:               # graph store
+  neo4j_logs:               # graph store logs
+  raganything_workdir:      # RAGAnything (composite of lightrag + mineru workdirs)
+  mineru_workdir:           # MinerU intermediate parses
+  j1_temp:                  # cross-service scratch (NOT shared with /tmp tmpfs)
+  benchmark_output:         # phase-1 benchmark / timing artifacts

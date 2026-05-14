@@ -410,6 +410,12 @@ def create_rest_api(
     confirm_handler: RunConfirmHandler | None = None,
     compile_handler: RunCompileHandler | None = None,
     llm_registry: object | None = None,
+    # Phase 5: when wired, every ``IngestionRun`` created via the
+    # REST surface allocates a candidate ``DocumentSnapshot``
+    # before the workflow starts. ``target_snapshot_id`` is then
+    # stamped on the run record so the workflow + activities know
+    # which snapshot they're building from the very first event.
+    snapshot_service: "object | None" = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -461,6 +467,29 @@ def create_rest_api(
     )
 
     resolver = context_resolver or _default_context_resolver
+
+    # Phase 5: Allocate a candidate ``DocumentSnapshot`` BEFORE the
+    # Temporal workflow starts. Returns the new snapshot's id (or
+    # ``None`` when the service isn't wired — the activity layer's
+    # ``get_or_create_for_run`` still catches that case lazily).
+    # Best-effort: any failure here returns ``None`` so the run
+    # creation isn't blocked by a snapshot-store hiccup; the
+    # downstream activity layer will fill in the gap.
+    def _allocate_target_snapshot(
+        ctx: ProjectContext, document_id: str, run_id: str,
+    ) -> str | None:
+        if snapshot_service is None or not document_id or not run_id:
+            return None
+        try:
+            snap = snapshot_service.create_candidate(
+                ctx,
+                document_id=document_id,
+                created_by_run_id=run_id,
+            )
+            return snap.snapshot_id
+        except Exception:  # noqa: BLE001 — best-effort
+            return None
+
     policy = SecurityPolicy(
         authenticator=authenticator,
         anonymous_paths=(
@@ -1343,6 +1372,13 @@ def create_rest_api(
             run_type="reindex",
             parent_run_id=run_id,
             document_version_id=original.document_version_id,
+            # Phase 5: candidate snapshot is allocated UP-FRONT.
+            # The Temporal workflow + every activity see the
+            # ``target_snapshot_id`` from the very first event;
+            # there's no lazy allocation race in the activity layer.
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, original.document_id, new_run_id,
+            ),
         )
         store.upsert(ctx, new_run)
 
@@ -1566,6 +1602,10 @@ def create_rest_api(
                     "document_name", doc_dto.original_filename,
                 ),
             },
+            # Phase 5: up-front snapshot allocation. See full-reindex.
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, original.document_id, new_run_id,
+            ),
         )
         store.upsert(ctx, new_run)
 
@@ -1720,6 +1760,10 @@ def create_rest_api(
                     "document_name", doc_dto.original_filename,
                 ),
             },
+            # Phase 5: up-front snapshot allocation. See full-reindex.
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, original.document_id, new_run_id,
+            ),
         )
         store.upsert(ctx, new_run)
 
@@ -2370,6 +2414,10 @@ def create_rest_api(
             parent_run_id=active_run_id,
             document_version_id=previous_version_id,
             display_version=display_version,
+            # Phase 5: up-front snapshot allocation. See full-reindex.
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, document_id, new_run_id,
+            ),
         )
         store.upsert(ctx, new_run)
 
@@ -2551,6 +2599,10 @@ def create_rest_api(
             parent_run_id=active_run_id,
             document_version_id=previous.document_version_id,
             display_version=display_version,
+            # Phase 5: up-front snapshot allocation. See full-reindex.
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, document_id, new_run_id,
+            ),
         )
         store.upsert(ctx, new_run)
         if progress_reporter is not None:
@@ -4356,6 +4408,12 @@ def create_rest_api(
                 # part `filename` parameter, which the FE always sends.
                 "document_name": doc_dto.original_filename,
             },
+            # Phase 5: initial-ingest path also allocates the
+            # candidate snapshot UP-FRONT so the workflow sees
+            # ``target_snapshot_id`` on its first activity.
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, doc_dto.document_id, run_id,
+            ),
         )
         store.upsert(ctx, run)
 
@@ -4540,6 +4598,10 @@ def create_rest_api(
                     "document_name": doc_dto.original_filename,
                     "batch_run_id": batch_run_id,
                 },
+                # Phase 5: batch-child runs also get up-front snapshot.
+                target_snapshot_id=_allocate_target_snapshot(
+                    ctx, doc_dto.document_id, child_run_id,
+                ),
             )
             store.upsert(ctx, child_run)
             if progress_reporter is not None:
@@ -4865,6 +4927,11 @@ def create_rest_api(
                     source_location=h.source_location,
                     confidence=h.confidence,
                     review_status=h.review_status,
+                    # Phase 5: snapshot lineage on every hit.
+                    snapshot_id=h.snapshot_id,
+                    chunk_id=h.chunk_id,
+                    created_by_run_id=h.run_id,
+                    extracted_text=h.extracted_text,
                 )
                 for h in hits
             ],

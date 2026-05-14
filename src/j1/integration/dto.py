@@ -61,6 +61,10 @@ class SearchHitDTO:
     # contract as CitationRecord — never echoed from request input.
     chunk_id: str | None = None
     run_id: str | None = None
+    # Phase 4: snapshot lineage on the hit so the FE can deep-link
+    # back to the snapshot and so the citation binder can verify
+    # the hit came from the document's currently-active snapshot.
+    snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)

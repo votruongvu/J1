@@ -35,6 +35,10 @@ _log = logging.getLogger("j1.dev.worker")
 
 
 async def _run() -> None:
+    # Phase 1: unified RuntimeConfig validation runs before any
+    # facade construction. Missing PROD providers raise here.
+    from deploy.dev._wiring import build_runtime_config
+    build_runtime_config()
     settings = build_settings()
     workspace = build_workspace(settings)
     temporal_settings = load_temporal_settings()

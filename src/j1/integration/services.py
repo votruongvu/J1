@@ -53,7 +53,7 @@ from j1.orchestration.workflows.project_processing import (
 from j1.projects.context import ProjectContext
 from j1.review.models import ReviewItem
 from j1.review.queue import ReviewQueue
-from j1.search.indexer import SearchHit, SqliteSearchIndexer
+from j1.search.indexer import SearchHit
 from j1.workspace.resolver import WorkspaceResolver
 
 
@@ -129,6 +129,27 @@ def _hit_to_dto(hit: SearchHit) -> SearchHitDTO:
     )
 
 
+def _evidence_hit_to_dto(hit) -> SearchHitDTO:
+    """Phase 4 adapter-side hit → DTO. The adapter's ``EvidenceHit``
+    carries the snapshot lineage; we surface it on the DTO so REST
+    callers and the citation binder can verify the hit came from
+    the active snapshot."""
+    return SearchHitDTO(
+        artifact_id=hit.artifact_id,
+        artifact_type="evidence_chunk",
+        title=(hit.content or "")[:80],
+        score=hit.score,
+        source_document_id=hit.document_id,
+        source_location=None,
+        confidence=0.0,
+        review_status="not_required",
+        extracted_text=hit.content or "",
+        chunk_id=hit.chunk_id,
+        run_id=hit.created_by_run_id,
+        snapshot_id=hit.snapshot_id,
+    )
+
+
 # ---- Port implementations ------------------------------------------------
 
 
@@ -195,8 +216,53 @@ class TemporalJobStatusService:
 
 
 class SearchService:
-    def __init__(self, indexer: SqliteSearchIndexer) -> None:
-        self._indexer = indexer
+    """Phase 4: the canonical operator-facing search surface.
+
+    Old: wrapped ``SqliteSearchIndexer`` directly; queries hit the
+    legacy FTS5 table, scoped by ``run_id`` columns.
+
+    New: wraps an ``EvidenceIndexAdapter`` (Postgres FTS by default)
+    and ALWAYS resolves the active-snapshot allowlist through the
+    eligibility gate before issuing a query. A document is searchable
+    iff it has ``active_snapshot_id`` set (Phase 3 retired the
+    ``active_run_id`` fallback) and isn't detached/removed.
+
+    Three modes of construction:
+
+      * ``SearchService(adapter, registry)`` — the canonical
+        snapshot-aware path. Production wiring.
+      * ``SearchService(adapter)`` — adapter-only mode; the caller
+        is responsible for passing ``allowed_snapshot_ids`` to
+        ``search``. Used by the dev/debug REPL.
+      * ``SearchService(indexer)`` — legacy SQLite path. Preserved
+        ONLY for the bundled REST debug endpoint when no adapter is
+        wired; never the strategic path. Phase 5 deletes this mode.
+    """
+
+    def __init__(
+        self,
+        adapter_or_indexer,
+        registry=None,
+    ) -> None:
+        # Detect adapter vs legacy indexer by the presence of the
+        # snapshot-aware ``search`` signature. The legacy indexer's
+        # ``search`` takes ``artifact_types`` + ``max_results``; the
+        # adapter's takes ``query`` + ``allowed_snapshot_ids`` +
+        # ``max_results``. Cheap duck-type check at construction so
+        # call sites don't have to pick the right constructor name.
+        self._adapter = None
+        self._indexer = None
+        self._registry = registry
+        from j1.search.evidence_adapter import PostgresFtsEvidenceAdapter
+        if isinstance(adapter_or_indexer, PostgresFtsEvidenceAdapter):
+            self._adapter = adapter_or_indexer
+        else:
+            # Phase 8 trace-only shim: the legacy SQLite path is
+            # gone, but the SearchService constructor still accepts
+            # a non-adapter object so legacy test wirings that pass
+            # ``None`` or a custom mock don't crash at import time.
+            # The ``search`` method raises on the legacy branch.
+            self._indexer = adapter_or_indexer
 
     def search(
         self,
@@ -206,6 +272,23 @@ class SearchService:
         artifact_types: list[str] | None = None,
         max_results: int = 20,
     ) -> list[SearchHitDTO]:
+        # Adapter path (Phase 4 canonical).
+        if self._adapter is not None:
+            allowlist = self._resolve_snapshot_allowlist(ctx)
+            if not allowlist:
+                # No visible snapshots → no results. Refuse to fall
+                # through to the adapter without an allowlist (the
+                # adapter would short-circuit anyway, but explicit
+                # is better than implicit here).
+                return []
+            hits = self._adapter.search(
+                ctx,
+                query=query,
+                allowed_snapshot_ids=allowlist,
+                max_results=max_results,
+            )
+            return [_evidence_hit_to_dto(h) for h in hits]
+        # Legacy SQLite path — Phase 5 removes.
         hits = self._indexer.search(
             ctx,
             query,
@@ -213,6 +296,22 @@ class SearchService:
             max_results=max_results,
         )
         return [_hit_to_dto(h) for h in hits]
+
+    def _resolve_snapshot_allowlist(self, ctx: ProjectContext) -> list[str]:
+        """Pull the active-snapshot set from the source registry.
+        Empty when no registry is wired (the caller didn't supply
+        one) — operators wiring this without a registry are
+        responsible for passing a snapshot allowlist explicitly."""
+        if self._registry is None:
+            return []
+        from j1.query.eligibility import (
+            resolve_eligible_active_snapshot_ids,
+        )
+        from j1.query.scope import WorkspaceScope
+        result = resolve_eligible_active_snapshot_ids(
+            ctx=ctx, scope=WorkspaceScope(), registry=self._registry,
+        )
+        return list(result.snapshot_ids)
 
 
 class RetrievalService:

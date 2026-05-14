@@ -687,7 +687,9 @@ def test_compiler_default_path_invokes_real_raganything_when_installed(
         llm_registry=_registry(),
         settings=RAGAnythingSettings(workdir=str(workdir)),
     )
-    result = compiler.compile(_ctx(), document_id="doc-1")
+    result = compiler.compile(
+        _ctx(), document_id="doc-1", snapshot_id="snap-test",
+    )
 
     assert result.status is ResultStatus.SUCCEEDED, result.error
     # Vendor was actually invoked through the real bridge.
@@ -713,11 +715,29 @@ def test_query_provider_default_path_invokes_real_aquery_when_installed(
     captured: dict = {}
     _install_fake_raganything(monkeypatch, captured=captured)
 
-    provider = RAGAnythingQueryProvider.from_default(
-        llm_registry=_registry(),
-        settings=RAGAnythingSettings(),
-    )
-    result = provider.query(_ctx(), "what is x?")
+    # Phase 6: provide a working_dir_override so the bridge's
+    # native-query preflight finds a populated workspace. Without
+    # it the preflight short-circuits with "workspace empty".
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as tmp:
+        wd = pathlib.Path(tmp)
+        # Materialise the minimum the preflight checks. The graphml
+        # must be parseable by NetworkX or LightRAG init raises.
+        (wd / "graph_chunk_entity_relation.graphml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">'
+            '<graph edgedefault="directed"></graph></graphml>'
+        )
+        (wd / "kv_store_doc_status.json").write_text("{}")
+        provider = RAGAnythingQueryProvider.from_default(
+            llm_registry=_registry(),
+            settings=RAGAnythingSettings(workdir=str(wd)),
+        )
+        result = provider.query(
+            _ctx(), "what is x?",
+            document_id="doc-1", snapshot_id="snap-test",
+            working_dir_override=wd,
+        )
 
     assert result.status is ResultStatus.SUCCEEDED, result.error
     assert captured["query_call"]["question"] == "what is x?"
@@ -745,7 +765,15 @@ def test_graph_builder_default_path_invokes_real_storage_walk_when_installed(
             workdir=str(tmp_path), storage_dir=str(storage),
         ),
     )
-    result = builder.build(_ctx(), ["a-1"])
+    # Phase 6: working_dir_override pins the storage walk to the
+    # test's storage dir so the bridge finds the synthetic graph
+    # files. Production passes the snapshot-scoped compile dir
+    # via ``RAGAnythingCompileAdapter``.
+    result = builder.build(
+        _ctx(), ["a-1"],
+        document_id="doc-1", snapshot_id="snap-test",
+        working_dir_override=storage,
+    )
 
     assert result.status is ResultStatus.SUCCEEDED, result.error
     # Vendor instance was constructed (proves real bridge path was taken).

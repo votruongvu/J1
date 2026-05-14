@@ -50,7 +50,6 @@ from j1 import (
     SearchService,
     Settings,
     SourceLookupService,
-    SqliteSearchIndexer,
     TemporalJobControlService,
     WorkerSpec,
     WorkspaceResolver,
@@ -107,16 +106,183 @@ def build_settings() -> Settings:
     return load_settings()
 
 
+def build_runtime_config():
+    """Phase 1: read the unified RuntimeConfig and run startup
+    validation. In PROD profile, missing provider config raises
+    ``ConfigError`` before the API/worker reach a ready state. In
+    DEV the loader is lenient — missing optional providers fall
+    back to the local seam."""
+    from j1.config.runtime import load_runtime_config
+    cfg = load_runtime_config()
+    cfg.validate()
+    return cfg
+
+
 def build_workspace(settings: Settings) -> WorkspaceResolver:
     return WorkspaceResolver(settings)
+
+
+def build_snapshot_services(workspace: WorkspaceResolver):
+    """Phase 3: snapshot-centered services.
+
+    Returns ``(snapshot_service, layout, index_refs, coordinator)``.
+    The coordinator is the new ingestion entrypoint — Phase 3
+    wires it alongside the legacy run-keyed workflow so the
+    cutover is incremental. Returns the snapshot_service alone is
+    enough for the activity layer to stamp ``snapshot_id`` onto
+    artifacts and for the promote-on-success hook to promote
+    ``document.active_snapshot_id``.
+    """
+    from j1.documents.index_refs import JsonIndexRefStore
+    from j1.documents.snapshot_layout import SnapshotLayout
+    from j1.documents.snapshot_service import DocumentSnapshotService
+    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
+
+    snapshot_store = JsonlDocumentSnapshotStore(workspace)
+    snapshot_service = DocumentSnapshotService(store=snapshot_store)
+    layout = SnapshotLayout(data_root=workspace.data_root)
+    index_refs = JsonIndexRefStore(workspace)
+    return snapshot_service, layout, index_refs
+
+
+def build_evidence_adapter(workspace: WorkspaceResolver, artifacts, sources):
+    """Phase 8: construct the canonical Postgres FTS evidence
+    adapter. PostgreSQL FTS is the only supported lexical/evidence
+    backend; the legacy SQLite path was deleted.
+    """
+    from j1.config.runtime import load_runtime_config
+    from j1.search.evidence_adapter import select_evidence_adapter
+    from j1.search.postgres_fts import (
+        PostgresFtsAdapter,
+        make_psycopg_connection_factory,
+    )
+
+    cfg = load_runtime_config()
+    dsn = cfg.evidence.effective_dsn(cfg.metadata)
+    if not dsn:
+        raise RuntimeError(
+            "Phase 8: PostgreSQL FTS requires a DSN. Set "
+            "J1_EVIDENCE_DSN or J1_METADATA_DSN. The SQLite FTS5 "
+            "fallback was deleted — there is no compatibility path."
+        )
+    factory = make_psycopg_connection_factory(dsn)
+    if factory is None:
+        raise RuntimeError(
+            "psycopg is not installed. Install j1[postgres] or pip "
+            "install 'psycopg[binary]>=3.1'."
+        )
+    backend = PostgresFtsAdapter(factory, schema=cfg.metadata.schema)
+    resolver = _build_chunk_resolver(workspace, artifacts)
+    return select_evidence_adapter(
+        "postgres_fts",
+        postgres_backend=backend,
+        postgres_chunk_resolver=resolver,
+        postgres_schema=cfg.metadata.schema,
+    )
+
+
+def _build_chunk_resolver(workspace, artifacts):
+    """Walk the artifact registry for chunk-kind records and yield
+    one ``{chunk_id, content, metadata}`` dict per chunk row. The
+    Postgres FTS adapter consumes this when materialising evidence
+    rows for an artifact_id.
+
+    Phase 5: bounded LRU cache. The cap is operator-configurable via
+    ``J1_EVIDENCE_CHUNK_RESOLVER_CACHE_MAX_ITEMS`` (default 1024 —
+    a few MB at typical chunk sizes). The cache is per-worker; the
+    activity layer doesn't clear it between invocations because
+    the LRU keeps memory bounded already.
+
+    The resolver reads only from the workspace-relative
+    ``record.location`` produced by the snapshot-aware artifact
+    registration helper — it never touches the legacy
+    ``{workdir}/runs/{run_id}/...`` path. If an artifact's location
+    doesn't resolve cleanly, the chunk is skipped without raising.
+    """
+    import os
+    from collections import OrderedDict
+
+    try:
+        cap = int(
+            os.environ.get(
+                "J1_EVIDENCE_CHUNK_RESOLVER_CACHE_MAX_ITEMS", "1024",
+            )
+        )
+    except ValueError:
+        cap = 1024
+    cap = max(0, cap)  # 0 disables caching cleanly.
+
+    cache: "OrderedDict[str, dict | None]" = OrderedDict()
+
+    def _cache_get(key: str):
+        if key not in cache:
+            return None, False
+        value = cache.pop(key)
+        cache[key] = value  # mark as most recently used
+        return value, True
+
+    def _cache_put(key: str, value):
+        if cap == 0:
+            return
+        cache[key] = value
+        while len(cache) > cap:
+            cache.popitem(last=False)  # evict oldest
+
+    def _resolver(ctx, artifact_id):
+        cached, hit = _cache_get(artifact_id)
+        if hit:
+            if cached is not None:
+                yield cached
+            return
+        try:
+            record = artifacts.get(ctx, artifact_id)
+        except Exception:
+            _cache_put(artifact_id, None)
+            return
+        if record.kind != "chunk":
+            _cache_put(artifact_id, None)
+            return
+        from pathlib import PurePosixPath
+        from j1.workspace.layout import WorkspaceArea
+        parts = PurePosixPath(record.location).parts
+        if len(parts) < 2:
+            _cache_put(artifact_id, None)
+            return
+        area_name, *rest = parts
+        try:
+            area = WorkspaceArea(area_name)
+        except ValueError:
+            _cache_put(artifact_id, None)
+            return
+        path = workspace.area(ctx, area).joinpath(*rest)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            _cache_put(artifact_id, None)
+            return
+        entry = {
+            "chunk_id": record.metadata.get("chunk_id") or record.artifact_id,
+            "content": content,
+            "metadata": dict(record.metadata or {}),
+        }
+        _cache_put(artifact_id, entry)
+        yield entry
+
+    return _resolver
 
 
 def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     """Construct a fully wired `ApplicationFacade`.
 
- Backed entirely by the framework's filesystem-based registries +
- SQLite FTS5 — the same setup that production deployments use as a
- single-writer baseline. No external services beyond Temporal.
+ Phase 3 retry: the canonical evidence adapter is built via
+ ``build_evidence_adapter`` (Postgres FTS by default; SQLite only
+ when explicitly selected). The legacy ``SqliteSearchIndexer`` is
+ still constructed for the REST ``/search`` endpoint's ``SearchService``
+ because that endpoint is a debug/operator surface — the canonical
+ query path goes through ``SmartQueryOrchestrator``. The legacy
+ indexer DOES NOT receive new writes by default: ingestion routes
+ evidence writes through the canonical adapter inside
+ ``SearchActivities``.
  """
     audit_sink = JsonlAuditSink(workspace)
     audit_recorder = DefaultAuditRecorder(audit_sink)
@@ -144,7 +310,15 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
         audit=audit_recorder, cost=cost_recorder,
         smart_query_orchestrator=smart_query_orchestrator,
     )
-    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+    # Phase 4: the canonical evidence adapter IS the search surface.
+    # ``SearchService`` resolves the active-snapshot allowlist via the
+    # source registry and dispatches to the adapter. REST /search
+    # endpoints inherit this — they no longer reach SQLite by
+    # default. Operators opting into SQLite (debug / comparison)
+    # set ``J1_EVIDENCE_BACKEND=sqlite_fts5``; the adapter still
+    # speaks the new interface so SearchService doesn't care which
+    # backend is behind it.
+    evidence_adapter = build_evidence_adapter(workspace, artifacts, sources)
 
     review_activities = ReviewActivities(review_queue=reviews, audit=audit_recorder)
 
@@ -155,7 +329,7 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
         source_lookup=SourceLookupService(sources),
         feedback=FeedbackService(feedback_store, audit_recorder),
         event_publisher=EventPublisherService(audit_recorder),
-        search=SearchService(indexer),
+        search=SearchService(evidence_adapter, sources),
         project_admin=ProjectAdminService(workspace),
         cost_summary=CostSummaryService(CostAggregator(workspace)),
         review=ReviewService(reviews, review_activities),
@@ -278,34 +452,41 @@ def build_smart_query_orchestrator(
     from j1.query.query_plan import RetrievalRouteKind
     from j1.query.retrieval_routes import (
         ArtifactLookupAdapter,
-        BM25Adapter,
+        LexicalEvidenceAdapter,
         RAGAnythingAdapter,
     )
-    from j1.search.indexer import SqliteSearchIndexer
 
     artifacts = JsonArtifactRegistry(workspace)
     sources = JsonSourceRegistry(workspace)
-    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
 
     routes: dict = {}
     if raganything_provider is not None:
         routes[RetrievalRouteKind.RAGANYTHING] = RAGAnythingAdapter(
             raganything_provider,
         )
-    def _resolve_eligible(ctx, scope):
-        """BM25 adapter wants ``frozenset[str] | None``;
+    def _resolve_eligible_snapshots(ctx, scope):
+        """The lexical adapter wants ``frozenset[str] | None``;
         ``resolve_eligible_active_run_ids`` returns ``EligibilityResult``.
-        Adapt the shape here."""
+        Phase 6: snapshot-id allowlist is the canonical visibility key."""
         try:
             result = resolve_eligible_active_run_ids(
                 ctx=ctx, scope=scope, registry=sources,
             )
-            return result.run_ids
+            return result.snapshot_ids
         except Exception:  # noqa: BLE001 — gate failure → unfiltered
             return None
-    routes[RetrievalRouteKind.BM25] = BM25Adapter(
-        indexer,
-        eligible_run_ids_resolver=_resolve_eligible,
+
+    # Phase 6: build the lexical-recall route on top of the canonical
+    # evidence adapter (Postgres FTS by default). Ranking is
+    # ``ts_rank_cd``, NOT true BM25 — the kind enum keeps the
+    # ``BM25`` name for trace back-compat (see LexicalEvidenceAdapter
+    # docstring).
+    lexical_evidence_adapter = build_evidence_adapter(
+        workspace, artifacts, sources,
+    )
+    routes[RetrievalRouteKind.BM25] = LexicalEvidenceAdapter(
+        lexical_evidence_adapter,
+        eligible_snapshot_ids_resolver=_resolve_eligible_snapshots,
     )
 
     def _read_artifact_bytes(record) -> str:
@@ -363,10 +544,17 @@ def build_document_cleanup_service(workspace: WorkspaceResolver):
     from j1.artifacts.registry import JsonArtifactRegistry
     from j1.documents.cleanup import DocumentCleanupService
     from j1.runs.store import JsonlIngestionRunStore
-    from j1.search.indexer import SqliteSearchIndexer
     artifacts = JsonArtifactRegistry(workspace)
     sources = JsonSourceRegistry(workspace)
-    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+    # Phase 7: the cleanup service no longer constructs
+    # ``SqliteSearchIndexer``. The canonical evidence index is
+    # Postgres FTS; cleanup goes through the snapshot-aware
+    # ``cleanup_snapshot`` path which routes to
+    # ``EvidenceIndexAdapter.delete_for_snapshot``. Legacy
+    # ``cleanup_run`` still works as a no-op on the FTS rows when
+    # no indexer is wired — it relies on artifact + workspace
+    # deletion, which is sufficient for the run-orphan-cleanup
+    # case.
     run_store = JsonlIngestionRunStore(workspace)
     raganything_workdir = (
         os.environ.get("J1_RAGANYTHING_WORKDIR")
@@ -375,7 +563,7 @@ def build_document_cleanup_service(workspace: WorkspaceResolver):
     return DocumentCleanupService(
         workspace=workspace,
         artifacts=artifacts,
-        indexer=indexer,
+        indexer=None,
         run_store=run_store,
         source_registry=sources,
         raganything_workdir=raganything_workdir,
@@ -454,7 +642,10 @@ def build_validation_service(workspace: WorkspaceResolver):
 
     sources = JsonSourceRegistry(workspace)
     artifacts = JsonArtifactRegistry(workspace)
-    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+    # Phase 7: the validation service constructor never consumed
+    # the SQLite indexer — the unused ``indexer = SqliteSearchIndexer(...)``
+    # construction was a relic. Removed to keep the legacy class
+    # out of normal wiring.
 
     # Best-effort LLM client for the test-case generator. Prefer
     # FAST role (cheap structured output) and fall back to text;
@@ -876,6 +1067,22 @@ def build_worker_spec(
     artifacts = JsonArtifactRegistry(workspace)
     reviews = JsonReviewQueue(workspace)
 
+    # Phase 3 retry: the snapshot service is the canonical lineage
+    # surface. Every artifact stamped by ``_materialize_draft`` and
+    # every terminal-success promotion routes through here. Wiring
+    # it at worker boot is what flips the default runtime from the
+    # legacy run-keyed path to the snapshot-centered one.
+    snapshot_service, snapshot_layout, index_refs = build_snapshot_services(
+        workspace,
+    )
+    # Phase 3 retry: pick the canonical evidence adapter. Default is
+    # Postgres FTS; SQLite is selected only when the operator
+    # explicitly sets ``J1_EVIDENCE_BACKEND=sqlite_fts5`` (or when
+    # ``postgres_fts`` is configured but the DSN is missing in DEV —
+    # ``build_evidence_adapter`` logs a structured warning before
+    # falling back so the absence is loud).
+    evidence_adapter = build_evidence_adapter(workspace, artifacts, sources)
+
     intake = DocumentIntakeService(
         workspace=workspace, registry=sources, audit_sink=audit_sink,
         max_upload_bytes=_resolve_max_upload_bytes(),
@@ -892,7 +1099,17 @@ def build_worker_spec(
         audit=audit_recorder, cost=cost_recorder,
         smart_query_orchestrator=smart_query_orchestrator,
     )
-    indexer = SqliteSearchIndexer(workspace, artifacts, sources)
+    # Phase 7: the SQLite indexer is constructed ONLY when an
+    # operator opted into the legacy dual-write path via
+    # ``J1_LEGACY_SQLITE_EVIDENCE_ENABLED=true``. Default = off →
+    # ``indexer`` is ``None`` and the indexer dispatch map is
+    # empty. The canonical Postgres FTS write target goes through
+    # ``evidence_adapter`` regardless. When legacy is enabled but
+    # Phase 8: SqliteSearchIndexer is GONE. ``indexer`` is always
+    # ``None``; SearchActivities relies on the canonical evidence
+    # adapter (Postgres FTS). Legacy operators that want SQLite
+    # for debug must roll their own outside the wiring helper.
+    indexer = None
 
     # Progress reporter shared by every workflow exit-point
     # activity (`run.completed`, `run.failed`, `run.cancelled`,
@@ -945,6 +1162,13 @@ def build_worker_spec(
         # rather than left as queryable phantom evidence.
         cleanup_service=build_document_cleanup_service(workspace),
         diagnostic_recorder=diagnostic_recorder,
+        # Phase 3 retry: wire the snapshot service into the run-
+        # promotion hook so a successful terminal status ALSO
+        # promotes ``document.active_snapshot_id`` (in addition to
+        # the existing ``active_run_id`` denormalisation). Without
+        # this, the snapshot side stays at BUILDING / READY without
+        # ever becoming the canonical visibility key.
+        snapshot_service=snapshot_service,
     ).all_activities()
     # Profiling activity (`j1.ingestion.profile_document`). Required
     # whenever `planner_enabled=True` flows through the workflow —
@@ -971,7 +1195,14 @@ def build_worker_spec(
     ).all_activities()
     activities += SearchActivities(
         audit=audit_recorder,
-        indexers={SqliteSearchIndexer.kind: indexer, **(indexers or {})},
+        indexers=dict(indexers or {}),
+        # Phase 3 retry: the canonical write target. The legacy
+        # ``indexer`` dispatch above still runs (for back-compat
+        # readers); the evidence adapter writes the snapshot-scoped
+        # row that the new query layer reads from.
+        evidence_adapter=evidence_adapter,
+        snapshot_service=snapshot_service,
+        artifact_registry=artifacts,
     ).all_activities()
     activities += ReviewActivities(
         review_queue=reviews, audit=audit_recorder,
@@ -1158,7 +1389,7 @@ def build_worker_spec(
         compilers=dict(compilers or {}),
         enrichers=dict(resolved_enrichers),
         graph_builders=dict(graph_builders or {}),
-        indexers={SqliteSearchIndexer.kind: indexer, **(indexers or {})},
+        indexers=dict(indexers or {}),
         query_providers=dict(query_providers or {}),
         # Without a reporter wired here, none of the per-step events
         # (`step.started`, `step.progress`, `step.completed`,
@@ -1196,6 +1427,13 @@ def build_worker_spec(
         compilers=dict(compilers or {}),
         enrichers=dict(enrichers or {}),
         graph_builders=dict(graph_builders or {}),
+        # Phase 3 retry: every artifact materialised by
+        # ``_materialize_draft`` now gets a typed ``snapshot_id`` +
+        # ``created_by_run_id`` stamped onto the ``ArtifactRecord``.
+        # The snapshot is allocated / reused via
+        # ``get_or_create_for_run`` so retries on the same
+        # (document_id, run_id) pair land in the same snapshot.
+        snapshot_service=snapshot_service,
     ).all_activities()
 
     # `BatchOrchestrationWorkflow` is the parent that dispatches

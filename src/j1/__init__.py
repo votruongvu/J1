@@ -496,12 +496,7 @@ from j1.review.queue import (
 from j1.query import (
     SmartQueryOrchestrator,
 )
-from j1.search import (
-    DEFAULT_DB_FILENAME,
-    MAX_INDEXED_BYTES,
-    SearchHit,
-    SqliteSearchIndexer,
-)
+from j1.search import SearchHit
 from j1.testing import TestEnvironment, make_test_environment
 from j1.workspace.layout import (
     DURABLE_AREAS,
@@ -700,7 +695,6 @@ __all__ = [
     "CompilerConfigError",
     "CompilerExecutionError",
     "DEFAULT_ANONYMOUS_PATHS",
-    "DEFAULT_DB_FILENAME",
     "DEFAULT_KB_SCOPES",
     "DELIVERY_STATUS_FAILED",
     "DELIVERY_STATUS_RETRYING",
@@ -828,7 +822,6 @@ __all__ = [
     "KnowledgeCompiler",
     "KnowledgeProcessingActivities",
     "LockHandle",
-    "MAX_INDEXED_BYTES",
     "ModelProvider",
     "ModelResponse",
     "ModelRouter",
@@ -892,7 +885,6 @@ __all__ = [
     "SearchIndexResult",
     "SearchIndexer",
     "SearchIndexerError",
-    "SqliteSearchIndexer",
     "SecurityContext",
     "SecuritySettings",
     "Settings",

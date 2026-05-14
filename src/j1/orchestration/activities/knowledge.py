@@ -149,6 +149,7 @@ class KnowledgeProcessingActivities:
         graph_builders: Mapping[str, GraphBuilder] | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
+        snapshot_service=None,
     ) -> None:
         self._workspace = workspace
         self._sources = sources
@@ -160,6 +161,13 @@ class KnowledgeProcessingActivities:
         self._graph_builders = dict(graph_builders or {})
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
+        # Phase 3: when wired, every materialised artifact gets a
+        # ``snapshot_id`` stamped on the typed field + metadata mirror.
+        # The activity allocates/looks up the candidate snapshot
+        # via ``get_or_create_for_run`` so retries on the same
+        # (document_id, run_id) pair land in the same snapshot.
+        # ``None`` keeps the legacy run-keyed path active.
+        self._snapshot_service = snapshot_service
 
     def all_activities(self) -> list:
         return [
@@ -207,6 +215,22 @@ class KnowledgeProcessingActivities:
             sig = inspect.signature(compiler.compile)
             if "run_id" in sig.parameters and input.correlation_id:
                 compile_kwargs["run_id"] = input.correlation_id
+            # Phase 7: thread the snapshot id through to the
+            # compiler so the bridge's snapshot-aware workspace
+            # resolver picks up the snapshot-scoped path. The
+            # snapshot is allocated lazily via ``get_or_create_for_run``
+            # — REST allocates up-front (Phase 5) so retries see the
+            # same id.
+            if "snapshot_id" in sig.parameters and self._snapshot_service is not None:
+                try:
+                    snap = self._snapshot_service.get_or_create_for_run(
+                        ctx,
+                        document_id=input.document_id,
+                        run_id=input.correlation_id,
+                    )
+                    compile_kwargs["snapshot_id"] = snap.snapshot_id
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
         except (TypeError, ValueError):
             pass
 
@@ -558,17 +582,29 @@ class KnowledgeProcessingActivities:
         merged_metadata = dict(draft.metadata)
         if run_id and "run_id" not in merged_metadata:
             merged_metadata["run_id"] = run_id
-        # Fail-fast lineage guard. The earlier orchestration fix
-        # ensures `correlation_id` flows through to `run_id`; this
-        # check is the defense-in-depth that catches any future
-        # producer that forgets to pass `run_id` through. Without it,
-        # graph_json / chunk / enriched.* artifacts could silently
-        # land with `run_id=None`, poisoning validation lineage
-        # checks (which is exactly the bug the latest test reports
-        # surface). The check is scoped to the artifact kinds the
-        # validation/retrieval surface gates on — generic blob
-        # uploads that legitimately have no run context skip the
-        # guard.
+        # Phase 3: resolve the snapshot the artifact belongs to. When
+        # the activities class was constructed with a snapshot
+        # service, every artifact gets ``snapshot_id`` on the typed
+        # field + metadata mirror. The legacy run_id mirror is kept
+        # so during the migration window the validation + search
+        # filters still find their data.
+        snapshot_id: str | None = None
+        primary_doc_id = (
+            (draft.source_document_ids or source_document_ids or [None])[0]
+        )
+        if (
+            self._snapshot_service is not None
+            and run_id
+            and primary_doc_id
+        ):
+            snap = self._snapshot_service.get_or_create_for_run(
+                ctx, document_id=primary_doc_id, run_id=run_id,
+            )
+            snapshot_id = snap.snapshot_id
+            merged_metadata.setdefault("snapshot_id", snapshot_id)
+        # Fail-fast lineage guard. Phase-3 prefers snapshot_id; legacy
+        # callers that supplied only run_id still satisfy the guard
+        # via the metadata fallback for backward compatibility.
         _enforce_lineage_or_raise(draft.kind, merged_metadata, artifact_id)
         record = ArtifactRecord(
             artifact_id=artifact_id,
@@ -585,6 +621,8 @@ class KnowledgeProcessingActivities:
             source_document_ids=list(draft.source_document_ids or source_document_ids),
             source_artifact_ids=list(draft.source_artifact_ids or source_artifact_ids),
             metadata=merged_metadata,
+            snapshot_id=snapshot_id,
+            created_by_run_id=run_id,
         )
         try:
             self._artifacts.add(record)

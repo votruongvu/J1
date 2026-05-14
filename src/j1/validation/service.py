@@ -230,6 +230,28 @@ _ANSWER_PREVIEW_CAP = 240
 _PREVIEW_MAX_CHARS = 240
 
 
+def _artifact_belongs_to_run(
+    artifact, run_id: str, snapshot_id: str | None,
+) -> bool:
+    """Phase 5: snapshot-only lineage check.
+
+    The artifact participates in this view iff its typed
+    ``snapshot_id`` matches the caller's ``snapshot_id``. The
+    pre-Phase-3 ``metadata["run_id"]`` fallback was removed in Phase
+    5 — pre-snapshot dev data is intentionally invisible after the
+    reset-and-re-ingest cycle. Validation does NOT validate against
+    legacy artifacts.
+
+    When ``snapshot_id`` is None (caller doesn't have one — should
+    not happen on the Phase-5 default path because runs allocate
+    ``target_snapshot_id`` up-front), the function returns False:
+    no fallback, no implicit run-id filtering.
+    """
+    if not snapshot_id:
+        return False
+    return getattr(artifact, "snapshot_id", None) == snapshot_id
+
+
 def _answer_preview(answer: str | None) -> str:
     """Truncate an answer to a stable preview length. Used by the
     debug payload so operators can compare native vs BM25
@@ -903,18 +925,27 @@ class IngestionValidationService:
         # gather modality artifacts the generator can
         # author cases against. Single registry scan; the partition
         # below is O(n) over the run's artifact list.
+        # Phase 3: pass through the run's target_snapshot_id so the
+        # per-bucket filters can prefer snapshot lineage when it
+        # exists. Falls back to the legacy run_id key for artifacts
+        # that pre-date the snapshot cutover.
+        snapshot_id = getattr(run, "target_snapshot_id", None)
         tables, visuals, graphs = self._modality_artifacts_for_run(
-            ctx, run.run_id,
+            ctx, run.run_id, snapshot_id,
         )
         # Enriched-stage artifacts (document_map / summary) carry
         # the structured context (entities, sections, doc purpose)
         # the question generator mines for high-signal question
         # seeds. Optional: when the run skipped enrichment the
         # generator falls back to chunk-only context.
-        enriched = self._enriched_artifacts_for_run(ctx, run.run_id)
+        enriched = self._enriched_artifacts_for_run(
+            ctx, run.run_id, snapshot_id,
+        )
         # Final ingestion report carries doc title / page count /
         # compile summary. Optional: legacy runs don't have one.
-        final_report = self._final_report_for_run(ctx, run.run_id)
+        final_report = self._final_report_for_run(
+            ctx, run.run_id, snapshot_id,
+        )
 
         # Generate first so we can compute the artifacts hash off
         # the sampled chunks. Cheap — no LLM call yet on the empty
@@ -1244,13 +1275,17 @@ class IngestionValidationService:
  the two surfaces see identical chunk text."""
         if self._workspace is None:
             return []
-        # Resolve only chunk-kind artifacts that belong to this run.
-        # + artifact tagging means we read directly from the
-        # registry by run_id; 's lineage fallback is preserved
-        # in `_resolve_run_artifacts` (we don't need that here yet).
+        # Phase 3: prefer snapshot_id (typed field) for lineage,
+        # fall back to legacy ``metadata["run_id"]`` when an artifact
+        # pre-dates the Phase-2 snapshot stamping. ``run`` carries
+        # ``target_snapshot_id`` when the workflow created a
+        # candidate snapshot; missing fields default to the run-id
+        # path so legacy data stays readable.
+        snapshot_id = getattr(run, "target_snapshot_id", None)
         artifacts = [
             a for a in self._artifacts.list_artifacts(ctx)
-            if a.kind == ARTIFACT_KIND_CHUNK and a.metadata.get("run_id") == run.run_id
+            if a.kind == ARTIFACT_KIND_CHUNK
+            and _artifact_belongs_to_run(a, run.run_id, snapshot_id)
         ]
         # Closure binds `ctx` so the projector can resolve paths
         # without knowing about the workspace.
@@ -1270,21 +1305,21 @@ class IngestionValidationService:
 
     def _modality_artifacts_for_run(
         self, ctx: ProjectContext, run_id: str,
+        snapshot_id: str | None = None,
     ) -> tuple[list, list, list]:
         """Partition the run's artifacts into the three modality
  buckets (tables / visuals / graph). One pass over the
  registry; returns the three lists in fixed order so the
  generator's call site stays unambiguous.
 
- keeps the kind taxonomy in lockstep with
- `j1.ingestion_review.availability` — table/image/graph
- gating uses identical kind strings everywhere.
+ Phase 3: prefer snapshot_id when supplied; fall back to
+ ``metadata["run_id"]`` for legacy artifacts.
  """
         tables: list = []
         visuals: list = []
         graphs: list = []
         for record in self._artifacts.list_artifacts(ctx):
-            if record.metadata.get("run_id") != run_id:
+            if not _artifact_belongs_to_run(record, run_id, snapshot_id):
                 continue
             if record.kind == "enriched.tables":
                 tables.append(record)
@@ -1296,20 +1331,18 @@ class IngestionValidationService:
 
     def _enriched_artifacts_for_run(
         self, ctx: ProjectContext, run_id: str,
+        snapshot_id: str | None = None,
     ) -> list:
         """Collect the enrichment-stage artifacts that carry
         structured context for question generation
         (``enriched.document_map``, ``enriched.summary``).
 
-        These are NOT modality artifacts — they're the rich
-        denormalised views that the question-context builder
-        mines for entities, sections, and a doc purpose. The
-        generator gracefully degrades when none are registered
-        (chunk-only context still produces document-specific
-        questions; just fewer of them)."""
+        Phase 3: prefer snapshot_id when supplied; fall back to
+        ``metadata["run_id"]`` for legacy artifacts.
+        """
         out: list = []
         for record in self._artifacts.list_artifacts(ctx):
-            if record.metadata.get("run_id") != run_id:
+            if not _artifact_belongs_to_run(record, run_id, snapshot_id):
                 continue
             if record.kind in {
                 "enriched.document_map", "enriched.summary",
@@ -1319,6 +1352,7 @@ class IngestionValidationService:
 
     def _final_report_for_run(
         self, ctx: ProjectContext, run_id: str,
+        snapshot_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Decode the ``final_ingestion_report`` artifact (when the
         run produced one) into a plain dict the generator's
@@ -1334,7 +1368,7 @@ class IngestionValidationService:
         candidates = [
             r for r in self._artifacts.list_artifacts(ctx)
             if r.kind == ARTIFACT_KIND_FINAL_INGESTION_REPORT
-            and r.metadata.get("run_id") == run_id
+            and _artifact_belongs_to_run(r, run_id, snapshot_id)
         ]
         if not candidates:
             return None

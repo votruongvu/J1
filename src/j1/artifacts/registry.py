@@ -17,21 +17,19 @@ ARTIFACT_REGISTRY_FILENAME = "artifacts.json"
 ARTIFACT_REGISTRY_VERSION = 1
 
 
-# Artifact kinds for which ``metadata.run_id`` is REQUIRED at the
-# registry layer. This is the last line of defense: even if a
-# producer or a registration helper bypasses the higher-level
-# lineage guards (``ProcessingService._register_draft``,
-# ``KnowledgeProcessingActivities._materialize_draft``), the registry
-# itself refuses to write the record. Defense in depth — operators
-# kept hitting "graph_json with run_id=None" because the validation
-# report flagged 7+ artifacts at a time, and each repair cycle
-# uncovered new orphans created via paths the upstream guards
-# missed.
+# Artifact kinds whose lineage MUST be checked at the registry
+# layer. Last line of defense — even if a producer or a
+# registration helper bypasses the higher-level guards
+# (``ProcessingService._register_draft``,
+# ``KnowledgeProcessingActivities._materialize_draft``), the
+# registry itself refuses to write the record.
 #
-# The list is intentionally tight: kinds in this set MUST be tied
-# to a specific ingestion run for retrieval/validation to scope
-# them correctly. Generic kinds (raw uploads, user attachments)
-# legitimately have no run scope and are allowed to omit ``run_id``.
+# Phase 3 promotes ``snapshot_id`` to the primary lineage key.
+# ``created_by_run_id`` is trace metadata and is RECOMMENDED but
+# not required. Legacy artifacts produced before the cutover may
+# carry only ``metadata["run_id"]``; the check accepts that as a
+# fallback during the migration window so the cutover doesn't
+# orphan dev data en masse.
 _REGISTRY_LINEAGE_REQUIRED_KINDS: frozenset[str] = frozenset({
     "graph_json",
 })
@@ -39,45 +37,42 @@ _REGISTRY_LINEAGE_REQUIRED_KINDS: frozenset[str] = frozenset({
 
 class RegistryLineageError(J1Error):
     """Raised when a write would land a lineage-required artifact
-    without ``metadata.run_id``. Subclass of ``J1Error`` so the
+    without a non-empty ``snapshot_id`` (or the legacy
+    ``metadata.run_id`` fallback). Subclass of ``J1Error`` so the
     legacy error-handling paths catch it without needing to know
     about lineage specifically."""
 
 
 def _enforce_registry_lineage_or_raise(record: ArtifactRecord) -> None:
-    """Last-line-of-defense lineage check. Refuses to add a
-    ``graph_json`` (or other lineage-required-kind) artifact without
-    a non-empty ``metadata.run_id``.
+    """Last-line-of-defense lineage check.
 
-    Why at the registry layer (and not just at the producer / draft
-    path): every other guard sits behind a specific entry point
-    (orchestration ``_materialize_draft``, legacy
-    ``ProcessingService._register_draft``). A future adapter that
-    calls ``artifacts.add()`` directly — for replay, repair, batch
-    import, in-process tests, anything — bypasses those guards. The
-    validation reports kept surfacing new orphan IDs run after run;
-    each upstream patch closed one path while another stayed open.
-    The registry is the ONE place every write goes through, so
-    enforcing here is hermetic.
+    Phase 3 rule: a ``graph_json`` (or other lineage-required-kind)
+    artifact MUST carry a non-empty ``snapshot_id`` on the typed
+    field, OR the legacy ``metadata["run_id"]`` for artifacts that
+    pre-date the cutover. The new-write path uses
+    ``register_snapshot_artifact`` which stamps both keys, so any
+    artifact written after Phase 3 satisfies both checks.
     """
     if record.kind not in _REGISTRY_LINEAGE_REQUIRED_KINDS:
         return
+    snapshot_id = getattr(record, "snapshot_id", None)
+    if snapshot_id:
+        return
     meta = record.metadata if isinstance(record.metadata, dict) else {}
-    run_id = meta.get("run_id")
-    if not run_id:
-        raise RegistryLineageError(
-            f"refusing to register artifact_id={record.artifact_id!r} of "
-            f"kind={record.kind!r}: metadata.run_id is missing or empty. "
-            "Lineage-required kinds must carry a non-empty run_id so "
-            "retrieval and validation can scope correctly. The producer "
-            "(_graph_drafts_from_storage) stamps it at the draft layer; "
-            "upstream registration helpers (_register_draft, "
-            "_materialize_draft) re-stamp from the workflow's "
-            "correlation_id. If you reached this error, the caller "
-            "bypassed both — pass run_id through the registration "
-            "chain, or use the project-wide cleanup sweep to invalidate "
-            "the existing orphan (POST /documents/{id}/repair)."
-        )
+    legacy_run_id = meta.get("run_id")
+    legacy_snapshot_id = meta.get("snapshot_id")
+    if legacy_snapshot_id or legacy_run_id:
+        return
+    raise RegistryLineageError(
+        f"refusing to register artifact_id={record.artifact_id!r} of "
+        f"kind={record.kind!r}: snapshot_id is missing and the legacy "
+        "metadata.run_id fallback is also empty. Phase 3 producers MUST "
+        "go through ``j1.documents.snapshot_artifact.register_snapshot_"
+        "artifact`` which stamps both fields. If you reached this error, "
+        "the caller bypassed the snapshot-aware helper — either supply "
+        "snapshot_id explicitly or call the Phase-3 helper. "
+        "``created_by_run_id`` is trace metadata, not a lineage key."
+    )
 
 
 class ArtifactNotFoundError(J1Error):

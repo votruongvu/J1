@@ -103,23 +103,23 @@ class SourceRegistry(Protocol):
         present."""
         ...
 
-    def try_promote_active_run_id(
+    def try_promote_active_snapshot_id(
         self,
         ctx: ProjectContext,
         document_id: str,
         *,
-        new_run_id: str,
-        expected_active_run_id: str | None,
-        completed_at,
+        new_snapshot_id: str,
     ) -> DocumentRecord | None:
-        """Atomic CAS: set ``active_run_id = new_run_id`` only if the
-        current value equals ``expected_active_run_id`` AND the
-        document isn't being removed.
+        """Phase 8: set ``active_snapshot_id`` on the document record.
 
-        Returns the updated record on success, ``None`` if the CAS
-        precondition didn't hold (concurrent promotion / document
-        removed / mid-removal). Callers MUST treat ``None`` as "the
-        candidate is now orphaned; trigger cleanup"."""
+        The snapshot service has already done the CAS against the
+        prior active snapshot via ``promote``; the registry just
+        denormalises the snapshot id onto the document record so
+        the query / validation gates can read it without scanning
+        the snapshot store.
+
+        Returns the updated record, or ``None`` when the document
+        no longer exists / is being removed."""
         ...
 
 
@@ -254,31 +254,17 @@ class JsonSourceRegistry:
         self._write(ctx, kept)
         return True
 
-    def try_promote_active_run_id(
+    def try_promote_active_snapshot_id(
         self,
         ctx: ProjectContext,
         document_id: str,
         *,
-        new_run_id: str,
-        expected_active_run_id: str | None,
-        completed_at,
+        new_snapshot_id: str,
     ) -> DocumentRecord | None:
-        """Compare-and-set promotion.
-
-        Promotes ``new_run_id`` to ``active_run_id`` IFF:
-
-          * the document's current ``active_run_id`` equals
-            ``expected_active_run_id`` (no concurrent promotion
-            stole the slot mid-run), AND
-          * the document is NOT in a removed knowledge state, AND
-          * the document is NOT mid-removal (lifecycle_status in
-            {``removing``, ``removed``, ``failed``,
-            ``cleanup_failed``}).
-
-        Returns the updated record on success, ``None`` when the
-        CAS precondition didn't hold. ``None`` is the signal the
-        caller must use to trigger candidate-cleanup — the run
-        succeeded but its result is now orphan."""
+        """Phase 3 denormalisation. The snapshot service already
+        CAS-promoted the snapshot record; we just stamp the active
+        snapshot id onto the document so the query / validation
+        visibility layer can read it without a second store hit."""
         from dataclasses import replace as _replace
 
         records = self._read(ctx)
@@ -291,19 +277,11 @@ class JsonSourceRegistry:
                 "removing", "removed", "failed", "cleanup_failed",
             ):
                 return None
-            if record.active_run_id != expected_active_run_id:
-                return None
-            merged = _replace(
-                record,
-                active_run_id=new_run_id,
-                updated_at=completed_at,
-            )
+            merged = _replace(record, active_snapshot_id=new_snapshot_id)
             records[i] = merged
             self._write(ctx, records)
             return merged
-        raise DocumentNotFoundError(
-            f"document {document_id} not found in {ctx.tenant_id}/{ctx.project_id}"
-        )
+        return None
 
     def release_operation_lock(
         self,
@@ -417,6 +395,11 @@ def _record_from_dict(d: dict) -> DocumentRecord:
         status=ProcessingStatus(d["status"]),
         created_at=datetime.fromisoformat(d["created_at"]),
         knowledge_state=raw_state,  # type: ignore[arg-type]
+        # Phase 8: ``active_snapshot_id`` is the only visibility
+        # pointer. ``active_run_id`` is a trace-only audit shim;
+        # missing on Phase-8-fresh records, present on pre-Phase-8
+        # data (still rendered by some legacy projector paths).
+        active_snapshot_id=d.get("active_snapshot_id"),
         active_run_id=d.get("active_run_id"),
         latest_version_id=d.get("latest_version_id"),
         removed_at=removed_at,

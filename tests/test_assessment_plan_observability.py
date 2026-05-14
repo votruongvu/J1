@@ -138,7 +138,7 @@ def test_compile_result_metadata_surfaces_warnings_for_disabled_capability(
         text_client=None,
         vision_client=None,
         embedding_client=None,
-        assessment_plan=plan,
+        assessment_plan=plan, snapshot_id="snap-test",
     )
 
     result = default_compile(request)
@@ -210,6 +210,7 @@ def test_compile_result_metadata_has_empty_keys_when_no_plan(
         text_client=None,
         vision_client=None,
         embedding_client=None,
+        snapshot_id="snap-test",
         # no assessment_plan
     )
 

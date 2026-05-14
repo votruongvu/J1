@@ -386,6 +386,7 @@ def test_default_compile_pre_converts_legacy_doc_then_calls_raganything(
         text_client=_FakeText(),
         vision_client=None,
         embedding_client=_FakeEmbed(),
+        snapshot_id="snap-test",
     )
 
     result = default_compile(request)
@@ -477,6 +478,7 @@ def test_default_compile_passes_through_native_pdf_unchanged(
         text_client=_FakeText(),
         vision_client=None,
         embedding_client=_FakeEmbed(),
+        snapshot_id="snap-test",
     )
 
     result = default_compile(request)
@@ -550,6 +552,7 @@ def test_default_compile_surfaces_lightrag_init_failure_as_provider_unavailable(
         text_client=_FakeText(),
         vision_client=None,
         embedding_client=_FakeEmbed(),
+        snapshot_id="snap-test",
     )
 
     with pytest.raises(ProviderUnavailable, match="embedding_func must be provided"):
@@ -680,6 +683,7 @@ def test_default_compile_short_circuits_plain_text_to_lightrag_ainsert(
         text_client=_FakeText(),
         vision_client=None,
         embedding_client=_FakeEmbed(),
+        snapshot_id="snap-test",
     )
 
     result = default_compile(request)
@@ -762,6 +766,7 @@ def test_default_compile_skips_ainsert_for_empty_text_file(
         text_client=_FakeText(),
         vision_client=None,
         embedding_client=_FakeEmbed(),
+        snapshot_id="snap-test",
     )
 
     result = default_compile(request)

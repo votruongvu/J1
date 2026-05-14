@@ -46,6 +46,9 @@ class RAGAnythingQueryRequest:
     embedding_client: Any | None
     document_id: str | None = None
     run_id: str | None = None
+    # Phase 6: snapshot-aware addressing — see RAGAnythingCompileRequest.
+    snapshot_id: str | None = None
+    working_dir_override: Any = None  # Path | None
 
 
 QueryCallable = Callable[[RAGAnythingQueryRequest], QueryResult]
@@ -92,6 +95,8 @@ class RAGAnythingQueryProvider:
         max_results: int | None = None,
         document_id: str | None = None,
         run_id: str | None = None,
+        snapshot_id: str | None = None,
+        working_dir_override: Any = None,
     ) -> QueryResult:
         request = RAGAnythingQueryRequest(
             ctx=ctx,
@@ -102,6 +107,8 @@ class RAGAnythingQueryProvider:
             embedding_client=self._llm_registry.try_embedding(),
             document_id=document_id,
             run_id=run_id,
+            snapshot_id=snapshot_id,
+            working_dir_override=working_dir_override,
         )
         try:
             return self._query_callable(request)
@@ -128,9 +135,17 @@ class RAGAnythingQueryProvider:
         workspace into debug payloads — operators need to see WHICH
         directory native answered against without inferring it.
         """
-        from j1.providers.raganything._bridge import workspace_path_for_run
-        path = workspace_path_for_run(
-            self._settings, ctx, document_id, run_id,
+        # Phase 6: debug-payload-only read of the snapshot-scoped
+        # workspace path. The legacy run-keyed helper is gone;
+        # operators inspecting failures get the snapshot path when
+        # callers thread it through, or None when they don't.
+        from j1.providers.raganything._bridge import _snapshot_workspace_path
+        # The debug surface doesn't carry snapshot_id today —
+        # returning None is intentional. When the validation surface
+        # learns to pass snapshot_id, this resolves to a real path.
+        snapshot_id = getattr(self, "_last_snapshot_id", None)
+        path = _snapshot_workspace_path(
+            self._settings, ctx, document_id, snapshot_id,
         )
         return str(path) if path is not None else None
 

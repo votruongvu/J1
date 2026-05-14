@@ -80,6 +80,14 @@ class RAGAnythingCompileRequest:
     # Vendor-neutral plan. `Any` typing keeps this dataclass importable
     # without forcing every consumer to import `j1.processing.assessment`.
     assessment_plan: Any = None
+    # Phase 6: snapshot-scoped workspace addressing. The bridge
+    # prefers ``working_dir_override`` (set by the snapshot-aware
+    # ``RAGAnythingCompileAdapter``); when absent it falls back to
+    # ``snapshot_id`` to compute the snapshot path. Neither →
+    # bridge raises. Test-only callers that don't care about the
+    # workspace pass ``working_dir_override=Path("/tmp/...")``.
+    snapshot_id: str | None = None
+    working_dir_override: Any = None  # Path | None — Any keeps dataclass import-free of pathlib.
 
 
 CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult]
@@ -162,6 +170,8 @@ class RAGAnythingCompiler:
         progress_reporter: Any = None,
         run_id: str | None = None,
         assessment_plan: Any = None,
+        snapshot_id: str | None = None,
+        working_dir_override: Any = None,
     ) -> ArtifactProcessingResult:
         """Run the wrapped vendor compile.
 
@@ -188,6 +198,8 @@ class RAGAnythingCompiler:
             progress_reporter=progress_reporter,
             run_id=run_id,
             assessment_plan=assessment_plan,
+            snapshot_id=snapshot_id,
+            working_dir_override=working_dir_override,
         )
         try:
             return self._compile_callable(request)

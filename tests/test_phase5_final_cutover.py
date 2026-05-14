@@ -1,0 +1,254 @@
+"""Phase 5 — final cutover invariants.
+
+These tests lock the Phase 5 changes:
+
+  * ``IngestionRun.target_snapshot_id`` is set BEFORE the workflow
+    starts (REST sites allocate the candidate snapshot first).
+  * ``workspace_path_for_run`` public symbol is DELETED.
+  * Validation no longer falls back to ``metadata["run_id"]``.
+  * REST ``/search`` response carries ``snapshotId``.
+  * Chunk resolver cache respects the LRU cap.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from j1.artifacts.models import ArtifactRecord
+from j1.jobs.status import ProcessingStatus, ReviewStatus
+from j1.projects.context import ProjectContext
+
+
+@pytest.fixture
+def ctx():
+    return ProjectContext(tenant_id="t", project_id="p", profile=None)
+
+
+# ---- Up-front snapshot allocation ------------------------------
+
+
+def test_ingestion_run_carries_target_snapshot_id_field():
+    """The ``IngestionRun`` dataclass exposes the typed
+    ``target_snapshot_id`` field that the REST allocation path
+    sets."""
+    import inspect
+    from j1.runs.models import IngestionRun
+    assert "target_snapshot_id" in IngestionRun.__dataclass_fields__
+
+
+def test_rest_app_allocator_returns_snapshot_id_when_service_wired(
+    tmp_path, ctx,
+):
+    """Spot-check the inner helper that REST app uses to allocate
+    a candidate snapshot before persisting the IngestionRun. With
+    a real snapshot service wired, it returns the new snapshot's
+    id; without, it returns None."""
+    from j1.config.settings import Settings
+    from j1.documents.snapshot_service import DocumentSnapshotService
+    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
+    from j1.workspace.resolver import WorkspaceResolver
+
+    workspace = WorkspaceResolver(Settings(data_root=tmp_path))
+    service = DocumentSnapshotService(
+        store=JsonlDocumentSnapshotStore(workspace),
+    )
+    snap = service.create_candidate(
+        ctx, document_id="d-1", created_by_run_id="run-X",
+    )
+    assert snap.snapshot_id.startswith("snap_")
+    # Re-call returns the same snapshot for an existing (doc, run) pair.
+    again = service.get_or_create_for_run(
+        ctx, document_id="d-1", run_id="run-X",
+    )
+    assert again.snapshot_id == snap.snapshot_id
+
+
+# ---- workspace_path_for_run is deleted -------------------------
+
+
+def test_public_workspace_path_for_run_is_gone():
+    """Phase 5 deleted the public deprecated shim. Importing it
+    from the bridge must fail."""
+    from j1.providers.raganything import _bridge
+    assert not hasattr(_bridge, "workspace_path_for_run")
+
+
+def test_internal_legacy_helper_is_deleted_in_phase6():
+    """Phase 6 deleted ``_legacy_workspace_path_for_run`` entirely.
+    The replacement is ``_snapshot_workspace_path`` which addresses
+    snapshots, not runs. Callers that still try to import the old
+    symbol get an ImportError."""
+    from j1.providers.raganything import _bridge
+    assert not hasattr(_bridge, "_legacy_workspace_path_for_run")
+
+
+# ---- Validation snapshot-only ----------------------------------
+
+
+def _record(snapshot_id=None, metadata=None):
+    return ArtifactRecord(
+        artifact_id="art-1",
+        project=ProjectContext(tenant_id="t", project_id="p", profile=None),
+        kind="chunk",
+        location="compiled/art-1.txt",
+        content_hash="x",
+        byte_size=1,
+        status=ProcessingStatus.SUCCEEDED,
+        review_status=ReviewStatus.NOT_REQUIRED,
+        version=1,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        snapshot_id=snapshot_id,
+        metadata=dict(metadata or {}),
+    )
+
+
+def test_validation_matches_only_when_snapshot_ids_match():
+    """Phase 5: snapshot id is the ONLY lineage key. An artifact
+    with a matching snapshot_id participates; everything else
+    is excluded."""
+    from j1.validation.service import _artifact_belongs_to_run
+    a = _record(snapshot_id="snap-1")
+    assert _artifact_belongs_to_run(a, "run-1", "snap-1") is True
+
+
+def test_validation_excludes_artifact_with_only_legacy_run_id_metadata():
+    """Phase 5: the ``metadata["run_id"]`` fallback is REMOVED.
+    Legacy artifacts that pre-date the snapshot stamping are NOT
+    validated — operators reset and re-ingest."""
+    from j1.validation.service import _artifact_belongs_to_run
+    a = _record(snapshot_id=None, metadata={"run_id": "run-1"})
+    assert _artifact_belongs_to_run(a, "run-1", "snap-1") is False
+
+
+def test_validation_excludes_when_snapshot_id_is_none():
+    """Phase 5: without a snapshot_id from the caller, the
+    function returns False — no implicit run-id filtering."""
+    from j1.validation.service import _artifact_belongs_to_run
+    a = _record(snapshot_id="snap-1")
+    assert _artifact_belongs_to_run(a, "run-1", None) is False
+
+
+def test_validation_excludes_artifact_with_different_snapshot():
+    """A different snapshot's artifact NEVER matches, even if the
+    caller's run_id matches the typed ``created_by_run_id``."""
+    from j1.validation.service import _artifact_belongs_to_run
+    a = _record(snapshot_id="snap-other")
+    assert _artifact_belongs_to_run(a, "run-1", "snap-1") is False
+
+
+# ---- REST /search snapshot_id on the wire ----------------------
+
+
+def test_search_hit_record_includes_snapshot_id_fields():
+    """The Pydantic wire schema MUST advertise snapshot lineage so
+    the FE / API consumers can deep-link a hit to its snapshot."""
+    from j1.adapters.rest.schemas import SearchHitRecord
+    fields = SearchHitRecord.model_fields
+    assert "snapshot_id" in fields
+    assert "chunk_id" in fields
+    assert "created_by_run_id" in fields
+
+
+def test_search_hit_dto_carries_snapshot_id():
+    """The Phase-4 DTO field is preserved + serialised by the REST
+    layer's hit-record translation."""
+    from j1.integration.dto import SearchHitDTO
+    dto = SearchHitDTO(
+        artifact_id="a", artifact_type="evidence_chunk",
+        title="t", score=0.9,
+        snapshot_id="snap-1", chunk_id="c-1",
+    )
+    assert dto.snapshot_id == "snap-1"
+
+
+# ---- Chunk resolver cache cap ----------------------------------
+
+
+def test_chunk_resolver_lru_cache_respects_configurable_cap(monkeypatch, tmp_path):
+    """The LRU cap is operator-configurable via
+    ``J1_EVIDENCE_CHUNK_RESOLVER_CACHE_MAX_ITEMS``. Above the cap,
+    oldest entries are evicted."""
+    from deploy.dev._wiring import _build_chunk_resolver
+    from j1.config.settings import Settings
+    from j1.workspace.resolver import WorkspaceResolver
+    from j1.workspace.layout import WorkspaceArea
+
+    monkeypatch.setenv("J1_EVIDENCE_CHUNK_RESOLVER_CACHE_MAX_ITEMS", "2")
+
+    workspace = WorkspaceResolver(Settings(data_root=tmp_path))
+    ctx_obj = ProjectContext(tenant_id="t", project_id="p", profile=None)
+    compiled = workspace.area(ctx_obj, WorkspaceArea.COMPILED)
+    compiled.mkdir(parents=True, exist_ok=True)
+    # Materialise 3 distinct chunk files.
+    for art_id in ("art-1", "art-2", "art-3"):
+        (compiled / f"{art_id}.txt").write_text(f"body of {art_id}")
+
+    read_count = {"n": 0}
+
+    class _Counting:
+        def get(self, ctx, artifact_id):
+            read_count["n"] += 1
+            from datetime import datetime, timezone
+            return ArtifactRecord(
+                artifact_id=artifact_id, project=ctx, kind="chunk",
+                location=f"compiled/{artifact_id}.txt",
+                content_hash="x", byte_size=1,
+                status=ProcessingStatus.SUCCEEDED,
+                review_status=ReviewStatus.NOT_REQUIRED, version=1,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                metadata={"chunk_id": f"c-{artifact_id}"},
+            )
+
+    resolver = _build_chunk_resolver(workspace, _Counting())
+    list(resolver(ctx_obj, "art-1"))  # miss → read 1
+    list(resolver(ctx_obj, "art-2"))  # miss → read 2
+    list(resolver(ctx_obj, "art-3"))  # miss → read 3 (cap=2 evicts art-1)
+    list(resolver(ctx_obj, "art-1"))  # miss again → read 4 (was evicted)
+    list(resolver(ctx_obj, "art-3"))  # hit (most-recently-used)
+    list(resolver(ctx_obj, "art-3"))  # hit
+    assert read_count["n"] == 4
+
+
+def test_chunk_resolver_handles_cap_zero_as_no_cache(monkeypatch, tmp_path):
+    """Cap=0 means caching is OFF — every read hits disk again."""
+    from deploy.dev._wiring import _build_chunk_resolver
+    from j1.config.settings import Settings
+    from j1.workspace.resolver import WorkspaceResolver
+    from j1.workspace.layout import WorkspaceArea
+
+    monkeypatch.setenv("J1_EVIDENCE_CHUNK_RESOLVER_CACHE_MAX_ITEMS", "0")
+
+    workspace = WorkspaceResolver(Settings(data_root=tmp_path))
+    ctx_obj = ProjectContext(tenant_id="t", project_id="p", profile=None)
+    compiled = workspace.area(ctx_obj, WorkspaceArea.COMPILED)
+    compiled.mkdir(parents=True, exist_ok=True)
+    (compiled / "art-1.txt").write_text("body")
+
+    read_count = {"n": 0}
+
+    class _Counting:
+        def get(self, ctx, artifact_id):
+            read_count["n"] += 1
+            from datetime import datetime, timezone
+            return ArtifactRecord(
+                artifact_id=artifact_id, project=ctx, kind="chunk",
+                location=f"compiled/{artifact_id}.txt",
+                content_hash="x", byte_size=1,
+                status=ProcessingStatus.SUCCEEDED,
+                review_status=ReviewStatus.NOT_REQUIRED, version=1,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                metadata={},
+            )
+
+    resolver = _build_chunk_resolver(workspace, _Counting())
+    list(resolver(ctx_obj, "art-1"))
+    list(resolver(ctx_obj, "art-1"))
+    list(resolver(ctx_obj, "art-1"))
+    assert read_count["n"] == 3

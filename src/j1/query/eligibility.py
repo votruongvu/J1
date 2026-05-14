@@ -49,21 +49,27 @@ _DISALLOWED_LIFECYCLE: frozenset[str] = frozenset(
 class EligibilityResult:
     """Outcome of one eligibility resolution.
 
-    ``run_ids`` is the set of ``active_run_id`` values that may
-    participate in the query. ``document_ids`` is the matching set
-    of document ids — useful for callers that want to enrich
-    debug payloads with "which documents survived the gate?".
+    Phase 3 introduces ``snapshot_ids`` as the **primary** visibility
+    key. ``run_ids`` is preserved for the legacy code paths (SQLite
+    FTS WHERE clauses, validation filters) that haven't been migrated
+    yet — both fields are filled in for every result so neither
+    side has to look up the other set.
+
     ``unchecked`` is true when the caller bypassed the gate via
     ``ScopeOverride`` (validation diagnostic path).
     """
 
+    snapshot_ids: frozenset[str]
     run_ids: frozenset[str]
     document_ids: frozenset[str]
     unchecked: bool = False
 
     @property
     def is_empty(self) -> bool:
-        return not self.run_ids
+        # The snapshot side is now the source of truth. A query
+        # with no eligible snapshots is unrunnable even when a
+        # legacy ``active_run_id`` exists.
+        return not self.snapshot_ids
 
 
 def resolve_eligible_active_run_ids(
@@ -98,6 +104,7 @@ def resolve_eligible_active_run_ids(
     if unchecked:
         if isinstance(scope, RunScope):
             return EligibilityResult(
+                snapshot_ids=frozenset(),
                 run_ids=frozenset({scope.run_id}),
                 document_ids=frozenset(),
                 unchecked=True,
@@ -107,6 +114,7 @@ def resolve_eligible_active_run_ids(
         # result here forces the caller to either set scope
         # correctly or accept zero results.
         return EligibilityResult(
+            snapshot_ids=frozenset(),
             run_ids=frozenset(),
             document_ids=frozenset(),
             unchecked=True,
@@ -121,7 +129,9 @@ def resolve_eligible_active_run_ids(
     # Defensive: unknown future scope class. Return empty so the
     # gate fails closed.
     return EligibilityResult(
-        run_ids=frozenset(), document_ids=frozenset(),
+        snapshot_ids=frozenset(),
+        run_ids=frozenset(),
+        document_ids=frozenset(),
     )
 
 
@@ -129,14 +139,22 @@ def _resolve_workspace_scope(
     ctx: ProjectContext, registry: SourceRegistry,
 ) -> EligibilityResult:
     docs = registry.list_documents(ctx)
+    eligible_snaps: set[str] = set()
     eligible_runs: set[str] = set()
     eligible_docs: set[str] = set()
     for doc in docs:
         if not _is_document_eligible(doc):
             continue
-        eligible_runs.add(doc.active_run_id)  # type: ignore[arg-type]
         eligible_docs.add(doc.document_id)
+        eligible_snaps.add(doc.active_snapshot_id)
+        # Legacy companion: SQLite-FTS code paths that still filter
+        # by ``run_id`` keep working when ``active_run_id`` is also
+        # set. NEW eligible documents always have ``active_snapshot_id``
+        # — the fallback only fires for pre-Phase-3 reads.
+        if getattr(doc, "active_run_id", None):
+            eligible_runs.add(doc.active_run_id)
     return EligibilityResult(
+        snapshot_ids=frozenset(eligible_snaps),
         run_ids=frozenset(eligible_runs),
         document_ids=frozenset(eligible_docs),
     )
@@ -149,15 +167,23 @@ def _resolve_active_scope(
         doc = registry.get(ctx, document_id)
     except Exception:  # noqa: BLE001 — DocumentNotFoundError + transient IO
         return EligibilityResult(
-            run_ids=frozenset(), document_ids=frozenset(),
+            snapshot_ids=frozenset(),
+            run_ids=frozenset(),
+            document_ids=frozenset(),
         )
     if not _is_document_eligible(doc):
         return EligibilityResult(
+            snapshot_ids=frozenset(),
             run_ids=frozenset(),
             document_ids=frozenset({doc.document_id}),
         )
     return EligibilityResult(
-        run_ids=frozenset({doc.active_run_id}),  # type: ignore[arg-type]
+        snapshot_ids=frozenset({doc.active_snapshot_id}),
+        run_ids=(
+            frozenset({doc.active_run_id})
+            if getattr(doc, "active_run_id", None)
+            else frozenset()
+        ),
         document_ids=frozenset({doc.document_id}),
     )
 
@@ -170,46 +196,69 @@ def _resolve_run_scope(
     eligible — otherwise queries against an explicit run_id of a
     removed document would leak.
 
-    Find the document by scanning. The registry doesn't index by
-    run_id today; for moderate projects this is fine (linear scan
-    over a small dict). Future optimisation can add a reverse
-    index when this becomes hot.
+    Snapshot-id companion: when the matched document has an
+    ``active_snapshot_id``, the result carries it in
+    ``snapshot_ids``. New code paths read this set; legacy paths
+    still see the run_id in ``run_ids``.
     """
     docs = registry.list_documents(ctx)
     for doc in docs:
         if doc.active_run_id == run_id:
             if _is_document_eligible(doc):
                 return EligibilityResult(
+                    snapshot_ids=frozenset({doc.active_snapshot_id}),
                     run_ids=frozenset({run_id}),
                     document_ids=frozenset({doc.document_id}),
                 )
             return EligibilityResult(
+                snapshot_ids=frozenset(),
                 run_ids=frozenset(),
                 document_ids=frozenset({doc.document_id}),
             )
-    # Run id supplied but no document currently points at it — this
-    # is the case for superseded / candidate / failed runs. The
-    # gated path returns empty; diagnostic callers should pass
-    # ``unchecked=True``.
+    # Run id supplied but no document currently points at it.
     return EligibilityResult(
-        run_ids=frozenset(), document_ids=frozenset(),
+        snapshot_ids=frozenset(),
+        run_ids=frozenset(),
+        document_ids=frozenset(),
+    )
+
+
+def resolve_eligible_active_snapshot_ids(
+    *,
+    ctx: ProjectContext,
+    scope: QueryScope,
+    registry: SourceRegistry,
+    unchecked: bool = False,
+) -> EligibilityResult:
+    """Phase-3 convenience wrapper. Returns the same
+    ``EligibilityResult`` as :func:`resolve_eligible_active_run_ids`
+    — callers that read the new ``snapshot_ids`` field can switch
+    to this name to advertise intent."""
+    return resolve_eligible_active_run_ids(
+        ctx=ctx, scope=scope, registry=registry, unchecked=unchecked,
     )
 
 
 def _is_document_eligible(doc: "DocumentRecord") -> bool:
     """The full eligibility predicate.
 
+    Phase 3 retry: ``active_snapshot_id`` is the ONLY visibility
+    key. The previous ``active_run_id`` fallback is gone — operators
+    who ran against pre-Phase-3 data must reset (``scripts/dev/
+    reset_docker.sh --yes``) and re-ingest. No backfill.
+
     A document participates in queries when:
       * ``knowledge_state == "attached"`` (operator gate)
-      * ``active_run_id`` is set (a successful run has promoted)
+      * ``active_snapshot_id`` is set (a successful Phase-3
+        promotion happened)
       * ``lifecycle_status`` is not in the disallowed set
         (rejects removing / removed / failed / cleanup_failed
-        even when the operator gate or active_run_id say
+        even when the operator gate or active markers say
         otherwise).
     """
     if getattr(doc, "knowledge_state", "attached") != "attached":
         return False
-    if not getattr(doc, "active_run_id", None):
+    if not getattr(doc, "active_snapshot_id", None):
         return False
     lifecycle = getattr(doc, "lifecycle_status", None)
     if lifecycle is not None and lifecycle in _DISALLOWED_LIFECYCLE:

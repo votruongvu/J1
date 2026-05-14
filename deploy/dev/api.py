@@ -55,6 +55,7 @@ from deploy.dev._wiring import (
     build_batch_run_store,
     build_document_lifecycle_service,
     build_review_service,
+    build_snapshot_services,
     build_validation_service,
     build_run_progress_surface,
     build_settings,
@@ -81,7 +82,6 @@ from j1.orchestration.workflows.batch_orchestration import (
 )
 from temporalio.common import WorkflowIDConflictPolicy
 from j1.integration.services import ApplicationFacade
-from j1.search.indexer import SqliteSearchIndexer
 
 _log = logging.getLogger("j1.dev.api")
 
@@ -254,6 +254,11 @@ def make_batch_starter(
 
 
 def _build_app():
+    # Phase 1: validate the unified runtime config FIRST. In PROD this
+    # fails fast on missing providers; in DEV the validator is lenient
+    # so the legacy local seams still come up.
+    from deploy.dev._wiring import build_runtime_config
+    build_runtime_config()
     settings = build_settings()
     workspace = build_workspace(settings)
     facade = build_application_facade(workspace)
@@ -409,7 +414,10 @@ def _build_app():
     capabilities = capabilities_from_bootstrap(
         boot,
         enricher_kinds=enricher_kinds,
-        indexer_kinds=frozenset({SqliteSearchIndexer.kind}),
+        # Phase 8: SQLite indexer deleted; no indexer kinds
+        # registered by default. Evidence flows through the
+        # canonical Postgres FTS adapter via the activity layer.
+        indexer_kinds=frozenset(),
     )
 
     app = create_rest_api(
@@ -455,6 +463,12 @@ def _build_app():
         # can re-probe synchronously instead of waiting for the next
         # 30s background tick.
         llm_registry=getattr(boot, "llm_registry", None),
+        # Phase 5: snapshot service injected so every
+        # ``IngestionRun`` created via the REST surface allocates
+        # its target ``DocumentSnapshot`` UP-FRONT (instead of
+        # leaving the activity layer to do it lazily on first
+        # artifact write).
+        snapshot_service=build_snapshot_services(workspace)[0],
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

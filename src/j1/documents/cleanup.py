@@ -63,7 +63,6 @@ if TYPE_CHECKING:
     from j1.artifacts.registry import ArtifactRegistry
     from j1.intake.registry import SourceRegistry
     from j1.runs.store import IngestionRunStore
-    from j1.search.indexer import SqliteSearchIndexer
     from j1.workspace.resolver import WorkspaceResolver
 
 _log = logging.getLogger("j1.documents.cleanup")
@@ -113,14 +112,25 @@ class DocumentCleanupService:
         *,
         workspace: "WorkspaceResolver",
         artifacts: "ArtifactRegistry | None" = None,
-        indexer: "SqliteSearchIndexer | None" = None,
+        indexer=None,  # Phase 8: legacy SQLite indexer slot; ignored.
         run_store: "IngestionRunStore | None" = None,
         source_registry: "SourceRegistry | None" = None,
         raganything_workdir: str | Path | None = None,
+        evidence_adapter=None,
     ) -> None:
         self._workspace = workspace
         self._artifacts = artifacts
+        # Phase 7: ``indexer`` is the LEGACY SQLite path. Default
+        # wiring passes ``None``; only an operator explicitly
+        # enabling ``J1_LEGACY_SQLITE_EVIDENCE_ENABLED=true`` wires
+        # it. The Phase-7 ``cleanup_snapshot`` API routes through
+        # ``evidence_adapter`` instead.
         self._indexer = indexer
+        # Phase 7: snapshot-scoped evidence cleanup target. When
+        # wired (the canonical default), ``cleanup_snapshot`` calls
+        # ``evidence_adapter.delete_for_snapshot(ctx, snapshot_id)``
+        # to drop Postgres FTS rows for the snapshot.
+        self._evidence_adapter = evidence_adapter
         self._run_store = run_store
         self._source_registry = source_registry
         # ``raganything_workdir`` overrides the per-run LightRAG +
@@ -141,17 +151,17 @@ class DocumentCleanupService:
         document_id: str,
         run_id: str,
     ) -> CleanupResult:
-        """Drop everything one run produced. Idempotent.
+        """Phase 8 DELETED for default-path use. The run-scoped
+        cleanup primitives are gone; this method survives only as
+        a back-compat shim that delegates to a NO-OP. Callers MUST
+        migrate to ``cleanup_snapshot``.
 
-        Order matters: drop FTS rows BEFORE artifacts so a partial
-        failure doesn't leave the index pointing at deleted
-        artifact files."""
-        steps: list[CleanupStepResult] = []
-        steps.append(self._delete_run_index_rows(ctx, run_id))
-        steps.append(self._delete_run_artifacts(ctx, run_id))
-        steps.append(self._delete_run_workspace(ctx, document_id, run_id))
-        ok = all(s.ok for s in steps)
-        return CleanupResult(ok=ok, steps=steps)
+        Returns a clean CleanupResult so the orphan-cleanup path
+        in ``RunsActivities._cleanup_orphan_candidate`` still
+        returns ok=True without doing harm — the snapshot side
+        already handles the visibility correctly.
+        """
+        return CleanupResult(ok=True, steps=[])
 
     def cleanup_document(
         self,
@@ -188,7 +198,87 @@ class DocumentCleanupService:
             ok = all(s.ok for s in steps)
         return CleanupResult(ok=ok, steps=steps)
 
+    def cleanup_snapshot(
+        self,
+        ctx: ProjectContext,
+        *,
+        document_id: str,
+        snapshot_id: str,
+    ) -> CleanupResult:
+        """Phase 7: snapshot-scoped cleanup. Drops:
+
+          * Evidence rows for ``snapshot_id`` (via the evidence
+            adapter's ``delete_for_snapshot``).
+          * Artifacts whose typed ``snapshot_id`` matches.
+
+        Idempotent. The legacy run-keyed workspace dirs are not
+        targeted here — Phase 2's ``SnapshotCleanupService`` owns
+        the workspace tree cleanup, keyed on the snapshot's
+        on-disk root. This method is the per-snapshot ARTIFACT +
+        EVIDENCE drop only.
+        """
+        steps: list[CleanupStepResult] = []
+        # Evidence rows (Postgres FTS).
+        if self._evidence_adapter is not None:
+            try:
+                removed = self._evidence_adapter.delete_for_snapshot(
+                    ctx, snapshot_id,
+                )
+                steps.append(CleanupStepResult(
+                    name="evidence", ok=True,
+                    items_removed=int(removed or 0),
+                ))
+            except Exception as exc:  # noqa: BLE001
+                steps.append(CleanupStepResult(
+                    name="evidence", ok=False, error=str(exc),
+                ))
+        else:
+            steps.append(CleanupStepResult(name="evidence", ok=True))
+        # Artifacts by snapshot_id (typed field).
+        steps.append(self._delete_snapshot_artifacts(ctx, snapshot_id))
+        ok = all(s.ok for s in steps)
+        return CleanupResult(ok=ok, steps=steps)
+
     # ---- Primitives -----------------------------------------------
+
+    def _delete_snapshot_artifacts(
+        self, ctx: ProjectContext, snapshot_id: str,
+    ) -> CleanupStepResult:
+        """Phase 7 analogue of ``_delete_run_artifacts``: scans the
+        artifact registry for records whose typed ``snapshot_id``
+        matches, unlinks their files, deletes their registry
+        entries."""
+        if self._artifacts is None:
+            return CleanupStepResult(name="artifacts", ok=True)
+        removed = 0
+        try:
+            records = self._artifacts.list_artifacts(ctx)
+        except Exception as exc:  # noqa: BLE001
+            return CleanupStepResult(
+                name="artifacts", ok=False, error=str(exc),
+            )
+        for record in records:
+            if getattr(record, "snapshot_id", None) != snapshot_id:
+                continue
+            # Unlink the on-disk file. Best-effort; the registry
+            # delete is the load-bearing step (idempotency).
+            try:
+                project_root = self._workspace.project_root(record.project)
+                path = project_root / record.location
+                if path.exists():
+                    path.unlink()
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+            try:
+                if self._artifacts.delete_by_artifact_id(
+                    ctx, record.artifact_id,
+                ):
+                    removed += 1
+            except Exception:  # noqa: BLE001 — best-effort
+                continue
+        return CleanupStepResult(
+            name="artifacts", ok=True, items_removed=removed,
+        )
 
     def _delete_run_artifacts(
         self, ctx: ProjectContext, run_id: str,

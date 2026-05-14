@@ -214,6 +214,7 @@ class RunsActivities:
         artifact_registry: "ArtifactRegistry | None" = None,
         cleanup_service: "DocumentCleanupService | None" = None,
         diagnostic_recorder: "DiagnosticRecorder | None" = None,
+        snapshot_service=None,
     ) -> None:
         # `progress_reporter` writes the audit-log progress events
         # the FE's SSE timeline reads. `run_store` updates the
@@ -248,6 +249,13 @@ class RunsActivities:
         # workspace; Remove flow chains through it to wipe an
         # entire document.
         self._cleanup_service = cleanup_service
+        # Phase 3 snapshot-centered promotion. When wired, terminal-
+        # success runs ALSO promote ``document.active_snapshot_id``
+        # to the run's candidate snapshot (mark_ready + promote via
+        # ``DocumentSnapshotService``). When ``None``, the run-id
+        # promotion still happens — the snapshot side becomes a
+        # no-op so partial deployments keep working.
+        self._snapshot_service = snapshot_service
         # Phase-1 ingestion diagnostics recorder. Persists the per-
         # run timing + LLM + enrichment summary as a
         # ``compiled.ingestion_diagnostic_report`` artifact at
@@ -586,40 +594,44 @@ class RunsActivities:
             doc = self._source_registry.get(ctx, run.document_id)
         except Exception:  # noqa: BLE001 — best-effort
             return
-        if doc.active_run_id == run.run_id:
-            return  # already pointing at us; nothing to do
-        previous_active_run_id = doc.active_run_id
-        # CAS precondition: for reindex / refresh runs, the expected
-        # active is the candidate's parent_run_id. Initial runs
-        # expect None (no prior active). Either way, mismatch
-        # means we lost the race or the document was removed —
-        # both warrant a no-op + cleanup, not a clobbering write.
-        expected_active = getattr(run, "parent_run_id", None)
-        promoted = None
-        try:
-            promoted = self._source_registry.try_promote_active_run_id(
-                ctx,
-                run.document_id,
-                new_run_id=run.run_id,
-                expected_active_run_id=expected_active,
-                completed_at=run.completed_at or run.updated_at,
+
+        # Phase 7: ``active_run_id`` is no longer written by the
+        # promotion path. ``active_snapshot_id`` is the canonical
+        # visibility key; the snapshot service's CAS-protected
+        # ``promote`` enforces correctness. The
+        # ``previous_active_snapshot_id`` for the CAS check reads
+        # directly from the DocumentRecord (the typed snapshot
+        # field), NOT from the legacy ``active_run_id``.
+        previous_active_snapshot_id = doc.active_snapshot_id
+
+        # Phase 7: promote the snapshot side (the canonical
+        # promotion path). When the snapshot service isn't wired,
+        # the run-status update is still the load-bearing
+        # operation; the promotion is a best-effort side effect.
+        snapshot_promoted = False
+        if self._snapshot_service is not None:
+            snapshot_promoted = self._promote_snapshot(
+                ctx, run.document_id, run.run_id,
+                previous_active_snapshot_id=previous_active_snapshot_id,
             )
-        except Exception:  # noqa: BLE001 — quiet best-effort
-            return
-        if promoted is None:
-            # CAS failed: candidate is orphaned. Best-effort drop
-            # of its workspace + artifacts so the run doesn't
-            # linger as queryable phantom evidence.
+        if not snapshot_promoted:
+            # Snapshot promotion failed (CAS conflict, service
+            # missing, etc.) — same orphan-cleanup contract as the
+            # legacy run-id CAS path.
             self._cleanup_orphan_candidate(ctx, run)
             return
 
-        # Post-promotion supersede sweep. Mark the previous active
-        # run's artifacts as `search_state=superseded` so retrieval
-        # stops surfacing them. Without this, a successful reindex
-        # leaves both runs' artifacts active in retrieval — the
-        # "graph_json from old run still appears in search results"
-        # failure mode the lineage hardening targets.
-        if self._artifact_registry is None or not previous_active_run_id:
+        # Phase 7 post-promotion supersede sweep. Mark the
+        # previously-active snapshot's artifacts as
+        # ``search_state=superseded`` so retrieval stops surfacing
+        # them. The supersede helper keys on snapshot_id (Phase 6).
+        if self._artifact_registry is None or self._snapshot_service is None:
+            return
+        try:
+            new_snap = self._snapshot_service.get_or_create_for_run(
+                ctx, document_id=run.document_id, run_id=run.run_id,
+            )
+        except Exception:  # noqa: BLE001 — best-effort
             return
         try:
             from j1.documents.artifact_state import (
@@ -629,11 +641,77 @@ class RunsActivities:
                 ctx=ctx,
                 artifacts=self._artifact_registry,
                 document_id=run.document_id,
-                new_run_id=run.run_id,
-                previous_run_id=previous_active_run_id,
+                new_snapshot_id=new_snap.snapshot_id,
+                # Phase 7: read directly from the DocumentRecord
+                # (snapshot is the canonical lineage).
+                previous_snapshot_id=previous_active_snapshot_id,
             )
         except Exception:  # noqa: BLE001 — best-effort; never blocks promotion
             pass
+
+    def _promote_snapshot(
+        self,
+        ctx,
+        document_id: str,
+        run_id: str,
+        *,
+        previous_active_snapshot_id: str | None,
+    ) -> bool:
+        """Phase 7: snapshot-side promotion is the CANONICAL
+        promotion path. Returns True on success, False when the
+        snapshot service refused (CAS conflict, snapshot missing,
+        store error). On False, the caller triggers orphan
+        cleanup — same contract the legacy run-id CAS path had.
+        """
+        try:
+            snap = self._snapshot_service.get_or_create_for_run(
+                ctx, document_id=document_id, run_id=run_id,
+            )
+        except Exception:  # noqa: BLE001 — best-effort
+            return False
+        # Phase 7: caller already resolved the previous active
+        # snapshot id from the DocumentRecord (no run-id lookup
+        # round-trip).
+        # Mark READY (idempotent — BUILDING → READY, READY is a no-op).
+        try:
+            from j1.documents.snapshot import SnapshotState  # noqa: PLC0415
+            current = self._snapshot_service.store.get(ctx, snap.snapshot_id)
+            if current is not None and current.state == SnapshotState.BUILDING:
+                self._snapshot_service.mark_ready(
+                    ctx, snapshot_id=snap.snapshot_id,
+                )
+        except Exception:  # noqa: BLE001 — best-effort
+            return False
+        try:
+            self._snapshot_service.promote(
+                ctx,
+                document_id=document_id,
+                snapshot_id=snap.snapshot_id,
+                previous_active_snapshot_id=previous_active_snapshot_id,
+            )
+        except Exception:  # noqa: BLE001 — CAS conflict / concurrent
+            # promotion. Caller treats as "failed to promote" →
+            # orphan cleanup.
+            return False
+        # Persist active_snapshot_id on the document record so the
+        # query/validation visibility layer reads the snapshot side.
+        try:
+            promote = getattr(
+                self._source_registry,
+                "try_promote_active_snapshot_id",
+                None,
+            )
+            if promote is not None:
+                promote(
+                    ctx,
+                    document_id=document_id,
+                    new_snapshot_id=snap.snapshot_id,
+                )
+        except Exception:  # noqa: BLE001 — best-effort
+            # The snapshot is promoted in the store; failing the
+            # denormalization onto the DocumentRecord is non-fatal.
+            pass
+        return True
 
     def _cleanup_orphan_candidate(self, ctx, run) -> None:
         """Best-effort cleanup of a candidate run that lost the CAS

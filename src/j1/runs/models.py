@@ -297,6 +297,15 @@ class IngestionRun:
     document_version_id: str | None = None
     parent_run_id: str | None = None
 
+    # ---- Snapshot-centered lineage (Phase 2) ---------------------
+    # ``target_snapshot_id`` records the candidate ``DocumentSnapshot``
+    # this run is building. Set when the lifecycle creates the
+    # candidate snapshot BEFORE the workflow starts; the run never
+    # mutates the snapshot record directly — only the lifecycle's
+    # promote step does. ``None`` for legacy runs that pre-date the
+    # snapshot refactor.
+    target_snapshot_id: str | None = None
+
     # ---- UI metadata + lifecycle fields ----
     # ``display_version`` is the operator-visible version chip the
     # FE shows next to each run (e.g. ``13052026-01``,

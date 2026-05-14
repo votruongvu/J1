@@ -73,25 +73,27 @@ def test_compose_worker_has_tmpfs_for_tmp():
     )
 
 
-def test_compose_workspace_volume_is_named_not_bind():
-    """The workspace mount on api + worker must be the named volume
- `j1_workspace` — never a host bind mount. On macOS Docker
- Desktop, bind mounts go through gRPC FUSE and are ~10× slower
- than named-volume writes."""
+def test_compose_workspace_volumes_are_named_not_bind():
+    """Phase 1 splits the legacy single ``j1_workspace`` volume into
+ provider-specific named volumes (``raganything_workdir``,
+ ``mineru_workdir``, ``benchmark_output``, ``j1_temp``). The
+ guarantee is unchanged: every workspace mount on api + worker
+ must be a NAMED volume, never a host bind mount — on macOS
+ Docker Desktop, bind mounts go through gRPC FUSE and are ~10×
+ slower than named-volume writes."""
     compose = (
         Path(__file__).resolve().parent.parent
         / "deploy" / "dev" / "docker-compose.yml"
     ).read_text(encoding="utf-8")
-    # Must contain the named-volume mount.
-    assert "j1_workspace:/var/lib/j1" in compose, (
-        "workspace must mount the j1_workspace named volume at /var/lib/j1"
+    # The RAGAnything workdir is the dominant write path; it MUST
+    # ride a named volume.
+    assert "raganything_workdir:/var/lib/j1/raganything" in compose, (
+        "raganything workdir must be on the named volume"
     )
-    # Must NOT contain a bind-style mount of the workspace dir (e.g.
-    # `./data:/var/lib/j1`). A grep for that exact shape would
-    # be wrong if anyone ever needed it for staging — so only
-    # warn against the dev-laptop traps.
+    # No bind-mount of the workspace root or RAGAnything dir.
     assert "./data:/var/lib/j1" not in compose
     assert "./workspace:/var/lib/j1" not in compose
+    assert "./raganything:/var/lib/j1" not in compose
 
 
 # ---- cleanup helper ----------------------------------------------

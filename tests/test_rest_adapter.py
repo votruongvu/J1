@@ -35,8 +35,26 @@ from j1.integration import (
 from j1.jobs.status import ProcessingStatus, ReviewStatus
 from j1.profiles import DEFAULT_PROFILE_ID, ProfileLoader
 from j1.review.models import ReviewItem
-from j1.search.indexer import SqliteSearchIndexer
 from j1.workspace.layout import WorkspaceArea
+
+
+# Phase 8 test stub for the deleted SqliteSearchIndexer.
+class SqliteSearchIndexer:
+    kind = "null_indexer"
+
+    def __init__(self, *_, **__):
+        pass
+
+    def index(self, *_, **__):
+        from j1.processing.results import ProcessingResult
+        from j1.processing.status import ResultStatus
+        return ProcessingResult(status=ResultStatus.SUCCEEDED)
+
+    def search(self, *_, **__):
+        return []
+
+    def delete_by_run_id(self, *_, **__):
+        return 0
 
 
 # ---- Fixtures --------------------------------------------------------
@@ -403,6 +421,11 @@ def test_get_job_events_without_workspace_returns_503(application_facade):
 # ---- Search / retrieve / answer ------------------------------------
 
 
+@pytest.mark.skip(
+    reason="Phase 8: tests the deleted SQLite search backend. "
+    "PostgreSQL FTS smoke coverage lives in "
+    "tests/integration/test_rest_search_live.py.",
+)
 def test_post_search_returns_ranked_hits(
     client, ctx, artifact_registry, search_indexer, workspace
 ):
@@ -450,6 +473,9 @@ def test_post_search_without_search_capability_returns_503(
     assert response.status_code == 503
 
 
+@pytest.mark.skip(
+    reason="Phase 8: tests the deleted SQLite-backed retrieve path.",
+)
 def test_post_retrieve_returns_context_blocks_with_citations(
     client, ctx, artifact_registry, search_indexer, workspace
 ):

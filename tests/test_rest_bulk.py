@@ -51,7 +51,25 @@ from j1.integration import (
 from j1.integration.feedback import FeedbackRecord
 from j1.jobs.status import ProcessingStatus
 from j1.profiles import DEFAULT_PROFILE_ID, ProfileLoader
-from j1.search.indexer import SqliteSearchIndexer
+
+
+# Phase 8 test stub for the deleted SqliteSearchIndexer.
+class SqliteSearchIndexer:
+    kind = "null_indexer"
+
+    def __init__(self, *_, **__):
+        pass
+
+    def index(self, *_, **__):
+        from j1.processing.results import ProcessingResult
+        from j1.processing.status import ResultStatus
+        return ProcessingResult(status=ResultStatus.SUCCEEDED)
+
+    def search(self, *_, **__):
+        return []
+
+    def delete_by_run_id(self, *_, **__):
+        return 0
 
 
 def _now() -> datetime:
