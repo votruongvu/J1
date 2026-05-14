@@ -168,20 +168,25 @@ graph + index. Same snapshot promotion contract.
   lifecycle state outside `stable`, so a concurrent query cannot
   leak a removing document.
 
-## Resume / retry principles
+## Retry principles
 
 Temporal already handles per-activity retries with the policies
-configured per activity (`COMPILE_RETRY`, `DEFAULT_RETRY`). On top
-of that:
+configured per activity (`COMPILE_RETRY`, `DEFAULT_RETRY`). Beyond
+that:
 
-- The compile path persists a `resume_snapshot` on the run's
-  metadata when a stage completes. The workflow can resume from
-  the last successful stage by reading that snapshot.
-- A REST-driven "resume" creates a new run with
-  `resume_from_run_id` set and a short list of `resume_completed_steps`.
-  The new run gets its own `target_snapshot_id`; the new snapshot
-  must promote atomically just like a fresh ingest.
-- The full restart fallback is "re-process" (a normal reindex).
+- A run is an **immutable execution record**. The workflow cannot be
+  resumed or partially re-run from the user-facing surface — there is
+  no `resume_snapshot` carry-forward, no
+  `POST /ingestion-runs/{id}/resume-from-checkpoint`, no rebuild-index
+  fast path.
+- When a user wants to re-process a document — whether the previous
+  run succeeded, failed, or was cancelled — they call
+  `POST /documents/{document_id}/reindex`. That endpoint allocates a
+  fresh `run_id` + `target_snapshot_id` and starts the workflow from
+  the original uploaded file. The new snapshot promotes atomically on
+  terminal success.
+- Internal Temporal retries inside an in-flight run remain the
+  fault-tolerance layer for transient activity failures.
 
 ## Source-of-truth rules (current)
 

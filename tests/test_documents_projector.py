@@ -72,9 +72,10 @@ def _run(
     failure_code: str | None = None,
     run_type: str = "initial",
 ) -> IngestionRun:
-    metadata: dict = {}
-    if has_compile_checkpoint:
-        metadata["resume_snapshot"] = {"completed_steps": ["compile"]}
+    # ``has_compile_checkpoint`` is accepted for caller compatibility
+    # but ignored — the projector no longer offers "resume" so no test
+    # actually exercises a compile-checkpoint-only state any more.
+    del has_compile_checkpoint
     return IngestionRun(
         run_id=run_id,
         document_id="doc-1",
@@ -85,7 +86,7 @@ def _run(
         updated_at=started_at or _NOW,
         completed_at=_NOW if status == RunStatus.SUCCEEDED else None,
         failure_code=failure_code,
-        metadata=metadata,
+        metadata={},
         run_type=run_type,  # type: ignore[arg-type]
     )
 

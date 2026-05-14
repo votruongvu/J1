@@ -54,20 +54,6 @@ class IngestRequest(CamelModel):
     # Used by the full-reindex endpoint so the new attempt doesn't
     # collide with the original workflow under USE_EXISTING.
     reindex_of: str | None = None
-    # Resume-from-checkpoint context. When set, the JobStarter uses
-    # a `-resume-{run_id}` workflow-id suffix (distinct from
-    # `-reindex-` so operators can tell them apart in the Temporal
-    # UI) and threads the carry-forward state into
-    # `ProjectProcessingRequest.resume_*`.
-    resume_of: str | None = None
-    resume_completed_steps: tuple[str, ...] = ()
-    resume_artifact_ids: tuple[str, ...] = ()
-    resume_artifact_kinds: tuple[str, ...] = ()
-    # Rebuild-index-only flag. When True, the workflow skips the
-    # per-document loop (compile / chunks / enrich / graph) and
-    # only runs the index activity against `resume_artifact_ids`.
-    # Used by `POST /ingestion-runs/{id}/rebuild-index`.
-    rebuild_index_only: bool = False
     # Phase 9: snapshot identity. The REST adapter allocates the
     # candidate ``DocumentSnapshot`` at run-creation time and
     # threads the id through here so the JobStarter can wire it

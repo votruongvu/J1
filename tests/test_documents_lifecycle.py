@@ -355,11 +355,7 @@ def _run(
     document_id: str,
     status: RunStatus,
     started_at: datetime,
-    has_checkpoint: bool = False,
 ) -> IngestionRun:
-    metadata: dict = {}
-    if has_checkpoint:
-        metadata["resume_snapshot"] = {"completed_steps": ["compile"]}
     return IngestionRun(
         run_id=run_id,
         document_id=document_id,
@@ -368,7 +364,7 @@ def _run(
         status=status,
         started_at=started_at,
         updated_at=started_at,
-        metadata=metadata,
+        metadata={},
     )
 
 

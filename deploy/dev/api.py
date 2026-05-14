@@ -127,24 +127,13 @@ def make_per_document_starter(
         scope = ProjectScope.from_context(ctx)
         # Default deterministic workflow_id: lets repeated uploads of
         # the same checksum re-attach to the in-flight workflow via
-        # USE_EXISTING. The `-reindex-`, `-rebuild-`, and `-resume-`
-        # suffixes are distinct so operators can tell them apart in
-        # the Temporal UI; all prevent USE_EXISTING from re-attaching
-        # to the original.
+        # USE_EXISTING. The `-reindex-` suffix prevents USE_EXISTING
+        # from re-attaching when the user explicitly re-indexes a
+        # document.
         if getattr(body, "reindex_of", None):
             workflow_id = (
                 f"j1-{ctx.tenant_id}-{ctx.project_id}-"
                 f"{document_id}-reindex-{body.correlation_id}"
-            )
-        elif getattr(body, "rebuild_index_only", False):
-            workflow_id = (
-                f"j1-{ctx.tenant_id}-{ctx.project_id}-"
-                f"{document_id}-rebuild-{body.correlation_id}"
-            )
-        elif getattr(body, "resume_of", None):
-            workflow_id = (
-                f"j1-{ctx.tenant_id}-{ctx.project_id}-"
-                f"{document_id}-resume-{body.correlation_id}"
             )
         else:
             workflow_id = (
@@ -162,19 +151,6 @@ def make_per_document_starter(
                 correlation_id=body.correlation_id,
                 target_document_ids=(document_id,),
                 planner_enabled=planner_enabled,
-                resume_from_run_id=getattr(body, "resume_of", None),
-                resume_completed_steps=tuple(
-                    getattr(body, "resume_completed_steps", ()) or ()
-                ),
-                resume_artifact_ids=tuple(
-                    getattr(body, "resume_artifact_ids", ()) or ()
-                ),
-                resume_artifact_kinds=tuple(
-                    getattr(body, "resume_artifact_kinds", ()) or ()
-                ),
-                rebuild_index_only=bool(
-                    getattr(body, "rebuild_index_only", False)
-                ),
                 assessment_failure_policy=assessment_failure_policy,
                 target_snapshot_id=getattr(
                     body, "target_snapshot_id", None,

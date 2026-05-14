@@ -51,22 +51,7 @@ from j1.runs import (
     JsonlIngestionRunStore,
     RunStatus,
 )
-from j1.runs.resume import compute_settings_hash
-
-
 _HEADERS = {TENANT_HEADER: "acme", PROJECT_HEADER: "alpha"}
-
-_PRIOR_SETTINGS = {
-    "compiler_kind": "raganything",
-    "enricher_kind": "composite_enricher",
-    "graph_builder_kind": "lightrag_graph",
-    "indexer_kind": "sqlite_search",
-    "planner_enabled": True,
-    "policy": "auto",
-    "domain_override": None,
-    "workspace_default_domain": None,
-    "failure_policy": "fail_fast",
-}
 
 
 @pytest.fixture
@@ -124,17 +109,9 @@ def stub_starter(starter_calls):
         starter_calls.append({
             "document_id": document_id,
             "correlation_id": body.correlation_id,
-            "rebuild_index_only": getattr(body, "rebuild_index_only", False),
-            "resume_of": getattr(body, "resume_of", None),
             "reindex_of": getattr(body, "reindex_of", None),
         })
-        suffix = "single"
-        if getattr(body, "rebuild_index_only", False):
-            suffix = "rebuild"
-        elif getattr(body, "resume_of", None):
-            suffix = "resume"
-        elif getattr(body, "reindex_of", None):
-            suffix = "reindex"
+        suffix = "reindex" if getattr(body, "reindex_of", None) else "single"
         return f"wf-{document_id}-{suffix}-{body.correlation_id}"
     return _start
 
@@ -200,15 +177,11 @@ def _seed_run(
     artifact_ids: list[str] | None = None,
     artifact_kinds: list[str] | None = None,
 ):
-    snap = {
-        "settings_hash": compute_settings_hash(_PRIOR_SETTINGS),
-        "settings_snapshot": _PRIOR_SETTINGS,
-        "completed_steps": completed_steps or ["compile", "enrich"],
-        "failed_steps": [],
-        "produced_artifact_ids": artifact_ids or ["chunk-1"],
-        "produced_artifact_kinds": artifact_kinds or ["chunk"],
-        "snapshot_at": "2026-05-10T12:00:00+00:00",
-    }
+    # ``completed_steps`` / ``artifact_ids`` / ``artifact_kinds`` are
+    # accepted but ignored; older tests passed them when seeding a
+    # resume snapshot. Kept as parameters for caller compatibility
+    # while the (no-op) resume context is being deleted upstream.
+    del completed_steps, artifact_ids, artifact_kinds
     now = datetime(2026, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
     run = IngestionRun(
         run_id=run_id,
@@ -222,7 +195,6 @@ def _seed_run(
         metadata={
             "policy": "auto", "mode": "STANDARD",
             "document_name": "doc-A.pdf",
-            "resume_snapshot": snap,
         },
     )
     ctx = ProjectContext(tenant_id="acme", project_id="alpha")

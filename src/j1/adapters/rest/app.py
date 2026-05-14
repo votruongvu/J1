@@ -1458,8 +1458,7 @@ def create_rest_api(
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
         from j1.ingestion_review.exceptions import (
-            ResumeNotPossible, ReviewNotFound, RunNotTerminal,
-            RunStillActive,
+            ReviewNotFound, RunNotTerminal, RunStillActive,
         )
         service = _require_review_service()
         actor = security.subject if security else "system"

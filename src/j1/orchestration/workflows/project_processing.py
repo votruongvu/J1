@@ -349,27 +349,6 @@ class ProjectProcessingRequest:
     #  with a warning recorded on `domain_context`.
     domain_override: str | None = None
     workspace_default_domain: str | None = None
-    # Resume-from-checkpoint context. Empty (default) = fresh run.
-    # When set, the workflow honours the carry-forward artifact lists
-    # at startup and skips activities for steps named in
-    # `resume_completed_steps` (limited to the LLM-cost stages —
-    # see `RESUMABLE_STAGES`). The new run gets its own correlation_id;
-    # `resume_from_run_id` only points back to the prior attempt for
-    # audit / FE-rendering of the relationship.
-    resume_from_run_id: str | None = None
-    resume_completed_steps: tuple[str, ...] = ()
-    resume_artifact_ids: tuple[str, ...] = ()
-    resume_artifact_kinds: tuple[str, ...] = ()
-    # Rebuild-index-only mode. When True, the workflow skips the
-    # per-document loop entirely (no compile / chunks / enrich /
-    # graph) and runs ONLY the `index` activity against the
-    # carry-forward artifact IDs in `resume_artifact_ids`. Used by
-    # `POST /ingestion-runs/{id}/rebuild-index` when chunks already
-    # exist + are valid but the retrieval index is stale (vector
-    # store cleared, embedding model upgrade, index corruption).
-    # Requires `indexer_kind` to be set; rejects at workflow start
-    # otherwise.
-    rebuild_index_only: bool = False
     # How the workflow reacts when AssessmentPlan construction
     # itself fails (planner raised, profile incomplete). Read from
     # `J1_ASSESSMENT_FAILURE_POLICY` at request-build time (REST
@@ -920,21 +899,6 @@ class ProjectProcessingWorkflow:
         self._documents_completed = request.documents_completed
         self._search_attributes_enabled = request.search_attributes_enabled
 
-        # Resume-from-checkpoint carry-forward. Seed the produced-
-        # artifact mirrors so downstream `extend` calls layer cleanly
-        # on top of the prior run's outputs and `_validate_completion`
-        # sees the full kind set. The carry-forward IDs reference
-        # artifacts still tagged to the prior run; the resume endpoint
-        # also persists them on the new run's metadata so the FE can
-        # render the lineage without walking workflow state.
-        if request.resume_from_run_id and request.resume_artifact_ids:
-            self._produced_artifact_ids.extend(
-                list(request.resume_artifact_ids)
-            )
-            self._produced_artifact_kinds.extend(
-                list(request.resume_artifact_kinds)
-            )
-
         # Announce workflow start with the operationally interesting
         # context — what's enabled, who asked. Lets operators filter
         # logs / Temporal UI without opening the workflow input
@@ -961,43 +925,8 @@ class ProjectProcessingWorkflow:
             if not is_continuation:
                 await self._validate(request)
 
-            # Rebuild-index-only mode: skip the documents loop
-            # entirely and emit synthetic SKIPPED step records for
-            # the upstream stages so the FE timeline still shows the
-            # full pipeline shape (with explicit "skipped: rebuild
-            # index only" reasons). Requires indexer_kind + at least
-            # one carry-forward artifact id; otherwise we can't index
-            # anything.
-            if request.rebuild_index_only:
-                if not request.indexer_kind:
-                    raise _BusinessRejection(
-                        "rebuild_index_only=True requires indexer_kind"
-                    )
-                if not self._produced_artifact_ids:
-                    raise _BusinessRejection(
-                        "rebuild_index_only=True requires at least one "
-                        "carry-forward artifact id (none provided in "
-                        "resume_artifact_ids)"
-                    )
-                self._documents_total = 1
-                reason = (
-                    f"rebuild index only — chunks reused from "
-                    f"{request.resume_from_run_id or 'prior run'}"
-                )
-                for skipped_step in ("compile", "enrich", "graph"):
-                    self._record_step(
-                        step=skipped_step,
-                        status=StepStatus.SKIPPED,
-                        required=False,
-                        source=StepSource.POLICY,
-                        reason=reason,
-                        metadata={"rebuild_index_only": True},
-                    )
-                # Fall through to the index-enabled branch below.
-                documents = []
-            else:
-                documents = await self._list_documents(request)
-                self._documents_total = len(documents)
+            documents = await self._list_documents(request)
+            self._documents_total = len(documents)
 
             # Skip documents already processed in a prior run.
             for doc_id in documents[self._documents_completed:]:
@@ -1607,43 +1536,6 @@ class ProjectProcessingWorkflow:
  to correlate against)."""
         if not request.correlation_id:
             return
-        # Build the resume snapshot for FAILED / SUCCEEDED transitions
-        # only — cancelled runs aren't a useful resume point (the
-        # operator explicitly stopped them) and unknown-terminal
-        # paths shouldn't pretend to be resumable. The snapshot
-        # captures settings + completed-step set + carry-forward
-        # artifact IDs so a later resume request can validate
-        # compatibility and skip the LLM-cost stages that finished.
-        resume_snapshot: dict | None = None
-        if final_status in (
-            "succeeded", "succeeded_with_warnings",
-            "partial_completed", "failed", "timed_out",
-        ):
-            try:
-                from j1.runs.resume import build_resume_snapshot
-                step_results_payload: list[dict] = []
-                for r in self._step_results:
-                    entry: dict = {
-                        "step": r.step,
-                        "status": (
-                            r.status.value if hasattr(r.status, "value")
-                            else str(r.status)
-                        ),
-                        "required": bool(r.required),
-                        "artifact_count": int(r.artifact_count or 0),
-                    }
-                    step_results_payload.append(entry)
-                resume_snapshot = build_resume_snapshot(
-                    request=request,
-                    step_results_payload=step_results_payload,
-                    produced_artifact_ids=self._produced_artifact_ids,
-                    produced_artifact_kinds=self._produced_artifact_kinds,
-                    failure_code=failure_code,
-                    failure_message=failure_message,
-                    snapshot_at=workflow.now(),
-                )
-            except Exception:  # noqa: BLE001 — snapshot build never blocks exit
-                resume_snapshot = None
         try:
             await workflow.execute_activity_method(
                 RunsActivities.report_run_terminal,
@@ -1656,7 +1548,6 @@ class ProjectProcessingWorkflow:
                     failure_message=failure_message,
                     actor=request.actor,
                     step_summary=self._step_summary_payload(),
-                    resume_snapshot=resume_snapshot,
                 ),
                 start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
                 retry_policy=DEFAULT_RETRY.to_temporal(),
@@ -3473,37 +3364,7 @@ class ProjectProcessingWorkflow:
             final_compile_quality=final_quality,
             enrich_plan=enrich_plan,
         )
-        # Resume short-circuit: if the prior run already completed
-        # enrich, skip the activity dispatch and record a SKIPPED
-        # step with a clear reason. The carry-forward artifact IDs
-        # were already seeded into `_produced_artifact_ids` at
-        # workflow start so downstream stages see the same artifact
-        # set the prior run produced. Set both flags so the existing
-        # `if not enrich_enabled` block below doesn't double-record.
-        resumed_skip_enrich = (
-            enrich_enabled
-            and bool(request.resume_from_run_id)
-            and "enrich" in request.resume_completed_steps
-        )
-        if resumed_skip_enrich:
-            self._record_step(
-                step="enrich",
-                status=StepStatus.SKIPPED,
-                required=False,
-                source=StepSource.POLICY,
-                reason=(
-                    f"resumed from run {request.resume_from_run_id} — "
-                    "enrich already completed"
-                ),
-                metadata={"document_id": document_id, "resumed": True},
-            )
-            await self._emit_step_skipped(
-                request, stage="ENRICH", step="enrich",
-                reason=f"resumed from {request.resume_from_run_id}",
-                source=StepSource.POLICY.value,
-            )
-            enrich_enabled = False
-        if not enrich_enabled and not resumed_skip_enrich:
+        if not enrich_enabled:
             self._record_step(
                 step="enrich",
                 status=StepStatus.SKIPPED,
@@ -3652,34 +3513,7 @@ class ProjectProcessingWorkflow:
             final_compile_quality=final_quality,
             enrich_plan=enrich_plan,
         )
-        # Resume short-circuit: same shape as the enrich one above.
-        # The `graph` step name matches what the planner / status
-        # tracker uses; `build_graph` is the activity name (not a
-        # step name).
-        resumed_skip_graph = (
-            graph_enabled
-            and bool(request.resume_from_run_id)
-            and "graph" in request.resume_completed_steps
-        )
-        if resumed_skip_graph:
-            self._record_step(
-                step="graph",
-                status=StepStatus.SKIPPED,
-                required=False,
-                source=StepSource.POLICY,
-                reason=(
-                    f"resumed from run {request.resume_from_run_id} — "
-                    "graph already completed"
-                ),
-                metadata={"document_id": document_id, "resumed": True},
-            )
-            await self._emit_step_skipped(
-                request, stage="GRAPH", step="graph",
-                reason=f"resumed from {request.resume_from_run_id}",
-                source=StepSource.POLICY.value,
-            )
-            graph_enabled = False
-        if not graph_enabled and not resumed_skip_graph:
+        if not graph_enabled:
             self._record_step(
                 step="graph",
                 status=StepStatus.SKIPPED,
