@@ -2,18 +2,17 @@
  * Test Active Knowledge — Document Detail-side query widget.
  *
  * Lets a user ask a question against the document's currently
- * active snapshot. Scope is fixed to ``document_active`` (the typed
- * snapshot-centric contract). The widget routes the request through
- * the producing run's manual-test-query endpoint, because that's
- * the only test-query endpoint today — the URL run id is a routing
- * key; the actual query is scoped by the typed ``scope`` field.
+ * active snapshot. Routes through the dedicated document endpoint
+ * (``POST /documents/{id}/test-query``) — no producing run id
+ * required. The backend resolves ``document.active_snapshot_id``
+ * from the URL and runs the typed ``document_active`` scope.
  *
  * UX intentionally minimal:
  *   - one question textarea + Run button
  *   - one-line answer + status badge
- *   - a "View full trace" link that deep-links into Run Detail's
- *     Validation tab for the producing run, where the operator can
- *     inspect retrieved chunks, citations, gate results, etc.
+ *   - a "View full trace" link that deep-links into Run Detail
+ *     for the producing run when one is known (operator can
+ *     inspect retrieved chunks, citations, gate results, etc.).
  *
  * Why not reuse ManualQueryConsole verbatim? It carries Run Detail
  * affordances (top-k, citation required, synthesize toggle, raw
@@ -35,10 +34,10 @@ interface TestActiveKnowledgePanelProps {
   /** ID of the document's active snapshot. ``null`` disables the
    *  widget (no active knowledge to test). */
   activeSnapshotId: string | null;
-  /** Run that produced the active snapshot. Used only as the URL
-   *  routing key for the test-query endpoint; the typed ``scope``
-   *  determines what's actually queried. ``null`` disables the
-   *  widget (no run to route through). */
+  /** Run that produced the active snapshot. Used ONLY for the
+   *  "View full trace" deep-link — the test-query request itself
+   *  routes through the document endpoint and doesn't require a
+   *  run id. ``null`` simply hides the deep-link affordance. */
   producingRunId: string | null;
   /** Open Run Detail for full trace. */
   onOpenRun: (runId: string) => void;
@@ -54,10 +53,13 @@ export function TestActiveKnowledgePanel({
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<ManualTestQueryResponse | null>(null);
 
-  const ready = !!activeSnapshotId && !!producingRunId;
+  // The widget is ready when there's an active snapshot to query.
+  // A producing-run id is optional — it only enables the "View full
+  // trace" deep-link below.
+  const ready = !!activeSnapshotId;
 
   const submit = useCallback(async () => {
-    if (!ready || !producingRunId) return;
+    if (!ready) return;
     const trimmed = question.trim();
     if (!trimmed) {
       setError("Enter a question.");
@@ -66,11 +68,11 @@ export function TestActiveKnowledgePanel({
     setRunning(true);
     setError(null);
     try {
-      const result = await client.runManualTestQuery(producingRunId, {
+      // Snapshot-centric: the request goes to the document endpoint
+      // which resolves ``document.active_snapshot_id`` server-side.
+      // No producing-run-id routing hack.
+      const result = await client.runDocumentTestQuery(documentId, {
         question: trimmed,
-        // Fixed scope: this widget tests the document's active
-        // knowledge. Operators who want to inspect a candidate
-        // snapshot go to Run Detail instead.
         scope: { type: "document_active", documentId },
         includeRaw: false,
         synthesize: true,
@@ -87,7 +89,7 @@ export function TestActiveKnowledgePanel({
     } finally {
       setRunning(false);
     }
-  }, [client, ready, producingRunId, question, documentId]);
+  }, [client, ready, question, documentId]);
 
   if (!ready) {
     return (
@@ -125,7 +127,7 @@ export function TestActiveKnowledgePanel({
         >
           {running ? "Running…" : "Run query"}
         </button>
-        {response && (
+        {response && producingRunId && (
           <button
             type="button"
             className="btn btn--ghost btn--sm"

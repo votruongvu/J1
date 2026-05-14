@@ -3164,82 +3164,11 @@ def create_rest_api(
             )
         return validation_service
 
-    @app.post(
-        "/ingestion-runs/{run_id}/test-query",
-        tags=["ingestion-runs"],
-        summary="Run a manual test query against this ingestion run",
-        description=(
-            "Sends a single tester-supplied question through the "
-            "answer engine with retrieval restricted to artifacts "
-            "produced by this run. Returns the engine's answer + "
-            "retrieved chunks + citations + a deterministic check "
-            "report. The HTTP 200 indicates the QUERY ran "
-            "successfully; the body's `validationStatus` field "
-            "reports whether the answer PASSED the deterministic "
-            "checks. The two are independent — a 200 with "
-            "`validationStatus=\"failed\"` is the canonical 'job ran "
-            "but the answer didn't pass' case.\n\n"
-            "Returns 404 if the run does not exist in the caller's "
-            "tenant/project."
-        ),
-        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
-    )
-    def post_ingestion_run_test_query(
-        request: Request,
-        run_id: str,
-        body: ManualTestQueryRequestRecord,
-        ctx: ProjectContext = Depends(get_ctx),
-        security: SecurityContext = Depends(get_security),
-    ) -> dict[str, Any]:
-        # Snapshot-centric scope contract. UI callers send the typed
-        # ``scope`` field; legacy callers fall through to the string
-        # ``validation_scope`` token. The diagnostic ``"run"`` scope
-        # is REFUSED on this endpoint unless the caller explicitly
-        # opts in via ``allowRunScope=true`` — Run is execution
-        # metadata, not a knowledge unit. The guard runs BEFORE
-        # ``_require_validation_service`` so a misconfigured
-        # deployment returns the actionable 400 (which the caller
-        # can fix) instead of a 503 that hides the real cause.
-        from j1.validation.dtos import QueryScopeDTO as _ScopeDTO
-        scope_dto: _ScopeDTO | None = None
-        if body.scope is not None:
-            scope_dto = _ScopeDTO(
-                type=body.scope.type,
-                document_id=body.scope.document_id,
-                snapshot_ids=tuple(body.scope.snapshot_ids or ()),
-            )
-        elif body.validation_scope == "run" and not body.allow_run_scope:
-            raise HTTPException(
-                400,
-                "validation_scope=\"run\" is no longer accepted on "
-                "this endpoint. Pass a typed `scope` instead: "
-                "{ type: 'document_active', documentId } or "
-                "{ type: 'snapshot_explicit', snapshotIds: [...] }. "
-                "Set `allowRunScope=true` only for diagnostic "
-                "tooling that needs raw run-keyed artifact lookup.",
-            )
-        service = _require_validation_service()
-        dto_request = ManualTestQueryRequestDTO(
-            question=body.question,
-            top_k=body.top_k,
-            mode=body.mode,
-            citation_required=body.citation_required,
-            include_raw=body.include_raw,
-            synthesize=body.synthesize,
-            scope=scope_dto,
-            validation_scope=body.validation_scope,
-            allow_run_scope=body.allow_run_scope,
-        )
-        # `_load_run` inside the service raises `ReviewNotFound` on
-        # cross-tenant / cross-project access — caught by the
-        # existing exception handler at the top of the app and
-        # converted to a uniform 404. We don't need to translate
-        # here; just let it propagate.
-        result = service.run_manual_test_query(
-            ctx, run_id, dto_request,
-            actor=security.subject,
-        )
-        record = ManualTestQueryResponseRecord(
+    def _test_query_response_record(result) -> "ManualTestQueryResponseRecord":
+        """Project a ``ManualTestQueryResponseDTO`` into the wire
+        record. Shared by the three test-query endpoints
+        (run-keyed legacy, document-level, project-level)."""
+        return ManualTestQueryResponseRecord(
             request_id=result.request_id,
             run_id=result.run_id,
             question=result.question,
@@ -3315,6 +3244,210 @@ def create_rest_api(
             ],
             debug=dict(getattr(result, "debug", None) or {}),
         )
+
+    def _build_manual_dto(body: ManualTestQueryRequestRecord):
+        """Shared shape: REST record → service DTO. The doc/project
+        endpoints don't accept ``validation_scope="run"`` (they refuse
+        even with ``allowRunScope`` since their URL doesn't carry a
+        run); the run-keyed endpoint keeps the diagnostic opt-in."""
+        from j1.validation.dtos import QueryScopeDTO as _ScopeDTO
+        scope_dto: _ScopeDTO | None = None
+        if body.scope is not None:
+            scope_dto = _ScopeDTO(
+                type=body.scope.type,
+                document_id=body.scope.document_id,
+                snapshot_ids=tuple(body.scope.snapshot_ids or ()),
+            )
+        return ManualTestQueryRequestDTO(
+            question=body.question,
+            top_k=body.top_k,
+            mode=body.mode,
+            citation_required=body.citation_required,
+            include_raw=body.include_raw,
+            synthesize=body.synthesize,
+            scope=scope_dto,
+            validation_scope=body.validation_scope,
+            allow_run_scope=body.allow_run_scope,
+        )
+
+    @app.post(
+        "/ingestion-runs/{run_id}/test-query",
+        tags=["ingestion-runs"],
+        summary="Run a manual test query against this ingestion run",
+        description=(
+            "Sends a single tester-supplied question through the "
+            "answer engine with retrieval restricted to artifacts "
+            "produced by this run. Returns the engine's answer + "
+            "retrieved chunks + citations + a deterministic check "
+            "report. The HTTP 200 indicates the QUERY ran "
+            "successfully; the body's `validationStatus` field "
+            "reports whether the answer PASSED the deterministic "
+            "checks. The two are independent — a 200 with "
+            "`validationStatus=\"failed\"` is the canonical 'job ran "
+            "but the answer didn't pass' case.\n\n"
+            "Returns 404 if the run does not exist in the caller's "
+            "tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_ingestion_run_test_query(
+        request: Request,
+        run_id: str,
+        body: ManualTestQueryRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        # Snapshot-centric scope contract. UI callers send the typed
+        # ``scope`` field; legacy callers fall through to the string
+        # ``validation_scope`` token. The diagnostic ``"run"`` scope
+        # is REFUSED on this endpoint unless the caller explicitly
+        # opts in via ``allowRunScope=true`` — Run is execution
+        # metadata, not a knowledge unit. The guard runs BEFORE
+        # ``_require_validation_service`` so a misconfigured
+        # deployment returns the actionable 400 (which the caller
+        # can fix) instead of a 503 that hides the real cause.
+        if (
+            body.scope is None
+            and body.validation_scope == "run"
+            and not body.allow_run_scope
+        ):
+            raise HTTPException(
+                400,
+                "validation_scope=\"run\" is no longer accepted on "
+                "this endpoint. Pass a typed `scope` instead: "
+                "{ type: 'document_active', documentId } or "
+                "{ type: 'snapshot_explicit', snapshotIds: [...] }. "
+                "Set `allowRunScope=true` only for diagnostic "
+                "tooling that needs raw run-keyed artifact lookup.",
+            )
+        service = _require_validation_service()
+        dto_request = _build_manual_dto(body)
+        # `_load_run` inside the service raises `ReviewNotFound` on
+        # cross-tenant / cross-project access — caught by the
+        # existing exception handler at the top of the app and
+        # converted to a uniform 404. We don't need to translate
+        # here; just let it propagate.
+        result = service.run_manual_test_query(
+            ctx, run_id, dto_request,
+            actor=security.subject,
+        )
+        record = _test_query_response_record(result)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    # ---- Snapshot-centric query endpoints (post-Phase-9) -------------
+    #
+    # The run-keyed endpoint above remains for legacy + diagnostic
+    # use. UI / API callers SHOULD route knowledge queries through
+    # these endpoints instead — they don't need a run id, and the
+    # routing surface itself enforces "Run is not knowledge".
+
+    @app.post(
+        "/documents/{document_id}/test-query",
+        tags=["documents"],
+        summary="Manual query against this document's active snapshot",
+        description=(
+            "Snapshot-centric replacement for "
+            "`/ingestion-runs/{run_id}/test-query` on the Document "
+            "Detail surface. The default scope is "
+            "`{ type: 'document_active', documentId }` — the "
+            "backend resolves to `document.active_snapshot_id` "
+            "without the caller having to know which run produced "
+            "the active snapshot. Callers MAY override via "
+            "`scope = { type: 'snapshot_explicit', snapshotIds }` "
+            "to validate a specific candidate snapshot tied to this "
+            "document.\n\n"
+            "Refuses `validation_scope=\"run\"` and "
+            "`scope = { type: 'snapshot_candidate' / ... }` — those "
+            "go through the run endpoint when the use case is "
+            "operator-side diagnostic. Returns 404 if the document "
+            "doesn't exist in the caller's tenant/project."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_document_test_query(
+        request: Request,
+        document_id: str,
+        body: ManualTestQueryRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        # This endpoint is snapshot-centric by construction. The
+        # legacy `validation_scope` string token never reaches the
+        # service — we always send a typed `scope` (either the
+        # caller's, or the URL-implied `document_active`).
+        if body.allow_run_scope:
+            raise HTTPException(
+                400,
+                "allowRunScope is not accepted on the document-level "
+                "test-query endpoint. Use "
+                "/ingestion-runs/{run_id}/test-query for the "
+                "diagnostic run-keyed surface.",
+            )
+        # Refuse 404 / 503 for unknown document before doing work.
+        lookup = _require_source_registry()
+        try:
+            lookup._sources.get(ctx, document_id)
+        except Exception:
+            raise HTTPException(404, f"document {document_id!r} not found")
+        service = _require_validation_service()
+        dto_request = _build_manual_dto(body)
+        result = service.run_document_test_query(
+            ctx, document_id, dto_request,
+            actor=security.subject,
+        )
+        record = _test_query_response_record(result)
+        return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.post(
+        "/projects/{project_id}/query",
+        tags=["projects"],
+        summary="Query the project's active knowledge",
+        description=(
+            "Snapshot-centric global query: every attached document's "
+            "active snapshot. Default scope is "
+            "`{ type: 'project_active' }`; callers MAY override via "
+            "an explicit `scope = { type: 'snapshot_explicit', "
+            "snapshotIds }` when they want to query a fixed set of "
+            "snapshots across the project. The path's `project_id` "
+            "MUST match `X-Project-Id`; mismatch returns 400.\n\n"
+            "Excludes detached / removed documents and "
+            "building / failed / superseded snapshots. Run lineage "
+            "is irrelevant — the eligibility resolver is the "
+            "visibility key."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_VALIDATION_WRITE))],
+    )
+    def post_project_query(
+        request: Request,
+        project_id: str,
+        body: ManualTestQueryRequestRecord,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        # Project-id consistency. The header carries the real
+        # tenant/project context; the URL path is operator-friendly
+        # but MUST agree.
+        if project_id != ctx.project_id:
+            raise HTTPException(
+                400,
+                f"URL project_id {project_id!r} does not match "
+                f"X-Project-Id {ctx.project_id!r}",
+            )
+        if body.allow_run_scope:
+            raise HTTPException(
+                400,
+                "allowRunScope is not accepted on the project-level "
+                "query endpoint. Use "
+                "/ingestion-runs/{run_id}/test-query for the "
+                "diagnostic run-keyed surface.",
+            )
+        service = _require_validation_service()
+        dto_request = _build_manual_dto(body)
+        result = service.run_project_query(
+            ctx, dto_request,
+            actor=security.subject,
+        )
+        record = _test_query_response_record(result)
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
     # ---- Raw orchestrator trace surface (developer / operator) ----

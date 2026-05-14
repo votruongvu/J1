@@ -230,6 +230,37 @@ export interface IngestionClient {
   ): Promise<ManualTestQueryResponse>;
 
   /**
+   * Snapshot-centric document query — the backend resolves the
+   * document's ``active_snapshot_id`` from ``document_id`` alone.
+   * No producing run id required. Use this for Document Detail's
+   * "Test Active Knowledge" / Manual Query Trace surfaces.
+   *
+   * Default scope is ``{ type: "document_active", documentId }``.
+   * Callers MAY pass an explicit ``scope`` to validate a specific
+   * candidate snapshot tied to this document via
+   * ``{ type: "snapshot_explicit", snapshotIds }``.
+   */
+  runDocumentTestQuery(
+    documentId: string,
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse>;
+
+  /**
+   * Snapshot-centric project query — every attached document's
+   * active snapshot. The backend resolves eligibility internally
+   * (detached / removed documents and building / failed /
+   * superseded snapshots are excluded). Use this for the Home /
+   * Ask Knowledge Base flow.
+   *
+   * Default scope is ``{ type: "project_active" }``. Callers MAY
+   * override with ``{ type: "snapshot_explicit", snapshotIds }``
+   * to query a fixed allowlist across the project.
+   */
+  runProjectQuery(
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse>;
+
+  /**
    * Run a question through SmartQueryOrchestrator and return the
    * full QueryTrace JSON. Operator/developer surface — exposes
    * every stage of the new pipeline (plan, routes, candidates,

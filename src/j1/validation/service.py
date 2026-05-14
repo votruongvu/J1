@@ -170,6 +170,119 @@ class IngestionValidationService:
             request_id=request_id, actor=actor,
         )
 
+    def run_document_test_query(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        request: ManualTestQueryRequest,
+        *,
+        actor: str = "system",
+    ) -> ManualTestQueryResponseDTO:
+        """Execute one tester question against a document's active
+        snapshot — no run id required.
+
+        The request's typed ``scope`` field decides what's queried:
+
+          * ``document_active``  → the document's ``active_snapshot_id``
+            (the visibility key the eligibility resolver narrows to).
+          * ``snapshot_explicit`` → a fixed allowlist (e.g. validate a
+            specific candidate snapshot for this document).
+
+        Both leave run lineage out of the routing path. The
+        underlying ``SmartQueryOrchestrator`` is already
+        snapshot-aware; this method is just the no-run-id surface.
+
+        Defaults: when ``request.scope`` is ``None`` (legacy callers),
+        treat it as ``document_active`` using the URL's ``document_id``
+        — this is the explicit contract of the endpoint, not a fall
+        through to ``RunScope``.
+        """
+        if self._smart_query_orchestrator is None:
+            raise RuntimeError(
+                "IngestionValidationService.run_document_test_query "
+                "requires a SmartQueryOrchestrator."
+            )
+        from j1.validation.dtos import (
+            ManualTestQueryRequest as _MTQR,
+            QueryScopeDTO as _ScopeDTO,
+        )
+        # Default to document_active when no typed scope was supplied.
+        # Refuses legacy ``validation_scope="run"`` for this endpoint
+        # — Run is not a primary routing key here.
+        scope_dto = request.scope or _ScopeDTO(
+            type="document_active", document_id=document_id,
+        )
+        # Normalise: a caller that sent type=document_active without
+        # a documentId still resolves via the URL.
+        if (
+            scope_dto.type == "document_active"
+            and not scope_dto.document_id
+        ):
+            scope_dto = _ScopeDTO(
+                type="document_active", document_id=document_id,
+            )
+        normalised = _MTQR(
+            question=request.question,
+            top_k=request.top_k,
+            mode=request.mode,
+            citation_required=request.citation_required,
+            include_raw=request.include_raw,
+            synthesize=request.synthesize,
+            scope=scope_dto,
+            # Legacy fields ignored when ``scope`` is set.
+            validation_scope=request.validation_scope,
+            allow_run_scope=False,
+        )
+        request_id = f"tq-{uuid.uuid4().hex[:12]}"
+        return self._run_manual_query_via_orchestrator(
+            ctx=ctx, run=None, request=normalised,
+            request_id=request_id, actor=actor,
+            document_id_override=document_id,
+        )
+
+    def run_project_query(
+        self,
+        ctx: ProjectContext,
+        request: ManualTestQueryRequest,
+        *,
+        actor: str = "system",
+    ) -> ManualTestQueryResponseDTO:
+        """Execute one query against the project's active knowledge
+        scope — no document / run id required.
+
+        Defaults the scope to ``project_active`` (every attached
+        document's active snapshot). Operators with a specific
+        ``snapshot_explicit`` allowlist can override via the typed
+        ``scope`` field; ``document_active`` is also accepted when
+        the caller wants to pin a single document.
+        """
+        if self._smart_query_orchestrator is None:
+            raise RuntimeError(
+                "IngestionValidationService.run_project_query "
+                "requires a SmartQueryOrchestrator."
+            )
+        from j1.validation.dtos import (
+            ManualTestQueryRequest as _MTQR,
+            QueryScopeDTO as _ScopeDTO,
+        )
+        scope_dto = request.scope or _ScopeDTO(type="project_active")
+        normalised = _MTQR(
+            question=request.question,
+            top_k=request.top_k,
+            mode=request.mode,
+            citation_required=request.citation_required,
+            include_raw=request.include_raw,
+            synthesize=request.synthesize,
+            scope=scope_dto,
+            validation_scope=request.validation_scope,
+            allow_run_scope=False,
+        )
+        request_id = f"pq-{uuid.uuid4().hex[:12]}"
+        return self._run_manual_query_via_orchestrator(
+            ctx=ctx, run=None, request=normalised,
+            request_id=request_id, actor=actor,
+        )
+
     def run_native_debug_query(
         self,
         ctx: ProjectContext,
@@ -440,10 +553,11 @@ class IngestionValidationService:
         self,
         *,
         ctx: ProjectContext,
-        run: IngestionRun,
+        run: IngestionRun | None,
         request: ManualTestQueryRequest,
         request_id: str,
         actor: str,
+        document_id_override: str | None = None,
     ) -> ManualTestQueryResponseDTO:
         """Drive one manual test query through the SmartQueryOrchestrator
         and project the result into ``ManualTestQueryResponseDTO``.
@@ -454,6 +568,13 @@ class IngestionValidationService:
         always has — ``validation_status`` comes from the
         orchestrator's ``final_status``, ``checks[]`` is a flattened
         view of the gate results.
+
+        ``run`` is optional: the run-keyed endpoint passes a real run;
+        the snapshot-centric doc/project endpoints pass ``None`` and
+        rely on the typed ``request.scope`` field. ``document_id_override``
+        lets the doc-level endpoint thread the URL's document id into
+        the route context (the orchestrator uses it to narrow the
+        RAGAnything fan-out when scope is ``document_active``).
         """
         from j1.query.orchestrator import OrchestratorRequest
 
@@ -464,8 +585,12 @@ class IngestionValidationService:
             ctx=ctx,
             question=request.question,
             scope=engine_scope,
-            run_id=run.run_id,
-            document_id=run.document_id,
+            run_id=run.run_id if run is not None else None,
+            document_id=(
+                document_id_override
+                if document_id_override is not None
+                else (run.document_id if run is not None else None)
+            ),
             eligible_snapshot_ids=eligible_snapshot_ids,
         ))
 
@@ -492,16 +617,20 @@ class IngestionValidationService:
             "orchestrator_message": result.message,
             "orchestrator_trace": result.trace.to_dict(),
         }
-        self._audit_manual_query(
-            ctx=ctx, run=run, request_id=request_id, request=request,
-            validation_status=validation_status,
-            retrieved_count=len(retrieved_chunks),
-            citation_count=len(citations_list),
-            actor=actor,
-        )
+        if run is not None:
+            # Audit trail is per-run today. Project / document
+            # endpoints skip the per-run audit and rely on the
+            # orchestrator's internal trace for diagnostics.
+            self._audit_manual_query(
+                ctx=ctx, run=run, request_id=request_id, request=request,
+                validation_status=validation_status,
+                retrieved_count=len(retrieved_chunks),
+                citation_count=len(citations_list),
+                actor=actor,
+            )
         return ManualTestQueryResponseDTO(
             request_id=request_id,
-            run_id=run.run_id,
+            run_id=run.run_id if run is not None else "",
             question=request.question,
             answer=result.answer or "",
             mode_used="smart_query_orchestrator",
@@ -521,7 +650,7 @@ class IngestionValidationService:
         self,
         *,
         ctx: ProjectContext,
-        run: IngestionRun,
+        run: IngestionRun | None,
         request: "ManualTestQueryRequest",
     ) -> tuple[QueryScope, "frozenset[str] | None"]:
         """Map the request's scope to a concrete ``(QueryScope, eligible_snapshot_ids)``.
@@ -556,7 +685,15 @@ class IngestionValidationService:
             if scope_dto.type == "project_active":
                 return WorkspaceScope(), None
             if scope_dto.type == "document_active":
-                doc_id = scope_dto.document_id or run.document_id
+                doc_id = scope_dto.document_id
+                if not doc_id and run is not None:
+                    doc_id = run.document_id
+                if not doc_id:
+                    raise ValueError(
+                        "scope.type='document_active' requires a "
+                        "documentId (either in the scope payload or "
+                        "as the URL routing key)"
+                    )
                 return ActiveScope(document_id=doc_id), None
             if scope_dto.type == "snapshot_explicit":
                 ids = tuple(scope_dto.snapshot_ids or ())
@@ -568,7 +705,14 @@ class IngestionValidationService:
                 return WorkspaceScope(), frozenset(ids)
             raise ValueError(f"unknown scope type {scope_dto.type!r}")
 
-        # Legacy path: ``validation_scope`` string token.
+        # Legacy path: ``validation_scope`` string token. Only the
+        # run-keyed endpoint reaches this branch — the doc/project
+        # endpoints always send a typed ``scope``.
+        if run is None:
+            raise ValueError(
+                "legacy validation_scope token requires a run; "
+                "doc/project endpoints must send the typed `scope`"
+            )
         if request.validation_scope == "active":
             if self._source_registry is not None:
                 from j1.query.active_scope import resolve_to_concrete_scope

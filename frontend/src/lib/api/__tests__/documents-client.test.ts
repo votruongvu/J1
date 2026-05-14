@@ -302,3 +302,90 @@ describe("reindexDocument", () => {
     });
   });
 });
+
+
+// ---- Snapshot-centric query endpoints (Phase 9 routing cleanup) ----
+
+const _MANUAL_QUERY_OK = {
+  requestId: "rq-1",
+  runId: "",
+  question: "anything?",
+  answer: "stub",
+  modeUsed: "smart_query_orchestrator",
+  retrievedChunks: [],
+  citations: [],
+  checks: [],
+  validationStatus: "passed",
+  evidenceFlags: { graphUsed: false, tablesUsed: false, imagesUsed: false },
+  rawResponse: null,
+  synthesizedAnswer: null,
+  llm: null,
+  evidenceSentToLlm: [],
+  debug: {},
+};
+
+
+describe("runDocumentTestQuery", () => {
+  it("POSTs to /documents/{id}/test-query — no producing run id required", async () => {
+    const { calls } = withFetch(() => jsonResponse(_MANUAL_QUERY_OK));
+    await makeClient().runDocumentTestQuery("doc-1", {
+      question: "anything?",
+      scope: { type: "document_active", documentId: "doc-1" },
+    });
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc-1/test-query",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    // Critical: the URL is keyed on document id, never on run id.
+    expect(calls[0]!.url).not.toContain("/ingestion-runs/");
+    // Body carries the typed snapshot-centric scope.
+    const body = JSON.parse(String(calls[0]!.init.body));
+    expect(body.scope).toEqual({
+      type: "document_active",
+      documentId: "doc-1",
+    });
+  });
+
+  it("URI-encodes document_id with special characters", async () => {
+    const { calls } = withFetch(() => jsonResponse(_MANUAL_QUERY_OK));
+    await makeClient().runDocumentTestQuery("doc/with slash", {
+      question: "q",
+    });
+    expect(calls[0]!.url).toContain("doc%2Fwith%20slash");
+  });
+});
+
+
+describe("runProjectQuery", () => {
+  it("POSTs to /projects/{X-Project-Id}/query — derives project from header context", async () => {
+    const { calls } = withFetch(() => jsonResponse(_MANUAL_QUERY_OK));
+    await makeClient().runProjectQuery({ question: "anything?" });
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/projects/alpha/query",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    // The header context's tenant + project travel as headers too,
+    // so the backend can cross-check URL vs header.
+    const headers = new Headers(calls[0]!.init.headers as HeadersInit);
+    expect(headers.get("X-Project-Id")).toBe("alpha");
+    expect(headers.get("X-Tenant-Id")).toBe("acme");
+    // No run id anywhere on the wire.
+    expect(calls[0]!.url).not.toContain("/ingestion-runs/");
+  });
+
+  it("forwards typed scope override (snapshot_explicit)", async () => {
+    const { calls } = withFetch(() => jsonResponse(_MANUAL_QUERY_OK));
+    await makeClient().runProjectQuery({
+      question: "anything?",
+      scope: {
+        type: "snapshot_explicit",
+        snapshotIds: ["snap-a", "snap-b"],
+      },
+    });
+    const body = JSON.parse(String(calls[0]!.init.body));
+    expect(body.scope).toEqual({
+      type: "snapshot_explicit",
+      snapshotIds: ["snap-a", "snap-b"],
+    });
+  });
+});

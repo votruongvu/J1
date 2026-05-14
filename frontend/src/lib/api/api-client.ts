@@ -472,6 +472,42 @@ export class ApiClient implements IngestionClient {
     return await this.json<ManualTestQueryResponse>(resp);
   }
 
+  async runDocumentTestQuery(
+    documentId: string,
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/test-query`,
+      ),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(request),
+      },
+    );
+    return await this.json<ManualTestQueryResponse>(resp);
+  }
+
+  async runProjectQuery(
+    request: ManualTestQueryRequest,
+  ): Promise<ManualTestQueryResponse> {
+    // Project id is in the path; the backend cross-checks against
+    // ``X-Project-Id`` (header set by ``this.headers()``).
+    const ctx = this.opts.getCtx();
+    const resp = await fetch(
+      this.url(
+        `/projects/${encodeURIComponent(ctx.project)}/query`,
+      ),
+      {
+        method: "POST",
+        headers: this.headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(request),
+      },
+    );
+    return await this.json<ManualTestQueryResponse>(resp);
+  }
+
   // ---- runQueryTrace (raw orchestrator trace) ---------------------
   //
   // Hits POST /dev/query-trace and returns the full ``QueryTrace``
