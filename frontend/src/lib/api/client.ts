@@ -330,39 +330,6 @@ export interface IngestionClient {
   purgeRun(runId: string, opts?: { force?: boolean }): Promise<PurgeRunResult>;
 
   /**
- * POST full re-index — start a NEW run for the same document_id
- * as the referenced run. Returns the new `reindexRunId`.
- * Throws ApiError(409) when the original run is still active.
- */
-  fullReindexRun(runId: string): Promise<FullReindexResult>;
-
-  /**
- * POST resume-from-checkpoint — start a NEW run for the same
- * document_id, skipping LLM-cost stages that already completed
- * in the prior run (currently enrich + graph). Compile and
- * chunk-generation always re-run.
- *
- * Throws `ApiError(409)` when the original run is still active,
- * `ApiError(412)` when the prior run has no resume snapshot
- * (legacy run / cancelled), and `ApiError(412)` with
- * `RESUME_INCOMPATIBLE` code + `details.diff` when settings
- * drifted since the prior run finished.
- */
-  resumeFromCheckpoint(runId: string): Promise<ResumeFromCheckpointResult>;
-
-  /**
- * POST rebuild-index — start a NEW run that ONLY runs the index
- * activity against the prior run's chunk artifacts. Use when the
- * vector store was cleared, the embedding model upgraded, or the
- * index got corrupted while chunks themselves are still valid.
- *
- * Throws `ApiError(409)` when the original run is still active,
- * `ApiError(412)` when the prior run has no resume snapshot or
- * never produced chunk artifacts (use full-reindex instead).
- */
-  rebuildIndex(runId: string): Promise<RebuildIndexResult>;
-
-  /**
  * POST a multi-upload batch. Backend registers each file as a
  * child ingestion run, returns the batch_run_id + child run_ids.
  * Max files is enforced server-side (default 5 via
@@ -476,41 +443,6 @@ export interface PurgeRunResult {
   validationSetsRemoved: number;
   validationRunsRemoved: number;
   purgedAt: string;
-}
-
-/** Result envelope from `POST /ingestion-runs/{id}/full-reindex`. */
-export interface FullReindexResult {
-  originalRunId: string;
-  reindexRunId: string;
-  workflowId: string;
-  documentId: string;
-  status: string;
-}
-
-/** Result envelope from `POST /ingestion-runs/{id}/resume-from-checkpoint`. */
-export interface ResumeFromCheckpointResult {
-  originalRunId: string;
-  resumeRunId: string;
-  workflowId: string;
-  documentId: string;
-  status: string;
-  /** Step names the new run will skip (subset of enrich, graph). */
-  resumedSteps: string[];
-  /** Number of artifacts seeded from the prior run. */
-  carryForwardArtifactCount: number;
-}
-
-/** Result envelope from `POST /ingestion-runs/{id}/rebuild-index`. */
-export interface RebuildIndexResult {
-  originalRunId: string;
-  rebuildRunId: string;
-  workflowId: string;
-  documentId: string;
-  status: string;
-  /** Number of chunk artifacts seeded from the prior run. */
-  carryForwardChunkCount: number;
-  /** The indexer kind the new run will use. */
-  indexerKind: string;
 }
 
 /** Result envelope from `POST /ingestion-batches`. */

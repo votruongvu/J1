@@ -1,11 +1,15 @@
 """Verifies the `j1.ops.*` audit events emitted by the operator-
-facing endpoints (soft-delete, purge, resume, rebuild-index, full-
-reindex, batch dispatch).
+facing endpoints (soft-delete, purge, batch dispatch).
 
 Each test invokes the endpoint, then reads `events.jsonl` and
 asserts on the action string + payload. The endpoint's response is
 secondary — the audit log is the historical record operators rely
 on for "who did what when," so it has to be solid.
+
+The run-level resume / rebuild-index / full-reindex endpoints were
+removed: re-processing a document always goes through
+``POST /documents/{document_id}/reindex``, and the audit event for
+that path is ``ACTION_OPS_RUN_REINDEXED`` keyed on the new run id.
 """
 
 from __future__ import annotations
@@ -27,10 +31,7 @@ from j1.ingestion_review import IngestionResultReviewService
 from j1.ingestion_review.audit_actions import (
     ACTION_OPS_BATCH_DISPATCHED,
     ACTION_OPS_RUN_DELETED,
-    ACTION_OPS_RUN_INDEX_REBUILT,
     ACTION_OPS_RUN_PURGED,
-    ACTION_OPS_RUN_REINDEXED,
-    ACTION_OPS_RUN_RESUMED,
     TARGET_KIND_INGESTION_BATCH,
     TARGET_KIND_INGESTION_RUN,
 )
@@ -284,74 +285,3 @@ def test_purge_endpoint_emits_ops_run_purged(
     assert "files_missing" in e["payload"]
 
 
-def test_resume_endpoint_emits_ops_run_resumed(
-    client, run_store, registry, workspace,
-):
-    _seed_run(
-        run_store, status=RunStatus.FAILED,
-        completed_steps=["compile", "enrich"],
-        artifact_ids=["chunk-1", "enrich-1"],
-        artifact_kinds=["chunk", "enriched.tables"],
-    )
-    _seed_document(registry)
-    resp = client.post(
-        "/ingestion-runs/run-prior/resume-from-checkpoint",
-        headers=_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-    new_run_id = resp.json()["data"]["resumeRunId"]
-    ctx = ProjectContext(tenant_id="acme", project_id="alpha")
-    events = _events_with_action(workspace, ctx, ACTION_OPS_RUN_RESUMED)
-    assert len(events) == 1
-    e = events[0]
-    # The audit event is keyed on the NEW run id, not the prior one
-    # — so a future query like "show me everything that touched
-    # run-X" naturally surfaces the resume.
-    assert e["target_id"] == new_run_id
-    assert e["payload"]["original_run_id"] == "run-prior"
-    assert "enrich" in e["payload"]["resumed_steps"]
-    assert e["payload"]["carry_forward_artifact_count"] == 2
-
-
-def test_rebuild_index_endpoint_emits_ops_run_index_rebuilt(
-    client, run_store, registry, workspace,
-):
-    _seed_run(
-        run_store, status=RunStatus.SUCCEEDED,
-        completed_steps=["compile", "enrich"],
-        artifact_ids=["chunk-1", "chunk-2"],
-        artifact_kinds=["chunk", "chunk"],
-    )
-    _seed_document(registry)
-    resp = client.post(
-        "/ingestion-runs/run-prior/rebuild-index", headers=_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-    new_run_id = resp.json()["data"]["rebuildRunId"]
-    ctx = ProjectContext(tenant_id="acme", project_id="alpha")
-    events = _events_with_action(workspace, ctx, ACTION_OPS_RUN_INDEX_REBUILT)
-    assert len(events) == 1
-    e = events[0]
-    assert e["target_id"] == new_run_id
-    assert e["payload"]["original_run_id"] == "run-prior"
-    assert e["payload"]["carry_forward_chunk_count"] == 2
-    assert e["payload"]["indexer_kind"] == "sqlite_search"
-
-
-def test_full_reindex_endpoint_emits_ops_run_reindexed(
-    client, run_store, registry, workspace,
-):
-    _seed_run(run_store, status=RunStatus.SUCCEEDED)
-    _seed_document(registry)
-    resp = client.post(
-        "/ingestion-runs/run-prior/full-reindex", headers=_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-    new_run_id = resp.json()["data"]["reindexRunId"]
-    ctx = ProjectContext(tenant_id="acme", project_id="alpha")
-    events = _events_with_action(workspace, ctx, ACTION_OPS_RUN_REINDEXED)
-    assert len(events) == 1
-    e = events[0]
-    assert e["target_id"] == new_run_id
-    assert e["payload"]["original_run_id"] == "run-prior"
-    assert e["payload"]["document_id"] == "doc-A"

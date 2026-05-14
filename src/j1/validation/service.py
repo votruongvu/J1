@@ -28,6 +28,7 @@ import uuid
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from j1.documents.snapshot_store import DocumentSnapshotStore
     from j1.intake.registry import SourceRegistry
 
 from j1.artifacts.registry import ArtifactRegistry
@@ -100,6 +101,13 @@ class IngestionValidationService:
         audit: AuditRecorder | None = None,
         workspace: WorkspaceResolver | None = None,
         source_registry: "SourceRegistry | None" = None,
+        # Snapshot store — resolves ``ActiveScope`` to a concrete run_id
+        # via ``Document.active_snapshot_id`` →
+        # ``DocumentSnapshot.created_by_run_id``. Optional so
+        # legacy/test wirings stay constructible; when absent the
+        # ``validation_scope="active"`` path falls back to the
+        # caller's run_id.
+        snapshot_store: "DocumentSnapshotStore | None" = None,
         # Manual-query path (SmartQueryOrchestrator).
         smart_query_orchestrator: object | None = None,
         # Native-debug path (LightRAG aquery, no BM25). Optional.
@@ -120,6 +128,7 @@ class IngestionValidationService:
         self._audit = audit
         self._workspace = workspace
         self._source_registry = source_registry
+        self._snapshot_store = snapshot_store
         self._smart_query_orchestrator = smart_query_orchestrator
         self._native_query_provider = native_query_provider
         self._native_query_timeout_seconds = native_query_timeout_seconds
@@ -184,9 +193,10 @@ class IngestionValidationService:
 
         tenant = getattr(ctx, "tenant_id", None) or ""
         project = getattr(ctx, "project_id", None) or ""
+        snapshot_id = getattr(run, "target_snapshot_id", None) or ""
         workspace_id = (
-            f"{tenant}/{project}/{run.document_id}/{run.run_id}"
-            if tenant and project and run.document_id and run.run_id
+            f"{tenant}/{project}/{run.document_id}/{snapshot_id}"
+            if tenant and project and run.document_id and snapshot_id
             else ""
         )
         workspace_path: str | None = None
@@ -194,7 +204,7 @@ class IngestionValidationService:
             try:
                 workspace_path = (
                     self._native_query_provider.workspace_path_for(
-                        ctx, run.document_id, run.run_id,
+                        ctx, run.document_id, snapshot_id or None,
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -527,7 +537,10 @@ class IngestionValidationService:
             from j1.query.active_scope import resolve_to_concrete_scope
             active = ActiveScope(document_id=run.document_id)
             return resolve_to_concrete_scope(
-                active, registry=self._source_registry, ctx=ctx,
+                active,
+                registry=self._source_registry,
+                ctx=ctx,
+                snapshot_store=self._snapshot_store,
             )
         return RunScope(run_id=run.run_id)
 

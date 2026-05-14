@@ -15,7 +15,6 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-ENV_RAGANYTHING_MODE = "J1_RAGANYTHING_MODE"
 ENV_RAGANYTHING_WORKDIR = "J1_RAGANYTHING_WORKDIR"
 ENV_RAGANYTHING_STORAGE_DIR = "J1_RAGANYTHING_STORAGE_DIR"
 ENV_RAGANYTHING_CACHE_DIR = "J1_RAGANYTHING_CACHE_DIR"
@@ -75,7 +74,6 @@ ENV_J1_VISION_LLM_BASE_URL = "J1_VISION_LLM_BASE_URL"
 ENV_J1_VISION_LLM_API_KEY = "J1_VISION_LLM_API_KEY"
 ENV_J1_VISION_LLM_MODEL = "J1_VISION_LLM_MODEL"
 
-DEFAULT_MODE = "local"
 DEFAULT_WORKDIR = "./data/raganything"
 DEFAULT_PARSE_METHOD = "auto"
 # J1 runs MinerU as an HTTP client only — local-model backends are
@@ -161,10 +159,6 @@ DEFAULT_PDF_CONVERT_EXTENSIONS: tuple[str, ...] = (
 class RAGAnythingSettings:
     """Configuration the RAGAnything adapters need to bootstrap.
 
- `mode` is currently informational ("local" / "service") — the
- adapter inspects it to decide whether to spin up an in-process
- pipeline vs. talk to a service. Today only "local" is wired.
-
  `*_processor` fields each name an importable callable. When set,
  the matching adapter delegates to it — turning "you must subclass
  the adapter" into "you can wire it via env". The callable
@@ -173,7 +167,6 @@ class RAGAnythingSettings:
  / `QueryResult`.
  """
 
-    mode: str = DEFAULT_MODE
     workdir: str = DEFAULT_WORKDIR
     storage_dir: str | None = None
     cache_dir: str | None = None
@@ -273,7 +266,6 @@ def load_raganything_settings(
             "docs/raganything-vlm-setup.md."
         )
     return RAGAnythingSettings(
-        mode=source.get(ENV_RAGANYTHING_MODE, DEFAULT_MODE),
         workdir=workdir,
         # Default to workdir itself — LightRAG writes
         # `kv_store_*.json` and graph artifacts directly into

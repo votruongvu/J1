@@ -83,7 +83,6 @@ def _ctx() -> ProjectContext:
 
 def test_raganything_settings_defaults():
     s = load_raganything_settings(env={"J1_RAGANYTHING_VLM_HTTP_SERVER_URL": "http://stub-vlm:1234/v1"})
-    assert s.mode == "local"
     assert s.workdir == "./data/raganything"
     # `storage_dir` defaults to the workdir itself — LightRAG writes
     # `kv_store_*.json` directly into working_dir, not into a

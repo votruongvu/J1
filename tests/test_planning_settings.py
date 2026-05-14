@@ -75,42 +75,22 @@ def test_empty_string_falls_back_to_default():
     assert s.max_sample_blocks == 20
 
 
-# ---- J1_INGEST_PLAN_MODE -------------------------------------------
+# ---- J1_LLM_PLANNING_ENABLED ---------------------------------------
 
 
-def test_default_plan_mode_is_rule_based():
+def test_default_llm_planning_disabled():
+    """LLM-assisted planning is opt-in. The default keeps the
+    rule-based path so deployments without a planner LLM wired
+    don't silently spend on every ingest."""
     s = load_planning_settings({})
     assert s.llm_planning_enabled is False
 
 
-def test_plan_mode_llm_enables_llm_planning():
-    s = load_planning_settings({"J1_INGEST_PLAN_MODE": "llm"})
-    assert s.llm_planning_enabled is True
-
-
-def test_plan_mode_hybrid_also_enables_llm_planning():
-    s = load_planning_settings({"J1_INGEST_PLAN_MODE": "hybrid"})
-    assert s.llm_planning_enabled is True
-
-
-def test_plan_mode_unrecognised_value_raises():
-    with pytest.raises(ConfigError, match="J1_INGEST_PLAN_MODE"):
-        load_planning_settings({"J1_INGEST_PLAN_MODE": "magical"})
-
-
-def test_legacy_llm_planning_enabled_flag_still_honored_when_plan_mode_unset():
-    """Backward compat: deployments that flipped J1_LLM_PLANNING_ENABLED
- before J1_INGEST_PLAN_MODE existed must continue working."""
+def test_llm_planning_enabled_flag_turns_it_on():
     s = load_planning_settings({"J1_LLM_PLANNING_ENABLED": "true"})
     assert s.llm_planning_enabled is True
 
 
-def test_explicit_llm_planning_disabled_overrides_plan_mode_llm():
-    """Explicit J1_LLM_PLANNING_ENABLED=false wins over the
- derived default — useful for staged rollouts where operators
- want plan_mode set for telemetry but LLM disabled."""
-    s = load_planning_settings({
-        "J1_INGEST_PLAN_MODE": "llm",
-        "J1_LLM_PLANNING_ENABLED": "false",
-    })
+def test_llm_planning_enabled_flag_off_keeps_it_off():
+    s = load_planning_settings({"J1_LLM_PLANNING_ENABLED": "false"})
     assert s.llm_planning_enabled is False

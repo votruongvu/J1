@@ -120,14 +120,12 @@ class DocumentCleanupService:
     ) -> None:
         self._workspace = workspace
         self._artifacts = artifacts
-        # Phase 7: ``indexer`` is the LEGACY SQLite path. Default
-        # wiring passes ``None``; only an operator explicitly
-        # enabling ``J1_LEGACY_SQLITE_EVIDENCE_ENABLED=true`` wires
-        # it. The Phase-7 ``cleanup_snapshot`` API routes through
-        # ``evidence_adapter`` instead.
+        # ``indexer`` is retained as an optional injection point for
+        # alternative SQL indexers; default wiring passes ``None``
+        # and snapshot-scoped cleanup runs through ``evidence_adapter``.
         self._indexer = indexer
-        # Phase 7: snapshot-scoped evidence cleanup target. When
-        # wired (the canonical default), ``cleanup_snapshot`` calls
+        # Canonical snapshot-scoped evidence cleanup target.
+        # ``cleanup_snapshot`` calls
         # ``evidence_adapter.delete_for_snapshot(ctx, snapshot_id)``
         # to drop Postgres FTS rows for the snapshot.
         self._evidence_adapter = evidence_adapter

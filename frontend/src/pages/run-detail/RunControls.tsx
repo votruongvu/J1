@@ -1,36 +1,30 @@
 /**
  * Status-aware control buttons for an ingestion run.
  *
- * Phase 8 reorganisation: the document-centric refactor moved
- * destructive lifecycle actions (delete the run, purge the run,
- * re-process from scratch) up to the document layer — users
- * should manage documents, not runs. This component now splits
- * its action set into two tiers:
+ * A run is an immutable execution record: nothing here ever restarts
+ * or re-indexes the run. Re-processing a document is a document-level
+ * action — see the "Re-Index Document" button on the Document page.
  *
- *  * **Primary controls** — workflow lifecycle (pause / resume /
- *    cancel). The earlier "Continue from compiled result" and
- *    "Rebuild index" buttons were removed once re-ingest moved to
- *    the document page — those flows live there now.
+ * What this component still exposes:
  *
- *  * **Advanced (debug)** — the old run-level destructive actions
- *    (re-process / soft-delete / purge). Hidden behind an
- *    `Advanced ▾` disclosure so a normal user reaching for "delete
- *    this run" is gently nudged toward the document-level
- *    Detach / Remove instead.
+ *   * **Cancel** — stop an in-flight workflow. Lets operators stop a
+ *     stuck or unwanted run; the run still becomes an immutable
+ *     CANCELLED record.
+ *   * **Pause** — pause an in-flight workflow at the next
+ *     pause-checkpoint. Operator escape hatch; resume is intentionally
+ *     not surfaced (a paused run can only be cancelled, then the user
+ *     starts a fresh re-index from the document).
+ *   * **Advanced → Delete / Purge** — soft-delete the run record or
+ *     hard-purge it from disk. These never start a new run; they only
+ *     remove historical data.
  *
- * Compact mode (used on the legacy runs list) hides the advanced
- * disclosure entirely — there's no room for a collapsible panel in
- * a list row, and the list view shouldn't encourage run-level
- * destructive ops anyway.
+ * What's removed:
  *
- * UX contract (unchanged):
- * - One in-flight action at a time. While a request is pending,
- * all buttons disable + the active one shows a spinner.
- * - Cancel + advanced destructive actions use `window.confirm`.
- * - Success/failure surface as a toast.
- * - After every attempted action the parent refreshes the run via
- * `onRefresh` so the run record's new status flows back into
- * header/panels.
+ *   * "Re-process" / "Re-index" on a run — only available at the
+ *     document level now.
+ *   * "Resume" of a stopped/paused run — only document-level
+ *     re-index can produce a new run.
+ *   * "Continue from compiled result" / "Rebuild index" — same reason.
  */
 
 import { useCallback, useState } from "react";
@@ -40,16 +34,13 @@ import {
   ACTIVE_STATUSES,
   CANCELLABLE_STATUSES,
   PAUSABLE_STATUSES,
-  RESUMABLE_STATUSES,
   RUN_STATUS,
 } from "@/lib/constants/runStatus";
 import type { IngestionRun } from "@/types/ingestion";
 import type { Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 
-type ControlAction =
-  | "pause" | "resume" | "cancel"
-  | "reindex" | "delete" | "purge";
+type ControlAction = "pause" | "cancel" | "delete" | "purge";
 
 interface RunControlsProps {
   run: IngestionRun | null;
@@ -57,15 +48,12 @@ interface RunControlsProps {
   pushToast: (toast: Omit<Toast, "id">) => void;
   /** Compact list-row variant — narrower buttons, no labels. */
   compact?: boolean;
-  /** Optional: invoked after a successful Re-process / Delete with
- * the resulting (new run id | null). Lets the parent navigate
- * away (e.g. to the new reindex run, or back to the list after a
- * delete). */
+  /** Optional: invoked after a successful Delete with `null` so the
+   * parent can navigate away (back to the list). */
   onAfterAction?: (action: ControlAction, newRunId: string | null) => void;
 }
 
 const PAUSE_FROM = PAUSABLE_STATUSES;
-const RESUME_FROM = RESUMABLE_STATUSES;
 const CANCEL_FROM = CANCELLABLE_STATUSES;
 
 export function RunControls({
@@ -73,9 +61,6 @@ export function RunControls({
 }: RunControlsProps) {
   const client = useClient();
   const [pending, setPending] = useState<ControlAction | null>(null);
-  // Disclosure state for the run-level destructive actions
-  // (re-process / delete / purge). Hidden by default in detail
-  // view; entirely omitted in compact list-row view.
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const dispatch = useCallback(
@@ -89,28 +74,12 @@ export function RunControls({
         if (!ok) return;
       }
       if (action === "delete") {
-        // The document-centric refactor moved primary cleanup
-        // up to the document level — Detach / Remove on the
-        // document page handles what a normal user wants.
-        // Run-level delete still works as a debug affordance but
-        // the copy makes the document-level path obvious.
         const ok = window.confirm(
           `Delete THIS RUN of "${run.document_name}"?\n\n` +
             `This soft-deletes ONLY this attempt. The document and ` +
             `its other runs stay attached to the knowledge base.\n\n` +
             `Looking to remove the document from search/answers? ` +
             `Use Detach or Remove on the document page instead.`,
-        );
-        if (!ok) return;
-      }
-      if (action === "reindex") {
-        const ok = window.confirm(
-          `Re-process "${run.document_name}" from scratch?\n\n` +
-            `Starts a NEW ingestion run for the same document. The ` +
-            `original active run is preserved until the new run ` +
-            `reaches a successful terminal state.\n\n` +
-            `Tip: "Re-index" on the document page is the document-` +
-            `centric equivalent of this action.`,
         );
         if (!ok) return;
       }
@@ -129,11 +98,10 @@ export function RunControls({
       try {
         let toastTitle = "";
         let toastBody = "";
-        let newRunId: string | null = null;
-        if (action === "pause" || action === "resume" || action === "cancel") {
+        const newRunId: string | null = null;
+        if (action === "pause" || action === "cancel") {
           let result: RunControlResult;
           if (action === "pause") result = await client.pauseRun(run.runId);
-          else if (action === "resume") result = await client.resumeRun(run.runId);
           else result = await client.cancelRun(run.runId);
           const verb = action.charAt(0).toUpperCase() + action.slice(1);
           toastTitle = `${verb} requested`;
@@ -145,11 +113,6 @@ export function RunControls({
           toastBody = result.wasAlreadyDeleted
             ? "This run was already tombstoned."
             : `Tombstoned ${result.tombstonedArtifactCount} artifact(s).`;
-        } else if (action === "reindex") {
-          const result = await client.fullReindexRun(run.runId);
-          toastTitle = "Re-process started";
-          toastBody = `New run ${result.reindexRunId.slice(0, 8)} created.`;
-          newRunId = result.reindexRunId;
         } else if (action === "purge") {
           const result = await client.purgeRun(run.runId);
           toastTitle = "Purged";
@@ -181,29 +144,15 @@ export function RunControls({
   const status = run.status;
   const isActive = ACTIVE_STATUSES.has(status);
   const isDeleted = status === RUN_STATUS.DELETED;
-  // ---- Primary controls (always visible on terminal/inflight runs)
   const showPause = PAUSE_FROM.has(status);
-  const showResume = RESUME_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
-  // Post-refactor: "Continue from compiled result" and
-  // "Rebuild index" were removed from the run-level surface. Both
-  // actions are now driven from the Document page, where reindex /
-  // refresh-enrich is the canonical entry point. The corresponding
-  // REST endpoints stay on the backend for now (used by the
-  // document-level handlers + tests).
-
-  // ---- Advanced (debug) — run-level destructive actions.
-  // Document-centric refactor moved these up to the document
-  // layer; we keep them here for power users but gate behind a
-  // disclosure so a normal user doesn't reach for them by mistake.
-  const showAdvancedReindex = !isActive && !isDeleted;
   const showAdvancedDelete = !isActive && !isDeleted;
   const showAdvancedPurge = isDeleted;
   const hasAdvanced =
-    !compact && (showAdvancedReindex || showAdvancedDelete || showAdvancedPurge);
+    !compact && (showAdvancedDelete || showAdvancedPurge);
 
   if (
-    !showPause && !showResume && !showCancel
+    !showPause && !showCancel
     && !hasAdvanced
     && status !== RUN_STATUS.CANCELLING
   ) {
@@ -238,22 +187,6 @@ export function RunControls({
           {!compact && <span style={{ marginLeft: 4 }}>Pause</span>}
         </button>
       )}
-      {showResume && (
-        <button
-          type="button"
-          className={btnClass}
-          disabled={anyPending}
-          onClick={() => void dispatch("resume")}
-          aria-label="Resume run"
-        >
-          {isPending("resume") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.Play className="icon-sm" />
-          )}
-          {!compact && <span style={{ marginLeft: 4 }}>Resume</span>}
-        </button>
-      )}
       {showCancel && (
         <button
           type="button"
@@ -270,9 +203,6 @@ export function RunControls({
           {!compact && <span style={{ marginLeft: 4 }}>Cancel</span>}
         </button>
       )}
-      {/* Advanced (debug) — collapsed by default. Detail view
-          only — list-row compact mode skips the advanced section
-          entirely because there's no room for a disclosure. */}
       {hasAdvanced && (
         <div className="run-controls__advanced">
           <button
@@ -283,8 +213,8 @@ export function RunControls({
             aria-controls="run-controls-advanced-panel"
             data-testid="run-controls-advanced-toggle"
             title={
-              "Run-level destructive actions. Most users should " +
-              "manage documents (Detach / Remove / Re-index) instead."
+              "Run-level destructive actions. Re-processing a document " +
+              "is a document-level action (Re-Index Document)."
             }
           >
             Advanced {advancedOpen ? "▴" : "▾"}
@@ -298,28 +228,10 @@ export function RunControls({
             >
               <p className="run-controls__advanced-note">
                 These act on this specific run, not the document.
-                Looking to remove the document from search/answers?
-                Use <strong>Detach</strong> or <strong>Remove</strong>{" "}
-                on the document page.
+                To re-process the document from scratch, use{" "}
+                <strong>Re-Index Document</strong> on the document
+                page.
               </p>
-              {showAdvancedReindex && (
-                <button
-                  type="button"
-                  className={btnClass}
-                  disabled={anyPending}
-                  onClick={() => void dispatch("reindex")}
-                  aria-label="Re-process from original document"
-                  title="Start a new ingestion run for the same document"
-                  data-testid="run-controls-reprocess"
-                >
-                  {isPending("reindex") ? (
-                    <Icon.RefreshCw className="icon-sm spin" />
-                  ) : (
-                    <Icon.RefreshCw className="icon-sm" />
-                  )}
-                  <span style={{ marginLeft: 4 }}>Re-process</span>
-                </button>
-              )}
               {showAdvancedDelete && (
                 <button
                   type="button"

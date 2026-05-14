@@ -128,24 +128,16 @@ class RAGAnythingQueryProvider:
         self,
         ctx: ProjectContext,
         document_id: str | None,
-        run_id: str | None,
+        snapshot_id: str | None,
     ) -> str | None:
-        """Return the per-run LightRAG workspace path as a string, or
-        ``None`` when the inputs can't form a scoped path.
+        """Return the per-snapshot LightRAG workspace path as a string,
+        or ``None`` when the inputs can't form a scoped path.
 
         Exposed so the validation surface can stamp the resolved
         workspace into debug payloads — operators need to see WHICH
         directory native answered against without inferring it.
         """
-        # Phase 6: debug-payload-only read of the snapshot-scoped
-        # workspace path. The legacy run-keyed helper is gone;
-        # operators inspecting failures get the snapshot path when
-        # callers thread it through, or None when they don't.
         from j1.providers.raganything._bridge import _snapshot_workspace_path
-        # The debug surface doesn't carry snapshot_id today —
-        # returning None is intentional. When the validation surface
-        # learns to pass snapshot_id, this resolves to a real path.
-        snapshot_id = getattr(self, "_last_snapshot_id", None)
         path = _snapshot_workspace_path(
             self._settings, ctx, document_id, snapshot_id,
         )

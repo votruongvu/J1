@@ -130,10 +130,8 @@ from j1.errors.exceptions import (
 from j1.ingestion_review.audit_actions import (
     ACTION_OPS_BATCH_DISPATCHED,
     ACTION_OPS_RUN_DELETED,
-    ACTION_OPS_RUN_INDEX_REBUILT,
     ACTION_OPS_RUN_PURGED,
     ACTION_OPS_RUN_REINDEXED,
-    ACTION_OPS_RUN_RESUMED,
     TARGET_KIND_INGESTION_BATCH,
     TARGET_KIND_INGESTION_RUN,
 )
@@ -1297,17 +1295,13 @@ def create_rest_api(
     @app.post(
         "/ingestion-runs/{run_id}/full-reindex",
         tags=["ingestion-runs"],
-        summary="Reprocess a document from its original source",
+        summary="(GONE) Run-level re-index is no longer supported",
         description=(
-            "Starts a NEW ingestion run for the same document_id as "
-            "the referenced run. Allocates a fresh run_id + workflow "
-            "(suffixed `-reindex-{run_id}` so it doesn't collide "
-            "with the original under USE_EXISTING). The new run's "
-            "metadata carries `reindex_of=<original-run-id>` so the "
-            "FE can render the relationship. Refuses to operate on "
-            "a run that's still active (HTTP 409). The original run "
-            "is preserved unchanged — operators delete it explicitly "
-            "via the soft-delete endpoint when ready."
+            "Removed: a run is an immutable execution record. To "
+            "re-process a document, call "
+            "`POST /documents/{document_id}/reindex` — this allocates "
+            "a brand-new run + snapshot and starts the pipeline from "
+            "the original uploaded file."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
@@ -1315,164 +1309,28 @@ def create_rest_api(
         request: Request,
         run_id: str,
         ctx: ProjectContext = Depends(get_ctx),
-        starter: JobStarter = Depends(require_job_starter),
-        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
-        from datetime import datetime, timezone
-        from j1.ingestion_review.exceptions import RunStillActive
-        store = _require_run_store()
-        original = store.get(ctx, run_id)
-        if original is None:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        # Same active-state guard as soft-delete; can't kick off a
-        # new attempt while the original workflow might still be
-        # writing artifacts.
-        active_states = {
-            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
-            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
-        }
-        if str(original.status) in active_states:
-            raise HTTPException(
-                409,
-                f"run {run_id!r} is currently {original.status} — "
-                "cancel it before starting a full-reindex",
-            )
-        # Validate the original document is still resolvable.
-        if not original.document_id:
-            raise HTTPException(
-                400, f"run {run_id!r} has no document_id; cannot full-reindex"
-            )
-        try:
-            doc_dto = facade.source_lookup.get_source(ctx, original.document_id)
-        except Exception:
-            raise HTTPException(
-                404,
-                f"original document {original.document_id!r} not found "
-                "in this project; cannot full-reindex",
-            )
-        # Document-centric guard (Phase 3): a re-index against a
-        # detached document doesn't make sense — the result wouldn't
-        # be visible to retrieval anyway. A re-index against a
-        # removed document is even more nonsensical because the
-        # knowledge has been disowned. Forces the user to attach
-        # first via the new lifecycle action. 409 (not 404) because
-        # the document exists; the state just disallows the action.
-        _enforce_document_attached_for_action(ctx, original.document_id, "full-reindex")
-        actor = security.subject if security else "system"
-        new_run_id = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
-        # Inherit processor selection from the original run's metadata
-        # when present, so a re-index repeats with the same recipe.
-        original_meta = dict(original.metadata or {})
-        new_run = IngestionRun(
-            run_id=new_run_id,
-            document_id=original.document_id,
-            workflow_id=None,
-            workflow_run_id=None,
-            status=RunStatus.CREATED,
-            started_at=now,
-            updated_at=now,
-            metadata={
-                "reindex_of": run_id,
-                "policy": original_meta.get("policy", "auto"),
-                "mode": original_meta.get("mode", "STANDARD"),
-                "document_name": original_meta.get(
-                    "document_name", doc_dto.original_filename,
-                ),
-            },
-            # Document-centric classification (Phase 4). The
-            # `reindex_of` metadata key stays for backward compat
-            # with FE consumers that learned to read it earlier;
-            # `parent_run_id` is the new structured field that
-            # downstream surfaces (projector, run-history UI) read.
-            run_type="reindex",
-            parent_run_id=run_id,
-            document_version_id=original.document_version_id,
-            # Phase 5: candidate snapshot is allocated UP-FRONT.
-            # The Temporal workflow + every activity see the
-            # ``target_snapshot_id`` from the very first event;
-            # there's no lazy allocation race in the activity layer.
-            target_snapshot_id=_allocate_target_snapshot(
-                ctx, original.document_id, new_run_id,
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Run-level re-index is no longer supported. Start a "
+                "new document re-index instead: "
+                "POST /documents/{document_id}/reindex."
             ),
-        )
-        store.upsert(ctx, new_run)
-
-        if progress_reporter is not None:
-            progress_reporter.report_run_created(
-                ctx, run_id=new_run_id, document_id=original.document_id,
-                actor=actor,
-            )
-
-        body = IngestRequest(
-            compiler_kind=_resolve_compiler_kind(None),
-            enricher_kind=_resolve_optional_processor_kind(
-                None,
-                (processing_capabilities.enricher_kinds
-                 if processing_capabilities else frozenset()),
-                "enricherKind",
-            ),
-            graph_builder_kind=_resolve_optional_processor_kind(
-                None,
-                (processing_capabilities.graph_builder_kinds
-                 if processing_capabilities else frozenset()),
-                "graphBuilderKind",
-            ),
-            indexer_kind=_resolve_optional_processor_kind(
-                None,
-                (processing_capabilities.indexer_kinds
-                 if processing_capabilities else frozenset()),
-                "indexerKind",
-            ),
-            actor=actor,
-            correlation_id=new_run_id,
-            reindex_of=run_id,  # signals starter to use suffixed workflow_id
-            target_snapshot_id=new_run.target_snapshot_id,
-        )
-        workflow_id = await starter(ctx, original.document_id, body)
-        new_run.workflow_id = workflow_id
-        new_run.updated_at = datetime.now(timezone.utc)
-        store.upsert(ctx, new_run)
-        _emit_ops_event(
-            ctx,
-            action=ACTION_OPS_RUN_REINDEXED,
-            target_id=new_run_id,
-            actor=actor,
-            correlation_id=new_run_id,
-            payload={
-                "original_run_id": run_id,
-                "document_id": original.document_id,
-                "workflow_id": workflow_id,
-            },
-        )
-        return envelope(
-            {
-                "originalRunId": run_id,
-                "reindexRunId": new_run_id,
-                "workflowId": workflow_id,
-                "documentId": original.document_id,
-                "status": RunStatus.CREATED.value,
-            },
-            _req_id(request),
         )
 
     @app.post(
         "/ingestion-runs/{run_id}/resume-from-checkpoint",
         tags=["ingestion-runs"],
-        summary="Resume a failed run from its last checkpoint",
+        summary="(GONE) Run-level resume is no longer supported",
         description=(
-            "Starts a NEW ingestion run for the same document_id as "
-            "the referenced run, carrying forward the prior run's "
-            "produced artifacts and skipping the LLM-cost stages "
-            "(enrich + graph) that already completed. Refuses to "
-            "operate on an in-flight run (HTTP 409). Returns HTTP 412 "
-            "when the prior run has no resume snapshot (terminated "
-            "before the snapshot machinery landed, or via a path "
-            "that doesn't snapshot — e.g. cancelled), and HTTP 412 "
-            "with a structured `diff` when settings have drifted "
-            "since the prior run finished. The new run's metadata "
-            "carries `resume_of=<original-run-id>` so the FE can "
-            "render the relationship."
+            "Removed: a run is an immutable execution record. To "
+            "re-process a document — even when a previous run failed "
+            "partway through — call `POST /documents/{document_id}/"
+            "reindex`. It allocates a brand-new run + snapshot and "
+            "starts the pipeline from the original uploaded file. "
+            "Reusing prior compile/enrich/graph outputs is no longer "
+            "supported on the user-facing surface."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
@@ -1480,219 +1338,27 @@ def create_rest_api(
         request: Request,
         run_id: str,
         ctx: ProjectContext = Depends(get_ctx),
-        starter: JobStarter = Depends(require_job_starter),
-        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
-        from datetime import datetime, timezone
-        from j1.ingestion_review.exceptions import (
-            ResumeIncompatible, ResumeNotPossible, ReviewNotFound,
-            RunStillActive,
-        )
-        store = _require_run_store()
-        review = _require_review_service()
-        original = store.get(ctx, run_id)
-        if original is None:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        if not original.document_id:
-            raise HTTPException(
-                400, f"run {run_id!r} has no document_id; cannot resume"
-            )
-        try:
-            doc_dto = facade.source_lookup.get_source(ctx, original.document_id)
-        except Exception:
-            raise HTTPException(
-                404,
-                f"original document {original.document_id!r} not found "
-                "in this project; cannot resume",
-            )
-        # Document-centric guard (Phase 3): resume requires the
-        # document to still be attached. Detached → user should
-        # attach first; removed → knowledge has been disowned and
-        # resume from old runs is disabled permanently per spec.
-        _enforce_document_attached_for_action(ctx, original.document_id, "resume")
-        # Resolve the new run's settings up-front so the compatibility
-        # check sees the same dict the workflow will receive. The
-        # resume endpoint inherits processor selections from the
-        # deployment defaults — operators who want to change them
-        # should full-reindex instead.
-        compiler_kind = _resolve_compiler_kind(None)
-        enricher_kind = _resolve_optional_processor_kind(
-            None,
-            (processing_capabilities.enricher_kinds
-             if processing_capabilities else frozenset()),
-            "enricherKind",
-        )
-        graph_builder_kind = _resolve_optional_processor_kind(
-            None,
-            (processing_capabilities.graph_builder_kinds
-             if processing_capabilities else frozenset()),
-            "graphBuilderKind",
-        )
-        indexer_kind = _resolve_optional_processor_kind(
-            None,
-            (processing_capabilities.indexer_kinds
-             if processing_capabilities else frozenset()),
-            "indexerKind",
-        )
-        # Build the candidate-settings dict mirroring the workflow's
-        # `ProjectProcessingRequest`. The fields that participate in
-        # the compatibility hash live in `RESUME_SETTINGS_FIELDS`;
-        # any field absent here defaults to whatever the workflow
-        # uses, which is what the prior run would also have used.
-        candidate_settings: dict[str, Any] = {
-            "compiler_kind": compiler_kind,
-            "enricher_kind": enricher_kind,
-            "graph_builder_kind": graph_builder_kind,
-            "indexer_kind": indexer_kind,
-            # Operators currently can't override these per-run; they
-            # come from the API process's env, which is also where
-            # the prior run got them. If the operator restarted the
-            # API with different env between runs the snapshot hash
-            # will catch it.
-            "planner_enabled": (
-                getattr(starter, "_planner_enabled", None)
-                # Fallback when the closure didn't expose it.
-                if hasattr(starter, "_planner_enabled") else None
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Run-level resume/re-index is no longer supported. "
+                "Start a new document re-index instead: "
+                "POST /documents/{document_id}/reindex."
             ),
-            "policy": "auto",
-            "domain_override": None,
-            "workspace_default_domain": None,
-            "failure_policy": "fail_fast",
-        }
-        # When the candidate-settings keys above don't get filled
-        # because the starter doesn't expose them, fall back to the
-        # snapshot's own values. This keeps the comparison effective
-        # against drift that operators CAN cause (changing a
-        # processor kind via env), while ignoring drift in fields
-        # neither end can vary today.
-        snap = (original.metadata or {}).get("resume_snapshot") or {}
-        prior_settings = (
-            snap.get("settings_snapshot") if isinstance(snap, dict) else {}
-        ) or {}
-        for k, v in candidate_settings.items():
-            if v is None and k in prior_settings:
-                candidate_settings[k] = prior_settings[k]
-
-        try:
-            plan = review.resume_from_checkpoint(
-                ctx, run_id, candidate_settings=candidate_settings,
-            )
-        except ReviewNotFound:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        except RunStillActive as exc:
-            raise HTTPException(409, str(exc))
-        except ResumeNotPossible as exc:
-            raise HTTPException(412, str(exc))
-        except ResumeIncompatible as exc:
-            # Surface the structured diff via the standard J1 error
-            # envelope's `details` so the FE can render exactly which
-            # settings changed. Returning the JSONResponse directly
-            # bypasses the generic HTTPException handler that would
-            # stringify our dict into the `message` field.
-            return error_response(
-                status_code=412,
-                code="RESUME_INCOMPATIBLE",
-                message=str(exc),
-                request_id=_req_id(request),
-                details={"diff": exc.diff},
-            )
-
-        actor = security.subject if security else "system"
-        new_run_id = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
-        original_meta = dict(original.metadata or {})
-        new_run = IngestionRun(
-            run_id=new_run_id,
-            document_id=original.document_id,
-            workflow_id=None,
-            workflow_run_id=None,
-            status=RunStatus.CREATED,
-            started_at=now,
-            updated_at=now,
-            metadata={
-                "resume_of": run_id,
-                "resumed_steps": plan["resumable_steps"],
-                "carry_forward_artifact_ids": plan["carry_forward_artifact_ids"],
-                "policy": original_meta.get("policy", "auto"),
-                "mode": original_meta.get("mode", "STANDARD"),
-                "document_name": original_meta.get(
-                    "document_name", doc_dto.original_filename,
-                ),
-            },
-            # Phase 5: up-front snapshot allocation. See full-reindex.
-            target_snapshot_id=_allocate_target_snapshot(
-                ctx, original.document_id, new_run_id,
-            ),
-        )
-        store.upsert(ctx, new_run)
-
-        if progress_reporter is not None:
-            progress_reporter.report_run_created(
-                ctx, run_id=new_run_id, document_id=original.document_id,
-                actor=actor,
-            )
-
-        body = IngestRequest(
-            compiler_kind=compiler_kind,
-            enricher_kind=enricher_kind,
-            graph_builder_kind=graph_builder_kind,
-            indexer_kind=indexer_kind,
-            actor=actor,
-            correlation_id=new_run_id,
-            resume_of=run_id,
-            resume_completed_steps=tuple(plan["resumable_steps"]),
-            resume_artifact_ids=tuple(plan["carry_forward_artifact_ids"]),
-            resume_artifact_kinds=tuple(plan["carry_forward_artifact_kinds"]),
-            target_snapshot_id=new_run.target_snapshot_id,
-        )
-        workflow_id = await starter(ctx, original.document_id, body)
-        new_run.workflow_id = workflow_id
-        new_run.updated_at = datetime.now(timezone.utc)
-        store.upsert(ctx, new_run)
-        _emit_ops_event(
-            ctx,
-            action=ACTION_OPS_RUN_RESUMED,
-            target_id=new_run_id,
-            actor=actor,
-            correlation_id=new_run_id,
-            payload={
-                "original_run_id": run_id,
-                "document_id": original.document_id,
-                "workflow_id": workflow_id,
-                "resumed_steps": list(plan["resumable_steps"]),
-                "carry_forward_artifact_count":
-                    len(plan["carry_forward_artifact_ids"]),
-            },
-        )
-        return envelope(
-            {
-                "originalRunId": run_id,
-                "resumeRunId": new_run_id,
-                "workflowId": workflow_id,
-                "documentId": original.document_id,
-                "status": RunStatus.CREATED.value,
-                "resumedSteps": plan["resumable_steps"],
-                "carryForwardArtifactCount": len(plan["carry_forward_artifact_ids"]),
-            },
-            _req_id(request),
         )
 
     @app.post(
         "/ingestion-runs/{run_id}/rebuild-index",
         tags=["ingestion-runs"],
-        summary="Rebuild the retrieval index from existing chunks",
+        summary="(GONE) Run-level index rebuild is no longer supported",
         description=(
-            "Starts a NEW ingestion run for the same document_id that "
-            "skips compile / enrich / graph entirely and only runs "
-            "the index activity against the prior run's chunk "
-            "artifacts. Useful when the vector store was cleared, the "
-            "embedding model upgraded, or the index got corrupted "
-            "while the chunks themselves are still valid. Refuses to "
-            "operate on an in-flight run (HTTP 409). Returns HTTP 412 "
-            "when the prior run has no resume snapshot or never "
-            "produced chunk artifacts (use full-reindex instead). The "
-            "new run's metadata carries `rebuild_of=<original-run-id>` "
-            "so the FE can render the relationship."
+            "Removed: re-using prior-run chunks as the source for a "
+            "new index goes against the rule that every active "
+            "result must trace back to a single immutable run. Use "
+            "`POST /documents/{document_id}/reindex` — it re-runs the "
+            "whole pipeline (parse → compile → enrich → graph → "
+            "index) from the original uploaded file."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
@@ -1700,142 +1366,14 @@ def create_rest_api(
         request: Request,
         run_id: str,
         ctx: ProjectContext = Depends(get_ctx),
-        starter: JobStarter = Depends(require_job_starter),
-        security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
-        from datetime import datetime, timezone
-        from j1.ingestion_review.exceptions import (
-            ResumeNotPossible, ReviewNotFound, RunStillActive,
-        )
-        store = _require_run_store()
-        review = _require_review_service()
-        original = store.get(ctx, run_id)
-        if original is None:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        if not original.document_id:
-            raise HTTPException(
-                400,
-                f"run {run_id!r} has no document_id; cannot rebuild index",
-            )
-        try:
-            doc_dto = facade.source_lookup.get_source(ctx, original.document_id)
-        except Exception:
-            raise HTTPException(
-                404,
-                f"original document {original.document_id!r} not found "
-                "in this project; cannot rebuild index",
-            )
-        try:
-            plan = review.rebuild_index_only(ctx, run_id)
-        except ReviewNotFound:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        except RunStillActive as exc:
-            raise HTTPException(409, str(exc))
-        except ResumeNotPossible as exc:
-            raise HTTPException(412, str(exc))
-        # Resolve the indexer kind: prefer the snapshot's value (so
-        # the rebuild repeats with the same recipe). Fall back to
-        # the deployment default — covers the case where an operator
-        # updated the worker between runs and the prior indexer is
-        # no longer registered.
-        indexer_kind = plan.get("indexer_kind") or _resolve_optional_processor_kind(
-            None,
-            (processing_capabilities.indexer_kinds
-             if processing_capabilities else frozenset()),
-            "indexerKind",
-        )
-        if not indexer_kind:
-            raise HTTPException(
-                412,
-                f"run {run_id!r} has no indexer_kind on snapshot and no "
-                "default is registered — nothing to rebuild against",
-            )
-        # Compile is mandatory in normal flows; rebuild-index-only
-        # short-circuits past it. Pass a non-empty `compiler_kind`
-        # anyway because `ProjectProcessingRequest` requires the
-        # field — the workflow won't dispatch the activity in this
-        # mode.
-        compiler_kind = _resolve_compiler_kind(None)
-
-        actor = security.subject if security else "system"
-        new_run_id = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
-        original_meta = dict(original.metadata or {})
-        new_run = IngestionRun(
-            run_id=new_run_id,
-            document_id=original.document_id,
-            workflow_id=None,
-            workflow_run_id=None,
-            status=RunStatus.CREATED,
-            started_at=now,
-            updated_at=now,
-            metadata={
-                "rebuild_of": run_id,
-                "carry_forward_artifact_ids": plan["chunk_artifact_ids"],
-                "policy": original_meta.get("policy", "auto"),
-                "mode": original_meta.get("mode", "STANDARD"),
-                "document_name": original_meta.get(
-                    "document_name", doc_dto.original_filename,
-                ),
-            },
-            # Phase 5: up-front snapshot allocation. See full-reindex.
-            target_snapshot_id=_allocate_target_snapshot(
-                ctx, original.document_id, new_run_id,
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Run-level index rebuild is no longer supported. "
+                "Start a new document re-index instead: "
+                "POST /documents/{document_id}/reindex."
             ),
-        )
-        store.upsert(ctx, new_run)
-
-        if progress_reporter is not None:
-            progress_reporter.report_run_created(
-                ctx, run_id=new_run_id, document_id=original.document_id,
-                actor=actor,
-            )
-
-        # Re-use the resume_* fields to thread the carry-forward
-        # artifact ids (the workflow seeds `_produced_artifact_ids`
-        # from them at startup). The rebuild-index-only flag tells
-        # the workflow to skip the per-document loop entirely.
-        body = IngestRequest(
-            compiler_kind=compiler_kind,
-            indexer_kind=indexer_kind,
-            actor=actor,
-            correlation_id=new_run_id,
-            resume_of=run_id,
-            resume_artifact_ids=tuple(plan["chunk_artifact_ids"]),
-            resume_artifact_kinds=tuple(plan["chunk_artifact_kinds"]),
-            rebuild_index_only=True,
-            target_snapshot_id=new_run.target_snapshot_id,
-        )
-        workflow_id = await starter(ctx, original.document_id, body)
-        new_run.workflow_id = workflow_id
-        new_run.updated_at = datetime.now(timezone.utc)
-        store.upsert(ctx, new_run)
-        _emit_ops_event(
-            ctx,
-            action=ACTION_OPS_RUN_INDEX_REBUILT,
-            target_id=new_run_id,
-            actor=actor,
-            correlation_id=new_run_id,
-            payload={
-                "original_run_id": run_id,
-                "document_id": original.document_id,
-                "workflow_id": workflow_id,
-                "carry_forward_chunk_count":
-                    len(plan["chunk_artifact_ids"]),
-                "indexer_kind": indexer_kind,
-            },
-        )
-        return envelope(
-            {
-                "originalRunId": run_id,
-                "rebuildRunId": new_run_id,
-                "workflowId": workflow_id,
-                "documentId": original.document_id,
-                "status": RunStatus.CREATED.value,
-                "carryForwardChunkCount": len(plan["chunk_artifact_ids"]),
-                "indexerKind": indexer_kind,
-            },
-            _req_id(request),
         )
 
     @app.delete(
@@ -2372,6 +1910,27 @@ def create_rest_api(
             raise HTTPException(
                 404, f"document {document_id!r} not found",
             )
+
+        # Re-index ALWAYS re-parses the original uploaded file. If it
+        # is missing on disk we fail clearly: silently falling back to
+        # cached parse / compile / enrichment from a prior run would
+        # produce a "successful" run that doesn't actually re-process
+        # the document. Skipped only when workspace isn't wired (test
+        # harnesses that stub the upload path).
+        if workspace is not None and doc_dto.stored_filename:
+            source_path = workspace.raw(ctx) / doc_dto.stored_filename
+            if not source_path.exists():
+                raise HTTPException(
+                    409,
+                    (
+                        f"original uploaded file for document "
+                        f"{document_id!r} is missing on disk "
+                        f"({doc_dto.stored_filename}); cannot "
+                        "re-index. Re-upload the document or contact "
+                        "an operator to restore the file."
+                    ),
+                )
+
         # Phase 9: ``active_run_id`` was deleted from the document
         # contract. The in-flight guard inspects every run on this
         # document (not just the historically-active one) so a

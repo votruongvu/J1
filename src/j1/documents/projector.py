@@ -159,17 +159,13 @@ def compute_available_actions(
     """Return the actions the FE should render for this document.
 
     Composition: start with the base set for the document's
-    knowledge state, then append ``"resume"`` when the active run
-    is a resumable failure (compile checkpoint exists + status is
-    FAILED). Resume is only meaningful when:
+    knowledge state, then append ``"refresh_enrich"`` when the
+    active run already produced a usable compile artifact.
 
-    1. The document is attached (resume on a detached document
-       wouldn't be visible to retrieval anyway).
-    2. The active run reached the compile checkpoint successfully
-       BUT then failed at a later stage.
-
-    Both conditions guard inside this helper so the REST layer
-    doesn't have to repeat them.
+    ``"resume"`` is intentionally NEVER included: a run is an
+    immutable execution record. When a previous run failed, the
+    user re-runs the document via ``"reindex"`` — the new run
+    starts from the original uploaded file.
     """
     base = _BASE_ACTIONS_BY_STATE.get(document.knowledge_state, ("view",))
     actions: list[Action] = list(base)
@@ -182,32 +178,7 @@ def compute_available_actions(
             RunStatus.SUCCEEDED, RunStatus.SUCCEEDED_WITH_WARNINGS,
         ):
             actions.append("refresh_enrich")
-        if _is_resumable_failure(active_run):
-            actions.append("resume")
     return tuple(actions)
-
-
-def _is_resumable_failure(run: IngestionRun) -> bool:
-    """A run is resumable iff it failed AFTER compile succeeded.
-
-    Reuses the same compile-checkpoint signal the Phase 1 backfill
-    used. Centralised here so the FE's resume affordance and the
-    backfill's active-run picker agree on what "compile completed"
-    means.
-    """
-    if run.status != RunStatus.FAILED:
-        return False
-    snapshot = run.metadata.get("resume_snapshot")
-    if isinstance(snapshot, dict):
-        completed = snapshot.get("completed_steps")
-        if isinstance(completed, list) and "compile" in completed:
-            return True
-    step_results = run.metadata.get("step_results")
-    if isinstance(step_results, dict):
-        compile_status = step_results.get("compile", {}).get("status")
-        if compile_status == "completed":
-            return True
-    return False
 
 
 # ---- DTO builders ----------------------------------------------------

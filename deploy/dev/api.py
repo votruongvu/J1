@@ -319,12 +319,14 @@ def _build_app():
         review=facade.review,
     )
 
-    # User-facing flow: should each upload run the planner? Default
-    # ON for the dev stack so the FE's run-detail page sees a
-    # populated execution plan immediately. Operators who don't want
-    # adaptive planning can set `J1_INGEST_PLANNER_ENABLED=false`.
+    # Should each upload run the pre-compile assessment (profile +
+    # AssessmentPlan)? Default ON for the dev stack so the FE's
+    # run-detail page sees a populated assessment immediately.
+    # Operators who don't want adaptive assessment can set
+    # ``J1_ASSESSMENT_ENABLED=false`` — the workflow then falls back
+    # to ``settings.parse_method`` without LLM-driven plan choice.
     planner_enabled = (
-        os.environ.get("J1_INGEST_PLANNER_ENABLED", "true").lower()
+        os.environ.get("J1_ASSESSMENT_ENABLED", "true").lower()
         not in {"false", "0", "no", "off"}
     )
 

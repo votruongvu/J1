@@ -107,9 +107,10 @@ def test_attached_document_with_succeeded_active_run_offers_reindex_detach_remov
     assert "attach" not in actions  # already attached
 
 
-def test_attached_document_with_failed_run_post_compile_offers_resume():
-    """Spec row 1 + resume: attached + active-run failed AFTER
- compile → standard set PLUS resume."""
+def test_attached_document_with_failed_run_post_compile_never_offers_resume():
+    """Run-level resume is gone: an immutable run never reanimates.
+    A failure (whenever it happened) only offers re-index — the new
+    run starts from the original uploaded file."""
     actions = compute_available_actions(
         document=_doc(state="attached"),
         active_run=_run(
@@ -118,14 +119,13 @@ def test_attached_document_with_failed_run_post_compile_offers_resume():
             failure_code="ENRICH_FAILED",
         ),
     )
-    assert "resume" in actions
+    assert "resume" not in actions
     assert "reindex" in actions
 
 
 def test_attached_document_with_failed_run_pre_compile_does_not_offer_resume():
-    """Resume requires the compile checkpoint. A failure that
- happened BEFORE compile completed has nothing to resume from —
- the user should re-run from the beginning via reindex."""
+    """Same as above for failures BEFORE compile — resume is never
+    offered, only re-index."""
     actions = compute_available_actions(
         document=_doc(state="attached"),
         active_run=_run(

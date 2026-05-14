@@ -21,10 +21,9 @@ TARGET_ARTIFACT_SET = "artifact_set"
 
 
 class SearchActivities:
-    """Phase 8: canonical evidence adapter is the ONLY write path.
-    The legacy SQLite dual-write + ``J1_LEGACY_SQLITE_EVIDENCE_ENABLED``
-    flag were deleted. Operators that want SQLite have to fork the
-    activity surface — no opt-in here."""
+    """Canonical evidence adapter is the only write path. The
+    SQLite dual-write path that earlier revisions kept behind a
+    feature flag is gone — Postgres FTS is the supported backend."""
 
     def __init__(
         self,

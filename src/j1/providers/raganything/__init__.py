@@ -34,7 +34,6 @@ from j1.providers.raganything.graph import RAGAnythingGraphBuilder
 from j1.providers.raganything.retrieval import RAGAnythingQueryProvider
 from j1.providers.raganything.settings import (
     ENV_RAGANYTHING_CACHE_DIR,
-    ENV_RAGANYTHING_MODE,
     ENV_RAGANYTHING_STORAGE_DIR,
     ENV_RAGANYTHING_WORKDIR,
     RAGAnythingSettings,
@@ -43,7 +42,6 @@ from j1.providers.raganything.settings import (
 
 __all__ = [
     "ENV_RAGANYTHING_CACHE_DIR",
-    "ENV_RAGANYTHING_MODE",
     "ENV_RAGANYTHING_STORAGE_DIR",
     "ENV_RAGANYTHING_WORKDIR",
     "PROVIDER_NAME",

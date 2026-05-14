@@ -60,10 +60,7 @@ import {
   type BatchDetail,
   type BatchUploadResult,
   type DeleteRunResult,
-  type FullReindexResult,
   type PurgeRunResult,
-  type RebuildIndexResult,
-  type ResumeFromCheckpointResult,
   type IngestionClient,
   type LLMHealthStatus,
   type RunControlResult,
@@ -731,59 +728,6 @@ export class ApiClient implements IngestionClient {
       validationSetsRemoved: Number(data.validationSetsRemoved ?? 0),
       validationRunsRemoved: Number(data.validationRunsRemoved ?? 0),
       purgedAt: String(data.purgedAt ?? ""),
-    };
-  }
-
-  async fullReindexRun(runId: string): Promise<FullReindexResult> {
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/full-reindex`),
-      { method: "POST", headers: this.headers() },
-    );
-    const data = await this.json<Record<string, unknown>>(resp);
-    return {
-      originalRunId: String(data.originalRunId ?? runId),
-      reindexRunId: String(data.reindexRunId ?? ""),
-      workflowId: String(data.workflowId ?? ""),
-      documentId: String(data.documentId ?? ""),
-      status: String(data.status ?? "created"),
-    };
-  }
-
-  async resumeFromCheckpoint(runId: string): Promise<ResumeFromCheckpointResult> {
-    const resp = await fetch(
-      this.url(
-        `/ingestion-runs/${encodeURIComponent(runId)}/resume-from-checkpoint`,
-      ),
-      { method: "POST", headers: this.headers() },
-    );
-    const data = await this.json<Record<string, unknown>>(resp);
-    return {
-      originalRunId: String(data.originalRunId ?? runId),
-      resumeRunId: String(data.resumeRunId ?? ""),
-      workflowId: String(data.workflowId ?? ""),
-      documentId: String(data.documentId ?? ""),
-      status: String(data.status ?? "created"),
-      resumedSteps: Array.isArray(data.resumedSteps)
-        ? data.resumedSteps.map(String)
-        : [],
-      carryForwardArtifactCount: Number(data.carryForwardArtifactCount ?? 0),
-    };
-  }
-
-  async rebuildIndex(runId: string): Promise<RebuildIndexResult> {
-    const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}/rebuild-index`),
-      { method: "POST", headers: this.headers() },
-    );
-    const data = await this.json<Record<string, unknown>>(resp);
-    return {
-      originalRunId: String(data.originalRunId ?? runId),
-      rebuildRunId: String(data.rebuildRunId ?? ""),
-      workflowId: String(data.workflowId ?? ""),
-      documentId: String(data.documentId ?? ""),
-      status: String(data.status ?? "created"),
-      carryForwardChunkCount: Number(data.carryForwardChunkCount ?? 0),
-      indexerKind: String(data.indexerKind ?? ""),
     };
   }
 

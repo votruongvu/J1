@@ -117,6 +117,7 @@ def _headers(ctx):
 def _seed_doc(
     registry, ctx, *, document_id: str, state: str = "attached",
     active_snapshot_id: str | None = None,
+    workspace=None,
 ):
     registry.add(DocumentRecord(
         document_id=document_id,
@@ -131,6 +132,13 @@ def _seed_doc(
         knowledge_state=state,  # type: ignore[arg-type]
         active_snapshot_id=active_snapshot_id,
     ))
+    if workspace is not None:
+        # Re-index now refuses to start when the original uploaded
+        # file isn't on disk. Drop a stub at the expected path so the
+        # endpoint's source-file existence check passes.
+        raw_dir = workspace.raw(ctx)
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / f"{document_id}.pdf").write_bytes(b"%PDF-1.4\n")
 
 
 def _seed_run(
@@ -157,9 +165,12 @@ def _seed_run(
 
 
 def test_reindex_creates_new_run_under_same_document(
-    client, registry, run_store, started_jobs, ctx,
+    client, registry, run_store, started_jobs, ctx, workspace,
 ):
-    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-prev")
+    _seed_doc(
+        registry, ctx, document_id="doc-1",
+        active_snapshot_id="r-prev", workspace=workspace,
+    )
     _seed_run(run_store, ctx, run_id="r-prev", document_id="doc-1")
 
     resp = client.post(
@@ -184,12 +195,15 @@ def test_reindex_creates_new_run_under_same_document(
 
 
 def test_reindex_does_not_clobber_previous_active_run_id_immediately(
-    client, registry, run_store, ctx,
+    client, registry, run_store, ctx, workspace,
 ):
     """Dispatch only — `active_run_id` stays pinned to the previous
  active. The promotion happens later when the new run reaches a
  terminal state (tested in `test_documents_promotion_hook`)."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-prev")
+    _seed_doc(
+        registry, ctx, document_id="doc-1",
+        active_snapshot_id="r-prev", workspace=workspace,
+    )
     _seed_run(run_store, ctx, run_id="r-prev", document_id="doc-1")
 
     client.post("/documents/doc-1/reindex", headers=_headers(ctx))
@@ -199,11 +213,14 @@ def test_reindex_does_not_clobber_previous_active_run_id_immediately(
 
 
 def test_reindex_inherits_settings_from_previous_run(
-    client, registry, run_store, ctx,
+    client, registry, run_store, ctx, workspace,
 ):
     """Re-index should repeat with the same recipe — policy + mode
  inherited from the previous active run's metadata."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-prev")
+    _seed_doc(
+        registry, ctx, document_id="doc-1",
+        active_snapshot_id="r-prev", workspace=workspace,
+    )
     _seed_run(
         run_store, ctx, run_id="r-prev", document_id="doc-1",
         metadata={"policy": "aggressive", "mode": "ENRICHED"},
@@ -221,12 +238,15 @@ def test_reindex_inherits_settings_from_previous_run(
 
 
 def test_reindex_for_document_without_prior_run(
-    client, registry, run_store, started_jobs, ctx,
+    client, registry, run_store, started_jobs, ctx, workspace,
 ):
     """A document with no active run yet (just uploaded?) can still
  be re-indexed. parent_run_id ends up None; the new run uses
  deployment defaults for settings."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id=None)
+    _seed_doc(
+        registry, ctx, document_id="doc-1",
+        active_snapshot_id=None, workspace=workspace,
+    )
 
     resp = client.post(
         "/documents/doc-1/reindex", headers=_headers(ctx),
@@ -274,12 +294,15 @@ def test_reindex_returns_404_for_unknown_document(client, ctx):
 
 
 def test_reindex_returns_409_when_previous_run_is_still_active(
-    client, registry, run_store, ctx,
+    client, registry, run_store, ctx, workspace,
 ):
     """If the previous active run is still running / paused, refuse
  to start a reindex — can't have two attempts writing artifacts
  for the same document concurrently."""
-    _seed_doc(registry, ctx, document_id="doc-1", active_snapshot_id="r-running")
+    _seed_doc(
+        registry, ctx, document_id="doc-1",
+        active_snapshot_id="r-running", workspace=workspace,
+    )
     _seed_run(
         run_store, ctx, run_id="r-running", document_id="doc-1",
         status=RunStatus.RUNNING,

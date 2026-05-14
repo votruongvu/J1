@@ -652,6 +652,8 @@ def build_validation_service(workspace: WorkspaceResolver):
         ) if orchestrator is not None else None
     )
 
+    from j1.documents.snapshot_store import JsonlDocumentSnapshotStore
+
     return IngestionValidationService(
         run_store=run_store,
         artifact_registry=artifacts,
@@ -659,8 +661,9 @@ def build_validation_service(workspace: WorkspaceResolver):
         workspace=workspace,
         # Enables ``validation_scope="active"`` on the manual-query
         # endpoint by resolving ``ActiveScope(document_id)`` against
-        # the source registry.
+        # the source registry → snapshot store.
         source_registry=JsonSourceRegistry(workspace),
+        snapshot_store=JsonlDocumentSnapshotStore(workspace),
         smart_query_orchestrator=orchestrator,
         native_query_provider=native_query_provider,
         native_query_timeout_seconds=native_query_timeout_seconds,
@@ -948,16 +951,11 @@ def build_worker_spec(
         audit=audit_recorder, cost=cost_recorder,
         smart_query_orchestrator=smart_query_orchestrator,
     )
-    # Phase 7: the SQLite indexer is constructed ONLY when an
-    # operator opted into the legacy dual-write path via
-    # ``J1_LEGACY_SQLITE_EVIDENCE_ENABLED=true``. Default = off →
-    # ``indexer`` is ``None`` and the indexer dispatch map is
-    # empty. The canonical Postgres FTS write target goes through
-    # ``evidence_adapter`` regardless. When legacy is enabled but
-    # Phase 8: SqliteSearchIndexer is GONE. ``indexer`` is always
-    # ``None``; SearchActivities relies on the canonical evidence
-    # adapter (Postgres FTS). Legacy operators that want SQLite
-    # for debug must roll their own outside the wiring helper.
+    # Postgres FTS is the only supported evidence backend.
+    # ``indexer`` stays ``None``; the canonical write target is
+    # ``evidence_adapter`` (PostgresFtsEvidenceAdapter). Deployments
+    # that want a different indexer must inject one outside this
+    # wiring helper.
     indexer = None
 
     # Progress reporter shared by every workflow exit-point

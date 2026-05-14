@@ -50,8 +50,7 @@ export type DocumentAction =
   | "refresh_enrich"
   | "detach"
   | "attach"
-  | "remove"
-  | "resume";
+  | "remove";
 
 /** Roll-up of the document's *current usable* result (the active run). */
 export interface DocumentResultSummary {

@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # Dev-only: wipe the entire local docker-compose state.
 #
-# Phase 4 (canonical Postgres FTS evidence path) policy: dev data is
-# THROWAWAY. Two reset triggers:
-#
-#   1. Pre-Phase-3 data has no ``active_snapshot_id`` and is now
-#      invisible to queries. Reset + re-ingest.
-#   2. SQLite evidence rows from Phase 1/2 are no longer the canonical
-#      search target. The default backend is PostgreSQL FTS; SQLite
-#      runs only when ``J1_LEGACY_SQLITE_EVIDENCE_ENABLED=true``.
+# Dev data is THROWAWAY. The canonical search backend is Postgres FTS,
+# and queries only see rows tied to a document's ``active_snapshot_id``.
+# Any pre-snapshot data on disk is invisible — reset + re-ingest.
 #
 # This script stops the stack, removes every named volume defined in
 # ``deploy/dev/docker-compose.yml``, and clears any host-side temp
@@ -17,9 +12,9 @@
 # After reset:
 #   1. ``docker compose up`` brings the stack back.
 #   2. Re-ingest documents through ``POST /documents`` + the normal
-#      Temporal workflow. Phase 4 writes snapshot-scoped evidence
-#      rows to Postgres and stamps ``document.active_snapshot_id``
-#      on promotion.
+#      Temporal workflow. The pipeline writes snapshot-scoped evidence
+#      rows to Postgres and stamps ``document.active_snapshot_id`` on
+#      promotion.
 #
 # Does NOT touch:
 #   * Source code / git state

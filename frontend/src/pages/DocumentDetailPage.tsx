@@ -124,14 +124,6 @@ export function DocumentDetailPage({
             r.reusedCompileFromRunId.slice(0, 12)
           }; new run: ${r.refreshRunId.slice(0, 12)}`,
         });
-      } else if (action === "resume") {
-        if (detail.activeRunId) {
-          // The resume API is run-scoped; route the operator to
-          // the run-detail page which owns the existing
-          // resume-from-checkpoint flow.
-          onOpenRun(detail.activeRunId);
-          return;
-        }
       }
       await load();
     } catch (e) {
@@ -481,7 +473,7 @@ const ACTION_META: Record<DocumentAction, {
   label: string; variant: "primary" | "ghost" | "danger";
 }> = {
   view:    { label: "View",       variant: "ghost"   },
-  reindex: { label: "Re-index document", variant: "ghost"   },
+  reindex: { label: "Re-Index Document", variant: "primary" },
   refresh_enrich: {
     label: "Refresh enrichment",
     variant: "ghost",
@@ -489,5 +481,4 @@ const ACTION_META: Record<DocumentAction, {
   detach:  { label: "Detach from Knowledge", variant: "ghost" },
   attach:  { label: "Attach to Knowledge",   variant: "primary" },
   remove:  { label: "Remove from Knowledge", variant: "danger"  },
-  resume:  { label: "Continue from compiled result", variant: "primary" },
 };
