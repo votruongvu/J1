@@ -1,19 +1,23 @@
-"""REST tests for ``POST /ingestion-runs/{run_id}/refresh-enrichment``.
+"""REST tests for the retired ``POST /ingestion-runs/{run_id}/
+refresh-enrichment`` route.
 
-Refresh-enrichment is a run-level action that's only valid on the
-document's currently active run. It allocates a new candidate run
-that reuses the active run's compile output and re-runs only
-enrichment + graph + index. Promotion to ``activeSnapshotId`` is
-CAS-on-terminal-success — a failed refresh preserves the previous
-active.
+The endpoint used to allocate a candidate run that reused the
+active run's compile output and re-ran enrichment + graph + index.
+It was replaced by the explicit Manual Domain Enrichment action:
 
-Covers:
-  * Happy path: posting against the active run creates a candidate.
-  * Active-run guard: posting against a non-active run is rejected
-    with HTTP 409.
-  * In-flight guard: rejected while the active run is still RUNNING.
-  * Detached / removed documents are rejected with HTTP 409.
-  * Unknown run → HTTP 404.
+    POST /documents/{document_id}/manual-actions/run-domain-enrichment
+
+To stop two competing enrichment paths from co-existing, the route
+now returns HTTP 410 Gone with a structured error envelope pointing
+callers at the replacement. The handler is intentionally side-effect
+free — no run is allocated, no workflow is started, no audit event
+is emitted beyond the FastAPI request log.
+
+This test file pins:
+
+  * 410 status + the ``REFRESH_ENRICHMENT_RETIRED`` code.
+  * Structured ``details`` payload carrying ``replacementRoute``.
+  * No job dispatch happens (the job starter is never invoked).
 """
 
 from __future__ import annotations
@@ -70,7 +74,6 @@ def job_starter(started_jobs):
         started_jobs.append({
             "document_id": document_id,
             "correlation_id": body.correlation_id,
-            "reindex_of": body.reindex_of,
         })
         return f"wf-{body.correlation_id}"
     return starter
@@ -148,14 +151,15 @@ def _seed_run(
     ))
 
 
-# ---- Happy path ---------------------------------------------------
+# ---- Retired contract --------------------------------------------
 
 
-def test_refresh_enrichment_on_active_run_creates_candidate(
+def test_refresh_enrichment_route_returns_410_with_structured_body(
     client, registry, run_store, started_jobs, ctx,
 ):
-    """Posting against the active run allocates a new candidate run
-    that reuses the active run's compile output."""
+    """The route is retired. Every call — valid or otherwise —
+    returns HTTP 410 with a structured envelope. The job starter
+    is never invoked."""
     _seed_doc(registry, ctx)
     _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
 
@@ -163,119 +167,47 @@ def test_refresh_enrichment_on_active_run_creates_candidate(
         "/ingestion-runs/r-active/refresh-enrichment",
         headers=_headers(ctx),
     )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()["data"]
+    assert resp.status_code == 410, resp.text
+    body = resp.json()
+    err = body["error"]
+    assert err["code"] == "REFRESH_ENRICHMENT_RETIRED"
+    # The message points at the replacement route so external
+    # callers know exactly where to migrate.
+    assert "manual-actions/run-domain-enrichment" in err["message"]
+    details = err["details"]
+    assert details["deprecatedRunId"] == "r-active"
+    assert details["replacementRoute"] == (
+        "/documents/{documentId}/manual-actions/run-domain-enrichment"
+    )
+    # No job was dispatched; the handler is side-effect free.
+    assert started_jobs == []
 
-    assert body["documentId"] == "doc-1"
-    assert body["runType"] == "refresh_enrich"
-    assert body["parentRunId"] == "r-active"
-    assert body["reusedCompileFromRunId"] == "r-active"
 
-    new_run = run_store.get(ctx, body["refreshRunId"])
-    assert new_run.run_type == "refresh_enrich"
-    assert new_run.parent_run_id == "r-active"
-    assert new_run.metadata["reused_compile_from_run_id"] == "r-active"
-
-
-def test_refresh_enrichment_does_not_flip_active_immediately(
-    client, registry, run_store, ctx,
+def test_refresh_enrichment_route_410_even_for_unknown_run(
+    client, started_jobs, ctx,
 ):
-    _seed_doc(registry, ctx, active_snapshot_id="snap-active")
-    _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
-
-    client.post(
-        "/ingestion-runs/r-active/refresh-enrichment",
-        headers=_headers(ctx),
-    )
-    # active_snapshot_id unchanged — promotion is CAS-on-terminal-success.
-    assert registry.get(ctx, "doc-1").active_snapshot_id == "snap-active"
-
-
-# ---- Refusal paths -------------------------------------------------
-
-
-def test_refresh_enrichment_rejects_non_active_run(
-    client, registry, run_store, ctx,
-):
-    """Posting against a non-active run (older / superseded) is
-    rejected. Only the document's currently active run can be
-    refresh-enriched."""
-    from datetime import timedelta
-    _seed_doc(registry, ctx, active_snapshot_id="snap-newer")
-    # The active run for this document is r-newer; r-older is a
-    # historical attempt and must not be refresh-enrichable.
-    _seed_run(
-        run_store, ctx, run_id="r-older", document_id="doc-1",
-        started_at=_NOW - timedelta(hours=1),
-    )
-    _seed_run(
-        run_store, ctx, run_id="r-newer", document_id="doc-1",
-        status=RunStatus.SUCCEEDED,
-        started_at=_NOW,
-    )
-
-    resp = client.post(
-        "/ingestion-runs/r-older/refresh-enrichment",
-        headers=_headers(ctx),
-    )
-    assert resp.status_code == 409
-    assert "not the active run" in resp.text.lower()
-
-
-def test_refresh_enrichment_rejected_when_document_has_no_active_run(
-    client, registry, run_store, ctx,
-):
-    """A document with no terminally-succeeded run yet has no active
-    run. Refresh-enrichment is meaningless until a successful initial
-    run exists; the error message points the user at reindex."""
-    _seed_doc(registry, ctx, active_snapshot_id=None)
-    _seed_run(
-        run_store, ctx, run_id="r-failed",
-        document_id="doc-1", status=RunStatus.FAILED,
-    )
-    resp = client.post(
-        "/ingestion-runs/r-failed/refresh-enrichment",
-        headers=_headers(ctx),
-    )
-    assert resp.status_code == 409
-    assert "no active run" in resp.text.lower()
-
-
-def test_refresh_enrichment_rejected_when_document_detached(
-    client, registry, run_store, ctx,
-):
-    _seed_doc(
-        registry, ctx, state="detached", active_snapshot_id="snap-active",
-    )
-    _seed_run(run_store, ctx, run_id="r-active", document_id="doc-1")
-    resp = client.post(
-        "/ingestion-runs/r-active/refresh-enrichment",
-        headers=_headers(ctx),
-    )
-    assert resp.status_code == 409
-
-
-def test_refresh_enrichment_rejected_while_active_run_is_running(
-    client, registry, run_store, ctx,
-):
-    """If the candidate active run is still RUNNING (we caught it
-    mid-flight), refuse the refresh — the workflow could still be
-    writing artifacts."""
-    _seed_doc(registry, ctx, active_snapshot_id="snap-active")
-    _seed_run(
-        run_store, ctx, run_id="r-active",
-        document_id="doc-1", status=RunStatus.RUNNING,
-    )
-    resp = client.post(
-        "/ingestion-runs/r-active/refresh-enrichment",
-        headers=_headers(ctx),
-    )
-    assert resp.status_code == 409
-
-
-def test_refresh_enrichment_404_on_unknown_run(client, ctx):
+    """The handler is intentionally not gated on run existence —
+    it short-circuits to 410 before any store lookup. External
+    callers that pass a bogus run id get the same retirement
+    notice as callers that pass a valid one."""
     resp = client.post(
         "/ingestion-runs/missing/refresh-enrichment",
         headers=_headers(ctx),
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["error"]["code"] == "REFRESH_ENRICHMENT_RETIRED"
+    assert started_jobs == []
+
+
+def test_refresh_enrichment_route_is_deprecated_in_openapi(
+    client,
+):
+    """The route remains mounted with ``deprecated=true`` so
+    generated clients flag it during code review."""
+    schema = client.app.openapi()
+    path = schema["paths"][
+        "/ingestion-runs/{run_id}/refresh-enrichment"
+    ]
+    op = path.get("post")
+    assert op is not None
+    assert op.get("deprecated") is True

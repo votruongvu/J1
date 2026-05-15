@@ -364,10 +364,12 @@ def test_manual_actions_unknown_document_returns_404(
 def test_refresh_enrich_marked_deprecated_in_openapi(
     application_facade, job_starter, workspace,
 ):
-    """FE surfaces should not render Refresh Enrich as the primary
-    action in the new flow. The OpenAPI schema flags it deprecated
-    so any FE that generates clients from the schema gets a clear
-    signal."""
+    """The route stays mounted with ``deprecated=true`` so
+    generated clients flag it during code review. The summary
+    string was tightened from "(Deprecated)" to "(Retired)" once
+    the handler stopped dispatching work and started returning
+    HTTP 410 — pin the canonical phrasing so the doc surface and
+    the runtime behaviour stay aligned."""
     app = _make_app(application_facade, job_starter, workspace)
     schema = app.openapi()
     path = schema["paths"][
@@ -376,9 +378,7 @@ def test_refresh_enrich_marked_deprecated_in_openapi(
     op = path.get("post")
     assert op is not None
     assert op.get("deprecated") is True
-    # The summary still mentions "Deprecated" so operators reading
-    # the docs immediately understand.
-    assert "Deprecated" in op["summary"]
+    assert "Retired" in op["summary"]
 
 
 # ---- Sample text classifier ---------------------------------------

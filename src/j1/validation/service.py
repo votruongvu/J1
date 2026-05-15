@@ -86,6 +86,69 @@ _DEFAULT_NATIVE_QUERY_TIMEOUT_SECONDS = 30.0
 # visually consistent.
 _PREVIEW_MAX_CHARS = 240
 
+# Cap on expansion variants the validation service stamps onto the
+# memory view per request. Aligned with the orchestrator's
+# per-original-job variant cap so retrieval fan-out remains
+# bounded end-to-end.
+_MAX_EXPANSIONS_PER_REQUEST = 4
+
+
+def _alias_expansions_for_query(
+    *, pack, query: str,
+) -> tuple[str, ...]:
+    """Compute the alias-driven expansion variants for ``query``
+    given the active domain pack.
+
+    Strategy: case-insensitive substring matching. For each
+    ``EntityAlias`` entry on the pack, if ANY alias form appears
+    as a substring of the (lower-cased) query, every OTHER form
+    in the bundle is added to the expansion list. This is
+    deliberately stricter than ``compute_query_expansion`` — that
+    helper surfaces all pack vocabulary for diagnostics; we only
+    want forms whose canonical/alias actually matches the
+    question so retrieval doesn't fan out into unrelated terms.
+
+    Output is deduplicated, empty-stripped, original-query
+    excluded, and capped at
+    ``_MAX_EXPANSIONS_PER_REQUEST`` so a misconfigured pack
+    cannot blow up retrieval. Returns ``()`` when no alias
+    bundle matched the query — the orchestrator then runs
+    retrieval against the original query only.
+    """
+    if pack is None or not query:
+        return ()
+    hints = getattr(pack, "extraction_hints", None)
+    if hints is None:
+        return ()
+    aliases = tuple(getattr(hints, "entity_aliases", ()) or ())
+    if not aliases:
+        return ()
+    needle = query.lower()
+    seen: dict[str, None] = {}
+    for entry in aliases:
+        forms = entry.all_forms()
+        if not forms:
+            continue
+        matched = any(form.lower() in needle for form in forms)
+        if not matched:
+            continue
+        # Surface the OTHER forms — alias forms that aren't already
+        # in the query — as expansion variants.
+        for form in forms:
+            if not isinstance(form, str):
+                continue
+            cleaned = form.strip()
+            if not cleaned or cleaned == query:
+                continue
+            if cleaned.lower() in needle:
+                continue
+            if cleaned in seen:
+                continue
+            seen[cleaned] = None
+            if len(seen) >= _MAX_EXPANSIONS_PER_REQUEST:
+                return tuple(seen.keys())
+    return tuple(seen.keys())
+
 
 class IngestionValidationService:
     """Validation surface — manual test queries + imported test cases.
@@ -1050,13 +1113,21 @@ class IngestionValidationService:
             )
         except Exception:  # noqa: BLE001 — augmentation never fails the call
             return None
-        # Compute expansions when both gates are open. The env flag
-        # gates the deployment-wide opt-in; the domain pack lookup
-        # is the wiring that supplies pack-shipped aliases. Either
-        # off → return the bare view (orchestrator falls back to
-        # "no broadening").
+        # Compute expansions only when every gate is open:
+        #
+        #   1. ``J1_QUERY_EXPANSION_ENABLED`` — retrieval-broadening
+        #      kill switch. Default off; off → return bare view.
+        #   2. ``J1_DOMAIN_QUERY_AUGMENTATION_ENABLED`` — augmentation
+        #      surface kill switch. Default on; off → return bare
+        #      view. The two flags compose deliberately so a
+        #      deployment can disable BOTH paths independently.
+        #   3. ``domain_pack_lookup`` wired — required to source
+        #      aliases.
+        from j1.memory.augmentation import is_augmentation_enabled
         from j1.query.orchestrator import is_query_expansion_enabled
         if not is_query_expansion_enabled():
+            return view
+        if not is_augmentation_enabled():
             return view
         if self._domain_pack_lookup is None:
             return view
@@ -1068,30 +1139,10 @@ class IngestionValidationService:
             return view
         try:
             from dataclasses import replace as _replace
-            from j1.memory.augmentation import (
-                DomainPackAugmentationProvider,
-                compute_query_expansion,
+            expansions = _alias_expansions_for_query(
+                pack=pack, query=request.question,
             )
-            provider = DomainPackAugmentationProvider(pack=pack)
-            hints = provider.hints_for(view, request.question)
-            expansions = compute_query_expansion(
-                request.question, hints,
-            )
-            # Strip the original question + empty / whitespace
-            # terms + duplicates. The orchestrator does another
-            # pass via ``_expansions_from_memory_view``, but we
-            # keep the view tight on the way out.
-            seen: dict[str, None] = {}
-            for term in expansions:
-                if not isinstance(term, str):
-                    continue
-                cleaned = term.strip()
-                if not cleaned or cleaned == request.question:
-                    continue
-                if cleaned in seen:
-                    continue
-                seen[cleaned] = None
-            return _replace(view, expansions=tuple(seen.keys()))
+            return _replace(view, expansions=expansions)
         except Exception:  # noqa: BLE001
             return view
 
