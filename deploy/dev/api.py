@@ -89,6 +89,53 @@ from j1.integration.services import ApplicationFacade
 _log = logging.getLogger("j1.dev.api")
 
 
+# Renamed from ``J1_INGEST_PLANNER_ENABLED`` in Phase 2. The legacy
+# name is honoured for one release cycle with a deprecation warning;
+# remove the fallback once operators have migrated.
+_ENV_ASSESSMENT_ENABLED = "J1_ASSESSMENT_ENABLED"
+_ENV_LEGACY_PLANNER_ENABLED = "J1_INGEST_PLANNER_ENABLED"
+_FALSY_VALUES = frozenset({"false", "0", "no", "off"})
+
+
+def _truthy(raw: str) -> bool:
+    return raw.strip().lower() not in _FALSY_VALUES
+
+
+def resolve_assessment_enabled(env) -> bool:
+    """Resolve the pre-compile assessment toggle.
+
+    Honours the renamed ``J1_ASSESSMENT_ENABLED``; falls back to the
+    legacy ``J1_INGEST_PLANNER_ENABLED`` with a deprecation warning
+    when the legacy name is the only source. When both are set, the
+    new name wins and a conflict warning fires so operators clean up
+    their env.
+
+    Default (neither set) is ``True`` — the dev stack ships with the
+    assessment stage enabled.
+    """
+    new_raw = env.get(_ENV_ASSESSMENT_ENABLED)
+    legacy_raw = env.get(_ENV_LEGACY_PLANNER_ENABLED)
+    if new_raw is not None and legacy_raw is not None:
+        _log.warning(
+            "Both %s and the legacy %s are set; honouring %s. "
+            "Remove %s from your env — it will be ignored.",
+            _ENV_ASSESSMENT_ENABLED, _ENV_LEGACY_PLANNER_ENABLED,
+            _ENV_ASSESSMENT_ENABLED, _ENV_LEGACY_PLANNER_ENABLED,
+        )
+        return _truthy(new_raw)
+    if new_raw is not None:
+        return _truthy(new_raw)
+    if legacy_raw is not None:
+        _log.warning(
+            "%s is deprecated; use %s instead. Value honoured for "
+            "this run; the legacy name will be removed in a future "
+            "release.",
+            _ENV_LEGACY_PLANNER_ENABLED, _ENV_ASSESSMENT_ENABLED,
+        )
+        return _truthy(legacy_raw)
+    return True
+
+
 def make_per_document_starter(
     *,
     client_provider,
@@ -323,10 +370,13 @@ def _build_app():
     # Operators who don't want adaptive assessment can set
     # ``J1_ASSESSMENT_ENABLED=false`` — the workflow then falls back
     # to ``settings.parse_method`` without LLM-driven plan choice.
-    planner_enabled = (
-        os.environ.get("J1_ASSESSMENT_ENABLED", "true").lower()
-        not in {"false", "0", "no", "off"}
-    )
+    #
+    # Legacy-name compatibility: the var was renamed from
+    # ``J1_INGEST_PLANNER_ENABLED`` in Phase 2. We honour the legacy
+    # name for one release cycle, log a warning when it is the only
+    # source, and prefer the new name when both are set. See
+    # ``resolve_assessment_enabled`` for the contract.
+    planner_enabled = resolve_assessment_enabled(os.environ)
 
     # Read once at startup — passing through the workflow request
     # rather than reading inside the workflow (which would violate
