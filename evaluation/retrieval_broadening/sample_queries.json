@@ -1,0 +1,100 @@
+{
+  "queries": [
+    {
+      "id": "alias_boq_001",
+      "question": "What is BOQ?",
+      "category": "alias",
+      "notes": "Acronym → canonical. Expects alias bundle BOQ → bill of quantities to drive expansion."
+    },
+    {
+      "id": "alias_rfi_001",
+      "question": "How do I submit an RFI?",
+      "category": "alias",
+      "notes": "Common civil-engineering initialism RFI → request for information."
+    },
+    {
+      "id": "alias_rc_001",
+      "question": "What are the inspection rules for RC beams?",
+      "category": "alias",
+      "notes": "RC → reinforced concrete. Tests case-insensitive substring match."
+    },
+    {
+      "id": "canonical_boq_001",
+      "question": "How is bill of quantities used in cost estimation?",
+      "category": "canonical_to_alias",
+      "notes": "Canonical → acronym. Bundle should expand to surface BOQ-tagged chunks."
+    },
+    {
+      "id": "canonical_rfi_001",
+      "question": "When should you file a request for information?",
+      "category": "canonical_to_alias",
+      "notes": "Canonical → acronym. Mirror of alias_rfi_001."
+    },
+    {
+      "id": "domain_synonym_001",
+      "question": "Where are concrete strength requirements defined?",
+      "category": "domain_synonym",
+      "notes": "Domain term without an obvious alias. Expansion list may stay empty; not a regression."
+    },
+    {
+      "id": "multi_word_concept_001",
+      "question": "Describe the rebar splice length calculation steps.",
+      "category": "multi_word_concept",
+      "notes": "Tests that multi-word concepts retrieve without alias broadening adding noise."
+    },
+    {
+      "id": "unrelated_001",
+      "question": "What is the weather like in Tokyo today?",
+      "category": "unrelated",
+      "notes": "Off-topic query. Should not pull any chunks; alias broadening must not fabricate hits."
+    },
+    {
+      "id": "should_not_broaden_001",
+      "question": "Explain the workflow for cancelling a draft.",
+      "category": "should_not_broaden",
+      "notes": "Generic process query with no aliases. Expansion variants should be zero."
+    },
+    {
+      "id": "scope_safety_001",
+      "question": "What is the project schedule?",
+      "category": "scope_safety",
+      "notes": "Snapshot-specific query. Validates that loader stays scoped — should NOT see aliases from other snapshots."
+    },
+    {
+      "id": "lowercase_common_001",
+      "question": "How is the input file structured?",
+      "category": "lowercase_common",
+      "notes": "Lowercase tokens — the alias extractor must not be tricked into emitting aliases like 'is' → 'input structured'."
+    },
+    {
+      "id": "negative_pdf_001",
+      "question": "Does this document mention PDF metadata?",
+      "category": "negative_stoplist",
+      "notes": "PDF is in the stoplist. No alias bundle should be generated even if document text says 'PDF (portable document format)'."
+    },
+    {
+      "id": "negative_http_001",
+      "question": "Are HTTP endpoints documented anywhere?",
+      "category": "negative_stoplist",
+      "notes": "HTTP is in the stoplist. Same rule as negative_pdf_001."
+    },
+    {
+      "id": "negative_usa_001",
+      "question": "Does the document reference USA standards?",
+      "category": "negative_stoplist",
+      "notes": "USA is in the stoplist."
+    },
+    {
+      "id": "civil_eng_aci_001",
+      "question": "Which ACI section governs minimum cover?",
+      "category": "civil_engineering",
+      "notes": "Civil-engineering example (ACI). Generic alias detector should leave it alone unless the pack ships an ACI alias bundle."
+    },
+    {
+      "id": "civil_eng_load_001",
+      "question": "List the load combinations from the structural code.",
+      "category": "civil_engineering",
+      "notes": "Civil-engineering example without an obvious alias. Used to baseline non-broadened civil queries."
+    }
+  ]
+}

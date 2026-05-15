@@ -55,6 +55,7 @@ __all__ = [
     "SuspicionFlag",
     "summarize_report",
     "format_summary",
+    "render_markdown",
     "main",
 ]
 
@@ -328,6 +329,180 @@ def _format_case(case: QuerySummary) -> str:
     )
 
 
+# ---- Markdown export ---------------------------------------------
+
+
+def render_markdown(
+    report: Mapping[str, Any],
+    *,
+    summary: ReportSummary | None = None,
+) -> str:
+    """Render the report as Markdown suitable for PR descriptions /
+    demo notes.
+
+    ``summary`` can be passed in to share the projected state with
+    a caller that's also rendering plain text; when ``None``, the
+    function summarises the report itself. The Markdown shape is
+    deterministic — same input → byte-identical output — so
+    snapshots / golden tests stay stable.
+    """
+    if summary is None:
+        summary = summarize_report(report)
+    generated_at = (
+        str(report.get("generated_at") or "—")
+        if isinstance(report, Mapping) else "—"
+    )
+
+    lines: list[str] = []
+    lines.append("# Retrieval Broadening A/B Summary")
+    lines.append("")
+    lines.append(f"_Generated at: `{generated_at}`_")
+    lines.append("")
+    lines.append("## Scope")
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("|---|---|")
+    scope = summary.scope or {}
+    for key in ("tenant_id", "project_id", "document_id", "snapshot_id"):
+        value = scope.get(key, "—")
+        lines.append(f"| {_md_label(key)} | {_md_cell(value)} |")
+    lines.append("")
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|---|---:|")
+    rows = [
+        ("Query count", summary.total_queries),
+        ("Warning count", summary.warning_count),
+        ("Queries with more results", summary.queries_increased),
+        ("Queries with fewer results", summary.queries_decreased),
+        ("Queries with same results", summary.queries_same),
+        (
+            "Enrichment aliases available but not applied",
+            summary.queries_with_enrichment_available_not_applied,
+        ),
+    ]
+    for label, value in rows:
+        lines.append(f"| {label} | {value} |")
+    lines.append("")
+
+    lines.append("## Query Results")
+    lines.append("")
+    results = (
+        report.get("results") if isinstance(report, Mapping) else []
+    )
+    if not isinstance(results, list) or not results:
+        lines.append("_No query results in this report._")
+    else:
+        lines.append(
+            "| Query ID | Category | Baseline Retrieved | "
+            "Broadening Retrieved | Δ | Suspicious |"
+        )
+        lines.append("|---|---|---:|---:|---:|---|")
+        suspicious_ids = {
+            case.query_id for case in summary.suspicious_cases
+        }
+        for entry in results:
+            if not isinstance(entry, Mapping):
+                continue
+            qid = str(entry.get("query_id") or "—")
+            category = str(entry.get("category") or "—")
+            base_retrieved = _md_count(
+                _safe_get(entry, "baseline", "retrieved_count"),
+            )
+            variant_retrieved = _md_count(
+                _safe_get(entry, "alias_broadening", "retrieved_count"),
+            )
+            delta = _md_count(
+                _safe_get(entry, "delta", "retrieved_count"),
+                signed=True,
+            )
+            suspicious = "Yes" if qid in suspicious_ids else "No"
+            lines.append(
+                f"| `{_md_cell(qid)}` | {_md_cell(category)} | "
+                f"{base_retrieved} | {variant_retrieved} | "
+                f"{delta} | {suspicious} |"
+            )
+    lines.append("")
+
+    lines.append("## Suspicious Cases")
+    lines.append("")
+    if not summary.suspicious_cases:
+        lines.append("_No suspicious cases detected._")
+    else:
+        for case in summary.suspicious_cases:
+            flags = ", ".join(case.suspicion_flags) or "none"
+            qid = case.query_id or "(no id)"
+            lines.append(f"- `{qid}` — flags: {flags}")
+    lines.append("")
+
+    lines.append("## Notes")
+    lines.append("")
+    lines.append(
+        "This report compares retrieval-level diagnostics only. "
+        "It does NOT grade final answer quality — more retrieved "
+        "chunks is not automatically better. Treat suspicious "
+        "cases as candidates for manual review, not as automatic "
+        "failures."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _md_label(key: str) -> str:
+    """Render a scope key (``tenant_id`` → ``Tenant``) for the
+    Markdown table. Keeps the rendered table title-case +
+    operator-friendly."""
+    return {
+        "tenant_id": "Tenant",
+        "project_id": "Project",
+        "document_id": "Document",
+        "snapshot_id": "Snapshot",
+    }.get(key, key)
+
+
+def _md_cell(value: Any) -> str:
+    """Escape table-pipe characters and render None/empty as
+    ``—``. Pipes inside strings break Markdown table parsing."""
+    if value is None:
+        return "—"
+    text = str(value)
+    if not text.strip():
+        return "—"
+    return text.replace("|", "\\|")
+
+
+def _md_count(value: Any, *, signed: bool = False) -> str:
+    """Format an int / None retrieval count for the table. When
+    ``signed=True`` and the value is positive, prepend ``+`` so
+    deltas read at a glance."""
+    if value is None:
+        return "—"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return "—"
+    if signed and n > 0:
+        return f"+{n}"
+    return str(n)
+
+
+def _safe_get(
+    entry: Mapping[str, Any], *keys: str,
+) -> Any:
+    """Walk a possibly-nested dict path, returning ``None`` if any
+    key is missing or holds a non-Mapping at an intermediate
+    step."""
+    cur: Any = entry
+    for key in keys:
+        if not isinstance(cur, Mapping):
+            return None
+        cur = cur.get(key)
+        if cur is None:
+            return None
+    return cur
+
+
 # ---- CLI ----------------------------------------------------------
 
 
@@ -337,7 +512,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         description=(
             "Read the JSON report produced by "
             "``j1.tools.evaluate_retrieval_broadening`` and print "
-            "a compact operator-facing summary."
+            "a compact operator-facing summary. Default output is "
+            "plain text; pass ``--format markdown`` for a PR-"
+            "friendly rendering."
         ),
     )
     parser.add_argument(
@@ -345,9 +522,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Path to the A/B report JSON.",
     )
     parser.add_argument(
+        "--format", choices=("text", "markdown"), default="text",
+        help="Output format. Defaults to plain text.",
+    )
+    parser.add_argument(
         "--output", default=None, type=Path,
         help=(
-            "Write the formatted summary here instead of stdout. "
+            "Write the rendered summary here instead of stdout. "
             "Optional."
         ),
     )
@@ -376,7 +557,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     summary = summarize_report(report)
-    text = format_summary(summary)
+    if args.format == "markdown":
+        text = render_markdown(report, summary=summary)
+    else:
+        text = format_summary(summary)
     if args.output is not None:
         args.output.write_text(text, encoding="utf-8")
     else:

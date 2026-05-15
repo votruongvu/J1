@@ -1,0 +1,25 @@
+{
+  "scope": {
+    "project_id": "alpha"
+  },
+  "results": [
+    {
+      "query_id": "missing_baseline_001",
+      "question": "Sparse report row."
+    },
+    {
+      "query_id": "missing_variant_counts_002",
+      "question": "Variant counts missing.",
+      "baseline": {
+        "retrieved_count": 3,
+        "evidence_count": 2,
+        "diagnostics": {}
+      },
+      "alias_broadening": {
+        "retrieved_count": null,
+        "evidence_count": null,
+        "diagnostics": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-05-19T12:00:00+00:00",
+  "scope": {
+    "tenant_id": "acme",
+    "project_id": "alpha",
+    "document_id": "doc-1",
+    "snapshot_id": "snap-prior"
+  },
+  "config": {
+    "baseline": {"alias_broadening_enabled": false},
+    "variant": {"alias_broadening_enabled": true}
+  },
+  "summary": {
+    "query_count": 3,
+    "queries_with_more_results": 2,
+    "queries_with_same_results": 1,
+    "queries_with_fewer_results": 0,
+    "queries_with_enrichment_aliases_available": 2,
+    "queries_with_enrichment_aliases_applied": 2
+  },
+  "results": [
+    {
+      "query_id": "compare_alias_001",
+      "question": "What is BOQ?",
+      "category": "alias",
+      "baseline": {"retrieved_count": 3, "evidence_count": 2, "diagnostics": {}},
+      "alias_broadening": {
+        "retrieved_count": 7,
+        "evidence_count": 5,
+        "diagnostics": {
+          "applied_to_retrieval": true,
+          "enrichment_alias_pairs_available": 1,
+          "enrichment_alias_pairs_applied": 1
+        }
+      },
+      "delta": {
+        "retrieved_count": 4,
+        "evidence_count": 3,
+        "enrichment_alias_pairs_applied": 1
+      }
+    },
+    {
+      "query_id": "compare_alias_002",
+      "question": "What is RFI?",
+      "category": "alias",
+      "baseline": {"retrieved_count": 4, "evidence_count": 3, "diagnostics": {}},
+      "alias_broadening": {
+        "retrieved_count": 8,
+        "evidence_count": 6,
+        "diagnostics": {
+          "applied_to_retrieval": true,
+          "enrichment_alias_pairs_available": 1,
+          "enrichment_alias_pairs_applied": 1
+        }
+      },
+      "delta": {
+        "retrieved_count": 4,
+        "evidence_count": 3,
+        "enrichment_alias_pairs_applied": 1
+      }
+    },
+    {
+      "query_id": "compare_neutral_003",
+      "question": "Workflow?",
+      "category": "should_not_broaden",
+      "baseline": {"retrieved_count": 2, "evidence_count": 2, "diagnostics": {}},
+      "alias_broadening": {
+        "retrieved_count": 2,
+        "evidence_count": 2,
+        "diagnostics": {
+          "applied_to_retrieval": false,
+          "enrichment_alias_pairs_available": 0,
+          "enrichment_alias_pairs_applied": 0
+        }
+      },
+      "delta": {
+        "retrieved_count": 0,
+        "evidence_count": 0,
+        "enrichment_alias_pairs_applied": 0
+      }
+    }
+  ],
+  "warnings": []
+}

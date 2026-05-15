@@ -28,6 +28,7 @@ from j1.tools.summarize_retrieval_broadening_report import (
     SuspicionFlag,
     format_summary,
     main,
+    render_markdown,
     summarize_report,
 )
 
@@ -529,3 +530,151 @@ def test_main_handles_real_harness_report_shape(tmp_path: Path, capsys):
     assert "total queries: 2" in captured.out
     assert "retrieved count increased: 1" in captured.out
     assert "retrieved count unchanged: 1" in captured.out
+
+
+# ---- Markdown export ---------------------------------------------
+
+
+def test_markdown_export_contains_required_sections():
+    """Spec calls out a fixed Markdown shape: title, generated
+    timestamp, scope table, summary table, query result table,
+    suspicious-cases section, notes block."""
+    report = _report(results=[
+        _query(query_id="alias_boq_001", question="What is BOQ?"),
+    ])
+    # Add a category to verify it lands in the table row.
+    report["results"][0]["category"] = "alias"
+    report["generated_at"] = "2026-05-20T12:00:00+00:00"
+
+    md = render_markdown(report)
+    assert "# Retrieval Broadening A/B Summary" in md
+    assert "2026-05-20T12:00:00+00:00" in md
+    assert "## Scope" in md
+    assert "| Tenant | acme |" in md
+    assert "## Summary" in md
+    assert "| Query count | 1 |" in md
+    assert "## Query Results" in md
+    assert "alias_boq_001" in md
+    assert "## Suspicious Cases" in md
+    assert "## Notes" in md
+
+
+def test_markdown_empty_report_still_valid():
+    md = render_markdown({})
+    # Headers render even with no data.
+    assert "# Retrieval Broadening A/B Summary" in md
+    assert "## Scope" in md
+    assert "_No query results in this report._" in md
+    assert "_No suspicious cases detected._" in md
+
+
+def test_markdown_missing_optional_fields_renders_em_dash():
+    """When scope keys are absent, the Markdown table renders
+    them as ``—`` rather than dropping the rows entirely. Stable
+    column layout across reports lets reviewers diff them
+    visually."""
+    report = {
+        "scope": {"project_id": "alpha"},  # missing tenant/document/snapshot
+        "results": [],
+    }
+    md = render_markdown(report)
+    assert "| Tenant | — |" in md
+    assert "| Project | alpha |" in md
+    assert "| Document | — |" in md
+    assert "| Snapshot | — |" in md
+
+
+def test_markdown_lists_suspicious_cases_with_flags():
+    """Suspicious cases land under their own section with the
+    flag list rendered verbatim."""
+    report = _report(results=[
+        _query(
+            query_id="q-down",
+            baseline_retrieved=5, variant_retrieved=1,
+        ),
+    ])
+    md = render_markdown(report)
+    assert "## Suspicious Cases" in md
+    assert "q-down" in md
+    assert SuspicionFlag.DECREASED_RETRIEVAL in md
+
+
+def test_markdown_query_results_table_shows_signed_delta():
+    """Positive deltas surface with a leading ``+`` so a quick
+    skim distinguishes wins from losses."""
+    report = _report(results=[
+        _query(query_id="q-up", baseline_retrieved=2, variant_retrieved=7),
+        _query(query_id="q-down", baseline_retrieved=7, variant_retrieved=2),
+    ])
+    md = render_markdown(report)
+    assert "| +5 |" in md
+    assert "| -5 |" in md
+
+
+def test_markdown_pipes_in_question_are_escaped():
+    """Pipes inside cell content would break the Markdown table
+    layout. Render with an escaped ``\\|``."""
+    report = _report(results=[
+        _query(
+            query_id="q-pipe",
+            question="What is | weird?",
+        ),
+    ])
+    # category carries pipes too — extra defense.
+    report["results"][0]["category"] = "weird | category"
+    md = render_markdown(report)
+    # Pipes inside the table cells are escaped — no raw ``|`` in
+    # the category cell content.
+    assert "weird \\| category" in md
+
+
+def test_main_writes_markdown_to_output_file(tmp_path: Path):
+    in_path = tmp_path / "in.json"
+    out_path = tmp_path / "out.md"
+    in_path.write_text(json.dumps(_report(results=[
+        _query(query_id="q1"),
+    ])), encoding="utf-8")
+    code = main([
+        "--input", str(in_path),
+        "--format", "markdown",
+        "--output", str(out_path),
+    ])
+    assert code == 0
+    rendered = out_path.read_text(encoding="utf-8")
+    assert rendered.startswith("# Retrieval Broadening A/B Summary")
+    assert "## Query Results" in rendered
+
+
+def test_main_prints_markdown_to_stdout(tmp_path: Path, capsys):
+    path = tmp_path / "in.json"
+    path.write_text(json.dumps(_report(results=[
+        _query(query_id="q1"),
+    ])), encoding="utf-8")
+    code = main([
+        "--input", str(path),
+        "--format", "markdown",
+    ])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "# Retrieval Broadening A/B Summary" in captured.out
+
+
+def test_markdown_render_is_deterministic():
+    """Same input → byte-identical output. Pinned because PR4's
+    use case (paste into PR description) depends on this."""
+    report = _report(results=[
+        _query(query_id="q1", baseline_retrieved=3, variant_retrieved=5),
+    ])
+    one = render_markdown(report)
+    two = render_markdown(report)
+    assert one == two
+
+
+def test_default_format_is_text():
+    """The pre-existing text rendering is the default — Markdown
+    is opt-in via ``--format markdown``. Pinned so a future change
+    that flips the default catches the regression."""
+    import argparse
+    from j1.tools.summarize_retrieval_broadening_report import _parse_args
+    args = _parse_args(["--input", "x"])
+    assert args.format == "text"

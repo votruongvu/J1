@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-05-20T12:05:00+00:00",
+  "scope": {
+    "tenant_id": "acme",
+    "project_id": "empty"
+  },
+  "config": {
+    "baseline": {"alias_broadening_enabled": false},
+    "variant": {"alias_broadening_enabled": true}
+  },
+  "summary": {
+    "query_count": 0,
+    "baseline_avg_retrieved_count": 0.0,
+    "alias_broadening_avg_retrieved_count": 0.0,
+    "queries_with_more_results": 0,
+    "queries_with_same_results": 0,
+    "queries_with_fewer_results": 0,
+    "queries_with_enrichment_aliases_available": 0,
+    "queries_with_enrichment_aliases_applied": 0
+  },
+  "results": [],
+  "warnings": []
+}

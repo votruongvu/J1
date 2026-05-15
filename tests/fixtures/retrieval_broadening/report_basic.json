@@ -1,0 +1,76 @@
+{
+  "generated_at": "2026-05-20T12:00:00+00:00",
+  "scope": {
+    "tenant_id": "acme",
+    "project_id": "alpha",
+    "document_id": "doc-1",
+    "snapshot_id": "snap-active"
+  },
+  "config": {
+    "baseline": {"alias_broadening_enabled": false},
+    "variant": {"alias_broadening_enabled": true}
+  },
+  "summary": {
+    "query_count": 2,
+    "baseline_avg_retrieved_count": 3.5,
+    "alias_broadening_avg_retrieved_count": 4.5,
+    "queries_with_more_results": 1,
+    "queries_with_same_results": 1,
+    "queries_with_fewer_results": 0,
+    "queries_with_enrichment_aliases_available": 1,
+    "queries_with_enrichment_aliases_applied": 1
+  },
+  "results": [
+    {
+      "query_id": "alias_boq_001",
+      "question": "What is BOQ?",
+      "category": "alias",
+      "baseline": {
+        "retrieved_count": 3,
+        "evidence_count": 2,
+        "diagnostics": {},
+        "top_k_preview": []
+      },
+      "alias_broadening": {
+        "retrieved_count": 5,
+        "evidence_count": 4,
+        "diagnostics": {
+          "applied_to_retrieval": true,
+          "enrichment_alias_pairs_available": 1,
+          "enrichment_alias_pairs_applied": 1
+        },
+        "top_k_preview": []
+      },
+      "delta": {
+        "retrieved_count": 2,
+        "evidence_count": 2,
+        "enrichment_alias_pairs_applied": 1
+      }
+    },
+    {
+      "query_id": "alias_neutral_001",
+      "question": "Explain the workflow.",
+      "category": "should_not_broaden",
+      "baseline": {
+        "retrieved_count": 4,
+        "evidence_count": 3,
+        "diagnostics": {}
+      },
+      "alias_broadening": {
+        "retrieved_count": 4,
+        "evidence_count": 3,
+        "diagnostics": {
+          "applied_to_retrieval": false,
+          "enrichment_alias_pairs_available": 0,
+          "enrichment_alias_pairs_applied": 0
+        }
+      },
+      "delta": {
+        "retrieved_count": 0,
+        "evidence_count": 0,
+        "enrichment_alias_pairs_applied": 0
+      }
+    }
+  ],
+  "warnings": []
+}

@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-05-20T12:10:00+00:00",
+  "scope": {
+    "tenant_id": "acme",
+    "project_id": "alpha",
+    "document_id": "doc-1",
+    "snapshot_id": "snap-active"
+  },
+  "config": {
+    "baseline": {"alias_broadening_enabled": false},
+    "variant": {"alias_broadening_enabled": true}
+  },
+  "summary": {
+    "query_count": 2,
+    "queries_with_more_results": 0,
+    "queries_with_same_results": 2,
+    "queries_with_fewer_results": 0,
+    "queries_with_enrichment_aliases_available": 0,
+    "queries_with_enrichment_aliases_applied": 0
+  },
+  "results": [
+    {
+      "query_id": "warn_one_001",
+      "question": "What is ABC?",
+      "category": "alias",
+      "baseline": {
+        "retrieved_count": 1,
+        "evidence_count": 1,
+        "diagnostics": {}
+      },
+      "alias_broadening": {
+        "retrieved_count": 1,
+        "evidence_count": 1,
+        "diagnostics": {
+          "applied_to_retrieval": true,
+          "enrichment_alias_pairs_available": 0,
+          "enrichment_alias_pairs_applied": 0
+        }
+      },
+      "delta": {
+        "retrieved_count": 0,
+        "evidence_count": 0,
+        "enrichment_alias_pairs_applied": 0
+      }
+    },
+    {
+      "query_id": "warn_two_002",
+      "question": "What is DEF?",
+      "category": "alias",
+      "baseline": {
+        "retrieved_count": 2,
+        "evidence_count": 1,
+        "diagnostics": {}
+      },
+      "alias_broadening": {
+        "retrieved_count": 2,
+        "evidence_count": 1,
+        "diagnostics": {
+          "applied_to_retrieval": false
+        }
+      },
+      "delta": {
+        "retrieved_count": 0,
+        "evidence_count": 0,
+        "enrichment_alias_pairs_applied": 0
+      }
+    }
+  ],
+  "warnings": [
+    "query 'warn_one_001' (alias_broadening): no augmentation diagnostics in response",
+    "query 'warn_two_002' (baseline): missing retrieved_chunks"
+  ]
+}
