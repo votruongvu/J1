@@ -520,14 +520,16 @@ export interface IngestionClient {
   ): Promise<DocumentReindexResponse>;
 
   /**
- * POST /ingestion-runs/{run_id}/refresh-enrichment — start a new
- * candidate run that REUSES this run's compile output and re-runs
- * only enrichment + graph + index. ``run_id`` MUST be the
- * document's currently active run; the server rejects non-active
- * runs with HTTP 409.
+ * POST /ingestion-runs/{run_id}/refresh-enrichment.
  *
- * Promotion to ``activeSnapshotId`` is CAS-on-terminal-success —
- * a failed refresh preserves the previous active.
+ * @deprecated Prefer ``runDomainEnrichment(documentId)``. The new
+ * surface dispatches an explicit Manual Action against the
+ * document's active snapshot, captures structured action
+ * provenance, and is the canonical UI path. This method remains
+ * on the client interface for legacy external integrations and
+ * legacy tests; FE surfaces MUST NOT render a primary "Refresh
+ * Enrich" button. The BE route is also flagged ``deprecated`` in
+ * the OpenAPI schema.
  */
   refreshRunEnrichment(runId: string): Promise<RunRefreshEnrichmentResponse>;
 

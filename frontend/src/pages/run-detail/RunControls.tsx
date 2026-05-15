@@ -35,18 +35,20 @@ import {
   PAUSABLE_STATUSES,
   RUN_STATUS,
 } from "@/lib/constants/runStatus";
-import { hideLegacyRefreshEnrich } from "@/lib/constants/feature-flags";
 import type { IngestionRun } from "@/types/ingestion";
 import type { DocumentRunSummary } from "@/types/documents";
 import type { Toast } from "@/types/ui";
 import { Icon } from "@/components/icons";
 
-type ControlAction =
-  | "pause"
-  | "cancel"
-  | "clean_up"
-  | "refresh_enrichment"
-  | "run_enrichment";
+// Run-scoped control vocabulary. The legacy ``refresh_enrichment``
+// and ``run_enrichment`` actions have been removed from the FE
+// surface — both were dispatch paths to
+// ``POST /ingestion-runs/{id}/refresh-enrichment``, which is now
+// deprecated in favour of the explicit Manual Actions panel on the
+// Document Detail page (``POST /documents/{id}/manual-actions/
+// run-domain-enrichment``). The BE route remains for external
+// integrations.
+type ControlAction = "pause" | "cancel" | "clean_up";
 
 interface RunControlsProps {
   run: IngestionRun | null;
@@ -140,16 +142,6 @@ export function RunControls({
           toastBody =
             `${c.workspaceFiles} file(s) + ${c.artifacts} artifact ` +
             `record(s) + ${c.snapshots} run snapshot(s) removed.`;
-        } else if (
-          action === "refresh_enrichment" || action === "run_enrichment"
-        ) {
-          const result = await client.refreshRunEnrichment(run.runId);
-          toastTitle =
-            action === "refresh_enrichment"
-              ? "Refresh enrichment started"
-              : "Enrichment started";
-          toastBody = `New run: ${result.refreshRunId.slice(0, 12)}`;
-          newRunId = result.refreshRunId;
         }
         pushToast({ kind: "success", title: toastTitle, body: toastBody });
         if (onAfterAction) onAfterAction(action, newRunId);
@@ -161,8 +153,6 @@ export function RunControls({
           pause: "Pause",
           cancel: "Cancel",
           clean_up: "Clean up",
-          refresh_enrichment: "Refresh enrichment",
-          run_enrichment: "Run enrichment",
         };
         pushToast({
           kind: "error",
@@ -184,15 +174,11 @@ export function RunControls({
   const showPause = PAUSE_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
   const canDeleteRun = capability?.canDeleteRun ?? false;
-  // Legacy refresh-enrich is hidden when the deployment runs in
-  // Manual Actions mode — the user-facing model in that mode is
-  // explicit post-index actions (Run Domain Enrichment, Build
-  // Knowledge Memory, etc.). The backend endpoint stays available
-  // for ops tooling; only the primary FE button is suppressed.
-  const canRefreshEnrichment =
-    (capability?.canRefreshEnrichment ?? false)
-    && !hideLegacyRefreshEnrich;
-  const canRunEnrichment = capability?.canRunEnrichment ?? false;
+  // The legacy ``canRefreshEnrichment`` / ``canRunEnrichment`` server
+  // capability flags are still on the wire for external clients, but
+  // the FE no longer surfaces them — the canonical surface is the
+  // Manual Actions panel on Document Detail
+  // (Run Domain Enrichment, etc.).
   const isOnlyRun = capability?.isOnlyRun ?? false;
   const isActive = capability?.isActive ?? false;
   const showOnlyRunHint = !compact && isOnlyRun && !isActive;
@@ -200,9 +186,7 @@ export function RunControls({
   const anyButton =
     showPause ||
     showCancel ||
-    canDeleteRun ||
-    canRefreshEnrichment ||
-    canRunEnrichment;
+    canDeleteRun;
 
   if (
     !anyButton
@@ -254,54 +238,6 @@ export function RunControls({
             <Icon.XCircle className="icon-sm" />
           )}
           {!compact && <span style={{ marginLeft: 4 }}>Cancel</span>}
-        </button>
-      )}
-      {canRefreshEnrichment && (
-        <button
-          type="button"
-          className={btnClass}
-          disabled={anyPending}
-          onClick={() => void dispatch("refresh_enrichment")}
-          aria-label="Refresh enrichment for active snapshot"
-          title={
-            "Build a new candidate snapshot that reuses this run's " +
-            "compile output and re-runs enrichment + graph + index. " +
-            "Current active knowledge stays live until the new " +
-            "candidate is promoted."
-          }
-          data-testid="run-controls-refresh-enrichment"
-        >
-          {isPending("refresh_enrichment") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.RefreshCw className="icon-sm" />
-          )}
-          {!compact && (
-            <span style={{ marginLeft: 4 }}>
-              Refresh enrichment for active snapshot
-            </span>
-          )}
-        </button>
-      )}
-      {canRunEnrichment && (
-        <button
-          type="button"
-          className={`${btnClass} btn--primary`}
-          disabled={anyPending}
-          onClick={() => void dispatch("run_enrichment")}
-          aria-label="Run enrichment for this run"
-          title={
-            "Run enrichment on this run for the first time. Re-uses this " +
-            "run's compile output."
-          }
-          data-testid="run-controls-run-enrichment"
-        >
-          {isPending("run_enrichment") ? (
-            <Icon.RefreshCw className="icon-sm spin" />
-          ) : (
-            <Icon.RefreshCw className="icon-sm" />
-          )}
-          {!compact && <span style={{ marginLeft: 4 }}>Run enrichment</span>}
         </button>
       )}
       {canDeleteRun && (

@@ -1,15 +1,14 @@
 /**
- * Static-markup tests for RunControls — focused on the
- * Manual-Actions-mode contract.
+ * Static-markup tests for RunControls — focused on the canonical
+ * post-Phase-4 contract.
  *
- *   - When ``hideLegacyRefreshEnrich`` is true, the Refresh
- *     Enrichment button MUST NOT render even when the server
- *     capability says it could.
- *   - When the feature flag is off (or the override is false),
- *     the legacy button renders as before.
- *
- * We mock the feature-flag module so the tests don't depend on
- * Vite env state.
+ *   - The legacy "Refresh Enrichment" / "Run Enrichment" buttons
+ *     are permanently retired. The canonical surface is the
+ *     Manual Actions panel on Document Detail.
+ *   - Capability flags the server still emits
+ *     (``canRefreshEnrichment``, ``canRunEnrichment``) are ignored
+ *     by the FE; this test pins that they DO NOT render anywhere
+ *     regardless of value.
  */
 
 import { describe, expect, it, vi, afterEach } from "vitest";
@@ -28,19 +27,6 @@ vi.mock("@/lib/hooks/useClient", () => ({
 }));
 
 
-// The flag default + override switches at module-load time. We mock
-// the export here and re-import RunControls in each test so the
-// closure captures the right value.
-async function _loadRunControlsWithFlag(hideLegacy: boolean) {
-  vi.resetModules();
-  vi.doMock("@/lib/constants/feature-flags", () => ({
-    manualActionsEnabled: hideLegacy,
-    hideLegacyRefreshEnrich: hideLegacy,
-  }));
-  return await import("../RunControls");
-}
-
-
 function _baseRun() {
   return {
     runId: "run-1",
@@ -50,7 +36,7 @@ function _baseRun() {
     completedAt: new Date().toISOString(),
     metadata: {},
   } as unknown as Parameters<
-    Awaited<ReturnType<typeof _loadRunControlsWithFlag>>["RunControls"]
+    typeof import("../RunControls")["RunControls"]
   >[0]["run"];
 }
 
@@ -61,9 +47,9 @@ afterEach(() => {
 });
 
 
-describe("RunControls — Manual Actions mode", () => {
-  it("hides Refresh Enrichment when hideLegacyRefreshEnrich is true", async () => {
-    const { RunControls } = await _loadRunControlsWithFlag(true);
+describe("RunControls — retired legacy enrichment buttons", () => {
+  it("never renders Refresh Enrichment, even when the server says canRefreshEnrichment=true", async () => {
+    const { RunControls } = await import("../RunControls");
     const html = renderToStaticMarkup(
       createElement(RunControls, {
         run: _baseRun(),
@@ -71,38 +57,19 @@ describe("RunControls — Manual Actions mode", () => {
           isActive: true,
           isOnlyRun: false,
           canDeleteRun: true,
-          // The server still says the capability is available …
+          // The server still emits these — they're ignored by the
+          // FE. The Manual Actions panel on Document Detail is the
+          // canonical surface.
           canRefreshEnrichment: true,
-          canRunEnrichment: false,
+          canRunEnrichment: true,
         },
         onRefresh: () => {},
         pushToast: () => {},
       } as Parameters<typeof RunControls>[0]),
     );
-    // … but the button MUST be suppressed at the FE because the
-    // deployment runs in Manual Actions mode.
     expect(html).not.toContain("run-controls-refresh-enrichment");
     expect(html).not.toContain("Refresh enrichment for active snapshot");
-  });
-
-  it("renders Refresh Enrichment when the flag is off", async () => {
-    const { RunControls } = await _loadRunControlsWithFlag(false);
-    const html = renderToStaticMarkup(
-      createElement(RunControls, {
-        run: _baseRun(),
-        capability: {
-          isActive: true,
-          isOnlyRun: false,
-          canDeleteRun: true,
-          canRefreshEnrichment: true,
-          canRunEnrichment: false,
-        },
-        onRefresh: () => {},
-        pushToast: () => {},
-      } as Parameters<typeof RunControls>[0]),
-    );
-    // Legacy deployments still see the button — pinned so a
-    // future cleanup doesn't accidentally drop the rollback path.
-    expect(html).toContain("run-controls-refresh-enrichment");
+    expect(html).not.toContain("run-controls-run-enrichment");
+    expect(html).not.toContain("Run enrichment");
   });
 });

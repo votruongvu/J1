@@ -26,6 +26,7 @@ Public API:
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Mapping
@@ -80,6 +81,26 @@ def _collect_snapshot_ids(
     return tuple(sorted(seen))
 
 
+# Phase-4 retrieval-broadening gate. Default OFF — the augmentation
+# provider's hints are captured into the trace as diagnostics, but
+# the retrieval routes do NOT see the expanded terms. Flip to true
+# in a deployment that wants to A/B the broadening; even then,
+# retrieval-side consumption is a future patch.
+ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL = (
+    "J1_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL"
+)
+
+
+def _augmentation_applied_to_retrieval(
+    env: dict[str, str] | None = None,
+) -> bool:
+    source = env if env is not None else os.environ
+    raw = source.get(ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL)
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _any_global_workspace(records: tuple) -> bool:
     """True if any RAGAnything candidate reported a working_dir that
     looks unscoped (no ``/snapshots/`` segment). Heuristic — surfaced
@@ -126,6 +147,15 @@ class OrchestratorRequest:
     # only sees ACTIVE snapshots and would refuse a candidate that
     # hasn't been promoted yet.
     eligible_snapshot_pairs: frozenset[tuple[str, str]] | None = None
+    # Phase-4: optional UnifiedMemoryView the orchestrator can hand
+    # to the augmentation provider so it has access to the active
+    # snapshot's enrichment artifact refs. ``None`` when the caller
+    # didn't pre-resolve it — the orchestrator gracefully skips
+    # augmentation (everything stays "disabled" in diagnostics).
+    # Typed as ``object`` to avoid an import cycle between
+    # ``j1.memory`` and ``j1.query``; the augmentation provider's
+    # ``hints_for`` accepts it directly.
+    memory_view: object | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +190,7 @@ class SmartQueryOrchestrator:
         synthesizer: AnswerSynthesizer,
         binder: CitationBinder,
         quality: AnswerQualityGate,
+        augmentation_provider: object | None = None,
     ) -> None:
         self._classifier = classifier
         self._routes = route_runner
@@ -168,6 +199,15 @@ class SmartQueryOrchestrator:
         self._synth = synthesizer
         self._binder = binder
         self._quality = quality
+        # Phase-4 augmentation provider. Optional — when ``None`` the
+        # orchestrator behaves identically to the pre-Phase-4 pipeline.
+        # When wired, the orchestrator captures the provider's hints
+        # into the QueryTrace as diagnostics; retrieval inputs are
+        # NOT broadened until ``J1_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL``
+        # is flipped on (deferred work — Phase-4 ships diagnostics
+        # only so the seam can be exercised without changing answer
+        # behaviour).
+        self._augmentation_provider = augmentation_provider
 
     # ---- Construction helper ---------------------------------
 
@@ -200,6 +240,50 @@ class SmartQueryOrchestrator:
             request.question, profile=profile,
         )
         trace = QueryTrace.empty_with_plan(request.question, plan)
+
+        # 1.5. Domain query augmentation (Phase-4, diagnostics-only).
+        # The provider is optional — wirings without it (legacy /
+        # validation diagnostics) skip this stage entirely. When
+        # wired, we capture the hints + a capped expansion list into
+        # the trace so the FE / manual-test view can surface them.
+        # Retrieval routes do NOT consume the expansions yet; the
+        # ``applied_to_retrieval`` flag stays ``False`` unless the
+        # deployment opts in via the env flag (the path for that
+        # opt-in is a follow-up PR).
+        if self._augmentation_provider is not None and request.memory_view is not None:
+            try:
+                hints = self._augmentation_provider.hints_for(
+                    request.memory_view, request.question,
+                )
+                # Local import: avoids a hard dependency on the
+                # ``j1.memory`` package at orchestrator import time
+                # (legacy tests construct the orchestrator without
+                # the memory module wired).
+                from j1.memory.augmentation import compute_query_expansion
+                expansions = compute_query_expansion(
+                    request.question, hints,
+                )
+                # ``compute_query_expansion`` prepends the original
+                # query at index 0 — strip it from the diagnostics
+                # field so callers see only the BROADENING terms.
+                augmentation_expansions = tuple(
+                    t for t in expansions if t != request.question
+                )
+                trace = trace.with_augmentation(
+                    source=hints.source,
+                    terms=hints.domain_terms,
+                    aliases=hints.aliases,
+                    expansions=augmentation_expansions,
+                    applied_to_retrieval=(
+                        bool(augmentation_expansions)
+                        and _augmentation_applied_to_retrieval()
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — diagnostics never fail the call
+                # Augmentation is advisory. A misconfigured provider
+                # must not regress the answer path; the trace just
+                # stays at the empty default.
+                pass
 
         # 2. Retrieval routes.
         route_ctx = RouteContext(

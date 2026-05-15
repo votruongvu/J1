@@ -77,19 +77,27 @@ Callers MUST go through this resolver. They MUST NOT:
 
 ## Queryability rules
 
-Queryable status is explicit and explainable. Suggested vocabulary
-(final names land with the Phase 2 implementation):
+Queryable status is explicit and explainable. The vocabulary below
+is the **canonical shipped contract** — the strings on the wire and
+the values of ``j1.memory.QueryableStatus``. The REST surface emits
+them verbatim in the ``details.queryableStatus`` payload on a
+``MEMORY_NOT_QUERYABLE`` 409.
 
 | Status | Meaning |
 | --- | --- |
 | `not_started` | Document exists, no run has produced a snapshot yet. |
-| `assessment_ready` | Assessment plan generated, awaiting confirmation. |
-| `compile_running` | The producing run is mid-compile. |
 | `compile_failed` | The producing run's compile failed; the previous active (if any) is still queryable. |
+| `missing_artifacts` | Active snapshot is set but its compile artifacts cannot be resolved — usually a cleanup race. Treated as not-queryable; re-index. |
+| `not_attached` | Document is detached or has a non-`stable` lifecycle. Attach it to bring it back into scope. |
+| `removed` | Document was removed from the knowledge base. Re-upload to restore. |
 | `queryable` | Active snapshot is promoted and compile artifacts resolve. Basic-only knowledge is queryable. |
 | `enrichment_available` | Same as `queryable`, plus a successful enrichment artifact set is attached. |
 | `enrichment_failed` | `queryable` is still true; the last enrichment attempt failed but the active snapshot is unchanged. |
-| `not_queryable` | Document is detached / removed / has no active snapshot / its compile artifacts are missing. |
+| `run_unknown` | ``resolve_run_memory`` only — the requested run id is not in the run store. |
+
+A view is **queryable** iff its status is one of ``queryable`` /
+``enrichment_available`` / ``enrichment_failed``. Everything else
+is treated as not-queryable by callers.
 
 Concrete rules every implementation must follow:
 
@@ -183,6 +191,41 @@ active query.
 - Old run data is fair game for diagnostics, run-history rendering,
   and audit comparison — but never for the public `/answer` route
   or for the project-active / document-active query paths.
+
+## Query augmentation seam
+
+The Unified Memory contract feeds the query layer's augmentation
+seam. The shape is documented here because it's where retrieval
+code learns "what does the active scope's domain pack say about
+this query?" without reading pack internals.
+
+Three exports in `j1.memory`:
+
+- **`DomainQueryAugmentationProvider`** — protocol. Implementations
+  receive `(DocumentMemoryView, query)` and return
+  `AugmentationHints` (terms, alias pairs, recommended retrieval
+  expansions, source tag).
+- **`DomainPackAugmentationProvider`** — domain-pack-backed default.
+  Reads `DomainPack.extraction_hints` (terminology, retrieval
+  hints, `entity_aliases`). Returns `(short, long)` alias pairs +
+  query-aware expansion forms.
+- **`compute_query_expansion(query, hints, max_terms=8)`** —
+  deterministic capped helper. Returns a tuple with the **original
+  query at index 0** (never evicted by the cap) plus the
+  `max_terms - 1` highest-precedence expansion forms. The
+  module-level ceiling `MAX_QUERY_EXPANSION_TERMS` silently clamps
+  oversized callers — a runaway pack cannot fan retrieval into
+  hundreds of terms.
+
+Feature flag: `J1_DOMAIN_QUERY_AUGMENTATION_ENABLED` (default
+`true`). When `false`, the provider returns the empty
+`source="disabled"` shape so callers branch uniformly without
+re-reading the env.
+
+The augmentation is **advisory**. Synthesis MUST consume the
+original query. Retrieval MAY consume the expansion list. Neither
+is required to produce a correct answer — when the provider
+returns empty hints, retrieval falls back to the original query.
 
 ## What the resolver does NOT do
 

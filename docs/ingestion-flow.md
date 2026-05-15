@@ -248,6 +248,33 @@ re-index.
 - It must not auto-run as part of the ingest workflow. Auto-run is
   gated by `J1_DOMAIN_ENRICHMENT_AUTO_ENABLED=false` (default).
 
+**Auto-run gate details (`J1_DOMAIN_ENRICHMENT_AUTO_ENABLED`).** This
+env flag is the deployment-wide kill switch the post-compile
+planner consults BEFORE returning its recommendation:
+
+- **Default `false`.** The post-compile assessor downgrades every
+  `RECOMMENDED` / `REQUIRED` / `OPTIONAL` verdict to `SKIP` with an
+  audit-friendly reason
+  (`auto_enrichment_disabled: J1_DOMAIN_ENRICHMENT_AUTO_ENABLED is
+  off. Trigger Run Domain Enrichment manually if needed.`). The
+  standard ingest path stays lightweight; enrichment is a separate
+  operator action.
+- **`true`.** The rule-based + domain-policy verdict runs to
+  completion; the workflow dispatches the enrich activity per the
+  recommendation. Use this when a deployment WANTS the historical
+  "auto-enrich on heavy documents" behaviour.
+- **Per-domain compliance override.** A `DomainEnrichmentPolicy`
+  with `policy=ENRICHMENT_POLICY_ALWAYS` bypasses the env gate —
+  compliance-driven domains (where enrichment is contractually
+  required) keep their behaviour regardless of the deployment-wide
+  setting.
+
+The manual `POST /documents/{id}/manual-actions/run-domain-enrichment`
+surface is **never** gated by this flag — it dispatches its own
+run and bypasses the planner entirely. The flags that gate the
+manual surface are `J1_ENABLE_MANUAL_ACTIONS` and
+`J1_ENABLE_MANUAL_DOMAIN_ENRICHMENT` (both default `true`).
+
 **Storage shape.** Enrichment artifacts are stamped with
 `document_id`, `snapshot_id`, `domain_id`, and the producing
 `manual_action_run_id`. The Unified Memory View exposes

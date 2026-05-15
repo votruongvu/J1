@@ -97,6 +97,17 @@ class QueryTrace:
     queried_raganything_snapshot_ids: tuple[str, ...] = ()
     bm25_allowed_snapshot_ids: tuple[str, ...] = ()
     used_global_workspace: bool = False
+    # Phase-4 augmentation diagnostics — populated when a
+    # ``DomainQueryAugmentationProvider`` was wired into the
+    # orchestrator. The fields are pure diagnostics today; retrieval
+    # behaviour is unchanged ("diagnostics-only" mode). When the
+    # provider is absent or returns ``source="disabled"``, every
+    # augmentation field below stays empty / False.
+    augmentation_source: str = ""  # "domain_pack" / "disabled" / ""
+    augmentation_terms: tuple[str, ...] = ()
+    augmentation_aliases: tuple[tuple[str, str], ...] = ()
+    augmentation_expansions: tuple[str, ...] = ()
+    augmentation_applied_to_retrieval: bool = False
 
     @classmethod
     def empty_with_plan(cls, question: str, plan: QueryPlan) -> "QueryTrace":
@@ -187,6 +198,29 @@ class QueryTrace:
             used_global_workspace=used_global_workspace,
         )
 
+    def with_augmentation(
+        self,
+        *,
+        source: str = "",
+        terms: tuple[str, ...] = (),
+        aliases: tuple[tuple[str, str], ...] = (),
+        expansions: tuple[str, ...] = (),
+        applied_to_retrieval: bool = False,
+    ) -> "QueryTrace":
+        """Stamp Phase-4 augmentation diagnostics. Pure data —
+        ``applied_to_retrieval`` is the truthful flag the trace
+        surface reports to the FE; in diagnostics-only mode it stays
+        ``False`` even when ``terms`` / ``expansions`` are populated,
+        because the route layer did NOT consume them."""
+        return _replace(
+            self,
+            augmentation_source=source,
+            augmentation_terms=terms,
+            augmentation_aliases=aliases,
+            augmentation_expansions=expansions,
+            augmentation_applied_to_retrieval=applied_to_retrieval,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-friendly shape rendered by the manual-test endpoint
         verbatim. Keys are stable; new ones land at the end so
@@ -220,6 +254,15 @@ class QueryTrace:
                     self.bm25_allowed_snapshot_ids,
                 ),
                 "used_global_workspace": self.used_global_workspace,
+            },
+            "augmentation": {
+                "source": self.augmentation_source,
+                "terms": list(self.augmentation_terms),
+                "aliases": [list(p) for p in self.augmentation_aliases],
+                "expansions": list(self.augmentation_expansions),
+                "applied_to_retrieval": (
+                    self.augmentation_applied_to_retrieval
+                ),
             },
         }
 

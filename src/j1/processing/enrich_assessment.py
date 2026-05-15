@@ -6,11 +6,9 @@ structured `PostCompileEnrichPlan` recommending whether to run
 the LLM-cost enrichment stages downstream.
 
 Rule-based today. The assessor is a pure function — easy to unit
-test and safe inside a Temporal activity. A future "fast LLM"
-mode (gated on `J1_ENRICH_FAST_LLM_ENABLED`) can sit in front of
-the rule-based path for ambiguous cases without changing the
-return shape; the schema is forward-compatible via
-`decision_source`.
+test and safe inside a Temporal activity. The schema is forward-
+compatible via `decision_source` so a future LLM-refined path can
+slot in without changing callers.
 
 Domain-aware overlay: when the run's selected `DomainPack` carries
 a `DomainEnrichmentPolicy`, the assessor consults it for `always` /
