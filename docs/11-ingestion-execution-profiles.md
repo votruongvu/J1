@@ -166,6 +166,29 @@ A profile is only `minimum_queryable` if it can ingest a 100-page text PDF and p
 
 ---
 
+## Deployment Env Vars (final)
+
+```env
+# Default profile when no `selectedProfile` arrives at the REST
+# boundary. Must be a valid wire string + must be on the
+# allow-list below. Misconfiguration fails at boot.
+J1_DEFAULT_INGEST_PROFILE=standard
+
+# Per-profile allow-list. Defaults are all `true`. Set to
+# `false` to refuse requests for that profile at 403.
+J1_ALLOW_MINIMUM_QUERYABLE_INGEST=true
+J1_ALLOW_STANDARD_INGEST=true
+J1_ALLOW_ADVANCED_INGEST=true
+
+# Opt-in per-LLM-call audit events. When `true`, every real-LLM
+# invocation emits `ingest.stage.llm_call_started` +
+# `ingest.stage.llm_call_completed` with provider/model/purpose/
+# selected_profile/duration_ms. Off by default to bound log
+# volume on busy workers. The no-op `minimum_queryable` path
+# ALWAYS emits its keystone event regardless of this flag.
+J1_LLM_CALL_AUDIT_ENABLED=false
+```
+
 ## Open Risks
 
 - **Stage 2 timeout when no-op is mis-injected.** If `llm_model_func` returns a non-JSON-parseable response, LightRAG raises and chunks may not persist. Mitigation: the no-op returns the exact JSON shape LightRAG expects for "no entities", and we still rely on `_force_persist_chunks` as a belt.

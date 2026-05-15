@@ -759,6 +759,19 @@ class ProcessingActivities:
                 and "disable_entity_extraction" in sig.parameters
             ):
                 compile_kwargs["disable_entity_extraction"] = True
+            # Carry the user-selected profile down to the service /
+            # compiler so the bridge can stamp it onto every audit
+            # event (llm_call_started / heavy_operation_detected).
+            selected_profile_wire = getattr(
+                input, "selected_execution_profile", None,
+            )
+            if (
+                selected_profile_wire
+                and "selected_execution_profile" in sig.parameters
+            ):
+                compile_kwargs["selected_execution_profile"] = (
+                    selected_profile_wire
+                )
         except (TypeError, ValueError):
             pass
         try:

@@ -80,6 +80,9 @@ from j1.orchestration.workflows.batch_orchestration import (
     BatchOrchestrationRequest,
     BatchOrchestrationWorkflow,
 )
+from j1.processing.execution_profile_policy import (
+    load_execution_profile_policy,
+)
 from temporalio.common import WorkflowIDConflictPolicy
 from j1.integration.services import ApplicationFacade
 
@@ -459,6 +462,14 @@ def _build_app():
         # leaving the activity layer to do it lazily on first
         # artifact write).
         snapshot_service=build_snapshot_services(workspace)[0],
+        # Phase C: deployment-level execution-profile safety policy.
+        # Read from env at boot (`J1_DEFAULT_INGEST_PROFILE`,
+        # `J1_ALLOW_{MINIMUM_QUERYABLE,STANDARD,ADVANCED}_INGEST`).
+        # Invalid env config raises `InvalidProfilePolicyError`
+        # synchronously so the dev process refuses to start rather
+        # than booting with a degraded policy — exactly the
+        # contract we want for operator-visible misconfiguration.
+        execution_profile_policy=load_execution_profile_policy(),
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

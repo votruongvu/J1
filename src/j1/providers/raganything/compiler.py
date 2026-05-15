@@ -95,6 +95,13 @@ class RAGAnythingCompileRequest:
     # execution profile. See [_noop_llm.py](./_noop_llm.py) for the
     # full rationale. Defaults to False (real LLM, full extraction).
     disable_entity_extraction: bool = False
+    # User-selected execution profile (wire-string value of
+    # ``ExecutionProfile``). Stamped on every LLM-call /
+    # heavy-operation audit event the bridge emits during this
+    # compile so the operator can correlate per-call cost against
+    # the profile the user chose. None on legacy callers — audit
+    # events still fire but without the profile field.
+    selected_execution_profile: str | None = None
 
 
 CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult]
@@ -180,6 +187,7 @@ class RAGAnythingCompiler:
         snapshot_id: str | None = None,
         working_dir_override: Any = None,
         disable_entity_extraction: bool = False,
+        selected_execution_profile: str | None = None,
     ) -> ArtifactProcessingResult:
         """Run the wrapped vendor compile.
 
@@ -209,6 +217,7 @@ class RAGAnythingCompiler:
             snapshot_id=snapshot_id,
             working_dir_override=working_dir_override,
             disable_entity_extraction=disable_entity_extraction,
+            selected_execution_profile=selected_execution_profile,
         )
         try:
             return self._compile_callable(request)

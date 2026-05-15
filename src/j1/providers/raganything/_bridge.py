@@ -63,6 +63,14 @@ from j1.processing.results import (
     ResultStatus,
 )
 from j1.providers.errors import ProviderUnavailable
+from j1.providers.raganything._llm_audit import (
+    PURPOSE_ENTITY_EXTRACTION,
+    PURPOSE_ENTITY_EXTRACTION_NOOP,
+    PURPOSE_VISION_ANALYSIS,
+    emit_heavy_operation_detected,
+    load_llm_audit_config,
+    wrap_audited_async,
+)
 
 if TYPE_CHECKING:
     from j1.providers.raganything.compiler import RAGAnythingCompileRequest
@@ -367,6 +375,23 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             request.settings.backend or "<mineru-default>",
             source_path.name,
             compile_plan_config is not None,
+        )
+        # Emit one structured audit line per compile that enters
+        # the MinerU pipeline. MinerU's transformer stack runs
+        # for minutes on real PDFs and is the dominant per-compile
+        # cost for `standard`/`advanced` ingests of multimodal
+        # documents — the heavy-operation event lets ops dashboards
+        # filter runs by "which compiles took the slow path."
+        emit_heavy_operation_detected(
+            stage="compile",
+            operation="mineru_parse",
+            selected_profile=getattr(
+                request, "selected_execution_profile", None,
+            ),
+            detail=(
+                f"parse_method={parser_kwargs.get('parse_method')} "
+                f"backend={request.settings.backend or 'default'}"
+            ),
         )
         await rag.process_document_complete(
             file_path=str(source_path),
@@ -1091,6 +1116,13 @@ def _prepare_compile(
         disable_entity_extraction=getattr(
             request, "disable_entity_extraction", False,
         ),
+        # Carry the user-selected profile into every audit line
+        # the bridge emits — heavy-operation events, llm-call
+        # events, and the no-op short-circuit notification all
+        # stamp it so operators can correlate against the run.
+        selected_profile=getattr(
+            request, "selected_execution_profile", None,
+        ),
     )
     workspace = _resolve_workspace_root(request.ctx)
     raw_dir = workspace / "tenants" / request.ctx.tenant_id / "projects" / request.ctx.project_id / "raw"
@@ -1240,6 +1272,7 @@ def _build_rag_instance(
     config_overrides: dict[str, Any] | None = None,
     working_dir_override: Path | None = None,
     disable_entity_extraction: bool = False,
+    selected_profile: str | None = None,
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
@@ -1291,6 +1324,23 @@ def _build_rag_instance(
     kwargs: dict[str, Any] = {}
     if config is not None:
         kwargs["config"] = config
+
+    # Resolve audit context for the wrapped LLM callables. Real-LLM
+    # auditing is env-gated (`J1_LLM_CALL_AUDIT_ENABLED`) to keep
+    # log volume bounded; the no-op path ALWAYS audits so the
+    # keystone honesty signal is unconditional. See
+    # [_llm_audit.py](./_llm_audit.py) for the policy rationale.
+    audit_cfg = load_llm_audit_config()
+    text_provider = getattr(text_client, "provider", None) or "text-llm"
+    text_model = getattr(text_client, "model", None)
+    vision_provider = (
+        getattr(vision_client, "provider", None) or "vision-llm"
+        if vision_client is not None else None
+    )
+    vision_model = (
+        getattr(vision_client, "model", None) if vision_client is not None else None
+    )
+
     if disable_entity_extraction:
         # `minimum_queryable` profile: short-circuit LightRAG's
         # stage-2 entity/relationship extraction so compile produces
@@ -1303,43 +1353,43 @@ def _build_rag_instance(
         # promised none.
         from j1.providers.raganything._noop_llm import make_noop_text_callable
 
-        # Emit one structured audit event per no-op invocation so
-        # the operator can prove the keystone is firing: every
-        # short-circuit should appear in the worker log under
-        # `ingest.stage.llm_call_started` with
-        # `purpose=entity_extraction_noop_minimum_queryable`. Logging
-        # at the bridge layer (not the workflow) is intentional —
-        # the no-op fires inside the activity, where workflow.logger
-        # isn't available.
-        def _audit_noop_call(payload: dict[str, Any]) -> None:
-            _log.info(
-                "ingest.stage.llm_call_started",
-                extra={
-                    "event": "ingest.stage.llm_call_started",
-                    "stage": "compile",
-                    "purpose": "entity_extraction_noop_minimum_queryable",
-                    "provider": "noop",
-                    "model": "noop",
-                    "selected_profile": "minimum_queryable",
-                    "history_messages_count": payload.get(
-                        "history_messages_count", 0,
-                    ),
-                },
-            )
-
-        kwargs["llm_model_func"] = make_noop_text_callable(
-            on_call=_audit_noop_call,
+        noop = make_noop_text_callable()
+        kwargs["llm_model_func"] = wrap_audited_async(
+            noop,
+            purpose=PURPOSE_ENTITY_EXTRACTION_NOOP,
+            stage="compile",
+            provider="noop",
+            model="noop",
+            selected_profile=selected_profile or "minimum_queryable",
+            always_audit=True,
+            config=audit_cfg,
         )
         _log.info(
             "compile-side llm_model_func swapped for no-op "
             "(disable_entity_extraction=True; minimum_queryable profile)"
         )
     else:
-        kwargs["llm_model_func"] = _make_text_callable(text_client)
+        kwargs["llm_model_func"] = wrap_audited_async(
+            _make_text_callable(text_client),
+            purpose=PURPOSE_ENTITY_EXTRACTION,
+            stage="compile",
+            provider=text_provider,
+            model=text_model,
+            selected_profile=selected_profile,
+            config=audit_cfg,
+        )
     if embedding_client is not None:
         kwargs["embedding_func"] = _make_embedding_func(embedding_client)
     if vision_client is not None and not disable_entity_extraction:
-        kwargs["vision_model_func"] = _make_vision_callable(vision_client)
+        kwargs["vision_model_func"] = wrap_audited_async(
+            _make_vision_callable(vision_client),
+            purpose=PURPOSE_VISION_ANALYSIS,
+            stage="compile",
+            provider=vision_provider or "vision-llm",
+            model=vision_model,
+            selected_profile=selected_profile,
+            config=audit_cfg,
+        )
 
     try:
         return rag_cls(**kwargs), dropped_overrides

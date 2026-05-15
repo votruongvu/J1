@@ -140,6 +140,7 @@ class ProcessingService:
         assessment_plan: object | None = None,
         target_snapshot_id: str | None = None,
         disable_entity_extraction: bool = False,
+        selected_execution_profile: str | None = None,
     ) -> ArtifactProcessingResult:
         # Detect whether the compiler accepts ``assessment_plan``,
         # ``run_id``, and ``snapshot_id`` (the ``KnowledgeCompiler``
@@ -181,6 +182,16 @@ class ProcessingService:
             # warning on the run when applicable.
             if disable_entity_extraction and "disable_entity_extraction" in sig.parameters:
                 compile_kwargs["disable_entity_extraction"] = True
+            # Carry the user-selected profile through to the
+            # compiler so the bridge can stamp it onto every audit
+            # event. Introspection guard mirrors the other forwards.
+            if (
+                selected_execution_profile
+                and "selected_execution_profile" in sig.parameters
+            ):
+                compile_kwargs["selected_execution_profile"] = (
+                    selected_execution_profile
+                )
         except (TypeError, ValueError):
             # Builtins / C extensions don't expose a signature;
             # fall back to no kwargs (legacy behaviour).

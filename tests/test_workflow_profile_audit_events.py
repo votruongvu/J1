@@ -195,8 +195,12 @@ def test_bridge_logs_llm_call_started_when_noop_runs(caplog):
 
     # The bridge installed the no-op; now fire it and confirm the
     # audit log line lands with the canonical event name + purpose.
+    # The unified `_llm_audit` wrapper logs through its own
+    # module-level logger now (post-Phase-C refactor), so we
+    # subscribe to that logger rather than the bridge's.
+    from j1.providers.raganything import _llm_audit
     llm_func = captured_kwargs["llm_model_func"]
-    with caplog.at_level(logging.INFO, logger=_bridge._log.name):
+    with caplog.at_level(logging.INFO, logger=_llm_audit._log.name):
         asyncio.run(llm_func("any prompt"))
 
     matching = [
