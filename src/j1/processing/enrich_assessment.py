@@ -17,10 +17,20 @@ a `DomainEnrichmentPolicy`, the assessor consults it for `always` /
 `never` verdict adjustments and merges `force_recommended_tasks` /
 `denied_tasks` into the per-task list. The pure-rule path remains
 the default — generic / no-domain runs see no change.
+
+Deployment-wide auto-run gate: ``J1_DOMAIN_ENRICHMENT_AUTO_ENABLED``
+(default ``false``) suppresses every "this run should auto-enrich"
+verdict at the planner. When false, the verdict becomes ``SKIP``
+with reason ``"auto_enrichment_disabled"`` regardless of compile
+signals. A domain policy that explicitly says ``ENRICHMENT_POLICY_ALWAYS``
+still wins (per-domain compliance opt-in), and the explicit Manual
+Run Domain Enrichment surface is unaffected — it dispatches an
+explicit operator action that bypasses this planner entirely.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -33,6 +43,24 @@ from j1.domains.models import (
     DomainPack,
 )
 from j1.processing.enrichment_policy import ResolvedEnrichmentPolicy
+
+
+# Deployment-wide auto-enrichment gate. Default ``false`` per
+# product spec: the standard ingest path stays lightweight; richer
+# behaviour is explicit / manual.
+ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED = "J1_DOMAIN_ENRICHMENT_AUTO_ENABLED"
+_AUTO_ENRICHMENT_DISABLED_REASON = (
+    "auto_enrichment_disabled: J1_DOMAIN_ENRICHMENT_AUTO_ENABLED is "
+    "off. Trigger Run Domain Enrichment manually if needed."
+)
+
+
+def _is_auto_enrichment_enabled(env: dict[str, str] | None = None) -> bool:
+    source = env if env is not None else os.environ
+    raw = source.get(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED)
+    if raw is None:
+        return False  # default: auto is OFF
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 SCHEMA_VERSION = "1"
@@ -521,6 +549,33 @@ def assess_post_compile_enrich(
     )
     if effective_policy is not None:
         plan = _apply_domain_policy(plan, effective_policy)
+    # Deployment-wide auto-run gate. Default OFF — the standard
+    # ingest path stays lightweight. A domain pack with an explicit
+    # ``ALWAYS`` policy is honoured (per-domain compliance opt-in);
+    # everything else downgrades to SKIP with an audit reason. The
+    # explicit Manual Run Domain Enrichment surface dispatches its
+    # own run and never reaches this planner, so the gate does not
+    # affect operator-triggered enrichment.
+    if not _is_auto_enrichment_enabled():
+        policy_is_always = (
+            effective_policy is not None
+            and effective_policy.policy == ENRICHMENT_POLICY_ALWAYS
+        )
+        if not policy_is_always and plan.overall_recommendation in (
+            EnrichRecommendation.RECOMMENDED,
+            EnrichRecommendation.REQUIRED,
+            EnrichRecommendation.OPTIONAL,
+        ):
+            from dataclasses import replace as _replace
+            plan = _replace(
+                plan,
+                overall_recommendation=EnrichRecommendation.SKIP,
+                reasons=plan.reasons + (_AUTO_ENRICHMENT_DISABLED_REASON,),
+                blocking_issues=(
+                    plan.blocking_issues
+                    + (_AUTO_ENRICHMENT_DISABLED_REASON,)
+                ),
+            )
     return _finalize_plan(
         plan,
         signals=signals,

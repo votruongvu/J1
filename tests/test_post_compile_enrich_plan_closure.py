@@ -34,6 +34,7 @@ from j1.domains.models import (
 from j1.orchestration.activities.payloads import ArtifactActivityResult
 from j1.processing.compile_result import normalize_compile_result
 from j1.processing.enrich_assessment import (
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
     TASK_IMAGE_CAPTIONING,
     TASK_QUALITY_ASSESSMENT,
     TASK_REQUIREMENT_EXTRACTION,
@@ -46,6 +47,16 @@ from j1.processing.enrich_assessment import (
     assess_post_compile_enrich,
     build_signals_from_normalized_compile_result,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """These tests assert on the planner's rule-based + closure
+    output (recommendation, confidence, model-tier selection). The
+    deployment-wide auto-run gate would short-circuit every verdict
+    to SKIP — opt into the legacy behaviour so the rule-based logic
+    stays exercised. The gate itself has dedicated tests."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 
 
 def _good_signals(**overrides) -> SourceSignals:

@@ -28,6 +28,18 @@ from j1.orchestration.workflows.project_processing import (
     WorkflowStatus,
     _BusinessRejection,
 )
+from j1.processing.enrich_assessment import (
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
+)
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """Workflow integration tests assume the enrich + graph stages
+    run end-to-end. The deployment-wide auto-run gate is OFF by
+    default in production; flip it on here so the workflow's stage
+    dispatch logic remains under test."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 
 
 # Static / shape tests

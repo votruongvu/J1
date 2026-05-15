@@ -30,6 +30,7 @@ from j1.orchestration.activities.payloads import (
 from j1.orchestration.activities.processing import ProcessingActivities
 from j1.processing.enrich_assessment import (
     DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
     EnrichRecommendation,
     FastLLMConsultPrompt,
     FastLLMRefinement,
@@ -40,6 +41,14 @@ from j1.processing.enrich_assessment import (
     is_consult_warranted,
     parse_fast_llm_refinement,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """Opt this fast-LLM-consult test set into auto-enrichment so
+    the planner's RECOMMENDED / OPTIONAL verdicts survive past the
+    deployment-wide gate (which defaults to OFF in production)."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 from j1.processing.enrich_assessment_settings import (
     DEFAULT_TIMEOUT_SECONDS,
     ENV_FAST_LLM_ENABLED,

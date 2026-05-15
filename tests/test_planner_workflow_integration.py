@@ -42,8 +42,21 @@ from j1.orchestration.workflows.project_processing import (
     ProjectProcessingRequest,
     ProjectProcessingWorkflow,
 )
+from j1.processing.enrich_assessment import (
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
+)
 from j1.processing.profiling import DocumentProfile
 from j1.processing.status import FinalStatus, StepSource, StepStatus
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """Workflow integration tests assert the enrichment + graph
+    stages run end-to-end. The deployment-wide auto-run gate is OFF
+    by default in production; opt in here so the integration tests
+    still exercise the full pipeline. Dedicated tests cover the
+    OFF-by-default behaviour."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 
 
 def _activity_name(method) -> str:

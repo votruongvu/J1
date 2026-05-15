@@ -9,6 +9,14 @@ snapshot store. The physical storage stays split; only the read
 shape is unified.
 """
 
+from j1.memory.augmentation import (
+    AugmentationHints,
+    DomainPackAugmentationProvider,
+    DomainQueryAugmentationProvider,
+    ENV_DOMAIN_QUERY_AUGMENTATION_ENABLED,
+    NoOpAugmentationProvider,
+    is_augmentation_enabled,
+)
 from j1.memory.unified import (
     DocumentMemoryView,
     MemoryNotQueryableError,
@@ -21,12 +29,18 @@ from j1.memory.unified import (
 )
 
 __all__ = [
+    "AugmentationHints",
     "DocumentMemoryView",
+    "DomainPackAugmentationProvider",
+    "DomainQueryAugmentationProvider",
+    "ENV_DOMAIN_QUERY_AUGMENTATION_ENABLED",
     "MemoryNotQueryableError",
     "MemoryScope",
+    "NoOpAugmentationProvider",
     "ProjectActiveMemoryView",
     "QueryableStatus",
     "RunMemoryView",
     "UnifiedMemoryResolver",
     "UnifiedMemoryView",
+    "is_augmentation_enabled",
 ]

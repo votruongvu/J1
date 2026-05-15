@@ -20,6 +20,7 @@ import pytest
 from j1.processing.enrich_assessment import (
     DECISION_SOURCE_RULE_BASED,
     DECISION_SOURCE_RULE_BASED_WITH_FAST_LLM,
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
     EnrichRecommendation,
     FastLLMRefinement,
     PostCompileEnrichPlan,
@@ -33,6 +34,19 @@ from j1.processing.enrich_assessment import (
     assess_post_compile_enrich,
     build_signals_from_compile_metrics,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """The planner's rule-based unit tests assert on the verdict
+    AFTER all overlays — including the deployment-wide auto-run gate
+    (``J1_DOMAIN_ENRICHMENT_AUTO_ENABLED``, default ``false``). Flip
+    the env var to ``true`` so these tests continue to exercise the
+    rule-based + domain-policy logic without the gate forcing every
+    verdict to SKIP. Dedicated tests in
+    ``test_auto_enrichment_env_gate.py`` cover the gate behaviour
+    itself."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 
 
 def _ok_signals(**overrides) -> SourceSignals:

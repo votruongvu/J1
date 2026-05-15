@@ -174,6 +174,13 @@ class UnifiedMemoryView:
 class DocumentMemoryView(UnifiedMemoryView):
     """Single-document view. Returned for ``resolve_document_active_memory``
     and as the per-document items inside ``ProjectActiveMemoryView``.
+
+    Phase 3 adds optional augmentation summary fields
+    (``domain_terms_count``, ``aliases_count``,
+    ``quality_warnings_count``, ``last_enriched_at``) so the FE
+    can render an enrichment-status panel without loading the
+    underlying artifacts. They are ``0`` / ``None`` when enrichment
+    has not run for the active snapshot.
     """
 
     document_id: str = ""
@@ -185,6 +192,12 @@ class DocumentMemoryView(UnifiedMemoryView):
     domain_id: str | None = None
     enrichment_status: str | None = None
     enrichment_artifact_refs: tuple[str, ...] = ()
+    # Phase-3 augmentation summary. Derived from enrichment artifacts
+    # for the active snapshot; ``0`` when no enrichment has run.
+    domain_terms_count: int = 0
+    aliases_count: int = 0
+    quality_warnings_count: int = 0
+    last_enriched_at: datetime | None = None
     plan_warnings: tuple[str, ...] = ()
     unsupported_controls: tuple[str, ...] = ()
     created_at: datetime | None = None
@@ -286,6 +299,33 @@ _DOCUMENT_ENRICHMENT_RESULT_KIND = "domain_enrichment_result"
 _DISALLOWED_LIFECYCLE: frozenset[str] = frozenset(
     {"removing", "removed", "failed", "cleanup_failed"},
 )
+
+
+def _coerce_int(value) -> int:
+    """Forgiving int coercion used by the enrichment summary. Strings
+    that look like numbers count; everything else is 0 — the
+    resolver never raises on weird metadata."""
+    if value is None or value is False:
+        return 0
+    if isinstance(value, bool):
+        return 0  # bools are ints in Python; guard explicitly
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str):
+        try:
+            return max(0, int(value.strip()))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _len_or_zero(value) -> int:
+    """``len(...)`` if the value supports it; otherwise 0. Tolerates
+    metadata that wraps counts inside lists / tuples / dicts."""
+    try:
+        return len(value) if value is not None else 0
+    except TypeError:
+        return 0
 
 
 class UnifiedMemoryResolver:
@@ -600,6 +640,21 @@ class UnifiedMemoryResolver:
         created_at, updated_at = self._snapshot_timestamps(
             ctx, snapshot_id=snapshot_id,
         )
+        # Phase-3: derive the augmentation summary from the
+        # enrichment artifacts attached to the active snapshot. A
+        # failed enrichment run leaves no artifacts behind so the
+        # counts are 0; the FE renders the failure separately.
+        (
+            domain_terms_count,
+            aliases_count,
+            quality_warnings_count,
+            last_enriched_at,
+        ) = self._enrichment_summary(
+            ctx,
+            document_id=document_id,
+            snapshot_id=snapshot_id,
+            enrichment_artifact_refs=enrichment_refs,
+        )
 
         return DocumentMemoryView(
             scope=MemoryScope.DOCUMENT_ACTIVE,
@@ -613,6 +668,10 @@ class UnifiedMemoryResolver:
             domain_id=domain_id,
             enrichment_status=enrichment_status,
             enrichment_artifact_refs=enrichment_refs,
+            domain_terms_count=domain_terms_count,
+            aliases_count=aliases_count,
+            quality_warnings_count=quality_warnings_count,
+            last_enriched_at=last_enriched_at,
             plan_warnings=plan_warnings,
             unsupported_controls=unsupported,
             created_at=created_at,
@@ -773,6 +832,66 @@ class UnifiedMemoryResolver:
             return "failed"
         # In-flight / pending — surface as None until terminal.
         return None
+
+    def _enrichment_summary(
+        self,
+        ctx: ProjectContext,
+        *,
+        document_id: str,
+        snapshot_id: str,
+        enrichment_artifact_refs: tuple[str, ...],
+    ) -> tuple[int, int, int, datetime | None]:
+        """Phase-3 augmentation counts derived from the active
+        snapshot's enrichment artifacts.
+
+        Returns ``(domain_terms_count, aliases_count,
+        quality_warnings_count, last_enriched_at)``.
+
+        Counts are best-effort — the resolver scans metadata
+        flexibly because enrichment producers stamp counts under
+        slightly different keys (``terminology_map`` /
+        ``terminology_count`` / ``aliases`` / ``warnings``). When
+        no payload provides a count, the field stays ``0``. The FE
+        treats ``0`` as "no augmentation surfaced" rather than
+        "augmentation failed" — the dedicated ``enrichment_status``
+        carries the failure signal.
+        """
+        if not enrichment_artifact_refs:
+            return (0, 0, 0, None)
+        terms = 0
+        aliases = 0
+        warnings = 0
+        last_at: datetime | None = None
+        ref_set = frozenset(enrichment_artifact_refs)
+        try:
+            records = self._artifacts.list_artifacts(ctx)
+        except Exception:  # noqa: BLE001
+            return (0, 0, 0, None)
+        for r in records:
+            if r.artifact_id not in ref_set:
+                continue
+            meta = dict(getattr(r, "metadata", None) or {})
+            terms += _coerce_int(
+                meta.get("domain_terms_count")
+                or meta.get("terminology_count")
+                or _len_or_zero(meta.get("terminology_map"))
+                or _len_or_zero(meta.get("domain_terms"))
+            )
+            aliases += _coerce_int(
+                meta.get("aliases_count")
+                or _len_or_zero(meta.get("aliases"))
+            )
+            warnings += _coerce_int(
+                meta.get("quality_warnings_count")
+                or _len_or_zero(meta.get("quality_warnings"))
+                or _len_or_zero(meta.get("warnings"))
+            )
+            updated = getattr(r, "updated_at", None)
+            if updated is not None and (
+                last_at is None or updated > last_at
+            ):
+                last_at = updated
+        return (terms, aliases, warnings, last_at)
 
     def _compile_status_for_run(
         self,

@@ -27,6 +27,7 @@ from j1.domains.models import (
 from j1.processing.enrich_assessment import (
     TASK_IMAGE_CAPTIONING,
     TASK_REQUIREMENT_EXTRACTION,
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
     TASK_RISK_EXTRACTION,
     TASK_TABLE_ENRICHMENT,
     TASK_VISION_ENRICHMENT,
@@ -34,6 +35,16 @@ from j1.processing.enrich_assessment import (
     SourceSignals,
     assess_post_compile_enrich,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """Opt these planner-policy tests into the legacy
+    auto-enrichment behaviour. The deployment-wide gate is off by
+    default in production; these tests pin the rule-based +
+    domain-policy overlay logic, which would otherwise be hidden
+    behind a forced SKIP."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 
 
 # ---- DomainEnrichmentPolicy dataclass ----------------------------

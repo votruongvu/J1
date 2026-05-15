@@ -38,11 +38,20 @@ from j1.processing.compile_result import (
     normalize_compile_result,
 )
 from j1.processing.enrich_assessment import (
+    ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED,
     TASK_REQUIREMENT_EXTRACTION,
     EnrichRecommendation,
     SourceSignals,
     assess_post_compile_enrich,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_enrichment(monkeypatch):
+    """Opt these planner-overlay tests into auto-enrichment so the
+    rule-based + policy logic is exercised. The deployment-wide
+    gate is OFF by default in production."""
+    monkeypatch.setenv(ENV_DOMAIN_ENRICHMENT_AUTO_ENABLED, "true")
 from j1.processing.enrichment_policy import (
     POLICY_SOURCE_DOMAIN,
     POLICY_SOURCE_PROJECT,
