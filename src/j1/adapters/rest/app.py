@@ -164,6 +164,14 @@ from j1.integration.security import (
     SecurityContext,
 )
 from j1.integration.services import ApplicationFacade
+from j1.processing.execution_profile import (
+    DEFAULT_PROFILE as _EXECUTION_PROFILE_DEFAULT,
+    ExecutionProfile,
+)
+from j1.processing.execution_profile_policy import (
+    ExecutionProfilePolicy,
+    ProfileNotAllowedError,
+)
 from j1.projects.context import ProjectContext
 from j1.review.queue import ReviewItemNotFoundError
 from j1.validation import (
@@ -404,6 +412,14 @@ def create_rest_api(
     # stamped on the run record so the workflow + activities know
     # which snapshot they're building from the very first event.
     snapshot_service: "object | None" = None,
+    # Deployment-level execution-profile safety policy. When None,
+    # the adapter constructs a permissive default (every profile
+    # allowed, deployment-wide DEFAULT_PROFILE) — preserves the
+    # pre-policy behaviour for existing test wiring + dev runs.
+    # Production deployments should pass a policy loaded via
+    # `load_execution_profile_policy()` so env-driven hard caps
+    # (`J1_ALLOW_ADVANCED_INGEST=false`, etc.) actually fire.
+    execution_profile_policy: "ExecutionProfilePolicy | None" = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -455,6 +471,19 @@ def create_rest_api(
     )
 
     resolver = context_resolver or _default_context_resolver
+
+    # Permissive default policy when the caller didn't pass one —
+    # preserves the pre-policy behaviour so existing tests + dev
+    # wiring keep working unchanged. Production deployments thread
+    # in a policy loaded from env (`load_execution_profile_policy()`)
+    # so `J1_ALLOW_ADVANCED_INGEST=false` is actually honoured.
+    _profile_policy: ExecutionProfilePolicy = (
+        execution_profile_policy
+        or ExecutionProfilePolicy(
+            default_profile=_EXECUTION_PROFILE_DEFAULT,
+            allowed=frozenset(ExecutionProfile),
+        )
+    )
 
     # Phase 5: Allocate a candidate ``DocumentSnapshot`` BEFORE the
     # Temporal workflow starts. Returns the new snapshot's id (or
@@ -869,6 +898,27 @@ def create_rest_api(
             details={"type": type(exc).__name__},
         )
 
+    @app.exception_handler(ProfileNotAllowedError)
+    async def _profile_not_allowed(
+        request: Request, exc: ProfileNotAllowedError,
+    ) -> JSONResponse:
+        # Distinct from `ValueError` (which is the typo case) —
+        # this is a policy violation, so the response carries the
+        # current allow-list so the FE re-renders the picker
+        # without re-fetching the assessment plan. 403 not 400
+        # because the request itself is well-formed; the
+        # deployment is refusing it.
+        return error_response(
+            status_code=403,
+            code="PROFILE_NOT_ALLOWED",
+            message=str(exc),
+            request_id=_req_id(request),
+            details={
+                "requestedProfile": exc.requested.value,
+                "allowedProfiles": sorted(p.value for p in exc.allowed),
+            },
+        )
+
     @app.exception_handler(ValueError)
     async def _value_error(request, exc: ValueError) -> JSONResponse:
         return error_response(
@@ -879,6 +929,48 @@ def create_rest_api(
         )
 
     # ---- Dependencies ------------------------------------------------
+
+    def _resolve_profile_or_400(
+        provided: str | None,
+    ) -> tuple[ExecutionProfile, str]:
+        """Resolve the caller's `selectedProfile` against the
+        deployment policy.
+
+        Two failure modes, each routed to its own exception
+        handler so the JSON envelope carries a structured `code`:
+
+          * Unknown wire string (typo) → raises `ValueError`
+            with a message that names the field + lists valid
+            wire strings. The global handler returns 400 with
+            `code=INVALID_ARGUMENT`.
+          * Recognised profile but not on the deployment
+            allow-list → policy raises `ProfileNotAllowedError`,
+            the dedicated handler returns 403 with
+            `code=PROFILE_NOT_ALLOWED` and `allowedProfiles` in
+            the details so the FE can re-render the picker.
+
+        When `provided` is None, the policy's default profile
+        applies and `source == "default"`. When `provided` is a
+        valid + allowed profile, `source == "rest"`. Never
+        silently swaps profiles — that's the policy's whole job.
+        """
+        try:
+            return _profile_policy.resolve(provided)
+        except ProfileNotAllowedError:
+            # Re-raise verbatim so the dedicated handler picks
+            # it up (the handler enriches the body with
+            # `allowedProfiles`).
+            raise
+        except ValueError as exc:
+            # The enum's stock message is "'foo' is not a valid
+            # ExecutionProfile" — too generic for an FE error
+            # banner. Re-wrap so the field name + allow-list
+            # surface verbatim, matching the original handler.
+            allowed_values = ", ".join(p.value for p in ExecutionProfile)
+            raise ValueError(
+                f"selectedProfile {provided!r} is not a recognised "
+                f"execution profile (allowed: {allowed_values})"
+            ) from exc
 
     def _resolve_compiler_kind(provided: str | None) -> str:
         """Resolve + validate `compilerKind` against the runtime.
@@ -1209,6 +1301,17 @@ def create_rest_api(
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        # Resolve the execution profile against the deployment
+        # policy FIRST (same code path as `POST /ingestion-runs`).
+        # Unknown wire strings → 400; forbidden profiles → 403.
+        # When the body omitted `selectedProfile`, the policy's
+        # default kicks in and the resolved value is stamped back
+        # onto `body` so the workflow always sees an explicit
+        # profile rather than `None`.
+        resolved_profile, _profile_source = _resolve_profile_or_400(
+            body.selected_profile,
+        )
+        body.selected_profile = resolved_profile.value
         # Resolve / validate processor kinds at the boundary; mutate
         # the body so the deployment-supplied job_starter sees the
         # resolved values rather than re-implementing this logic.
@@ -4573,25 +4676,23 @@ def create_rest_api(
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
-        # 0. Validate the selected execution profile at the boundary
-        # so a typo fails with a clear 400 instead of degrading into
-        # silent legacy behaviour deep in the workflow. The set of
-        # accepted wire strings is the canonical
-        # `ExecutionProfile` enum — single source of truth in
-        # `j1.processing.execution_profile`. Runs BEFORE the run-store
-        # check so request-shape errors fail fast regardless of
-        # deployment wiring.
-        if selected_profile is not None:
-            from j1.processing.execution_profile import ExecutionProfile
-            try:
-                ExecutionProfile(selected_profile)
-            except ValueError:
-                allowed = ", ".join(p.value for p in ExecutionProfile)
-                raise HTTPException(
-                    400,
-                    f"selectedProfile {selected_profile!r} is not a "
-                    f"recognised execution profile (allowed: {allowed})",
-                )
+        # 0. Resolve the selected profile against the deployment
+        # policy. Two failure modes, distinct HTTP codes:
+        #
+        #   * Unknown wire string (typo) → 400 INVALID_ARGUMENT
+        #   * Known profile, but not on the deployment allow-list
+        #     (e.g. `advanced` requested when
+        #     `J1_ALLOW_ADVANCED_INGEST=false`) → 403 PROFILE_NOT_ALLOWED
+        #
+        # `_resolve_profile_or_400` returns the resolved
+        # `(profile, source)` pair OR raises one of the two
+        # HTTPExceptions. When the caller omitted `selectedProfile`,
+        # the policy's default kicks in and `source == "default"`.
+        # Runs BEFORE the run-store check so request-shape errors
+        # fail fast regardless of deployment wiring.
+        resolved_profile, profile_source = _resolve_profile_or_400(
+            selected_profile,
+        )
 
         store = _require_run_store()
 
@@ -4676,19 +4777,18 @@ def create_rest_api(
                 # store. `original_filename` falls back to the multi-
                 # part `filename` parameter, which the FE always sends.
                 "document_name": doc_dto.original_filename,
-                # Execution profile audit trail. `selected_execution_profile`
-                # is the user's choice (or None when the FE hasn't yet
-                # adopted the picker). The recommended-profile half is
-                # written later, once the pre-compile assessment runs.
+                # Execution profile audit trail. The profile here is
+                # the deployment-policy-resolved final value — caller's
+                # request when allowed, deployment default when the
+                # caller omitted `selectedProfile`. Refused requests
+                # never reach this point (they raise 403 above).
                 # Wire-string values match
                 # `j1.processing.execution_profile.ExecutionProfile`.
-                "selected_execution_profile": selected_profile,
+                "selected_execution_profile": resolved_profile.value,
                 "profile_selected_by": (
-                    "user" if selected_profile is not None else "system"
+                    "user" if profile_source == "rest" else "system"
                 ),
-                "profile_selection_source": (
-                    "rest" if selected_profile is not None else "default"
-                ),
+                "profile_selection_source": profile_source,
             },
             # Phase 5: initial-ingest path also allocates the
             # candidate snapshot UP-FRONT so the workflow sees
@@ -4724,8 +4824,12 @@ def create_rest_api(
             # Profile threaded through to the workflow so every
             # `_stage_enabled` check and the compile activity's
             # `disable_entity_extraction` plumbing see the same
-            # authoritative value.
-            selected_profile=selected_profile,
+            # authoritative value. Always the policy-resolved
+            # value — even when the caller omitted `selectedProfile`,
+            # we explicitly thread the deployment default so the
+            # workflow's audit log captures what actually ran
+            # instead of leaving the field None.
+            selected_profile=resolved_profile.value,
         )
         workflow_id = await starter(ctx, doc_dto.document_id, body)
 

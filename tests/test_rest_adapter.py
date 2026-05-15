@@ -143,9 +143,15 @@ def started_jobs() -> list[tuple[str, str, str]]:
 @pytest.fixture
 def job_starter(started_jobs):
     async def starter(ctx, document_id, body):
+        # Capture the full IngestRequest body in addition to the
+        # legacy tuple. Profile-related tests need to inspect
+        # `body.selected_profile`; older tests still consume the
+        # `started_jobs` tuple unchanged.
         started_jobs.append((ctx.project_id, document_id, body.compiler_kind))
+        starter.bodies.append(body)
         return f"job-{document_id}-{len(started_jobs)}"
 
+    starter.bodies = []
     return starter
 
 
@@ -476,6 +482,202 @@ def test_ingestion_run_rejects_unknown_selected_profile(
     # The error message lists the allowed values so the operator
     # doesn't have to grep the codebase.
     assert "minimum_queryable" in err["message"]
+
+
+# ---- Profile policy enforcement -----------------------------------
+
+
+def _restricted_client(
+    application_facade,
+    job_starter,
+    workspace,
+    *,
+    allowed,
+    default,
+) -> TestClient:
+    """Build a TestClient with a deployment-policy that restricts
+    which execution profiles are allowed. Mirrors the production
+    bootstrap path (env → `load_execution_profile_policy` → pass
+    into `create_rest_api`).
+
+    Wires an `ingestion_run_store` so `POST /ingestion-runs` can
+    actually create a run record — otherwise every request 503s
+    on `_require_run_store()` before the policy check runs.
+    """
+    from j1.processing.execution_profile import ExecutionProfile
+    from j1.processing.execution_profile_policy import (
+        ExecutionProfilePolicy,
+    )
+    from j1.runs.store import JsonlIngestionRunStore
+
+    policy = ExecutionProfilePolicy(
+        default_profile=ExecutionProfile(default),
+        allowed=frozenset(ExecutionProfile(p) for p in allowed),
+    )
+    app = create_rest_api(
+        application_facade,
+        job_starter=job_starter,
+        workspace=workspace,
+        execution_profile_policy=policy,
+        ingestion_run_store=JsonlIngestionRunStore(workspace),
+    )
+    return TestClient(app)
+
+
+def test_ingestion_run_rejects_forbidden_profile_with_403(
+    application_facade, job_starter, workspace,
+):
+    """Hard safety cap. Even though `advanced` is a valid profile,
+    a deployment that forbids it must REJECT requests for it —
+    never silently downgrade. The 403 body lists the allowed
+    profiles so the UI can re-render the picker."""
+    c = _restricted_client(
+        application_facade,
+        job_starter,
+        workspace,
+        allowed=["minimum_queryable", "standard"],
+        default="standard",
+    )
+    response = c.post(
+        "/ingestion-runs",
+        files={"file": ("doc.txt", io.BytesIO(b"x"), "text/plain")},
+        data={"compilerKind": "mock", "selectedProfile": "advanced"},
+        headers=_headers(),
+    )
+    assert response.status_code == 403
+    err = _assert_error_envelope(response.json())
+    assert err["code"] == "PROFILE_NOT_ALLOWED"
+    assert "advanced" in err["message"]
+    # The FE keys off `allowedProfiles` to re-render the picker
+    # without round-tripping to `/assessment-plan` again.
+    assert sorted(err["details"]["allowedProfiles"]) == [
+        "minimum_queryable",
+        "standard",
+    ]
+    assert err["details"]["requestedProfile"] == "advanced"
+
+
+def test_ingestion_run_applies_deployment_default_when_unspecified(
+    application_facade, job_starter, workspace,
+):
+    """When the caller omits `selectedProfile` and the deployment
+    pins the default to `minimum_queryable` (e.g. on a debug
+    stack), the workflow MUST run under that default — not the
+    codebase-level `DEFAULT_PROFILE`. Pins that env-driven
+    defaults actually flow into the workflow request."""
+    c = _restricted_client(
+        application_facade,
+        job_starter,
+        workspace,
+        allowed=["minimum_queryable", "standard"],
+        default="minimum_queryable",
+    )
+    response = c.post(
+        "/ingestion-runs",
+        files={"file": ("doc.txt", io.BytesIO(b"x"), "text/plain")},
+        # No `selectedProfile` — deployment default should apply.
+        data={"compilerKind": "mock"},
+        headers=_headers(),
+    )
+    assert response.status_code == 201
+    assert job_starter.bodies, "job_starter must have been invoked"
+    started_body = job_starter.bodies[-1]
+    assert started_body.selected_profile == "minimum_queryable"
+
+
+def test_ingestion_run_threads_allowed_profile_through_to_workflow(
+    application_facade, job_starter, workspace,
+):
+    """Sanity check the happy path: explicit + allowed profile
+    reaches the workflow request body."""
+    c = _restricted_client(
+        application_facade,
+        job_starter,
+        workspace,
+        allowed=["minimum_queryable", "standard", "advanced"],
+        default="standard",
+    )
+    response = c.post(
+        "/ingestion-runs",
+        files={"file": ("doc.txt", io.BytesIO(b"x"), "text/plain")},
+        data={"compilerKind": "mock", "selectedProfile": "advanced"},
+        headers=_headers(),
+    )
+    assert response.status_code == 201
+    assert job_starter.bodies[-1].selected_profile == "advanced"
+
+
+def test_documents_ingest_rejects_forbidden_profile_with_403(
+    application_facade, job_starter, workspace, ctx, registry,
+):
+    """The JSON-body endpoint must enforce the same policy as the
+    multipart `/ingestion-runs` endpoint. Tested separately
+    because the body validation runs in a different code path."""
+    _stage_document(ctx, registry, document_id="doc-policy")
+    c = _restricted_client(
+        application_facade,
+        job_starter,
+        workspace,
+        allowed=["minimum_queryable", "standard"],
+        default="standard",
+    )
+    response = c.post(
+        "/documents/doc-policy/ingest",
+        json={
+            "compilerKind": "external_knowledge_compiler",
+            "selectedProfile": "advanced",
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 403
+
+
+def test_documents_ingest_applies_deployment_default_when_unspecified(
+    application_facade, job_starter, workspace, ctx, registry,
+):
+    _stage_document(ctx, registry, document_id="doc-policy-default")
+    c = _restricted_client(
+        application_facade,
+        job_starter,
+        workspace,
+        allowed=["minimum_queryable", "standard"],
+        default="minimum_queryable",
+    )
+    response = c.post(
+        "/documents/doc-policy-default/ingest",
+        json={"compilerKind": "external_knowledge_compiler"},
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    assert job_starter.bodies[-1].selected_profile == "minimum_queryable"
+
+
+def test_default_policy_accepts_every_profile(
+    application_facade, job_starter, workspace,
+):
+    """Backward compatibility: when `create_rest_api` is called
+    without `execution_profile_policy=`, the adapter builds a
+    permissive default — every profile is allowed. Pin so a
+    future refactor doesn't tighten this and break existing
+    deployments that haven't adopted env-driven policy."""
+    from j1.runs.store import JsonlIngestionRunStore
+
+    app = create_rest_api(
+        application_facade,
+        job_starter=job_starter,
+        workspace=workspace,
+        # NO execution_profile_policy=, intentionally.
+        ingestion_run_store=JsonlIngestionRunStore(workspace),
+    )
+    c = TestClient(app)
+    response = c.post(
+        "/ingestion-runs",
+        files={"file": ("doc.txt", io.BytesIO(b"x"), "text/plain")},
+        data={"compilerKind": "mock", "selectedProfile": "advanced"},
+        headers=_headers(),
+    )
+    assert response.status_code == 201
+    assert job_starter.bodies[-1].selected_profile == "advanced"
 
 
 # ---- Ingestion jobs / events ---------------------------------------
