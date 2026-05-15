@@ -425,28 +425,39 @@ class AnswerRecord(CamelModel):
 class QueryScopeRecord(CamelModel):
     """Explicit query scope contract (wire shape, FE → BE).
 
-    Snapshot-centric: callers select *which knowledge* to query, never
-    *which run*. The three valid shapes map to ``j1.query.scope``:
+    Five valid shapes, each with its own eligibility contract:
 
-      * ``type="project_active"`` — query every attached document's
-        active snapshot. The user's "Ask Knowledge Base" / Home flow.
-      * ``type="document_active"`` — query a single document's active
+      * ``type="project_active"`` — every attached document's active
+        snapshot. The user's "Ask Knowledge Base" / Home flow.
+        Project-active eligibility (attached + has active snapshot +
+        lifecycle ok) applies; refusal text mentions attached
+        documents.
+      * ``type="document_active"`` — a single document's active
         snapshot. Backs the Document Detail "Test Active Knowledge"
-        widget. Requires ``documentId``.
-      * ``type="snapshot_explicit"`` — query a fixed set of snapshot
-        ids. Backs the Run Detail "Validate Produced Snapshot" widget,
-        which pre-resolves ``run.targetSnapshotId`` and sends it
-        here. Requires ``snapshotIds``.
-
-    There is intentionally NO ``"run"`` scope. Run is execution
-    metadata, not a knowledge unit. The FE resolves the producing
-    snapshot for the run and sends ``snapshot_explicit`` with that
-    snapshot id.
+        widget. Requires ``documentId``. Document-active eligibility
+        applies; refusal text mentions the document.
+      * ``type="snapshot_explicit"`` — query a fixed allowlist of
+        snapshot ids. Back-compat path used before the typed run
+        scopes existed. Requires ``snapshotIds``.
+      * ``type="run"`` — query the snapshot the named run produced,
+        regardless of promotion / active state. Requires ``runId``.
+        Active-snapshot eligibility is INTENTIONALLY bypassed: this
+        scope exists so historical / candidate snapshots remain
+        queryable from Run Detail.
+      * ``type="document_run"`` — same as ``"run"`` but with a
+        ``documentId`` guard: the resolver rejects runs that don't
+        belong to that document. The Run Detail UI sends this so
+        an attacker can't shop a stranger's runId at a document
+        endpoint.
     """
 
-    type: Literal["project_active", "document_active", "snapshot_explicit"]
+    type: Literal[
+        "project_active", "document_active", "snapshot_explicit",
+        "run", "document_run",
+    ]
     document_id: str | None = None
     snapshot_ids: list[str] | None = None
+    run_id: str | None = None
 
 
 class ManualTestQueryRequestRecord(CamelModel):

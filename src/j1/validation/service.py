@@ -581,17 +581,18 @@ class IngestionValidationService:
         engine_scope, eligible_snapshot_ids = self._resolve_query_scope(
             ctx=ctx, run=run, request=request,
         )
-        # When the caller passed ``snapshot_explicit`` we resolve the
-        # exact ``(document_id, snapshot_id)`` pairs against the
-        # snapshot store and thread them through. The default
-        # eligibility resolver only sees ACTIVE snapshots, so a query
-        # against a candidate (not-yet-promoted) snapshot would
-        # otherwise resolve to an empty pair set and the RAGAnything
-        # adapter would refuse with ``no_eligible_snapshot``. This is
-        # the exact scenario Run Detail's "Run query" hits when the
-        # produced snapshot from the current run hasn't been
+        # When the caller passed an explicit-pair scope
+        # (``snapshot_explicit``, ``run``, or ``document_run``) we
+        # resolve the ``(document_id, snapshot_id)`` pair set HERE,
+        # bypassing the active-snapshot eligibility resolver. The
+        # active resolver only sees ACTIVE snapshots, so a query
+        # against a candidate / historical / non-promoted snapshot
+        # would otherwise resolve to an empty pair set and the
+        # RAGAnything adapter would refuse with
+        # ``no_eligible_snapshot`` — the exact bug Run Detail hits
+        # when the produced snapshot from the current run isn't
         # promoted yet.
-        eligible_pairs = self._resolve_snapshot_explicit_pairs(
+        eligible_pairs = self._resolve_explicit_pairs(
             ctx=ctx, request=request,
         )
         result = self._smart_query_orchestrator.run(OrchestratorRequest(
@@ -660,33 +661,57 @@ class IngestionValidationService:
             debug=debug,
         )
 
-    def _resolve_snapshot_explicit_pairs(
+    def _resolve_explicit_pairs(
         self,
         *,
         ctx: ProjectContext,
         request: "ManualTestQueryRequest",
     ) -> "frozenset[tuple[str, str]] | None":
-        """Translate ``scope.type='snapshot_explicit'`` into a concrete
-        ``(document_id, snapshot_id)`` allowlist via the snapshot store.
+        """Translate the request's scope into a concrete
+        ``(document_id, snapshot_id)`` allowlist, BYPASSING active-
+        snapshot eligibility. Covers two scope types:
 
-        Returns ``None`` when:
-          * the scope isn't ``snapshot_explicit``;
-          * no snapshot store is wired (legacy/test deployments — the
-            adapter falls back to the existing allowlist path, which
-            works for already-active snapshots);
-          * none of the supplied snapshot ids resolve to a known
-            document (caller error / stale id — let the adapter emit
-            its own ``no_eligible_snapshot`` so the operator sees a
-            clear trace).
+          * ``snapshot_explicit`` — fixed allowlist, lookup via the
+            snapshot store (back-compat path).
+          * ``run`` / ``document_run`` — identity flows
+            ``run → snapshot``; lookup via the run store, with the
+            ``document_run`` variant adding a cross-document guard.
+
+        Returns ``None`` for any other scope type (the active-scope
+        path stays on the existing eligibility resolver). Also returns
+        ``None`` when the required store isn't wired or when the
+        lookup yields nothing — that intentionally surfaces an
+        actionable "no eligible snapshot" message at the adapter.
         """
         scope_dto = getattr(request, "scope", None)
-        if scope_dto is None or scope_dto.type != "snapshot_explicit":
+        if scope_dto is None:
             return None
+        if scope_dto.type == "snapshot_explicit":
+            return self._resolve_snapshot_explicit_pairs(
+                ctx=ctx, snapshot_ids=tuple(scope_dto.snapshot_ids or ()),
+            )
+        if scope_dto.type in ("run", "document_run"):
+            return self._resolve_run_pairs(
+                ctx=ctx,
+                run_id=scope_dto.run_id,
+                expected_document_id=(
+                    scope_dto.document_id
+                    if scope_dto.type == "document_run" else None
+                ),
+            )
+        return None
+
+    def _resolve_snapshot_explicit_pairs(
+        self,
+        *,
+        ctx: ProjectContext,
+        snapshot_ids: tuple[str, ...],
+    ) -> "frozenset[tuple[str, str]] | None":
+        """Lookup helper for ``snapshot_explicit``. See parent docstring."""
         if self._snapshot_store is None:
             return None
-        ids = tuple(scope_dto.snapshot_ids or ())
         pairs: set[tuple[str, str]] = set()
-        for snapshot_id in ids:
+        for snapshot_id in snapshot_ids:
             try:
                 snap = self._snapshot_store.get(ctx, snapshot_id)
             except Exception:  # noqa: BLE001 — store IO fault → drop the entry
@@ -695,6 +720,62 @@ class IngestionValidationService:
                 continue
             pairs.add((snap.document_id, snap.snapshot_id))
         return frozenset(pairs) if pairs else None
+
+    def _resolve_run_pairs(
+        self,
+        *,
+        ctx: ProjectContext,
+        run_id: str | None,
+        expected_document_id: str | None,
+    ) -> "frozenset[tuple[str, str]] | None":
+        """Lookup helper for ``run`` / ``document_run`` scope.
+
+        Resolves identity via the run store: ``run.document_id`` +
+        ``run.target_snapshot_id``. This path INTENTIONALLY bypasses
+        the project-active eligibility predicate — a historical /
+        candidate / non-promoted snapshot is a valid query target
+        when the caller explicitly named the run that produced it.
+
+        Reject (returns ``None``) when:
+          * ``run_id`` missing,
+          * run store unwired,
+          * run does not exist for this ``ctx``,
+          * ``expected_document_id`` set and run belongs to a
+            different document,
+          * run has no ``target_snapshot_id`` (legacy /
+            mid-allocation),
+          * snapshot store is wired AND the snapshot record was
+            purged (artifacts deleted).
+        """
+        if not run_id or self._run_store is None:
+            return None
+        try:
+            run = self._run_store.get(ctx, run_id)
+        except Exception:  # noqa: BLE001 — store IO fault → fail closed
+            run = None
+        if run is None:
+            return None
+        run_document_id = getattr(run, "document_id", None)
+        if not run_document_id:
+            return None
+        if (
+            expected_document_id is not None
+            and run_document_id != expected_document_id
+        ):
+            return None
+        snapshot_id = getattr(run, "target_snapshot_id", None)
+        if not snapshot_id:
+            return None
+        if self._snapshot_store is not None:
+            try:
+                snap = self._snapshot_store.get(ctx, snapshot_id)
+            except Exception:  # noqa: BLE001 — store IO fault → fail closed
+                snap = None
+            if snap is None:
+                return None
+            if getattr(snap, "document_id", None) != run_document_id:
+                return None
+        return frozenset({(run_document_id, snapshot_id)})
 
     def _resolve_query_scope(
         self,
@@ -753,6 +834,25 @@ class IngestionValidationService:
                         "least one snapshotId"
                     )
                 return WorkspaceScope(), frozenset(ids)
+            if scope_dto.type in ("run", "document_run"):
+                rid = scope_dto.run_id
+                if not rid:
+                    raise ValueError(
+                        f"scope.type={scope_dto.type!r} requires runId"
+                    )
+                doc_id = (
+                    scope_dto.document_id
+                    if scope_dto.type == "document_run" else None
+                )
+                if scope_dto.type == "document_run" and not doc_id:
+                    raise ValueError(
+                        "scope.type='document_run' requires documentId"
+                    )
+                # Internal scope mirrors the wire choice — the explicit
+                # ``(document_id, snapshot_id)`` allowlist is computed
+                # separately by ``_resolve_explicit_pairs`` and
+                # threaded into ``OrchestratorRequest.eligible_snapshot_pairs``.
+                return RunScope(run_id=rid, document_id=doc_id), None
             raise ValueError(f"unknown scope type {scope_dto.type!r}")
 
         # Legacy path: ``validation_scope`` string token. Only the

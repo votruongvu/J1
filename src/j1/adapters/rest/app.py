@@ -3690,6 +3690,7 @@ def create_rest_api(
                 type=body.scope.type,
                 document_id=body.scope.document_id,
                 snapshot_ids=tuple(body.scope.snapshot_ids or ()),
+                run_id=body.scope.run_id,
             )
         return ManualTestQueryRequestDTO(
             question=body.question,

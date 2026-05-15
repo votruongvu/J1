@@ -397,17 +397,42 @@ def _no_eligible_snapshot_candidate(
     """Marker for the trace when the adapter could not resolve any
     eligible ``(document_id, snapshot_id)`` pair. Score 0 so the
     sufficiency gate sees a clean "retrieval returned nothing" and
-    the synthesizer is never called."""
+    the synthesizer is never called.
+
+    The text is SCOPE-AWARE — operators on Run Detail should never
+    see "project may have no attached documents with an active
+    snapshot" when they explicitly named a run. The
+    project-active copy fires only when the scope is actually
+    project-active (``WorkspaceScope``).
+    """
+    from j1.query.scope import ActiveScope as _ActiveScope
+    from j1.query.scope import RunScope as _RunScope
+    scope = context.scope
+    if isinstance(scope, _RunScope):
+        msg = (
+            "Selected run has no queryable snapshot. The run may not "
+            "exist for this project, may not have produced a "
+            "snapshot yet, or its snapshot artifacts were deleted."
+        )
+        reason = "no_queryable_run_snapshot"
+    elif isinstance(scope, _ActiveScope):
+        msg = (
+            "Document has no active snapshot to query. Re-index the "
+            "document or wait for the current run to promote."
+        )
+        reason = "no_active_document_snapshot"
+    else:
+        msg = (
+            "No attached documents with an active snapshot in this "
+            "project. Attach a document or run an initial ingest."
+        )
+        reason = "no_active_project_snapshot"
     return EvidenceCandidate(
         route=job.route,
         artifact_id="raganything.no_eligible_snapshot",
         artifact_kind="raganything.no_eligible_snapshot",
         chunk_id=None,
-        text_preview=(
-            "RAGAnything adapter refused: no eligible snapshot for "
-            "the current scope. Project may have no attached documents "
-            "with an active snapshot, or the resolver was unwired."
-        ),
+        text_preview=f"RAGAnything adapter refused: {msg}",
         score=0.0,
         matched_anchors=(),
         run_id=run_id,
@@ -416,6 +441,7 @@ def _no_eligible_snapshot_candidate(
         extra={
             "body": "",
             "raganything_refused": "no_eligible_snapshot",
+            "raganything_refused_reason": reason,
             "advisory_only": True,
         },
     )

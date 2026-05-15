@@ -109,24 +109,34 @@ class RetrievedChunkRefDTO:
 
 @dataclass(frozen=True)
 class QueryScopeDTO:
-    """Explicit snapshot-centric scope (internal representation).
+    """Explicit query scope (internal representation).
 
-    Mirrors the wire-side ``QueryScopeRecord``. Three valid shapes:
+    Mirrors the wire-side ``QueryScopeRecord``. Five valid shapes:
 
       * ``type="project_active"`` — every attached document's active
-        snapshot. ``document_id`` and ``snapshot_ids`` are unused.
+        snapshot. Project-active eligibility (attached + has active
+        snapshot + lifecycle ok) gates the result.
       * ``type="document_active"`` — one document's active snapshot.
-        ``document_id`` required; ``snapshot_ids`` unused.
-      * ``type="snapshot_explicit"`` — a fixed allowlist.
-        ``snapshot_ids`` required; ``document_id`` unused.
-
-    Run is intentionally not a scope. The caller resolves run →
-    target snapshot before constructing this DTO.
+        Document-active eligibility gates the result.
+      * ``type="snapshot_explicit"`` — a fixed snapshot allowlist
+        (back-compat path). ``snapshot_ids`` required.
+      * ``type="run"`` — query the snapshot produced by a specific
+        run, regardless of whether it's promoted to active.
+        ``run_id`` required. Run-scope resolution does NOT consult
+        project-active or document-active eligibility — historical /
+        candidate snapshots remain queryable.
+      * ``type="document_run"`` — same as ``run`` but with an extra
+        ``document_id`` guard: the resolver rejects cross-document
+        runs. The Run Detail UI sends this for safety.
     """
 
-    type: Literal["project_active", "document_active", "snapshot_explicit"]
+    type: Literal[
+        "project_active", "document_active", "snapshot_explicit",
+        "run", "document_run",
+    ]
     document_id: str | None = None
     snapshot_ids: tuple[str, ...] = ()
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -129,15 +129,13 @@ def test_resolve_query_scope_snapshot_explicit_requires_ids():
         )
 
 
-def test_resolve_snapshot_explicit_pairs_uses_snapshot_store():
-    """``_resolve_snapshot_explicit_pairs`` looks up each snapshot id
-    in the snapshot store and returns ``(document_id, snapshot_id)``
-    pairs. This is the Run Detail fix: candidate snapshots (not yet
-    promoted to ``active_snapshot_id``) must still produce a non-empty
-    pair set so the RAGAnything adapter fans out and queries them.
-    Without this, the adapter's scope-driven resolver — which only
-    sees ACTIVE snapshots — would intersect to empty and refuse with
-    ``no_eligible_snapshot``."""
+def test_resolve_explicit_pairs_snapshot_explicit_uses_snapshot_store():
+    """For ``snapshot_explicit`` the dispatcher looks up each snapshot
+    id in the snapshot store and returns ``(document_id, snapshot_id)``
+    pairs. This is the legacy Run Detail fix path: candidate
+    snapshots (not yet promoted to ``active_snapshot_id``) must still
+    produce a non-empty pair set so the RAGAnything adapter fans out
+    and queries them."""
     from j1.validation.service import IngestionValidationService
 
     class _StubSnapshotStore:
@@ -171,6 +169,7 @@ def test_resolve_snapshot_explicit_pairs_uses_snapshot_store():
     svc = object.__new__(IngestionValidationService)
     svc._source_registry = None  # type: ignore[attr-defined]
     svc._snapshot_store = store  # type: ignore[attr-defined]
+    svc._run_store = None  # type: ignore[attr-defined]
 
     req = ManualTestQueryRequest(
         question="q",
@@ -179,7 +178,7 @@ def test_resolve_snapshot_explicit_pairs_uses_snapshot_store():
             snapshot_ids=("snap-candidate-A", "snap-candidate-B"),
         ),
     )
-    pairs = svc._resolve_snapshot_explicit_pairs(  # type: ignore[attr-defined]
+    pairs = svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
         ctx=_fake_ctx(), request=req,
     )
     assert pairs == frozenset({
@@ -189,17 +188,17 @@ def test_resolve_snapshot_explicit_pairs_uses_snapshot_store():
     assert store.calls == ["snap-candidate-A", "snap-candidate-B"]
 
 
-def test_resolve_snapshot_explicit_pairs_returns_none_without_store():
-    """Legacy/test wirings without a snapshot store keep the existing
-    allowlist-only behaviour (the adapter's resolver path still works
-    for ALREADY-ACTIVE snapshots). We just return None so the
-    orchestrator doesn't try to apply a pair allowlist that wasn't
-    built."""
+def test_resolve_explicit_pairs_returns_none_without_store():
+    """Legacy/test wirings without a snapshot store still get None
+    so the orchestrator doesn't try to apply a pair allowlist that
+    wasn't built. The adapter falls back to its scope-aware refusal
+    message."""
     from j1.validation.service import IngestionValidationService
 
     svc = object.__new__(IngestionValidationService)
     svc._source_registry = None  # type: ignore[attr-defined]
     svc._snapshot_store = None  # type: ignore[attr-defined]
+    svc._run_store = None  # type: ignore[attr-defined]
 
     req = ManualTestQueryRequest(
         question="q",
@@ -207,31 +206,187 @@ def test_resolve_snapshot_explicit_pairs_returns_none_without_store():
             type="snapshot_explicit", snapshot_ids=("snap-A",),
         ),
     )
-    assert svc._resolve_snapshot_explicit_pairs(  # type: ignore[attr-defined]
+    assert svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
         ctx=_fake_ctx(), request=req,
     ) is None
 
 
-def test_resolve_snapshot_explicit_pairs_is_noop_for_other_scopes():
-    """When the scope is anything other than ``snapshot_explicit`` the
-    helper short-circuits to None; no snapshot-store traffic. Keeps
-    the ``WorkspaceScope`` / ``ActiveScope`` paths on the existing
-    eligibility resolver."""
+def test_resolve_explicit_pairs_is_noop_for_active_scopes():
+    """``project_active`` / ``document_active`` keep the existing
+    eligibility resolver path. The dispatcher must NOT consult the
+    snapshot or run store for them — those scopes intentionally
+    gate on active-snapshot eligibility."""
     from j1.validation.service import IngestionValidationService
 
     class _ExplodingStore:
-        def get(self, ctx, snapshot_id):
-            raise AssertionError("snapshot store must not be consulted")
+        def get(self, ctx, **_kwargs):
+            raise AssertionError("active-scope path must not touch the store")
 
     svc = object.__new__(IngestionValidationService)
     svc._source_registry = None  # type: ignore[attr-defined]
     svc._snapshot_store = _ExplodingStore()  # type: ignore[attr-defined]
+    svc._run_store = _ExplodingStore()  # type: ignore[attr-defined]
+
+    for scope in (
+        QueryScopeDTO(type="document_active", document_id="doc-1"),
+        QueryScopeDTO(type="project_active"),
+    ):
+        req = ManualTestQueryRequest(question="q", scope=scope)
+        assert svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
+            ctx=_fake_ctx(), request=req,
+        ) is None
+
+
+def test_resolve_explicit_pairs_run_scope_uses_run_store():
+    """``document_run`` (the Run Detail path) resolves the pair via
+    the run store — identity flows ``run → snapshot``. The snapshot
+    does NOT have to be active. The run's ``target_snapshot_id`` is
+    the authoritative target."""
+    from j1.validation.service import IngestionValidationService
+
+    class _StubRunStore:
+        def __init__(self, run):
+            self.run = run
+            self.calls: list[str] = []
+        def get(self, ctx, run_id):
+            self.calls.append(run_id)
+            return self.run if run_id == self.run.run_id else None
+
+    historical_run = IngestionRun(
+        run_id="run-old",
+        document_id="doc-1",
+        workflow_id="wf-old",
+        workflow_run_id=None,
+        status=RunStatus.SUCCEEDED,
+        started_at=_NOW,
+        updated_at=_NOW,
+        completed_at=_NOW,
+        target_snapshot_id="snap-superseded",
+        metadata={},
+    )
+    run_store = _StubRunStore(historical_run)
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = None  # type: ignore[attr-defined]
+    svc._run_store = run_store  # type: ignore[attr-defined]
 
     req = ManualTestQueryRequest(
         question="q",
-        scope=QueryScopeDTO(type="document_active", document_id="doc-1"),
+        scope=QueryScopeDTO(
+            type="document_run",
+            document_id="doc-1",
+            run_id="run-old",
+        ),
     )
-    assert svc._resolve_snapshot_explicit_pairs(  # type: ignore[attr-defined]
+    pairs = svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
+        ctx=_fake_ctx(), request=req,
+    )
+    assert pairs == frozenset({("doc-1", "snap-superseded")})
+    assert run_store.calls == ["run-old"]
+
+
+def test_resolve_explicit_pairs_run_scope_rejects_cross_document():
+    """``document_run`` rejects a runId that belongs to a different
+    document. Prevents an attacker from shopping a stranger's run
+    id at a document-keyed endpoint."""
+    from j1.validation.service import IngestionValidationService
+
+    other_doc_run = IngestionRun(
+        run_id="run-other",
+        document_id="doc-other",
+        workflow_id="wf",
+        workflow_run_id=None,
+        status=RunStatus.SUCCEEDED,
+        started_at=_NOW,
+        updated_at=_NOW,
+        completed_at=_NOW,
+        target_snapshot_id="snap-other",
+        metadata={},
+    )
+
+    class _Store:
+        def get(self, ctx, run_id):
+            return other_doc_run if run_id == "run-other" else None
+
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = None  # type: ignore[attr-defined]
+    svc._run_store = _Store()  # type: ignore[attr-defined]
+
+    req = ManualTestQueryRequest(
+        question="q",
+        scope=QueryScopeDTO(
+            type="document_run",
+            document_id="doc-1",  # caller's document — doesn't match run
+            run_id="run-other",
+        ),
+    )
+    assert svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
+        ctx=_fake_ctx(), request=req,
+    ) is None
+
+
+def test_resolve_explicit_pairs_run_scope_requires_target_snapshot():
+    """A run with no ``target_snapshot_id`` (legacy / mid-allocation)
+    yields ``None``. The adapter then surfaces the scope-aware
+    "selected run has no queryable snapshot" message."""
+    from j1.validation.service import IngestionValidationService
+
+    legacy_run = IngestionRun(
+        run_id="run-legacy",
+        document_id="doc-1",
+        workflow_id="wf",
+        workflow_run_id=None,
+        status=RunStatus.SUCCEEDED,
+        started_at=_NOW,
+        updated_at=_NOW,
+        completed_at=_NOW,
+        target_snapshot_id=None,
+        metadata={},
+    )
+
+    class _Store:
+        def get(self, ctx, run_id):
+            return legacy_run if run_id == "run-legacy" else None
+
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = None  # type: ignore[attr-defined]
+    svc._run_store = _Store()  # type: ignore[attr-defined]
+
+    req = ManualTestQueryRequest(
+        question="q",
+        scope=QueryScopeDTO(
+            type="run", run_id="run-legacy",
+        ),
+    )
+    assert svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
+        ctx=_fake_ctx(), request=req,
+    ) is None
+
+
+def test_resolve_explicit_pairs_run_scope_requires_run_to_exist():
+    """Unknown run id → no pairs → adapter surfaces 'selected run
+    has no queryable snapshot'. The previous-active-snapshot path is
+    NOT consulted — that would leak a wrong-answer."""
+    from j1.validation.service import IngestionValidationService
+
+    class _Store:
+        def get(self, ctx, run_id):
+            return None  # store empty
+
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = None  # type: ignore[attr-defined]
+    svc._run_store = _Store()  # type: ignore[attr-defined]
+
+    req = ManualTestQueryRequest(
+        question="q",
+        scope=QueryScopeDTO(
+            type="document_run", document_id="doc-1", run_id="ghost",
+        ),
+    )
+    assert svc._resolve_explicit_pairs(  # type: ignore[attr-defined]
         ctx=_fake_ctx(), request=req,
     ) is None
 

@@ -211,6 +211,92 @@ def test_document_endpoint_defaults_to_document_active_scope(
     assert captured.document_id == "doc-1"
 
 
+def test_document_endpoint_accepts_document_run_scope(
+    validation_service, capturing_orchestrator, ctx, run_store,
+):
+    """Document endpoint with ``document_run`` scope: the run-store
+    lookup resolves ``(documentId, run.target_snapshot_id)`` and
+    threads it as ``eligible_snapshot_pairs`` so the adapter
+    bypasses project-active eligibility entirely. This is the Run
+    Detail validation path — it MUST work even when the run's
+    snapshot isn't promoted to active."""
+    from j1.runs.models import IngestionRun, RunStatus
+    # Persist a historical run whose target_snapshot_id is NOT the
+    # document's active snapshot. The document's active snapshot
+    # could be anything (or nothing) — run scope ignores it.
+    historical = IngestionRun(
+        run_id="run-historical",
+        document_id="doc-1",
+        workflow_id="wf",
+        workflow_run_id=None,
+        status=RunStatus.SUCCEEDED,
+        started_at=_NOW,
+        updated_at=_NOW,
+        completed_at=_NOW,
+        target_snapshot_id="snap-historical-output",
+        metadata={},
+    )
+    run_store.upsert(ctx, historical)
+
+    req = ManualTestQueryRequest(
+        question="anything?",
+        scope=QueryScopeDTO(
+            type="document_run",
+            document_id="doc-1",
+            run_id="run-historical",
+        ),
+    )
+    validation_service.run_document_test_query(ctx, "doc-1", req)
+    captured = capturing_orchestrator.calls[0]
+    # Internal scope is RunScope — adapter dispatch uses pre-resolved
+    # pairs, not the scope-driven eligibility resolver.
+    from j1.query.scope import RunScope as _RS
+    assert isinstance(captured.scope, _RS)
+    assert captured.scope.run_id == "run-historical"
+    assert captured.scope.document_id == "doc-1"
+    # The explicit pair is threaded via OrchestratorRequest so the
+    # RAGAnything adapter fans out directly — no active-snapshot
+    # filter applied.
+    assert captured.eligible_snapshot_pairs == frozenset({
+        ("doc-1", "snap-historical-output"),
+    })
+
+
+def test_document_endpoint_rejects_cross_document_run(
+    validation_service, capturing_orchestrator, ctx, run_store,
+):
+    """``document_run`` with a runId that belongs to another
+    document must yield no pairs. We return the result via the
+    adapter's scope-aware refusal — the orchestrator sees no pairs."""
+    from j1.runs.models import IngestionRun, RunStatus
+    other_doc_run = IngestionRun(
+        run_id="run-other",
+        document_id="doc-OTHER",
+        workflow_id="wf",
+        workflow_run_id=None,
+        status=RunStatus.SUCCEEDED,
+        started_at=_NOW,
+        updated_at=_NOW,
+        completed_at=_NOW,
+        target_snapshot_id="snap-other",
+        metadata={},
+    )
+    run_store.upsert(ctx, other_doc_run)
+
+    req = ManualTestQueryRequest(
+        question="anything?",
+        scope=QueryScopeDTO(
+            type="document_run",
+            document_id="doc-1",  # caller's doc — doesn't match run
+            run_id="run-other",
+        ),
+    )
+    validation_service.run_document_test_query(ctx, "doc-1", req)
+    captured = capturing_orchestrator.calls[0]
+    # No pre-resolved pairs because the cross-document guard tripped.
+    assert captured.eligible_snapshot_pairs is None
+
+
 def test_document_endpoint_accepts_snapshot_explicit_override(
     validation_service, capturing_orchestrator, ctx,
 ):

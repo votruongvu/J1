@@ -458,6 +458,18 @@ def build_smart_query_orchestrator(
 
     artifacts = JsonArtifactRegistry(workspace)
     sources = JsonSourceRegistry(workspace)
+    # ``run_store`` + ``snapshot_store`` give the eligibility
+    # resolver a way to handle ``RunScope`` directly — required for
+    # the Run Detail "validate the produced snapshot" flow, which
+    # must work even when the candidate snapshot isn't promoted to
+    # active yet (so the active-snapshot resolver would otherwise
+    # return an empty set).
+    from j1.runs.store import JsonlIngestionRunStore as _JsonRunStore
+    from j1.documents.snapshot_store import (
+        JsonlDocumentSnapshotStore as _JsonSnapStore,
+    )
+    runs_store = _JsonRunStore(workspace)
+    snap_store = _JsonSnapStore(workspace)
 
     def _resolve_eligible_snapshots(ctx, scope):
         """The lexical adapter wants ``frozenset[str] | None``;
@@ -466,6 +478,7 @@ def build_smart_query_orchestrator(
         try:
             result = resolve_eligible_active_run_ids(
                 ctx=ctx, scope=scope, registry=sources,
+                run_store=runs_store, snapshot_store=snap_store,
             )
             return result.snapshot_ids
         except Exception:  # noqa: BLE001 — gate failure → unfiltered
@@ -480,6 +493,7 @@ def build_smart_query_orchestrator(
         try:
             result = resolve_eligible_active_run_ids(
                 ctx=ctx, scope=scope, registry=sources,
+                run_store=runs_store, snapshot_store=snap_store,
             )
             return result.snapshot_pairs
         except Exception:  # noqa: BLE001 — gate failure → no fan-out

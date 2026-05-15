@@ -30,14 +30,25 @@ class WorkspaceScope:
 
 @dataclass(frozen=True)
 class RunScope:
-    """Restrict retrieval to artifacts produced by a single ingestion run.
+    """Restrict retrieval to the snapshot produced by a specific run.
 
- The validation surface uses this so a tester's "did this document
- answer correctly?" question can never accidentally pull evidence
- from a sibling run in the same project.
- """
+    Semantics: identity is the run; the resolver derives the
+    ``(document_id, snapshot_id)`` pair from
+    ``run.target_snapshot_id``. The snapshot does NOT have to be the
+    document's currently-active snapshot — that's the whole point of
+    this scope. Run Detail's "validate the snapshot this run built"
+    flow needs to query a CANDIDATE snapshot that hasn't been promoted
+    yet, and it must not be gated by project-active eligibility.
+
+    ``document_id`` is optional. When supplied (the typed
+    ``document_run`` DTO), the resolver verifies the run actually
+    belongs to that document and rejects mismatches. When omitted
+    (the bare ``run`` DTO) the document is inferred from the run
+    record.
+    """
 
     run_id: str
+    document_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -310,6 +310,80 @@ def test_raganything_adapter_refuses_when_no_eligible_snapshot(route_ctx):
     assert candidates[0].score == 0.0
 
 
+def test_no_eligible_snapshot_message_is_scope_aware_for_run_scope(ctx):
+    """When the scope is ``RunScope``, the refusal message must NOT
+    mention 'attached documents with an active snapshot' — the user
+    explicitly named a run and the project-active eligibility
+    predicate is irrelevant. Regression for the Run Detail bug."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(),  # empty
+    )
+    run_scope_ctx = RouteContext(
+        ctx=ctx, scope=RunScope(run_id="run-X"), run_id="run-X",
+    )
+    [candidate] = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        run_scope_ctx,
+    )
+    assert candidate.artifact_kind == "raganything.no_eligible_snapshot"
+    assert "attached documents" not in candidate.text_preview
+    assert "Selected run" in candidate.text_preview
+    assert candidate.extra["raganything_refused_reason"] == (
+        "no_queryable_run_snapshot"
+    )
+
+
+def test_no_eligible_snapshot_message_is_scope_aware_for_active_scope(ctx):
+    """``ActiveScope`` failure says the DOCUMENT has no active
+    snapshot — not the project."""
+    from j1.query.scope import ActiveScope
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(),
+    )
+    active_ctx = RouteContext(
+        ctx=ctx, scope=ActiveScope(document_id="doc-1"),
+        document_id="doc-1",
+    )
+    [candidate] = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        active_ctx,
+    )
+    assert "Document has no active snapshot" in candidate.text_preview
+    assert candidate.extra["raganything_refused_reason"] == (
+        "no_active_document_snapshot"
+    )
+
+
+def test_no_eligible_snapshot_message_is_scope_aware_for_project_scope(ctx):
+    """The legacy project-active message stays — but ONLY for
+    ``WorkspaceScope``. This is the regression pin so the message
+    can't drift back into being scope-blind."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        eligible_snapshot_pairs_resolver=_pairs_resolver(),
+    )
+    workspace_ctx = RouteContext(ctx=ctx, scope=WorkspaceScope())
+    [candidate] = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        workspace_ctx,
+    )
+    assert "No attached documents" in candidate.text_preview
+    assert candidate.extra["raganything_refused_reason"] == (
+        "no_active_project_snapshot"
+    )
+
+
 def test_raganything_adapter_prefers_eligible_snapshot_pairs_over_resolver(ctx):
     """When ``RouteContext.eligible_snapshot_pairs`` is supplied, the
     adapter MUST bypass the scope-driven resolver and fan out against

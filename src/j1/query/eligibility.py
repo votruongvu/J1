@@ -35,6 +35,8 @@ from j1.query.scope import ActiveScope, QueryScope, RunScope, WorkspaceScope
 
 if TYPE_CHECKING:
     from j1.documents.models import DocumentRecord
+    from j1.documents.snapshot_store import DocumentSnapshotStore
+    from j1.runs.store import IngestionRunStore
 
 
 # Knowledge states + lifecycle states that DISQUALIFY a document
@@ -84,25 +86,37 @@ def resolve_eligible_active_run_ids(
     scope: QueryScope,
     registry: SourceRegistry,
     unchecked: bool = False,
+    run_store: "IngestionRunStore | None" = None,
+    snapshot_store: "DocumentSnapshotStore | None" = None,
 ) -> EligibilityResult:
     """Return the eligibility set for a query.
 
-    ``unchecked=True`` is the explicit escape hatch the validation
-    surface uses when ``validation_scope="run"`` — operators
-    intentionally querying a specific run (including failed /
-    superseded / detached / removed) for diagnostic reasons. In
-    that case the supplied scope's ``run_id`` is returned in
-    ``run_ids`` without the document-state check.
+    The dispatch is explicitly scope-aware: ACTIVE scopes
+    (``WorkspaceScope`` / ``ActiveScope``) gate on the active-snapshot
+    eligibility predicate, while ``RunScope`` resolves directly via
+    the run store and ignores active-snapshot rules. This is the
+    invariant that lets Run Detail validate a CANDIDATE snapshot that
+    isn't promoted yet — the run is the identity, not the active set.
 
-    For the regular (gated) path the result is snapshot-centered:
+    ``unchecked=True`` is a separate diagnostic escape hatch (the
+    legacy ``validation_scope="run"`` path) — it short-circuits to a
+    bare ``run_ids`` set without document-state checks. Distinct from
+    the new ``RunScope`` gated path, which DOES verify the run
+    exists + has a target snapshot, just without the active filter.
+
+    Per-scope behaviour:
 
       * ``ActiveScope(document_id)`` — return
-        ``snapshot_ids={doc.active_snapshot_id}`` if eligible.
+        ``snapshot_ids={doc.active_snapshot_id}`` iff the document is
+        eligible (attached + has active snapshot + lifecycle ok).
       * ``WorkspaceScope`` — union of every eligible document's
         ``active_snapshot_id``.
-      * ``RunScope(run_id)`` — empty in the gated path (Phase 9
-        removed the run_id-based reverse lookup; use
-        ``unchecked=True`` for diagnostic run scoping).
+      * ``RunScope(run_id, document_id?)`` — look up the run, return
+        ``snapshot_ids={run.target_snapshot_id}`` after validating the
+        run exists, has a target snapshot, and (if ``document_id`` is
+        supplied) belongs to that document. ``run_store`` is REQUIRED
+        for this branch; without it the result is empty (fail-closed
+        for legacy test wirings).
     """
     if unchecked:
         if isinstance(scope, RunScope):
@@ -124,7 +138,10 @@ def resolve_eligible_active_run_ids(
         )
 
     if isinstance(scope, RunScope):
-        return _resolve_run_scope(ctx, scope.run_id, registry)
+        return _resolve_run_scope_via_store(
+            ctx, scope,
+            run_store=run_store, snapshot_store=snapshot_store,
+        )
     if isinstance(scope, ActiveScope):
         return _resolve_active_scope(ctx, scope.document_id, registry)
     if isinstance(scope, WorkspaceScope):
@@ -186,23 +203,95 @@ def _resolve_active_scope(
     )
 
 
-def _resolve_run_scope(
-    ctx: ProjectContext, run_id: str, registry: SourceRegistry,
+def _resolve_run_scope_via_store(
+    ctx: ProjectContext,
+    scope: RunScope,
+    *,
+    run_store: "IngestionRunStore | None",
+    snapshot_store: "DocumentSnapshotStore | None",
 ) -> EligibilityResult:
-    """RunScope in the gated path is unreachable after Phase 9.
+    """Resolve a ``RunScope`` against the run store.
 
-    Documents no longer carry ``active_run_id``; visibility is
-    snapshot-centered. Callers that want a specific run_id must
-    use ``unchecked=True`` (the validation-diagnostic path).
-    Returning empty here is fail-closed: the gated path can't
-    derive owning-document eligibility from a bare run_id without
-    walking the snapshot store, and we deliberately don't do that
-    (snapshot scope is the supported route).
+    The semantic contract: identity flows ``run → snapshot``, NOT
+    ``run → document.active_*``. We deliberately bypass the
+    attached/active-snapshot predicate so historical (inactive,
+    superseded, failed-promotion) runs remain queryable for
+    diagnostic and Run Detail validation paths.
+
+    Reject cases (return empty ``EligibilityResult``):
+      * ``run_store`` not wired (legacy test deployments). The caller
+        sees zero pairs and the adapter falls back to its
+        scope-aware "no eligible snapshot" message.
+      * run does not exist in the store for this ``ctx``.
+      * caller passed ``scope.document_id`` and it doesn't match
+        ``run.document_id`` (cross-document protection).
+      * run has no ``target_snapshot_id`` or no ``document_id``
+        (legacy / mid-allocation runs).
+      * snapshot store is wired AND the snapshot lookup returns
+        ``None`` (artifacts deleted / store sweep purged the record).
+      * snapshot's ``document_id`` doesn't match the run's
+        ``document_id`` (data corruption — fail closed).
+
+    We do NOT check ``snapshot.state`` — a SUPERSEDED snapshot whose
+    artifacts are still on disk is a valid query target (the whole
+    Run Detail flow exists to re-inspect older candidates). Storage
+    sweeps that physically delete artifacts must purge the snapshot
+    record itself; the ``snapshot_store.get`` check above catches
+    that case.
     """
+    if run_store is None:
+        return EligibilityResult(
+            snapshot_ids=frozenset(),
+            run_ids=frozenset(),
+            document_ids=frozenset(),
+        )
+    try:
+        run = run_store.get(ctx, scope.run_id)
+    except Exception:  # noqa: BLE001 — store IO fault → fail closed
+        run = None
+    if run is None:
+        return EligibilityResult(
+            snapshot_ids=frozenset(),
+            run_ids=frozenset(),
+            document_ids=frozenset(),
+        )
+    expected_doc = scope.document_id
+    if expected_doc is not None and run.document_id != expected_doc:
+        return EligibilityResult(
+            snapshot_ids=frozenset(),
+            run_ids=frozenset(),
+            document_ids=frozenset(),
+        )
+    snapshot_id = getattr(run, "target_snapshot_id", None)
+    document_id = getattr(run, "document_id", None)
+    if not snapshot_id or not document_id:
+        return EligibilityResult(
+            snapshot_ids=frozenset(),
+            run_ids=frozenset(),
+            document_ids=frozenset(),
+        )
+    if snapshot_store is not None:
+        try:
+            snap = snapshot_store.get(ctx, snapshot_id)
+        except Exception:  # noqa: BLE001 — store IO fault → fail closed
+            snap = None
+        if snap is None:
+            return EligibilityResult(
+                snapshot_ids=frozenset(),
+                run_ids=frozenset(),
+                document_ids=frozenset(),
+            )
+        if getattr(snap, "document_id", None) != document_id:
+            return EligibilityResult(
+                snapshot_ids=frozenset(),
+                run_ids=frozenset(),
+                document_ids=frozenset(),
+            )
     return EligibilityResult(
-        snapshot_ids=frozenset(),
-        run_ids=frozenset(),
-        document_ids=frozenset(),
+        snapshot_ids=frozenset({snapshot_id}),
+        run_ids=frozenset({scope.run_id}),
+        document_ids=frozenset({document_id}),
+        snapshot_pairs=frozenset({(document_id, snapshot_id)}),
     )
 
 
@@ -212,6 +301,8 @@ def resolve_eligible_active_snapshot_ids(
     scope: QueryScope,
     registry: SourceRegistry,
     unchecked: bool = False,
+    run_store: "IngestionRunStore | None" = None,
+    snapshot_store: "DocumentSnapshotStore | None" = None,
 ) -> EligibilityResult:
     """Phase-3 convenience wrapper. Returns the same
     ``EligibilityResult`` as :func:`resolve_eligible_active_run_ids`
@@ -219,6 +310,30 @@ def resolve_eligible_active_snapshot_ids(
     to this name to advertise intent."""
     return resolve_eligible_active_run_ids(
         ctx=ctx, scope=scope, registry=registry, unchecked=unchecked,
+        run_store=run_store, snapshot_store=snapshot_store,
+    )
+
+
+def resolve_query_snapshots(
+    *,
+    ctx: ProjectContext,
+    scope: QueryScope,
+    registry: SourceRegistry,
+    run_store: "IngestionRunStore | None" = None,
+    snapshot_store: "DocumentSnapshotStore | None" = None,
+) -> EligibilityResult:
+    """Public dispatcher. Identical to
+    :func:`resolve_eligible_active_run_ids` minus the
+    ``unchecked`` flag.
+
+    This is the name to prefer in new call sites — it carries the
+    "active-scope eligibility vs explicit-run eligibility" intent.
+    The existing entry points stay so the audit-fix tests don't
+    have to be re-aimed.
+    """
+    return resolve_eligible_active_run_ids(
+        ctx=ctx, scope=scope, registry=registry,
+        run_store=run_store, snapshot_store=snapshot_store,
     )
 
 

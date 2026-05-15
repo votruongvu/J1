@@ -653,9 +653,24 @@ export type ValidationStatus =
  * ``snapshot_explicit`` with that single id.
  */
 export type QueryScope =
+  /** Project-active eligibility: only attached documents with a
+   * promoted active snapshot. Refusal text mentions the project. */
   | { type: "project_active" }
+  /** Document-active eligibility: the one document's promoted
+   * active snapshot. Refusal text mentions the document. */
   | { type: "document_active"; documentId: string }
-  | { type: "snapshot_explicit"; snapshotIds: string[] };
+  /** Fixed snapshot allowlist (back-compat). Bypasses active-
+   * snapshot eligibility — the caller already named the snapshots. */
+  | { type: "snapshot_explicit"; snapshotIds: string[] }
+  /** Query the snapshot produced by a specific run, regardless of
+   * promotion / active state. Bypasses active-snapshot eligibility.
+   * Use ``document_run`` (below) for the safer variant. */
+  | { type: "run"; runId: string }
+  /** Same as ``run`` plus a cross-document guard: the server
+   * rejects runs that don't belong to ``documentId``. Run Detail
+   * sends this so a stranger's runId can't be shopped at the
+   * endpoint. */
+  | { type: "document_run"; documentId: string; runId: string };
 
 export interface ManualTestQueryRequest {
   question: string;

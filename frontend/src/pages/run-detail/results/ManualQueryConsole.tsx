@@ -34,19 +34,20 @@ import type {
 interface ManualQueryConsoleProps {
   runId: string;
   /**
-   * The snapshot this run produced. Drives the default
-   * ``snapshot_explicit`` scope so the manual query validates the
-   * run's *output* (the snapshot), not the run record itself. When
-   * ``null`` (legacy runs predating the snapshot model), the
-   * console falls back to ``document_active`` scope so the query
-   * still has a coherent target.
+   * The snapshot this run produced. Surfaced in the picker label
+   * so the operator sees which snapshot they're validating. The
+   * wire-side scope for the "produced snapshot" choice is
+   * ``document_run`` (which carries the runId, not the snapshotId)
+   * so the server's run-store lookup is the authoritative path —
+   * the snapshot doesn't have to be promoted to active.
    */
   targetSnapshotId: string | null;
   /**
-   * The document this run is for. Used as the fallback scope
-   * (``document_active``) when ``targetSnapshotId`` is unavailable.
-   * When also ``null``, the console disables the submit button —
-   * there's no meaningful scope to query.
+   * The document this run is for. Used both as (a) the fallback
+   * scope (``document_active``) when ``targetSnapshotId`` is
+   * unavailable AND (b) the cross-document guard in the
+   * ``document_run`` scope. When ``null``, the console disables
+   * the submit button — there's no meaningful scope to query.
    */
   documentId: string | null;
 }
@@ -115,9 +116,14 @@ export const ManualQueryConsole = forwardRef<
       setError("Enter a question to run a manual test query.");
       return;
     }
-    // Resolve the typed scope client-side. Run is never a scope —
-    // we always either query the snapshot this run produced or the
-    // document's active snapshot.
+    // Resolve the typed scope client-side. The "produced snapshot"
+    // choice now sends ``document_run`` — identity flows
+    // ``run → snapshot`` on the server, so the candidate snapshot
+    // remains queryable even when it isn't promoted to active yet
+    // (the project-active eligibility resolver would have refused
+    // otherwise). The legacy ``snapshot_explicit`` shape relied on
+    // the snapshot store being eventually consistent with the run
+    // record — ``document_run`` removes that race entirely.
     let queryScope: QueryScope;
     if (scopeChoice === "produced_snapshot") {
       if (!targetSnapshotId) {
@@ -127,10 +133,14 @@ export const ManualQueryConsole = forwardRef<
         );
         return;
       }
-      queryScope = {
-        type: "snapshot_explicit",
-        snapshotIds: [targetSnapshotId],
-      };
+      if (!documentId) {
+        setError(
+          "This run has no parent document; document_run scope " +
+          "needs both runId and documentId.",
+        );
+        return;
+      }
+      queryScope = { type: "document_run", documentId, runId };
     } else {
       if (!documentId) {
         setError(
