@@ -164,6 +164,8 @@ you've at least skimmed `01-overall-architecture.md`.
 - [docs/08-multi-kb-model.md](docs/08-multi-kb-model.md) — How the per-project knowledge bases compose.
 - [docs/09-external-integration-model.md](docs/09-external-integration-model.md) — REST + event integration with outside systems.
 - [docs/10-domain-configuration.md](docs/10-domain-configuration.md) — Domain packs (general + civil engineering).
+- [docs/11-ingestion-execution-profiles.md](docs/11-ingestion-execution-profiles.md) — Execution profiles (`minimum_queryable` / `standard` / `advanced`).
+- [docs/12-retrieval-intelligence-roadmap.md](docs/12-retrieval-intelligence-roadmap.md) — Staged levels of retrieval intelligence: alias broadening (current default) → LLM rewrite → graph expansion → answer grading.
 
 The older `docs/02-ingestion-flow.md` is **superseded** by
 [docs/ingestion-flow.md](docs/ingestion-flow.md); the file remains
