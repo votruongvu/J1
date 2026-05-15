@@ -295,11 +295,16 @@ export function computeNeedsAttention(
 
 /**
  * Render a short, business-friendly description of the run-type
- * tag. Used in the Recent Runs panel so operators see "Initial
- * ingest" instead of `"initial"`. Single source of truth — the
- * Document Detail run history can adopt this later.
+ * tag. Used in the Recent Runs panel + the Document Detail run
+ * history so operators see "Initial ingest" instead of
+ * ``"initial"``. Single source of truth — both call sites import
+ * from here so a new ``RunType`` value gets a label in one place.
+ *
+ * Accepts ``string`` so a forward-compat FE that hasn't been
+ * re-built for a brand-new BE ``RunType`` value still renders the
+ * raw wire string instead of crashing.
  */
-export function runTypeLabel(runType: DocumentRunSummary["runType"]): string {
+export function runTypeLabel(runType: string): string {
   switch (runType) {
     case "initial": return "Initial ingest";
     case "reindex": return "Reindex";
@@ -307,6 +312,8 @@ export function runTypeLabel(runType: DocumentRunSummary["runType"]): string {
     case "retry": return "Retry";
     case "validation": return "Validation";
     case "refresh_enrich": return "Refresh enrichment";
+    case "run_domain_enrichment": return "Domain Enrichment";
+    default: return runType;
   }
 }
 

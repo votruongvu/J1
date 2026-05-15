@@ -348,3 +348,102 @@ def test_manual_actions_list_reports_disabled_when_flag_off(
     actions = resp.json()["data"]["actions"]
     by_id = {a["id"]: a for a in actions}
     assert by_id["run_domain_enrichment"]["status"] == "disabled"
+
+
+# ---- Dispatch-failure / best-effort lock release -------------------
+
+
+def test_dispatch_failure_logs_release_failure_with_structured_context(
+    application_facade, workspace, run_store, registry,
+    lifecycle_service, ctx, caplog,
+):
+    """When workflow dispatch fails AND the best-effort lock
+    release ALSO fails, the handler must log a structured error
+    with enough context to manually diagnose the stuck operation
+    (instead of silently swallowing it). The request itself still
+    raises so the caller sees the dispatch failure."""
+
+    import logging
+    from j1.integration.dto import ProcessingCapabilities
+    from j1.adapters.rest import create_rest_api
+
+    async def boom_starter(ctx, document_id, body):
+        raise RuntimeError("workflow dispatch unavailable")
+
+    capabilities = ProcessingCapabilities(
+        default_compiler_kind="mock",
+        compiler_kinds=frozenset({"mock"}),
+    )
+
+    # Wrap the source registry so its ``release_operation_lock``
+    # explodes. The handler should catch the explosion and log it
+    # instead of letting it propagate.
+    real_sources = registry
+
+    class _ExplodingSources:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            if name == "release_operation_lock":
+                def _release(*_a, **_kw):
+                    raise RuntimeError("lock store unavailable")
+                return _release
+            return getattr(self._inner, name)
+
+    from j1.integration import SourceLookupService
+
+    facade = application_facade.__class__(
+        ingestion=application_facade.ingestion,
+        retrieval=application_facade.retrieval,
+        citation_lookup=application_facade.citation_lookup,
+        source_lookup=SourceLookupService(_ExplodingSources(real_sources)),
+        feedback=None,
+        event_publisher=application_facade.event_publisher,
+        job_control=None,
+    )
+
+    app = create_rest_api(
+        facade,
+        workspace=workspace,
+        ingestion_run_store=run_store,
+        job_starter=boom_starter,
+        document_lifecycle_service=lifecycle_service,
+        processing_capabilities=capabilities,
+    )
+    test_client = TestClient(app, raise_server_exceptions=False)
+
+    _seed_doc(registry, ctx, active_snapshot_id="snap-active")
+    _seed_run(run_store, ctx, run_id="r-baseline", document_id="doc-1")
+
+    with caplog.at_level(logging.ERROR, logger="j1.adapters.rest"):
+        # The endpoint re-raises after logging — TestClient with
+        # raise_server_exceptions=False surfaces it as HTTP 500.
+        resp = test_client.post(
+            _PATH.format(doc="doc-1"), headers=_headers(ctx),
+        )
+        assert resp.status_code == 500
+
+    matching = [
+        r for r in caplog.records
+        if r.name == "j1.adapters.rest"
+        and "release pending operation" in r.getMessage().lower()
+    ]
+    assert matching, (
+        "expected an error log about failed lock release; got: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+    rec = matching[0]
+    # Structured fields used by operators to diagnose stuck locks.
+    assert getattr(rec, "document_id", None) == "doc-1"
+    assert getattr(rec, "operation_type", None) == "run_domain_enrichment"
+    assert (
+        getattr(rec, "action_type", None)
+        == "manual_action.run_domain_enrichment"
+    )
+    # Both error reprs are captured so an operator can correlate
+    # the dispatch failure with the release failure.
+    assert "workflow dispatch unavailable" in getattr(
+        rec, "dispatch_error", "",
+    )
+    assert "lock store unavailable" in getattr(rec, "release_error", "")

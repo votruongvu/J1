@@ -38,6 +38,7 @@ import type {
   DocumentListItem,
   DocumentSnapshotSummary,
 } from "@/types/documents";
+import { runTypeLabel } from "./home/home-dashboard-helpers";
 import type {
   AssessmentPlanResponse,
   ExecutionProfileId,
@@ -420,6 +421,12 @@ export function DocumentDetailPage({
 
       <section className="document-detail__section">
         <h3>Manual Actions</h3>
+        {/* TODO: Thread ``recommendedNextSteps`` once Document Detail
+            fetches the latest AssessmentDecision (or equivalent LLM
+            advanced-assessment payload). The panel already accepts
+            the prop and renders a "Recommended" pill; we just don't
+            fetch the data on this page yet. Until then the panel
+            renders correctly with the prop undefined. */}
         <ManualActionsPanel
           client={client}
           documentId={detail.documentId}
@@ -640,7 +647,7 @@ export function CandidateKnowledgeList({
             <span className="mono" title={run.runId}>
               {run.runId.slice(0, 12)}…
             </span>
-            <span className="muted">{run.runType}</span>
+            <span className="muted">{runTypeLabel(run.runType)}</span>
             {run.displayVersion && (
               <span className="run-history-row__version-chip">
                 v{run.displayVersion}
@@ -768,7 +775,7 @@ function RunHistoryTable({
                 )}
               </span>
             </td>
-            <td className="run-history-row__type">{run.runType}</td>
+            <td className="run-history-row__type">{runTypeLabel(run.runType)}</td>
             <td>
               <RunStatusPill status={run.status} />
             </td>

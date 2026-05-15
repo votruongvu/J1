@@ -107,6 +107,12 @@ export function ManualActionsPanel({
   // function stops the loop when the lifecycle leaves "running" —
   // either we transition to "terminal" or the operator navigates
   // away.
+  // TODO: Replace lifecycle polling with SSE subscription for
+  // long-running manual actions. The backend already streams
+  // ``/ingestion-runs/{id}/events/stream``; switching to it would
+  // drop the steady poll traffic for multi-minute enrichments. Kept
+  // as polling for the demo build because it's the same pattern the
+  // run-detail page uses today.
   useEffect(() => {
     if (lifecycle.kind !== "running") return;
     let cancelled = false;

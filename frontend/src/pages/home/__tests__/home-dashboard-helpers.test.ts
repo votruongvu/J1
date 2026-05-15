@@ -421,6 +421,14 @@ describe("runTypeLabel", () => {
     expect(runTypeLabel("retry")).toBe("Retry");
     expect(runTypeLabel("validation")).toBe("Validation");
     expect(runTypeLabel("refresh_enrich")).toBe("Refresh enrichment");
+    expect(runTypeLabel("run_domain_enrichment")).toBe("Domain Enrichment");
+  });
+
+  it("falls back to the raw wire string for unknown future types", () => {
+    // Forward-compat: a brand-new BE ``RunType`` value must not
+    // crash the run-history rows on an older FE bundle. The label
+    // just degrades to the wire string until the FE rebuild ships.
+    expect(runTypeLabel("brand_new_future_type")).toBe("brand_new_future_type");
   });
 });
 

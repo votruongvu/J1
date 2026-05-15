@@ -2487,7 +2487,13 @@ def create_rest_api(
         )
         try:
             workflow_id = await starter(ctx, document_id, body)
-        except Exception:
+        except Exception as dispatch_exc:
+            # Workflow dispatch failed before the activity layer
+            # could release the lock at a terminal status. Best-
+            # effort release here so the document doesn't stay
+            # wedged in ``pending_operation=run_domain_enrichment``.
+            # We log — not swallow — release failures so an operator
+            # can diagnose a stuck lock from `events.jsonl`.
             try:
                 sources_raw = getattr(
                     _require_source_registry(), "_sources", None,
@@ -2497,8 +2503,24 @@ def create_rest_api(
                 ) if sources_raw is not None else None
                 if release is not None:
                     release(ctx, document_id, expected_run_id=new_run_id)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as release_exc:  # noqa: BLE001 — release is best-effort
+                _log.error(
+                    "Failed to release pending operation after "
+                    "workflow dispatch failure",
+                    extra={
+                        "tenant_id": getattr(ctx, "tenant_id", None),
+                        "project_id": getattr(ctx, "project_id", None),
+                        "document_id": document_id,
+                        "run_id": new_run_id,
+                        "operation_type": "run_domain_enrichment",
+                        "action_type": (
+                            "manual_action.run_domain_enrichment"
+                        ),
+                        "dispatch_error": repr(dispatch_exc),
+                        "release_error": repr(release_exc),
+                    },
+                    exc_info=True,
+                )
             raise
         new_run.workflow_id = workflow_id
         new_run.updated_at = datetime.now(timezone.utc)
