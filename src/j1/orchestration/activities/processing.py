@@ -748,6 +748,17 @@ class ProcessingActivities:
                 compile_kwargs["target_snapshot_id"] = (
                     input.target_snapshot_id
                 )
+            # `minimum_queryable` execution profile: forward the
+            # adapter-layer no-op-LLM hook so the compiler can ask
+            # the bridge to swap LightRAG's stage-2 entity/relationship
+            # extraction for a no-op. Introspection guard mirrors the
+            # other forwards so older `ProcessingService` stubs in
+            # tests don't trip a TypeError.
+            if (
+                getattr(input, "disable_entity_extraction", False)
+                and "disable_entity_extraction" in sig.parameters
+            ):
+                compile_kwargs["disable_entity_extraction"] = True
         except (TypeError, ValueError):
             pass
         try:

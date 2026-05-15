@@ -139,6 +139,7 @@ class ProcessingService:
         correlation_id: str | None = None,
         assessment_plan: object | None = None,
         target_snapshot_id: str | None = None,
+        disable_entity_extraction: bool = False,
     ) -> ArtifactProcessingResult:
         # Detect whether the compiler accepts ``assessment_plan``,
         # ``run_id``, and ``snapshot_id`` (the ``KnowledgeCompiler``
@@ -170,6 +171,16 @@ class ProcessingService:
                 compile_kwargs["run_id"] = correlation_id
             if target_snapshot_id and "snapshot_id" in sig.parameters:
                 compile_kwargs["snapshot_id"] = target_snapshot_id
+            # `minimum_queryable` execution profile: ask the adapter
+            # to swap LightRAG's stage-2 entity/relationship extraction
+            # for a no-op so compile doesn't fire any LLM token. The
+            # introspection guard keeps legacy compilers (test fakes,
+            # custom adapters) that don't yet support the kwarg
+            # working unchanged — they simply ignore the request and
+            # the workflow stamps an `unsupported_profile_controls`
+            # warning on the run when applicable.
+            if disable_entity_extraction and "disable_entity_extraction" in sig.parameters:
+                compile_kwargs["disable_entity_extraction"] = True
         except (TypeError, ValueError):
             # Builtins / C extensions don't expose a signature;
             # fall back to no kwargs (legacy behaviour).

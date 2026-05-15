@@ -156,6 +156,13 @@ def make_per_document_starter(
                     body, "target_snapshot_id", None,
                 ),
                 reindex_of=getattr(body, "reindex_of", None),
+                # User-selected execution profile from the FE picker.
+                # `getattr` guards legacy callers that built IngestRequest
+                # before the field was added; they keep working with
+                # the workflow-side `DEFAULT_PROFILE` fallback.
+                selected_execution_profile=getattr(
+                    body, "selected_profile", None,
+                ),
             ),
             id=workflow_id,
             task_queue=task_queue,

@@ -1088,6 +1088,9 @@ def _prepare_compile(
         settings=request.settings,
         config_overrides=config_overrides,
         working_dir_override=working_dir_override,
+        disable_entity_extraction=getattr(
+            request, "disable_entity_extraction", False,
+        ),
     )
     workspace = _resolve_workspace_root(request.ctx)
     raw_dir = workspace / "tenants" / request.ctx.tenant_id / "projects" / request.ctx.project_id / "raw"
@@ -1236,6 +1239,7 @@ def _build_rag_instance(
     settings,
     config_overrides: dict[str, Any] | None = None,
     working_dir_override: Path | None = None,
+    disable_entity_extraction: bool = False,
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
@@ -1256,6 +1260,14 @@ def _build_rag_instance(
  produced by run X (and only run X). Pre-existing callers that
  don't pass it continue to use the global ``settings.workdir`` —
  backward-compatible.
+
+ `disable_entity_extraction`, when True, swaps the real text-LLM
+ callable for the no-op defined in [_noop_llm.py](./_noop_llm.py).
+ LightRAG's stage-2 entity + relationship extraction then returns
+ "no entities" immediately, producing an empty graph without
+ firing any LLM token. Used by the `minimum_queryable` execution
+ profile. Defaults to False so existing callers see the real LLM
+ path unchanged.
  """
     raganything_mod = _import_raganything()
     rag_cls = getattr(raganything_mod, "RAGAnything", None)
@@ -1279,10 +1291,54 @@ def _build_rag_instance(
     kwargs: dict[str, Any] = {}
     if config is not None:
         kwargs["config"] = config
-    kwargs["llm_model_func"] = _make_text_callable(text_client)
+    if disable_entity_extraction:
+        # `minimum_queryable` profile: short-circuit LightRAG's
+        # stage-2 entity/relationship extraction so compile produces
+        # an empty graph without firing any LLM token. The chunks
+        # still persist via `_force_persist_chunks` and the document
+        # remains queryable through vector retrieval. The vision
+        # callable is also dropped — `minimum_queryable` disables
+        # multimodal processing upstream, but defending here too
+        # so no path leaks vision-LLM calls into a profile that
+        # promised none.
+        from j1.providers.raganything._noop_llm import make_noop_text_callable
+
+        # Emit one structured audit event per no-op invocation so
+        # the operator can prove the keystone is firing: every
+        # short-circuit should appear in the worker log under
+        # `ingest.stage.llm_call_started` with
+        # `purpose=entity_extraction_noop_minimum_queryable`. Logging
+        # at the bridge layer (not the workflow) is intentional —
+        # the no-op fires inside the activity, where workflow.logger
+        # isn't available.
+        def _audit_noop_call(payload: dict[str, Any]) -> None:
+            _log.info(
+                "ingest.stage.llm_call_started",
+                extra={
+                    "event": "ingest.stage.llm_call_started",
+                    "stage": "compile",
+                    "purpose": "entity_extraction_noop_minimum_queryable",
+                    "provider": "noop",
+                    "model": "noop",
+                    "selected_profile": "minimum_queryable",
+                    "history_messages_count": payload.get(
+                        "history_messages_count", 0,
+                    ),
+                },
+            )
+
+        kwargs["llm_model_func"] = make_noop_text_callable(
+            on_call=_audit_noop_call,
+        )
+        _log.info(
+            "compile-side llm_model_func swapped for no-op "
+            "(disable_entity_extraction=True; minimum_queryable profile)"
+        )
+    else:
+        kwargs["llm_model_func"] = _make_text_callable(text_client)
     if embedding_client is not None:
         kwargs["embedding_func"] = _make_embedding_func(embedding_client)
-    if vision_client is not None:
+    if vision_client is not None and not disable_entity_extraction:
         kwargs["vision_model_func"] = _make_vision_callable(vision_client)
 
     try:

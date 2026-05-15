@@ -11,6 +11,10 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  AssessmentPlanResponse,
+  ExecutionProfileId,
+} from "@/types/execution-profile";
+import type {
   ContentInventory,
   ImportedTestCaseExecution,
   ImportedTestCaseSet,
@@ -84,8 +88,35 @@ export interface IngestionClient {
   /** GET list of runs (live mode may return an empty page with `_liveUnsupported`). */
   listRuns(ctx: ProjectContext, opts?: RunListQuery): Promise<RunListResult>;
 
-  /** POST a new run. Returns the assigned run id. */
-  upload(file: UploadFile, ctx: ProjectContext): Promise<{ runId: string }>;
+  /** POST a new run. Returns the assigned run id.
+   * When `selectedProfile` is supplied (typically from the
+   * `AssessmentPlanDialog` picker), it becomes the authoritative
+   * gate for downstream stage decisions. Omitting it preserves
+   * legacy behaviour — the backend's `DEFAULT_PROFILE` kicks in. */
+  upload(
+    file: UploadFile,
+    ctx: ProjectContext,
+    selectedProfile?: ExecutionProfileId,
+  ): Promise<{ runId: string }>;
+
+  /** POST `/documents/{id}/assessment-plan`. Synchronous, no
+   * workflow dispatch. Returns the recommended profile + the
+   * catalogue the picker renders. Caller must have already
+   * registered the document (typically via the preceding
+   * `registerDocument` call from the upload flow). */
+  getDocumentAssessmentPlan(
+    documentId: string,
+  ): Promise<AssessmentPlanResponse>;
+
+  /** POST `/documents`. Registers a document WITHOUT starting an
+   * ingestion run, so the two-step upload flow can call
+   * `getDocumentAssessmentPlan` before the user commits to a
+   * profile. Returns the document id (idempotent on checksum;
+   * duplicate uploads return the existing record). */
+  registerDocument(
+    file: UploadFile,
+    ctx: ProjectContext,
+  ): Promise<{ documentId: string }>;
 
   /** GET a single run snapshot. */
   getRun(runId: string): Promise<IngestionRun>;

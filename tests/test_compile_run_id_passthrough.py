@@ -291,3 +291,142 @@ def test_processing_service_passes_both_assessment_plan_and_run_id():
 
     assert spy.capture.run_id == "run-1"
     assert spy.capture.assessment_plan is plan_sentinel
+
+
+# ---- disable_entity_extraction passthrough ----------------------
+
+
+@dataclass
+class _ProfileCapture:
+    """Spy capture for the no-op-LLM keystone wiring."""
+    document_id: str | None = None
+    disable_entity_extraction: bool | None = None
+    called: int = 0
+
+
+class _ProfileSpyCompiler:
+    """Stub compiler that records whether `disable_entity_extraction`
+    flowed through. The kwarg is what hooks LightRAG's no-op
+    `llm_model_func` into the `minimum_queryable` execution profile
+    — without it the profile is a lie."""
+
+    kind = "profile-spy"
+
+    def __init__(self) -> None:
+        self.capture = _ProfileCapture()
+
+    def compile(
+        self,
+        ctx: ProjectContext,
+        document_id: str,
+        *,
+        run_id: str | None = None,
+        assessment_plan: object | None = None,
+        disable_entity_extraction: bool = False,
+    ) -> ArtifactProcessingResult:
+        self.capture.document_id = document_id
+        self.capture.disable_entity_extraction = disable_entity_extraction
+        self.capture.called += 1
+        return ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[],
+        )
+
+
+def test_processing_service_forwards_disable_entity_extraction_when_supported():
+    """The keystone hand-off: ProcessingService.compile must forward
+    `disable_entity_extraction=True` to a compiler that accepts it.
+    Without this, `minimum_queryable` runs would silently fall back
+    to the real LLM and the profile would be a fiction."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from j1.documents.models import DocumentRecord
+    from j1.processing.service import ProcessingService
+
+    doc = MagicMock(spec=DocumentRecord)
+    doc.document_id = "doc-a"
+    workspace = MagicMock()
+    workspace.area.return_value = Path("/tmp")
+
+    svc = ProcessingService(
+        workspace=workspace,
+        artifact_registry=MagicMock(),
+        audit=MagicMock(),
+        cost=MagicMock(),
+        clock=lambda: datetime(2026, 5, 15, tzinfo=timezone.utc),
+        id_factory=lambda: "art-id",
+    )
+
+    spy = _ProfileSpyCompiler()
+    svc.compile(
+        MagicMock(),
+        spy,
+        doc,
+        correlation_id="run-min",
+        disable_entity_extraction=True,
+    )
+    assert spy.capture.called == 1
+    assert spy.capture.disable_entity_extraction is True
+
+
+def test_processing_service_default_keeps_extraction_enabled():
+    """Default behaviour: when the kwarg is omitted, the real LLM
+    runs. Pinned so a future refactor doesn't accidentally flip
+    the default for everyone."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from j1.documents.models import DocumentRecord
+    from j1.processing.service import ProcessingService
+
+    doc = MagicMock(spec=DocumentRecord)
+    doc.document_id = "doc-a"
+    workspace = MagicMock()
+    workspace.area.return_value = Path("/tmp")
+
+    svc = ProcessingService(
+        workspace=workspace,
+        artifact_registry=MagicMock(),
+        audit=MagicMock(),
+        cost=MagicMock(),
+        clock=lambda: datetime(2026, 5, 15, tzinfo=timezone.utc),
+        id_factory=lambda: "art-id",
+    )
+
+    spy = _ProfileSpyCompiler()
+    svc.compile(MagicMock(), spy, doc, correlation_id="run-x")
+    assert spy.capture.called == 1
+    assert spy.capture.disable_entity_extraction is False
+
+
+def test_processing_service_silently_drops_kwarg_for_legacy_compilers():
+    """Legacy compilers whose `compile` signature predates the
+    `disable_entity_extraction` kwarg must keep working — the
+    inspect-based forward drops it without raising."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from j1.documents.models import DocumentRecord
+    from j1.processing.service import ProcessingService
+
+    doc = MagicMock(spec=DocumentRecord)
+    doc.document_id = "doc-a"
+    workspace = MagicMock()
+    workspace.area.return_value = Path("/tmp")
+
+    svc = ProcessingService(
+        workspace=workspace,
+        artifact_registry=MagicMock(),
+        audit=MagicMock(),
+        cost=MagicMock(),
+    )
+
+    spy = _LegacySpyCompiler()
+    svc.compile(
+        MagicMock(),
+        spy,
+        doc,
+        correlation_id="run-x",
+        disable_entity_extraction=True,  # silently dropped
+    )
+    assert spy.capture.called == 1

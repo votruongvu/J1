@@ -62,6 +62,15 @@ class IngestRequest(CamelModel):
     # workflow; the workflow allocates per-document inside the
     # processing loop via the ``allocate_target_snapshot`` activity.
     target_snapshot_id: str | None = None
+    # User-selected execution profile (wire-string value of
+    # ``ExecutionProfile``: ``minimum_queryable`` / ``standard`` /
+    # ``advanced``). When None (default), the workflow falls back
+    # to the `DEFAULT_PROFILE` constant in
+    # [`j1.processing.execution_profile`](../../processing/execution_profile.py).
+    # When explicitly provided by the FE's profile picker, it
+    # becomes the authoritative gate for every downstream
+    # "should this stage run?" check.
+    selected_profile: str | None = None
 
 
 class JobStartRecord(CamelModel):

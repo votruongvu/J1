@@ -108,6 +108,31 @@ export interface CompileStrategyReport {
   unhandled_capabilities: string[];
   /** Added in the API/UI-shape refactor. Older reports omit it. */
   extraction_evidence?: ExtractionEvidence | null;
+  /** Profile-specific control violations: each entry describes a
+   * capability the user-selected execution profile asked the
+   * adapter to disable but the adapter could not enforce. Empty
+   * (or omitted on legacy reports) when no profile was selected
+   * or the adapter honored every request. Surfaced as a banner +
+   * structured list so users see when `minimum_queryable` was
+   * only partially enforced. */
+  unsupported_profile_controls?: UnsupportedProfileControl[];
+}
+
+
+export interface UnsupportedProfileControl {
+  /** Canonical profile-control name (e.g.
+   * `disable_multimodal_processing`). Wire-string; backend
+   * source-of-truth lives in `j1.processing.execution_profile`. */
+  control: string;
+  /** What the profile asked for. Typically `true` (we wanted X
+   * disabled); future controls may use other shapes. */
+  requested_value: boolean;
+  /** Operator-readable explanation of why the adapter couldn't
+   * honor the request. */
+  reason: string;
+  /** Short sentence describing the user-visible consequence —
+   * drives banner copy. */
+  impact: string;
 }
 
 export interface BannerSpec {
@@ -160,6 +185,18 @@ export function bannersForReport(
       kind: "warn",
       message: `Unhandled capabilities: ${report.unhandled_capabilities.join(", ")}. Compile may have produced lower-quality output for these areas.`,
       testid: "banner-unhandled",
+    });
+  }
+  // Profile-specific control violations are surfaced as their own
+  // banner so they're distinguishable from generic adapter-version
+  // drift warnings. One banner per violation keeps the per-control
+  // reason + impact intact; collapsing into a single line would
+  // lose the actionable detail.
+  for (const ctrl of report.unsupported_profile_controls ?? []) {
+    banners.push({
+      kind: "warn",
+      message: `Profile control not enforced: ${ctrl.control}. ${ctrl.impact}`,
+      testid: `banner-unsupported-control-${ctrl.control}`,
     });
   }
   if (report.retry_used) {

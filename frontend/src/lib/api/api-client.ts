@@ -46,6 +46,10 @@ import type {
   RunEnrichmentResultResponse,
   RunInitialExecutionPlanResponse,
 } from "@/types/review";
+import type {
+  AssessmentPlanResponse,
+  ExecutionProfileId,
+} from "@/types/execution-profile";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import type {
   DocumentDetail,
@@ -177,7 +181,11 @@ export class ApiClient implements IngestionClient {
 
   // ---- upload ------------------------------------------------------
 
-  async upload(file: UploadFile, ctx: ProjectContext): Promise<{ runId: string }> {
+  async upload(
+    file: UploadFile,
+    ctx: ProjectContext,
+    selectedProfile?: ExecutionProfileId,
+  ): Promise<{ runId: string }> {
     if (!ctx?.tenant || !ctx?.project) {
       throw new ApiError(400, "Tenant and Project are required.");
     }
@@ -197,6 +205,14 @@ export class ApiClient implements IngestionClient {
     // either silently swap the compiler or fail with INVALID_ARGUMENT
     // when the chosen kind isn't registered. Surface a `compilerKind`
     // selector in the UI before threading a value through here.
+    //
+    // `selectedProfile` IS forwarded when present so the backend can
+    // honour the user's profile pick from the AssessmentPlanDialog.
+    // Omitting it keeps the legacy "use deployment default" path
+    // working for callers that haven't adopted the picker yet.
+    if (selectedProfile) {
+      fd.append("selectedProfile", selectedProfile);
+    }
     const resp = await fetch(this.url("/ingestion-runs"), {
       method: "POST",
       headers: this.headers(),
@@ -204,6 +220,40 @@ export class ApiClient implements IngestionClient {
     });
     const data = await this.json<{ runId: string }>(resp);
     return { runId: data.runId };
+  }
+
+  async getDocumentAssessmentPlan(
+    documentId: string,
+  ): Promise<AssessmentPlanResponse> {
+    const resp = await fetch(
+      this.url(`/documents/${encodeURIComponent(documentId)}/assessment-plan`),
+      { method: "POST", headers: this.headers() },
+    );
+    return this.json<AssessmentPlanResponse>(resp);
+  }
+
+  async registerDocument(
+    file: UploadFile,
+    ctx: ProjectContext,
+  ): Promise<{ documentId: string }> {
+    if (!ctx?.tenant || !ctx?.project) {
+      throw new ApiError(400, "Tenant and Project are required.");
+    }
+    const fd = new FormData();
+    if (file instanceof File) {
+      fd.append("file", file);
+    } else {
+      const blob = new Blob(["demo content"], { type: "text/plain" });
+      const filename = (file as { name?: string }).name ?? "demo.txt";
+      fd.append("file", blob, filename);
+    }
+    const resp = await fetch(this.url("/documents"), {
+      method: "POST",
+      headers: this.headers(),
+      body: fd,
+    });
+    const data = await this.json<{ documentId: string }>(resp);
+    return { documentId: data.documentId };
   }
 
   // ---- getRun ------------------------------------------------------

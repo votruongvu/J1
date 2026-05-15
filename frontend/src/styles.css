@@ -5769,3 +5769,112 @@ pre.json .b {
   font-size: 0.95rem;
   white-space: pre-wrap;
 }
+
+/* ─── AssessmentPlanDialog — execution-profile picker ─────────────
+   Two-step ingest flow. Shown between file pick and run start so
+   the user reviews the backend's recommendation and explicitly
+   chooses a profile. Vanilla CSS to match the rest of the dialogs;
+   no external dialog library. */
+.modal-card.assessment-plan-dialog {
+  max-width: 640px;
+}
+.assessment-plan-dialog__filename {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+.assessment-plan-dialog__loading {
+  font-size: 14px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.assessment-plan-dialog__recommendation {
+  background: var(--surface-muted, #f6f8fa);
+  border: 1px solid var(--border, #e1e4e8);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+.assessment-plan-dialog__reasons {
+  margin: 6px 0 0 18px;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.assessment-plan-dialog__profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 0;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.assessment-plan-dialog__profile-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--border, #e1e4e8);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  background: var(--surface, #fff);
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.assessment-plan-dialog__profile-card:hover {
+  border-color: var(--primary, #0366d6);
+}
+.assessment-plan-dialog__profile-card--checked {
+  border-color: var(--primary, #0366d6);
+  background: var(--surface-emphasis, #f0f6ff);
+}
+.assessment-plan-dialog__profile-card input[type="radio"] {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.assessment-plan-dialog__profile-card-body {
+  flex: 1;
+  min-width: 0;
+}
+.assessment-plan-dialog__profile-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.assessment-plan-dialog__recommended-pill {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--primary, #0366d6);
+  color: #fff;
+  letter-spacing: 0.04em;
+}
+.assessment-plan-dialog__profile-card-tagline {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+}
+.assessment-plan-dialog__profile-card-bullets {
+  margin: 6px 0 0 16px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.assessment-plan-dialog__profile-card-bullets li {
+  line-height: 1.4;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

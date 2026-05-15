@@ -375,6 +375,109 @@ def test_post_ingest_validates_required_field(client):
     assert "compilerKind" in body["error"]["message"]
 
 
+# ---- Execution profile endpoints -----------------------------------
+
+
+def _stage_document_with_file(
+    ctx, registry, workspace, *, document_id: str = "doc-prof",
+    content: bytes = b"hello world for profile assessment",
+    filename: str = "doc-prof.txt",
+) -> DocumentRecord:
+    """Stage a registered document AND write its source file under the
+    workspace's raw area so the profiler can read it."""
+    raw_dir = workspace.raw(ctx)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / filename).write_bytes(content)
+    record = DocumentRecord(
+        document_id=document_id,
+        project=ctx,
+        original_filename=filename,
+        stored_filename=filename,
+        mime_type="text/plain",
+        file_size=len(content),
+        checksum=f"sha256:{document_id}",
+        status=ProcessingStatus.PENDING,
+        created_at=_now(),
+    )
+    registry.add(record)
+    return record
+
+
+def test_assessment_plan_endpoint_returns_recommendation_and_catalogue(
+    client, ctx, registry, workspace,
+):
+    """`POST /documents/{id}/assessment-plan` runs synchronously,
+    returns the recommended profile + the full profile catalogue.
+    Pins the response shape the FE picker keys off."""
+    _stage_document_with_file(ctx, registry, workspace)
+    response = client.post(
+        "/documents/doc-prof/assessment-plan",
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    assert data["documentId"] == "doc-prof"
+    # Plain-text doc → no images, no tables → recommendation is
+    # `standard` (the keystone behaviour for text-only inputs).
+    assert data["recommendedProfile"] == "standard"
+    # The catalogue must include every profile, in declaration order.
+    profile_ids = [p["id"] for p in data["availableProfiles"]]
+    assert profile_ids == ["minimum_queryable", "standard", "advanced"]
+    # Each profile must carry the FE-renderable fields.
+    for entry in data["availableProfiles"]:
+        assert "label" in entry
+        assert "expected_speed" in entry
+        assert "expected_llm_usage" in entry
+        assert "graph_enabled" in entry
+        assert "compile_lightrag_extraction" in entry
+
+
+def test_assessment_plan_minimum_queryable_is_honest_about_cost(
+    client, ctx, registry, workspace,
+):
+    """The `minimum_queryable` card must disclose that LightRAG's
+    built-in extraction is OFF — that's the whole point of the
+    profile vs `standard`. Pinned so a future refactor doesn't
+    quietly remove the honesty signal."""
+    _stage_document_with_file(ctx, registry, workspace)
+    response = client.post(
+        "/documents/doc-prof/assessment-plan",
+        headers=_headers(),
+    )
+    data = _assert_success_envelope(response.json())
+    by_id = {p["id"]: p for p in data["availableProfiles"]}
+    assert by_id["minimum_queryable"]["compile_lightrag_extraction"] is False
+    assert by_id["standard"]["compile_lightrag_extraction"] is True
+    assert by_id["advanced"]["compile_lightrag_extraction"] is True
+
+
+def test_assessment_plan_missing_document_returns_404(client):
+    response = client.post(
+        "/documents/does-not-exist/assessment-plan",
+        headers=_headers(),
+    )
+    assert response.status_code == 404
+
+
+def test_ingestion_run_rejects_unknown_selected_profile(
+    client, ctx, registry, workspace, started_jobs,
+):
+    """An invalid `selectedProfile` value must fail at the boundary
+    with 400 — not silently fall through to legacy behaviour."""
+    response = client.post(
+        "/ingestion-runs",
+        files={"file": ("doc.txt", io.BytesIO(b"x"), "text/plain")},
+        data={"selectedProfile": "premiun_typo"},  # nonsense value
+        headers=_headers(),
+    )
+    assert response.status_code == 400
+    err = _assert_error_envelope(response.json())
+    assert "selectedProfile" in err["message"]
+    # The error message lists the allowed values so the operator
+    # doesn't have to grep the codebase.
+    assert "minimum_queryable" in err["message"]
+
+
 # ---- Ingestion jobs / events ---------------------------------------
 
 

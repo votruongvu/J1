@@ -55,6 +55,23 @@ class CompileActivityInput:
     # honoured even when a prior successful entry exists for the same
     # (document_hash, processor_kind, processor_version, mode) key.
     reindex_of: str | None = None
+    # When True, the activity passes
+    # ``disable_entity_extraction=True`` to the compiler so the
+    # bridge swaps LightRAG's stage-2 entity/relationship extraction
+    # LLM call for a no-op. Used by the ``minimum_queryable``
+    # execution profile — chunks + embeddings still persist (the
+    # document remains queryable via vector retrieval) but no LLM
+    # token is spent on graph construction. Defaults to False so
+    # existing callers see unchanged behaviour. See
+    # [`j1.providers.raganything._noop_llm`](../../providers/raganything/_noop_llm.py)
+    # for the wiring.
+    disable_entity_extraction: bool = False
+    # User-selected execution profile wire string (e.g.
+    # ``"minimum_queryable"``, ``"standard"``, ``"advanced"``).
+    # Threaded so the activity can stamp it onto compile-stage
+    # audit events without re-reading the workflow request. None
+    # preserves legacy behaviour.
+    selected_execution_profile: str | None = None
 
 
 @dataclass(frozen=True)

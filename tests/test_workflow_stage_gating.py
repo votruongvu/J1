@@ -284,10 +284,118 @@ def test_stage_enabled_signature_does_not_accept_ingest_plan():
     """Regression guard: ensure we don't reintroduce an `IngestPlan`
  parameter on `_stage_enabled` by accident. The new signature
  is `(stage, request_kind, *, compile_result, final_compile_quality,
- enrich_plan)` — no `plan` positional."""
+ enrich_plan, selected_profile)` — no `plan` positional."""
     import inspect
     sig = inspect.signature(_wf()._stage_enabled)
     params = list(sig.parameters.keys())
     assert "plan" not in params
     assert params[0] == "stage"
     assert params[1] == "request_kind"
+
+
+# ---- execution profile precedence ---------------------------------
+
+
+def test_minimum_queryable_profile_skips_enrich_even_when_plan_recommends():
+    """Profile precedence: a user-selected `minimum_queryable` profile
+ disables enrich even when the post-compile plan recommends it.
+ `StepSource.PROFILE` is the highest-priority skip source — what
+ the user chose explicitly wins over what the planner suggested."""
+    plan = PostCompileEnrichPlan(
+        overall_recommendation=EnrichRecommendation.RECOMMENDED,
+        recommended_tasks=("table_enrichment",),
+    )
+    enabled, reason, source = _wf()._stage_enabled(
+        "enrich", "composite_enricher",
+        compile_result=_ok_compile(),
+        enrich_plan=plan,
+        selected_profile="minimum_queryable",
+    )
+    assert enabled is False
+    assert "minimum_queryable" in (reason or "")
+    assert source == StepSource.PROFILE
+
+
+def test_minimum_queryable_profile_skips_graph_even_with_caller_kind():
+    """Profile beats caller-supplied graph_builder_kind. The user
+ chose `minimum_queryable` knowing it disables graph build."""
+    enabled, reason, source = _wf()._stage_enabled(
+        "graph", "raganything",
+        compile_result=_ok_compile(),
+        selected_profile="minimum_queryable",
+    )
+    assert enabled is False
+    assert "minimum_queryable" in (reason or "")
+    assert source == StepSource.PROFILE
+
+
+def test_standard_profile_skips_enrich_and_graph_by_default():
+    """Standard profile disables enrich + graph at the workflow gate
+ (the matrix is the source of truth). It does NOT disable index —
+ minimum_queryable + standard + advanced all keep index on."""
+    enabled_enrich, _, _ = _wf()._stage_enabled(
+        "enrich", "composite_enricher",
+        compile_result=_ok_compile(),
+        selected_profile="standard",
+    )
+    enabled_graph, _, _ = _wf()._stage_enabled(
+        "graph", "raganything",
+        compile_result=_ok_compile(),
+        selected_profile="standard",
+    )
+    enabled_index, _, source = _wf()._stage_enabled(
+        "index", "sqlite_search",
+        compile_result=_ok_compile(),
+        selected_profile="standard",
+    )
+    assert enabled_enrich is False
+    assert enabled_graph is False
+    assert enabled_index is True
+    assert source == StepSource.CALLER
+
+
+def test_advanced_profile_falls_through_to_planner_and_caller_rules():
+    """Advanced profile enables everything in the matrix, so the gate
+ falls through to the normal planner+caller precedence."""
+    plan = PostCompileEnrichPlan(
+        overall_recommendation=EnrichRecommendation.RECOMMENDED,
+        recommended_tasks=("table_enrichment",),
+    )
+    enabled, _, source = _wf()._stage_enabled(
+        "enrich", "composite_enricher",
+        compile_result=_ok_compile(),
+        enrich_plan=plan,
+        selected_profile="advanced",
+    )
+    assert enabled is True
+    # Source should reflect WHY it ran (planner recommended) — not
+    # PROFILE, because the profile was permissive rather than
+    # decisive.
+    assert source == StepSource.PLANNER
+
+
+def test_unknown_profile_string_falls_through_silently():
+    """A typo on the REST surface (e.g. `"premiun"` instead of
+ `"advanced"`) must NOT silently disable every stage. Unknown
+ values fall through to the normal rules."""
+    enabled, _, source = _wf()._stage_enabled(
+        "enrich", "composite_enricher",
+        compile_result=_ok_compile(),
+        selected_profile="some_typoed_profile",
+    )
+    # Without a recognised profile and no enrich plan, defer to
+    # caller — preserving legacy behaviour.
+    assert enabled is True
+    assert source == StepSource.CALLER
+
+
+def test_no_profile_preserves_legacy_behaviour():
+    """When `selected_profile` is None (legacy callers / unit tests),
+ the gate behaves exactly as before the profile system landed."""
+    enabled, _, source = _wf()._stage_enabled(
+        "graph", "raganything",
+        compile_result=_ok_compile(),
+        selected_profile=None,
+    )
+    assert enabled is True
+    assert source == StepSource.CALLER

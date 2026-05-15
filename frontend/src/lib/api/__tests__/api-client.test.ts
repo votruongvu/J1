@@ -169,6 +169,108 @@ describe("ApiClient.upload", () => {
       client.upload(new File([""], "x.txt"), { tenant: "", project: "alpha" }),
     ).rejects.toBeInstanceOf(ApiError);
   });
+
+  it("forwards selectedProfile in the FormData when provided", async () => {
+    // The whole point of the new two-step flow: the dialog's profile
+    // choice must reach the backend. Without this field on the wire,
+    // `minimum_queryable` becomes a UI fiction.
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "r" } }));
+    const file = new File(["x"], "x.txt");
+    await makeClient().upload(
+      file,
+      { tenant: "acme", project: "alpha" },
+      "minimum_queryable",
+    );
+    const body = calls[0]!.init.body as FormData;
+    expect(body.get("selectedProfile")).toBe("minimum_queryable");
+  });
+
+  it("omits selectedProfile when no profile was selected", async () => {
+    // Legacy callers (none today, but future automation) skip the
+    // picker entirely and rely on the backend default. Pin so a
+    // future refactor doesn't accidentally hard-code a profile.
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "r" } }));
+    const file = new File(["x"], "x.txt");
+    await makeClient().upload(file, { tenant: "acme", project: "alpha" });
+    const body = calls[0]!.init.body as FormData;
+    expect(body.get("selectedProfile")).toBeNull();
+  });
+});
+
+describe("ApiClient.getDocumentAssessmentPlan", () => {
+  it("POSTs to /documents/{id}/assessment-plan and unwraps the envelope", async () => {
+    const planPayload = {
+      documentId: "doc-1",
+      recommendedProfile: "advanced",
+      availableProfiles: [
+        {
+          id: "minimum_queryable",
+          label: "Minimum Queryable",
+          queryable: true,
+          expected_speed: "fast",
+          expected_llm_usage: "none_or_minimal",
+          graph_enabled: false,
+          multimodal_processing: false,
+          enrichment_enabled: false,
+          domain_enrichment_enabled: false,
+          validation_enabled: false,
+          compile_lightrag_extraction: false,
+        },
+      ],
+      reasons: ["Document contains tables."],
+      assessment: { mode: "standard" },
+      warnings: [],
+    };
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: planPayload }),
+    );
+    const out = await makeClient().getDocumentAssessmentPlan("doc-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc-1/assessment-plan",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(out.recommendedProfile).toBe("advanced");
+    expect(out.availableProfiles).toHaveLength(1);
+    expect(out.reasons).toEqual(["Document contains tables."]);
+  });
+
+  it("URL-encodes the document id", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: { documentId: "x" } }),
+    );
+    await makeClient().getDocumentAssessmentPlan("doc with spaces/and-slash");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc%20with%20spaces%2Fand-slash/assessment-plan",
+    );
+  });
+});
+
+describe("ApiClient.registerDocument", () => {
+  it("posts multipart to /documents and returns the documentId", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({ data: { documentId: "doc-new" } }, 201),
+    );
+    const file = new File(["x"], "report.pdf");
+    const out = await makeClient().registerDocument(file, {
+      tenant: "acme",
+      project: "alpha",
+    });
+    expect(out.documentId).toBe("doc-new");
+    expect(calls[0]!.url).toBe("https://api.test.j1.local/documents");
+    expect(calls[0]!.init.method).toBe("POST");
+    const body = calls[0]!.init.body as FormData;
+    expect(body.get("file")).toBeInstanceOf(Blob);
+  });
+
+  it("rejects with a 400 ApiError when tenant/project are missing", async () => {
+    withFetch(() => jsonResponse({}, 200));
+    await expect(
+      makeClient({ tenant: "" }).registerDocument(new File([""], "x.txt"), {
+        tenant: "",
+        project: "alpha",
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
 });
 
 describe("ApiClient.listRuns", () => {

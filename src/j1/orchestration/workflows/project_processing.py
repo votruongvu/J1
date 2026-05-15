@@ -396,6 +396,19 @@ class ProjectProcessingRequest:
     # short-circuits the parse and the downstream stages inherit
     # stale artifact ids whose registry records may no longer exist.
     reindex_of: str | None = None
+    # User-selected execution profile. When set, this is the
+    # authoritative source for "should this stage run?" — it
+    # overrides caller-supplied stage kinds and post-compile enrich
+    # plan recommendations. See
+    # [`j1.processing.execution_profile`](../../processing/execution_profile.py)
+    # for the capability matrix. None preserves legacy behaviour
+    # (caller-kind + enrich plan drive gating); set explicitly via
+    # the REST adapter when the two-step `POST /assessment-plan` +
+    # `POST /index` flow runs. Wire-string value of the enum
+    # (e.g. "minimum_queryable", "standard", "advanced") — kept
+    # as `str | None` here to avoid pulling the enum import into
+    # this module's surface.
+    selected_execution_profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -535,6 +548,40 @@ def _compile_saw_images(compile_result) -> bool:
         return True
     image_count = stats.get("image_count")
     return isinstance(image_count, int) and image_count > 0
+
+
+def _profile_disables_entity_extraction(
+    selected_profile: str | None,
+) -> bool:
+    """True iff the user-selected execution profile forbids the
+ LightRAG-internal stage-2 entity/relationship extraction.
+
+ Reads off the canonical capability matrix in
+ [`j1.processing.execution_profile`](../../processing/execution_profile.py)
+ so adding a new profile only requires updating the matrix —
+ not editing this helper. Unknown / missing profiles default to
+ False (real LLM, full extraction) so legacy callers behave
+ unchanged.
+
+ The bridge converts True → injecting the no-op `llm_model_func`
+ at LightRAG construction time. See
+ [`j1.providers.raganything._noop_llm`](../../providers/raganything/_noop_llm.py)
+ for the keystone wiring.
+ """
+    if not selected_profile:
+        return False
+    try:
+        # Local import keeps the workflow module's surface narrow
+        # and matches the lazy-import pattern used elsewhere in
+        # this file for processing-layer types.
+        from j1.processing.execution_profile import (
+            ExecutionProfile,
+            capabilities_for,
+        )
+        caps = capabilities_for(ExecutionProfile(selected_profile))
+    except ValueError:
+        return False
+    return not caps.compile_lightrag_entity_extraction
 
 
 def _enrich_plan_needs_premium_llm(enrich_plan) -> bool:
@@ -917,6 +964,18 @@ class ProjectProcessingWorkflow:
             stage="workflow",
             status="running",
         )
+        # Emit `ingest.profile.selected` as soon as the workflow
+        # starts so every downstream event in the timeline carries
+        # the user's profile decision in the log aggregator. Only
+        # fires when the REST adapter threaded a profile through —
+        # legacy callers (no FE picker) skip silently.
+        if request.selected_execution_profile:
+            self._log_profile_event(
+                request,
+                event="ingest.profile.selected",
+                selected_profile=request.selected_execution_profile,
+                reason="profile threaded from REST request",
+            )
         # RECEIVED is the canonical first-stage value. The
         # legacy "starting" alias is retained as a constant for
         # operators whose dashboards filter on it; new runs write
@@ -1328,6 +1387,66 @@ class ProjectProcessingWorkflow:
             }
         return self._scope_log_context
 
+    def _log_profile_event(
+        self,
+        request: ProjectProcessingRequest,
+        *,
+        event: str,
+        document_id: str | None = None,
+        recommended_profile: str | None = None,
+        selected_profile: str | None = None,
+        reason: str | None = None,
+        stage: str | None = None,
+        purpose: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Emit a structured profile/llm audit event.
+
+        Field shape matches the contract documented in the
+        ingestion-execution-profiles refactor:
+          `event` — one of `ingest.profile.recommended`,
+            `ingest.profile.selected`, `ingest.stage.llm_call_started`,
+            `ingest.stage.llm_call_completed`, `ingest.stage.skipped`.
+          `recommended_profile` — what the planner suggested.
+          `selected_profile` — what the run is executing under.
+          `purpose` — for LLM events: `entity_extraction`,
+            `entity_extraction_noop_minimum_queryable`, etc.
+          `provider` / `model` — populated for LLM call events.
+
+        Side-channel: routes through `workflow.logger` so the same
+        replay-safe path used by `_log_step` carries these events.
+        Field hygiene: NEVER log document content, prompts, or LLM
+        outputs here. Profile names + reasons are operationally
+        safe; purpose names are pinned vocabulary.
+        """
+        ctx = self._scope_context(request)
+        payload: dict[str, object] = {
+            "event": event,
+            "run_id": request.correlation_id or "",
+            **ctx,
+        }
+        if document_id is not None:
+            payload["document_id"] = document_id
+        if recommended_profile is not None:
+            payload["recommended_profile"] = recommended_profile
+        if selected_profile is not None:
+            payload["selected_profile"] = selected_profile
+        if reason is not None:
+            payload["reason"] = reason
+        if stage is not None:
+            payload["stage"] = stage
+        if purpose is not None:
+            payload["purpose"] = purpose
+        if provider is not None:
+            payload["provider"] = provider
+        if model is not None:
+            payload["model"] = model
+        try:
+            workflow.logger.info(event, extra=payload)
+        except Exception:  # noqa: BLE001 — observability never blocks ingest
+            pass
+
     def _log_step(
         self,
         request: ProjectProcessingRequest,
@@ -1660,6 +1779,7 @@ class ProjectProcessingWorkflow:
         unhandled_capabilities: list[str],
         plan_warnings: list[str],
         compile_result: "ArtifactActivityResult | None" = None,
+        unsupported_profile_controls: list[dict] | None = None,
     ) -> None:
         """Schedule the `persist_compile_strategy_report` activity.
  Best-effort — any persistence error inside the activity is
@@ -1711,6 +1831,16 @@ class ProjectProcessingWorkflow:
             "initial_assessment_plan": dict(initial_assessment or {}),
             "plan_warnings": list(plan_warnings),
             "unhandled_capabilities": list(unhandled_capabilities),
+            # Profile-specific control violations: list of structured
+            # records describing each profile-requested capability the
+            # adapter could not enforce. Empty (or omitted) when the
+            # selected profile didn't ask for anything the adapter
+            # couldn't honor. The FE surfaces these on the run-detail
+            # page so the user sees that "minimum_queryable" may have
+            # been partially a fiction for this run.
+            "unsupported_profile_controls": list(
+                unsupported_profile_controls or []
+            ),
             "extraction_evidence": _build_extraction_evidence(compile_result),
             # Verification status block. Compile-stage success is
             # NOT enough to mark the run complete — chunks + index
@@ -2589,6 +2719,7 @@ class ProjectProcessingWorkflow:
         compile_result: "ArtifactActivityResult | None" = None,
         final_compile_quality: str | None = None,
         enrich_plan: "PostCompileEnrichPlan | None" = None,
+        selected_profile: str | None = None,
     ) -> tuple[bool, str | None, StepSource]:
         """Resolve "should this stage run?" using compile evidence +
  the post-compile enrich plan + the request's stage kind.
@@ -2601,7 +2732,13 @@ class ProjectProcessingWorkflow:
  compile-first. Pre-compile guesses do not influence
  enrich/graph/index decisions.
 
- Per-stage rules:
+ Profile precedence: when `selected_profile` is set, it is the
+ HIGHEST priority skip source. A profile that disables a stage
+ wins over any caller-supplied kind, any enrich plan
+ recommendation, and any compile evidence. The audit source for
+ such a skip is `StepSource.PROFILE` so operators see why.
+
+ Per-stage rules (after profile check):
  * `enrich`:
  - SKIP from enrich plan (with blocking issues) →
  skip with `PLANNER` source.
@@ -2622,6 +2759,39 @@ class ProjectProcessingWorkflow:
  - zero chunks produced → skip (`PLANNER`).
  - Else → run (`CALLER`).
  """
+        # Profile override — highest priority. Read flags off the
+        # capability matrix rather than branching on the profile
+        # string, so adding a new profile only requires updating
+        # the matrix (single source of truth in
+        # `j1.processing.execution_profile`).
+        if selected_profile:
+            from j1.processing.execution_profile import (
+                ExecutionProfile,
+                capabilities_for,
+            )
+            try:
+                profile_enum = ExecutionProfile(selected_profile)
+            except ValueError:
+                # Unrecognised wire string: fall through to the
+                # caller/planner rules and record a warning at the
+                # call site. Defensive: a typo on the REST surface
+                # should not silently disable gating.
+                profile_enum = None
+            if profile_enum is not None:
+                caps = capabilities_for(profile_enum)
+                profile_disabled = {
+                    "enrich": not caps.run_enrich,
+                    "graph": not caps.run_graph_build,
+                    "index": not caps.run_index,
+                }.get(stage, False)
+                if profile_disabled:
+                    return (
+                        False,
+                        f"disabled by selected execution profile "
+                        f"{selected_profile!r}",
+                        StepSource.PROFILE,
+                    )
+
         if not request_kind:
             return False, f"{stage}_kind not provided in request", StepSource.CALLER
 
@@ -2909,6 +3079,43 @@ class ProjectProcessingWorkflow:
                         f"policy={enrichment_policy_value or 'none'}"
                     ),
                 )
+                # Derive + emit the profile recommendation from the
+                # same DocumentProfile the planner consumed. The
+                # workflow doesn't enforce this — it's audit only —
+                # but emitting it now means every run carries both
+                # the recommendation AND the selected_profile in
+                # the timeline. When the user accepts the
+                # recommendation the two match; when they override
+                # the divergence is visible in one place.
+                try:
+                    from j1.processing.execution_profile import (
+                        recommend_profile_from_assessment,
+                    )
+                    recommended, reasons = recommend_profile_from_assessment(
+                        has_images=bool(getattr(profile, "has_images", False)),
+                        has_tables=bool(getattr(profile, "has_tables", False)),
+                        has_scanned_pages=bool(
+                            getattr(profile, "has_scanned_pages", False),
+                        ),
+                        text_extractable_ratio=getattr(
+                            profile, "text_extractable_ratio", None,
+                        ),
+                        page_count=getattr(profile, "page_count", None),
+                    )
+                    self._log_profile_event(
+                        request,
+                        event="ingest.profile.recommended",
+                        document_id=document_id,
+                        recommended_profile=recommended.value,
+                        selected_profile=(
+                            request.selected_execution_profile or None
+                        ),
+                        reason=(
+                            "; ".join(reasons) if reasons else None
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — audit must not block ingest
+                    pass
                 # surface domain + policy as search attributes
                 # so ops dashboards can filter by domain pack or
                 # enrichment policy without crawling audit logs.
@@ -3045,6 +3252,16 @@ class ProjectProcessingWorkflow:
                     assessment_plan_payload=current_assessment_payload,
                     target_snapshot_id=self._resolved_target_snapshot_id,
                     reindex_of=request.reindex_of,
+                    # `minimum_queryable` profile: tell the compile
+                    # activity to swap the LightRAG `llm_model_func`
+                    # for a no-op so stage-2 entity/relationship
+                    # extraction returns "no entities" immediately
+                    # without firing any LLM token. Other profiles
+                    # see the real LLM unchanged.
+                    disable_entity_extraction=_profile_disables_entity_extraction(
+                        request.selected_execution_profile,
+                    ),
+                    selected_execution_profile=request.selected_execution_profile,
                 ),
                 # Compile is the most expensive activity (MinerU parse
                 # is minutes per real PDF). Wider timeout absorbs
@@ -3241,6 +3458,53 @@ class ProjectProcessingWorkflow:
         # the FE's run-detail page can render the timeline + banners.
         # Best-effort: any persistence error is logged inside the
         # activity, the run still succeeds.
+        # Translate adapter-side `unhandled_capabilities` into
+        # profile-specific control violations. When the selected
+        # profile is None (legacy callers / unit harnesses), the
+        # translator returns an empty list — no profile violations
+        # to surface.
+        unhandled_caps_list = list(
+            (compile_result.compile_metrics or {}).get(
+                "unhandled_capabilities", []
+            )
+        )
+        unsupported_controls_payload: list[dict] = []
+        if request.selected_execution_profile:
+            from j1.processing.execution_profile import (
+                ExecutionProfile,
+                detect_unsupported_controls,
+            )
+            try:
+                profile_enum = ExecutionProfile(
+                    request.selected_execution_profile,
+                )
+                unsupported_controls_payload = [
+                    ctrl.to_payload()
+                    for ctrl in detect_unsupported_controls(
+                        profile=profile_enum,
+                        unhandled_capabilities=tuple(unhandled_caps_list),
+                    )
+                ]
+            except ValueError:
+                # Unrecognised wire string. The REST boundary should
+                # have rejected this earlier, so falling through is
+                # belt-and-suspenders.
+                pass
+            # Surface each violation through workflow logging so the
+            # operator sees the profile-vs-adapter mismatch in run
+            # logs without having to fetch the strategy report.
+            for ctrl in unsupported_controls_payload:
+                workflow.logger.warning(
+                    "ingest.profile.control_unsupported: profile=%s "
+                    "control=%s reason=%s impact=%s document_id=%s run_id=%s",
+                    request.selected_execution_profile,
+                    ctrl.get("control"),
+                    ctrl.get("reason"),
+                    ctrl.get("impact"),
+                    document_id,
+                    request.correlation_id,
+                )
+
         await self._persist_compile_strategy_report(
             request,
             document_id=document_id,
@@ -3255,17 +3519,14 @@ class ProjectProcessingWorkflow:
             final_quality=final_quality,
             final_retry_reason=final_retry_reason,
             final_warnings=final_attempt_warnings,
-            unhandled_capabilities=list(
-                (compile_result.compile_metrics or {}).get(
-                    "unhandled_capabilities", []
-                )
-            ),
+            unhandled_capabilities=unhandled_caps_list,
             plan_warnings=list(
                 (compile_result.compile_metrics or {}).get(
                     "plan_warnings", []
                 )
             ),
             compile_result=compile_result,
+            unsupported_profile_controls=unsupported_controls_payload,
         )
 
         # ── Normalized compile result ─────────────────────
@@ -3372,6 +3633,7 @@ class ProjectProcessingWorkflow:
             compile_result=compile_result,
             final_compile_quality=final_quality,
             enrich_plan=enrich_plan,
+            selected_profile=request.selected_execution_profile,
         )
         if not enrich_enabled:
             self._record_step(
@@ -3521,6 +3783,7 @@ class ProjectProcessingWorkflow:
             compile_result=compile_result,
             final_compile_quality=final_quality,
             enrich_plan=enrich_plan,
+            selected_profile=request.selected_execution_profile,
         )
         if not graph_enabled:
             self._record_step(

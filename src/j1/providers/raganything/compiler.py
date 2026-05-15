@@ -88,6 +88,13 @@ class RAGAnythingCompileRequest:
     # workspace pass ``working_dir_override=Path("/tmp/...")``.
     snapshot_id: str | None = None
     working_dir_override: Any = None  # Path | None — Any keeps dataclass import-free of pathlib.
+    # When True, the bridge injects a no-op `llm_model_func` into the
+    # LightRAG instance used during compile so the library's stage-2
+    # entity + relationship extraction returns "no entities" instantly
+    # without firing any LLM call. Used by the `minimum_queryable`
+    # execution profile. See [_noop_llm.py](./_noop_llm.py) for the
+    # full rationale. Defaults to False (real LLM, full extraction).
+    disable_entity_extraction: bool = False
 
 
 CompileCallable = Callable[[RAGAnythingCompileRequest], ArtifactProcessingResult]
@@ -172,6 +179,7 @@ class RAGAnythingCompiler:
         assessment_plan: Any = None,
         snapshot_id: str | None = None,
         working_dir_override: Any = None,
+        disable_entity_extraction: bool = False,
     ) -> ArtifactProcessingResult:
         """Run the wrapped vendor compile.
 
@@ -200,6 +208,7 @@ class RAGAnythingCompiler:
             assessment_plan=assessment_plan,
             snapshot_id=snapshot_id,
             working_dir_override=working_dir_override,
+            disable_entity_extraction=disable_entity_extraction,
         )
         try:
             return self._compile_callable(request)

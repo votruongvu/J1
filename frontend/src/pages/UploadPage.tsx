@@ -17,6 +17,11 @@ import { Banner } from "@/components/Banner";
 import { useClient } from "@/lib/hooks/useClient";
 import type { BatchDetail, BatchUploadResult } from "@/lib/api/client";
 import type { ProjectContext } from "@/types/ui";
+import type {
+  AssessmentPlanResponse,
+  ExecutionProfileId,
+} from "@/types/execution-profile";
+import { AssessmentPlanDialog } from "./upload/AssessmentPlanDialog";
 
 const MAX_BATCH_FILES = 5;
 
@@ -42,6 +47,16 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
   const [batchDetail, setBatchDetail] = useState<BatchDetail | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // Two-step single-file ingest state: when the user picks one file,
+  // we open the AssessmentPlanDialog and fetch the recommendation
+  // in parallel. Confirming the dialog hands control back to the
+  // normal upload path with `selectedProfile` threaded through.
+  // Cancelling discards everything and returns to the dropzone.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [planResponse, setPlanResponse] =
+    useState<AssessmentPlanResponse | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+
   const ready = !!ctx.tenant && !!ctx.project;
 
   const onPick = useCallback(() => {
@@ -62,14 +77,31 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
     setError(null);
     setBatch(null);
     setBatchDetail(null);
+    if (files.length === 1) {
+      // Two-step flow: stash the file, open the dialog, fetch the
+      // assessment plan in the background. The dialog renders a
+      // "Analysing…" state until `planResponse` resolves.
+      const single = files[0]!;
+      setPendingFile(single);
+      setPlanResponse(null);
+      setPlanError(null);
+      void (async () => {
+        try {
+          const { documentId } = await client.registerDocument(single, ctx);
+          const plan = await client.getDocumentAssessmentPlan(documentId);
+          setPlanResponse(plan);
+        } catch (e) {
+          setPlanError(
+            e instanceof Error
+              ? e.message
+              : "Could not analyse this document.",
+          );
+        }
+      })();
+      return;
+    }
     setBusy(true);
     try {
-      if (files.length === 1) {
-        const single = files[0]!;
-        const { runId } = await client.upload(single, ctx);
-        onUploaded(runId);
-        return;
-      }
       const result = await client.uploadBatch(files, ctx);
       setBatch(result);
     } catch (e) {
@@ -77,6 +109,33 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onAssessmentConfirm = async (
+    selectedProfile: ExecutionProfileId,
+  ) => {
+    if (pendingFile === null) return;
+    const file = pendingFile;
+    // Close the dialog optimistically — the dropzone shows its
+    // own busy spinner while the upload runs.
+    setPendingFile(null);
+    setPlanResponse(null);
+    setPlanError(null);
+    setBusy(true);
+    try {
+      const { runId } = await client.upload(file, ctx, selectedProfile);
+      onUploaded(runId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onAssessmentCancel = () => {
+    setPendingFile(null);
+    setPlanResponse(null);
+    setPlanError(null);
   };
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
@@ -124,6 +183,15 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
 
   return (
     <div>
+      {pendingFile !== null && (
+        <AssessmentPlanDialog
+          filename={pendingFile.name}
+          plan={planResponse}
+          loadError={planError}
+          onConfirm={(profile) => void onAssessmentConfirm(profile)}
+          onCancel={onAssessmentCancel}
+        />
+      )}
       <div className="page-header">
         <div>
           {onBack && (

@@ -1244,6 +1244,128 @@ def create_rest_api(
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
 
+    @app.post(
+        "/documents/{document_id}/assessment-plan",
+        tags=["documents"],
+        summary="Run pre-compile assessment + recommend execution profile",
+        description=(
+            "Synchronous, no workflow dispatch. Runs the deterministic "
+            "profiler + rule-based assessment planner against the "
+            "registered document and returns:\n\n"
+            "* `recommendedProfile` — the planner's suggestion based "
+            "on document signals (scanned pages, tables, images, "
+            "length).\n"
+            "* `availableProfiles` — the full profile catalogue with "
+            "expected speed / LLM usage / capability flags so the FE "
+            "can render the picker without re-deriving copy.\n"
+            "* `reasons` — operator-readable strings explaining the "
+            "recommendation.\n\n"
+            "The user then chooses a profile and calls "
+            "`POST /documents/{id}/ingest` (or `POST /ingestion-runs` "
+            "for the upload-and-start path) with `selectedProfile=...` "
+            "to dispatch the workflow."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def post_document_assessment_plan(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        from j1.processing.assessment import DefaultAssessmentPlanner
+        from j1.processing.execution_profile import (
+            ExecutionProfile,
+            profile_details,
+            recommend_profile_from_assessment,
+        )
+        from j1.processing.profiling import DeterministicDocumentProfiler
+
+        # 1. Resolve the document (404 when not registered).
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+
+        # 2. Resolve the source path. When the workspace seam isn't
+        # wired (test harnesses), fall back to an empty path — the
+        # profiler will return a degraded profile with warnings,
+        # and the recommendation degrades to `standard` (the safe
+        # default).
+        profile = None
+        source_path = None
+        if workspace is not None and doc_dto.stored_filename:
+            source_path = workspace.raw(ctx) / doc_dto.stored_filename
+            if not source_path.exists():
+                raise HTTPException(
+                    409,
+                    f"original uploaded file for document "
+                    f"{document_id!r} is missing on disk "
+                    f"({doc_dto.stored_filename}); cannot run "
+                    "assessment.",
+                )
+
+        # 3. Run the profiler. Cheap + deterministic — typically
+        # <100ms even for large PDFs (pypdf metadata only).
+        if source_path is not None:
+            try:
+                profile = DeterministicDocumentProfiler().profile(
+                    document_id, str(source_path),
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(409, str(exc))
+
+        # 4. Run the rule-based assessment planner (no LLM).
+        assessment_plan_payload: dict[str, Any] | None = None
+        if profile is not None:
+            try:
+                assessment_plan = DefaultAssessmentPlanner().assess(profile)
+                assessment_plan_payload = (
+                    assessment_plan.to_payload()
+                    if hasattr(assessment_plan, "to_payload")
+                    else None
+                )
+            except Exception:  # noqa: BLE001 — assessment is advisory
+                assessment_plan_payload = None
+
+        # 5. Build the profile recommendation from the profile
+        # signals. Falls back to the safe default when the profile
+        # is missing or under-specified.
+        if profile is not None:
+            recommended, reasons = recommend_profile_from_assessment(
+                has_images=bool(profile.has_images),
+                has_tables=bool(profile.has_tables),
+                has_scanned_pages=bool(profile.has_scanned_pages),
+                text_extractable_ratio=profile.text_extractable_ratio,
+                page_count=profile.page_count,
+            )
+        else:
+            recommended = ExecutionProfile.STANDARD
+            reasons = (
+                "Document signals unavailable; defaulting to standard.",
+            )
+
+        # 6. Build the profile catalogue. Stable shape — the FE
+        # renders these as radio buttons + cost copy.
+        available = [profile_details(p) for p in ExecutionProfile]
+
+        return envelope(
+            {
+                "documentId": document_id,
+                "recommendedProfile": recommended.value,
+                "availableProfiles": available,
+                "reasons": list(reasons),
+                # The pre-compile assessment plan payload so the FE
+                # can render WHY the planner chose this mode (e.g.
+                # "scanned PDF" / "text-only").
+                "assessment": assessment_plan_payload,
+                # Operator-readable cost disclosure.
+                "warnings": list(profile.warnings) if profile is not None else [],
+            },
+            _req_id(request),
+        )
+
     @app.get(
         "/documents/{document_id}/status",
         tags=["documents"],
@@ -4437,10 +4559,40 @@ def create_rest_api(
         ),
         indexer_kind: str | None = Form(default=None, alias="indexerKind"),
         policy: str | None = Form(default=None),
+        # User-selected execution profile from the FE's two-step
+        # picker. None falls back to the deployment's safe default
+        # (see `j1.processing.execution_profile.DEFAULT_PROFILE`).
+        # When supplied, becomes the authoritative gate — overrides
+        # caller-supplied processor kinds AND the post-compile enrich
+        # plan when it disables a stage. Profile wire strings:
+        # `minimum_queryable` / `standard` / `advanced`. Unknown
+        # values are rejected at the boundary with 400 so a typo
+        # fails fast.
+        selected_profile: str | None = Form(default=None, alias="selectedProfile"),
         ctx: ProjectContext = Depends(get_ctx),
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
     ) -> dict[str, Any]:
+        # 0. Validate the selected execution profile at the boundary
+        # so a typo fails with a clear 400 instead of degrading into
+        # silent legacy behaviour deep in the workflow. The set of
+        # accepted wire strings is the canonical
+        # `ExecutionProfile` enum — single source of truth in
+        # `j1.processing.execution_profile`. Runs BEFORE the run-store
+        # check so request-shape errors fail fast regardless of
+        # deployment wiring.
+        if selected_profile is not None:
+            from j1.processing.execution_profile import ExecutionProfile
+            try:
+                ExecutionProfile(selected_profile)
+            except ValueError:
+                allowed = ", ".join(p.value for p in ExecutionProfile)
+                raise HTTPException(
+                    400,
+                    f"selectedProfile {selected_profile!r} is not a "
+                    f"recognised execution profile (allowed: {allowed})",
+                )
+
         store = _require_run_store()
 
         # 1. Register the document (existing service; idempotent on
@@ -4524,6 +4676,19 @@ def create_rest_api(
                 # store. `original_filename` falls back to the multi-
                 # part `filename` parameter, which the FE always sends.
                 "document_name": doc_dto.original_filename,
+                # Execution profile audit trail. `selected_execution_profile`
+                # is the user's choice (or None when the FE hasn't yet
+                # adopted the picker). The recommended-profile half is
+                # written later, once the pre-compile assessment runs.
+                # Wire-string values match
+                # `j1.processing.execution_profile.ExecutionProfile`.
+                "selected_execution_profile": selected_profile,
+                "profile_selected_by": (
+                    "user" if selected_profile is not None else "system"
+                ),
+                "profile_selection_source": (
+                    "rest" if selected_profile is not None else "default"
+                ),
             },
             # Phase 5: initial-ingest path also allocates the
             # candidate snapshot UP-FRONT so the workflow sees
@@ -4556,6 +4721,11 @@ def create_rest_api(
             actor=actor,
             correlation_id=run_id,
             target_snapshot_id=run.target_snapshot_id,
+            # Profile threaded through to the workflow so every
+            # `_stage_enabled` check and the compile activity's
+            # `disable_entity_extraction` plumbing see the same
+            # authoritative value.
+            selected_profile=selected_profile,
         )
         workflow_id = await starter(ctx, doc_dto.document_id, body)
 

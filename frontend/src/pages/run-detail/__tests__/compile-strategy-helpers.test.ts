@@ -188,6 +188,43 @@ describe("bannersForReport", () => {
     expect(b!.message).toContain("formula_extraction");
   });
 
+  it("emits one banner per unsupported_profile_control", () => {
+    // The profile-control banner is distinct from the generic
+    // unhandled-capabilities banner — it carries the per-control
+    // reason + impact, which would be lost in a collapsed list.
+    const banners = bannersForReport(_report({
+      unsupported_profile_controls: [
+        {
+          control: "disable_multimodal_processing",
+          requested_value: true,
+          reason: "vendor does not expose toggle",
+          impact:
+            "minimum_queryable requested multimodal processing to be "
+            + "disabled, but the adapter cannot enforce this.",
+        },
+      ],
+    }));
+    const b = banners.find(
+      (b) =>
+        b.testid === "banner-unsupported-control-disable_multimodal_processing",
+    );
+    expect(b).toBeDefined();
+    expect(b!.kind).toBe("warn");
+    expect(b!.message).toContain("disable_multimodal_processing");
+    expect(b!.message).toContain("minimum_queryable");
+  });
+
+  it("emits zero profile-control banners when the report omits the field", () => {
+    // Legacy reports (pre-refactor) don't carry the field at all;
+    // we must NOT crash and must NOT emit empty banners.
+    const banners = bannersForReport(_report());
+    expect(
+      banners.some((b) =>
+        b.testid.startsWith("banner-unsupported-control-"),
+      ),
+    ).toBe(false);
+  });
+
   it("emits retry-used banner with mode transition when retry_used=true", () => {
     const banners = bannersForReport(_report({
       retry_used: true,

@@ -36,11 +36,17 @@ class StepSource(StrEnum):
 
  Surfaced in audit + status output so operators can answer "why
  did this stage run / not run?" without reading code:
- * `caller` — explicit kind on the ingest request (highest priority)
+ * `caller` — explicit kind on the ingest request (highest priority
+ absent a profile override)
  * `planner` — adaptive planner decision
  * `policy` — global / per-job ingest policy override
  * `default` — capability default (no caller, no planner)
  * `config` — operator-set deployment config (e.g. enrichment disabled)
+ * `profile` — user-selected ExecutionProfile disabled this stage.
+ This is the highest-priority "skip" source — when a profile
+ forbids a stage, no caller-supplied kind / planner recommendation
+ / enrich plan can re-enable it. Profile is what the user
+ explicitly chose; the workflow MUST honour it.
  """
 
     CALLER = "caller"
@@ -48,6 +54,7 @@ class StepSource(StrEnum):
     POLICY = "policy"
     DEFAULT = "default"
     CONFIG = "config"
+    PROFILE = "profile"
 
 
 class FinalStatus(StrEnum):
