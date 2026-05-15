@@ -362,6 +362,51 @@ def test_no_eligible_snapshot_message_is_scope_aware_for_active_scope(ctx):
     )
 
 
+def test_deleted_run_snapshot_surfaces_run_specific_refusal(ctx):
+    """End-to-end: the orchestrator stamps a ``RunScope`` and passes
+    an EMPTY ``eligible_snapshot_pairs`` (because the validation
+    service's run-store lookup found no record / the snapshot was
+    purged). The adapter must surface the run-specific message, NOT
+    the project-active one. Regression for the original bug —
+    operators on Run Detail used to see 'Project may have no
+    attached documents…' even when their snapshot was simply
+    deleted."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[], metadata={},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        # The resolver would return pairs for ACTIVE snapshots — we
+        # supply one, but it's not the one the run scope named.
+        eligible_snapshot_pairs_resolver=_pairs_resolver(
+            ("doc-1", "snap-currently-active"),
+        ),
+    )
+    run_scope_ctx = RouteContext(
+        ctx=ctx,
+        scope=RunScope(run_id="run-deleted-snap", document_id="doc-1"),
+        # Service intentionally passes an empty allowlist when the
+        # snapshot store has no record for the run's
+        # target_snapshot_id (artifacts purged).
+        eligible_snapshot_pairs=frozenset(),
+        document_id="doc-1",
+        run_id="run-deleted-snap",
+    )
+    [candidate] = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        run_scope_ctx,
+    )
+    # No provider call — the adapter refused.
+    assert provider.calls == []
+    # Scope-aware message — run-specific, not project-active.
+    assert candidate.artifact_kind == "raganything.no_eligible_snapshot"
+    assert "Selected run" in candidate.text_preview
+    assert "snapshot artifacts were deleted" in candidate.text_preview
+    assert candidate.extra["raganything_refused_reason"] == (
+        "no_queryable_run_snapshot"
+    )
+
+
 def test_no_eligible_snapshot_message_is_scope_aware_for_project_scope(ctx):
     """The legacy project-active message stays — but ONLY for
     ``WorkspaceScope``. This is the regression pin so the message

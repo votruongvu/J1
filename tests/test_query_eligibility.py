@@ -422,6 +422,57 @@ def test_project_active_still_requires_attached_documents(ctx):
     assert result.snapshot_pairs == frozenset()
 
 
+def test_run_scope_cross_project_rejection_via_ctx_keyed_store(ctx):
+    """Cross-project protection is implicit in the ``(ctx, run_id)``
+    store API: a run that lives in project A's store is unreachable
+    from project B's ctx. Pin this so a future store refactor that
+    drops the ctx parameter can't silently leak runs across
+    projects."""
+    in_project_run = _historical_run(
+        run_id="run-here", document_id="d1", snapshot_id="snap-here",
+    )
+
+    class _CtxKeyedRunStore:
+        """Returns the run ONLY when called with the project ctx that
+        owns it. Mirrors the on-disk JSONL layout."""
+        def __init__(self, *, owner_ctx, run):
+            self._owner_ctx = owner_ctx
+            self._run = run
+
+        def get(self, ctx, run_id):
+            if (
+                ctx.tenant_id != self._owner_ctx.tenant_id
+                or ctx.project_id != self._owner_ctx.project_id
+            ):
+                return None
+            return self._run if run_id == self._run.run_id else None
+
+    other_ctx = ProjectContext(
+        tenant_id="other-tenant",
+        project_id="other-project",
+        profile=None,
+    )
+    store = _CtxKeyedRunStore(owner_ctx=ctx, run=in_project_run)
+
+    # Same project ctx → resolves.
+    own_result = resolve_eligible_active_run_ids(
+        ctx=ctx,
+        scope=RunScope(run_id="run-here"),
+        registry=_StubRegistry([]),
+        run_store=store,
+    )
+    assert own_result.snapshot_pairs == frozenset({("d1", "snap-here")})
+
+    # Different tenant/project ctx → empty (no leak).
+    foreign_result = resolve_eligible_active_run_ids(
+        ctx=other_ctx,
+        scope=RunScope(run_id="run-here"),
+        registry=_StubRegistry([]),
+        run_store=store,
+    )
+    assert foreign_result.snapshot_pairs == frozenset()
+
+
 def test_resolve_query_snapshots_is_alias_for_main_resolver(ctx):
     """``resolve_query_snapshots`` is the new public name; it's a
     thin wrapper that omits the ``unchecked`` flag. Pin the

@@ -526,6 +526,28 @@ describe("ApiClient.runManualTestQuery", () => {
       makeClient().runManualTestQuery("ghost", { question: "x" }),
     ).rejects.toBeInstanceOf(ApiError);
   });
+
+  it("serialises a document_run scope verbatim (Run Detail wire shape)", async () => {
+    // Run Detail's "Produced snapshot" choice sends document_run so
+    // the server can resolve identity via the run store and bypass
+    // active-snapshot eligibility. Pin the camelCase body shape —
+    // a typo here would silently re-route to project-active rules.
+    const { calls } = withFetch(() => jsonResponse(_OK_PAYLOAD));
+    await makeClient().runManualTestQuery("run-1", {
+      question: "is the candidate snapshot answering correctly?",
+      scope: {
+        type: "document_run",
+        documentId: "doc-1",
+        runId: "run-1",
+      },
+    });
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.scope).toEqual({
+      type: "document_run",
+      documentId: "doc-1",
+      runId: "run-1",
+    });
+  });
 });
 
 
