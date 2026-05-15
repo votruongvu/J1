@@ -34,21 +34,33 @@ export interface Toast {
   body?: string;
 }
 
-/** Routing state. Four top-level views — documents (the
- * document-centric surface), document detail, upload, and the
- * shared run detail page.
+/** Routing state. Six top-level views:
+ *
+ *   `home`      — dashboard landing page (default). Carries the
+ *                 Global Search card, system status summary, and
+ *                 recent-runs / needs-attention panels.
+ *   `search`    — dedicated Global Search page; optionally
+ *                 preloaded with a `query` from the home search card.
+ *   `documents` — document list (existing surface, no longer the
+ *                 default since `home` exists).
+ *   `document`  — single-document detail.
+ *   `upload`    — upload + ingest dialog.
+ *   `run`       — run-detail page.
  *
  * The `origin` field on the `run` route records where the operator
  * arrived from so the back link can return them to the same page
- * (documents list vs. a specific document's detail) rather than
- * always dropping them on the documents list.
+ * (documents list vs. a specific document's detail vs. home) rather
+ * than always dropping them on the documents list.
  */
 export type Route =
+  | { name: "home" }
+  | { name: "search"; query?: string }
   | { name: "upload" }
   | { name: "run"; runId: string; origin?: RunOrigin }
   | { name: "documents" }                              // documents list
   | { name: "document"; documentId: string };          // document detail
 
 export type RunOrigin =
+  | { name: "home" }
   | { name: "documents" }
   | { name: "document"; documentId: string };

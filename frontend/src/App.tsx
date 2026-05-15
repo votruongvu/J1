@@ -17,6 +17,7 @@ import type { IngestionClient } from "@/lib/api/client";
 import { ClientContext } from "@/lib/client-context";
 import { LS_KEYS, useLocalStorage } from "@/lib/hooks/useLocalStorage";
 import { ContextBar } from "@/components/ContextBar";
+import { MainNav, type MainNavSection } from "@/components/MainNav";
 import { AuthModal } from "@/components/AuthModal";
 import { LLMHealthBanner } from "@/components/LLMHealthBanner";
 import { ToastHost } from "@/components/Toast";
@@ -24,6 +25,8 @@ import { DocumentsPage } from "@/pages/DocumentsPage";
 import { DocumentDetailPage } from "@/pages/DocumentDetailPage";
 import { UploadPage } from "@/pages/UploadPage";
 import { RunDetailPage } from "@/pages/RunDetailPage";
+import { HomeDashboard } from "@/pages/home/HomeDashboard";
+import { GlobalSearchPage } from "@/pages/search/GlobalSearchPage";
 import type { AuthConfig, AuthKind, Route, Theme, Toast } from "@/types/ui";
 
 // Vite inlines `import.meta.env.VITE_API_BASE_URL` at build time. The
@@ -48,9 +51,10 @@ export function App() {
   const [theme, setTheme] = useLocalStorage<Theme>(LS_KEYS.theme, "light");
 
   const [authOpen, setAuthOpen] = useState(false);
-  // Document-centric surface is the only top-level list now; the
-  // legacy run list was retired once Phase 7 reached parity.
-  const [route, setRoute] = useState<Route>({ name: "documents" });
+  // Home is the default landing surface. The legacy run list was
+  // retired earlier; Documents is now a dedicated main section
+  // alongside Home and Global Search.
+  const [route, setRoute] = useState<Route>({ name: "home" });
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Apply the chosen theme to <html data-theme="…">.
@@ -93,6 +97,33 @@ export function App() {
 
   const onUploaded = (runId: string) => setRoute({ name: "run", runId });
 
+  // Map the current route back to the primary-nav section so the
+  // nav can highlight where the user is. Detail / upload / run
+  // pages bubble back to whichever main section they belong to.
+  const navSection: MainNavSection | null = (() => {
+    switch (route.name) {
+      case "home":
+        return "home";
+      case "search":
+        return "search";
+      case "documents":
+      case "document":
+      case "upload":
+        return "documents";
+      case "run":
+        // Run detail is reached from multiple entry points; keep
+        // nav highlight on whichever section the user came from.
+        if (route.origin?.name === "home") return "home";
+        return "documents";
+    }
+  })();
+
+  const handleNavigate = (section: MainNavSection) => {
+    if (section === "home") setRoute({ name: "home" });
+    else if (section === "search") setRoute({ name: "search" });
+    else setRoute({ name: "documents" });
+  };
+
   return (
     <ClientContext.Provider value={client}>
       <div className="app">
@@ -105,9 +136,43 @@ export function App() {
           onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")}
         />
 
+        {navSection !== null && (
+          <MainNav active={navSection} onNavigate={handleNavigate} />
+        )}
+
         <LLMHealthBanner />
 
         <main className="main">
+          {route.name === "home" && (
+            <HomeDashboard
+              ctx={ctx}
+              onSearch={(query) => setRoute({ name: "search", query })}
+              onOpenRun={(runId) =>
+                setRoute({
+                  name: "run",
+                  runId,
+                  origin: { name: "home" },
+                })
+              }
+            />
+          )}
+          {route.name === "search" && (
+            <GlobalSearchPage
+              ctx={ctx}
+              initialQuery={route.query}
+              onBack={() => setRoute({ name: "home" })}
+              onOpenDocument={(documentId) =>
+                setRoute({ name: "document", documentId })
+              }
+              onOpenRun={(runId) =>
+                setRoute({
+                  name: "run",
+                  runId,
+                  origin: { name: "home" },
+                })
+              }
+            />
+          )}
           {route.name === "documents" && (
             <DocumentsPage
               ctx={ctx}
@@ -148,6 +213,8 @@ export function App() {
                 const o = route.origin;
                 if (o?.name === "document") {
                   setRoute({ name: "document", documentId: o.documentId });
+                } else if (o?.name === "home") {
+                  setRoute({ name: "home" });
                 } else {
                   setRoute({ name: "documents" });
                 }

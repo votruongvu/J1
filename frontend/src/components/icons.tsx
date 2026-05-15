@@ -100,6 +100,18 @@ export const Icon = {
       <path d="M12 2v6M12 16v6M4.93 4.93l4.24 4.24M14.83 14.83l4.24 4.24M2 12h6M16 12h6M4.93 19.07l4.24-4.24M14.83 9.17l4.24-4.24" />
     </svg>
   ),
+  Search: ({ className, ...rest }: IconProps) => (
+    <svg className={cls(className)} strokeWidth="1.75" {...baseProps} {...rest}>
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  ),
+  Home: ({ className, ...rest }: IconProps) => (
+    <svg className={cls(className)} strokeWidth="1.75" {...baseProps} {...rest}>
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.5V21h14V9.5" />
+    </svg>
+  ),
   Loader: ({ className, ...rest }: IconProps) => (
     <svg className={`${cls(className)} spin`} strokeWidth="2" {...baseProps} {...rest}>
       <line x1="12" y1="2" x2="12" y2="6" />
