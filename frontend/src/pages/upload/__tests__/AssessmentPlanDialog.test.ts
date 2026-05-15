@@ -409,10 +409,15 @@ describe("AssessmentPlanDialog — Advanced Assessment trigger", () => {
       "assessment-plan-advanced-assessment-button",
     );
     expect(html).toContain("Run Advanced Assessment");
-    // The hedge copy explaining cost + that it's an LLM estimate
-    // must surface beneath the button.
-    expect(html).toContain("Uses an LLM");
-    expect(html).toContain("May cost more");
+    // The hedge copy under the button MUST be explicit that each
+    // click is a NEW LLM call — the showcase build doesn't cache
+    // results across clicks.
+    expect(html).toContain("NEW LLM assessment");
+    expect(html).toContain("not cached");
+    // And it MUST mention cost + that this is an LLM estimate, not
+    // a parse of the document.
+    expect(html.toLowerCase()).toContain("llm");
+    expect(html.toLowerCase()).toContain("may cost");
   });
 
   it("renders a busy state when the trigger is in flight", () => {
@@ -439,6 +444,142 @@ describe("AssessmentPlanDialog — Advanced Assessment trigger", () => {
     // automatically.
     expect(html.toLowerCase()).not.toContain("automatically uses");
     expect(html.toLowerCase()).not.toContain("auto llm");
+  });
+});
+
+
+describe("AssessmentPlanDialog — recommended next steps", () => {
+  it("does not render the panel when no next steps were suggested", () => {
+    const html = _render();
+    expect(html).not.toContain("assessment-plan-next-steps");
+  });
+
+  it("renders LLM-suggested next steps as DISABLED 'Coming soon' buttons", () => {
+    // Pin the spec: clicking these would 404 (the manual-action
+    // endpoints don't exist yet). The buttons MUST render disabled
+    // with a 'Coming soon' marker.
+    const html = _render({
+      plan: _response({
+        recommendedNextSteps: [
+          "run_domain_enrichment",
+          "build_knowledge_memory",
+          "normalize_entities",
+          "build_deep_knowledge_index",
+        ],
+      }),
+    });
+    expect(html).toContain("assessment-plan-next-steps");
+    expect(html).toContain("Run Domain Enrichment");
+    expect(html).toContain("Build Knowledge Memory");
+    expect(html).toContain("Normalize Entities");
+    expect(html).toContain("Build / Extend Deep Knowledge Index");
+    // Every step gets a row, and every <button> inside the panel
+    // is rendered disabled — pinned so a future contributor can't
+    // forget the disable when wiring an endpoint.
+    expect(html).toContain("assessment-plan-next-step-run_domain_enrichment");
+    expect(html).toContain("assessment-plan-next-step-build_knowledge_memory");
+    expect(html).toContain("assessment-plan-next-step-normalize_entities");
+    expect(html).toContain(
+      "assessment-plan-next-step-build_deep_knowledge_index",
+    );
+    // Each next-step button is rendered DISABLED. We scope the
+    // assertion to the next-steps panel by slicing the HTML
+    // between the panel opening and the surrounding modal__actions
+    // marker (which only appears AFTER all the dynamic content).
+    const panelStart = html.indexOf("assessment-plan-next-steps");
+    expect(panelStart).toBeGreaterThan(-1);
+    const panelEnd = html.indexOf("modal__actions", panelStart);
+    const panelHtml = html.slice(panelStart, panelEnd > 0 ? panelEnd : undefined);
+    const buttons = panelHtml.match(/<button[^>]*>/g) ?? [];
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const btn of buttons) {
+      expect(btn).toContain("disabled");
+    }
+    // The "Coming soon" disclosure is rendered next to each entry.
+    expect(html).toContain("Coming soon");
+    // Disclosure copy reminds the user these never run
+    // automatically (regression for the "auto-trigger" anti-pattern).
+    expect(html.toLowerCase()).toContain("never run automatically");
+  });
+});
+
+
+describe("AssessmentPlanDialog — LLM sample-text warning", () => {
+  it("does not render when the LLM saw available sample text", () => {
+    const html = _render({
+      plan: _response({
+        llmAssessment: {
+          status: "ok",
+          refusalReason: null,
+          message: null,
+          documentComplexity: "moderate",
+          recommendedProfile: "standard_index",
+          confidence: "medium",
+          detectedSignals: { likely_tables: "suspected" },
+          recommendedNextSteps: [],
+          reasoningSummary: [],
+          warnings: [],
+          sampleTextStatus: "available",
+          sampleTextSource: "pypdf",
+          sampledTextCharCount: 100,
+          sampledPageCount: 3,
+        },
+      }),
+    });
+    expect(html).not.toContain("assessment-plan-sample-text-warning");
+  });
+
+  it("renders a warning when sample text was unsupported", () => {
+    const html = _render({
+      plan: _response({
+        llmAssessment: {
+          status: "ok",
+          refusalReason: null,
+          message: null,
+          documentComplexity: "moderate",
+          recommendedProfile: "standard_index",
+          confidence: "low",
+          detectedSignals: {},
+          recommendedNextSteps: [],
+          reasoningSummary: [],
+          warnings: [],
+          sampleTextStatus: "unsupported",
+          sampleTextSource: "unavailable",
+          sampledTextCharCount: 0,
+          sampledPageCount: 0,
+        },
+      }),
+    });
+    expect(html).toContain("assessment-plan-sample-text-warning");
+    expect(html).toContain("no reliable sample text");
+    // The "filename + signals + matched rules only" framing is
+    // surfaced verbatim per the spec.
+    expect(html).toContain("filename, metadata, lightweight signals");
+  });
+
+  it("renders a different message when sample text was garbled", () => {
+    const html = _render({
+      plan: _response({
+        llmAssessment: {
+          status: "ok",
+          refusalReason: null,
+          message: null,
+          documentComplexity: "moderate",
+          recommendedProfile: "standard_index",
+          confidence: "low",
+          detectedSignals: {},
+          recommendedNextSteps: [],
+          reasoningSummary: [],
+          warnings: [],
+          sampleTextStatus: "garbled",
+          sampleTextSource: "pypdf",
+          sampledTextCharCount: 12,
+          sampledPageCount: 0,
+        },
+      }),
+    });
+    expect(html).toContain("assessment-plan-sample-text-warning");
+    expect(html.toLowerCase()).toContain("binary noise");
   });
 });
 

@@ -195,4 +195,14 @@ export interface AssessmentPlanResponse {
   /** Resolver warnings (env-disable downgrade messages, fallback
    * notice, profiler warnings). */
   warnings: string[];
+  /** Most-recent LLM Advanced Assessment payload, if the operator
+   * has run it for this document. ``null`` otherwise. Mirrors the
+   * ``LLMAdvancedAssessmentResult`` shape. */
+  llmAssessment?: LLMAdvancedAssessmentResult | null;
+  /** Operator-triggered manual actions the LLM suggested running
+   * AFTER indexing (wire ids from
+   * ``j1.processing.manual_actions``). The picker renders each as
+   * a disabled "Coming soon" button until the corresponding
+   * endpoint is wired. */
+  recommendedNextSteps?: string[];
 }

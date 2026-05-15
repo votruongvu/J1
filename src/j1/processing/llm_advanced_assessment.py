@@ -43,6 +43,14 @@ __all__ = [
     "REFUSAL_MALFORMED_RESPONSE",
     "REFUSAL_NOT_RUN",
     "MANUAL_SELECTION_HINT",
+    "SAMPLE_TEXT_STATUS_AVAILABLE",
+    "SAMPLE_TEXT_STATUS_EMPTY",
+    "SAMPLE_TEXT_STATUS_UNSUPPORTED",
+    "SAMPLE_TEXT_STATUS_GARBLED",
+    "SAMPLE_TEXT_SOURCE_PYPDF",
+    "SAMPLE_TEXT_SOURCE_PLAIN_TEXT",
+    "SAMPLE_TEXT_SOURCE_UNAVAILABLE",
+    "SAMPLE_TEXT_UNRELIABLE_WARNING",
     "STATUS_OK",
     "STATUS_REFUSED",
 ]
@@ -66,6 +74,31 @@ REFUSAL_MALFORMED_RESPONSE = "malformed_response"
 MANUAL_SELECTION_HINT = (
     "This document is too large for Advanced Assessment. Please "
     "choose a profile manually based on visible document complexity."
+)
+
+
+# Sampled-text status. The REST handler classifies the extractor's
+# output into one of these four values + surfaces it to the LLM and
+# the FE. ``available`` is the only one that lets the LLM make
+# layout / content claims; the other three force it to fall back to
+# filename + lightweight signals + matched rules.
+
+SAMPLE_TEXT_STATUS_AVAILABLE = "available"   # extractor returned usable text
+SAMPLE_TEXT_STATUS_EMPTY = "empty"           # extractor ran but the doc is empty
+SAMPLE_TEXT_STATUS_UNSUPPORTED = "unsupported"  # file type has no text extractor
+SAMPLE_TEXT_STATUS_GARBLED = "garbled"       # extractor ran but the output is noise
+
+SAMPLE_TEXT_SOURCE_PYPDF = "pypdf"
+SAMPLE_TEXT_SOURCE_PLAIN_TEXT = "plain_text"
+SAMPLE_TEXT_SOURCE_UNAVAILABLE = "unavailable"
+
+# Operator-readable warning surfaced when sampled text isn't
+# reliable enough for the LLM to make detailed layout claims. The FE
+# renders this verbatim under the Run Advanced Assessment dialog.
+SAMPLE_TEXT_UNRELIABLE_WARNING = (
+    "Sampled text could not be extracted reliably for this file "
+    "type. The LLM assessment used filename, metadata, lightweight "
+    "signals, and matched rules only."
 )
 
 
@@ -104,7 +137,16 @@ class LLMAdvancedAssessmentInputs:
 
     Decoupled from the REST handler so tests don't have to mock a
     document registry. The handler builds this dataclass from the
-    document profile / sampled text / decision context."""
+    document profile / sampled text / decision context.
+
+    ``sample_text_status`` + ``sample_text_source`` describe HOW
+    the sampled text was obtained — surfaced to the LLM so it can
+    hedge when extraction failed instead of inventing detail. When
+    ``status`` is anything other than ``"available"``, the prompt
+    explicitly tells the model NOT to claim layout / table / image
+    counts; the recommendation must come from filename + signals
+    + matched rules only.
+    """
 
     document_id: str
     filename: str | None = None
@@ -112,6 +154,10 @@ class LLMAdvancedAssessmentInputs:
     file_size_bytes: int | None = None
     page_count: int | None = None
     sampled_text: str | None = None
+    sample_text_status: str = SAMPLE_TEXT_STATUS_AVAILABLE
+    sample_text_source: str = SAMPLE_TEXT_SOURCE_PYPDF
+    sampled_text_char_count: int = 0
+    sampled_page_count: int = 0
     lightweight_assessment_payload: dict | None = None
     matched_rules: tuple[dict, ...] = ()
     domain_id: str | None = None
@@ -137,6 +183,13 @@ class LLMAdvancedAssessmentResult:
     recommended_next_steps: tuple[str, ...] = ()
     reasoning_summary: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    # Sampled-text provenance. ``sample_text_status`` mirrors the
+    # input field and is surfaced to the FE so the dialog can warn
+    # the operator that the LLM didn't see real content.
+    sample_text_status: str = SAMPLE_TEXT_STATUS_AVAILABLE
+    sample_text_source: str = SAMPLE_TEXT_SOURCE_PYPDF
+    sampled_text_char_count: int = 0
+    sampled_page_count: int = 0
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -150,6 +203,10 @@ class LLMAdvancedAssessmentResult:
             "recommendedNextSteps": list(self.recommended_next_steps),
             "reasoningSummary": list(self.reasoning_summary),
             "warnings": list(self.warnings),
+            "sampleTextStatus": self.sample_text_status,
+            "sampleTextSource": self.sample_text_source,
+            "sampledTextCharCount": self.sampled_text_char_count,
+            "sampledPageCount": self.sampled_page_count,
         }
 
 
@@ -217,9 +274,12 @@ class LLMAdvancedAssessmentService:
                 REFUSAL_MALFORMED_RESPONSE,
                 "LLM returned an empty response.",
             )
-        # 3. Parse + normalise.
+        # 3. Parse + normalise. Pass the inputs so the parser can
+        # stamp sample-text provenance + raise the unreliable-text
+        # warning when the operator-facing dialog needs to disclose
+        # that the LLM didn't see real content.
         try:
-            return self._parse_response(raw)
+            return self._parse_response(raw, inputs=inputs)
         except _ParseError as exc:
             return _refusal(
                 REFUSAL_MALFORMED_RESPONSE,
@@ -280,6 +340,39 @@ class LLMAdvancedAssessmentService:
             list(inputs.matched_rules)[:10],
             ensure_ascii=False, indent=2,
         )[:2000]
+        # When sampled text is missing / garbled / unsupported, the
+        # LLM must NOT pretend it can count tables or figures. We
+        # surface the status verbatim and pin the constraint in the
+        # prompt so the model defaults to filename + signals + rule
+        # matches for the recommendation.
+        sample_section: str
+        if inputs.sample_text_status == SAMPLE_TEXT_STATUS_AVAILABLE:
+            sample_section = (
+                "Sampled-text status: AVAILABLE "
+                f"(source={inputs.sample_text_source}, "
+                f"chars={inputs.sampled_text_char_count}, "
+                f"pages={inputs.sampled_page_count}).\n"
+                "Sampled text from first / middle / end pages "
+                "follows (may still be partial):\n"
+                "----\n"
+                f"{text_snippet}\n"
+                "----\n"
+            )
+        else:
+            sample_section = (
+                "Sampled-text status: "
+                f"{inputs.sample_text_status.upper()} "
+                f"(source={inputs.sample_text_source}, "
+                f"chars={inputs.sampled_text_char_count}).\n"
+                "Sampled text was NOT extracted reliably for this "
+                "file. You MUST NOT infer table counts, image "
+                "counts, equation counts, or layout structure from "
+                "missing or garbled content. Make your "
+                "recommendation from filename, title, lightweight "
+                "signals, and the matched rules below ONLY. Hedge "
+                "detected_signals with 'no' / 'suspected' (NEVER "
+                "'likely') when sampled text is unavailable.\n"
+            )
         return (
             f"Document id: {inputs.document_id!r}\n"
             f"Filename: {inputs.filename or '(unknown)'!r}\n"
@@ -292,10 +385,8 @@ class LLMAdvancedAssessmentService:
             f"{lightweight}\n"
             "\nDomain / general rules already matched (advisory):\n"
             f"{rules}\n"
-            "\nSampled text from first / middle / end pages (may be empty):\n"
-            "----\n"
-            f"{text_snippet}\n"
-            "----\n"
+            "\n"
+            f"{sample_section}"
             "\nReturn a SINGLE JSON object exactly matching the "
             "schema described in the system prompt. Do NOT include "
             "any other text. Do NOT answer questions about the "
@@ -307,6 +398,8 @@ class LLMAdvancedAssessmentService:
 
     def _parse_response(
         self, raw: str,
+        *,
+        inputs: LLMAdvancedAssessmentInputs | None = None,
     ) -> LLMAdvancedAssessmentResult:
         payload = _extract_json_object(raw)
         if not isinstance(payload, dict):
@@ -364,6 +457,32 @@ class LLMAdvancedAssessmentService:
             for w in warnings_raw:
                 if isinstance(w, str) and w.strip() and w not in warnings:
                     warnings.append(w.strip())
+        # Sample-text provenance — defaults match the
+        # ``LLMAdvancedAssessmentInputs`` shape so tests that call
+        # ``_parse_response`` directly still produce a valid
+        # result without threading the inputs through.
+        sample_status = SAMPLE_TEXT_STATUS_AVAILABLE
+        sample_source = SAMPLE_TEXT_SOURCE_PYPDF
+        char_count = 0
+        page_count = 0
+        if inputs is not None:
+            sample_status = inputs.sample_text_status
+            sample_source = inputs.sample_text_source
+            char_count = inputs.sampled_text_char_count
+            page_count = inputs.sampled_page_count
+            # Operator-facing warning when sampled text isn't reliable.
+            # Inserted before any LLM-emitted warnings so the FE
+            # renders it first.
+            if sample_status != SAMPLE_TEXT_STATUS_AVAILABLE:
+                if SAMPLE_TEXT_UNRELIABLE_WARNING not in warnings:
+                    warnings.insert(1, SAMPLE_TEXT_UNRELIABLE_WARNING)
+                # And forcibly hedge any "likely" verdict the model
+                # emitted under unreliable text — we promised the
+                # operator the LLM wouldn't make detailed claims.
+                detected_signals = {
+                    key: ("suspected" if value == "likely" else value)
+                    for key, value in detected_signals.items()
+                }
         return LLMAdvancedAssessmentResult(
             status=STATUS_OK,
             document_complexity=complexity,
@@ -373,6 +492,10 @@ class LLMAdvancedAssessmentService:
             recommended_next_steps=tuple(next_steps),
             reasoning_summary=tuple(reasoning),
             warnings=tuple(warnings),
+            sample_text_status=sample_status,
+            sample_text_source=sample_source,
+            sampled_text_char_count=char_count,
+            sampled_page_count=page_count,
         )
 
 

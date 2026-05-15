@@ -586,65 +586,154 @@ def create_rest_api(
             )
         return decision.to_payload(), None
 
-    def _read_sampled_text(source_path, *, max_chars: int) -> str | None:
-        """Best-effort sampled-text extractor for the LLM Advanced
-        Assessment. PDF-only today via pypdf (matches the lightweight
-        profiler's tooling) — every other format falls through to
-        a plain read up to ``max_chars``.
+    def _read_sampled_text(source_path, *, max_chars: int) -> dict[str, Any]:
+        """Best-effort sampled-text extractor with structured status.
 
-        Samples from the FIRST, MIDDLE, and LAST page of multi-page
-        PDFs so the LLM sees document shape, not just the cover.
-        Single-page PDFs return that page's text verbatim. Returns
-        ``None`` on any failure — the LLM still has filename / signals
-        / matched rules to work with.
+        Returns a dict matching the ``LLMAdvancedAssessmentInputs``
+        sample-text fields::
+
+            {
+                "text": str | None,
+                "status": "available" | "empty" | "unsupported" | "garbled",
+                "source": "pypdf" | "plain_text" | "unavailable",
+                "char_count": int,
+                "page_count": int,
+            }
+
+        ``available``  — extractor returned usable text.
+        ``empty``      — extractor ran but returned no content.
+        ``unsupported``— file extension has no text extractor at all
+                         (.docx / .xlsx / .png / binary uploads).
+        ``garbled``    — extractor ran but the output is mostly
+                         non-printable bytes (heuristic: <40 % ASCII
+                         printables across the sample).
+
+        The LLM Advanced Assessment service reads ``status`` and
+        adjusts the prompt accordingly — it won't claim layout
+        detail under non-``available`` statuses.
         """
+        from j1.processing.llm_advanced_assessment import (
+            SAMPLE_TEXT_SOURCE_PLAIN_TEXT,
+            SAMPLE_TEXT_SOURCE_PYPDF,
+            SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+            SAMPLE_TEXT_STATUS_AVAILABLE,
+            SAMPLE_TEXT_STATUS_EMPTY,
+            SAMPLE_TEXT_STATUS_GARBLED,
+            SAMPLE_TEXT_STATUS_UNSUPPORTED,
+        )
+
+        _PLAIN_TEXT_EXTS = frozenset({
+            ".txt", ".md", ".markdown", ".rst", ".log",
+            ".csv", ".json", ".yaml", ".yml", ".html", ".htm",
+        })
+
+        def _classify_text(s: str) -> str:
+            """Cheap garbled-text heuristic: count printable ASCII
+            (incl. common whitespace) over the first 1024 chars and
+            flag anything below 40 % as ``garbled``."""
+            if not s:
+                return SAMPLE_TEXT_STATUS_EMPTY
+            sample = s[:1024]
+            printable = sum(
+                1 for ch in sample
+                if 0x20 <= ord(ch) < 0x7F or ch in "\t\n\r"
+            )
+            ratio = printable / len(sample)
+            if ratio < 0.40:
+                return SAMPLE_TEXT_STATUS_GARBLED
+            return SAMPLE_TEXT_STATUS_AVAILABLE
+
         try:
             ext = source_path.suffix.lower() if source_path else ""
         except Exception:  # noqa: BLE001
-            return None
-        if ext != ".pdf":
-            # Plain-text family: bounded read.
+            ext = ""
+        # ---- Plain-text family ----------------------------------
+        if ext in _PLAIN_TEXT_EXTS:
             try:
                 raw = source_path.read_text(
                     encoding="utf-8", errors="replace",
                 )
-                return raw[:max_chars]
             except Exception:  # noqa: BLE001
-                return None
-        try:
-            from pypdf import PdfReader  # type: ignore[import-not-found]
-        except Exception:  # noqa: BLE001
-            return None
-        try:
-            reader = PdfReader(str(source_path))
-            pages = reader.pages
-            n = len(pages)
-            if n == 0:
-                return None
-            indices = [0]
-            if n >= 2:
-                indices.append(n - 1)
-            if n >= 3:
-                indices.insert(1, n // 2)
-            parts: list[str] = []
-            remaining = max_chars
-            for idx in indices:
-                if remaining <= 0:
-                    break
-                try:
-                    text = pages[idx].extract_text() or ""
-                except Exception:  # noqa: BLE001
-                    text = ""
-                chunk = text[:remaining]
-                if chunk:
-                    parts.append(
-                        f"[page {idx + 1}/{n}]\n{chunk}"
-                    )
-                    remaining -= len(chunk)
-            joined = "\n\n".join(parts) if parts else None
-            return joined
-        except Exception:  # noqa: BLE001
-            return None
+                return {
+                    "text": None,
+                    "status": SAMPLE_TEXT_STATUS_UNSUPPORTED,
+                    "source": SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+                    "char_count": 0, "page_count": 0,
+                }
+            trimmed = raw[:max_chars]
+            return {
+                "text": trimmed,
+                "status": _classify_text(trimmed),
+                "source": SAMPLE_TEXT_SOURCE_PLAIN_TEXT,
+                "char_count": len(trimmed),
+                "page_count": 1,
+            }
+        # ---- PDF ------------------------------------------------
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader  # type: ignore[import-not-found]
+            except Exception:  # noqa: BLE001
+                return {
+                    "text": None,
+                    "status": SAMPLE_TEXT_STATUS_UNSUPPORTED,
+                    "source": SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+                    "char_count": 0, "page_count": 0,
+                }
+            try:
+                reader = PdfReader(str(source_path))
+                pages = reader.pages
+                n = len(pages)
+                if n == 0:
+                    return {
+                        "text": None,
+                        "status": SAMPLE_TEXT_STATUS_EMPTY,
+                        "source": SAMPLE_TEXT_SOURCE_PYPDF,
+                        "char_count": 0, "page_count": 0,
+                    }
+                indices = [0]
+                if n >= 2:
+                    indices.append(n - 1)
+                if n >= 3:
+                    indices.insert(1, n // 2)
+                parts: list[str] = []
+                remaining = max_chars
+                sampled_pages = 0
+                for idx in indices:
+                    if remaining <= 0:
+                        break
+                    try:
+                        text = pages[idx].extract_text() or ""
+                    except Exception:  # noqa: BLE001
+                        text = ""
+                    chunk = text[:remaining]
+                    if chunk:
+                        parts.append(
+                            f"[page {idx + 1}/{n}]\n{chunk}"
+                        )
+                        remaining -= len(chunk)
+                        sampled_pages += 1
+                joined = "\n\n".join(parts) if parts else ""
+                return {
+                    "text": joined or None,
+                    "status": _classify_text(joined),
+                    "source": SAMPLE_TEXT_SOURCE_PYPDF,
+                    "char_count": len(joined),
+                    "page_count": sampled_pages,
+                }
+            except Exception:  # noqa: BLE001
+                return {
+                    "text": None,
+                    "status": SAMPLE_TEXT_STATUS_GARBLED,
+                    "source": SAMPLE_TEXT_SOURCE_PYPDF,
+                    "char_count": 0, "page_count": 0,
+                }
+        # ---- Unsupported file type ------------------------------
+        return {
+            "text": None,
+            "status": SAMPLE_TEXT_STATUS_UNSUPPORTED,
+            "source": SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+            "char_count": 0, "page_count": 0,
+        }
 
     def _llm_profile_to_wire(llm_profile: str) -> str:
         """Map the LLM's own profile vocabulary to ExecutionProfile
@@ -1704,6 +1793,26 @@ def create_rest_api(
             ),
         }
 
+        # 7b. Look up the most-recent persisted decision so the
+        # picker can SURFACE (not re-run) a previous LLM Advanced
+        # Assessment result. The LLM call itself is uncached — each
+        # click of "Run Advanced Assessment" mints a fresh decision
+        # — but once the user HAS run it, the picker carries the
+        # result + suggested next steps through to any subsequent
+        # refresh so the dialog state survives a re-fetch.
+        prior_llm_payload: dict[str, Any] | None = None
+        prior_next_steps: tuple[str, ...] = ()
+        if assessment_decision_store is not None:
+            try:
+                prior = assessment_decision_store.latest_for_document(
+                    ctx, document_id,
+                )
+            except Exception:  # noqa: BLE001 — best-effort lookup
+                prior = None
+            if prior is not None:
+                prior_llm_payload = prior.llm_assessment_result
+                prior_next_steps = tuple(prior.recommended_next_steps)
+
         # 8. Persist the decision so the ingest endpoint can consume
         # the same recommendation the FE just showed the operator.
         # When the store seam isn't wired (legacy/test deployments)
@@ -1749,6 +1858,15 @@ def create_rest_api(
                 fallback_used=outcome.fallback_used,
                 compile_option_preview=compile_option_preview,
                 warnings=tuple(decision_warnings),
+                # Carry-forward the previous LLM result + suggested
+                # next steps so the picker keeps surfacing them
+                # across refreshes. NOT a cache of the LLM call:
+                # every Run Advanced Assessment click mints a fresh
+                # decision via ``/advanced-assessment``; this just
+                # avoids losing the previous outcome on the picker's
+                # next re-fetch.
+                llm_assessment_result=prior_llm_payload,
+                recommended_next_steps=prior_next_steps,
             )
             try:
                 assessment_decision_store.upsert(ctx, decision)
@@ -1771,6 +1889,12 @@ def create_rest_api(
             "assessment": assessment_plan_payload,
             "compileOptionPreview": compile_option_preview,
             "warnings": decision_warnings,
+            # Surfaced so the FE picker can render the LLM-driven
+            # recommendation, sample-text status, and suggested
+            # manual steps after the operator has run Advanced
+            # Assessment. ``None`` when the operator hasn't run it.
+            "llmAssessment": prior_llm_payload,
+            "recommendedNextSteps": list(prior_next_steps),
         }
         return envelope(response_body, _req_id(request))
 
@@ -1802,6 +1926,7 @@ def create_rest_api(
         from j1.processing.llm_advanced_assessment import (
             LLMAdvancedAssessmentInputs,
             REFUSAL_LLM_UNAVAILABLE,
+            STATUS_OK,
             STATUS_REFUSED,
         )
         from j1.processing.profiling import DeterministicDocumentProfiler
@@ -1844,8 +1969,19 @@ def create_rest_api(
         # 3. Build profile + sampled text. Cheap — same path the
         # standard /assessment-plan uses. We DELIBERATELY don't
         # invoke MinerU / vision / full parse here.
+        from j1.processing.llm_advanced_assessment import (
+            SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+            SAMPLE_TEXT_STATUS_AVAILABLE,
+            SAMPLE_TEXT_STATUS_UNSUPPORTED,
+        )
         profile = None
-        sampled_text: str | None = None
+        sample = {
+            "text": None,
+            "status": SAMPLE_TEXT_STATUS_UNSUPPORTED,
+            "source": SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+            "char_count": 0,
+            "page_count": 0,
+        }
         if workspace is not None and doc_dto.stored_filename:
             source_path = workspace.raw(ctx) / doc_dto.stored_filename
             if source_path.exists():
@@ -1855,15 +1991,21 @@ def create_rest_api(
                     )
                 except FileNotFoundError:
                     profile = None
-                # Best-effort sampled-text read. Falls back to None
-                # on any failure; the LLM still gets filename /
-                # signals / matched rules.
+                # Structured sampled-text read. Always returns a
+                # dict — the LLM service inspects ``status`` to
+                # decide whether to make layout claims at all.
                 try:
-                    sampled_text = _read_sampled_text(
+                    sample = _read_sampled_text(
                         source_path, max_chars=60_000,
                     )
                 except Exception:  # noqa: BLE001 — sampling is advisory
-                    sampled_text = None
+                    sample = {
+                        "text": None,
+                        "status": SAMPLE_TEXT_STATUS_UNSUPPORTED,
+                        "source": SAMPLE_TEXT_SOURCE_UNAVAILABLE,
+                        "char_count": 0,
+                        "page_count": 0,
+                    }
         lightweight_payload: dict[str, Any] | None = None
         if profile is not None:
             try:
@@ -1872,17 +2014,72 @@ def create_rest_api(
                 )
             except Exception:  # noqa: BLE001 — advisory
                 lightweight_payload = None
-        # 4. Run the service.
+        # 4. Run the service. Threads sample-text provenance through
+        # so the prompt can hedge + the result can surface a
+        # warning when extraction wasn't reliable.
         inputs = LLMAdvancedAssessmentInputs(
             document_id=document_id,
             filename=getattr(doc_dto, "original_filename", None),
             title=getattr(doc_dto, "title", None),
             file_size_bytes=getattr(doc_dto, "file_size", None),
             page_count=(profile.page_count if profile is not None else None),
-            sampled_text=sampled_text,
+            sampled_text=sample["text"],
+            sample_text_status=sample["status"],
+            sample_text_source=sample["source"],
+            sampled_text_char_count=int(sample["char_count"] or 0),
+            sampled_page_count=int(sample["page_count"] or 0),
             lightweight_assessment_payload=lightweight_payload,
         )
         result = llm_advanced_assessment_service.run(inputs)
+        # 4b. Stamp the classifier's verdict onto the result. The
+        # REST handler is the authority on sample-text provenance
+        # (it runs the extractor); the service uses these fields
+        # for prompt-building and warning-hedging, but stub /
+        # legacy service implementations might not propagate them.
+        # We rewrite the result here so the wire response is
+        # ALWAYS consistent with what the classifier observed,
+        # and we layer the unreliable-text warning on top when
+        # appropriate.
+        from j1.processing.llm_advanced_assessment import (
+            LLMAdvancedAssessmentResult as _LLMResult,
+            SAMPLE_TEXT_STATUS_AVAILABLE,
+            SAMPLE_TEXT_UNRELIABLE_WARNING,
+        )
+        if (
+            result.status == STATUS_OK
+            and (
+                result.sample_text_status != sample["status"]
+                or result.sample_text_source != sample["source"]
+                or result.sampled_text_char_count != int(sample["char_count"] or 0)
+                or result.sampled_page_count != int(sample["page_count"] or 0)
+            )
+        ):
+            existing_warnings = list(result.warnings)
+            if sample["status"] != SAMPLE_TEXT_STATUS_AVAILABLE:
+                if SAMPLE_TEXT_UNRELIABLE_WARNING not in existing_warnings:
+                    existing_warnings.insert(0, SAMPLE_TEXT_UNRELIABLE_WARNING)
+                hedged_signals = {
+                    k: ("suspected" if v == "likely" else v)
+                    for k, v in dict(result.detected_signals).items()
+                }
+            else:
+                hedged_signals = dict(result.detected_signals)
+            result = _LLMResult(
+                status=result.status,
+                refusal_reason=result.refusal_reason,
+                message=result.message,
+                document_complexity=result.document_complexity,
+                recommended_profile=result.recommended_profile,
+                confidence=result.confidence,
+                detected_signals=hedged_signals,
+                recommended_next_steps=result.recommended_next_steps,
+                reasoning_summary=result.reasoning_summary,
+                warnings=tuple(existing_warnings),
+                sample_text_status=sample["status"],
+                sample_text_source=sample["source"],
+                sampled_text_char_count=int(sample["char_count"] or 0),
+                sampled_page_count=int(sample["page_count"] or 0),
+            )
         # 5. Persist the result onto a NEW AssessmentDecision when
         # the store is wired AND the result was OK. Refusals are
         # surfaced to the FE but never written — the picker keeps

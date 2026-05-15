@@ -210,6 +210,91 @@ _VALID_LLM_OUTPUT = json.dumps({
 })
 
 
+def test_sample_text_provenance_round_trips_on_available():
+    """Every OK result carries sample-text provenance (status /
+    source / counts) so the FE can render an honest "what the LLM
+    saw" disclosure under the picker."""
+    svc = LLMAdvancedAssessmentService(
+        settings=LLMAdvancedAssessmentSettings(enabled=True),
+        llm_call=lambda p, sp: _VALID_LLM_OUTPUT,
+    )
+    out = svc.run(LLMAdvancedAssessmentInputs(
+        document_id="d1",
+        sampled_text="page content",
+        sample_text_status="available",
+        sample_text_source="pypdf",
+        sampled_text_char_count=42,
+        sampled_page_count=3,
+    ))
+    assert out.sample_text_status == "available"
+    assert out.sample_text_source == "pypdf"
+    assert out.sampled_text_char_count == 42
+    assert out.sampled_page_count == 3
+    # ``to_payload`` round-trips with camelCase keys for the FE.
+    payload = out.to_payload()
+    assert payload["sampleTextStatus"] == "available"
+    assert payload["sampleTextSource"] == "pypdf"
+    assert payload["sampledTextCharCount"] == 42
+    assert payload["sampledPageCount"] == 3
+
+
+def test_unreliable_sample_text_emits_warning_and_hedges_likely():
+    """When sample text isn't reliable (unsupported / empty /
+    garbled), the result must (a) carry the unreliable-text
+    warning verbatim AND (b) downgrade every ``likely`` verdict
+    the model emitted to ``suspected`` so the FE never claims
+    layout detail under missing content."""
+    from j1.processing.llm_advanced_assessment import (
+        SAMPLE_TEXT_UNRELIABLE_WARNING,
+    )
+    svc = LLMAdvancedAssessmentService(
+        settings=LLMAdvancedAssessmentSettings(enabled=True),
+        llm_call=lambda p, sp: _VALID_LLM_OUTPUT,
+    )
+    out = svc.run(LLMAdvancedAssessmentInputs(
+        document_id="d1",
+        sampled_text=None,
+        sample_text_status="unsupported",
+        sample_text_source="unavailable",
+    ))
+    assert out.sample_text_status == "unsupported"
+    assert SAMPLE_TEXT_UNRELIABLE_WARNING in out.warnings
+    # The fixture's ``likely_tables=likely`` / ``likely_requirements=likely``
+    # get hedged. ``no`` and the orthogonal ``layout_complexity``
+    # are left alone.
+    assert out.detected_signals["likely_tables"] == "suspected"
+    assert out.detected_signals["likely_requirements"] == "suspected"
+    assert out.detected_signals["likely_equations"] == "no"
+
+
+def test_prompt_pins_no_layout_inference_under_unreliable_sample_text():
+    """The prompt MUST tell the LLM not to invent layout claims
+    when sampled text isn't available. We don't run a real LLM —
+    capture the prompt and assert the constraint is present."""
+    captured: dict[str, str] = {}
+
+    def _capture(prompt: str, system_prompt: str) -> str:
+        captured["prompt"] = prompt
+        return _VALID_LLM_OUTPUT
+
+    svc = LLMAdvancedAssessmentService(
+        settings=LLMAdvancedAssessmentSettings(enabled=True),
+        llm_call=_capture,
+    )
+    svc.run(LLMAdvancedAssessmentInputs(
+        document_id="d1",
+        sample_text_status="unsupported",
+        sample_text_source="unavailable",
+    ))
+    prompt = captured["prompt"]
+    assert "UNSUPPORTED" in prompt
+    assert "MUST NOT" in prompt
+    # The "filename + signals + rules ONLY" constraint must be
+    # spelled out so the LLM knows what to fall back on.
+    assert "filename" in prompt.lower()
+    assert "matched rules" in prompt.lower()
+
+
 def test_returns_structured_ok_result():
     svc = LLMAdvancedAssessmentService(
         settings=LLMAdvancedAssessmentSettings(enabled=True),

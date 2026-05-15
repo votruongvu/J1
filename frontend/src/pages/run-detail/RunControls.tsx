@@ -35,6 +35,7 @@ import {
   PAUSABLE_STATUSES,
   RUN_STATUS,
 } from "@/lib/constants/runStatus";
+import { hideLegacyRefreshEnrich } from "@/lib/constants/feature-flags";
 import type { IngestionRun } from "@/types/ingestion";
 import type { DocumentRunSummary } from "@/types/documents";
 import type { Toast } from "@/types/ui";
@@ -183,7 +184,14 @@ export function RunControls({
   const showPause = PAUSE_FROM.has(status);
   const showCancel = CANCEL_FROM.has(status);
   const canDeleteRun = capability?.canDeleteRun ?? false;
-  const canRefreshEnrichment = capability?.canRefreshEnrichment ?? false;
+  // Legacy refresh-enrich is hidden when the deployment runs in
+  // Manual Actions mode — the user-facing model in that mode is
+  // explicit post-index actions (Run Domain Enrichment, Build
+  // Knowledge Memory, etc.). The backend endpoint stays available
+  // for ops tooling; only the primary FE button is suppressed.
+  const canRefreshEnrichment =
+    (capability?.canRefreshEnrichment ?? false)
+    && !hideLegacyRefreshEnrich;
   const canRunEnrichment = capability?.canRunEnrichment ?? false;
   const isOnlyRun = capability?.isOnlyRun ?? false;
   const isActive = capability?.isActive ?? false;

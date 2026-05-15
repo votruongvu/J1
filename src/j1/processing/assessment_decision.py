@@ -279,6 +279,15 @@ class AssessmentDecisionStore:
     ) -> AssessmentDecision | None:
         raise NotImplementedError
 
+    def latest_for_document(
+        self, ctx: ProjectContext, document_id: str,
+    ) -> AssessmentDecision | None:
+        """Most recently persisted decision for ``document_id``, or
+        ``None`` when the document has no decisions yet. The default
+        implementation returns ``None`` so legacy in-memory test
+        stubs keep working — JSONL store overrides."""
+        return None
+
 
 class JsonlAssessmentDecisionStore(AssessmentDecisionStore):
     """Append-only JSONL store mirroring ``JsonlIngestionRunStore`` and
@@ -322,6 +331,21 @@ class JsonlAssessmentDecisionStore(AssessmentDecisionStore):
         latest: AssessmentDecision | None = None
         for decision in self._iter_all(ctx):
             if decision.assessment_decision_id == decision_id:
+                latest = decision
+        return latest
+
+    def latest_for_document(
+        self, ctx: ProjectContext, document_id: str,
+    ) -> AssessmentDecision | None:
+        """Most-recently-persisted decision matching ``document_id``.
+        Used by the ``/assessment-plan`` handler to surface the
+        previous LLM assessment (if any) to the picker without
+        re-running the LLM."""
+        latest: AssessmentDecision | None = None
+        for decision in self._iter_all(ctx):
+            if decision.document_id != document_id:
+                continue
+            if latest is None or decision.created_at >= latest.created_at:
                 latest = decision
         return latest
 

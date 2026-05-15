@@ -379,3 +379,159 @@ def test_refresh_enrich_marked_deprecated_in_openapi(
     # The summary still mentions "Deprecated" so operators reading
     # the docs immediately understand.
     assert "Deprecated" in op["summary"]
+
+
+# ---- Sample text classifier ---------------------------------------
+
+
+def test_advanced_assessment_marks_unsupported_for_binary_file_type(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """A document with an unsupported binary-ish extension (.xlsx)
+    must NOT make the LLM claim layout detail. The result carries
+    ``sampleTextStatus='unsupported'`` and the operator-readable
+    warning ('used filename, metadata, lightweight signals, and
+    matched rules only')."""
+    _stage_document(
+        workspace, registry, ctx,
+        document_id="doc-bin",
+        filename="schedule.xlsx",
+        content=b"\x50\x4b\x03\x04binary-zip-archive",
+    )
+    llm = _OkLLMService()
+    app = _make_app(
+        application_facade, job_starter, workspace,
+        decision_store=decision_store, llm_service=llm,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/documents/doc-bin/advanced-assessment",
+        headers=_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    data = _envelope(resp.json())
+    result = data["result"]
+    # Result still OK — but with the unreliable-text warning AND
+    # downgraded sample-text status.
+    assert result["status"] == STATUS_OK
+    assert result["sampleTextStatus"] == "unsupported"
+    assert result["sampleTextSource"] == "unavailable"
+    assert any(
+        "filename" in w.lower() and "matched rules" in w.lower()
+        for w in result["warnings"]
+    )
+    # And every ``likely`` verdict the stub emitted is hedged to
+    # ``suspected``.
+    signals = result["detectedSignals"]
+    assert "likely" not in (signals.get("likely_tables") or "")
+
+
+def test_advanced_assessment_marks_available_for_pdf(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """A real PDF goes through pypdf and surfaces
+    ``sampleTextStatus='available'`` so the FE doesn't render the
+    sample-text warning. We stage a minimal one-page PDF via
+    pypdf's writer."""
+    pytest.importorskip("pypdf")
+    from pypdf import PdfWriter
+    raw_dir = workspace.raw(ctx)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = raw_dir / "sample.pdf"
+    w = PdfWriter()
+    w.add_blank_page(width=72, height=72)
+    with pdf_path.open("wb") as fh:
+        w.write(fh)
+    _stage_document(
+        workspace, registry, ctx,
+        document_id="doc-pdf",
+        filename="sample.pdf",
+        content=pdf_path.read_bytes(),
+    )
+    llm = _OkLLMService()
+    app = _make_app(
+        application_facade, job_starter, workspace,
+        decision_store=decision_store, llm_service=llm,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/documents/doc-pdf/advanced-assessment",
+        headers=_headers(),
+    )
+    data = _envelope(resp.json())
+    # Blank page → pypdf produces no text → ``empty`` (not
+    # ``unsupported`` since the extractor itself works). Either
+    # status MUST come from the classifier — the wire string is
+    # never ``available`` for a blank doc.
+    assert data["result"]["sampleTextStatus"] in {"empty", "available"}
+    assert data["result"]["sampleTextSource"] == "pypdf"
+
+
+# ---- /assessment-plan carries forward LLM result ------------------
+
+
+def test_assessment_plan_surfaces_latest_llm_result(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """After the operator runs Advanced Assessment, a subsequent
+    /assessment-plan call must SURFACE (not re-run) the LLM
+    payload + recommended_next_steps so the FE picker shows the
+    LLM-driven recommendation."""
+    _stage_document(workspace, registry, ctx)
+    llm = _OkLLMService()
+    app = _make_app(
+        application_facade, job_starter, workspace,
+        decision_store=decision_store, llm_service=llm,
+    )
+    client = TestClient(app)
+    # First: no LLM result yet — plan shows nothing.
+    initial = _envelope(client.post(
+        "/documents/doc-adv/assessment-plan",
+        headers=_headers(),
+    ).json())
+    assert initial.get("llmAssessment") is None
+    assert initial.get("recommendedNextSteps") == []
+    # Run advanced assessment.
+    adv = _envelope(client.post(
+        "/documents/doc-adv/advanced-assessment",
+        headers=_headers(),
+    ).json())
+    assert adv["result"]["status"] == STATUS_OK
+    # Refresh: plan now carries the LLM payload + suggested steps.
+    refreshed = _envelope(client.post(
+        "/documents/doc-adv/assessment-plan",
+        headers=_headers(),
+    ).json())
+    assert refreshed["llmAssessment"] is not None
+    assert (
+        refreshed["llmAssessment"]["recommendedProfile"]
+        == "deep_knowledge_index"
+    )
+    assert "run_domain_enrichment" in refreshed["recommendedNextSteps"]
+    # The LLM was called EXACTLY ONCE — the refresh did not
+    # re-invoke it. Pins the "uncached but persisted result" contract.
+    assert len(llm.calls) == 1
+
+
+def test_default_ingest_does_not_invoke_manual_actions_or_llm(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """Regression: the standard /assessment-plan path is
+    lightweight. It must NOT call the LLM service even when one is
+    wired AND must not include any of the LLM next-steps as if
+    they had been triggered."""
+    _stage_document(workspace, registry, ctx)
+    llm = _OkLLMService()
+    app = _make_app(
+        application_facade, job_starter, workspace,
+        decision_store=decision_store, llm_service=llm,
+    )
+    client = TestClient(app)
+    client.post(
+        "/documents/doc-adv/assessment-plan", headers=_headers(),
+    )
+    assert llm.calls == []

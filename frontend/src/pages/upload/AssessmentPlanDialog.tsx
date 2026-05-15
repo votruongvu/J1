@@ -26,6 +26,7 @@
 import { useState } from "react";
 
 import { Banner } from "@/components/Banner";
+import { manualActionsEnabled } from "@/lib/constants/feature-flags";
 import type {
   AssessmentPlanResponse,
   CompileOptionPreview,
@@ -188,9 +189,24 @@ export function AssessmentPlanDialog({
           />
         )}
 
+        {/* Sample-text status warning — surfaces only when the
+            LLM result indicates extraction wasn't reliable. */}
+        {plan !== null && (
+          <SampleTextWarning plan={plan} />
+        )}
+
+        {/* Suggested next manual steps — operator-triggered, never
+            auto-run. Disabled "Coming soon" until the manual-action
+            endpoints are wired. */}
+        {plan !== null && (
+          <RecommendedNextStepsPanel plan={plan} />
+        )}
+
         {/* Advanced Assessment trigger — operator-triggered ONLY.
             Hidden when the owner didn't provide a handler (i.e.
-            deployments without the LLM service wired). */}
+            deployments without the LLM service wired). Copy is
+            explicit that each click is a NEW LLM call — we don't
+            cache results in this build. */}
         {plan !== null && onRunAdvancedAssessment !== undefined && (
           <div
             className="assessment-plan-dialog__advanced"
@@ -208,9 +224,10 @@ export function AssessmentPlanDialog({
                 : "Run Advanced Assessment"}
             </button>
             <small>
-              Uses an LLM to estimate document complexity and
-              recommend a profile / next steps. May cost more and
-              take longer.
+              Each click starts a NEW LLM assessment — results are
+              not cached. The LLM estimates document complexity and
+              suggests a profile + next manual steps. May cost more
+              and take longer than the lightweight assessment.
             </small>
           </div>
         )}
@@ -388,5 +405,126 @@ function ProfileCard({
         </ul>
       </div>
     </label>
+  );
+}
+
+
+/** Labels for the manual-action wire ids the LLM may suggest in
+ * ``recommended_next_steps``. Stays in lockstep with the backend's
+ * ``j1.processing.manual_actions`` vocabulary; a rename on one side
+ * surfaces here as an "unknown action id" fallback. */
+const _NEXT_STEP_LABELS: Record<string, string> = {
+  run_domain_enrichment: "Run Domain Enrichment",
+  build_knowledge_memory: "Build Knowledge Memory",
+  normalize_entities: "Normalize Entities",
+  build_deep_knowledge_index: "Build / Extend Deep Knowledge Index",
+  run_multimodal_enrichment: "Run Multimodal Enrichment",
+};
+
+
+/** Render the LLM-suggested next manual steps as disabled
+ * "Coming soon" buttons. Per the showcase spec the manual-action
+ * endpoints don't exist yet — clicking these would 404, so we
+ * disable them and add a clarifying note. ``manualActionsEnabled``
+ * gates the entire panel: when the deployment runs in legacy mode
+ * the LLM's suggestions are still in the decision payload but the
+ * picker doesn't surface them. */
+function RecommendedNextStepsPanel({
+  plan,
+}: {
+  plan: AssessmentPlanResponse;
+}) {
+  const ids: string[] = Array.isArray(
+    (plan as { recommendedNextSteps?: unknown }).recommendedNextSteps,
+  )
+    ? ((plan as unknown as { recommendedNextSteps: string[] })
+        .recommendedNextSteps)
+    : [];
+  if (!manualActionsEnabled || ids.length === 0) return null;
+  return (
+    <div
+      className="assessment-plan-dialog__next-steps"
+      data-testid="assessment-plan-next-steps"
+    >
+      <strong>Suggested next steps</strong>
+      <p className="muted">
+        The LLM suggested these manual actions for after indexing
+        completes. They never run automatically; you'll trigger
+        them from the document detail page once their endpoints
+        are wired.
+      </p>
+      <ul>
+        {ids.map((id) => {
+          const label = _NEXT_STEP_LABELS[id] ?? id;
+          return (
+            <li
+              key={id}
+              data-testid={`assessment-plan-next-step-${id}`}
+            >
+              <button
+                type="button"
+                className="btn btn--ghost"
+                disabled
+                aria-disabled="true"
+                title="Manual-action endpoint not yet implemented."
+              >
+                {label}
+              </button>
+              <small className="muted"> · Coming soon</small>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+
+/** Show the sample-text status surfaced by the LLM service. When
+ * the extractor produced nothing usable, the operator needs to
+ * know the LLM's recommendation came from filename + signals +
+ * matched rules — not document content. */
+function SampleTextWarning({
+  plan,
+}: {
+  plan: AssessmentPlanResponse;
+}) {
+  const llm = (plan as { llmAssessment?: unknown }).llmAssessment as
+    | { sampleTextStatus?: string; sampleTextSource?: string }
+    | undefined;
+  const status = llm?.sampleTextStatus;
+  if (!status || status === "available") return null;
+  const reason = (() => {
+    switch (status) {
+      case "empty":
+        return "The document appeared empty to the text extractor.";
+      case "unsupported":
+        return (
+          "This file type has no text extractor; sampled text was "
+          + "not produced."
+        );
+      case "garbled":
+        return (
+          "The text extractor ran but the output looks like binary "
+          + "noise."
+        );
+      default:
+        return `Sample text status: ${status}.`;
+    }
+  })();
+  return (
+    <div
+      className="assessment-plan-dialog__sample-text-warning"
+      data-testid="assessment-plan-sample-text-warning"
+    >
+      <Banner kind="warn" title="LLM saw no reliable sample text">
+        <p>{reason}</p>
+        <p>
+          The LLM assessment used filename, metadata, lightweight
+          signals, and matched rules only. Detailed layout claims
+          have been hedged automatically.
+        </p>
+      </Banner>
+    </div>
   );
 }
