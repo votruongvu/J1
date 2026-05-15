@@ -29,6 +29,7 @@ from j1.domains.models import (
     KeywordSignal,
     UnsupportedCapability,
 )
+from j1.domains.profile_rules import parse_document_profile_rules
 
 
 __all__ = ["build_civil_engineering_pack"]
@@ -104,6 +105,9 @@ def build_civil_engineering_pack() -> DomainPack:
             keyword_signals=keyword_signals,
             detection_rules=detection_rules,
             overlays=overlays,
+        ),
+        document_profile_rules=parse_document_profile_rules(
+            data.get("document_profile_rules"),
         ),
     )
 

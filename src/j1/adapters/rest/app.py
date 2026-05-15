@@ -38,6 +38,7 @@ from j1.adapters.rest.sse import SSE_CONTENT_TYPE, SSE_HEADERS
 from j1.adapters.rest.schemas import (
     ArtifactListRecord,
     ArtifactRecord,
+    AssessmentPlanRequest,
     BulkImportFailureRow,
     BulkImportResultRecord,
     CapabilitiesRecord,
@@ -414,6 +415,23 @@ def create_rest_api(
     # stamped on the run record so the workflow + activities know
     # which snapshot they're building from the very first event.
     snapshot_service: "object | None" = None,
+    # Persistent recommendation store. When wired, the
+    # ``POST /documents/{id}/assessment-plan`` endpoint stamps each
+    # outcome as an ``AssessmentDecision`` so the FE-shown
+    # recommendation can be threaded through ``POST /ingestion-runs``
+    # (via ``assessmentDecisionId``) and consumed by the workflow
+    # instead of being silently recomputed downstream. When None,
+    # the endpoint degrades gracefully — no ``assessmentDecisionId``
+    # in the response and the workflow's existing rebuild path
+    # runs as before.
+    assessment_decision_store: "object | None" = None,
+    # Workspace default domain (per-deployment knob, not per-request).
+    # Threaded into the assessment-plan domain resolution chain:
+    # user-selected > workspace default > general. ``None`` falls
+    # straight through to ``general``. Currently sourced from a
+    # single deployment-level setting; per-project overrides live
+    # under future work.
+    workspace_default_domain_id: "str | None" = None,
     # Deployment-level execution-profile safety policy. When None,
     # the adapter constructs a permissive default (every profile
     # allowed, deployment-wide DEFAULT_PROFILE) — preserves the
@@ -508,6 +526,59 @@ def create_rest_api(
             return snap.snapshot_id
         except Exception:  # noqa: BLE001 — best-effort
             return None
+
+    def _load_and_validate_assessment_decision(
+        *,
+        ctx: ProjectContext,
+        decision_id: str | None,
+        document_id: str,
+        file_hash: str | None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Look up + validate a persisted ``AssessmentDecision``.
+
+        Returns ``(metadata_payload | None, validation_warning | None)``.
+
+        * Both ``None``  → caller didn't pass a decision id; the workflow
+          will run its rebuild path as before.
+        * ``(payload, None)`` → decision is valid; stamp it onto run
+          metadata and thread the id to the workflow so it can
+          short-circuit.
+        * ``(None, warning)`` → caller passed an id but validation
+          failed; stamp the warning so the final report reflects what
+          happened. The workflow still rebuilds.
+
+        Never raises — assessment is advisory, and a stale FE picker
+        result must not block an upload.
+        """
+        if not decision_id or assessment_decision_store is None:
+            return None, None
+        try:
+            from j1.processing.assessment_decision import (
+                AssessmentDecisionValidationError,
+                validate_decision_for_document,
+            )
+            decision = assessment_decision_store.get(ctx, decision_id)
+        except Exception:  # noqa: BLE001 — store IO fault → fallback
+            return None, (
+                f"Assessment decision {decision_id!r} could not be "
+                "loaded from the store; workflow will rebuild assessment."
+            )
+        if decision is None:
+            return None, (
+                f"Assessment decision {decision_id!r} was not found "
+                "for this project; workflow will rebuild assessment."
+            )
+        try:
+            validate_decision_for_document(
+                decision,
+                document_id=document_id,
+                file_hash=file_hash,
+            )
+        except AssessmentDecisionValidationError as exc:
+            return None, (
+                f"{exc}; workflow will rebuild assessment."
+            )
+        return decision.to_payload(), None
 
     def _latest_succeeded_run_id(
         ctx: ProjectContext, document_id: str,
@@ -1375,15 +1446,24 @@ def create_rest_api(
     def post_document_assessment_plan(
         request: Request,
         document_id: str,
+        body: AssessmentPlanRequest | None = Body(default=None),
         ctx: ProjectContext = Depends(get_ctx),
     ) -> dict[str, Any]:
+        from j1.domains import DOMAIN_GENERAL, default_registry
         from j1.processing.assessment import DefaultAssessmentPlanner
+        from j1.processing.assessment_decision import (
+            AssessmentDecision,
+            new_decision_id,
+        )
         from j1.processing.execution_profile import (
             ExecutionProfile,
             profile_details,
-            recommend_profile_from_assessment,
         )
         from j1.processing.profiling import DeterministicDocumentProfiler
+        from j1.processing.recommendation_resolver import (
+            ProfilerInputs,
+            resolve_recommendation,
+        )
 
         # 1. Resolve the document (404 when not registered).
         try:
@@ -1434,42 +1514,181 @@ def create_rest_api(
             except Exception:  # noqa: BLE001 — assessment is advisory
                 assessment_plan_payload = None
 
-        # 5. Build the profile recommendation from the profile
-        # signals. Falls back to the safe default when the profile
-        # is missing or under-specified.
+        # 5. Resolve the recommendation via the precedence chain:
+        # env hard-disable > user selection > active-domain rules >
+        # general-domain rules > lightweight assessment fallback >
+        # system default. The resolver itself is pure data — no
+        # MinerU, no RAGAnything, no LLM, no PyMuPDF.
+        try:
+            registry = default_registry()
+        except Exception:  # noqa: BLE001 — degrade gracefully without a registry
+            registry = None
+        # Domain selection (user > workspace default > general).
+        # ``selectedDomainId`` is operator intent — it takes precedence
+        # over the deployment's ``workspace_default_domain_id`` knob.
+        # An unknown id falls back to ``general`` and surfaces a
+        # warning so the operator sees the mismatch.
+        domain_warnings: list[str] = []
+        active_domain = None
+        general_domain = None
+        selected_domain_id_input = (
+            body.selected_domain_id if body is not None else None
+        )
+        if registry is not None:
+            general_domain = registry.get(DOMAIN_GENERAL)
+            preferred_id = (
+                selected_domain_id_input
+                or workspace_default_domain_id
+                or DOMAIN_GENERAL
+            )
+            active_domain = registry.get(preferred_id)
+            if active_domain is None:
+                # Fall through to general + warn so the FE knows the
+                # operator's pick wasn't honoured.
+                active_domain = general_domain
+                if preferred_id != DOMAIN_GENERAL:
+                    domain_warnings.append(
+                        f"Requested domain {preferred_id!r} is not "
+                        "registered; falling back to general."
+                    )
+        profiler_inputs = None
         if profile is not None:
-            recommended, reasons = recommend_profile_from_assessment(
+            profiler_inputs = ProfilerInputs(
                 has_images=bool(profile.has_images),
                 has_tables=bool(profile.has_tables),
                 has_scanned_pages=bool(profile.has_scanned_pages),
-                text_extractable_ratio=profile.text_extractable_ratio,
-                page_count=profile.page_count,
+                text_extractable_ratio=(
+                    profile.text_extractable_ratio
+                    if profile.text_extractable_ratio is not None
+                    else 1.0
+                ),
+                page_count=profile.page_count or 0,
+                warnings=tuple(profile.warnings or ()),
             )
-        else:
-            recommended = ExecutionProfile.STANDARD
-            reasons = (
-                "Document signals unavailable; defaulting to standard.",
-            )
+        user_selected_profile_input: str | None = (
+            body.selected_profile if body is not None else None
+        )
+        outcome = resolve_recommendation(
+            filename=doc_dto.original_filename,
+            title=getattr(doc_dto, "title", None),
+            active_domain=active_domain,
+            general_domain=general_domain,
+            profiler_inputs=profiler_inputs,
+            user_selected_profile=user_selected_profile_input,
+            policy=_profile_policy,
+        )
 
         # 6. Build the profile catalogue. Stable shape — the FE
         # renders these as radio buttons + cost copy.
         available = [profile_details(p) for p in ExecutionProfile]
 
-        return envelope(
-            {
-                "documentId": document_id,
-                "recommendedProfile": recommended.value,
-                "availableProfiles": available,
-                "reasons": list(reasons),
-                # The pre-compile assessment plan payload so the FE
-                # can render WHY the planner chose this mode (e.g.
-                # "scanned PDF" / "text-only").
-                "assessment": assessment_plan_payload,
-                # Operator-readable cost disclosure.
-                "warnings": list(profile.warnings) if profile is not None else [],
-            },
-            _req_id(request),
+        # 7. Compile-option preview — a small set of hedged hints
+        # the FE can render BELOW the picker without claiming exact
+        # detection. The compile / RAGAnything / enrichment layers
+        # remain the authority on what actually runs; this is for
+        # operator transparency only.
+        winner_hints = next(
+            (r.hints for r in outcome.matched_rules if r.winner),
+            None,
         )
+        compile_option_preview = {
+            "suspectedTables": bool(
+                (winner_hints.likely_tables if winner_hints else False)
+                or (profile.has_tables if profile is not None else False)
+            ),
+            "suspectedImages": bool(
+                (winner_hints.likely_images if winner_hints else False)
+                or (profile.has_images if profile is not None else False)
+            ),
+            "suspectedScanned": bool(
+                (winner_hints.likely_scanned if winner_hints else False)
+                or (profile.has_scanned_pages if profile is not None else False)
+            ),
+            "suspectedRequirements": bool(
+                winner_hints.likely_requirements if winner_hints else False
+            ),
+            "suspectedLongDocument": bool(
+                (winner_hints.likely_long_document if winner_hints else False)
+                or (
+                    profile is not None
+                    and (profile.page_count or 0) > 100
+                )
+            ),
+            "note": (
+                "These are rule-based hints, not exact detection. "
+                "The compile stage decides actual behaviour."
+            ),
+        }
+
+        # 8. Persist the decision so the ingest endpoint can consume
+        # the same recommendation the FE just showed the operator.
+        # When the store seam isn't wired (legacy/test deployments)
+        # the endpoint still works — the caller just won't get an
+        # ``assessmentDecisionId`` to thread through ingest, and the
+        # workflow falls back to its rebuild path.
+        active_domain_id = (
+            active_domain.id
+            if active_domain is not None
+            else (general_domain.id if general_domain is not None
+                  else DOMAIN_GENERAL)
+        )
+        decision_warnings = list(outcome.warnings) + domain_warnings
+        active_rule_payloads = [
+            r.to_payload()
+            for r in outcome.matched_rules
+            if r.domain_id == active_domain_id
+        ]
+        general_rule_payloads = [
+            r.to_payload()
+            for r in outcome.matched_rules
+            if r.domain_id != active_domain_id
+            and general_domain is not None
+            and r.domain_id == general_domain.id
+        ]
+        decision: AssessmentDecision | None = None
+        if assessment_decision_store is not None:
+            decision = AssessmentDecision(
+                assessment_decision_id=new_decision_id(),
+                document_id=document_id,
+                document_version_id=getattr(
+                    doc_dto, "current_version_id", None,
+                ),
+                file_hash=getattr(doc_dto, "checksum", None),
+                selected_domain_id=active_domain_id,
+                lightweight_assessment=assessment_plan_payload,
+                matched_domain_rules=tuple(active_rule_payloads),
+                matched_general_rules=tuple(general_rule_payloads),
+                recommended_profile=outcome.profile.value,
+                selected_profile=user_selected_profile_input,
+                effective_profile=outcome.profile.value,
+                recommendation_source=outcome.source,
+                fallback_used=outcome.fallback_used,
+                compile_option_preview=compile_option_preview,
+                warnings=tuple(decision_warnings),
+            )
+            try:
+                assessment_decision_store.upsert(ctx, decision)
+            except Exception:  # noqa: BLE001 — store IO is best-effort
+                decision = None
+
+        response_body: dict[str, Any] = {
+            "documentId": document_id,
+            "assessmentDecisionId": (
+                decision.assessment_decision_id
+                if decision is not None else None
+            ),
+            "selectedDomainId": active_domain_id,
+            "recommendedProfile": outcome.profile.value,
+            "recommendationSource": outcome.source,
+            "fallbackUsed": outcome.fallback_used,
+            "matchedRules": [r.to_payload() for r in outcome.matched_rules],
+            "availableProfiles": available,
+            "reasons": list(outcome.reasons),
+            "assessment": assessment_plan_payload,
+            "compileOptionPreview": compile_option_preview,
+            "warnings": decision_warnings,
+        }
+        return envelope(response_body, _req_id(request))
 
     @app.get(
         "/documents/{document_id}/status",
@@ -4697,6 +4916,17 @@ def create_rest_api(
         # values are rejected at the boundary with 400 so a typo
         # fails fast.
         selected_profile: str | None = Form(default=None, alias="selectedProfile"),
+        # Assessment-decision id minted by
+        # ``POST /documents/{id}/assessment-plan``. When supplied,
+        # the REST adapter looks it up, validates it against the
+        # current document, and stamps the full payload onto the
+        # run's metadata so the workflow consumes the same
+        # recommendation the FE picker showed. A missing /
+        # mismatched / unsupported decision degrades to the
+        # workflow's rebuild path (with a stamped warning).
+        assessment_decision_id: str | None = Form(
+            default=None, alias="assessmentDecisionId",
+        ),
         ctx: ProjectContext = Depends(get_ctx),
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
@@ -4776,10 +5006,82 @@ def create_rest_api(
         # has to map between them.
         run_id = correlation_id or uuid.uuid4().hex
 
+        # 3b. Look up + validate the assessment decision (if any).
+        # The validated decision is stamped onto run metadata so the
+        # workflow consumes the same recommendation the FE picker
+        # showed. Validation failure does NOT 4xx — we degrade to
+        # the workflow's rebuild path with a stamped warning, so
+        # the user's upload still completes.
+        (
+            assessment_decision_metadata,
+            assessment_decision_warning,
+        ) = _load_and_validate_assessment_decision(
+            ctx=ctx,
+            decision_id=assessment_decision_id,
+            document_id=doc_dto.document_id,
+            file_hash=getattr(doc_dto, "checksum", None),
+        )
+
         # 4. Persist initial run record with status=CREATED. Subsequent
         # writes (status transitions) append fresh snapshots; the
         # latest one wins on read.
         now = datetime.now(timezone.utc)
+        run_metadata: dict[str, Any] = {
+            "duplicate_upload": duplicate,
+            "policy": policy or "auto",
+            # `mode` is the human-readable label the FE shows
+            # alongside `policy` (e.g., STANDARD / FAST / THOROUGH).
+            # The upload form doesn't yet collect a value, so we
+            # default to STANDARD — when a mode selector lands in
+            # the UI thread it through here.
+            "mode": "STANDARD",
+            # Persisted so `GET /ingestion-runs` can render the
+            # uploaded filename without joining on the documents
+            # store. `original_filename` falls back to the multi-
+            # part `filename` parameter, which the FE always sends.
+            "document_name": doc_dto.original_filename,
+            # Execution profile audit trail. The profile here is
+            # the deployment-policy-resolved final value — caller's
+            # request when allowed, deployment default when the
+            # caller omitted `selectedProfile`. Refused requests
+            # never reach this point (they raise 403 above).
+            # Wire-string values match
+            # `j1.processing.execution_profile.ExecutionProfile`.
+            "selected_execution_profile": resolved_profile.value,
+            "profile_selected_by": (
+                "user" if profile_source == "rest" else "system"
+            ),
+            "profile_selection_source": profile_source,
+        }
+        if assessment_decision_metadata is not None:
+            run_metadata["assessment_decision_id"] = (
+                assessment_decision_metadata["assessmentDecisionId"]
+            )
+            run_metadata["assessment_decision"] = (
+                assessment_decision_metadata
+            )
+            # Final-report indicator. ``persisted`` only fires when
+            # the REST adapter validated the decision AND it carries
+            # a usable ``lightweightAssessment``. Anything else falls
+            # through to ``rebuilt_fallback`` (caller passed an id
+            # that didn't validate, or no id at all).
+            if assessment_decision_metadata.get("lightweightAssessment"):
+                run_metadata["assessment_decision_source"] = "persisted"
+            else:
+                run_metadata["assessment_decision_source"] = (
+                    "rebuilt_fallback"
+                )
+        elif assessment_decision_id:
+            # Caller passed an id but validation failed. The workflow
+            # will rebuild — record the expected source so the final
+            # report reflects what happened.
+            run_metadata["assessment_decision_source"] = "rebuilt_fallback"
+        if assessment_decision_warning is not None:
+            # Stamp the validation warning so the final report can
+            # surface it even when the decision was unusable.
+            run_metadata.setdefault(
+                "assessment_decision_warnings", [],
+            ).append(assessment_decision_warning)
         run = IngestionRun(
             run_id=run_id,
             document_id=doc_dto.document_id,
@@ -4788,33 +5090,7 @@ def create_rest_api(
             status=RunStatus.CREATED,
             started_at=now,
             updated_at=now,
-            metadata={
-                "duplicate_upload": duplicate,
-                "policy": policy or "auto",
-                # `mode` is the human-readable label the FE shows
-                # alongside `policy` (e.g., STANDARD / FAST / THOROUGH).
-                # The upload form doesn't yet collect a value, so we
-                # default to STANDARD — when a mode selector lands in
-                # the UI thread it through here.
-                "mode": "STANDARD",
-                # Persisted so `GET /ingestion-runs` can render the
-                # uploaded filename without joining on the documents
-                # store. `original_filename` falls back to the multi-
-                # part `filename` parameter, which the FE always sends.
-                "document_name": doc_dto.original_filename,
-                # Execution profile audit trail. The profile here is
-                # the deployment-policy-resolved final value — caller's
-                # request when allowed, deployment default when the
-                # caller omitted `selectedProfile`. Refused requests
-                # never reach this point (they raise 403 above).
-                # Wire-string values match
-                # `j1.processing.execution_profile.ExecutionProfile`.
-                "selected_execution_profile": resolved_profile.value,
-                "profile_selected_by": (
-                    "user" if profile_source == "rest" else "system"
-                ),
-                "profile_selection_source": profile_source,
-            },
+            metadata=run_metadata,
             # Phase 5: initial-ingest path also allocates the
             # candidate snapshot UP-FRONT so the workflow sees
             # ``target_snapshot_id`` on its first activity.
@@ -4855,6 +5131,22 @@ def create_rest_api(
             # workflow's audit log captures what actually ran
             # instead of leaving the field None.
             selected_profile=resolved_profile.value,
+            # Pass the validated decision id + full payload so the
+            # workflow can short-circuit its rebuild path. When None,
+            # the workflow falls back to its existing assessment-plan
+            # activity and stamps the source as ``rebuilt_fallback``.
+            assessment_decision_id=(
+                assessment_decision_metadata["assessmentDecisionId"]
+                if assessment_decision_metadata is not None else None
+            ),
+            assessment_decision_payload=(
+                dict(assessment_decision_metadata)
+                if assessment_decision_metadata is not None else None
+            ),
+            assessment_decision_warnings=(
+                (assessment_decision_warning,)
+                if assessment_decision_warning is not None else ()
+            ),
         )
         workflow_id = await starter(ctx, doc_dto.document_id, body)
 

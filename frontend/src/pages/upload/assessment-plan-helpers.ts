@@ -15,6 +15,7 @@ import {
   type AssessmentPlanResponse,
   type ExecutionProfileDetails,
   type ExecutionProfileId,
+  type RecommendationSource,
 } from "@/types/execution-profile";
 
 
@@ -34,19 +35,57 @@ export function profileLabel(id: ExecutionProfileId): string {
 
 
 /** Short one-line description rendered under the profile label.
- * Mirrors the cost/quality copy from the task spec — kept here
- * (not in the backend response) so design tweaks don't require
- * a backend deploy. */
+ *
+ * NOTE: this is intentionally GENERIC and hedged. Profile-card
+ * specifics (graph yes/no, multimodal yes/no, …) come from the
+ * backend ``ExecutionProfileDetails`` flags — see
+ * ``capabilityBullets`` below. Keeping per-profile claims out of
+ * this function avoids the misleading-copy class of bug where the
+ * FE asserts "skips graph" while a future backend revision turns
+ * graph on for that profile.
+ */
 export function profileTagline(id: ExecutionProfileId): string {
   switch (id) {
     case "minimum_queryable":
-      return "Fastest. Skips graph, enrichment, and validation.";
+      return "Lightest pass. See the bullets below for current behaviour.";
     case "standard":
-      return "Balanced. Limited optional processing.";
+      return "Balanced pass. See the bullets below for current behaviour.";
     case "advanced":
-      return "Highest quality. May run graph, multimodal, enrichment.";
+      return "Heaviest pass. See the bullets below for current behaviour.";
   }
 }
+
+
+/** Source-aware copy for the "Why this recommendation?" line.
+ * Mirrors the backend ``recommendation_resolver`` vocabulary. */
+export function recommendationSourceLabel(
+  source: RecommendationSource,
+): string {
+  switch (source) {
+    case "user_override":
+      return "Recommended by operator override";
+    case "active_domain_rule":
+      return "Recommended by domain rule";
+    case "general_domain_rule":
+      return "Recommended by general rule";
+    case "lightweight_assessment":
+      return "Recommended by lightweight assessment";
+    case "lightweight_assessment_fallback":
+      return "Recommended by lightweight assessment fallback";
+    case "system_default":
+      return "Recommended by system default";
+  }
+}
+
+
+/** Standard fallback warning. Pinned in tests; backend emits the
+ * same string under ``warnings`` but the helper exists so the FE
+ * test can locate the banner without a string-match against the
+ * backend warning array. */
+export const FALLBACK_WARNING_BODY =
+  "No domain-specific document rule matched this filename/title. "
+  + "This recommendation is based on lightweight assessment only. "
+  + "Please choose based on the visible complexity of the document.";
 
 
 /** Speed label rendered as a chip. Maps the backend's
@@ -83,8 +122,15 @@ export function llmUsageLabel(details: ExecutionProfileDetails): string {
 
 /**
  * Render the bullet-list of capability flags for a profile card.
- * Honesty disclosure: surfaces `compile_lightrag_extraction` as
- * a separate bullet for `standard` / `advanced` so the user
+ *
+ * Every bullet is DERIVED FROM the backend ``ExecutionProfileDetails``
+ * — never hard-coded prose claims like "Skips graph, enrichment,
+ * and validation". That older copy went stale every time the
+ * backend's capability matrix changed; this version follows the
+ * data so a backend-side flip immediately reaches the UI.
+ *
+ * Honesty disclosure: surfaces ``compile_lightrag_extraction`` as
+ * a separate bullet for ``standard`` / ``advanced`` so the user
  * sees the unavoidable library-internal LLM tax. Pinned in tests.
  */
 export function capabilityBullets(

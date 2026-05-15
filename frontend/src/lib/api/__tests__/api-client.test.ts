@@ -195,6 +195,41 @@ describe("ApiClient.upload", () => {
     const body = calls[0]!.init.body as FormData;
     expect(body.get("selectedProfile")).toBeNull();
   });
+
+  it("forwards assessmentDecisionId in the FormData when provided", async () => {
+    // Without this field, the backend recomputes the assessment
+    // downstream and the FE-shown recommendation never reaches the
+    // workflow. Pin so a regression silently demotes every run to
+    // ``rebuilt_fallback``.
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "r" } }));
+    const file = new File(["x"], "x.txt");
+    await makeClient().upload(
+      file,
+      { tenant: "acme", project: "alpha" },
+      "standard",
+      "ad-abc123",
+    );
+    const body = calls[0]!.init.body as FormData;
+    expect(body.get("assessmentDecisionId")).toBe("ad-abc123");
+    expect(body.get("selectedProfile")).toBe("standard");
+  });
+
+  it("omits assessmentDecisionId when null / undefined", async () => {
+    // Either skipping the picker entirely (legacy) or hitting a
+    // deployment without the decision store wired (the endpoint
+    // returns ``assessmentDecisionId: null``). The form field must
+    // be absent so the backend treats the run as decision-less.
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "r" } }));
+    const file = new File(["x"], "x.txt");
+    await makeClient().upload(
+      file,
+      { tenant: "acme", project: "alpha" },
+      "standard",
+      null,
+    );
+    const body = calls[0]!.init.body as FormData;
+    expect(body.get("assessmentDecisionId")).toBeNull();
+  });
 });
 
 describe("ApiClient.getDocumentAssessmentPlan", () => {

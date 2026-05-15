@@ -56,6 +56,54 @@ export interface ExecutionProfileDetails {
   compile_lightrag_extraction: boolean;
 }
 
+/** Stable vocabulary for the ``recommendationSource`` field. Mirrors
+ * ``j1.processing.recommendation_resolver`` so renames require a
+ * coordinated BE + FE change. */
+export type RecommendationSource =
+  | "user_override"
+  | "active_domain_rule"
+  | "general_domain_rule"
+  | "lightweight_assessment"
+  | "lightweight_assessment_fallback"
+  | "system_default";
+
+/** Rule-based hints attached to a winning ``document_profile_rule``.
+ * Advisory only — the FE renders these as "likely / suspected"
+ * copy, not as facts. */
+export interface AssessmentPlanRuleHints {
+  likelyTables: boolean;
+  likelyImages: boolean;
+  likelyRequirements: boolean;
+  likelyScanned: boolean;
+  likelyLongDocument: boolean;
+}
+
+/** One ``document_profile_rule`` that fired during resolution.
+ * The resolver surfaces every match (not just the winner) so the
+ * audit panel can show why a candidate was demoted by priority. */
+export interface MatchedProfileRule {
+  ruleId: string;
+  domainId: string;
+  priority: number;
+  recommendedProfile: ExecutionProfileId;
+  confidence: number;
+  reason: string;
+  winner: boolean;
+  hints: AssessmentPlanRuleHints;
+}
+
+/** Compile-option preview surfaced under the picker. Every field
+ * is a SUSPICION, never a fact — the compile stage decides actual
+ * behaviour. The dialog copy uses "likely / suspected" verbatim. */
+export interface CompileOptionPreview {
+  suspectedTables: boolean;
+  suspectedImages: boolean;
+  suspectedScanned: boolean;
+  suspectedRequirements: boolean;
+  suspectedLongDocument: boolean;
+  note: string;
+}
+
 /**
  * Response of `POST /documents/{id}/assessment-plan`.
  *
@@ -65,21 +113,48 @@ export interface ExecutionProfileDetails {
  */
 export interface AssessmentPlanResponse {
   documentId: string;
+  /** Server-minted id for the persisted ``AssessmentDecision``.
+   * Threaded back to ``POST /ingestion-runs`` as
+   * ``assessmentDecisionId`` so the workflow consumes the same
+   * recommendation the picker showed instead of re-running the
+   * resolver downstream. ``null`` when the deployment didn't wire
+   * the decision store (legacy path). */
+  assessmentDecisionId: string | null;
+  /** Active domain pack id that owned the resolution. Mirrors the
+   * resolver's precedence chain (user > workspace default >
+   * general). Surfaced for audit + future per-document overrides. */
+  selectedDomainId: string;
   /** The planner's suggestion based on document signals. The user
    * may accept or override via the picker. */
   recommendedProfile: ExecutionProfileId;
+  /** Which layer of the precedence chain produced the
+   * recommendation. The dialog renders source-specific copy
+   * (e.g. "Recommended by domain rule") so the operator
+   * understands the authority. */
+  recommendationSource: RecommendationSource;
+  /** True when no domain or general rule matched the document's
+   * filename / title and the recommendation fell back to the
+   * lightweight profiler signals. The FE MUST show the standard
+   * fallback warning when this is true. */
+  fallbackUsed: boolean;
+  /** Every rule that matched. The ``winner`` flag tells the FE
+   * which one drove the recommendation. */
+  matchedRules: MatchedProfileRule[];
   /** Full profile catalogue with cost / capability disclosures.
    * The FE picker renders these as radio cards without rebuilding
    * the copy on the client side. */
   availableProfiles: ExecutionProfileDetails[];
   /** Operator-readable strings explaining WHY the recommendation
-   * was made (e.g. "Document contains scanned pages"). Surfaced
-   * next to the picker so the user can audit the suggestion. */
+   * was made. Hedged language ("likely / suspected") preferred. */
   reasons: string[];
   /** Pre-compile assessment-plan payload (mode + capabilities)
    * — opaque dict the FE may surface in a debug drawer. Null when
    * the profiler couldn't analyze the document. */
   assessment: Record<string, unknown> | null;
-  /** Profiler warnings (e.g. "file size exceeds threshold"). */
+  /** Rule-based hints about compile-time behaviour. Advisory; the
+   * compile / RAGAnything layers decide actual behaviour. */
+  compileOptionPreview: CompileOptionPreview;
+  /** Resolver warnings (env-disable downgrade messages, fallback
+   * notice, profiler warnings). */
   warnings: string[];
 }

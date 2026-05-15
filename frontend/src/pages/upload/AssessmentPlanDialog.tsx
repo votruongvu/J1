@@ -28,6 +28,7 @@ import { useState } from "react";
 import { Banner } from "@/components/Banner";
 import type {
   AssessmentPlanResponse,
+  CompileOptionPreview,
   ExecutionProfileDetails,
   ExecutionProfileId,
 } from "@/types/execution-profile";
@@ -35,9 +36,11 @@ import type {
 import {
   capabilityBullets,
   defaultInitialSelection,
+  FALLBACK_WARNING_BODY,
   orderedProfiles,
   profileLabel,
   profileTagline,
+  recommendationSourceLabel,
 } from "./assessment-plan-helpers";
 
 
@@ -111,14 +114,38 @@ export function AssessmentPlanDialog({
           <RecommendationBanner plan={plan} />
         )}
 
-        {/* Warnings from the profiler (file-size, etc.). */}
-        {plan !== null && plan.warnings.length > 0 && (
+        {/* Fallback warning — surfaces only when no domain or
+            general rule matched, so the operator knows the
+            recommendation came from lightweight signals alone. */}
+        {plan !== null && plan.fallbackUsed && (
+          <div data-testid="assessment-plan-fallback-warning">
+            <Banner kind="warn" title="No document rule matched">
+              {FALLBACK_WARNING_BODY}
+            </Banner>
+          </div>
+        )}
+
+        {/* Compile-option preview — hedged hints under the picker. */}
+        {plan !== null && (
+          <CompileOptionPreviewPanel preview={plan.compileOptionPreview} />
+        )}
+
+        {/* Warnings from the profiler / resolver (file-size, env
+            downgrades, etc.). We intentionally render the fallback
+            banner above as its own block; this list catches
+            anything else. */}
+        {plan !== null
+          && plan.warnings.filter(
+              (w) => w !== FALLBACK_WARNING_BODY,
+            ).length > 0 && (
           <div data-testid="assessment-plan-warnings">
             <Banner kind="warn" title="Notes on this document">
               <ul>
-                {plan.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
+                {plan.warnings
+                  .filter((w) => w !== FALLBACK_WARNING_BODY)
+                  .map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
               </ul>
             </Banner>
           </div>
@@ -185,6 +212,12 @@ function RecommendationBanner({ plan }: { plan: AssessmentPlanResponse }) {
       <div>
         Recommended: <strong>{profileLabel(plan.recommendedProfile)}</strong>
       </div>
+      <div
+        className="assessment-plan-dialog__source"
+        data-testid="assessment-plan-recommendation-source"
+      >
+        {recommendationSourceLabel(plan.recommendationSource)}
+      </div>
       {plan.reasons.length > 0 && (
         <ul className="assessment-plan-dialog__reasons">
           {plan.reasons.map((r, i) => (
@@ -192,6 +225,46 @@ function RecommendationBanner({ plan }: { plan: AssessmentPlanResponse }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+
+/** Compile-option preview — hedged hints, never claims. The note
+ * text comes from the backend so future tweaks don't require
+ * a coordinated FE release. */
+function CompileOptionPreviewPanel({
+  preview,
+}: {
+  preview: CompileOptionPreview;
+}) {
+  const hints: { label: string; on: boolean }[] = [
+    { label: "Tables likely", on: preview.suspectedTables },
+    { label: "Images likely", on: preview.suspectedImages },
+    { label: "Scanned content suspected", on: preview.suspectedScanned },
+    {
+      label: "Requirements likely (rule-based hint)",
+      on: preview.suspectedRequirements,
+    },
+    {
+      label: "Long document suspected",
+      on: preview.suspectedLongDocument,
+    },
+  ];
+  const active = hints.filter((h) => h.on);
+  if (active.length === 0) return null;
+  return (
+    <div
+      className="assessment-plan-dialog__compile-preview"
+      data-testid="assessment-plan-compile-preview"
+    >
+      <strong>What this document likely contains</strong>
+      <ul>
+        {active.map((h) => (
+          <li key={h.label}>{h.label}</li>
+        ))}
+      </ul>
+      <small>{preview.note}</small>
     </div>
   );
 }

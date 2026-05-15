@@ -62,6 +62,31 @@ class IngestRequest(CamelModel):
     # workflow; the workflow allocates per-document inside the
     # processing loop via the ``allocate_target_snapshot`` activity.
     target_snapshot_id: str | None = None
+    # Assessment-decision id minted by
+    # ``POST /documents/{id}/assessment-plan``. When set, the REST
+    # adapter looks the decision up, validates it against the
+    # current document, stamps the full payload onto
+    # ``IngestionRun.metadata["assessment_decision"]``, and threads
+    # it through ``ProjectProcessingRequest`` so the workflow uses
+    # the SAME recommendation the FE picker showed. Missing or
+    # invalid decisions degrade to the workflow's rebuild path —
+    # see ``j1.processing.assessment_decision`` for the validation
+    # contract.
+    assessment_decision_id: str | None = None
+    # Full validated ``AssessmentDecision`` payload. Populated by the
+    # REST adapter (NOT supplied by external callers) once the id has
+    # passed ``validate_decision_for_document``. The starter threads
+    # it onto ``ProjectProcessingRequest.assessment_decision_payload``
+    # so the workflow can short-circuit its rebuild without consulting
+    # the store from inside Temporal. Internal contract — kept on the
+    # request DTO instead of a side-channel so test wirings can pass
+    # a synthetic payload directly.
+    assessment_decision_payload: dict | None = None
+    # Warnings produced by the REST adapter's decision lookup (id
+    # missing / hash mismatch / store IO fault). Threaded through so
+    # the workflow can stamp them on the final report even when the
+    # decision wasn't usable.
+    assessment_decision_warnings: tuple[str, ...] = ()
     # User-selected execution profile (wire-string value of
     # ``ExecutionProfile``: ``minimum_queryable`` / ``standard`` /
     # ``advanced``). When None (default), the workflow falls back
@@ -70,6 +95,25 @@ class IngestRequest(CamelModel):
     # When explicitly provided by the FE's profile picker, it
     # becomes the authoritative gate for every downstream
     # "should this stage run?" check.
+    selected_profile: str | None = None
+
+
+class AssessmentPlanRequest(CamelModel):
+    """Optional JSON body for ``POST /documents/{id}/assessment-plan``.
+
+    All fields optional. Tracks the assessment-layer
+    ``RecommendationResolver`` contract:
+
+      * ``selectedDomainId`` — caller's domain preference. Resolution
+        order: user-selected > workspace default > general. When the
+        requested id isn't registered, the resolver falls back to
+        general and emits a warning.
+      * ``selectedProfile`` — operator pick at recommend time. Goes
+        through the same env / allow-list gating as the ingest
+        endpoint; surfaces in the persisted ``AssessmentDecision``
+        for audit.
+    """
+    selected_domain_id: str | None = None
     selected_profile: str | None = None
 
 

@@ -23,6 +23,8 @@ __all__ = [
     "ENRICHMENT_POLICY_ALWAYS",
     "ENRICHMENT_POLICY_AUTO",
     "ENRICHMENT_POLICY_NEVER",
+    "DocumentProfileRule",
+    "DocumentProfileRuleHints",
     "DomainContext",
     "DomainDetectionResult",
     "DomainEnrichmentPolicy",
@@ -407,6 +409,67 @@ class DomainPromptPack:
 
 
 @dataclass(frozen=True)
+class DocumentProfileRuleHints:
+    """Rule-based, NON-AUTHORITATIVE hints attached to a recommendation.
+
+    These are deliberately fuzzy: a rule that matches ``RFP_*.pdf`` can
+    claim ``likely_tables=True`` and ``likely_requirements=True`` without
+    promising the document actually has them — the recommendation
+    resolver surfaces these to the FE as "suspected" / "likely" copy so
+    the operator can override on visual inspection.
+
+    The compile / enrichment layers MUST NOT make hard decisions from
+    these fields (e.g. don't skip OCR because ``likely_images=False``).
+    They're for FE display + audit trail only.
+    """
+
+    likely_tables: bool = False
+    likely_images: bool = False
+    likely_requirements: bool = False
+    likely_scanned: bool = False
+    likely_long_document: bool = False
+
+
+@dataclass(frozen=True)
+class DocumentProfileRule:
+    """One pattern-based recommendation rule from a domain pack.
+
+    Matches against the document's ``filename`` and / or ``title``
+    via case-insensitive regex. When a rule matches, the resolver
+    uses ``recommended_profile`` as the profile suggestion and
+    surfaces ``reason`` to the user verbatim. Lower-numbered
+    ``priority`` wins on tie-break; first match by priority order
+    is authoritative.
+
+    The rule's authority is BOUNDED:
+
+      * It does NOT bypass deployment env policy (a rule that
+        recommends ``advanced`` while the env disables advanced
+        downgrades — see ``RecommendationResolver``).
+      * It does NOT bypass an explicit user-selected profile —
+        user choice always wins after env validation.
+      * ``hints`` are advisory ONLY: see
+        :class:`DocumentProfileRuleHints` for the contract.
+
+    Domain packs declare rules in ``domain.yaml`` under the
+    ``document_profile_rules:`` block. The generic pack also carries
+    rules (RFP / meeting minutes / memo / notes) so deployments
+    without a domain still get filename-driven hints.
+    """
+
+    id: str
+    priority: int
+    recommended_profile: str
+    confidence: float
+    reason: str
+    filename_regex: str | None = None
+    title_regex: str | None = None
+    hints: DocumentProfileRuleHints = field(
+        default_factory=DocumentProfileRuleHints,
+    )
+
+
+@dataclass(frozen=True)
 class DomainPack:
     """One Domain Pack.
 
@@ -473,6 +536,14 @@ class DomainPack:
     # Detection function. Generic pack uses a no-op; civil pack
     # uses a keyword + structural scorer.
     detect: DetectionFn | None = None
+    # Pattern-based profile recommendation rules. Evaluated by the
+    # ``RecommendationResolver`` (assessment layer). Lower
+    # ``priority`` wins. The generic pack carries cross-domain
+    # patterns (RFP / meeting minutes / memo / notes); domain
+    # packs add domain-specific patterns (e.g. civil engineering
+    # contributes BOQ / specs / drawings). See
+    # :class:`DocumentProfileRule` for the contract.
+    document_profile_rules: tuple["DocumentProfileRule", ...] = ()
 
 
 class DetectionContext(Protocol):

@@ -166,6 +166,17 @@ def make_per_document_starter(
                 selected_execution_profile=getattr(
                     body, "selected_profile", None,
                 ),
+                # Persisted AssessmentDecision (validated by REST
+                # adapter). When supplied, the workflow uses it
+                # verbatim and skips its rebuild path. ``getattr``
+                # keeps legacy IngestRequests working with the
+                # workflow-side rebuild fallback.
+                assessment_decision_payload=getattr(
+                    body, "assessment_decision_payload", None,
+                ),
+                assessment_decision_warnings=tuple(getattr(
+                    body, "assessment_decision_warnings", (),
+                ) or ()),
             ),
             id=workflow_id,
             task_queue=task_queue,
@@ -413,6 +424,34 @@ def _build_app():
         indexer_kinds=frozenset(),
     )
 
+    # Preload the domain registry in the API process so both the
+    # generic and civil-engineering packs are visible at
+    # ``/assessment-plan`` time. Without this, the standalone dev
+    # API (no worker in-process) would never import
+    # ``j1.domains.civil_engineering`` and the registry singleton
+    # would carry only the generic pack — domain-specific rules
+    # would silently never fire.
+    from j1.domains import default_registry as _preload_default_registry
+    try:
+        _preload_default_registry()
+    except Exception:  # noqa: BLE001 — degrade if a pack fails to load
+        pass
+
+    # Persistent ``AssessmentDecision`` store. Lives under the same
+    # workspace audit area as ``ingestion_runs.jsonl`` so a single
+    # backup covers run records + snapshots + decisions.
+    from j1.processing.assessment_decision import (
+        JsonlAssessmentDecisionStore,
+    )
+    assessment_decision_store = JsonlAssessmentDecisionStore(workspace)
+
+    # Deployment-level workspace default domain. Read at boot to
+    # avoid per-request env access. ``None`` keeps the resolver on
+    # the generic pack until a per-project override lands.
+    workspace_default_domain_id = (
+        os.environ.get("J1_WORKSPACE_DEFAULT_DOMAIN") or None
+    )
+
     app = create_rest_api(
         facade_with_temporal,
         authenticator=maybe_build_authenticator(),
@@ -470,6 +509,13 @@ def _build_app():
         # than booting with a degraded policy — exactly the
         # contract we want for operator-visible misconfiguration.
         execution_profile_policy=load_execution_profile_policy(),
+        # Persistent recommendation store + workspace default domain
+        # — the two seams that turn ``/assessment-plan`` into a real
+        # source of truth instead of a one-shot recommendation. See
+        # ``j1.processing.assessment_decision`` for the validation
+        # contract consumers must honour.
+        assessment_decision_store=assessment_decision_store,
+        workspace_default_domain_id=workspace_default_domain_id,
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

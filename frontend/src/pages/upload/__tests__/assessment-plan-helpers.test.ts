@@ -54,7 +54,12 @@ function _response(
 ): AssessmentPlanResponse {
   return {
     documentId: "doc-1",
+    assessmentDecisionId: null,
+    selectedDomainId: "general",
     recommendedProfile: "standard",
+    recommendationSource: "lightweight_assessment",
+    fallbackUsed: false,
+    matchedRules: [],
     availableProfiles: [
       _details({ id: "minimum_queryable" }),
       _details({ id: "standard" }),
@@ -62,6 +67,14 @@ function _response(
     ],
     reasons: [],
     assessment: null,
+    compileOptionPreview: {
+      suspectedTables: false,
+      suspectedImages: false,
+      suspectedScanned: false,
+      suspectedRequirements: false,
+      suspectedLongDocument: false,
+      note: "These are rule-based hints, not exact detection.",
+    },
     warnings: [],
     ...overrides,
   };
@@ -89,8 +102,24 @@ describe("profileTagline", () => {
     }
   });
 
-  it("minimum_queryable tagline mentions skipping enrichment", () => {
-    expect(profileTagline("minimum_queryable").toLowerCase()).toContain("skip");
+  it("avoids hard-coded misleading capability claims", () => {
+    // Regression guard: the old tagline asserted "Skips graph,
+    // enrichment, and validation" which drifted out of sync every
+    // time the backend's capability matrix changed. The refactor
+    // moved per-profile specifics to the data-driven bullets and
+    // keeps the tagline generic + hedged.
+    for (const id of ["minimum_queryable", "standard", "advanced"] as const) {
+      const tag = profileTagline(id).toLowerCase();
+      expect(tag).not.toContain("skips graph");
+      expect(tag).not.toContain("enrichment, and validation");
+      expect(tag).not.toContain("highest quality");
+    }
+  });
+
+  it("points the operator at the data-driven bullets", () => {
+    expect(profileTagline("minimum_queryable").toLowerCase()).toContain(
+      "current behaviour",
+    );
   });
 });
 

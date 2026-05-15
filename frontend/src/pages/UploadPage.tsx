@@ -116,6 +116,10 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
   ) => {
     if (pendingFile === null) return;
     const file = pendingFile;
+    // Capture the decision id BEFORE clearing the plan — the
+    // backend uses it to consume the same recommendation the picker
+    // just showed instead of re-running the resolver.
+    const decisionId = planResponse?.assessmentDecisionId ?? null;
     // Close the dialog optimistically — the dropzone shows its
     // own busy spinner while the upload runs.
     setPendingFile(null);
@@ -123,7 +127,9 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
     setPlanError(null);
     setBusy(true);
     try {
-      const { runId } = await client.upload(file, ctx, selectedProfile);
+      const { runId } = await client.upload(
+        file, ctx, selectedProfile, decisionId,
+      );
       onUploaded(runId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");

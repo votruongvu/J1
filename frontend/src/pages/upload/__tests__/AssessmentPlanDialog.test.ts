@@ -53,7 +53,12 @@ function _response(
 ): AssessmentPlanResponse {
   return {
     documentId: "doc-1",
+    assessmentDecisionId: null,
+    selectedDomainId: "general",
     recommendedProfile: "advanced",
+    recommendationSource: "active_domain_rule",
+    fallbackUsed: false,
+    matchedRules: [],
     availableProfiles: [
       _profile({
         id: "minimum_queryable",
@@ -72,8 +77,16 @@ function _response(
         enrichment_enabled: true,
       }),
     ],
-    reasons: ["Document contains tables and images."],
+    reasons: ["Document likely contains tables and images."],
     assessment: null,
+    compileOptionPreview: {
+      suspectedTables: false,
+      suspectedImages: false,
+      suspectedScanned: false,
+      suspectedRequirements: false,
+      suspectedLongDocument: false,
+      note: "These are rule-based hints, not exact detection.",
+    },
     warnings: [],
     ...overrides,
   };
@@ -201,6 +214,125 @@ describe("AssessmentPlanDialog — state machine", () => {
       }),
     });
     expect(html).toContain("file size exceeds 100MB threshold");
+  });
+});
+
+
+describe("AssessmentPlanDialog — recommendation source + fallback", () => {
+  it("renders a source label for active-domain rule recommendations", () => {
+    const html = _render({
+      plan: _response({
+        recommendationSource: "active_domain_rule",
+        fallbackUsed: false,
+      }),
+    });
+    expect(html).toContain("Recommended by domain rule");
+    // And NOT the fallback banner.
+    expect(html).not.toContain("assessment-plan-fallback-warning");
+  });
+
+  it("renders a different source label for general-rule recommendations", () => {
+    const html = _render({
+      plan: _response({
+        recommendationSource: "general_domain_rule",
+        fallbackUsed: false,
+      }),
+    });
+    expect(html).toContain("Recommended by general rule");
+    expect(html).not.toContain("assessment-plan-fallback-warning");
+  });
+
+  it("renders the fallback warning when fallbackUsed=true", () => {
+    const html = _render({
+      plan: _response({
+        recommendationSource: "lightweight_assessment_fallback",
+        fallbackUsed: true,
+      }),
+    });
+    expect(html).toContain("assessment-plan-fallback-warning");
+    // Standard wording — pinned so a drift on either side is caught.
+    expect(html).toContain("No domain-specific document rule matched");
+    expect(html).toContain("lightweight assessment only");
+    expect(html).toContain("visible complexity");
+    expect(html).toContain("Recommended by lightweight assessment fallback");
+  });
+
+  it("renders the compile-option preview with hedged language", () => {
+    const html = _render({
+      plan: _response({
+        compileOptionPreview: {
+          suspectedTables: true,
+          suspectedImages: false,
+          suspectedScanned: true,
+          suspectedRequirements: true,
+          suspectedLongDocument: false,
+          note: "These are rule-based hints, not exact detection.",
+        },
+      }),
+    });
+    expect(html).toContain("assessment-plan-compile-preview");
+    // Hedged words, no exact-detection claims.
+    expect(html).toContain("Tables likely");
+    expect(html).toContain("Scanned content suspected");
+    expect(html).toContain("Requirements likely (rule-based hint)");
+    // The "not exact detection" disclaimer is surfaced verbatim.
+    expect(html).toContain("not exact detection");
+  });
+
+  it("hides the compile-option preview when no hint is active", () => {
+    const html = _render({
+      plan: _response({
+        compileOptionPreview: {
+          suspectedTables: false,
+          suspectedImages: false,
+          suspectedScanned: false,
+          suspectedRequirements: false,
+          suspectedLongDocument: false,
+          note: "n/a",
+        },
+      }),
+    });
+    expect(html).not.toContain("assessment-plan-compile-preview");
+  });
+
+  it("does NOT hard-code 'Skips graph, enrichment, and validation' copy", () => {
+    // Regression guard: the old tagline made misleading claims that
+    // didn't match the backend's capability matrix. The refactor
+    // moved per-profile specifics to the data-driven capability
+    // bullets and kept the tagline generic + hedged.
+    const html = _render();
+    expect(html).not.toContain("Skips graph, enrichment, and validation");
+    // The generic tagline DOES tell the user to read the bullets.
+    expect(html).toContain("current behaviour");
+  });
+
+  it("filters the duplicate fallback warning out of the generic notes list", () => {
+    // The fallback warning gets its own dedicated banner. The
+    // "Notes on this document" generic list MUST NOT also surface
+    // the same string — that would render the same banner twice.
+    const html = _render({
+      plan: _response({
+        recommendationSource: "lightweight_assessment_fallback",
+        fallbackUsed: true,
+        warnings: [
+          // The backend emits FALLBACK_WARNING in `warnings` too,
+          // plus a profiler note. Only the profiler note should
+          // surface in the generic "Notes" list.
+          "No domain-specific document rule matched this filename/title. "
+          + "This recommendation is based on lightweight assessment only. "
+          + "Please choose based on the visible complexity of the document.",
+          "file size exceeds 100MB threshold",
+        ],
+      }),
+    });
+    // Fallback banner gets the fallback copy.
+    expect(html).toContain("assessment-plan-fallback-warning");
+    // Generic notes list gets the OTHER warning.
+    expect(html).toContain("file size exceeds 100MB threshold");
+    // The fallback copy must not appear inside the generic notes
+    // panel — check that the fallback string appears EXACTLY ONCE.
+    const matches = html.match(/No domain-specific document rule matched/g);
+    expect(matches?.length ?? 0).toBe(1);
   });
 });
 

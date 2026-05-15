@@ -185,6 +185,7 @@ export class ApiClient implements IngestionClient {
     file: UploadFile,
     ctx: ProjectContext,
     selectedProfile?: ExecutionProfileId,
+    assessmentDecisionId?: string | null,
   ): Promise<{ runId: string }> {
     if (!ctx?.tenant || !ctx?.project) {
       throw new ApiError(400, "Tenant and Project are required.");
@@ -212,6 +213,13 @@ export class ApiClient implements IngestionClient {
     // working for callers that haven't adopted the picker yet.
     if (selectedProfile) {
       fd.append("selectedProfile", selectedProfile);
+    }
+    // ``assessmentDecisionId`` lets the backend short-circuit its
+    // assessment rebuild by consuming the persisted decision the
+    // picker just showed. Missing / invalid ids degrade to the
+    // workflow's rebuild fallback (server-side warning, not a 4xx).
+    if (assessmentDecisionId) {
+      fd.append("assessmentDecisionId", assessmentDecisionId);
     }
     const resp = await fetch(this.url("/ingestion-runs"), {
       method: "POST",

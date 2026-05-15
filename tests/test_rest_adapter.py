@@ -465,6 +465,79 @@ def test_assessment_plan_missing_document_returns_404(client):
     assert response.status_code == 404
 
 
+def test_assessment_plan_response_carries_recommendation_source_and_fallback(
+    client, ctx, registry, workspace,
+):
+    """REST shape regression: every assessment-plan response carries
+    ``recommendationSource``, ``fallbackUsed``, ``matchedRules``,
+    ``compileOptionPreview`` and ``warnings``. Pinned so a future
+    cleanup that drops one of these fields breaks at test time."""
+    _stage_document_with_file(
+        ctx, registry, workspace,
+        document_id="doc-no-rule",
+        filename="archive_001.bin",  # matches no rule
+    )
+    response = client.post(
+        "/documents/doc-no-rule/assessment-plan",
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    data = _assert_success_envelope(response.json())
+    # New fields exist with the right wire shape.
+    assert data["recommendationSource"] in {
+        "user_override", "active_domain_rule", "general_domain_rule",
+        "lightweight_assessment", "lightweight_assessment_fallback",
+        "system_default",
+    }
+    assert isinstance(data["fallbackUsed"], bool)
+    assert isinstance(data["matchedRules"], list)
+    assert isinstance(data["compileOptionPreview"], dict)
+    preview = data["compileOptionPreview"]
+    for key in (
+        "suspectedTables", "suspectedImages", "suspectedScanned",
+        "suspectedRequirements", "suspectedLongDocument", "note",
+    ):
+        assert key in preview
+    # The fallback warning fires when no rule matched a .bin file.
+    assert data["fallbackUsed"] is True
+    assert any(
+        "lightweight assessment" in w.lower() for w in data["warnings"]
+    )
+
+
+def test_assessment_plan_general_rfp_rule_fires_for_rfp_filename(
+    client, ctx, registry, workspace,
+):
+    """End-to-end: an RFP filename routes through the generic
+    pack's ``generic_rfp`` rule and returns
+    ``recommendationSource='general_domain_rule'`` (the REST
+    handler uses the generic pack as the active surface). The
+    ``matchedRules`` list carries the rule id."""
+    _stage_document_with_file(
+        ctx, registry, workspace,
+        document_id="doc-rfp",
+        filename="vendor_RFP_2026.pdf",
+    )
+    response = client.post(
+        "/documents/doc-rfp/assessment-plan",
+        headers=_headers(),
+    )
+    data = _assert_success_envelope(response.json())
+    # The generic pack IS the REST-side active domain; the rule
+    # surfaces as ``active_domain_rule``. The wire vocabulary stays
+    # consistent regardless of which pack carried the rule.
+    assert data["recommendationSource"] in {
+        "active_domain_rule", "general_domain_rule",
+    }
+    assert data["fallbackUsed"] is False
+    assert data["recommendedProfile"] == "advanced"
+    [winner] = [r for r in data["matchedRules"] if r["winner"]]
+    assert winner["ruleId"] == "generic_rfp"
+    # Hints surfaced in the preview so the FE can render hedged copy.
+    assert data["compileOptionPreview"]["suspectedTables"] is True
+    assert data["compileOptionPreview"]["suspectedRequirements"] is True
+
+
 def test_ingestion_run_rejects_unknown_selected_profile(
     client, ctx, registry, workspace, started_jobs,
 ):

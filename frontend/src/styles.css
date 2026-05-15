@@ -5797,6 +5797,30 @@ pre.json .b {
   margin-bottom: 12px;
   font-size: 14px;
 }
+.assessment-plan-dialog__source {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-style: italic;
+}
+.assessment-plan-dialog__compile-preview {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg-tinted);
+  font-size: 13px;
+}
+.assessment-plan-dialog__compile-preview ul {
+  margin: 6px 0 0 18px;
+  padding: 0;
+}
+.assessment-plan-dialog__compile-preview small {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .assessment-plan-dialog__reasons {
   margin: 6px 0 0 18px;
   padding: 0;

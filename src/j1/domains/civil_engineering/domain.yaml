@@ -928,3 +928,80 @@ prompt_pack:
     rules. Required metadata: project_number, document_date.
     Expected structure varies by document type (see the pack's
     expected_document_structure list).
+
+
+# ---- Document profile rules ----------------------------------------
+#
+# Pattern-based rules that the assessment-layer
+# ``RecommendationResolver`` evaluates BEFORE running the lightweight
+# profiler. Lower ``priority`` wins. The ``hints`` block is advisory
+# only — the FE surfaces them as "likely / suspected" copy and the
+# compile layer must not branch on them.
+#
+# Authoring contract:
+#   * id              required (stable string id, used in audit trail)
+#   * priority        smaller wins; ties broken by id
+#   * filename_regex  Python regex, case-insensitive, OR
+#   * title_regex     same shape (at least one is required)
+#   * recommended_profile  minimum_queryable / standard / advanced
+#   * confidence      0..1; surfaced in the response audit
+#   * reason          operator-readable; rendered next to the chosen
+#                     profile in the dialog
+#   * hints           likely_tables / likely_images / likely_requirements
+#                     / likely_scanned / likely_long_document
+
+document_profile_rules:
+  - id: civil_rfp_tender
+    priority: 10
+    filename_regex: '(?i)(\b|_)(rfp|tender|itb|rfq|invitation[\s_-]?to[\s_-]?bid)(\b|_)'
+    title_regex: '(?i)\b(request for proposal|tender document|invitation to bid)\b'
+    recommended_profile: advanced
+    confidence: 0.85
+    reason: >-
+      Filename or title suggests an RFP / tender package. These
+      packages usually carry requirements tables, schedules of
+      quantities, and figures that benefit from full enrichment.
+    hints:
+      likely_tables: true
+      likely_requirements: true
+      likely_long_document: true
+
+  - id: civil_boq
+    priority: 15
+    filename_regex: '(?i)(\b|_)(boq|bill[\s_-]?of[\s_-]?quantit)'
+    title_regex: '(?i)\bbill of quantit'
+    recommended_profile: advanced
+    confidence: 0.8
+    reason: >-
+      Filename or title suggests a BOQ. BOQs are table-dense and
+      the table-enrichment pass is recommended.
+    hints:
+      likely_tables: true
+      likely_requirements: true
+
+  - id: civil_drawing
+    priority: 20
+    filename_regex: '(?i)(\b|_)(drawing|dwg|sheet|plan)(\b|_)'
+    title_regex: '(?i)\b(general arrangement|plan view|section|elevation)\b'
+    recommended_profile: advanced
+    confidence: 0.7
+    reason: >-
+      Filename or title suggests a drawing sheet. Drawings are
+      typically image-dense and require multimodal processing.
+    hints:
+      likely_images: true
+      likely_scanned: true
+
+  - id: civil_specification
+    priority: 25
+    filename_regex: '(?i)(\b|_)(spec|specification)s?(\b|_)'
+    title_regex: '(?i)\b(technical specification|particular specification)\b'
+    recommended_profile: standard
+    confidence: 0.75
+    reason: >-
+      Filename or title suggests a specification document.
+      Specifications are usually text-dense; standard mode is the
+      balanced choice.
+    hints:
+      likely_requirements: true
+      likely_long_document: true

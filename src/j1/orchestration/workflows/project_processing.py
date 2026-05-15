@@ -409,6 +409,22 @@ class ProjectProcessingRequest:
     # as `str | None` here to avoid pulling the enum import into
     # this module's surface.
     selected_execution_profile: str | None = None
+    # Persisted ``AssessmentDecision`` payload (the recommendation
+    # the FE picker showed at upload time, after passing the
+    # REST-side validation contract). When supplied, the workflow
+    # uses ``decision.lightweight_assessment`` as the
+    # ``assessment_payload`` instead of re-running
+    # ``build_initial_execution_plan``. When None / missing fields,
+    # the workflow falls back to its existing rebuild path and
+    # stamps ``assessment_decision_source="rebuilt_fallback"`` on
+    # the run record.
+    assessment_decision_payload: dict | None = None
+    # Validation warnings produced when the REST adapter looked up
+    # the assessment decision (e.g. id not found, doc mismatch).
+    # The workflow folds these onto the run-record warnings so the
+    # final report reflects what happened even when validation
+    # failed BEFORE the workflow could see the decision.
+    assessment_decision_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2997,49 +3013,110 @@ class ProjectProcessingWorkflow:
                     start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
                     retry_policy=DEFAULT_RETRY.to_temporal(),
                 )
-                # Build the InitialExecutionPlan via an
-                # activity so domain pack resolution + persistence
-                # stay outside the sandbox. The activity returns the
-                # plan payload; the workflow holds the compile-stage
-                # AssessmentPlan as the legacy `assessment_payload`
-                # so existing per-compile-attempt code paths still
-                # work unchanged.
+                # Short-circuit: if the REST adapter validated a
+                # persisted ``AssessmentDecision`` and threaded its
+                # payload through, use that as the authoritative
+                # ``assessment_payload`` instead of re-running the
+                # build-initial-execution-plan activity. This is the
+                # contract the user sees on the FE picker — recomputing
+                # here can drift if the resolver / pack rules changed
+                # between assessment time and workflow start.
                 #
-                # Backward-compat: if the activity isn't wired (None
-                # return) or carries no plan_payload, fall back to
-                # the legacy in-workflow DefaultAssessmentPlanner.
-                # Lets existing test harnesses + deployments that
-                # haven't registered the new activity keep working.
-                build_result = await workflow.execute_activity_method(
-                    ProcessingActivities.build_initial_execution_plan,
-                    BuildInitialExecutionPlanInput(
-                        scope=request.scope,
-                        run_id=request.correlation_id or "",
+                # When the decision is missing OR carries no
+                # ``lightweightAssessment``, fall through to the
+                # existing rebuild path and stamp a warning that
+                # ``assessment_decision_source="rebuilt_fallback"``
+                # so the final report reflects what happened.
+                decision_payload = getattr(
+                    request, "assessment_decision_payload", None,
+                ) or None
+                persisted_assessment = None
+                if (
+                    isinstance(decision_payload, dict)
+                    and isinstance(
+                        decision_payload.get("lightweightAssessment"),
+                        dict,
+                    )
+                ):
+                    persisted_assessment = dict(
+                        decision_payload["lightweightAssessment"]
+                    )
+
+                if persisted_assessment is not None:
+                    # Use the persisted decision verbatim. We DON'T
+                    # call the activity at all — the FE-shown plan IS
+                    # the one we run.
+                    assessment_payload = persisted_assessment
+                    initial_plan_payload = None
+                    self._log_step(
+                        request,
+                        event="ingestion.assessment.used_persisted",
+                        stage="assessment",
+                        status="completed",
                         document_id=document_id,
-                        profile=profile,
-                        domain_override=request.domain_override,
-                        workspace_default_domain=request.workspace_default_domain,
-                        allowed_domain_overrides=(),
-                        actor=request.actor,
-                    ),
-                    start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
-                    retry_policy=DEFAULT_RETRY.to_temporal(),
-                )
-                plan_payload_raw = (
-                    getattr(build_result, "plan_payload", None)
-                    if build_result is not None else None
-                )
-                if plan_payload_raw:
-                    initial_plan_payload = dict(plan_payload_raw)
-                    assessment_payload = (
-                        initial_plan_payload.get("compile_plan") or None
+                        reason=(
+                            f"Consumed AssessmentDecision "
+                            f"{decision_payload.get('assessmentDecisionId', '?')} "
+                            f"(domain={decision_payload.get('selectedDomainId', '?')})"
+                        ),
                     )
                 else:
-                    # Legacy fallback — build the AssessmentPlan
-                    # workflow-side just like wiring.
-                    fallback = DefaultAssessmentPlanner().assess(profile)
-                    assessment_payload = fallback.to_payload()
-                    initial_plan_payload = None
+                    # Build the InitialExecutionPlan via an
+                    # activity so domain pack resolution + persistence
+                    # stay outside the sandbox. The activity returns
+                    # the plan payload; the workflow holds the
+                    # compile-stage AssessmentPlan as the legacy
+                    # `assessment_payload` so existing per-compile-
+                    # attempt code paths still work unchanged.
+                    build_result = await workflow.execute_activity_method(
+                        ProcessingActivities.build_initial_execution_plan,
+                        BuildInitialExecutionPlanInput(
+                            scope=request.scope,
+                            run_id=request.correlation_id or "",
+                            document_id=document_id,
+                            profile=profile,
+                            domain_override=request.domain_override,
+                            workspace_default_domain=request.workspace_default_domain,
+                            allowed_domain_overrides=(),
+                            actor=request.actor,
+                        ),
+                        start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
+                        retry_policy=DEFAULT_RETRY.to_temporal(),
+                    )
+                    plan_payload_raw = (
+                        getattr(build_result, "plan_payload", None)
+                        if build_result is not None else None
+                    )
+                    if plan_payload_raw:
+                        initial_plan_payload = dict(plan_payload_raw)
+                        assessment_payload = (
+                            initial_plan_payload.get("compile_plan") or None
+                        )
+                    else:
+                        # Legacy fallback — build the AssessmentPlan
+                        # workflow-side just like wiring.
+                        fallback = DefaultAssessmentPlanner().assess(profile)
+                        assessment_payload = fallback.to_payload()
+                        initial_plan_payload = None
+                    # Emit a single audit event so the final report can
+                    # tell apart "no decision supplied" vs "decision
+                    # supplied but workflow rebuilt anyway". The actual
+                    # ``rebuilt_fallback`` stamp lives on
+                    # ``run.metadata`` (set by the REST adapter).
+                    if decision_payload is not None:
+                        self._log_step(
+                            request,
+                            event="ingestion.assessment.rebuilt_fallback",
+                            stage="assessment",
+                            status="completed",
+                            document_id=document_id,
+                            reason=(
+                                "Persisted AssessmentDecision was "
+                                "supplied but did not carry a usable "
+                                "lightweight assessment; workflow "
+                                "rebuilt."
+                            ),
+                        )
                 # Surface the assessment mode as a Temporal search
                 # attribute so operators can filter histories without
                 # reading the audit log. INGEST_MODE comes from the

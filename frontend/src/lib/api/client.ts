@@ -92,11 +92,18 @@ export interface IngestionClient {
    * When `selectedProfile` is supplied (typically from the
    * `AssessmentPlanDialog` picker), it becomes the authoritative
    * gate for downstream stage decisions. Omitting it preserves
-   * legacy behaviour — the backend's `DEFAULT_PROFILE` kicks in. */
+   * legacy behaviour — the backend's `DEFAULT_PROFILE` kicks in.
+   *
+   * ``assessmentDecisionId`` (when supplied) lets the backend
+   * consume the persisted ``AssessmentDecision`` the picker just
+   * showed instead of recomputing downstream. Missing / invalid
+   * ids degrade gracefully (server-side fallback + warning); they
+   * never 4xx. */
   upload(
     file: UploadFile,
     ctx: ProjectContext,
     selectedProfile?: ExecutionProfileId,
+    assessmentDecisionId?: string | null,
   ): Promise<{ runId: string }>;
 
   /** POST `/documents/{id}/assessment-plan`. Synchronous, no
