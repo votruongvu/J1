@@ -93,47 +93,88 @@ _PREVIEW_MAX_CHARS = 240
 _MAX_EXPANSIONS_PER_REQUEST = 4
 
 
+def _matched_enrichment_alias_pairs(
+    *,
+    enrichment_aliases: tuple,
+    query: str,
+) -> tuple[tuple[str, str], ...]:
+    """Return ``(canonical, alias)`` pairs for every enrichment
+    bundle whose forms appear in the query.
+
+    Used by the diagnostic stamp so the trace surface can
+    distinguish "this expansion came from enrichment" from "this
+    expansion came from the static pack". Same substring-match
+    rule as ``_alias_expansions_for_query`` — we look at whether
+    any form is a substring of the (lower-cased) query."""
+    if not query or not enrichment_aliases:
+        return ()
+    needle = query.lower()
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in enrichment_aliases:
+        forms = entry.all_forms()
+        if not forms:
+            continue
+        if not any(form.lower() in needle for form in forms):
+            continue
+        canonical = entry.canonical_name
+        for alt in entry.aliases:
+            if not alt or alt == canonical:
+                continue
+            pair = (canonical, alt)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            out.append(pair)
+    return tuple(out)
+
+
 def _alias_expansions_for_query(
-    *, pack, query: str,
+    *,
+    pack=None,
+    enrichment_aliases: tuple = (),
+    query: str,
 ) -> tuple[str, ...]:
     """Compute the alias-driven expansion variants for ``query``
-    given the active domain pack.
+    given the active domain pack's static aliases AND any
+    enrichment-derived aliases produced by Domain Enrichment.
 
-    Strategy: case-insensitive substring matching. For each
-    ``EntityAlias`` entry on the pack, if ANY alias form appears
-    as a substring of the (lower-cased) query, every OTHER form
-    in the bundle is added to the expansion list. This is
-    deliberately stricter than ``compute_query_expansion`` — that
-    helper surfaces all pack vocabulary for diagnostics; we only
-    want forms whose canonical/alias actually matches the
+    Strategy: case-insensitive substring matching. For each alias
+    bundle (pack-static OR enrichment-derived), if ANY of its
+    forms appears as a substring of the (lower-cased) query, the
+    OTHER forms in the bundle are added to the expansion list.
+    This is deliberately stricter than ``compute_query_expansion``
+    — that helper surfaces all pack vocabulary for diagnostics;
+    we only want forms whose canonical/alias actually matches the
     question so retrieval doesn't fan out into unrelated terms.
 
     Output is deduplicated, empty-stripped, original-query
     excluded, and capped at
-    ``_MAX_EXPANSIONS_PER_REQUEST`` so a misconfigured pack
-    cannot blow up retrieval. Returns ``()`` when no alias
-    bundle matched the query — the orchestrator then runs
+    ``_MAX_EXPANSIONS_PER_REQUEST`` so a misconfigured pack /
+    runaway enrichment producer cannot blow up retrieval. Returns
+    ``()`` when no bundle matched — the orchestrator then runs
     retrieval against the original query only.
     """
-    if pack is None or not query:
+    if not query:
         return ()
-    hints = getattr(pack, "extraction_hints", None)
-    if hints is None:
-        return ()
-    aliases = tuple(getattr(hints, "entity_aliases", ()) or ())
-    if not aliases:
+    bundles: list = []
+    if pack is not None:
+        hints = getattr(pack, "extraction_hints", None)
+        if hints is not None:
+            for entry in getattr(hints, "entity_aliases", ()) or ():
+                bundles.append(entry)
+    bundles.extend(enrichment_aliases)
+    if not bundles:
         return ()
     needle = query.lower()
     seen: dict[str, None] = {}
-    for entry in aliases:
+    for entry in bundles:
         forms = entry.all_forms()
         if not forms:
             continue
         matched = any(form.lower() in needle for form in forms)
         if not matched:
             continue
-        # Surface the OTHER forms — alias forms that aren't already
-        # in the query — as expansion variants.
         for form in forms:
             if not isinstance(form, str):
                 continue
@@ -1129,20 +1170,56 @@ class IngestionValidationService:
             return view
         if not is_augmentation_enabled():
             return view
-        if self._domain_pack_lookup is None:
-            return view
-        try:
-            pack = self._domain_pack_lookup(view.domain_id)
-        except Exception:  # noqa: BLE001
-            return view
-        if pack is None:
+        # Source 1: pack-static aliases via the optional lookup.
+        pack = None
+        if self._domain_pack_lookup is not None:
+            try:
+                pack = self._domain_pack_lookup(view.domain_id)
+            except Exception:  # noqa: BLE001
+                pack = None
+        # Source 2: enrichment-derived aliases for the active
+        # snapshot. Always attempted (no separate wiring needed —
+        # the artifact registry is already on hand). Returns ()
+        # when no ``domain_enrichment_aliases`` artifact exists
+        # for the scope, which is the common case.
+        enrichment_aliases: tuple = ()
+        if view.snapshot_id:
+            try:
+                from j1.processing.enrichment_aliases import (
+                    load_enrichment_aliases_for_snapshot,
+                )
+                enrichment_aliases = load_enrichment_aliases_for_snapshot(
+                    ctx=ctx,
+                    artifact_registry=self._artifacts,
+                    document_id=view.document_id,
+                    snapshot_id=view.snapshot_id,
+                    workspace=self._workspace,
+                )
+            except Exception:  # noqa: BLE001
+                enrichment_aliases = ()
+        if pack is None and not enrichment_aliases:
             return view
         try:
             from dataclasses import replace as _replace
             expansions = _alias_expansions_for_query(
-                pack=pack, query=request.question,
+                pack=pack,
+                enrichment_aliases=enrichment_aliases,
+                query=request.question,
             )
-            return _replace(view, expansions=expansions)
+            # Compute the diagnostic split — which of the enrichment
+            # bundles actually matched the query. We only surface
+            # matched pairs (not full bundles) so the trace stays
+            # tight.
+            matched_pairs = _matched_enrichment_alias_pairs(
+                enrichment_aliases=enrichment_aliases,
+                query=request.question,
+            )
+            return _replace(
+                view,
+                expansions=expansions,
+                enrichment_aliases_available=len(enrichment_aliases),
+                enrichment_aliases_matched=matched_pairs,
+            )
         except Exception:  # noqa: BLE001
             return view
 

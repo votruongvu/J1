@@ -212,6 +212,17 @@ class DocumentMemoryView(UnifiedMemoryView):
     # Producers MUST already have stripped the original query +
     # deduplicated; the orchestrator consumes them verbatim.
     expansions: tuple[str, ...] = ()
+    # Provenance counts for enrichment-derived aliases. The
+    # validation service stamps these when it loads
+    # ``domain_enrichment_aliases`` artifacts for the active
+    # snapshot. ``available`` is how many bundles were on disk;
+    # ``matched`` is the subset whose form appeared in the query
+    # (and therefore contributed to ``expansions``). The trace
+    # surface reads them so operators can distinguish "no
+    # enrichment artifacts" from "artifacts exist but didn't
+    # match this query".
+    enrichment_aliases_available: int = 0
+    enrichment_aliases_matched: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

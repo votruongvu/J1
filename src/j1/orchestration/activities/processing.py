@@ -353,6 +353,59 @@ def _processing_service_for_registry(artifact_registry):
     )
 
 
+def _read_chunks_for_alias_extraction(
+    *,
+    artifacts,
+    ctx,
+    document_id: str,
+    snapshot_id: str,
+) -> list[dict]:
+    """Collect chunk text + per-chunk evidence metadata for the
+    alias extractor.
+
+    Filters chunk artifacts to the active document + snapshot, then
+    reads body text from whichever field the producer populated:
+
+      * ``metadata["body"]`` / ``metadata["text"]`` — full bodies
+        stamped by producers that ship them inline.
+      * ``text_preview`` — the 240-char preview the registry
+        carries on chunk records by convention. Short but enough
+        for the conservative ``ALIAS (canonical)`` pattern to
+        match in many real documents.
+
+    No workspace / disk I/O. Returns an empty list when no usable
+    body text surfaces — the activity then skips alias emission.
+    """
+    try:
+        records = artifacts.list_artifacts(ctx, kind="chunk")
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+    out: list[dict] = []
+    for r in records:
+        # Snapshot scope check — typed field OR metadata fallback,
+        # mirroring the resolver / loader.
+        typed = getattr(r, "snapshot_id", None)
+        meta = dict(getattr(r, "metadata", None) or {})
+        if typed != snapshot_id and meta.get("snapshot_id") != snapshot_id:
+            continue
+        sources = getattr(r, "source_document_ids", None) or ()
+        if document_id not in sources:
+            continue
+        body = meta.get("body") or meta.get("text") or ""
+        if not body:
+            preview = getattr(r, "text_preview", None) or ""
+            body = preview
+        if not body:
+            continue
+        out.append({
+            "artifact_id": r.artifact_id,
+            "chunk_id": meta.get("chunk_id") or getattr(r, "artifact_id", None),
+            "body": body,
+            "page": meta.get("page") or meta.get("page_start"),
+        })
+    return out
+
+
 def _persist_enrichment_payload(
     service,
     ctx,
@@ -1008,6 +1061,75 @@ class ProcessingActivities:
             ),
         )
 
+    def _maybe_emit_enrichment_aliases(
+        self,
+        ctx,
+        *,
+        run_id: str,
+        document_id: str,
+        actor: str,
+    ) -> str | None:
+        """Producer step for the domain-enrichment alias artifact.
+
+        Runs at the tail of ``run_enrichment_stage`` and scans the
+        active run's chunk artifacts for evidence-backed alias
+        patterns (``ALIAS (canonical)`` / ``canonical (ALIAS)``).
+        When matches surface, persists them as a single
+        ``domain_enrichment_aliases`` artifact stamped with the
+        run's ``target_snapshot_id``. Zero-alias runs persist
+        nothing.
+
+        Resolves the snapshot id by looking up the run record via
+        ``self._run_store``. When the run store isn't wired
+        (legacy / partial test wirings) the producer no-ops — same
+        rule as the other run-aware activity helpers.
+
+        Returns the new artifact id on success, ``None`` otherwise
+        (no aliases, no snapshot, store unwired). The caller swallows
+        every exception so a misbehaving extractor cannot fail the
+        enrichment activity.
+        """
+        if self._run_store is None:
+            return None
+        try:
+            run = self._run_store.get(ctx, run_id)
+        except Exception:  # noqa: BLE001 — best-effort
+            return None
+        if run is None:
+            return None
+        snapshot_id = getattr(run, "target_snapshot_id", None)
+        if not snapshot_id:
+            return None
+        chunks = _read_chunks_for_alias_extraction(
+            artifacts=self._artifacts,
+            ctx=ctx,
+            document_id=document_id,
+            snapshot_id=snapshot_id,
+        )
+        if not chunks:
+            return None
+        from j1.processing.enrichment_aliases import (
+            extract_aliases_from_chunks,
+            register_aliases_artifact,
+        )
+        extracted = extract_aliases_from_chunks(
+            chunks,
+            run_id=run_id,
+            snapshot_id=snapshot_id,
+            document_id=document_id,
+        )
+        if not extracted:
+            return None
+        return register_aliases_artifact(
+            ctx=ctx,
+            artifact_registry=self._artifacts,
+            run_id=run_id,
+            document_id=document_id,
+            snapshot_id=snapshot_id,
+            aliases=extracted,
+            actor=actor,
+        )
+
     def _cached_artifact_exists(self, ctx, artifact_id: str) -> bool:
         """True iff ``artifact_id`` still resolves in the registry for
         this project. Used by the compile cache-hit path to detect a
@@ -1610,6 +1732,25 @@ class ProcessingActivities:
             payload=payload,
             actor=input.actor,
         )
+        # Phase: domain-enrichment alias producer. Runs as a
+        # best-effort post-step — successes contribute aliases to
+        # the query layer; failures are logged and never regress
+        # the enrichment result the workflow gates on. Only fires
+        # when the alias module yields a non-empty set; zero-alias
+        # runs persist nothing (the loader treats absence as "no
+        # enrichment aliases").
+        try:
+            self._maybe_emit_enrichment_aliases(
+                ctx,
+                run_id=input.run_id,
+                document_id=input.document_id,
+                actor=input.actor,
+            )
+        except Exception:  # noqa: BLE001 — never regress the run
+            _log.debug(
+                "domain-enrichment alias producer failed (best-effort)",
+                exc_info=True,
+            )
         return RunEnrichmentStageResult(
             status=result.status,
             plan_payload=payload,

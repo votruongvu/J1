@@ -511,6 +511,21 @@ class SmartQueryOrchestrator:
                 expansions=augmentation_expansions,
                 applied_to_retrieval=applied_to_retrieval,
             )
+        # Enrichment-alias provenance. Surfaced verbatim from the
+        # memory view the caller built — separated from
+        # ``with_augmentation`` so the trace can distinguish "the
+        # pack contributed" from "Domain Enrichment contributed".
+        if request.memory_view is not None:
+            available = getattr(
+                request.memory_view, "enrichment_aliases_available", 0,
+            )
+            matched = getattr(
+                request.memory_view, "enrichment_aliases_matched", (),
+            ) or ()
+            if available or matched:
+                trace = trace.with_enrichment_alias_diagnostics(
+                    available=available, matched=tuple(matched),
+                )
 
         # 2. Retrieval routes.
         route_ctx = RouteContext(

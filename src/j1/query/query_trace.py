@@ -116,6 +116,16 @@ class QueryTrace:
     # both)``. Computed BEFORE dedup but using dedup-keyed identity
     # so operators see how each provenance class contributed.
     augmentation_distribution: tuple[int, int, int] = (0, 0, 0)
+    # Enrichment-alias provenance diagnostics. Distinguishes the
+    # static-domain alias source from the runtime
+    # ``domain_enrichment``-derived source so operators can see
+    # whether the Domain Enrichment producer surfaced anything for
+    # this scope. ``available`` is the COUNT of enrichment alias
+    # bundles loaded for the active snapshot; ``matched`` is the
+    # subset whose forms appeared in the query (and therefore
+    # contributed to the expansion list).
+    enrichment_aliases_available: int = 0
+    enrichment_aliases_matched: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def empty_with_plan(cls, question: str, plan: QueryPlan) -> "QueryTrace":
@@ -266,6 +276,23 @@ class QueryTrace:
         route raw rows stay visible in the manual-test view."""
         return _replace(self, all_candidates=tuple(candidates))
 
+    def with_enrichment_alias_diagnostics(
+        self,
+        *,
+        available: int,
+        matched: tuple[tuple[str, str], ...],
+    ) -> "QueryTrace":
+        """Stamp enrichment-alias provenance diagnostics. Called by
+        the validation service when it loads
+        ``domain_enrichment_aliases`` for the active scope so the
+        trace surface can distinguish "no aliases existed" from
+        "aliases existed but didn't match the query"."""
+        return _replace(
+            self,
+            enrichment_aliases_available=int(available),
+            enrichment_aliases_matched=tuple(matched),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-friendly shape rendered by the manual-test endpoint
         verbatim. Keys are stable; new ones land at the end so
@@ -320,6 +347,13 @@ class QueryTrace:
                     "expanded_only": self.augmentation_distribution[1],
                     "both": self.augmentation_distribution[2],
                 },
+                "enrichment_aliases_available": (
+                    self.enrichment_aliases_available
+                ),
+                "enrichment_aliases_matched": [
+                    {"canonical": canonical, "alias": alias}
+                    for canonical, alias in self.enrichment_aliases_matched
+                ],
             },
         }
 
