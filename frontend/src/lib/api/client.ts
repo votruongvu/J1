@@ -350,7 +350,23 @@ export interface IngestionClient {
  * doesn't exist (also returned on a second delete — the operation
  * is idempotent in the sense that retries are safe).
  */
-  deleteRun(runId: string): Promise<DeleteRunResult>;
+  /**
+   * Pre-flight check for the Clean Up Run action. Lets the FE
+   * render the button in the right state (enabled / disabled with
+   * reason) without trying the action. The server uses the same
+   * helper internally on ``cleanUpRun``, so the UI never drifts
+   * from the API on eligibility rules.
+   */
+  getCleanupEligibility(runId: string): Promise<CleanUpEligibility>;
+
+  /**
+   * Snapshot-centric replacement for ``deleteRun``: clean up all
+   * data produced by a non-active run. HTTP is always 200 — the
+   * ``cleaned`` flag carries the outcome. Refusal (``cleaned=false``)
+   * is NOT an error; the FE renders the server's ``message`` and
+   * leaves the run intact.
+   */
+  cleanUpRun(runId: string): Promise<CleanUpRunResult>;
 
   /**
  * POST a multi-upload batch. Backend registers each file as a
@@ -455,20 +471,49 @@ export interface LLMHealthStatus {
   results: LLMHealthRole[];
 }
 
-/** Result envelope from `DELETE /ingestion-runs/{id}` (hard delete). */
-export interface DeleteRunResult {
+/**
+ * Reason code on a Clean Up Run eligibility / result response. The
+ * server is the source of truth; the FE maps these to copy without
+ * re-deriving the rules. ``OK`` is the only "yes you can" code.
+ */
+export type CleanUpRunReason =
+  | "OK"
+  | "RUN_NOT_FOUND"
+  | "PROCESSING_RUN"
+  | "ACTIVE_RUN"
+  | "ONLY_RUN";
+
+/** Result of ``GET /ingestion-runs/{id}/cleanup-eligibility``. */
+export interface CleanUpEligibility {
   runId: string;
-  /** Registry records removed. */
-  artifactsDeleted: number;
-  /** Files actually unlinked from disk. */
-  filesDeleted: number;
-  /** Files that were already missing (idempotent path). */
-  filesMissing: number;
-  /** JSONL snapshots of the run record removed. */
-  snapshotsRemoved: number;
-  validationSetsRemoved: number;
-  validationRunsRemoved: number;
-  deletedAt: string;
+  allowed: boolean;
+  reason: CleanUpRunReason;
+  message: string;
+  /** Specific blocking ids (e.g. ``activeRunId``, ``documentId``)
+   *  so the UI can render precise diagnostics. */
+  blockingReferences: Record<string, unknown>;
+}
+
+/**
+ * Result of ``POST /ingestion-runs/{id}/clean-up``. HTTP status is
+ * always 200 — ``cleaned`` carries the outcome. On ``cleaned=false``
+ * the ``reason`` is one of the refusal codes; the FE renders the
+ * server's ``message`` verbatim so users see the canonical copy.
+ */
+export interface CleanUpRunResult {
+  runId: string;
+  cleaned: boolean;
+  reason: CleanUpRunReason;
+  message: string;
+  deletedCounts: {
+    artifacts: number;
+    chunks: number;
+    enrichments: number;
+    validationResults: number;
+    snapshots: number;
+    workspaceFiles: number;
+  };
+  deletedAt: string | null;
 }
 
 /** Result envelope from `POST /ingestion-batches`. */

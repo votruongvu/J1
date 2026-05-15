@@ -37,12 +37,12 @@ interface RunHeaderProps {
   onRefresh: () => void;
   pushToast: (toast: Omit<Toast, "id">) => void;
   /** Forwarded to RunControls so the page can navigate after a
-   * successful action (e.g. back to the run list after Delete, or
-   * to the new refresh-enrichment run). */
+   * successful action (e.g. back to the run list after Clean Up,
+   * or to the new refresh-enrichment run). */
   onAfterAction?: (
     action:
       | "pause" | "cancel"
-      | "delete" | "refresh_enrichment" | "run_enrichment",
+      | "clean_up" | "refresh_enrichment" | "run_enrichment",
     newRunId: string | null,
   ) => void;
 }

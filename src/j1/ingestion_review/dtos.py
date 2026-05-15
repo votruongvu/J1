@@ -629,3 +629,90 @@ class PlanningResultDTO(CamelModel):
     #  `rule_based` / `llm` / `hybrid` / `rule_based_fallback`.
     # None on legacy / audit-log responses that pre-date the field.
     planner_mode: str | None = None
+
+
+# ---- Clean Up Run -----------------------------------------------
+#
+# Phase 9 rename + refactor: "Delete Run" → "Clean Up Run". A
+# cleanup hard-removes every record produced by a non-active
+# ingestion run so it no longer pollutes storage, UI, query scope,
+# validation, or audit. The action is *only* allowed for terminal,
+# non-active, non-only-run runs that don't produce the document's
+# currently active snapshot. Eligibility is checked via the same
+# helper for the API, UI pre-flight, and confirmation modal so the
+# rules never drift.
+
+# Stable machine-readable reasons returned by the eligibility check
+# and the rejected-cleanup response. The UI maps these to human
+# copy without re-deriving the rules.
+CLEANUP_REASON_OK = "OK"
+CLEANUP_REASON_RUN_NOT_FOUND = "RUN_NOT_FOUND"
+CLEANUP_REASON_PROCESSING_RUN = "PROCESSING_RUN"
+CLEANUP_REASON_ACTIVE_RUN = "ACTIVE_RUN"
+CLEANUP_REASON_ONLY_RUN = "ONLY_RUN"
+
+
+class CleanUpEligibilityDTO(CamelModel):
+    """Result of ``can_clean_up_run``. Single source of truth for
+    the rules every caller (REST GET pre-check, POST clean-up,
+    legacy DELETE wrapper, FE pre-flight) consults.
+
+    ``reason`` is one of the ``CLEANUP_REASON_*`` codes above.
+    ``blocking_references`` carries the specific ids that block
+    cleanup (e.g. the active snapshot id, the sole-run id) so the
+    UI can render a precise message without re-querying.
+    """
+
+    run_id: str
+    allowed: bool
+    reason: str
+    message: str
+    blocking_references: dict[str, Any] = Field(default_factory=dict)
+
+
+class CleanUpDeletedCountsDTO(CamelModel):
+    """Per-resource counts of things removed by one cleanup call.
+    Counts are best-effort tallies — a cleanup that partially
+    failed still emits the counts it succeeded on so operators can
+    diagnose without re-running. The DTO is intentionally
+    extensible: new resource kinds land here as additional zero-
+    default fields.
+
+    NOTE: ``chunks`` and ``enrichments`` are currently PLACEHOLDERS
+    and always return 0. The cleanup *does* remove them — they're
+    rolled into the ``artifacts`` count today — but the artifact
+    registry doesn't expose a reliable per-kind tally on the
+    delete path yet. The fields stay in the wire shape so future
+    per-kind tallies land without breaking callers.
+    """
+
+    artifacts: int = 0
+    # Placeholder — always 0. See class docstring.
+    chunks: int = 0
+    # Placeholder — always 0. See class docstring.
+    enrichments: int = 0
+    validation_results: int = 0
+    snapshots: int = 0
+    workspace_files: int = 0
+
+
+class CleanUpRunResultDTO(CamelModel):
+    """Result of ``POST /ingestion-runs/{run_id}/clean-up``.
+
+    HTTP status is always 200 — the body's ``cleaned`` flag carries
+    the outcome. This keeps the contract uniform whether cleanup
+    ran or was refused by the eligibility check.
+    """
+
+    run_id: str
+    cleaned: bool
+    # ``CLEANUP_REASON_OK`` on success; refusal codes otherwise.
+    reason: str = CLEANUP_REASON_OK
+    message: str
+    deleted_counts: CleanUpDeletedCountsDTO = Field(
+        default_factory=CleanUpDeletedCountsDTO,
+    )
+    # Optional: the running-totals + counts the existing service
+    # already returns. Kept for back-compat with operators wired to
+    # the legacy DELETE response shape.
+    deleted_at: str | None = None

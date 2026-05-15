@@ -60,7 +60,8 @@ import {
   ApiError,
   type BatchDetail,
   type BatchUploadResult,
-  type DeleteRunResult,
+  type CleanUpEligibility,
+  type CleanUpRunResult,
   type IngestionClient,
   type LLMHealthStatus,
   type RunControlResult,
@@ -731,22 +732,24 @@ export class ApiClient implements IngestionClient {
 
   // ---- Operational actions --------------------------------------
 
-  async deleteRun(runId: string): Promise<DeleteRunResult> {
+  async getCleanupEligibility(runId: string): Promise<CleanUpEligibility> {
     const resp = await fetch(
-      this.url(`/ingestion-runs/${encodeURIComponent(runId)}`),
-      { method: "DELETE", headers: this.headers() },
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/cleanup-eligibility`,
+      ),
+      { headers: this.headers() },
     );
-    const data = await this.json<Record<string, unknown>>(resp);
-    return {
-      runId: String(data.runId ?? runId),
-      artifactsDeleted: Number(data.artifactsDeleted ?? 0),
-      filesDeleted: Number(data.filesDeleted ?? 0),
-      filesMissing: Number(data.filesMissing ?? 0),
-      snapshotsRemoved: Number(data.snapshotsRemoved ?? 0),
-      validationSetsRemoved: Number(data.validationSetsRemoved ?? 0),
-      validationRunsRemoved: Number(data.validationRunsRemoved ?? 0),
-      deletedAt: String(data.deletedAt ?? ""),
-    };
+    return await this.json<CleanUpEligibility>(resp);
+  }
+
+  async cleanUpRun(runId: string): Promise<CleanUpRunResult> {
+    const resp = await fetch(
+      this.url(
+        `/ingestion-runs/${encodeURIComponent(runId)}/clean-up`,
+      ),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<CleanUpRunResult>(resp);
   }
 
   async uploadBatch(

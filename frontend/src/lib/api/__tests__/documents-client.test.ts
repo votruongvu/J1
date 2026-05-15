@@ -371,6 +371,74 @@ describe("runDocumentTestQuery", () => {
 });
 
 
+describe("Clean Up Run (snapshot-centric replacement for deleteRun)", () => {
+  const _CLEAN_UP_OK = {
+    runId: "r-1",
+    cleaned: true,
+    reason: "OK",
+    message: "Run cleaned up successfully.",
+    deletedCounts: {
+      artifacts: 3, chunks: 0, enrichments: 0,
+      validationResults: 1, snapshots: 1, workspaceFiles: 3,
+    },
+    deletedAt: "2026-05-15T12:00:00Z",
+  };
+  const _CLEAN_UP_REFUSED = {
+    runId: "r-1",
+    cleaned: false,
+    reason: "ACTIVE_RUN",
+    message: "This run produced the active knowledge snapshot. …",
+    deletedCounts: {
+      artifacts: 0, chunks: 0, enrichments: 0,
+      validationResults: 0, snapshots: 0, workspaceFiles: 0,
+    },
+    deletedAt: null,
+  };
+
+  it("POSTs to /ingestion-runs/{id}/clean-up", async () => {
+    const { calls } = withFetch(() => jsonResponse(_CLEAN_UP_OK));
+    const result = await makeClient().cleanUpRun("r-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/r-1/clean-up",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(result.cleaned).toBe(true);
+    expect(result.reason).toBe("OK");
+    expect(result.deletedCounts.workspaceFiles).toBe(3);
+  });
+
+  it("returns the structured refusal verbatim — does NOT throw on cleaned=false", async () => {
+    // The eligibility refusal is HTTP 200 by contract. The client
+    // must return the body shape, not raise — the FE renders the
+    // server's ``message`` as a warning toast.
+    withFetch(() => jsonResponse(_CLEAN_UP_REFUSED));
+    const result = await makeClient().cleanUpRun("r-1");
+    expect(result.cleaned).toBe(false);
+    expect(result.reason).toBe("ACTIVE_RUN");
+    expect(result.message).toContain("active knowledge snapshot");
+  });
+
+  it("getCleanupEligibility GETs /ingestion-runs/{id}/cleanup-eligibility", async () => {
+    const { calls } = withFetch(() =>
+      jsonResponse({
+        runId: "r-1",
+        allowed: false,
+        reason: "ONLY_RUN",
+        message: "This is the document's only run. …",
+        blockingReferences: { documentId: "doc-1" },
+      }),
+    );
+    const elig = await makeClient().getCleanupEligibility("r-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/ingestion-runs/r-1/cleanup-eligibility",
+    );
+    expect(elig.allowed).toBe(false);
+    expect(elig.reason).toBe("ONLY_RUN");
+    expect(elig.blockingReferences.documentId).toBe("doc-1");
+  });
+});
+
+
 describe("runProjectQuery", () => {
   it("POSTs to /projects/{X-Project-Id}/query — derives project from header context", async () => {
     const { calls } = withFetch(() => jsonResponse(_MANUAL_QUERY_OK));

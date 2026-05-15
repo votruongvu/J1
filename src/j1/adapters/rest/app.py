@@ -549,6 +549,113 @@ def create_rest_api(
             return None
         return getattr(snap, "created_by_run_id", None)
 
+    def _check_cleanup_eligibility(
+        ctx: ProjectContext, run_id: str,
+    ) -> "CleanUpEligibilityDTO":
+        """Single source of truth for "can this run be cleaned up?".
+
+        Consulted by:
+          * ``POST /ingestion-runs/{id}/clean-up`` — refusal becomes
+            ``{cleaned: false, reason, message}`` (200).
+          * ``GET /ingestion-runs/{id}/cleanup-eligibility`` — same
+            shape; lets the FE render the Clean Up Run button in the
+            right state without trying the action.
+          * ``DELETE /ingestion-runs/{id}`` (back-compat) — refusal
+            becomes the legacy HTTP 409 with the same human message.
+
+        Rules:
+          * Run must exist (else ``RUN_NOT_FOUND``).
+          * Must not be in flight (``RUNNING / PAUSED / CANCELLING /
+            ASSESSING``) (``PROCESSING_RUN``).
+          * Must not be the document's only run (``ONLY_RUN``;
+            operators must use Remove Knowledge).
+          * Must not be the producer of the document's currently
+            active snapshot (``ACTIVE_RUN``; snapshot-store-keyed
+            lookup, with the legacy latest-succeeded heuristic as a
+            test-only fallback).
+        """
+        from j1.ingestion_review.dtos import (
+            CleanUpEligibilityDTO,
+            CLEANUP_REASON_ACTIVE_RUN,
+            CLEANUP_REASON_OK,
+            CLEANUP_REASON_ONLY_RUN,
+            CLEANUP_REASON_PROCESSING_RUN,
+            CLEANUP_REASON_RUN_NOT_FOUND,
+        )
+        store = _require_run_store()
+        run = store.get(ctx, run_id)
+        if run is None:
+            return CleanUpEligibilityDTO(
+                run_id=run_id,
+                allowed=False,
+                reason=CLEANUP_REASON_RUN_NOT_FOUND,
+                message=f"Ingestion run {run_id!r} not found.",
+            )
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+        }
+        if str(run.status) in active_states:
+            return CleanUpEligibilityDTO(
+                run_id=run_id,
+                allowed=False,
+                reason=CLEANUP_REASON_PROCESSING_RUN,
+                message=(
+                    f"This run is still {run.status}. Cancel it "
+                    "before cleaning up."
+                ),
+                blocking_references={"status": str(run.status)},
+            )
+        if run.document_id:
+            sibling_runs = [
+                r for r in store.list_runs(
+                    ctx, document_id=run.document_id,
+                )
+                if r.run_id != run_id
+            ]
+            if not sibling_runs:
+                return CleanUpEligibilityDTO(
+                    run_id=run_id,
+                    allowed=False,
+                    reason=CLEANUP_REASON_ONLY_RUN,
+                    message=(
+                        "This is the document's only run. Use "
+                        "Remove Knowledge on the document instead."
+                    ),
+                    blocking_references={
+                        "documentId": run.document_id,
+                    },
+                )
+            protected_run_id = _protected_run_id_for_document(
+                ctx, run.document_id,
+            )
+            if protected_run_id is None:
+                protected_run_id = _latest_succeeded_run_id(
+                    ctx, run.document_id,
+                )
+            if protected_run_id == run_id:
+                return CleanUpEligibilityDTO(
+                    run_id=run_id,
+                    allowed=False,
+                    reason=CLEANUP_REASON_ACTIVE_RUN,
+                    message=(
+                        "This run produced the active knowledge "
+                        "snapshot. Re-index the document or use "
+                        "Remove Knowledge to replace it before "
+                        "cleaning up this run."
+                    ),
+                    blocking_references={
+                        "documentId": run.document_id,
+                        "activeRunId": protected_run_id,
+                    },
+                )
+        return CleanUpEligibilityDTO(
+            run_id=run_id,
+            allowed=True,
+            reason=CLEANUP_REASON_OK,
+            message="Run is eligible for cleanup.",
+        )
+
     policy = SecurityPolicy(
         authenticator=authenticator,
         anonymous_paths=(
@@ -1421,91 +1528,67 @@ def create_rest_api(
             ),
         )
 
-    @app.delete(
-        "/ingestion-runs/{run_id}",
-        tags=["ingestion-runs"],
-        summary="Hard-delete an ingestion run",
-        description=(
-            "Single-step hard delete. Physically removes the run "
-            "record, every artifact (file on disk + registry record), "
-            "every JSONL snapshot of the run, and cascades to "
-            "validation sets / runs that reference this run_id. The "
-            "audit log stays intact for compliance.\n\n"
-            "Refuses (HTTP 409) when:\n"
-            "  * the run is still RUNNING / PAUSED / CANCELLING / "
-            "ASSESSING — cancel first;\n"
-            "  * the run is the document's currently active run — "
-            "remove the document with `POST /documents/{id}/remove` "
-            "instead;\n"
-            "  * the run is the document's only run — same remedy."
-        ),
-        dependencies=[Depends(scope_required(SCOPE_INGEST))],
-    )
-    def delete_ingestion_run(
-        request: Request,
-        run_id: str,
-        ctx: ProjectContext = Depends(get_ctx),
-        security: SecurityContext = Depends(get_security),
-    ) -> dict[str, Any]:
+    def _execute_run_cleanup(
+        ctx: ProjectContext, run_id: str, *, actor: str,
+    ) -> tuple["CleanUpEligibilityDTO", dict[str, Any] | None, dict[str, int] | None]:
+        """Run the eligibility check; if allowed, perform the
+        hard-cleanup and return ``(eligibility, report,
+        validation_cascade)``. On refusal returns
+        ``(eligibility, None, None)`` so the caller can shape the
+        response (200+structured-reason vs HTTP 409 for legacy
+        DELETE).
+
+        The intent of "Clean Up Run": permanently remove every
+        record this run owns — registry artifacts + files on disk,
+        run-store snapshot, validation history — so the run no
+        longer pollutes storage, UI, query scope, or audit history.
+        See the cleanup helper docstring for the full guarantee set.
+        """
         from j1.ingestion_review.exceptions import (
             ReviewNotFound, RunStillActive,
         )
+        eligibility = _check_cleanup_eligibility(ctx, run_id)
+        if not eligibility.allowed:
+            return eligibility, None, None
         service = _require_review_service()
-        store = _require_run_store()
-        actor = security.subject if security else "system"
-
-        run = store.get(ctx, run_id)
-        if run is None:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-
-        # Active-run + only-run guards. Both require document context
-        # the review service doesn't carry; check at the REST edge so
-        # the service stays document-agnostic.
-        if run.document_id:
-            sibling_runs = [
-                r for r in store.list_runs(ctx, document_id=run.document_id)
-                if r.run_id != run_id
-            ]
-            if not sibling_runs:
-                raise HTTPException(
-                    409,
-                    f"run {run_id!r} is the only run for document "
-                    f"{run.document_id!r}. Remove the document via "
-                    "POST /documents/{id}/remove instead.",
-                )
-            # Primary guard: the run that produced the document's
-            # currently active snapshot is protected, regardless of
-            # which run is "latest succeeded". Falls back to the
-            # heuristic when the snapshot store isn't wired (test
-            # harness) so legacy fixtures still see the guard.
-            protected_run_id = _protected_run_id_for_document(
-                ctx, run.document_id,
-            )
-            if protected_run_id is None:
-                protected_run_id = _latest_succeeded_run_id(
-                    ctx, run.document_id,
-                )
-            if protected_run_id == run_id:
-                raise HTTPException(
-                    409,
-                    f"run {run_id!r} produced the active snapshot for "
-                    f"document {run.document_id!r}. Re-index or "
-                    "remove the document to replace it before "
-                    "deleting this run.",
-                )
-
         try:
             report = service.delete_run(ctx, run_id, actor=actor)
         except ReviewNotFound:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        except RunStillActive as exc:
-            raise HTTPException(409, str(exc))
-
-        # Cascade-delete validation history. Best-effort — failures
-        # here don't roll back the artifact/run delete above (which
-        # already physically removed bytes from disk). A stale
-        # validation record pointing at a missing run is ugly but
-        # not dangerous.
+            # Race with concurrent cleanup: the eligibility check
+            # said the run was present, but it's gone by the time
+            # we tried to remove it. Surface as RUN_NOT_FOUND.
+            from j1.ingestion_review.dtos import (
+                CleanUpEligibilityDTO,
+                CLEANUP_REASON_RUN_NOT_FOUND,
+            )
+            return (
+                CleanUpEligibilityDTO(
+                    run_id=run_id,
+                    allowed=False,
+                    reason=CLEANUP_REASON_RUN_NOT_FOUND,
+                    message=f"Ingestion run {run_id!r} not found.",
+                ),
+                None, None,
+            )
+        except RunStillActive:
+            # Same race shape — eligibility said terminal, but the
+            # service raised. Surface as PROCESSING_RUN.
+            from j1.ingestion_review.dtos import (
+                CleanUpEligibilityDTO,
+                CLEANUP_REASON_PROCESSING_RUN,
+            )
+            return (
+                CleanUpEligibilityDTO(
+                    run_id=run_id,
+                    allowed=False,
+                    reason=CLEANUP_REASON_PROCESSING_RUN,
+                    message=(
+                        "This run transitioned to processing while "
+                        "cleanup was being prepared. Try again."
+                    ),
+                ),
+                None, None,
+            )
         validation_cascade = {"sets_removed": 0, "runs_removed": 0}
         if validation_service is not None:
             try:
@@ -1514,7 +1597,6 @@ def create_rest_api(
                 )
             except Exception:  # noqa: BLE001 — best-effort
                 pass
-
         _emit_ops_event(
             ctx,
             action=ACTION_OPS_RUN_DELETED,
@@ -1529,20 +1611,122 @@ def create_rest_api(
                 "validation_sets_removed": validation_cascade["sets_removed"],
                 "validation_runs_removed": validation_cascade["runs_removed"],
                 "deleted_at": report["deleted_at"],
+                "action_label": "clean_up_run",
             },
         )
+        return eligibility, report, validation_cascade
+
+    @app.get(
+        "/ingestion-runs/{run_id}/cleanup-eligibility",
+        tags=["ingestion-runs"],
+        summary="Whether this run can be cleaned up",
+        description=(
+            "Snapshot-centric pre-flight check for the Clean Up "
+            "Run action. Returns a structured eligibility result so "
+            "the FE can render the button + tooltip + confirmation "
+            "modal in the right state without trying the action. "
+            "The same check is consulted server-side by "
+            "POST /ingestion-runs/{id}/clean-up — UI and API can't "
+            "drift on the rules."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_AUDIT_READ))],
+    )
+    def get_run_cleanup_eligibility(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        eligibility = _check_cleanup_eligibility(ctx, run_id)
         return envelope(
-            {
-                "runId": report["run_id"],
-                "artifactsDeleted": report["artifacts_deleted"],
-                "filesDeleted": report["files_deleted"],
-                "filesMissing": report["files_missing"],
-                "snapshotsRemoved": report["snapshots_removed"],
-                "validationSetsRemoved": validation_cascade["sets_removed"],
-                "validationRunsRemoved": validation_cascade["runs_removed"],
-                "deletedAt": report["deleted_at"],
-            },
-            _req_id(request),
+            eligibility.model_dump(by_alias=True), _req_id(request),
+        )
+
+    @app.post(
+        "/ingestion-runs/{run_id}/clean-up",
+        tags=["ingestion-runs"],
+        summary="Clean up all data produced by a non-active run",
+        description=(
+            "Renamed + structured replacement for the legacy "
+            "`DELETE /ingestion-runs/{id}`. Hard-removes every "
+            "record the run owns — registry artifacts + their files "
+            "on disk, every JSONL snapshot of the run, validation "
+            "history that references this run_id. The audit log is "
+            "preserved for compliance.\n\n"
+            "Always returns HTTP 200. The body's `cleaned` flag "
+            "carries the outcome:\n"
+            "  * `cleaned=true` → run is gone; `deletedCounts` "
+            "tallies what was removed.\n"
+            "  * `cleaned=false` → cleanup was refused; `reason` "
+            "is one of `PROCESSING_RUN`, `ACTIVE_RUN`, `ONLY_RUN`, "
+            "`RUN_NOT_FOUND`. The same `reason` is returned by "
+            "GET /cleanup-eligibility."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def post_run_clean_up(
+        request: Request,
+        run_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from j1.ingestion_review.dtos import (
+            CleanUpDeletedCountsDTO, CleanUpRunResultDTO,
+            CLEANUP_REASON_OK,
+        )
+        actor = security.subject if security else "system"
+        eligibility, report, validation_cascade = _execute_run_cleanup(
+            ctx, run_id, actor=actor,
+        )
+        if report is None:
+            result = CleanUpRunResultDTO(
+                run_id=run_id,
+                cleaned=False,
+                reason=eligibility.reason,
+                message=eligibility.message,
+                deleted_counts=CleanUpDeletedCountsDTO(),
+                deleted_at=None,
+            )
+            return envelope(
+                result.model_dump(by_alias=True), _req_id(request),
+            )
+        validation_cascade = validation_cascade or {
+            "sets_removed": 0, "runs_removed": 0,
+        }
+        # Map the internal report → structured deleted_counts. Each
+        # field is a "kind" of run-owned data; counts are best-effort
+        # tallies (a partial-failure cleanup still emits what it
+        # succeeded on).
+        #
+        # PLACEHOLDER: ``chunks`` and ``enrichments`` are intentionally
+        # returned as 0 today. The artifact registry hard-deletes them
+        # alongside every other artifact this run owns (they roll up
+        # into ``artifacts``), but the registry doesn't expose a
+        # reliable per-kind tally on the delete path yet. The fields
+        # are in the wire shape so future per-kind tallies land here
+        # without breaking callers. See
+        # ``j1.artifacts.registry.JsonArtifactRegistry.delete_by_artifact_id``
+        # — adding a per-kind breakdown requires the registry to
+        # surface the kind of each deleted record back to the caller.
+        deleted = CleanUpDeletedCountsDTO(
+            artifacts=int(report.get("artifacts_deleted", 0) or 0),
+            workspace_files=int(report.get("files_deleted", 0) or 0),
+            snapshots=int(report.get("snapshots_removed", 0) or 0),
+            validation_results=int(
+                (validation_cascade.get("runs_removed", 0) or 0)
+                + (validation_cascade.get("sets_removed", 0) or 0)
+            ),
+            # chunks / enrichments left at 0 — see placeholder note above.
+        )
+        result = CleanUpRunResultDTO(
+            run_id=report["run_id"],
+            cleaned=True,
+            reason=CLEANUP_REASON_OK,
+            message="Run cleaned up successfully.",
+            deleted_counts=deleted,
+            deleted_at=report.get("deleted_at"),
+        )
+        return envelope(
+            result.model_dump(by_alias=True), _req_id(request),
         )
 
     @app.get(

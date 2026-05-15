@@ -388,7 +388,7 @@ export function RunDetailPage({ runId, ctx, origin, onBack, pushToast }: RunDeta
         }}
         pushToast={pushToast}
         onAfterAction={(action, newRunId) => {
-          if (action === "delete") {
+          if (action === "clean_up") {
             // The run is gone — bounce back so the user doesn't sit
             // on a page for something that no longer exists.
             onBack();

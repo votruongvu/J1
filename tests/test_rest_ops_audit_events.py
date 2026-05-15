@@ -221,12 +221,15 @@ def _seed_document(registry, *, document_id="doc-A"):
 # ---- Tests --------------------------------------------------------
 
 
-def test_delete_endpoint_emits_ops_run_deleted(
+def test_clean_up_endpoint_emits_ops_run_deleted(
     client, run_store, workspace,
 ):
     # Two runs so the active/only-run guards don't reject. The active
     # run is the SUCCEEDED one (``run-active``); ``run-prior`` is an
-    # older FAILED attempt that can be safely deleted.
+    # older FAILED attempt that can be safely cleaned up via the
+    # snapshot-centric POST /clean-up endpoint. The ops event still
+    # uses the historical ``ACTION_OPS_RUN_DELETED`` action label
+    # for back-compat with operator dashboards that filter on it.
     _seed_run(
         run_store, run_id="run-active",
         status=RunStatus.SUCCEEDED,
@@ -235,8 +238,11 @@ def test_delete_endpoint_emits_ops_run_deleted(
         run_store, run_id="run-prior",
         status=RunStatus.FAILED,
     )
-    resp = client.delete("/ingestion-runs/run-prior", headers=_HEADERS)
+    resp = client.post(
+        "/ingestion-runs/run-prior/clean-up", headers=_HEADERS,
+    )
     assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["cleaned"] is True
     ctx = ProjectContext(tenant_id="acme", project_id="alpha")
     events = _events_with_action(workspace, ctx, ACTION_OPS_RUN_DELETED)
     assert len(events) == 1
@@ -248,5 +254,9 @@ def test_delete_endpoint_emits_ops_run_deleted(
     assert "snapshots_removed" in e["payload"]
     assert "files_deleted" in e["payload"]
     assert "files_missing" in e["payload"]
+    # The audit payload also carries the new action label so
+    # downstream consumers can distinguish the Phase-9 cleanup path
+    # from any legacy hit.
+    assert e["payload"].get("action_label") == "clean_up_run"
 
 

@@ -174,10 +174,10 @@ def _seed_snapshot(snapshot_store, ctx, *, snapshot_id, run_id,
     ))
 
 
-# ---- Delete-run guard via snapshot lookup -----------------------
+# ---- Clean-up-run guard via snapshot lookup -----------------------
 
 
-def test_delete_run_guard_uses_active_snapshot_producing_run(
+def test_clean_up_run_guard_uses_active_snapshot_producing_run(
     client, registry, run_store, snapshot_store, ctx,
 ):
     """Audit fix: the protected run is derived from
@@ -185,7 +185,8 @@ def test_delete_run_guard_uses_active_snapshot_producing_run(
     succeeded-run heuristic. Setup picks an active snapshot whose
     producer is the OLDER run; the latest succeeded run is a later
     (non-promoting) attempt — proves the guard now consults the
-    snapshot store instead of the heuristic."""
+    snapshot store instead of the heuristic, on the snapshot-
+    centric Clean Up Run endpoint."""
     # Active snapshot was produced by r-older. A later succeeded
     # run (r-newer) exists but did NOT promote — e.g. test/preview
     # path, CAS conflict, refresh-enrich pending promotion.
@@ -202,20 +203,24 @@ def test_delete_run_guard_uses_active_snapshot_producing_run(
     _seed_snapshot(snapshot_store, ctx,
                    snapshot_id="snap-older", run_id="r-older")
 
-    # The older run produced the active snapshot — guarded.
-    resp_older = client.delete(
-        "/ingestion-runs/r-older", headers=_headers(ctx),
+    # The older run produced the active snapshot — guarded. The
+    # snapshot-centric endpoint always returns 200; ``cleaned``
+    # carries the outcome and ``reason`` carries the refusal code.
+    resp_older = client.post(
+        "/ingestion-runs/r-older/clean-up", headers=_headers(ctx),
     )
-    assert resp_older.status_code == 409, resp_older.text
-    msg = resp_older.json()["error"]["message"]
-    assert "snapshot" in msg.lower() or "active" in msg.lower()
+    assert resp_older.status_code == 200, resp_older.text
+    older_body = resp_older.json()["data"]
+    assert older_body["cleaned"] is False
+    assert older_body["reason"] == "ACTIVE_RUN"
     assert run_store.get(ctx, "r-older") is not None
 
-    # The newer run is NOT the active snapshot's producer — deletable.
-    resp_newer = client.delete(
-        "/ingestion-runs/r-newer", headers=_headers(ctx),
+    # The newer run is NOT the active snapshot's producer — eligible.
+    resp_newer = client.post(
+        "/ingestion-runs/r-newer/clean-up", headers=_headers(ctx),
     )
     assert resp_newer.status_code == 200, resp_newer.text
+    assert resp_newer.json()["data"]["cleaned"] is True
 
 
 # ---- Atomic re-index lock (pending_operation CAS) ---------------
