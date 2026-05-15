@@ -586,7 +586,9 @@ def create_rest_api(
             )
         return decision.to_payload(), None
 
-    def _read_sampled_text(source_path, *, max_chars: int) -> dict[str, Any]:
+    def _read_sampled_text(
+        source_path, *, max_chars: int, profile: Any = None,
+    ) -> dict[str, Any]:
         """Best-effort sampled-text extractor with structured status.
 
         Returns a dict matching the ``LLMAdvancedAssessmentInputs``
@@ -594,7 +596,8 @@ def create_rest_api(
 
             {
                 "text": str | None,
-                "status": "available" | "empty" | "unsupported" | "garbled",
+                "status": "available" | "empty" | "unsupported"
+                          | "garbled" | "unreliable",
                 "source": "pypdf" | "plain_text" | "unavailable",
                 "char_count": int,
                 "page_count": int,
@@ -607,10 +610,17 @@ def create_rest_api(
         ``garbled``    — extractor ran but the output is mostly
                          non-printable bytes (heuristic: <40 % ASCII
                          printables across the sample).
+        ``unreliable`` — extractor produced text that DECODED but is
+                         too sparse / too low-ratio to anchor layout
+                         claims. Driven by the lightweight profile's
+                         ``text_extractable_ratio`` signal + per-page
+                         character density.
 
-        The LLM Advanced Assessment service reads ``status`` and
-        adjusts the prompt accordingly — it won't claim layout
-        detail under non-``available`` statuses.
+        When ``profile`` is supplied (the lightweight
+        ``DocumentProfile``), an extra refinement pass promotes
+        ``available`` → ``unreliable`` for scanned-document
+        signatures. The LLM service hedges all ``likely`` verdicts
+        on any non-``available`` status.
         """
         from j1.processing.llm_advanced_assessment import (
             SAMPLE_TEXT_SOURCE_PLAIN_TEXT,
@@ -619,8 +629,21 @@ def create_rest_api(
             SAMPLE_TEXT_STATUS_AVAILABLE,
             SAMPLE_TEXT_STATUS_EMPTY,
             SAMPLE_TEXT_STATUS_GARBLED,
+            SAMPLE_TEXT_STATUS_UNRELIABLE,
             SAMPLE_TEXT_STATUS_UNSUPPORTED,
         )
+
+        # ---- Thresholds ----
+        # These are intentionally conservative: a false-positive
+        # ``unreliable`` is cheap (LLM still gets filename + rules)
+        # while a false-negative makes the LLM claim layout detail
+        # from a scanned doc. Tunable via env if a deployment needs
+        # different thresholds.
+        _MIN_EXTRACTABLE_RATIO = 0.20
+        _MIN_CHARS_PER_PAGE_FOR_RELIABLE = 80
+        # Documents shorter than this skip the density check —
+        # short notes legitimately have low char counts.
+        _MIN_PAGES_FOR_DENSITY_CHECK = 3
 
         _PLAIN_TEXT_EXTS = frozenset({
             ".txt", ".md", ".markdown", ".rst", ".log",
@@ -661,13 +684,13 @@ def create_rest_api(
                     "char_count": 0, "page_count": 0,
                 }
             trimmed = raw[:max_chars]
-            return {
+            return _refine_with_profile({
                 "text": trimmed,
                 "status": _classify_text(trimmed),
                 "source": SAMPLE_TEXT_SOURCE_PLAIN_TEXT,
                 "char_count": len(trimmed),
                 "page_count": 1,
-            }
+            }, profile)
         # ---- PDF ------------------------------------------------
         if ext == ".pdf":
             try:
@@ -713,13 +736,13 @@ def create_rest_api(
                         remaining -= len(chunk)
                         sampled_pages += 1
                 joined = "\n\n".join(parts) if parts else ""
-                return {
+                return _refine_with_profile({
                     "text": joined or None,
                     "status": _classify_text(joined),
                     "source": SAMPLE_TEXT_SOURCE_PYPDF,
                     "char_count": len(joined),
                     "page_count": sampled_pages,
-                }
+                }, profile)
             except Exception:  # noqa: BLE001
                 return {
                     "text": None,
@@ -728,12 +751,68 @@ def create_rest_api(
                     "char_count": 0, "page_count": 0,
                 }
         # ---- Unsupported file type ------------------------------
-        return {
+        return _refine_with_profile({
             "text": None,
             "status": SAMPLE_TEXT_STATUS_UNSUPPORTED,
             "source": SAMPLE_TEXT_SOURCE_UNAVAILABLE,
             "char_count": 0, "page_count": 0,
-        }
+        }, profile)
+
+    def _refine_with_profile(
+        result: dict[str, Any], profile: Any,
+    ) -> dict[str, Any]:
+        """Final pass that promotes ``available`` → ``unreliable``
+        when the lightweight profile signals + actual char density
+        say the extracted text won't anchor real layout claims.
+
+        Skipped for non-``available`` statuses (those are already
+        more pessimistic) and when no profile was supplied (the
+        legacy callers — they get the extractor's verdict
+        verbatim).
+        """
+        from j1.processing.llm_advanced_assessment import (
+            SAMPLE_TEXT_STATUS_AVAILABLE,
+            SAMPLE_TEXT_STATUS_UNRELIABLE,
+        )
+        # Thresholds duplicated from ``_read_sampled_text`` so this
+        # sibling helper is self-contained — Python closures don't
+        # expose locals of one inner function to another inside the
+        # same enclosing scope. A future refactor can lift these to
+        # module-level constants once the function moves out of the
+        # route factory.
+        _MIN_EXTRACTABLE_RATIO = 0.20
+        _MIN_CHARS_PER_PAGE_FOR_RELIABLE = 80
+        _MIN_PAGES_FOR_DENSITY_CHECK = 3
+        if profile is None:
+            return result
+        if result.get("status") != SAMPLE_TEXT_STATUS_AVAILABLE:
+            return result
+        ratio = getattr(profile, "text_extractable_ratio", None)
+        page_count = getattr(profile, "page_count", None) or 0
+        char_count = int(result.get("char_count") or 0)
+        sampled_pages = int(result.get("page_count") or 0)
+        # Signal 1: scanned-document signature. The lightweight
+        # profiler reports the share of pages with embedded text;
+        # a small share means most of the document is image-only.
+        if ratio is not None and ratio < _MIN_EXTRACTABLE_RATIO:
+            new = dict(result)
+            new["status"] = SAMPLE_TEXT_STATUS_UNRELIABLE
+            return new
+        # Signal 2: sparse text across sampled pages. Skip the
+        # check for short docs — a 2-page note legitimately has
+        # low char counts. We use ``sampled_pages`` (not total
+        # page_count) so the denominator matches what we actually
+        # extracted from.
+        if (
+            page_count >= _MIN_PAGES_FOR_DENSITY_CHECK
+            and sampled_pages > 0
+            and char_count / sampled_pages
+                < _MIN_CHARS_PER_PAGE_FOR_RELIABLE
+        ):
+            new = dict(result)
+            new["status"] = SAMPLE_TEXT_STATUS_UNRELIABLE
+            return new
+        return result
 
     def _llm_profile_to_wire(llm_profile: str) -> str:
         """Map the LLM's own profile vocabulary to ExecutionProfile
@@ -1996,7 +2075,7 @@ def create_rest_api(
                 # decide whether to make layout claims at all.
                 try:
                     sample = _read_sampled_text(
-                        source_path, max_chars=60_000,
+                        source_path, max_chars=60_000, profile=profile,
                     )
                 except Exception:  # noqa: BLE001 — sampling is advisory
                     sample = {

@@ -288,10 +288,20 @@ def test_prompt_pins_no_layout_inference_under_unreliable_sample_text():
     ))
     prompt = captured["prompt"]
     assert "UNSUPPORTED" in prompt
-    assert "MUST NOT" in prompt
-    # The "filename + signals + rules ONLY" constraint must be
-    # spelled out so the LLM knows what to fall back on.
+    # Spec-exact wording for the unreliable-text directive. Pinned
+    # so a future copy edit on either side surfaces a coordinated
+    # change instead of silent drift.
+    assert (
+        "Sample text is unavailable or unreliable. Do not infer "
+        "detailed layout or content from missing or broken text."
+    ) in prompt
+    # The "may still recommend based on filename / signals / rules"
+    # fallback path must be spelled out so the LLM has something
+    # to work from.
     assert "filename" in prompt.lower()
+    assert "matched rules" in prompt.lower()
+    # Hedging constraint is still pinned via MUST.
+    assert "MUST be hedged" in prompt
     assert "matched rules" in prompt.lower()
 
 

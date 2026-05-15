@@ -47,6 +47,7 @@ __all__ = [
     "SAMPLE_TEXT_STATUS_EMPTY",
     "SAMPLE_TEXT_STATUS_UNSUPPORTED",
     "SAMPLE_TEXT_STATUS_GARBLED",
+    "SAMPLE_TEXT_STATUS_UNRELIABLE",
     "SAMPLE_TEXT_SOURCE_PYPDF",
     "SAMPLE_TEXT_SOURCE_PLAIN_TEXT",
     "SAMPLE_TEXT_SOURCE_UNAVAILABLE",
@@ -87,6 +88,13 @@ SAMPLE_TEXT_STATUS_AVAILABLE = "available"   # extractor returned usable text
 SAMPLE_TEXT_STATUS_EMPTY = "empty"           # extractor ran but the doc is empty
 SAMPLE_TEXT_STATUS_UNSUPPORTED = "unsupported"  # file type has no text extractor
 SAMPLE_TEXT_STATUS_GARBLED = "garbled"       # extractor ran but the output is noise
+# ``unreliable`` distinguishes extractor-produced text that DECODED
+# but is too sparse or too low-ratio to anchor layout claims. The
+# pypdf path raises this when the lightweight profile reports a
+# scanned-document signature (low text_extractable_ratio) or when
+# the per-page character density is well below what real text would
+# yield. Distinct from ``garbled`` (printable-ASCII heuristic).
+SAMPLE_TEXT_STATUS_UNRELIABLE = "unreliable"
 
 SAMPLE_TEXT_SOURCE_PYPDF = "pypdf"
 SAMPLE_TEXT_SOURCE_PLAIN_TEXT = "plain_text"
@@ -364,14 +372,16 @@ class LLMAdvancedAssessmentService:
                 f"{inputs.sample_text_status.upper()} "
                 f"(source={inputs.sample_text_source}, "
                 f"chars={inputs.sampled_text_char_count}).\n"
-                "Sampled text was NOT extracted reliably for this "
-                "file. You MUST NOT infer table counts, image "
-                "counts, equation counts, or layout structure from "
-                "missing or garbled content. Make your "
-                "recommendation from filename, title, lightweight "
-                "signals, and the matched rules below ONLY. Hedge "
-                "detected_signals with 'no' / 'suspected' (NEVER "
-                "'likely') when sampled text is unavailable.\n"
+                # Spec-exact directive: keep this wording stable so
+                # the prompt-shape test can pin it.
+                "Sample text is unavailable or unreliable. Do not "
+                "infer detailed layout or content from missing or "
+                "broken text.\n"
+                "You MAY still recommend a profile and manual next "
+                "steps from filename, title, lightweight signals, "
+                "and the matched rules below — but every "
+                "``detected_signals`` value MUST be hedged with "
+                "``no`` or ``suspected`` (NEVER ``likely``).\n"
             )
         return (
             f"Document id: {inputs.document_id!r}\n"

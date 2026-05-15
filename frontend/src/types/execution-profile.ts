@@ -68,6 +68,20 @@ export type RecommendationSource =
   | "lightweight_assessment_fallback"
   | "system_default";
 
+/** Sample-text status surfaced by the BE classifier. Mirrors
+ * ``SAMPLE_TEXT_STATUS_*`` in
+ * ``j1.processing.llm_advanced_assessment``. */
+export type SampleTextStatus =
+  | "available"
+  | "empty"
+  | "unsupported"
+  | "garbled"
+  | "unreliable";
+
+/** Sample-text source — which extractor produced the text (or
+ * confirmed it couldn't be produced). */
+export type SampleTextSource = "pypdf" | "plain_text" | "unavailable";
+
 /** Strict-JSON output of ``POST /documents/{id}/advanced-assessment``.
  * Mirrors ``LLMAdvancedAssessmentResult.to_payload()`` on the BE.
  * ``status='refused'`` carries ``refusalReason`` + ``message`` and
@@ -83,6 +97,12 @@ export interface LLMAdvancedAssessmentResult {
   recommendedNextSteps: string[];
   reasoningSummary: string[];
   warnings: string[];
+  /** Sample-text provenance — operator-facing copy in the picker
+   * keys off these fields. */
+  sampleTextStatus?: SampleTextStatus;
+  sampleTextSource?: SampleTextSource;
+  sampledTextCharCount?: number;
+  sampledPageCount?: number;
 }
 
 /** Response shape for ``POST /documents/{id}/advanced-assessment``. */

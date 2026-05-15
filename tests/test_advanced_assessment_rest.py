@@ -461,15 +461,172 @@ def test_advanced_assessment_marks_available_for_pdf(
         headers=_headers(),
     )
     data = _envelope(resp.json())
-    # Blank page → pypdf produces no text → ``empty`` (not
-    # ``unsupported`` since the extractor itself works). Either
-    # status MUST come from the classifier — the wire string is
-    # never ``available`` for a blank doc.
-    assert data["result"]["sampleTextStatus"] in {"empty", "available"}
+    # A blank-page PDF can resolve to ``empty`` / ``garbled`` /
+    # ``unreliable`` depending on what pypdf returns for an empty
+    # canvas — the contract we DO pin is (a) the source field is
+    # ``pypdf`` (extractor ran) and (b) status is never the
+    # wire-stable "available" for a doc with no real text.
+    assert data["result"]["sampleTextStatus"] in {
+        "empty", "garbled", "unreliable",
+    }
     assert data["result"]["sampleTextSource"] == "pypdf"
 
 
 # ---- /assessment-plan carries forward LLM result ------------------
+
+
+def test_advanced_assessment_promotes_unreliable_on_low_extractable_ratio(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """A document whose lightweight profile reports a low
+    ``text_extractable_ratio`` (mostly-scanned signature) must
+    surface ``sampleTextStatus='unreliable'`` to the LLM service —
+    even when the extractor returns real text. We use a plain-text
+    file for a deterministic extractor result and stub the
+    profiler to claim the scanned-doc signature."""
+    from j1.processing.profiling import DocumentProfile
+
+    _stage_document(
+        workspace, registry, ctx,
+        document_id="doc-scanned",
+        filename="report.txt",
+        content=b"some readable text",
+    )
+
+    import j1.processing.profiling as _profiling
+
+    class _StubProfiler:
+        def profile(self, document_id: str, source_path: str):
+            return DocumentProfile(
+                document_id=document_id,
+                extension=".txt",
+                page_count=5,
+                text_extractable_ratio=0.05,  # mostly scanned
+                has_scanned_pages=True,
+            )
+
+    original = _profiling.DeterministicDocumentProfiler
+    _profiling.DeterministicDocumentProfiler = _StubProfiler  # type: ignore[misc]
+    try:
+        llm = _OkLLMService()
+        app = _make_app(
+            application_facade, job_starter, workspace,
+            decision_store=decision_store, llm_service=llm,
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/documents/doc-scanned/advanced-assessment",
+            headers=_headers(),
+        )
+        data = _envelope(resp.json())
+    finally:
+        _profiling.DeterministicDocumentProfiler = original  # type: ignore[misc]
+
+    assert data["result"]["sampleTextStatus"] == "unreliable"
+    # Operator-facing warning is present (backend is the source
+    # of truth for the FE).
+    assert any(
+        "filename" in w.lower() and "matched rules" in w.lower()
+        for w in data["result"]["warnings"]
+    )
+
+
+def test_advanced_assessment_promotes_unreliable_on_sparse_text_in_long_doc(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """The second classifier signal: a doc with enough pages but
+    too-few chars per sampled page should promote
+    ``available`` → ``unreliable``."""
+    from j1.processing.profiling import DocumentProfile
+
+    # 20 chars / 1 sampled page = 20 chars per page — well below
+    # the 80-char/page threshold.
+    _stage_document(
+        workspace, registry, ctx,
+        document_id="doc-sparse",
+        filename="sparse.txt",
+        content=b"only twenty chars!! ",
+    )
+
+    import j1.processing.profiling as _profiling
+
+    class _StubProfiler:
+        def profile(self, document_id: str, source_path: str):
+            return DocumentProfile(
+                document_id=document_id,
+                extension=".txt",
+                page_count=10,  # multi-page doc
+                text_extractable_ratio=0.9,  # not scanned
+            )
+
+    original = _profiling.DeterministicDocumentProfiler
+    _profiling.DeterministicDocumentProfiler = _StubProfiler  # type: ignore[misc]
+    try:
+        llm = _OkLLMService()
+        app = _make_app(
+            application_facade, job_starter, workspace,
+            decision_store=decision_store, llm_service=llm,
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/documents/doc-sparse/advanced-assessment",
+            headers=_headers(),
+        )
+        data = _envelope(resp.json())
+    finally:
+        _profiling.DeterministicDocumentProfiler = original  # type: ignore[misc]
+
+    assert data["result"]["sampleTextStatus"] == "unreliable"
+
+
+def test_advanced_assessment_leaves_short_docs_alone(
+    application_facade, job_starter, workspace, registry, ctx,
+    decision_store,
+):
+    """Short notes legitimately have low char counts — the
+    density check skips when ``page_count < 3`` so a 1-page memo
+    doesn't get demoted to ``unreliable`` just because it has 50
+    chars."""
+    from j1.processing.profiling import DocumentProfile
+
+    _stage_document(
+        workspace, registry, ctx,
+        document_id="doc-memo",
+        filename="memo.txt",
+        content=b"short memo body",
+    )
+
+    import j1.processing.profiling as _profiling
+
+    class _StubProfiler:
+        def profile(self, document_id: str, source_path: str):
+            return DocumentProfile(
+                document_id=document_id,
+                extension=".txt",
+                page_count=1,  # short doc
+                text_extractable_ratio=1.0,
+            )
+
+    original = _profiling.DeterministicDocumentProfiler
+    _profiling.DeterministicDocumentProfiler = _StubProfiler  # type: ignore[misc]
+    try:
+        llm = _OkLLMService()
+        app = _make_app(
+            application_facade, job_starter, workspace,
+            decision_store=decision_store, llm_service=llm,
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/documents/doc-memo/advanced-assessment",
+            headers=_headers(),
+        )
+        data = _envelope(resp.json())
+    finally:
+        _profiling.DeterministicDocumentProfiler = original  # type: ignore[misc]
+
+    assert data["result"]["sampleTextStatus"] == "available"
 
 
 def test_assessment_plan_surfaces_latest_llm_result(

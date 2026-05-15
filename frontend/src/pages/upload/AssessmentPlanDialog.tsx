@@ -480,50 +480,85 @@ function RecommendedNextStepsPanel({
 }
 
 
+/** Generic fallback copy per sample-text status, used ONLY when
+ * the backend didn't include any warnings on the LLM assessment
+ * payload. The backend's warnings are the source of truth — we
+ * render them verbatim under the panel.
+ */
+function _fallbackSampleTextCopy(status: string): string {
+  switch (status) {
+    case "empty":
+      return "The document appeared empty to the text extractor.";
+    case "unsupported":
+      return (
+        "This file type has no text extractor; sampled text was "
+        + "not produced."
+      );
+    case "garbled":
+      return (
+        "The text extractor ran but the output is mostly "
+        + "non-printable bytes."
+      );
+    case "unreliable":
+      return (
+        "Sample text was sparse or the document looks mostly "
+        + "scanned; the LLM's recommendation isn't anchored in "
+        + "real text."
+      );
+    default:
+      return `Sample text status: ${status}.`;
+  }
+}
+
+
 /** Show the sample-text status surfaced by the LLM service. When
  * the extractor produced nothing usable, the operator needs to
  * know the LLM's recommendation came from filename + signals +
- * matched rules — not document content. */
+ * matched rules — not document content.
+ *
+ * Renders the BACKEND's warnings verbatim (source of truth). Only
+ * falls back to FE-synthesized copy when the backend didn't ship
+ * any warning for the non-``available`` status. This avoids
+ * duplicating the ``SAMPLE_TEXT_UNRELIABLE_WARNING`` text the
+ * backend already emits.
+ */
 function SampleTextWarning({
   plan,
 }: {
   plan: AssessmentPlanResponse;
 }) {
   const llm = (plan as { llmAssessment?: unknown }).llmAssessment as
-    | { sampleTextStatus?: string; sampleTextSource?: string }
+    | {
+        sampleTextStatus?: string;
+        sampleTextSource?: string;
+        warnings?: string[];
+      }
     | undefined;
   const status = llm?.sampleTextStatus;
   if (!status || status === "available") return null;
-  const reason = (() => {
-    switch (status) {
-      case "empty":
-        return "The document appeared empty to the text extractor.";
-      case "unsupported":
-        return (
-          "This file type has no text extractor; sampled text was "
-          + "not produced."
-        );
-      case "garbled":
-        return (
-          "The text extractor ran but the output looks like binary "
-          + "noise."
-        );
-      default:
-        return `Sample text status: ${status}.`;
-    }
-  })();
+  // Backend-supplied warnings are the source of truth. Filter out
+  // empty strings just in case a stub service returns ``[""]``.
+  const backendWarnings = (llm?.warnings ?? [])
+    .map((w) => (typeof w === "string" ? w.trim() : ""))
+    .filter((w) => w.length > 0);
   return (
     <div
       className="assessment-plan-dialog__sample-text-warning"
       data-testid="assessment-plan-sample-text-warning"
     >
-      <Banner kind="warn" title="LLM saw no reliable sample text">
-        <p>{reason}</p>
-        <p>
-          The LLM assessment used filename, metadata, lightweight
-          signals, and matched rules only. Detailed layout claims
-          have been hedged automatically.
-        </p>
+      <Banner kind="warn" title="LLM sample text was not reliable">
+        {backendWarnings.length > 0 ? (
+          <ul>
+            {backendWarnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        ) : (
+          // Fallback ONLY when the backend didn't ship a warning.
+          // Real deployments always do; this exists for legacy
+          // service stubs that return an empty warnings array.
+          <p>{_fallbackSampleTextCopy(status)}</p>
+        )}
       </Banner>
     </div>
   );

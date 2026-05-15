@@ -529,7 +529,14 @@ describe("AssessmentPlanDialog — LLM sample-text warning", () => {
     expect(html).not.toContain("assessment-plan-sample-text-warning");
   });
 
-  it("renders a warning when sample text was unsupported", () => {
+  it("renders BACKEND warnings verbatim — no synthesized duplicate", () => {
+    // Spec contract: backend warnings are the source of truth. The
+    // FE renders them as-is and MUST NOT also emit its own
+    // synthesized per-status copy alongside them.
+    const backendWarning =
+      "Sampled text could not be extracted reliably for this file "
+      + "type. The LLM assessment used filename, metadata, "
+      + "lightweight signals, and matched rules only.";
     const html = _render({
       plan: _response({
         llmAssessment: {
@@ -542,7 +549,7 @@ describe("AssessmentPlanDialog — LLM sample-text warning", () => {
           detectedSignals: {},
           recommendedNextSteps: [],
           reasoningSummary: [],
-          warnings: [],
+          warnings: [backendWarning],
           sampleTextStatus: "unsupported",
           sampleTextSource: "unavailable",
           sampledTextCharCount: 0,
@@ -551,13 +558,19 @@ describe("AssessmentPlanDialog — LLM sample-text warning", () => {
       }),
     });
     expect(html).toContain("assessment-plan-sample-text-warning");
-    expect(html).toContain("no reliable sample text");
-    // The "filename + signals + matched rules only" framing is
-    // surfaced verbatim per the spec.
-    expect(html).toContain("filename, metadata, lightweight signals");
+    // The backend warning text appears in the rendered HTML.
+    expect(html).toContain(backendWarning);
+    // And ONLY ONCE — no synthesized FE duplicate of the same
+    // string.
+    const matches = html.split(backendWarning).length - 1;
+    expect(matches).toBe(1);
   });
 
-  it("renders a different message when sample text was garbled", () => {
+  it("falls back to FE copy ONLY when backend ships no warnings", () => {
+    // The fallback path exists so legacy / stub services that
+    // return ``warnings=[]`` still produce something readable.
+    // Production deployments always ship a warning, so the
+    // fallback should be rare.
     const html = _render({
       plan: _response({
         llmAssessment: {
@@ -579,7 +592,38 @@ describe("AssessmentPlanDialog — LLM sample-text warning", () => {
       }),
     });
     expect(html).toContain("assessment-plan-sample-text-warning");
-    expect(html.toLowerCase()).toContain("binary noise");
+    // Fallback copy keys off the status enum value.
+    expect(html.toLowerCase()).toContain("non-printable bytes");
+  });
+
+  it("renders the unreliable status when the backend promoted it", () => {
+    // The new ``unreliable`` status surfaces when the backend's
+    // classifier detected sparse / low-extractable text and
+    // promoted ``available`` → ``unreliable``. Fallback copy must
+    // map this to operator-readable wording when the backend
+    // didn't also include a warning string.
+    const html = _render({
+      plan: _response({
+        llmAssessment: {
+          status: "ok",
+          refusalReason: null,
+          message: null,
+          documentComplexity: "moderate",
+          recommendedProfile: "standard_index",
+          confidence: "low",
+          detectedSignals: {},
+          recommendedNextSteps: [],
+          reasoningSummary: [],
+          warnings: [],
+          sampleTextStatus: "unreliable",
+          sampleTextSource: "pypdf",
+          sampledTextCharCount: 30,
+          sampledPageCount: 1,
+        },
+      }),
+    });
+    expect(html).toContain("assessment-plan-sample-text-warning");
+    expect(html.toLowerCase()).toContain("scanned");
   });
 });
 

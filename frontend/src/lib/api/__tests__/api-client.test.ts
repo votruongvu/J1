@@ -226,6 +226,27 @@ describe("ApiClient.upload", () => {
     expect(calls[0]!.url).not.toContain("/manual-actions");
   });
 
+  it("does not expose a runManualAction dispatcher (endpoints not yet implemented)", async () => {
+    // Pinned per the showcase spec: the FE MUST NOT advertise a
+    // ``runManualAction`` / ``triggerManualAction`` method on the
+    // API client until the backend implements
+    // ``POST /documents/{id}/manual-actions/{id}``. The FE renders
+    // the suggested next-step buttons as DISABLED instead, so a
+    // wiring oversight surfaces here.
+    const client = makeClient();
+    const forbidden = [
+      "runManualAction",
+      "triggerManualAction",
+      "executeManualAction",
+      "postManualAction",
+    ];
+    for (const name of forbidden) {
+      expect(
+        (client as unknown as Record<string, unknown>)[name],
+      ).toBeUndefined();
+    }
+  });
+
   it("omits assessmentDecisionId when null / undefined", async () => {
     // Either skipping the picker entirely (legacy) or hitting a
     // deployment without the decision store wired (the endpoint
