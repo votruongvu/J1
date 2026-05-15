@@ -798,7 +798,7 @@ def _parse_method_for_mode(mode: str | None) -> str | None:
  layer."""
     if mode is None:
         return None
-    return {"fast": "txt", "standard": "auto", "deep": "auto"}.get(mode)
+    return {"standard": "auto", "deep": "auto"}.get(mode)
 
 
 def _project_search_attr_final_status(
@@ -2507,6 +2507,13 @@ class ProjectProcessingWorkflow:
                     # the request at REST-handler time.
                     target_snapshot_id=getattr(
                         request, "target_snapshot_id", None,
+                    ),
+                    # PR-05: thread the user-selected execution
+                    # profile onto the report. The picker writes
+                    # this onto ``request.selected_execution_profile``
+                    # at upload time.
+                    selected_execution_profile=getattr(
+                        request, "selected_execution_profile", None,
                     ),
                 ),
                 start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,

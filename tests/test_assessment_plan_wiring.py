@@ -259,16 +259,15 @@ def test_processing_service_compile_threads_assessment_plan_to_compiler(
     assert captured.get("legacy_called") is True
 
 
-# ---- (4): fast/standard/deep plans reach the mapper correctly -----
+# ---- (4): standard/deep plans reach the mapper correctly ---------
 
 
 @pytest.mark.parametrize(
     "mode,expected_parse_method",
     [
-        # Legacy FAST → txt is preserved as a read-path safety net
-        # for legacy plans replayed from history. The planner never
-        # emits FAST any more (see two-mode model in assessment.py).
-        (CompileMode.FAST, "txt"),
+        # Two-mode model — only STANDARD and DEEP are emitted.
+        # Legacy FAST was retired in PR-03; payloads carrying it
+        # fall back to STANDARD via from_payload's ValueError catch.
         (CompileMode.STANDARD, "auto"),
         (CompileMode.DEEP, "auto"),  # no OCR required
     ],

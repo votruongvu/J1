@@ -196,73 +196,18 @@ def test_binary_container_extensions_never_assigned_fast_mode(extension):
         has_scanned_pages=False,
     )
     plan = DefaultAssessmentPlanner().assess(profile)
-    assert plan.mode != CompileMode.FAST, (
-        f"{extension} must NEVER map to FAST mode; got {plan.mode}. "
-        "Binary containers may carry vision content the file extension "
-        "doesn't reveal."
+    assert plan.mode in {CompileMode.STANDARD, CompileMode.DEEP}, (
+        f"{extension} must map to STANDARD or DEEP; got {plan.mode}. "
+        "Binary containers may carry vision content the file "
+        "extension doesn't reveal."
     )
 
 
-def test_legacy_fast_mode_coerces_to_standard_regardless_of_extension():
-    """Two-mode model: FAST is removed from the official vocabulary.
- The safety belt coerces ANY FAST plan to STANDARD — even for
- 100%-text extensions where pre-refactor FAST was the answer.
- Operators see the migration in `reason`."""
-    from j1.processing.assessment import _enforce_fast_mode_safety
-
-    legacy_plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="pdf", complexity=Complexity.LOW, confidence=1.0,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-        reason="legacy plan persisted before the two-mode refactor",
-    )
-    pdf_profile = _profile(extension=".pdf", page_count=1)
-    coerced = _enforce_fast_mode_safety(legacy_plan, pdf_profile)
-    assert coerced.mode == CompileMode.STANDARD
-    assert "migrated legacy FAST→STANDARD" in coerced.reason
-    # Standard baseline capabilities are added; pre-existing
-    # required caps survive.
-    assert Capability.TEXT_EXTRACTION in coerced.required_capabilities
-    assert Capability.LAYOUT_DETECTION in coerced.required_capabilities
-
-
-def test_legacy_fast_mode_coercion_also_fires_for_text_extension():
-    """Belt fires uniformly. A FAST plan for a.txt file is still
- coerced to STANDARD — no extension exemption in the two-mode
- model."""
-    from j1.processing.assessment import _enforce_fast_mode_safety
-
-    legacy_plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="plain_text",
-        complexity=Complexity.LOW, confidence=1.0,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-        reason="legacy plain-text FAST plan",
-    )
-    txt_profile = _profile(extension=".txt", page_count=1)
-    coerced = _enforce_fast_mode_safety(legacy_plan, txt_profile)
-    assert coerced.mode == CompileMode.STANDARD
-    assert "migrated legacy FAST→STANDARD" in coerced.reason
-
-
-def test_safety_belt_noop_for_already_standard():
-    """The belt only acts on FAST plans. STANDARD/DEEP pass through
- untouched."""
-    from j1.processing.assessment import _enforce_fast_mode_safety
-
-    standard_plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.STANDARD,
-        document_type="pdf",
-        complexity=Complexity.MEDIUM, confidence=0.9,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-        reason="standard reason",
-    )
-    pdf_profile = _profile(extension=".pdf", page_count=1)
-    same = _enforce_fast_mode_safety(standard_plan, pdf_profile)
-    assert same is standard_plan or (
-        same.mode == CompileMode.STANDARD
-        and same.reason == "standard reason"
-    )
+# PR-03: the legacy ``_enforce_fast_mode_safety`` coercion belt and
+# the ``CompileMode.FAST`` enum value were retired. Read-side
+# tolerance is handled by ``AssessmentPlan.from_payload``'s
+# ValueError catch — pinned by
+# ``test_legacy_fast_payload_round_trips_to_standard`` below.
 
 
 # ---- RecommendedProcessingPath: derived from mode + capabilities --
@@ -361,13 +306,14 @@ def test_recommended_path_from_payload_tolerates_missing_field():
 
 
 def test_recommended_path_from_payload_coerces_legacy_values():
-    """Legacy values from before the two-mode refactor must coerce
- on the read path:
- * `fast_text_compile` → STANDARD_COMPILE
- * `multimodal_compile` → STANDARD_COMPILE
- * `ocr_parse` → DEEP_COMPILE
- The actual recommended_path stored in legacy artifacts is one
- of these strings; replaying them MUST NOT crash."""
+    """Pre-two-mode legacy ``recommended_path`` strings
+    (``fast_text_compile`` / ``multimodal_compile`` / ``ocr_parse``)
+    fall back to ``STANDARD_COMPILE`` on the read path. The actual
+    compile behaviour is determined by the load-bearing ``mode``
+    field on the same payload — ``recommended_path`` is the
+    operator label. PR-03 simplified the coercion: replay no
+    longer maps individual legacy strings to specific paths;
+    everything unknown falls through to STANDARD_COMPILE."""
     from j1.processing.assessment import RecommendedProcessingPath
 
     def _payload(path_value: str) -> dict:
@@ -386,15 +332,11 @@ def test_recommended_path_from_payload_coerces_legacy_values():
             "recommended_path": path_value,
         }
 
-    assert AssessmentPlan.from_payload(
-        _payload("fast_text_compile"),
-    ).recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
-    assert AssessmentPlan.from_payload(
-        _payload("multimodal_compile"),
-    ).recommended_path == RecommendedProcessingPath.STANDARD_COMPILE
-    assert AssessmentPlan.from_payload(
-        _payload("ocr_parse"),
-    ).recommended_path == RecommendedProcessingPath.DEEP_COMPILE
+    for legacy in ("fast_text_compile", "multimodal_compile", "ocr_parse"):
+        plan = AssessmentPlan.from_payload(_payload(legacy))
+        assert plan.recommended_path == (
+            RecommendedProcessingPath.STANDARD_COMPILE
+        ), f"legacy {legacy!r} should fall back to STANDARD_COMPILE"
 
 
 def test_recommended_path_from_payload_tolerates_unknown_value():
@@ -509,37 +451,11 @@ def test_extraction_evidence_block_none_compile_result_safe():
     assert block["chunking_status"] == "pending_verification"
 
 
-# ---- 4) fast plan maps to txt / light behaviour ------------------
-
-
-def test_fast_plan_maps_to_parse_method_txt_in_raganything_adapter():
-    plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="plain_text", complexity=Complexity.LOW,
-        confidence=1.0,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-    )
-    config = map_assessment_to_raganything_config(plan, _settings())
-    assert config.parse_method == "txt"
-    # Fast mode disables image / equation processing by default.
-    assert config.enable_image_processing is False
-    assert config.enable_equation_processing is False
-    # Tables off too unless explicitly required.
-    assert config.enable_table_processing is False
-
-
-def test_fast_plan_with_required_table_capability_enables_tables():
-    plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="plain_text", complexity=Complexity.LOW,
-        confidence=1.0,
-        required_capabilities=frozenset({
-            Capability.TEXT_EXTRACTION, Capability.TABLE_EXTRACTION,
-        }),
-    )
-    config = map_assessment_to_raganything_config(plan, _settings())
-    assert config.parse_method == "txt"
-    assert config.enable_table_processing is True
+# PR-03: the legacy ``FAST`` compile mode was retired. Tests of
+# FAST→txt mapping and FAST capability defaults were removed
+# alongside the enum value. The bridge's plaintext fast-path
+# (extension-keyed, independent of CompileMode) is covered by
+# ``test_native_text_extension*`` in this file.
 
 
 # ---- 5) standard plan maps to parse_method=auto -------------------
@@ -604,16 +520,19 @@ def test_deep_plan_without_ocr_falls_back_to_auto():
 
 def test_env_default_parse_method_does_not_override_plan_choice():
     """Even if `J1_RAGANYTHING_PARSE_METHOD=auto` (the env default),
- a fast plan must still resolve to `txt`. Plan > env."""
+ a deep plan that requires OCR must still resolve to `ocr`. Plan >
+ env."""
     plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="plain_text", complexity=Complexity.LOW,
-        confidence=1.0,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
+        document_id="d", mode=CompileMode.DEEP,
+        document_type="pdf", complexity=Complexity.HIGH,
+        confidence=0.85,
+        required_capabilities=frozenset({
+            Capability.TEXT_EXTRACTION, Capability.OCR,
+        }),
     )
     settings = _settings(parse_method="auto")  # env default
     config = map_assessment_to_raganything_config(plan, settings)
-    assert config.parse_method == "txt"  # plan wins, not "auto"
+    assert config.parse_method == "ocr"  # plan wins, not env "auto"
 
 
 def test_env_allowed_parse_methods_constrains_plan_choice():
@@ -623,14 +542,16 @@ def test_env_allowed_parse_methods_constrains_plan_choice():
  safety hatch — settings carry the allow-list as a real field
  populated by `load_raganything_settings`."""
     plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="plain_text", complexity=Complexity.LOW,
-        confidence=1.0,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
+        document_id="d", mode=CompileMode.DEEP,
+        document_type="pdf", complexity=Complexity.HIGH,
+        confidence=0.85,
+        required_capabilities=frozenset({
+            Capability.TEXT_EXTRACTION, Capability.OCR,
+        }),
     )
     settings = _settings(parse_method="auto", allowed_parse_methods=("auto",))
     config = map_assessment_to_raganything_config(plan, settings)
-    # `txt` not in allow-list → fall back to the env default (`auto`).
+    # `ocr` not in allow-list → fall back to the env default (`auto`).
     assert config.parse_method == "auto"
     assert any(
         "allow-list" in w or "fallback" in w.lower() or "falling back" in w
@@ -762,23 +683,6 @@ def test_standard_plan_with_table_cap_sets_enable_table_processing_true():
     assert overrides["enable_table_processing"] is True
 
 
-def test_fast_plan_disables_image_and_equation_config_flags():
-    """Fast plan with NO image/formula capabilities required → mapper
- emits `enable_image_processing=False` and
- `enable_equation_processing=False` so RAGAnythingConfig skips the
- expensive paths. Table also off (fast mode default)."""
-    plan = AssessmentPlan(
-        document_id="d", mode=CompileMode.FAST,
-        document_type="plain_text", complexity=Complexity.LOW,
-        confidence=1.0,
-        required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-    )
-    config = map_assessment_to_raganything_config(plan, _settings())
-    assert config.enable_image_processing is False
-    assert config.enable_equation_processing is False
-    assert config.enable_table_processing is False
-
-
 def test_deep_plan_enables_image_table_equation_config_flags():
     """Deep plan → all three RAGAnythingConfig flags True regardless
  of whether each capability is in `required_capabilities`. The
@@ -803,17 +707,8 @@ def test_deep_plan_enables_image_table_equation_config_flags():
 def test_parse_method_still_maps_correctly_alongside_config_flags():
     """The CompileConfig split (parser_kwargs vs config_overrides)
  must NOT regress the parse_method mapping. Each mode still
- resolves the same way — txt / auto / ocr — independent of
- the per-capability flag values."""
-    fast = map_assessment_to_raganything_config(
-        AssessmentPlan(
-            document_id="d", mode=CompileMode.FAST,
-            document_type="plain_text", complexity=Complexity.LOW,
-            confidence=1.0,
-            required_capabilities=frozenset({Capability.TEXT_EXTRACTION}),
-        ),
-        _settings(),
-    )
+ resolves the same way — auto / ocr — independent of the
+ per-capability flag values."""
     standard = map_assessment_to_raganything_config(
         AssessmentPlan(
             document_id="d", mode=CompileMode.STANDARD,
@@ -834,7 +729,6 @@ def test_parse_method_still_maps_correctly_alongside_config_flags():
         ),
         _settings(),
     )
-    assert fast.to_parser_kwargs() == {"parse_method": "txt"}
     assert standard.to_parser_kwargs() == {"parse_method": "auto"}
     assert deep_with_ocr.to_parser_kwargs() == {"parse_method": "ocr"}
 

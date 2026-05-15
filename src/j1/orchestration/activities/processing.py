@@ -2075,6 +2075,11 @@ class ProcessingActivities:
                 # PR-02: snapshot id flows from the run record via
                 # the workflow's ``PersistFinalIngestionReportInput``.
                 snapshot_id=input.target_snapshot_id,
+                # PR-05: selected execution profile flows from the
+                # ProjectProcessingRequest the FE picker built.
+                selected_execution_profile=(
+                    input.selected_execution_profile
+                ),
                 initial_execution_plan=sources["initial_execution_plan"],
                 compile_result_summary=sources["compile_result_summary"],
                 post_compile_enrich_plan=sources["post_compile_enrich_plan"],

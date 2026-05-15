@@ -90,12 +90,12 @@ _log = logging.getLogger(__name__)
 # LightRAG, skipping mineru entirely.
 #
 # MUST stay in lockstep with `_PLAIN_TEXT_EXTENSIONS` in
-# `j1.processing.assessment`. The assessor uses the same set to pick
-# `CompileMode.FAST`; if the bridge's set is narrower, the assessor
-# selects FAST but the bridge still routes through MinerU — defeating
-# the whole point of fast mode. Touch BOTH files together when adding
-# a new extension and add a regression test in
-# `test_assessment_plan.py` that pins the new extension to FAST.
+# `j1.processing.assessment`. The two sets together drive the
+# plaintext fast-path: an extension in BOTH sets bypasses MinerU
+# and feeds bytes straight to LightRAG. A mismatch (extension in
+# the assessor set but not here) still routes through MinerU,
+# defeating the bypass. Touch BOTH files together when adding a
+# new extension.
 _NATIVE_TEXT_EXTENSIONS = frozenset({
     # Documentation / log formats.
     ".txt", ".md", ".markdown", ".rst", ".log",
@@ -1865,10 +1865,11 @@ async def _force_persist_chunks(rag) -> None:
  upsert race — the in-memory chunks are lost and the FE's
  Chunks tab stays empty even though parsing produced text.
 
- For txt/FAST-mode compiles we don't care whether entity
- extraction succeeded: the chunks are the deliverable. Force the
- flush via `index_done_callback` on the chunk storages so they
- persist regardless of upstream LLM status.
+ For txt-mode compiles (plaintext bypass path) we don't care
+ whether entity extraction succeeded: the chunks are the
+ deliverable. Force the flush via `index_done_callback` on the
+ chunk storages so they persist regardless of upstream LLM
+ status.
 
  Best-effort: any flush error logs + returns. Compile never
  fails because telemetry flushing didn't work."""

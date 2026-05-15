@@ -180,7 +180,8 @@ def test_quality_unknown_text_chars_skips_text_rule():
 
 
 def test_next_compile_mode_ladder():
-    assert next_compile_mode(CompileMode.FAST) == CompileMode.STANDARD
+    # Two-mode model: STANDARD → DEEP → STOP. Legacy FAST was
+    # retired in PR-03.
     assert next_compile_mode(CompileMode.STANDARD) == CompileMode.DEEP
     assert next_compile_mode(CompileMode.DEEP) is None
 

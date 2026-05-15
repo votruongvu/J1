@@ -40,17 +40,19 @@ _REQUIRED_TOP_LEVEL_KEYS = (
     "document_name",
     "tenant_id",
     "project_id",
-    "snapshot_id",          # PR-02 — new
+    "snapshot_id",                  # PR-02
     "domain_profile_id",
+    "selected_execution_profile",   # PR-05
     "started_at",
     "completed_at",
     "duration_ms",
     "final_status",
     "final_status_reason",
+    "promotion_result",             # PR-05
     "stages",
     "compile_summary",
     "enrichment_summary",
-    "alias_summary",        # PR-02 — new
+    "alias_summary",                # PR-02
     "artifact_refs",
     "warnings",
     "errors",
@@ -80,10 +82,9 @@ def _minimal_inputs(**overrides) -> ReportSourceInputs:
 
 
 def test_schema_version_bumped_for_new_fields():
-    """PR-02 introduced new top-level keys; the schema version
-    MUST advertise the change so legacy consumers can detect
-    shape evolution."""
-    assert FINAL_INGESTION_REPORT_SCHEMA_VERSION == "1.1"
+    """The schema version advertises every additive shape bump so
+    legacy consumers can detect shape evolution."""
+    assert FINAL_INGESTION_REPORT_SCHEMA_VERSION == "1.2"
 
 
 # ---- Top-level shape pin ----------------------------------------

@@ -57,15 +57,10 @@ from j1.providers.raganything.settings import (
 # adapter resolves parse_method here from the mode + capability set
 # (e.g. `deep` promotes to "ocr" when the plan requires OCR).
 #
-# `FAST → txt` is kept as a LEGACY fallback so adapters can still
-# resolve a parse_method when reading an old AssessmentPlan from a
-# historical artifact. The planner itself never emits FAST any more
-# (see assessment.py); the safety belt coerces FAST → STANDARD on
-# the read path before this mapping is consulted in the normal
-# flow. Touch this dict together with `CompileMode` if either
-# changes.
+# Two-mode model: STANDARD → `auto`, DEEP → `auto` (promoted to
+# `ocr` when the plan requires OCR). Touch this dict together with
+# `CompileMode` if either changes.
 _MODE_TO_PARSE_METHOD: dict[CompileMode, str] = {
-    CompileMode.FAST: "txt",   # legacy round-trip only — never emitted
     CompileMode.STANDARD: "auto",
     CompileMode.DEEP: "auto",  # promoted to "ocr" when plan requires OCR
 }
@@ -205,7 +200,6 @@ def map_assessment_to_raganything_config(
     enable_image = _capability_enabled(
         plan, Capability.IMAGE_EXTRACTION,
         mode_default={
-            CompileMode.FAST: False,
             CompileMode.STANDARD: True,
             CompileMode.DEEP: True,
         },
@@ -213,7 +207,6 @@ def map_assessment_to_raganything_config(
     enable_table = _capability_enabled(
         plan, Capability.TABLE_EXTRACTION,
         mode_default={
-            CompileMode.FAST: False,
             CompileMode.STANDARD: True,
             CompileMode.DEEP: True,
         },
@@ -221,7 +214,6 @@ def map_assessment_to_raganything_config(
     enable_equation = _capability_enabled(
         plan, Capability.FORMULA_EXTRACTION,
         mode_default={
-            CompileMode.FAST: False,
             CompileMode.STANDARD: False,  # opt-in even in standard
             CompileMode.DEEP: True,
         },

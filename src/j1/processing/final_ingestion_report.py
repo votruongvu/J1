@@ -81,10 +81,14 @@ __all__ = [
 ]
 
 
-# PR-02 bumped the schema to `1.1`: adds top-level ``snapshot_id``
-# and the ``alias_summary`` block so the report covers Phase 2's
-# example JSON's ``snapshot_id`` and ``aliases`` keys.
-FINAL_INGESTION_REPORT_SCHEMA_VERSION = "1.1"
+# Schema version history:
+#   1.0 — initial shape (stages, compile_summary, enrichment_summary).
+#   1.1 — PR-02 added top-level ``snapshot_id`` and the
+#         ``alias_summary`` block.
+#   1.2 — PR-05 added top-level ``selected_execution_profile`` +
+#         ``promotion_result`` and extended ``compile_summary``
+#         with ``compile_mode`` + ``parse_method``.
+FINAL_INGESTION_REPORT_SCHEMA_VERSION = "1.2"
 
 
 # ---- Stage identifiers ------------------------------------------
@@ -192,6 +196,14 @@ class CompileSummary:
     errors: tuple[str, ...] = ()
     retry_count: int = 0
     artifact_refs: tuple[str, ...] = ()
+    # PR-05: load-bearing for operator debugging. ``compile_mode``
+    # is the final resolved ``CompileMode`` value (standard / deep);
+    # ``parse_method`` is the MinerU resolved method
+    # (auto / ocr / txt). Both live on the compile_result_summary
+    # artifact today; surfacing here saves a round-trip when
+    # operators are answering "why was this slow?".
+    compile_mode: str | None = None
+    parse_method: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -207,6 +219,8 @@ class CompileSummary:
             "errors": list(self.errors),
             "retry_count": self.retry_count,
             "artifact_refs": list(self.artifact_refs),
+            "compile_mode": self.compile_mode,
+            "parse_method": self.parse_method,
         }
 
 
@@ -297,11 +311,23 @@ class FinalIngestionReport:
     # which keys on ``snapshot_id``.
     snapshot_id: str | None
     domain_profile_id: str | None
+    # PR-05: the user-selected execution profile this run ran under
+    # (``minimum_queryable`` / ``standard`` / ``advanced``). Surfaces
+    # at the top level so operators answering "what config was used?"
+    # can read the answer without scanning stage metadata.
+    selected_execution_profile: str | None
     started_at: str | None
     completed_at: str | None
     duration_ms: int | None
     final_status: str
     final_status_reason: str
+    # PR-05: explicit promotion result. Derived from
+    # ``framework_final_status``; ``promoted`` when the workflow
+    # reported terminal-success and the promotion hook ran;
+    # ``not_promoted`` for failed / cancelled / timed-out runs.
+    # Always present so the FE doesn't have to re-derive it from
+    # ``final_status``.
+    promotion_result: str
     stages: tuple[StageSummary, ...]
     compile_summary: CompileSummary
     enrichment_summary: EnrichmentSummary
@@ -327,11 +353,13 @@ class FinalIngestionReport:
             "project_id": self.project_id,
             "snapshot_id": self.snapshot_id,
             "domain_profile_id": self.domain_profile_id,
+            "selected_execution_profile": self.selected_execution_profile,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "duration_ms": self.duration_ms,
             "final_status": self.final_status,
             "final_status_reason": self.final_status_reason,
+            "promotion_result": self.promotion_result,
             "stages": [s.to_dict() for s in self.stages],
             "compile_summary": self.compile_summary.to_dict(),
             "enrichment_summary": self.enrichment_summary.to_dict(),
@@ -369,6 +397,11 @@ class ReportSourceInputs:
     # ``PersistFinalIngestionReportInput`` payload. None on legacy
     # runs that pre-date snapshot allocation.
     snapshot_id: str | None = None
+    # PR-05: user-selected execution profile this run executed
+    # under (``minimum_queryable`` / ``standard`` / ``advanced``).
+    # Threaded from ``ProjectProcessingRequest.selected_execution_profile``.
+    # None for legacy bulk-job dispatch without a profile pick.
+    selected_execution_profile: str | None = None
     # Persisted artifact payloads (already pre-fetched by the
     # workflow / activity). Missing keys are tolerated — the
     # builder fills the stage as `pending` and the summary fields
@@ -469,6 +502,11 @@ def build_final_ingestion_report(
         artifact_id=inputs.enrichment_aliases_artifact_id,
     )
 
+    promotion_result = _project_promotion_result(
+        framework_final_status=inputs.framework_final_status,
+        final_status=projection.status,
+    )
+
     return FinalIngestionReport(
         schema_version=FINAL_INGESTION_REPORT_SCHEMA_VERSION,
         run_id=inputs.run_id,
@@ -478,11 +516,13 @@ def build_final_ingestion_report(
         project_id=inputs.project_id,
         snapshot_id=inputs.snapshot_id,
         domain_profile_id=domain_profile_id,
+        selected_execution_profile=inputs.selected_execution_profile,
         started_at=inputs.started_at,
         completed_at=inputs.completed_at,
         duration_ms=duration_ms,
         final_status=projection.status,
         final_status_reason=projection.reason,
+        promotion_result=promotion_result,
         stages=stages,
         compile_summary=compile_summary,
         enrichment_summary=enrichment_summary,
@@ -493,6 +533,38 @@ def build_final_ingestion_report(
         retry_counts=retry_counts,
         operator_notes=inputs.operator_notes,
     )
+
+
+def _project_promotion_result(
+    *,
+    framework_final_status: str,
+    final_status: str,
+) -> str:
+    """Derive a tidy ``promotion_result`` string from the workflow's
+    framework status. Operators reading the report want one
+    answer to "did this run change what users see?" without
+    decoding ``final_status``'s enrichment-aware vocabulary.
+
+    Vocabulary:
+      * ``promoted`` — workflow reached terminal-success AND the
+        active snapshot now points at this run's candidate. Both
+        ``completed`` and ``partial_completed`` (enrichment
+        warnings) produce ``promoted`` — the snapshot promotion
+        hook only refuses on hard failure.
+      * ``not_promoted`` — workflow failed / cancelled / timed
+        out, OR the projected final status is in the failure
+        family. The previous active snapshot remains queryable.
+    """
+    success_states = {"completed", "partial_completed"}
+    failure_states = {"failed", "cancelled", "timed_out"}
+    fws = (framework_final_status or "").lower()
+    if fws in success_states and not final_status.startswith("failed"):
+        return "promoted"
+    if fws in failure_states or final_status.startswith("failed"):
+        return "not_promoted"
+    # Unknown framework status — fail closed so operators can spot
+    # the gap.
+    return "not_promoted"
 
 
 def _build_alias_summary(
@@ -632,6 +704,11 @@ def _build_compile_summary(
         artifact_refs=tuple(
             str(r) for r in (payload.get("raw_artifact_refs") or [])
         ),
+        # PR-05: project final compile mode + parse_method off the
+        # compile_result_summary artifact. Both are operator-facing
+        # answers to "what config did this run use?".
+        compile_mode=_optional_str(payload.get("final_compile_mode")),
+        parse_method=_optional_str(payload.get("parse_method")),
     )
 
 

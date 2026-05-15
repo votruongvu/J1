@@ -55,17 +55,11 @@ class CompileMode(StrEnum):
  quality knob (OCR, layout, multimodal) and emits warnings
  for later optimisation.
 
- `FAST` is deprecated and kept ONLY so legacy
- `compile_strategy_report` payloads can round-trip without
- crashing replay. The planner NEVER emits FAST; the safety belt
- (`_coerce_legacy_fast_to_standard`) coerces any FAST it sees
- on the read path to STANDARD. New planning code MUST emit
- STANDARD or DEEP. Any code branching on `CompileMode.FAST`
- is a regression — branch on STANDARD/DEEP."""
+ Legacy ``"fast"`` payloads from before the two-mode refactor
+ are tolerated on the read path: ``AssessmentPlan.from_payload``
+ catches the ``ValueError`` and falls back to ``STANDARD``. The
+ planner never emits any value outside this enum."""
 
-    # Deprecated, kept readable for legacy artifact compatibility.
-    # Do not emit from new planning code.
-    FAST = "fast"
     STANDARD = "standard"
     DEEP = "deep"
 
@@ -138,10 +132,9 @@ class RecommendedProcessingPath(StrEnum):
  * `FAILED` — assessment couldn't complete (profile build
  failure, missing extension, etc.).
 
- Legacy values `fast_text_compile`, `multimodal_compile`, and
- `ocr_parse` are NO LONGER emitted by the planner. `from_payload`
- accepts them for legacy artifact round-trip and coerces them
- to the canonical two-mode model (see `_coerce_legacy_recommended_path`).
+ Pre-two-mode payloads (`fast_text_compile`, `multimodal_compile`,
+ `ocr_parse`) are tolerated on the read path — `from_payload`
+ falls back to `STANDARD_COMPILE` for any value not in the enum.
 
  Wire strings are stable — dashboards key off them, FE renders
  human-readable labels via a separate mapper."""
@@ -248,14 +241,10 @@ class AssessmentPlan:
             )
         except ValueError:
             policy = FallbackPolicy.DEGRADE_WITH_WARNING
-        # `recommended_path` is additive — older payloads omit it.
-        # Tolerate missing / unknown values rather than crashing
-        # replay. Legacy values (fast_text_compile, multimodal_compile,
-        # ocr_parse) are coerced to the canonical two-mode model:
-        #  fast_text_compile → STANDARD_COMPILE
-        #  multimodal_compile → STANDARD_COMPILE (standard handles
-        #  multimodal capability flags too)
-        #  ocr_parse → DEEP_COMPILE
+        # `recommended_path` is additive — older payloads omit it
+        # or carry pre-two-mode values. Tolerate missing / unknown
+        # values rather than crashing replay; unknown coerces to
+        # STANDARD_COMPILE (see ``_coerce_legacy_recommended_path``).
         raw_path = payload.get("recommended_path")
         path = _coerce_legacy_recommended_path(raw_path)
         return cls(
@@ -290,26 +279,23 @@ class AssessmentPlanner:
 # ---- Default rule-based planner ------------------------------------
 
 
-# 100%-text extensions where `fast` mode is always safe. The
-# guarantee operators care about: a file in this set CAN'T contain
-# embedded images / tables that need VLM extraction — the bytes ARE
-# the content. PDFs, DOCX, PPTX etc. are deliberately excluded
-# because we can never be sure a binary container doesn't carry
-# vision-only artifacts (figures, scanned regions, equation images).
+# 100%-text extensions where the bridge's plaintext fast-path can
+# bypass MinerU entirely. The guarantee operators care about: a
+# file in this set CAN'T contain embedded images / tables that
+# need VLM extraction — the bytes ARE the content. PDFs, DOCX,
+# PPTX etc. are deliberately excluded because we can never be
+# sure a binary container doesn't carry vision-only artifacts
+# (figures, scanned regions, equation images).
 #
-# When growing this set:
-#  * Update `_NATIVE_TEXT_EXTENSIONS` in
-#  [_bridge.py](../providers/raganything/_bridge.py) in lockstep
-#  — the bridge's plaintext fast-path that skips MinerU keys off
-#  the same vocabulary.
-#  * Add a regression test in `test_assessment_plan.py` that pins
-#  the new extension to `CompileMode.FAST`.
+# When growing this set, update `_NATIVE_TEXT_EXTENSIONS` in
+# [_bridge.py](../providers/raganything/_bridge.py) in lockstep —
+# the bridge's plaintext fast-path keys off the same vocabulary.
 #
 # Markup / hypertext formats (`.html`, `.xml`) are intentionally
 # absent — they CAN reference vision content via `<img>`, even though
 # the file bytes are text — and operators usually want layout
-# detection on them. Default to STANDARD; operators that know their
-# corpus is plain HTML can opt into FAST via parse_method override.
+# detection on them. Default to STANDARD; the bridge's plaintext
+# bypass is independent of `CompileMode`.
 _PLAIN_TEXT_EXTENSIONS: frozenset[str] = frozenset({
     # Documentation / log formats.
     ".txt", ".md", ".markdown", ".rst", ".log",
@@ -421,16 +407,10 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
         document_type: str | None = None,
     ) -> AssessmentPlan:
         plan = self._assess_inner(profile, document_type=document_type)
-        # Defensive belt: FAST mode is only safe for 100%-text
-        # extensions. If a future rule ever lets FAST escape for a
-        # PDF / DOCX / image binary, coerce up to STANDARD here.
-        # Operators reading the audit trail see the coercion in the
-        # `reason` field so the override is auditable.
-        plan = _enforce_fast_mode_safety(plan, profile)
         # Stamp `recommended_path` as the LAST step so it always
-        # reflects the (possibly coerced) `mode + capabilities`.
-        # Single source of truth for the mode → operator-intent
-        # mapping — every rule branch flows through here.
+        # reflects the rule-emitted `mode + capabilities`. Single
+        # source of truth for the mode → operator-intent mapping —
+        # every rule branch flows through here.
         return _stamp_recommended_path(plan, profile)
 
     def _assess_inner(
@@ -619,71 +599,16 @@ class DefaultAssessmentPlanner(AssessmentPlanner):
         )
 
 
-def _enforce_fast_mode_safety(
-    plan: AssessmentPlan,
-    profile: DocumentProfile,
-) -> AssessmentPlan:
-    """Belt-and-suspenders: planner never emits FAST in the
- two-mode model, but if a legacy code path slips through OR a
- payload from before the two-mode refactor lands here, coerce
- FAST → STANDARD universally.
-
- Pre-refactor this helper was scoped to "FAST is only safe for
- 100%-text extensions"; in the two-mode model FAST is not safe
- for ANY extension because it's no longer part of the official
- compile-mode vocabulary. The plaintext-extension optimisation
- moved to the bridge layer (extension-keyed `_NATIVE_TEXT_EXTENSIONS`
- plaintext bypass) — independent of `CompileMode`.
-
- No-op when `plan.mode != FAST`. When FAST is observed, coerce
- to STANDARD with the safe capability baseline + an audit-trail
- note in `reason` so operators see the migration. Profile is
- accepted for parity with the pre-refactor signature but isn't
- consulted — coercion now ignores extension."""
-    if plan.mode != CompileMode.FAST:
-        return plan
-    # Coerce. Replace mode, augment required capabilities to the
-    # STANDARD baseline, append the override reason so audit logs
-    # show why FAST was overridden.
-    coerced_required = frozenset(plan.required_capabilities | {
-        Capability.TEXT_EXTRACTION,
-        Capability.LAYOUT_DETECTION,
-    })
-    return AssessmentPlan(
-        document_id=plan.document_id,
-        mode=CompileMode.STANDARD,
-        document_type=plan.document_type,
-        complexity=plan.complexity,
-        confidence=plan.confidence,
-        required_capabilities=coerced_required,
-        optional_capabilities=plan.optional_capabilities,
-        risk_flags=plan.risk_flags,
-        fallback_policy=plan.fallback_policy,
-        reason=(
-            f"{plan.reason} | migrated legacy FAST→STANDARD: the "
-            "two-mode model has only standard + deep compile modes"
-        ),
-    )
-
-
 def _coerce_legacy_recommended_path(
     raw: object,
 ) -> RecommendedProcessingPath:
-    """Map any value (current OR legacy) onto the two-mode
- `RecommendedProcessingPath` vocabulary.
-
- Mapping:
- * Current values pass through (`standard_compile`,
- `deep_compile`, `skip_empty_document`, `failed`).
- * Legacy values coerce:
- - `fast_text_compile` → STANDARD_COMPILE
- - `multimodal_compile` → STANDARD_COMPILE
- - `ocr_parse` → DEEP_COMPILE
- * Anything else (None, unknown future value, garbage) →
- STANDARD_COMPILE.
-
- Pure / safe / never raises — used on the deserialisation path
- where legacy payloads cross worker boundaries."""
+    """Map any value onto the two-mode ``RecommendedProcessingPath``
+    vocabulary. Pure / safe / never raises — used on the
+    deserialisation path where pre-two-mode payloads (``fast_text_compile``,
+    ``multimodal_compile``, ``ocr_parse``) still flow through.
+    Unknown values fall back to ``STANDARD_COMPILE`` — the load-
+    bearing ``mode`` field on the same payload still determines
+    actual compile behaviour."""
     if isinstance(raw, RecommendedProcessingPath):
         return raw
     if not isinstance(raw, str):
@@ -692,12 +617,7 @@ def _coerce_legacy_recommended_path(
     try:
         return RecommendedProcessingPath(cleaned)
     except ValueError:
-        pass
-    if cleaned in {"fast_text_compile", "multimodal_compile"}:
         return RecommendedProcessingPath.STANDARD_COMPILE
-    if cleaned == "ocr_parse":
-        return RecommendedProcessingPath.DEEP_COMPILE
-    return RecommendedProcessingPath.STANDARD_COMPILE
 
 
 def _stamp_recommended_path(

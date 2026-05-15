@@ -258,6 +258,11 @@ class PersistFinalIngestionReportInput:
     # uses, without which operators can't cross-reference the
     # report against the artifact store.
     target_snapshot_id: str | None = None
+    # PR-05: user-selected execution profile this run executed
+    # under. Threaded onto the final report so operators see the
+    # answer to "what config was used?" alongside the compile
+    # summary. None for legacy bulk-job dispatch.
+    selected_execution_profile: str | None = None
 
 
 @dataclass(frozen=True)
