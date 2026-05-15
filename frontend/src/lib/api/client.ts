@@ -470,8 +470,17 @@ export interface IngestionClient {
  * activeSnapshotId only flips when the new run reaches a usable
  * terminal state — a failed reindex preserves the previous good
  * result.
+ *
+ * When `selectedProfile` is supplied (typically from the
+ * AssessmentPlanDialog opened off the Re-Index button), it is
+ * threaded through to the workflow so the re-index honours the
+ * user's profile pick. Omitting it falls back to the deployment
+ * policy default — same fallback chain as the upload path.
  */
-  reindexDocument(documentId: string): Promise<DocumentReindexResponse>;
+  reindexDocument(
+    documentId: string,
+    selectedProfile?: ExecutionProfileId,
+  ): Promise<DocumentReindexResponse>;
 
   /**
  * POST /ingestion-runs/{run_id}/refresh-enrichment — start a new

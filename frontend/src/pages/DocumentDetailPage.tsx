@@ -30,12 +30,17 @@ import {
   ResultStatusBadge,
 } from "./documents/DocumentBadges";
 import { TestActiveKnowledgePanel } from "./documents/TestActiveKnowledgePanel";
+import { AssessmentPlanDialog } from "./upload/AssessmentPlanDialog";
 import type {
   DocumentAction,
   DocumentDetail,
   DocumentListItem,
   DocumentSnapshotSummary,
 } from "@/types/documents";
+import type {
+  AssessmentPlanResponse,
+  ExecutionProfileId,
+} from "@/types/execution-profile";
 import type { ProjectContext, Toast } from "@/types/ui";
 
 interface DocumentDetailPageProps {
@@ -59,6 +64,16 @@ export function DocumentDetailPage({
   const [pendingDetach, setPendingDetach] = useState<DocumentListItem | null>(null);
   const [pendingRemove, setPendingRemove] = useState<DocumentListItem | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Re-index now flows through AssessmentPlanDialog so the user picks
+  // an execution profile before the new run is dispatched — same
+  // two-step contract as the first-time upload path. `pendingReindex`
+  // is true once the dialog is open; the plan fetch resolves into
+  // `planResponse` (or `planError` on failure).
+  const [pendingReindex, setPendingReindex] = useState(false);
+  const [planResponse, setPlanResponse] =
+    useState<AssessmentPlanResponse | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!ready) return;
@@ -116,21 +131,33 @@ export function DocumentDetailPage({
       setPendingRemove(detailAsListItem(detail));
       return;
     }
+    if (action === "reindex") {
+      // Open the assessment-plan picker first — re-index now mirrors
+      // the upload flow, so the user always picks an execution
+      // profile before the run is dispatched. Fetch the plan in the
+      // background; the dialog renders "Analysing…" until it lands.
+      setPendingReindex(true);
+      setPlanResponse(null);
+      setPlanError(null);
+      void (async () => {
+        try {
+          const plan = await client.getDocumentAssessmentPlan(documentId);
+          setPlanResponse(plan);
+        } catch (e) {
+          setPlanError(
+            e instanceof Error
+              ? e.message
+              : "Could not analyse this document.",
+          );
+        }
+      })();
+      return;
+    }
     setBusy(true);
     try {
       if (action === "attach") {
         await client.attachDocument(documentId);
         pushToast?.({ kind: "success", title: "Document attached" });
-      } else if (action === "reindex") {
-        const r = await client.reindexDocument(documentId);
-        pushToast?.({
-          kind: "success",
-          title: "Building new candidate snapshot",
-          body: (
-            `Current active knowledge stays live while the new ` +
-            `candidate is built. Run ${r.reindexRunId.slice(0, 12)}.`
-          ),
-        });
       }
       await load();
     } catch (e) {
@@ -141,6 +168,38 @@ export function DocumentDetailPage({
     } finally {
       setBusy(false);
     }
+  };
+
+  const onReindexConfirm = async (selectedProfile: ExecutionProfileId) => {
+    setPendingReindex(false);
+    setPlanResponse(null);
+    setPlanError(null);
+    setBusy(true);
+    try {
+      const r = await client.reindexDocument(documentId, selectedProfile);
+      pushToast?.({
+        kind: "success",
+        title: "Building new candidate snapshot",
+        body: (
+          `Current active knowledge stays live while the new ` +
+          `candidate is built. Run ${r.reindexRunId.slice(0, 12)}.`
+        ),
+      });
+      await load();
+    } catch (e) {
+      const msg = e instanceof ApiError
+        ? `${e.message} (HTTP ${e.status})`
+        : (e instanceof Error ? e.message : "reindex failed");
+      pushToast?.({ kind: "error", title: "reindex failed", body: msg });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onReindexCancel = () => {
+    setPendingReindex(false);
+    setPlanResponse(null);
+    setPlanError(null);
   };
 
   const performDetach = async () => {
@@ -426,6 +485,15 @@ export function DocumentDetailPage({
         onConfirm={() => void performRemove()}
         onCancel={() => setPendingRemove(null)}
       />
+      {pendingReindex && (
+        <AssessmentPlanDialog
+          filename={detail.displayName}
+          plan={planResponse}
+          loadError={planError}
+          onConfirm={(profile) => void onReindexConfirm(profile)}
+          onCancel={onReindexCancel}
+        />
+      )}
     </div>
   );
 }

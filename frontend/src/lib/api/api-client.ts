@@ -935,10 +935,22 @@ export class ApiClient implements IngestionClient {
     return await this.json<DocumentLifecycleResponse>(resp);
   }
 
-  async reindexDocument(documentId: string): Promise<DocumentReindexResponse> {
+  async reindexDocument(
+    documentId: string,
+    selectedProfile?: ExecutionProfileId,
+  ): Promise<DocumentReindexResponse> {
+    const headers: Record<string, string> = { ...this.headers() };
+    let init: RequestInit = { method: "POST", headers };
+    if (selectedProfile) {
+      headers["Content-Type"] = "application/json";
+      init = {
+        ...init,
+        body: JSON.stringify({ selectedProfile }),
+      };
+    }
     const resp = await fetch(
       this.url(`/documents/${encodeURIComponent(documentId)}/reindex`),
-      { method: "POST", headers: this.headers() },
+      init,
     );
     return await this.json<DocumentReindexResponse>(resp);
   }

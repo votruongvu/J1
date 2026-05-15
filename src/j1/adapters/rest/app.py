@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import (
+    Body,
     Depends,
     FastAPI,
     File,
@@ -46,6 +47,7 @@ from j1.adapters.rest.schemas import (
     ContextBlockRecord,
     CostSummaryRecord,
     DocumentRecord,
+    DocumentReindexRequest,
     DocumentStatusRecord,
     EvidenceFlagsRecord,
     FeedbackReceiptRecord,
@@ -2293,13 +2295,20 @@ def create_rest_api(
             "that a failed reindex preserves the previous good "
             "result for retrieval. Returns 409 when the document is "
             "detached or removed (attach it first via "
-            "`POST /documents/{id}/attach`)."
+            "`POST /documents/{id}/attach`).\n\n"
+            "Optional JSON body accepts `selectedProfile` "
+            "(`minimum_queryable` / `standard` / `advanced`) so the "
+            "FE's AssessmentPlanDialog can drive re-index dispatch "
+            "the same way it drives the upload-and-start path. Omit "
+            "the body to fall back to the deployment policy's "
+            "default profile."
         ),
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
     async def post_document_reindex(
         request: Request,
         document_id: str,
+        body: DocumentReindexRequest | None = Body(default=None),
         ctx: ProjectContext = Depends(get_ctx),
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
@@ -2307,6 +2316,15 @@ def create_rest_api(
         from datetime import datetime, timezone
         from j1.ingestion_review.exceptions import RunStillActive
         store = _require_run_store()
+        # Resolve the execution profile against the deployment policy
+        # BEFORE touching the run store so a typo / disallowed profile
+        # fails fast with a structured 400 / 403 — same fail-fast
+        # contract as `POST /ingestion-runs`. Omitted body or omitted
+        # field → policy default applies.
+        provided_profile = body.selected_profile if body is not None else None
+        resolved_profile, profile_source = _resolve_profile_or_400(
+            provided_profile,
+        )
         # State guard: refuse on detached / removed documents per
         # the spec's section-8 action matrix. The lifecycle service
         # would also refuse, but rejecting at the API edge gives
@@ -2474,6 +2492,11 @@ def create_rest_api(
                 "document_name": previous_meta.get(
                     "document_name", doc_dto.original_filename,
                 ),
+                "selected_execution_profile": resolved_profile.value,
+                "profile_selected_by": (
+                    "user" if profile_source == "rest" else "system"
+                ),
+                "profile_selection_source": profile_source,
             },
             run_type="reindex",
             parent_run_id=active_run_id,
@@ -2553,6 +2576,7 @@ def create_rest_api(
             correlation_id=new_run_id,
             reindex_of=active_run_id or None,
             target_snapshot_id=new_run.target_snapshot_id,
+            selected_profile=resolved_profile.value,
         )
         try:
             workflow_id = await starter(ctx, document_id, body)

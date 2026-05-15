@@ -5776,7 +5776,7 @@ pre.json .b {
    chooses a profile. Vanilla CSS to match the rest of the dialogs;
    no external dialog library. */
 .modal-card.assessment-plan-dialog {
-  max-width: 640px;
+  max-width: 960px;
 }
 .assessment-plan-dialog__filename {
   font-size: 13px;
@@ -5805,14 +5805,17 @@ pre.json .b {
 }
 .assessment-plan-dialog__profiles {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px;
   border: 0;
   padding: 0;
   margin: 12px 0 0;
 }
 .assessment-plan-dialog__profile-card {
   display: flex;
+  flex: 1 1 0;
+  min-width: 220px;
   gap: 10px;
   align-items: flex-start;
   border: 1px solid var(--border, #e1e4e8);

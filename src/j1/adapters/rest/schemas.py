@@ -73,6 +73,18 @@ class IngestRequest(CamelModel):
     selected_profile: str | None = None
 
 
+class DocumentReindexRequest(CamelModel):
+    """Optional JSON body for ``POST /documents/{id}/reindex``.
+
+    Mirrors the ``selectedProfile`` field from the upload flow so the
+    same AssessmentPlanDialog picker can drive re-index dispatch. When
+    the field is omitted (or the body itself is omitted), the
+    deployment policy's default profile applies — same fallback chain
+    as the upload-and-start path.
+    """
+    selected_profile: str | None = None
+
+
 class JobStartRecord(CamelModel):
     job_id: str
     document_id: str
