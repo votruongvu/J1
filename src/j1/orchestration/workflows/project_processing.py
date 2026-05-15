@@ -2500,6 +2500,14 @@ class ProjectProcessingWorkflow:
                     started_at=started_at,
                     completed_at=completed_at,
                     actor=request.actor,
+                    # PR-02: thread the candidate snapshot id onto
+                    # the report so operators can cross-reference
+                    # the artifact registry, which keys on
+                    # snapshot_id. ``target_snapshot_id`` is set on
+                    # the request at REST-handler time.
+                    target_snapshot_id=getattr(
+                        request, "target_snapshot_id", None,
+                    ),
                 ),
                 start_to_close_timeout=SHORT_ACTIVITY_TIMEOUT,
                 retry_policy=DEFAULT_RETRY.to_temporal(),

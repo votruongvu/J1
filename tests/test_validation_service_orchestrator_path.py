@@ -233,6 +233,57 @@ def test_orchestrator_evidence_insufficient_maps_to_validation_failed(
     assert "100% design" in missing
 
 
+def test_orchestrator_response_carries_diagnostic_warnings_list(
+    ctx, workspace, run,
+):
+    """PR-01: every manual-test response MUST carry a
+    ``debug['diagnostic_warnings']`` array, even when empty. The
+    FE banner reads from this key — an absent key would silently
+    hide warnings instead of showing 'all green'."""
+    service = _make_service(
+        workspace=workspace, ctx=ctx,
+        orchestrator=_good_orchestrator(),
+    )
+    result = service.run_manual_test_query(
+        ctx, run.run_id,
+        ManualTestQueryRequest(question=_FAILED_QUERY),
+        actor="tester",
+    )
+    assert "diagnostic_warnings" in result.debug
+    assert isinstance(result.debug["diagnostic_warnings"], list)
+
+
+def test_diagnostic_warnings_surface_missing_eligible_snapshot_ids(
+    ctx, workspace, run,
+):
+    """When the orchestrator's eligibility resolver returns no
+    snapshots (refusal path), the trace's
+    ``snapshot_scope.eligible_snapshot_ids`` lands empty. PR-01
+    requires that empty state surface in
+    ``diagnostic_warnings`` so operators tracking down 'no eligible
+    snapshot' refusals see the load-bearing cause without paging
+    through the raw trace.
+
+    The orchestrator under test never stamps an eligible snapshot
+    id (its trace defaults to empty), so this exercise pins the
+    builder's contract end-to-end through the service."""
+    service = _make_service(
+        workspace=workspace, ctx=ctx,
+        orchestrator=_sparse_orchestrator(),
+    )
+    result = service.run_manual_test_query(
+        ctx, run.run_id,
+        ManualTestQueryRequest(question=_FAILED_QUERY),
+        actor="tester",
+    )
+    warnings = result.debug["diagnostic_warnings"]
+    assert any(
+        "snapshot_scope.eligible_snapshot_ids" in w
+        and "empty" in w.lower()
+        for w in warnings
+    ), f"expected eligible_snapshot_ids warning; got {warnings!r}"
+
+
 def test_manual_query_without_orchestrator_raises(
     ctx, workspace, run,
 ):

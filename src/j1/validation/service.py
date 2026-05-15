@@ -802,11 +802,22 @@ class IngestionValidationService:
                 else result.message
             ),
         )
+        from j1.validation.diagnostic_warnings import (
+            build_diagnostic_warnings,
+        )
+        orchestrator_trace = result.trace.to_dict()
         debug: dict[str, Any] = {
             "query_engine": "smart_query_orchestrator",
             "orchestrator_final_status": result.final_status,
             "orchestrator_message": result.message,
-            "orchestrator_trace": result.trace.to_dict(),
+            "orchestrator_trace": orchestrator_trace,
+            # PR-01: surface expected-but-absent diagnostic fields so
+            # operators can tell "stage didn't run" from "projection
+            # dropped the field" at a glance. Empty list = every
+            # expected diagnostic is present.
+            "diagnostic_warnings": build_diagnostic_warnings(
+                orchestrator_trace,
+            ),
         }
         if run is not None:
             # Audit trail is per-run today. Project / document

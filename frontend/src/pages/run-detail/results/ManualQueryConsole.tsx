@@ -335,6 +335,10 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
         </div>
       </div>
       <div className="card__body" style={{ display: "grid", gap: 16 }}>
+        <DiagnosticWarningsBanner
+          warnings={extractDiagnosticWarnings(response.debug)}
+        />
+
         <FinalAnswerSection
           synthesized={response.synthesizedAnswer ?? null}
           llm={response.llm ?? null}
@@ -772,6 +776,71 @@ function CheckRow({ check }: { check: ValidationCheck }) {
  * stays visible even when collapsed so an operator scanning
  * results spots the diagnostic hint without expanding.
  */
+/**
+ * PR-01: extract the server-stamped ``diagnostic_warnings`` array
+ * from the free-form debug dict. Backend stamps a list of short
+ * strings naming each expected-but-absent diagnostic field. The
+ * field is always present (empty list = "all expected diagnostics
+ * accounted for"); a missing key means we're talking to an older
+ * backend that didn't ship PR-01, in which case we render nothing.
+ */
+export function extractDiagnosticWarnings(
+  debug: ManualQueryDebug | null | undefined,
+): string[] {
+  if (debug == null) return [];
+  const raw = debug.diagnostic_warnings;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is string => typeof entry === "string");
+}
+
+/**
+ * PR-01: yellow banner above the result body listing every
+ * expected-but-absent diagnostic. Empty list → component renders
+ * nothing (no "all green" noise). Backed by the server-stamped
+ * ``debug.diagnostic_warnings`` array; operators rely on this to
+ * distinguish "stage did not run" from "field dropped by the
+ * projection layer" without paging through the raw trace.
+ */
+function DiagnosticWarningsBanner({
+  warnings,
+}: {
+  warnings: string[];
+}) {
+  if (warnings.length === 0) return null;
+  return (
+    <section
+      role="status"
+      aria-label="Diagnostic warnings"
+      data-testid="diagnostic-warnings-banner"
+      style={{
+        border: "1px solid var(--warn-border, #d4a017)",
+        background: "var(--warn-bg, #fff8e1)",
+        color: "var(--warn-fg, #5a4500)",
+        borderRadius: 6,
+        padding: "10px 12px",
+        fontSize: 13,
+      }}
+    >
+      <strong style={{ display: "block", marginBottom: 4 }}>
+        Diagnostic warnings ({warnings.length})
+      </strong>
+      <p style={{ margin: "0 0 6px", fontSize: 12 }}>
+        Expected diagnostic fields the orchestrator did not stamp on
+        this run. The query still executed; these are operator
+        hints, not failures.
+      </p>
+      <ul style={{ margin: 0, paddingLeft: 18 }}>
+        {warnings.map((line, idx) => (
+          <li key={idx}>
+            <code style={{ fontSize: 12 }}>{line}</code>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+
 function DebugPanel({ debug }: { debug: ManualQueryDebug }) {
   const [open, setOpen] = useState(false);
   const reasonKey = debug.fallbackReason ?? "none";

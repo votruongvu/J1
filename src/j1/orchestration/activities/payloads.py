@@ -252,6 +252,12 @@ class PersistFinalIngestionReportInput:
     completed_at: str | None = None
     operator_notes: tuple[str, ...] = ()
     actor: str = "system"
+    # PR-02: candidate / promoted snapshot id this run produced.
+    # Threaded through so the final report carries
+    # ``snapshot_id`` — the load-bearing key the artifact registry
+    # uses, without which operators can't cross-reference the
+    # report against the artifact store.
+    target_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)

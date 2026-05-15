@@ -248,6 +248,7 @@ def _resolve_report_source_payloads(
  traversal guard here keeps the activity self-contained without
  pulling the FE-facing read service into the worker."""
     # Lazy import to keep test-time imports thin.
+    from j1.processing.enrichment_aliases import ALIAS_ARTIFACT_KIND
     from j1.processing.results import (
         ARTIFACT_KIND_COMPILE_RESULT_SUMMARY,
         ARTIFACT_KIND_ENRICHMENT_RESULT,
@@ -297,6 +298,15 @@ def _resolve_report_source_payloads(
         artifact_registry, processing_service, ctx,
         kind=ARTIFACT_KIND_FINAL_SUMMARY, run_id=run_id,
     )
+    # PR-02: load the alias artifact for the final report's
+    # ``alias_summary`` block. Best-effort — most runs don't emit
+    # an alias artifact, in which case the read returns ``None``
+    # and the builder produces an empty summary with
+    # ``persisted=False``.
+    aliases_payload, aliases_id = _read_latest_artifact_payload(
+        artifact_registry, processing_service, ctx,
+        kind=ALIAS_ARTIFACT_KIND, run_id=run_id,
+    )
 
     artifact_refs: dict[str, str] = {}
     for key, val in (
@@ -305,6 +315,7 @@ def _resolve_report_source_payloads(
         ("post_compile_enrich_plan", pcp_id),
         ("enrichment_result", enr_id),
         ("final_summary", fs_id),
+        ("domain_enrichment_aliases", aliases_id),
     ):
         if val:
             artifact_refs[key] = val
@@ -321,6 +332,8 @@ def _resolve_report_source_payloads(
         "post_compile_enrich_plan": enrich_plan,
         "enrichment_result": enrichment_result,
         "final_summary": final_summary,
+        "enrichment_aliases": aliases_payload,
+        "enrichment_aliases_artifact_id": aliases_id,
         "artifact_refs": artifact_refs,
         "raw_compile_artifact_refs": raw_refs,
     }
@@ -2059,11 +2072,18 @@ class ProcessingActivities:
                 failure_code=input.failure_code,
                 failure_message=input.failure_message,
                 warning_count=input.warning_count,
+                # PR-02: snapshot id flows from the run record via
+                # the workflow's ``PersistFinalIngestionReportInput``.
+                snapshot_id=input.target_snapshot_id,
                 initial_execution_plan=sources["initial_execution_plan"],
                 compile_result_summary=sources["compile_result_summary"],
                 post_compile_enrich_plan=sources["post_compile_enrich_plan"],
                 enrichment_result=sources["enrichment_result"],
                 final_summary=sources["final_summary"],
+                enrichment_aliases=sources["enrichment_aliases"],
+                enrichment_aliases_artifact_id=sources[
+                    "enrichment_aliases_artifact_id"
+                ],
                 artifact_refs=sources["artifact_refs"],
                 raw_compile_artifact_refs=sources["raw_compile_artifact_refs"],
                 operator_notes=input.operator_notes,

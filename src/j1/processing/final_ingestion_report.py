@@ -71,6 +71,7 @@ __all__ = [
     "STAGE_STATUS_SUCCEEDED",
     "STAGE_STATUS_SUCCEEDED_WITH_WARNINGS",
     "STAGE_STATUS_FAILED",
+    "AliasSummary",
     "StageSummary",
     "CompileSummary",
     "EnrichmentSummary",
@@ -80,7 +81,10 @@ __all__ = [
 ]
 
 
-FINAL_INGESTION_REPORT_SCHEMA_VERSION = "1.0"
+# PR-02 bumped the schema to `1.1`: adds top-level ``snapshot_id``
+# and the ``alias_summary`` block so the report covers Phase 2's
+# example JSON's ``snapshot_id`` and ``aliases`` keys.
+FINAL_INGESTION_REPORT_SCHEMA_VERSION = "1.1"
 
 
 # ---- Stage identifiers ------------------------------------------
@@ -250,6 +254,33 @@ class EnrichmentSummary:
 
 
 @dataclass(frozen=True)
+class AliasSummary:
+    """Denormalised view over the ``domain_enrichment_aliases``
+    artifact, when present. Operators inspecting a run need to tell
+    "alias producer ran and persisted N aliases" apart from "no
+    artifact exists" without fetching the artifact body.
+
+    The ``persisted`` flag is the load-bearing signal; ``alias_count``
+    surfaces the headline number. Other fields are deep-link aids.
+    """
+
+    persisted: bool = False
+    alias_count: int = 0
+    artifact_id: str | None = None
+    snapshot_id: str | None = None
+    warnings: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "persisted": self.persisted,
+            "alias_count": self.alias_count,
+            "artifact_id": self.artifact_id,
+            "snapshot_id": self.snapshot_id,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True)
 class FinalIngestionReport:
     """The end-to-end report. Pure data. Persisted as the
  `final_ingestion_report` artifact at workflow terminal."""
@@ -260,6 +291,11 @@ class FinalIngestionReport:
     document_name: str | None
     tenant_id: str | None
     project_id: str | None
+    # PR-02: the candidate / promoted snapshot id this run produced.
+    # Required for operator incident debugging — without it the
+    # report can't be cross-referenced against the artifact registry
+    # which keys on ``snapshot_id``.
+    snapshot_id: str | None
     domain_profile_id: str | None
     started_at: str | None
     completed_at: str | None
@@ -269,6 +305,12 @@ class FinalIngestionReport:
     stages: tuple[StageSummary, ...]
     compile_summary: CompileSummary
     enrichment_summary: EnrichmentSummary
+    # PR-02: summary of the ``domain_enrichment_aliases`` artifact.
+    # Always present; ``persisted=False`` and ``alias_count=0`` when
+    # no alias artifact exists. Distinguishes "alias producer ran
+    # and emitted nothing" from "alias producer was wired but
+    # skipped" via the upstream enrichment status.
+    alias_summary: "AliasSummary"
     artifact_refs: dict[str, str]
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
@@ -283,6 +325,7 @@ class FinalIngestionReport:
             "document_name": self.document_name,
             "tenant_id": self.tenant_id,
             "project_id": self.project_id,
+            "snapshot_id": self.snapshot_id,
             "domain_profile_id": self.domain_profile_id,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
@@ -292,6 +335,7 @@ class FinalIngestionReport:
             "stages": [s.to_dict() for s in self.stages],
             "compile_summary": self.compile_summary.to_dict(),
             "enrichment_summary": self.enrichment_summary.to_dict(),
+            "alias_summary": self.alias_summary.to_dict(),
             "artifact_refs": dict(self.artifact_refs),
             "warnings": list(self.warnings),
             "errors": list(self.errors),
@@ -320,6 +364,11 @@ class ReportSourceInputs:
     failure_code: str | None
     failure_message: str | None
     warning_count: int = 0
+    # PR-02: candidate / promoted snapshot id this run produced.
+    # Threaded from ``IngestionRun.target_snapshot_id`` via the
+    # ``PersistFinalIngestionReportInput`` payload. None on legacy
+    # runs that pre-date snapshot allocation.
+    snapshot_id: str | None = None
     # Persisted artifact payloads (already pre-fetched by the
     # workflow / activity). Missing keys are tolerated — the
     # builder fills the stage as `pending` and the summary fields
@@ -329,6 +378,12 @@ class ReportSourceInputs:
     post_compile_enrich_plan: dict[str, Any] | None = None
     enrichment_result: dict[str, Any] | None = None
     final_summary: dict[str, Any] | None = None
+    # PR-02: persisted ``domain_enrichment_aliases`` artifact
+    # payload (if any). The activity resolves it the same way it
+    # resolves the other inputs above; the builder projects it onto
+    # the typed ``AliasSummary`` block.
+    enrichment_aliases: dict[str, Any] | None = None
+    enrichment_aliases_artifact_id: str | None = None
     # Artifact-id pointers for deep-linking.
     artifact_refs: dict[str, str] = field(default_factory=dict)
     # Raw compile artifact refs (`raw_artifact_refs` from
@@ -409,6 +464,11 @@ def build_final_ingestion_report(
         inputs.initial_execution_plan,
     )
 
+    alias_summary = _build_alias_summary(
+        payload=inputs.enrichment_aliases,
+        artifact_id=inputs.enrichment_aliases_artifact_id,
+    )
+
     return FinalIngestionReport(
         schema_version=FINAL_INGESTION_REPORT_SCHEMA_VERSION,
         run_id=inputs.run_id,
@@ -416,6 +476,7 @@ def build_final_ingestion_report(
         document_name=inputs.document_name,
         tenant_id=inputs.tenant_id,
         project_id=inputs.project_id,
+        snapshot_id=inputs.snapshot_id,
         domain_profile_id=domain_profile_id,
         started_at=inputs.started_at,
         completed_at=inputs.completed_at,
@@ -425,11 +486,44 @@ def build_final_ingestion_report(
         stages=stages,
         compile_summary=compile_summary,
         enrichment_summary=enrichment_summary,
+        alias_summary=alias_summary,
         artifact_refs=artifact_refs,
         warnings=tuple(all_warnings),
         errors=tuple(all_errors),
         retry_counts=retry_counts,
         operator_notes=inputs.operator_notes,
+    )
+
+
+def _build_alias_summary(
+    *,
+    payload: dict[str, Any] | None,
+    artifact_id: str | None,
+) -> AliasSummary:
+    """Project the persisted ``domain_enrichment_aliases`` artifact
+    payload onto the typed summary. Missing payload → empty summary
+    with ``persisted=False`` (signals "no artifact ever landed").
+    """
+    if not isinstance(payload, dict):
+        return AliasSummary(persisted=False, artifact_id=artifact_id)
+    aliases = payload.get("aliases")
+    if not isinstance(aliases, list):
+        aliases = []
+    warnings_raw = payload.get("warnings")
+    warnings = tuple(
+        str(w) for w in warnings_raw
+    ) if isinstance(warnings_raw, list) else ()
+    # ``snapshot_id`` on the alias payload is stamped by the
+    # producer (see register_aliases_artifact's metadata). When the
+    # producer didn't include it (older payloads), the report's
+    # top-level ``snapshot_id`` is still the canonical reference.
+    snapshot_id = payload.get("snapshot_id")
+    return AliasSummary(
+        persisted=True,
+        alias_count=len(aliases),
+        artifact_id=artifact_id,
+        snapshot_id=str(snapshot_id) if snapshot_id else None,
+        warnings=warnings,
     )
 
 
