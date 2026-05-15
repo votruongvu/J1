@@ -283,3 +283,124 @@ def test_resolver_direct_returns_queryable_for_seeded_active_doc(
     view = resolver.resolve_document_active_memory(ctx, "doc-1")
     assert view.queryable is True
     assert view.queryable_status == QueryableStatus.QUERYABLE
+
+
+# ---- Propagation guardrails ----------------------------------------
+#
+# These tests pin the invariant that ``MemoryNotQueryableError``
+# bubbles out of the validation surface cleanly — neither swallowed
+# into a generic 500 nor wrapped by a broad ``except Exception``.
+
+
+def _doc_sentinel(*, status=QueryableStatus.COMPILE_FAILED, reason="x"):
+    """Construct a not-queryable ``DocumentMemoryView`` to wrap in the
+    exception. The fields ``MemoryNotQueryableError`` actually reads
+    from are ``queryable_status`` + ``queryable_reason``."""
+    from j1.memory import DocumentMemoryView, MemoryScope
+    return DocumentMemoryView(
+        scope=MemoryScope.DOCUMENT_ACTIVE,
+        project_id="alpha",
+        document_id="doc-1",
+        queryable_status=status,
+        queryable_reason=reason,
+    )
+
+
+def _project_sentinel(*, status=QueryableStatus.NOT_STARTED, reason="x"):
+    from j1.memory import MemoryScope, ProjectActiveMemoryView
+    return ProjectActiveMemoryView(
+        scope=MemoryScope.PROJECT_ACTIVE,
+        project_id="alpha",
+        queryable_status=status,
+        queryable_reason=reason,
+        documents=(),
+    )
+
+
+def test_memory_not_queryable_propagates_through_run_document_test_query(
+    validation_service, registry, ctx, orchestrator, monkeypatch,
+):
+    """Inject the raise at the gate; the public entry method must
+    let it bubble out unmodified (not wrap it, not convert it). Pins
+    the invariant against a future broad-except regression in
+    ``_run_manual_query_via_orchestrator``."""
+    _seed_doc(registry, ctx, active_snapshot_id="snap-real")
+
+    def _raise(*_a, **_kw):
+        raise MemoryNotQueryableError(
+            _doc_sentinel(reason="injected sentinel reason"),
+        )
+
+    monkeypatch.setattr(
+        validation_service, "_enforce_memory_queryability", _raise,
+    )
+
+    req = ManualTestQueryRequest(
+        question="anything?",
+        scope=QueryScopeDTO(type="document_active", document_id="doc-1"),
+    )
+    with pytest.raises(MemoryNotQueryableError) as exc:
+        validation_service.run_document_test_query(ctx, "doc-1", req)
+    assert exc.value.queryable_status == QueryableStatus.COMPILE_FAILED
+    assert exc.value.queryable_reason == "injected sentinel reason"
+    assert orchestrator.calls == []
+
+
+def test_memory_not_queryable_propagates_through_run_project_query(
+    validation_service, ctx, orchestrator, monkeypatch,
+):
+    def _raise(*_a, **_kw):
+        raise MemoryNotQueryableError(_project_sentinel())
+
+    monkeypatch.setattr(
+        validation_service, "_enforce_memory_queryability", _raise,
+    )
+    req = ManualTestQueryRequest(
+        question="anything?",
+        scope=QueryScopeDTO(type="project_active"),
+    )
+    with pytest.raises(MemoryNotQueryableError):
+        validation_service.run_project_query(ctx, req)
+    assert orchestrator.calls == []
+
+
+def test_imported_test_cases_executor_does_not_swallow_memory_error(
+    ctx,
+):
+    """The CSV runner wraps each per-question orchestrator call in
+    ``except Exception``. Any ``MemoryNotQueryableError`` raised
+    from inside the orchestrator must bubble out as a SCOPE-level
+    refusal — converting it into a per-question ``status="error"``
+    would silently produce a misleading summary across the batch.
+    Pinned via the explicit re-raise in ``_execute_one``."""
+    from datetime import datetime, timezone
+    from j1.validation.imported_test_cases import (
+        ImportedTestCase,
+        ImportedTestCaseExecutor,
+        ImportedTestCaseSet,
+    )
+
+    sentinel = _doc_sentinel(
+        status=QueryableStatus.MISSING_ARTIFACTS,
+        reason="batch-scoped refusal",
+    )
+
+    class _BoomOrchestrator:
+        def run(self, _request):
+            raise MemoryNotQueryableError(sentinel)
+
+    executor = ImportedTestCaseExecutor(
+        smart_query_orchestrator=_BoomOrchestrator(),
+        run_store=None,  # unused on the raising path
+    )
+    now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
+    imported = ImportedTestCaseSet(
+        document_id="doc-1",
+        cases=(
+            ImportedTestCase(test_case_id="t-1", question="anything?"),
+        ),
+        imported_at=now,
+        source_filename="t.csv",
+    )
+    with pytest.raises(MemoryNotQueryableError):
+        executor.execute(ctx, imported, run_id="r-1")

@@ -287,14 +287,22 @@ def project_run_history(
 def _find_active_run(
     document: DocumentRecord, runs: list[IngestionRun],
 ) -> IngestionRun | None:
-    """Phase 9: derive the display-active run heuristically.
+    """Return the run that produced ``document.active_snapshot_id``.
 
-    The canonical visibility key is ``document.active_snapshot_id``;
-    the projector picks a representative run for the FE's
-    "current result" panel. Selection rule:
+    Selection rule:
 
-      1. Latest succeeded / succeeded-with-warnings run.
-      2. Otherwise None — the FE renders "no current result".
+      1. **Canonical**: the run whose ``target_snapshot_id`` equals
+         ``document.active_snapshot_id``. This is the producing run
+         of the currently-promoted snapshot — the same lineage the
+         Unified Memory Resolver returns for ``DocumentMemoryView.active_run_id``.
+         Required for promotion correctness: a later succeeded but
+         non-promoting run (CAS conflict, refresh-enrich pending
+         promotion) MUST NOT be picked as "active".
+      2. **Fallback**: latest succeeded / succeeded-with-warnings
+         run by timestamp. Kept only for legacy runs that pre-date
+         ``target_snapshot_id`` — every fresh-ingested run carries
+         it, so the fallback is only reached for projects that
+         haven't re-ingested after the snapshot refactor.
 
     Resumable-failure detection is preserved by the existing
     ``compute_available_actions`` helper, which gates on the
@@ -302,6 +310,11 @@ def _find_active_run(
     """
     if not document.active_snapshot_id:
         return None
+    # Canonical: match by ``target_snapshot_id == active_snapshot_id``.
+    for r in runs:
+        if getattr(r, "target_snapshot_id", None) == document.active_snapshot_id:
+            return r
+    # Legacy fallback for runs predating ``target_snapshot_id``.
     sorted_runs = _sort_runs_desc(runs)
     for r in sorted_runs:
         if r.status in (

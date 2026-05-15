@@ -610,6 +610,24 @@ class IngestionValidationService:
         # this gate — the eligibility resolver already handles run-
         # keyed identity, and snapshot-explicit is an operator
         # allowlist by definition.
+        # ``_enforce_memory_queryability`` raises
+        # ``MemoryNotQueryableError`` on a not-queryable scope. The
+        # REST adapter has a ``@app.exception_handler`` that converts
+        # it into a structured HTTP 409 — this must propagate.
+        #
+        # DO NOT add a broad ``except Exception`` around the call
+        # below. If a future edit needs broad error handling here,
+        # use the explicit re-raise pattern:
+        #
+        #     try:
+        #         self._enforce_memory_queryability(...)
+        #     except MemoryNotQueryableError:
+        #         raise
+        #     except Exception:
+        #         ...  # narrow handling
+        #
+        # The guardrail test in ``test_unified_memory_validation_gate``
+        # pins that the exception reaches the FastAPI handler.
         self._enforce_memory_queryability(
             ctx=ctx, engine_scope=engine_scope, request=request,
             document_id_override=document_id_override,

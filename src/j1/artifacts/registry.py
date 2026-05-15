@@ -239,6 +239,28 @@ def _record_from_dict(d: dict) -> ArtifactRecord:
         project_id=project_data["project_id"],
         profile=project_data.get("profile"),
     )
+    # ``snapshot_id`` + ``created_by_run_id`` are written by the
+    # serializer (every dataclass field is emitted) but were not
+    # propagated back through the reader — the typed field would
+    # silently become ``None`` after a round-trip even though the
+    # JSON payload still carried the value. This was masked by the
+    # parallel ``metadata["snapshot_id"]`` stamping production code
+    # does (see ``j1.documents.snapshot_artifact``), but downstream
+    # consumers that read the typed field directly (the Unified
+    # Memory Resolver, future graph/index code) need the round-trip
+    # to be lossless.
+    #
+    # Fallback chain stays:
+    #   typed field on disk > metadata stamped value > None.
+    # That way artifacts written before this fix still load (the
+    # metadata branch fills in the typed value on read).
+    metadata = dict(d.get("metadata", {}))
+    snapshot_id = d.get("snapshot_id") or metadata.get("snapshot_id")
+    created_by_run_id = (
+        d.get("created_by_run_id")
+        or metadata.get("created_by_run_id")
+        or metadata.get("run_id")
+    )
     return ArtifactRecord(
         artifact_id=d["artifact_id"],
         project=project,
@@ -253,5 +275,7 @@ def _record_from_dict(d: dict) -> ArtifactRecord:
         updated_at=datetime.fromisoformat(d["updated_at"]),
         source_document_ids=list(d.get("source_document_ids", [])),
         source_artifact_ids=list(d.get("source_artifact_ids", [])),
-        metadata=dict(d.get("metadata", {})),
+        metadata=metadata,
+        snapshot_id=snapshot_id,
+        created_by_run_id=created_by_run_id,
     )

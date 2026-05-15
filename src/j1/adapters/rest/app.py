@@ -835,23 +835,33 @@ def create_rest_api(
     def _latest_succeeded_run_id(
         ctx: ProjectContext, document_id: str,
     ) -> str | None:
-        """Phase 9: derive the previous-active run_id from the runs
-        store. Documents no longer carry ``active_run_id``; the
-        canonical visibility key is ``active_snapshot_id`` on the
-        document and ``created_by_run_id`` on the snapshot. For
-        reindex / refresh-enrich the previous-run lookup just needs
-        the most recent succeeded run, which the projector's
-        ``_find_active_run`` already computes the same way.
+        """Return the run id callers should treat as "the previous
+        active run" for reindex parent-pointer + settings inheritance
+        + manual-action compile-reuse source.
 
-        WARNING: this is a heuristic. For *visibility* / *delete
-        safety* the source of truth is the snapshot store — use
-        ``_protected_run_id_for_document`` instead, which derives
-        the protected run from ``DocumentSnapshot.created_by_run_id``
-        of the document's ``active_snapshot_id``. The heuristic
-        survives here only for the reindex parent-pointer + refresh-
-        enrich settings-inheritance lookups, which don't need
-        promotion correctness.
+        Consolidated lookup order:
+
+          1. **Canonical**: the producing run of the document's
+             current ``active_snapshot_id`` (via the snapshot store).
+             This is what ``_protected_run_id_for_document`` returns;
+             reusing it here means all read-only "previous active"
+             call sites agree on the same answer.
+          2. **Fallback**: latest-succeeded-by-timestamp heuristic.
+             Only reached when the canonical lookup isn't wired
+             (legacy / test harnesses without a snapshot service)
+             or when the document has no active snapshot yet (the
+             snapshot store has nothing to say — settings still
+             inherit from the most recent succeeded run).
+
+        WARNING: even with the canonical lookup at the top, callers
+        that need delete-protection MUST use
+        ``_protected_run_id_for_document`` directly. It returns
+        ``None`` for "no active snapshot" instead of falling back —
+        which is what delete safety actually needs.
         """
+        canonical = _protected_run_id_for_document(ctx, document_id)
+        if canonical is not None:
+            return canonical
         store = _require_run_store()
         prior = store.list_runs(ctx, document_id=document_id)
         sorted_runs = sorted(

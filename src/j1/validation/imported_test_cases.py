@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from j1._serialization import to_jsonable
+from j1.memory import MemoryNotQueryableError
 from j1.projects.context import ProjectContext
 from j1.workspace.resolver import WorkspaceResolver
 
@@ -650,6 +651,15 @@ class ImportedTestCaseExecutor:
                 run_id=run_id,
                 document_id=document_id,
             ))
+        # Re-raise the Unified Memory queryability refusal verbatim.
+        # The CSV runner intentionally captures per-question errors
+        # into ``status="error"``, but ``MemoryNotQueryableError``
+        # is a SCOPE-LEVEL refusal that applies to every question in
+        # the batch — converting it into a per-question error would
+        # silently produce a misleading summary. Let it bubble so
+        # the REST handler converts the whole batch to HTTP 409.
+        except MemoryNotQueryableError:
+            raise
         except Exception as exc:  # noqa: BLE001 — capture, don't propagate
             _log.warning(
                 "imported_test_case execution failed: %s", exc,

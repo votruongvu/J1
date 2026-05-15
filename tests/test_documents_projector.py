@@ -256,6 +256,64 @@ def test_summary_marks_active_run_in_history():
     assert active_rows[0].run_id == "r-2"
 
 
+def test_active_run_resolves_via_target_snapshot_id_not_latest_succeeded():
+    """Canonical-first rule: when the document's active snapshot
+    was produced by an OLDER run (e.g. a later refresh-enrich
+    succeeded but has not been promoted yet, or a later reindex
+    lost the CAS), the projector MUST select the *producing* run —
+    NOT the latest succeeded by timestamp.
+
+    Without this rule the FE's "current result" panel would silently
+    represent a non-promoting run, drifting from what the query
+    layer actually reads.
+    """
+    # Older run produced the currently-active snapshot.
+    producer = _run(
+        run_id="r-producer",
+        started_at=_NOW,
+    )
+    producer.target_snapshot_id = "snap-active"
+    # Later run succeeded but did NOT promote (target snapshot
+    # differs from the document's active_snapshot_id).
+    non_promoting = _run(
+        run_id="r-later",
+        started_at=_NOW + timedelta(hours=1),
+    )
+    non_promoting.target_snapshot_id = "snap-pending"
+
+    dto = project_document_summary(
+        document=_doc(active_snapshot_id="snap-active"),
+        runs=[producer, non_promoting],
+    )
+    active_rows = [r for r in dto.run_history_summary if r.is_active]
+    assert len(active_rows) == 1
+    assert active_rows[0].run_id == "r-producer"
+
+
+def test_active_run_falls_back_to_latest_succeeded_when_no_target_snapshot_id():
+    """Legacy fallback: runs that pre-date ``target_snapshot_id``
+    fall through to the latest-succeeded-by-timestamp heuristic.
+    This keeps existing on-disk runs renderable without a backfill
+    pass."""
+    older = _run(run_id="r-older", started_at=_NOW)
+    newer = _run(
+        run_id="r-newer",
+        started_at=_NOW + timedelta(hours=1),
+    )
+    # Neither run has target_snapshot_id set — legacy shape.
+    assert older.target_snapshot_id is None
+    assert newer.target_snapshot_id is None
+
+    dto = project_document_summary(
+        document=_doc(active_snapshot_id="snap-active"),
+        runs=[older, newer],
+    )
+    active_rows = [r for r in dto.run_history_summary if r.is_active]
+    assert len(active_rows) == 1
+    # Heuristic picks the latest succeeded run.
+    assert active_rows[0].run_id == "r-newer"
+
+
 def test_summary_falls_back_to_none_when_no_active_snapshot():
     """Phase 9: without an active_snapshot_id, the projector
  doesn't surface a current result — even when a succeeded run
