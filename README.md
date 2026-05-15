@@ -148,6 +148,11 @@ at minimum you need:
 Read in roughly this order. Each doc is standalone, but they assume
 you've at least skimmed `01-overall-architecture.md`.
 
+If you searched for a doc by an intuitive name (`architecture.md`,
+`deployment.md`, `developer-onboarding.md`, etc.) the
+[docs/README.md](docs/README.md) index maps those names onto the
+numbered files below.
+
 **Canonical architecture docs**
 
 - [docs/01-overall-architecture.md](docs/01-overall-architecture.md) — Business-friendly system overview.
