@@ -38,9 +38,9 @@ export function NeedsAttentionPanel({ items }: NeedsAttentionPanelProps) {
             data-testid={`needs-attention-${item.id}`}
           >
             {item.kind === "err" ? (
-              <Icon.XCircle className="needs-attention-panel__icon" />
+              <Icon.XCircle className="icon needs-attention-panel__icon" />
             ) : (
-              <Icon.Alert className="needs-attention-panel__icon" />
+              <Icon.Alert className="icon needs-attention-panel__icon" />
             )}
             <span>{item.message}</span>
           </li>

@@ -68,7 +68,7 @@ export function GlobalSearchCard({
           Search query
         </label>
         <div className="global-search-card__input-row">
-          <Icon.Search className="global-search-card__icon" />
+          <Icon.Search className="icon global-search-card__icon" />
           <input
             id="global-search-input"
             type="search"
