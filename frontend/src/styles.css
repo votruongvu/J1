@@ -5883,16 +5883,22 @@ pre.json .b {
 }
 
 /* ─── Main navigation ─────────────────────────────────────────────
-   Floating segmented-pill control. Sits below the ContextBar on a
-   thin warm divider. The track uses the sunken cream surface, each
-   pill is a button; the active pill "lifts" onto the paper surface
-   with a soft warm shadow and accent-tinted icon. Mirrors the chip
-   styling used elsewhere ("Context set", "INGESTION") so the whole
-   header reads as one design system. */
+   Floating segmented-pill control. Sits below the ContextBar in the
+   same content gutter as ``.main`` so the pill aligns with the page
+   title and cards beneath it. The track uses the sunken cream
+   surface, each pill is a button; the active pill "lifts" onto the
+   paper surface with a soft warm shadow and accent-tinted icon.
+   Mirrors the chip styling used elsewhere ("Context set",
+   "INGESTION") so the whole header reads as one design system.
+   No full-bleed divider — the ContextBar above already carries one,
+   and a second band underneath made the pill feel "stuck" to a
+   separate header strip instead of floating with the page. */
 .main-nav {
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  padding: var(--sp-3) var(--sp-4);
+  max-width: 1320px;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--sp-3) 32px 0;
+  background: transparent;
 }
 .main-nav__list {
   list-style: none;
