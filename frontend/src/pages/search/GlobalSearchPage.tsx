@@ -139,7 +139,11 @@ export function GlobalSearchPage({
           Search query
         </label>
         <div className="global-search-page__input-row">
-          <Icon.Search className="icon global-search-page__icon" />
+          <Icon.Search
+            className="icon global-search-page__icon"
+            width={18}
+            height={18}
+          />
           <input
             id="global-search-page-input"
             type="search"

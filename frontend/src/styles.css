@@ -5971,6 +5971,8 @@ pre.json .b {
   color: var(--text, #1f2328);
 }
 .global-search-card__icon {
+  width: 18px;
+  height: 18px;
   color: var(--text-muted, #57606a);
   flex-shrink: 0;
 }
@@ -6040,6 +6042,8 @@ pre.json .b {
   color: var(--err-fg, #b04040);
 }
 .needs-attention-panel__icon {
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
   margin-top: 2px;
 }
@@ -6115,6 +6119,8 @@ pre.json .b {
   padding: 10px 4px;
 }
 .global-search-page__icon {
+  width: 18px;
+  height: 18px;
   color: var(--text-muted, #57606a);
   flex-shrink: 0;
 }

@@ -68,7 +68,11 @@ export function GlobalSearchCard({
           Search query
         </label>
         <div className="global-search-card__input-row">
-          <Icon.Search className="icon global-search-card__icon" />
+          <Icon.Search
+            className="icon global-search-card__icon"
+            width={18}
+            height={18}
+          />
           <input
             id="global-search-input"
             type="search"
