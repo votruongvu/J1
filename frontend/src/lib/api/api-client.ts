@@ -47,8 +47,10 @@ import type {
   RunInitialExecutionPlanResponse,
 } from "@/types/review";
 import type {
+  AdvancedAssessmentResponse,
   AssessmentPlanResponse,
   ExecutionProfileId,
+  ManualActionDescriptor,
 } from "@/types/execution-profile";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import type {
@@ -238,6 +240,30 @@ export class ApiClient implements IngestionClient {
       { method: "POST", headers: this.headers() },
     );
     return this.json<AssessmentPlanResponse>(resp);
+  }
+
+  async runAdvancedAssessment(
+    documentId: string,
+  ): Promise<AdvancedAssessmentResponse> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/advanced-assessment`,
+      ),
+      { method: "POST", headers: this.headers() },
+    );
+    return this.json<AdvancedAssessmentResponse>(resp);
+  }
+
+  async listDocumentManualActions(
+    documentId: string,
+  ): Promise<{ documentId: string; actions: ManualActionDescriptor[] }> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/manual-actions`,
+      ),
+      { method: "GET", headers: this.headers() },
+    );
+    return this.json(resp);
   }
 
   async registerDocument(

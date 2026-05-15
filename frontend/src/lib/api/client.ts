@@ -11,8 +11,10 @@ import type {
   RunListResult,
 } from "@/types/ingestion";
 import type {
+  AdvancedAssessmentResponse,
   AssessmentPlanResponse,
   ExecutionProfileId,
+  ManualActionDescriptor,
 } from "@/types/execution-profile";
 import type {
   ContentInventory,
@@ -114,6 +116,33 @@ export interface IngestionClient {
   getDocumentAssessmentPlan(
     documentId: string,
   ): Promise<AssessmentPlanResponse>;
+
+  /** POST `/documents/{id}/advanced-assessment`. Operator-triggered
+   * only — NEVER runs automatically. Sends sampled text + signals to
+   * a configured LLM and returns a structured complexity + profile
+   * recommendation. The result is persisted as a new
+   * ``AssessmentDecision`` so the picker / ingest endpoint can
+   * thread the matching ``assessmentDecisionId`` downstream.
+   *
+   * Returns a structured refusal when:
+   *   - the deployment has no LLM advanced assessment configured,
+   *   - the deployment has it disabled via env,
+   *   - the document exceeds the guardrail limits.
+   *
+   * In every refusal case the FE should ask the user to pick
+   * manually rather than 5xx. */
+  runAdvancedAssessment(
+    documentId: string,
+  ): Promise<AdvancedAssessmentResponse>;
+
+  /** GET `/documents/{id}/manual-actions`. Lists the post-index
+   * advanced steps the FE renders as explicit operator buttons.
+   * Status flags determine whether each button is enabled,
+   * shows a "coming soon" disclaimer, or is hidden as disabled by
+   * deployment policy. */
+  listDocumentManualActions(
+    documentId: string,
+  ): Promise<{ documentId: string; actions: ManualActionDescriptor[] }>;
 
   /** POST `/documents`. Registers a document WITHOUT starting an
    * ingestion run, so the two-step upload flow can call

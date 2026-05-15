@@ -214,6 +214,18 @@ describe("ApiClient.upload", () => {
     expect(body.get("selectedProfile")).toBe("standard");
   });
 
+  it("does not call /advanced-assessment automatically on upload", async () => {
+    // Hard regression: the default Index path is lightweight. The
+    // LLM Advanced Assessment is an EXPLICIT operator action — the
+    // upload endpoint must never trigger it as a side effect.
+    const { calls } = withFetch(() => jsonResponse({ data: { runId: "r" } }));
+    const file = new File(["x"], "x.txt");
+    await makeClient().upload(file, { tenant: "acme", project: "alpha" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).not.toContain("/advanced-assessment");
+    expect(calls[0]!.url).not.toContain("/manual-actions");
+  });
+
   it("omits assessmentDecisionId when null / undefined", async () => {
     // Either skipping the picker entirely (legacy) or hitting a
     // deployment without the decision store wired (the endpoint
@@ -277,6 +289,104 @@ describe("ApiClient.getDocumentAssessmentPlan", () => {
     expect(calls[0]!.url).toBe(
       "https://api.test.j1.local/documents/doc%20with%20spaces%2Fand-slash/assessment-plan",
     );
+  });
+});
+
+describe("ApiClient.runAdvancedAssessment", () => {
+  it("POSTs to /documents/{id}/advanced-assessment + returns the result", async () => {
+    const payload = {
+      data: {
+        documentId: "doc-1",
+        assessmentDecisionId: "ad-llm-1",
+        result: {
+          status: "ok",
+          refusalReason: null,
+          message: null,
+          documentComplexity: "complex",
+          recommendedProfile: "deep_knowledge_index",
+          confidence: "medium",
+          detectedSignals: { likely_tables: "likely" },
+          recommendedNextSteps: ["run_domain_enrichment"],
+          reasoningSummary: ["RFP-shaped"],
+          warnings: ["LLM estimate from sampled content."],
+        },
+      },
+    };
+    const { calls } = withFetch(() => jsonResponse(payload));
+    const out = await makeClient().runAdvancedAssessment("doc-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc-1/advanced-assessment",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(out.assessmentDecisionId).toBe("ad-llm-1");
+    expect(out.result.status).toBe("ok");
+    expect(out.result.recommendedProfile).toBe("deep_knowledge_index");
+  });
+
+  it("returns the refusal payload verbatim when guardrails trip", async () => {
+    // Server returns a structured refusal — NOT a 4xx. The FE
+    // surfaces ``message`` to the user instead of throwing.
+    const refusal = {
+      data: {
+        documentId: "doc-1",
+        assessmentDecisionId: null,
+        result: {
+          status: "refused",
+          refusalReason: "document_too_large",
+          message:
+            "This document is too large for Advanced Assessment. "
+            + "Please choose a profile manually based on visible "
+            + "document complexity.",
+          documentComplexity: null,
+          recommendedProfile: null,
+          confidence: null,
+          detectedSignals: {},
+          recommendedNextSteps: [],
+          reasoningSummary: [],
+          warnings: ["This document is too large…"],
+        },
+      },
+    };
+    withFetch(() => jsonResponse(refusal));
+    const out = await makeClient().runAdvancedAssessment("doc-1");
+    expect(out.result.status).toBe("refused");
+    expect(out.result.refusalReason).toBe("document_too_large");
+    expect(out.assessmentDecisionId).toBeNull();
+  });
+});
+
+describe("ApiClient.listDocumentManualActions", () => {
+  it("GETs the manual-actions vocabulary for a document", async () => {
+    const payload = {
+      data: {
+        documentId: "doc-1",
+        actions: [
+          {
+            id: "run_llm_advanced_assessment",
+            label: "Run Advanced Assessment",
+            description: "...",
+            costNote: "Uses one LLM call.",
+            status: "available",
+          },
+          {
+            id: "run_domain_enrichment",
+            label: "Run Domain Enrichment",
+            description: "...",
+            costNote: "Multiple LLM calls.",
+            status: "not_implemented",
+          },
+        ],
+      },
+    };
+    const { calls } = withFetch(() => jsonResponse(payload));
+    const out = await makeClient().listDocumentManualActions("doc-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local/documents/doc-1/manual-actions",
+    );
+    expect(calls[0]!.init.method).toBe("GET");
+    expect(out.actions).toHaveLength(2);
+    expect(out.actions[0]!.id).toBe("run_llm_advanced_assessment");
+    expect(out.actions[1]!.status).toBe("not_implemented");
   });
 });
 

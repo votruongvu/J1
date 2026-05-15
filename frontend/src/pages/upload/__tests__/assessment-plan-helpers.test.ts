@@ -85,10 +85,13 @@ function _response(
 
 
 describe("profileLabel", () => {
-  it("renders Minimum Queryable / Standard / Advanced", () => {
-    expect(profileLabel("minimum_queryable")).toBe("Minimum Queryable");
-    expect(profileLabel("standard")).toBe("Standard");
-    expect(profileLabel("advanced")).toBe("Advanced");
+  it("renders Quick / Standard / Deep Knowledge Index labels", () => {
+    // The labels frame the tradeoff as "what you GET" rather than
+    // the wire enum names — this is the contract the picker copy
+    // depends on.
+    expect(profileLabel("minimum_queryable")).toBe("Quick Index");
+    expect(profileLabel("standard")).toBe("Standard Index");
+    expect(profileLabel("advanced")).toBe("Deep Knowledge Index");
   });
 });
 
@@ -105,9 +108,7 @@ describe("profileTagline", () => {
   it("avoids hard-coded misleading capability claims", () => {
     // Regression guard: the old tagline asserted "Skips graph,
     // enrichment, and validation" which drifted out of sync every
-    // time the backend's capability matrix changed. The refactor
-    // moved per-profile specifics to the data-driven bullets and
-    // keeps the tagline generic + hedged.
+    // time the backend's capability matrix changed.
     for (const id of ["minimum_queryable", "standard", "advanced"] as const) {
       const tag = profileTagline(id).toLowerCase();
       expect(tag).not.toContain("skips graph");
@@ -116,10 +117,16 @@ describe("profileTagline", () => {
     }
   });
 
-  it("points the operator at the data-driven bullets", () => {
-    expect(profileTagline("minimum_queryable").toLowerCase()).toContain(
-      "current behaviour",
-    );
+  it("describes what the operator GETS, not what is skipped", () => {
+    // Pinned per the demo / showcase spec: Quick / Standard / Deep
+    // each explain their suitability + tradeoff in operator
+    // language.
+    expect(profileTagline("minimum_queryable").toLowerCase())
+      .toContain("fastest");
+    expect(profileTagline("standard").toLowerCase())
+      .toContain("balanced");
+    expect(profileTagline("advanced").toLowerCase())
+      .toContain("complex documents");
   });
 });
 
@@ -161,9 +168,34 @@ describe("capabilityBullets", () => {
     expect(bullets[0]).toBe("Document is queryable");
   });
 
-  it("renders 'Graph extraction: no' when graph_enabled=false", () => {
+  it("uses hedged 'Extra graph processing' framing — not 'Graph extraction: no'", () => {
+    // Regression for the misleading-copy bug: even when
+    // ``graph_enabled=false`` the base RAGAnything compile may
+    // still emit graph artifacts. The bullet MUST hedge — never
+    // claim "no graph" outright.
     const bullets = capabilityBullets(_details({ graph_enabled: false }));
-    expect(bullets.some((b) => b.includes("Graph extraction: no"))).toBe(true);
+    const graphBullet = bullets.find((b) =>
+      b.toLowerCase().includes("graph"),
+    );
+    expect(graphBullet).toBeDefined();
+    expect(graphBullet).toContain("Extra graph processing: no");
+    expect(graphBullet).toContain("base RAGAnything compile may");
+    // Forbidden: the old assertive wording.
+    expect(bullets.some((b) => b === "Graph extraction: no")).toBe(false);
+  });
+
+  it("hedges domain enrichment as a post-index manual action", () => {
+    // Domain enrichment is a manual action after indexing per the
+    // showcase spec, so a profile with it off should say so —
+    // never just "Enrichment: no".
+    const bullets = capabilityBullets(
+      _details({ enrichment_enabled: false }),
+    );
+    const enrichBullet = bullets.find((b) =>
+      b.toLowerCase().includes("enrichment"),
+    );
+    expect(enrichBullet).toBeDefined();
+    expect(enrichBullet).toContain("manual action");
   });
 
   it("emits the honesty bullet for standard (LightRAG tax still fires)", () => {

@@ -67,6 +67,7 @@ __all__ = [
 # Wire vocabulary — pinned by tests + surfaced to the FE so a
 # dialog can render the right copy without parsing free-form text.
 SOURCE_USER_OVERRIDE = "user_override"
+SOURCE_LLM_ADVANCED_ASSESSMENT = "llm_advanced_assessment"
 SOURCE_ACTIVE_DOMAIN_RULE = "active_domain_rule"
 SOURCE_GENERAL_DOMAIN_RULE = "general_domain_rule"
 SOURCE_LIGHTWEIGHT_ASSESSMENT = "lightweight_assessment"
@@ -75,6 +76,7 @@ SOURCE_SYSTEM_DEFAULT = "system_default"
 
 RECOMMENDATION_SOURCES = (
     SOURCE_USER_OVERRIDE,
+    SOURCE_LLM_ADVANCED_ASSESSMENT,
     SOURCE_ACTIVE_DOMAIN_RULE,
     SOURCE_GENERAL_DOMAIN_RULE,
     SOURCE_LIGHTWEIGHT_ASSESSMENT,
@@ -186,6 +188,7 @@ def resolve_recommendation(
     profiler_inputs: ProfilerInputs | None,
     user_selected_profile: ExecutionProfile | str | None,
     policy: ExecutionProfilePolicy,
+    llm_assessment_result: dict | None = None,
 ) -> RecommendationOutcome:
     """Run the full precedence chain. Pure function; no I/O.
 
@@ -232,6 +235,31 @@ def resolve_recommendation(
         return RecommendationOutcome(
             profile=downgraded,
             source=SOURCE_USER_OVERRIDE,
+            fallback_used=False,
+            reasons=tuple(reasons),
+            warnings=tuple(warnings),
+            matched_rules=(),
+        )
+
+    # ---- 1b. LLM Advanced Assessment ----
+    # Sits between user override and domain rules: the operator
+    # explicitly ran the LLM, so its suggestion outranks rule-based
+    # patterns BUT never silently overrides a user-selected profile
+    # (handled by the user-override branch above returning first).
+    llm_profile = _profile_from_llm_result(llm_assessment_result)
+    if llm_profile is not None:
+        chosen = _coerce_profile(llm_profile)
+        for reason in _llm_reasons(llm_assessment_result):
+            reasons.append(reason)
+        for w in _llm_warnings(llm_assessment_result):
+            if w not in warnings:
+                warnings.append(w)
+        downgraded, downgrade_warning = _apply_env_policy(chosen, policy)
+        if downgrade_warning:
+            warnings.append(downgrade_warning)
+        return RecommendationOutcome(
+            profile=downgraded,
+            source=SOURCE_LLM_ADVANCED_ASSESSMENT,
             fallback_used=False,
             reasons=tuple(reasons),
             warnings=tuple(warnings),
@@ -445,6 +473,73 @@ _HEDGE_SUBSTITUTIONS: tuple[tuple[str, str], ...] = (
     ("Document is text-only", "Document appears to be mostly text"),
     ("Very little text could be extracted directly", "Very little text could be extracted directly (suspected scanned content)"),
 )
+
+
+# ---- LLM-result extraction ----------------------------------------
+#
+# The LLM speaks in its OWN profile vocabulary
+# (quick_index / standard_index / deep_knowledge_index) so we map it
+# back to the wire-stable execution profile enum here. The mapping
+# is intentionally one-way: rename one side and you must rename this
+# table at the same time, which is the contract the FE relies on.
+
+_LLM_PROFILE_MAP: dict[str, str] = {
+    # LLM-facing names → ExecutionProfile wire strings.
+    "quick_index": "minimum_queryable",
+    "standard_index": "standard",
+    "deep_knowledge_index": "advanced",
+    # Wire-string passthroughs so tests / callers can also speak
+    # the enum directly. Forgiving on both sides reduces
+    # coordination cost at deploy time.
+    "minimum_queryable": "minimum_queryable",
+    "standard": "standard",
+    "advanced": "advanced",
+}
+
+
+def _profile_from_llm_result(result: dict | None) -> str | None:
+    """Extract the recommended-profile wire string from an LLM
+    Advanced Assessment payload. Returns ``None`` when the payload
+    is missing / refused / malformed — the caller then falls through
+    to the next branch in the precedence chain."""
+    if not isinstance(result, dict):
+        return None
+    # Refusal payloads carry ``status="refused"`` and MUST not drive
+    # the recommendation — the caller should still see the refusal
+    # warning surfaced elsewhere.
+    if str(result.get("status") or "").lower() == "refused":
+        return None
+    raw = (
+        result.get("recommendedProfile")
+        or result.get("recommended_profile")
+        or ""
+    )
+    if not isinstance(raw, str):
+        return None
+    mapped = _LLM_PROFILE_MAP.get(raw.strip().lower())
+    return mapped
+
+
+def _llm_reasons(result: dict | None) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+    raw = (
+        result.get("reasoningSummary")
+        or result.get("reasoning_summary")
+        or []
+    )
+    if not isinstance(raw, list):
+        return []
+    return [str(r).strip() for r in raw if str(r).strip()]
+
+
+def _llm_warnings(result: dict | None) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+    raw = result.get("warnings") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(w).strip() for w in raw if str(w).strip()]
 
 
 def _hedge_reasons(reasons: tuple[str, ...]) -> list[str]:

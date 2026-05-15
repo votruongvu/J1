@@ -445,6 +445,56 @@ def _build_app():
     )
     assessment_decision_store = JsonlAssessmentDecisionStore(workspace)
 
+    # Optional LLM Advanced Assessment service — operator-triggered
+    # only. Disabled by default; flip on via env once a deployment
+    # has an LLM provider + cost budget for the picker-time
+    # assessment. The factory returns ``None`` when no LLM registry
+    # is wired so the REST endpoint surfaces a structured refusal
+    # ("Advanced Assessment is not configured in this deployment.")
+    # instead of 5xx.
+    from j1.processing.llm_advanced_assessment import (
+        LLMAdvancedAssessmentService,
+    )
+    from j1.processing.llm_advanced_assessment_settings import (
+        load_llm_advanced_assessment_settings,
+    )
+    advanced_assessment_settings = load_llm_advanced_assessment_settings()
+
+    def _build_llm_advanced_assessment_service():
+        if not advanced_assessment_settings.enabled:
+            # Build a no-op service so the FE list still shows the
+            # button and the operator gets a clear refusal payload
+            # instead of a missing endpoint.
+            return LLMAdvancedAssessmentService(
+                settings=advanced_assessment_settings,
+                llm_call=None,
+            )
+        registry = getattr(boot, "llm_registry", None)
+        if registry is None:
+            return LLMAdvancedAssessmentService(
+                settings=advanced_assessment_settings,
+                llm_call=None,
+            )
+        def _call(prompt: str, system_prompt: str) -> str:
+            try_text = getattr(registry, "try_text", None)
+            if try_text is None:
+                return ""
+            client = try_text()
+            if client is None:
+                return ""
+            text, _usage = client.generate(
+                prompt, system_prompt=system_prompt,
+            )
+            return text or ""
+        return LLMAdvancedAssessmentService(
+            settings=advanced_assessment_settings,
+            llm_call=_call,
+        )
+
+    llm_advanced_assessment_service = (
+        _build_llm_advanced_assessment_service()
+    )
+
     # Deployment-level workspace default domain. Read at boot to
     # avoid per-request env access. ``None`` keeps the resolver on
     # the generic pack until a per-project override lands.
@@ -516,6 +566,11 @@ def _build_app():
         # contract consumers must honour.
         assessment_decision_store=assessment_decision_store,
         workspace_default_domain_id=workspace_default_domain_id,
+        # Optional LLM Advanced Assessment service. Operator-
+        # triggered only — never runs automatically. Disabled
+        # deployments still expose the endpoint; it just returns
+        # a structured refusal.
+        llm_advanced_assessment_service=llm_advanced_assessment_service,
         # `confirm_handler` intentionally left None — no workflow in
         # the dev stack listens for the confirm signal yet, so the
         # endpoint just flips status and emits `plan.confirmed`.

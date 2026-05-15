@@ -53,9 +53,13 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
   // normal upload path with `selectedProfile` threaded through.
   // Cancelling discards everything and returns to the dropzone.
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingDocumentId, setPendingDocumentId] = useState<string | null>(
+    null,
+  );
   const [planResponse, setPlanResponse] =
     useState<AssessmentPlanResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [advancedRunning, setAdvancedRunning] = useState(false);
 
   const ready = !!ctx.tenant && !!ctx.project;
 
@@ -83,11 +87,13 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
       // "Analysing…" state until `planResponse` resolves.
       const single = files[0]!;
       setPendingFile(single);
+      setPendingDocumentId(null);
       setPlanResponse(null);
       setPlanError(null);
       void (async () => {
         try {
           const { documentId } = await client.registerDocument(single, ctx);
+          setPendingDocumentId(documentId);
           const plan = await client.getDocumentAssessmentPlan(documentId);
           setPlanResponse(plan);
         } catch (e) {
@@ -140,8 +146,45 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
 
   const onAssessmentCancel = () => {
     setPendingFile(null);
+    setPendingDocumentId(null);
     setPlanResponse(null);
     setPlanError(null);
+    setAdvancedRunning(false);
+  };
+
+  const onRunAdvancedAssessment = async () => {
+    if (pendingDocumentId === null) return;
+    setAdvancedRunning(true);
+    try {
+      // The endpoint NEVER 4xxs the FE — refusals come back as a
+      // structured ``result.status='refused'`` payload. Re-fetch
+      // the assessment plan afterwards so the picker re-renders
+      // with the new ``recommendationSource='llm_advanced_assessment'``
+      // (or the unchanged source on refusal).
+      await client.runAdvancedAssessment(pendingDocumentId);
+      try {
+        const refreshed = await client.getDocumentAssessmentPlan(
+          pendingDocumentId,
+        );
+        setPlanResponse(refreshed);
+      } catch (e) {
+        // Picker stays on the prior plan; surface the fetch error
+        // so the operator can retry.
+        setPlanError(
+          e instanceof Error
+            ? e.message
+            : "Could not refresh assessment after Advanced Assessment.",
+        );
+      }
+    } catch (e) {
+      setPlanError(
+        e instanceof Error
+          ? e.message
+          : "Advanced Assessment failed.",
+      );
+    } finally {
+      setAdvancedRunning(false);
+    }
   };
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
@@ -196,6 +239,8 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
           loadError={planError}
           onConfirm={(profile) => void onAssessmentConfirm(profile)}
           onCancel={onAssessmentCancel}
+          onRunAdvancedAssessment={() => void onRunAdvancedAssessment()}
+          advancedAssessmentRunning={advancedRunning}
         />
       )}
       <div className="page-header">

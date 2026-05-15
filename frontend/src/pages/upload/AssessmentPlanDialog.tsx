@@ -62,6 +62,15 @@ interface AssessmentPlanDialogProps {
   onConfirm: (selectedProfile: ExecutionProfileId) => void;
   /** Called when the user clicks Cancel or the backdrop. */
   onCancel: () => void;
+  /** Called when the user clicks "Run Advanced Assessment". The
+   * owner is responsible for the API call + refreshing ``plan``
+   * with the new recommendation. When omitted, the button is
+   * hidden (deployments without LLM advanced assessment wired). */
+  onRunAdvancedAssessment?: () => void;
+  /** When ``true`` the Advanced Assessment button renders in a
+   * busy state. Owners flip this while the API call is in
+   * flight so the operator can't double-click. */
+  advancedAssessmentRunning?: boolean;
 }
 
 
@@ -71,6 +80,8 @@ export function AssessmentPlanDialog({
   loadError,
   onConfirm,
   onCancel,
+  onRunAdvancedAssessment,
+  advancedAssessmentRunning,
 }: AssessmentPlanDialogProps) {
   // Pre-select the backend-recommended profile so the user sees
   // a sensible default. The radio group is fully active — one
@@ -175,6 +186,33 @@ export function AssessmentPlanDialog({
             selected={selected}
             onSelect={setSelected}
           />
+        )}
+
+        {/* Advanced Assessment trigger — operator-triggered ONLY.
+            Hidden when the owner didn't provide a handler (i.e.
+            deployments without the LLM service wired). */}
+        {plan !== null && onRunAdvancedAssessment !== undefined && (
+          <div
+            className="assessment-plan-dialog__advanced"
+            data-testid="assessment-plan-advanced-assessment"
+          >
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={onRunAdvancedAssessment}
+              disabled={advancedAssessmentRunning === true}
+              data-testid="assessment-plan-advanced-assessment-button"
+            >
+              {advancedAssessmentRunning
+                ? "Running Advanced Assessment…"
+                : "Run Advanced Assessment"}
+            </button>
+            <small>
+              Uses an LLM to estimate document complexity and
+              recommend a profile / next steps. May cost more and
+              take longer.
+            </small>
+          </div>
         )}
 
         {/* Action buttons */}

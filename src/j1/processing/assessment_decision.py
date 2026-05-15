@@ -97,6 +97,20 @@ class AssessmentDecision:
     matched_general_rules: tuple[dict[str, Any], ...] = ()
     compile_option_preview: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    # Optional LLM Advanced Assessment payload. Populated by
+    # ``POST /documents/{id}/advanced-assessment`` when the operator
+    # explicitly runs the LLM helper. Shape follows the strict
+    # contract in
+    # :mod:`j1.processing.llm_advanced_assessment` — see
+    # ``LLMAdvancedAssessmentResult.to_payload()``. ``None`` is the
+    # default: Advanced Assessment NEVER runs automatically.
+    llm_assessment_result: dict[str, Any] | None = None
+    # Manual-action vocabulary the LLM (or domain rule) suggests
+    # AFTER the document is indexed. Wire strings from
+    # :mod:`j1.processing.manual_actions`. The FE renders these as
+    # explicit buttons on the run-detail page; the workflow does
+    # NOT auto-trigger any of them.
+    recommended_next_steps: tuple[str, ...] = ()
     schema_version: str = ASSESSMENT_DECISION_SCHEMA_VERSION
     created_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -121,6 +135,11 @@ class AssessmentDecision:
             "fallbackUsed": self.fallback_used,
             "compileOptionPreview": dict(self.compile_option_preview),
             "warnings": list(self.warnings),
+            "llmAssessmentResult": (
+                dict(self.llm_assessment_result)
+                if self.llm_assessment_result is not None else None
+            ),
+            "recommendedNextSteps": list(self.recommended_next_steps),
             "schemaVersion": self.schema_version,
             "createdAt": self.created_at.isoformat(),
         }
@@ -220,6 +239,20 @@ class AssessmentDecision:
                 or {}
             ),
             warnings=_warning_tuple("warnings", "warnings"),
+            llm_assessment_result=(
+                dict(payload["llmAssessmentResult"])
+                if isinstance(
+                    payload.get("llmAssessmentResult"), dict,
+                ) else (
+                    dict(payload["llm_assessment_result"])
+                    if isinstance(
+                        payload.get("llm_assessment_result"), dict,
+                    ) else None
+                )
+            ),
+            recommended_next_steps=_warning_tuple(
+                "recommendedNextSteps", "recommended_next_steps",
+            ),
             schema_version=str(
                 payload.get("schemaVersion")
                 or payload.get("schema_version")

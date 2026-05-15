@@ -113,7 +113,9 @@ describe("AssessmentPlanDialog — recommendation banner", () => {
       plan: _response({ recommendedProfile: "advanced" }),
     });
     expect(html).toContain("Recommended:");
-    expect(html).toContain("Advanced");
+    // The label is now "Deep Knowledge Index" — framing what the
+    // operator GETS, not the wire enum name.
+    expect(html).toContain("Deep Knowledge Index");
   });
 
   it("renders every reason from the backend", () => {
@@ -154,10 +156,12 @@ describe("AssessmentPlanDialog — profile picker", () => {
   });
 
   it("renders profile labels via the FE-side label helper", () => {
+    // Per the showcase spec: each card shows the "what you GET"
+    // label — Quick Index / Standard Index / Deep Knowledge Index.
     const html = _render();
-    expect(html).toContain("Minimum Queryable");
-    expect(html).toContain("Standard");
-    expect(html).toContain("Advanced");
+    expect(html).toContain("Quick Index");
+    expect(html).toContain("Standard Index");
+    expect(html).toContain("Deep Knowledge Index");
   });
 
   it("renders the LightRAG-extraction honesty bullet on standard", () => {
@@ -242,6 +246,19 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
     expect(html).not.toContain("assessment-plan-fallback-warning");
   });
 
+  it("renders the LLM source label after Advanced Assessment", () => {
+    // Pins the precedence-chain → UI mapping: when the operator
+    // ran Advanced Assessment and got a result, the picker
+    // attributes the recommendation to the LLM.
+    const html = _render({
+      plan: _response({
+        recommendationSource: "llm_advanced_assessment",
+        fallbackUsed: false,
+      }),
+    });
+    expect(html).toContain("Recommended by LLM assessment");
+  });
+
   it("renders the fallback warning when fallbackUsed=true", () => {
     const html = _render({
       plan: _response({
@@ -295,15 +312,18 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
     expect(html).not.toContain("assessment-plan-compile-preview");
   });
 
-  it("does NOT hard-code 'Skips graph, enrichment, and validation' copy", () => {
-    // Regression guard: the old tagline made misleading claims that
-    // didn't match the backend's capability matrix. The refactor
-    // moved per-profile specifics to the data-driven capability
-    // bullets and kept the tagline generic + hedged.
+  it("does NOT hard-code misleading 'Graph extraction: no' copy", () => {
+    // Regression guard: the old bullet asserted "Graph extraction:
+    // no" which lied about the base RAGAnything compile stage —
+    // it may still produce graph artifacts. The current bullet
+    // hedges with "Extra graph processing: no — base RAGAnything
+    // compile may still produce graph artifacts".
     const html = _render();
+    expect(html).not.toContain("Graph extraction: no");
     expect(html).not.toContain("Skips graph, enrichment, and validation");
-    // The generic tagline DOES tell the user to read the bullets.
-    expect(html).toContain("current behaviour");
+    // The hedged disclaimer is rendered for the minimum_queryable
+    // and standard cards.
+    expect(html).toContain("base RAGAnything compile may");
   });
 
   it("filters the duplicate fallback warning out of the generic notes list", () => {
@@ -333,6 +353,92 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
     // panel — check that the fallback string appears EXACTLY ONCE.
     const matches = html.match(/No domain-specific document rule matched/g);
     expect(matches?.length ?? 0).toBe(1);
+  });
+});
+
+
+describe("AssessmentPlanDialog — Advanced Assessment trigger", () => {
+  it("renders the Run Advanced Assessment button when handler is supplied", () => {
+    // Operator-triggered ONLY — the dialog never auto-runs the LLM
+    // assessment. The button exists so the user can opt in.
+    const html = _render({ onRunAdvancedAssessment: () => {} });
+    expect(html).toContain("assessment-plan-advanced-assessment-button");
+    expect(html).toContain("Run Advanced Assessment");
+  });
+
+  it("hides the button when no handler is supplied", () => {
+    // Deployments without the LLM service wired pass no handler.
+    // The button must be hidden — clicking a 'Run Advanced'
+    // button that resolves to "not configured" each time is a
+    // worse UX than not showing it at all.
+    const html = _render({ onRunAdvancedAssessment: undefined });
+    expect(html).not.toContain("assessment-plan-advanced-assessment-button");
+  });
+
+  it("renders a busy state while the request is in flight", () => {
+    const html = _render({
+      onRunAdvancedAssessment: () => {},
+      advancedAssessmentRunning: true,
+    });
+    expect(html).toContain("Running Advanced Assessment…");
+    // Button is disabled so the operator can't double-click.
+    const match = html.match(
+      /<button[^>]*assessment-plan-advanced-assessment-button[^>]*>/,
+    )?.[0];
+    expect(match).toContain("disabled");
+  });
+});
+
+
+describe("AssessmentPlanDialog — Advanced Assessment trigger", () => {
+  it("does NOT render the trigger when no handler is supplied", () => {
+    // Deployments that don't wire the LLM service must NOT advertise
+    // a button the operator can't actually use. The button is hidden
+    // by omitting ``onRunAdvancedAssessment`` from props.
+    const html = _render();
+    expect(html).not.toContain(
+      "assessment-plan-advanced-assessment-button",
+    );
+  });
+
+  it("renders the Run Advanced Assessment button when a handler is supplied", () => {
+    const html = _render({
+      onRunAdvancedAssessment: () => {},
+    });
+    expect(html).toContain(
+      "assessment-plan-advanced-assessment-button",
+    );
+    expect(html).toContain("Run Advanced Assessment");
+    // The hedge copy explaining cost + that it's an LLM estimate
+    // must surface beneath the button.
+    expect(html).toContain("Uses an LLM");
+    expect(html).toContain("May cost more");
+  });
+
+  it("renders a busy state when the trigger is in flight", () => {
+    const html = _render({
+      onRunAdvancedAssessment: () => {},
+      advancedAssessmentRunning: true,
+    });
+    expect(html).toContain("Running Advanced Assessment…");
+    // And disables the button so the operator can't double-trigger.
+    const btn = html.match(
+      /<button[^>]*assessment-plan-advanced-assessment-button[^>]*>/,
+    )?.[0];
+    expect(btn).toBeDefined();
+    expect(btn).toContain("disabled");
+  });
+
+  it("is NOT presented as part of the default Index path", () => {
+    // The default render (no handler) doesn't expose the button at
+    // all — the FE-side contract that Advanced Assessment is
+    // operator-only.
+    const html = _render();
+    expect(html).not.toContain("Run Advanced Assessment");
+    // And there's no copy implying the picker will run an LLM
+    // automatically.
+    expect(html.toLowerCase()).not.toContain("automatically uses");
+    expect(html.toLowerCase()).not.toContain("auto llm");
   });
 });
 

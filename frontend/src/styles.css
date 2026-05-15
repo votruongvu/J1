@@ -5811,6 +5811,20 @@ pre.json .b {
   background: var(--bg-tinted);
   font-size: 13px;
 }
+.assessment-plan-dialog__advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-tinted);
+}
+.assessment-plan-dialog__advanced small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .assessment-plan-dialog__compile-preview ul {
   margin: 6px 0 0 18px;
   padding: 0;

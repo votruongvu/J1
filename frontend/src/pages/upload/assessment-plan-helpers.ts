@@ -19,39 +19,51 @@ import {
 } from "@/types/execution-profile";
 
 
-/** Human-readable label rendered on the profile card. Single
- * source of truth on the FE so the dialog and any future
- * "current profile" badge stay in sync. */
+/** Human-readable label rendered on the profile card.
+ *
+ * The labels are intentionally framed as "what you GET" (Quick /
+ * Standard / Deep Knowledge Index) rather than the wire enum names
+ * (minimum_queryable / standard / advanced) so the operator sees
+ * an honest tradeoff axis. The wire strings stay stable — this
+ * function is the single source of truth for the visible label.
+ */
 export function profileLabel(id: ExecutionProfileId): string {
   switch (id) {
     case "minimum_queryable":
-      return "Minimum Queryable";
+      return "Quick Index";
     case "standard":
-      return "Standard";
+      return "Standard Index";
     case "advanced":
-      return "Advanced";
+      return "Deep Knowledge Index";
   }
 }
 
 
 /** Short one-line description rendered under the profile label.
  *
- * NOTE: this is intentionally GENERIC and hedged. Profile-card
- * specifics (graph yes/no, multimodal yes/no, …) come from the
- * backend ``ExecutionProfileDetails`` flags — see
- * ``capabilityBullets`` below. Keeping per-profile claims out of
- * this function avoids the misleading-copy class of bug where the
- * FE asserts "skips graph" while a future backend revision turns
- * graph on for that profile.
+ * Hedged: explains WHAT the operator gets, not what gets skipped.
+ * The misleading "Graph extraction: no" framing moved into the
+ * capability bullets where it can disclaim base RAGAnything
+ * behaviour — see ``capabilityBullets`` below.
  */
 export function profileTagline(id: ExecutionProfileId): string {
   switch (id) {
     case "minimum_queryable":
-      return "Lightest pass. See the bullets below for current behaviour.";
+      return (
+        "Quick Index: fastest, basic searchable document. "
+        + "Best when you just need text retrieval."
+      );
     case "standard":
-      return "Balanced pass. See the bullets below for current behaviour.";
+      return (
+        "Standard Index: balanced default for normal documents. "
+        + "Suitable for most uploads."
+      );
     case "advanced":
-      return "Heaviest pass. See the bullets below for current behaviour.";
+      return (
+        "Deep Knowledge Index: slower, richer knowledge build. "
+        + "Best for complex documents with tables, diagrams, or "
+        + "requirements."
+      );
   }
 }
 
@@ -64,6 +76,8 @@ export function recommendationSourceLabel(
   switch (source) {
     case "user_override":
       return "Recommended by operator override";
+    case "llm_advanced_assessment":
+      return "Recommended by LLM assessment";
     case "active_domain_rule":
       return "Recommended by domain rule";
     case "general_domain_rule":
@@ -140,10 +154,16 @@ export function capabilityBullets(
   bullets.push(details.queryable ? "Document is queryable" : "Not queryable");
   bullets.push(speedLabel(details));
   bullets.push(llmUsageLabel(details));
+  // "Extra graph processing" framing instead of "graph extraction: no".
+  // The base RAGAnything compile stage MAY still produce graph
+  // artifacts as a side-effect of its built-in entity extraction —
+  // we disclose that explicitly so the FE can't drift into asserting
+  // "zero graph activity" when that's untrue.
   bullets.push(
     details.graph_enabled
-      ? "Graph extraction: yes"
-      : "Graph extraction: no",
+      ? "Extra graph processing: yes"
+      : "Extra graph processing: no — base RAGAnything compile may "
+        + "still produce graph artifacts",
   );
   bullets.push(
     details.multimodal_processing
@@ -152,8 +172,9 @@ export function capabilityBullets(
   );
   bullets.push(
     details.enrichment_enabled
-      ? "Enrichment: yes"
-      : "Enrichment: no",
+      ? "Domain enrichment: yes"
+      : "Domain enrichment: no — available as a manual action "
+        + "after indexing",
   );
   // Honesty bullet — only emit when the profile inherits the
   // library-internal extraction tax. Hidden for `minimum_queryable`

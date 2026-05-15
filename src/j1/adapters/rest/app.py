@@ -425,6 +425,12 @@ def create_rest_api(
     # in the response and the workflow's existing rebuild path
     # runs as before.
     assessment_decision_store: "object | None" = None,
+    # Optional LLM-based Advanced Assessment service. NEVER runs as
+    # part of the default ingest path — operators trigger it
+    # explicitly via ``POST /documents/{id}/advanced-assessment``.
+    # When None, the endpoint returns a structured refusal saying
+    # the deployment has no LLM advanced-assessment configured.
+    llm_advanced_assessment_service: "object | None" = None,
     # Workspace default domain (per-deployment knob, not per-request).
     # Threaded into the assessment-plan domain resolution chain:
     # user-selected > workspace default > general. ``None`` falls
@@ -579,6 +585,84 @@ def create_rest_api(
                 f"{exc}; workflow will rebuild assessment."
             )
         return decision.to_payload(), None
+
+    def _read_sampled_text(source_path, *, max_chars: int) -> str | None:
+        """Best-effort sampled-text extractor for the LLM Advanced
+        Assessment. PDF-only today via pypdf (matches the lightweight
+        profiler's tooling) — every other format falls through to
+        a plain read up to ``max_chars``.
+
+        Samples from the FIRST, MIDDLE, and LAST page of multi-page
+        PDFs so the LLM sees document shape, not just the cover.
+        Single-page PDFs return that page's text verbatim. Returns
+        ``None`` on any failure — the LLM still has filename / signals
+        / matched rules to work with.
+        """
+        try:
+            ext = source_path.suffix.lower() if source_path else ""
+        except Exception:  # noqa: BLE001
+            return None
+        if ext != ".pdf":
+            # Plain-text family: bounded read.
+            try:
+                raw = source_path.read_text(
+                    encoding="utf-8", errors="replace",
+                )
+                return raw[:max_chars]
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            from pypdf import PdfReader  # type: ignore[import-not-found]
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            reader = PdfReader(str(source_path))
+            pages = reader.pages
+            n = len(pages)
+            if n == 0:
+                return None
+            indices = [0]
+            if n >= 2:
+                indices.append(n - 1)
+            if n >= 3:
+                indices.insert(1, n // 2)
+            parts: list[str] = []
+            remaining = max_chars
+            for idx in indices:
+                if remaining <= 0:
+                    break
+                try:
+                    text = pages[idx].extract_text() or ""
+                except Exception:  # noqa: BLE001
+                    text = ""
+                chunk = text[:remaining]
+                if chunk:
+                    parts.append(
+                        f"[page {idx + 1}/{n}]\n{chunk}"
+                    )
+                    remaining -= len(chunk)
+            joined = "\n\n".join(parts) if parts else None
+            return joined
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _llm_profile_to_wire(llm_profile: str) -> str:
+        """Map the LLM's own profile vocabulary to ExecutionProfile
+        wire strings. Mirrors the table in
+        :mod:`j1.processing.recommendation_resolver`.
+        Anything unrecognised falls back to ``standard`` (the safe
+        default the rest of the codebase already uses)."""
+        mapping = {
+            "quick_index": "minimum_queryable",
+            "standard_index": "standard",
+            "deep_knowledge_index": "advanced",
+            "minimum_queryable": "minimum_queryable",
+            "standard": "standard",
+            "advanced": "advanced",
+        }
+        return mapping.get(
+            (llm_profile or "").strip().lower(), "standard",
+        )
 
     def _latest_succeeded_run_id(
         ctx: ProjectContext, document_id: str,
@@ -1689,6 +1773,210 @@ def create_rest_api(
             "warnings": decision_warnings,
         }
         return envelope(response_body, _req_id(request))
+
+    @app.post(
+        "/documents/{document_id}/advanced-assessment",
+        tags=["documents"],
+        summary="Run LLM Advanced Assessment (manual, opt-in)",
+        description=(
+            "Operator-triggered. Sends sampled text + lightweight "
+            "signals to a configured LLM and returns a structured "
+            "complexity / profile recommendation. NEVER runs "
+            "automatically — the default Index path is lightweight "
+            "and only uses pypdf-based signals.\n\n"
+            "Guardrails (size, page count, sampled-text cap) refuse "
+            "expensive inputs with a structured payload so the FE "
+            "asks the user to pick manually. Output is strict JSON "
+            "matching ``LLMAdvancedAssessmentResult`` — the LLM is "
+            "NOT asked to answer document questions."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def post_document_advanced_assessment(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        from j1.domains import DOMAIN_GENERAL
+        from j1.processing.assessment import DefaultAssessmentPlanner
+        from j1.processing.llm_advanced_assessment import (
+            LLMAdvancedAssessmentInputs,
+            REFUSAL_LLM_UNAVAILABLE,
+            STATUS_REFUSED,
+        )
+        from j1.processing.profiling import DeterministicDocumentProfiler
+        # 1. Resolve the document.
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        # 2. If no service is wired, return a structured refusal —
+        # the endpoint is intentionally NON-fatal because the rest
+        # of the Index path doesn't need this to function.
+        if llm_advanced_assessment_service is None:
+            return envelope(
+                {
+                    "documentId": document_id,
+                    "assessmentDecisionId": None,
+                    "result": {
+                        "status": STATUS_REFUSED,
+                        "refusalReason": REFUSAL_LLM_UNAVAILABLE,
+                        "message": (
+                            "Advanced Assessment is not configured "
+                            "in this deployment."
+                        ),
+                        "documentComplexity": None,
+                        "recommendedProfile": None,
+                        "confidence": None,
+                        "detectedSignals": {},
+                        "recommendedNextSteps": [],
+                        "reasoningSummary": [],
+                        "warnings": [
+                            "Advanced Assessment is not configured "
+                            "in this deployment."
+                        ],
+                    },
+                },
+                _req_id(request),
+            )
+        # 3. Build profile + sampled text. Cheap — same path the
+        # standard /assessment-plan uses. We DELIBERATELY don't
+        # invoke MinerU / vision / full parse here.
+        profile = None
+        sampled_text: str | None = None
+        if workspace is not None and doc_dto.stored_filename:
+            source_path = workspace.raw(ctx) / doc_dto.stored_filename
+            if source_path.exists():
+                try:
+                    profile = DeterministicDocumentProfiler().profile(
+                        document_id, str(source_path),
+                    )
+                except FileNotFoundError:
+                    profile = None
+                # Best-effort sampled-text read. Falls back to None
+                # on any failure; the LLM still gets filename /
+                # signals / matched rules.
+                try:
+                    sampled_text = _read_sampled_text(
+                        source_path, max_chars=60_000,
+                    )
+                except Exception:  # noqa: BLE001 — sampling is advisory
+                    sampled_text = None
+        lightweight_payload: dict[str, Any] | None = None
+        if profile is not None:
+            try:
+                lightweight_payload = (
+                    DefaultAssessmentPlanner().assess(profile).to_payload()
+                )
+            except Exception:  # noqa: BLE001 — advisory
+                lightweight_payload = None
+        # 4. Run the service.
+        inputs = LLMAdvancedAssessmentInputs(
+            document_id=document_id,
+            filename=getattr(doc_dto, "original_filename", None),
+            title=getattr(doc_dto, "title", None),
+            file_size_bytes=getattr(doc_dto, "file_size", None),
+            page_count=(profile.page_count if profile is not None else None),
+            sampled_text=sampled_text,
+            lightweight_assessment_payload=lightweight_payload,
+        )
+        result = llm_advanced_assessment_service.run(inputs)
+        # 5. Persist the result onto a NEW AssessmentDecision when
+        # the store is wired AND the result was OK. Refusals are
+        # surfaced to the FE but never written — the picker keeps
+        # whatever decision it already had.
+        decision_id: str | None = None
+        if (
+            assessment_decision_store is not None
+            and result.status != STATUS_REFUSED
+        ):
+            from j1.processing.assessment_decision import (
+                AssessmentDecision, new_decision_id,
+            )
+            decision = AssessmentDecision(
+                assessment_decision_id=new_decision_id(),
+                document_id=document_id,
+                file_hash=getattr(doc_dto, "checksum", None),
+                selected_domain_id=DOMAIN_GENERAL,
+                lightweight_assessment=lightweight_payload,
+                recommended_profile=_llm_profile_to_wire(
+                    result.recommended_profile or "standard_index",
+                ),
+                effective_profile=_llm_profile_to_wire(
+                    result.recommended_profile or "standard_index",
+                ),
+                recommendation_source="llm_advanced_assessment",
+                fallback_used=False,
+                compile_option_preview={
+                    "note": (
+                        "These are LLM-based hints, not exact "
+                        "detection. The compile stage decides "
+                        "actual behaviour."
+                    ),
+                },
+                warnings=tuple(result.warnings),
+                llm_assessment_result=result.to_payload(),
+                recommended_next_steps=tuple(
+                    result.recommended_next_steps,
+                ),
+            )
+            try:
+                assessment_decision_store.upsert(ctx, decision)
+                decision_id = decision.assessment_decision_id
+            except Exception:  # noqa: BLE001 — advisory
+                decision_id = None
+        return envelope(
+            {
+                "documentId": document_id,
+                "assessmentDecisionId": decision_id,
+                "result": result.to_payload(),
+            },
+            _req_id(request),
+        )
+
+    @app.get(
+        "/documents/{document_id}/manual-actions",
+        tags=["documents"],
+        summary="List post-index manual actions (advanced steps)",
+        description=(
+            "Vocabulary of operator-triggered actions exposed AFTER "
+            "the default Index path completes (LLM Advanced "
+            "Assessment, domain enrichment, knowledge memory, "
+            "entity normalization, deep knowledge index, multimodal "
+            "enrichment).\n\n"
+            "Each entry carries an ``id``, FE-rendered ``label``, "
+            "operator-readable ``description``, ``costNote``, and "
+            "``status`` (``available`` / ``not_implemented`` / "
+            "``disabled``). The FE renders one button per action."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def get_document_manual_actions(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        # The document must exist so a stranger can't enumerate
+        # actions against an unknown id (preserves the 404 contract
+        # the rest of the document surface uses).
+        try:
+            facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        from j1.processing.manual_actions import list_manual_actions
+        return envelope(
+            {
+                "documentId": document_id,
+                "actions": [
+                    a.to_payload() for a in list_manual_actions()
+                ],
+            },
+            _req_id(request),
+        )
 
     @app.get(
         "/documents/{document_id}/status",
@@ -2879,11 +3167,23 @@ def create_rest_api(
     @app.post(
         "/ingestion-runs/{run_id}/refresh-enrichment",
         tags=["ingestion-runs"],
-        summary="Refresh enrichment on the active run",
+        summary=(
+            "(Deprecated) Refresh enrichment on the active run"
+        ),
         description=(
-            "Start a new candidate ingestion run that REUSES this "
-            "run's compile output and re-runs only enrichment + "
-            "graph + index. The new run carries "
+            "**Deprecated.** This endpoint is being replaced by the "
+            "explicit post-index Manual Actions surface (see "
+            "``GET /documents/{id}/manual-actions``). The default "
+            "Index path should remain lightweight; richer behaviour "
+            "(domain enrichment, knowledge memory, normalisation, "
+            "deep knowledge index, multimodal enrichment) belongs "
+            "in operator-triggered actions with clear cost notes.\n\n"
+            "Kept available for in-flight deployments and tests. "
+            "New FE surfaces SHOULD NOT render a primary 'Refresh "
+            "Enrich' button.\n\n"
+            "Behavior unchanged: starts a new candidate ingestion "
+            "run that REUSES this run's compile output and re-runs "
+            "only enrichment + graph + index. The new run carries "
             "`runType=refresh_enrich` and "
             "`metadata.reusedCompileFromRunId=<this run id>`. "
             "Promotion to `activeSnapshotId` is gated on terminal "
@@ -2895,6 +3195,7 @@ def create_rest_api(
             "  * the run is still in-flight;\n"
             "  * the document is detached or removed."
         ),
+        deprecated=True,
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
     )
     async def post_run_refresh_enrichment(

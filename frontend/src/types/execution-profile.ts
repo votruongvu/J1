@@ -61,11 +61,49 @@ export interface ExecutionProfileDetails {
  * coordinated BE + FE change. */
 export type RecommendationSource =
   | "user_override"
+  | "llm_advanced_assessment"
   | "active_domain_rule"
   | "general_domain_rule"
   | "lightweight_assessment"
   | "lightweight_assessment_fallback"
   | "system_default";
+
+/** Strict-JSON output of ``POST /documents/{id}/advanced-assessment``.
+ * Mirrors ``LLMAdvancedAssessmentResult.to_payload()`` on the BE.
+ * ``status='refused'`` carries ``refusalReason`` + ``message`` and
+ * NO complexity / profile fields. */
+export interface LLMAdvancedAssessmentResult {
+  status: "ok" | "refused";
+  refusalReason: string | null;
+  message: string | null;
+  documentComplexity: "simple" | "moderate" | "complex" | "very_complex" | null;
+  recommendedProfile: "quick_index" | "standard_index" | "deep_knowledge_index" | null;
+  confidence: "low" | "medium" | "high" | null;
+  detectedSignals: Record<string, string>;
+  recommendedNextSteps: string[];
+  reasoningSummary: string[];
+  warnings: string[];
+}
+
+/** Response shape for ``POST /documents/{id}/advanced-assessment``. */
+export interface AdvancedAssessmentResponse {
+  documentId: string;
+  /** Server-minted id for the NEW ``AssessmentDecision`` that
+   * carries the LLM result. ``null`` when the service refused or
+   * the deployment didn't wire the decision store. */
+  assessmentDecisionId: string | null;
+  result: LLMAdvancedAssessmentResult;
+}
+
+/** One descriptor returned by ``GET /documents/{id}/manual-actions``.
+ * Mirrors ``ManualActionDescriptor`` on the BE. */
+export interface ManualActionDescriptor {
+  id: string;
+  label: string;
+  description: string;
+  costNote: string;
+  status: "available" | "not_implemented" | "disabled";
+}
 
 /** Rule-based hints attached to a winning ``document_profile_rule``.
  * Advisory only — the FE renders these as "likely / suspected"
