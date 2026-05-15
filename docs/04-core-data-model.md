@@ -97,7 +97,7 @@ Important fields:
 | `workflow_id`, `workflow_run_id` | Temporal handles. |
 | `status` | `RunStatus` (CREATED / RUNNING / SUCCEEDED / FAILED / …). |
 | `started_at`, `updated_at`, `completed_at` | Timestamps. |
-| `run_type` | `initial` / `reindex` / `resume` / `retry` / `refresh_enrich`. |
+| `run_type` | `initial` / `reindex` / `resume` / `retry` / `refresh_enrich` / `run_domain_enrichment`. |
 | `parent_run_id` | Lineage for reindex / refresh. |
 | `document_version_id` | Pointer to the version this run consumed. |
 | `display_version` | Operator-facing `DDMMYYYY-NN` label. |

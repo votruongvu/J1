@@ -36,8 +36,13 @@ hitting it in production.
 - "Continue from compiled result" and "Rebuild index" were
   removed from the run-level controls. The corresponding REST
   endpoints (`resume-from-checkpoint`, `rebuild-index`) still
-  exist on the backend; the document-level reindex /
-  refresh-enrich entry points use them under the hood.
+  exist on the backend; the document-level reindex / manual
+  Run Domain Enrichment entry points use them under the hood.
+- `POST /ingestion-runs/{run_id}/refresh-enrichment` is
+  **deprecated** in favour of
+  `POST /documents/{id}/manual-actions/run-domain-enrichment`.
+  The legacy route stays mounted but is flagged
+  `deprecated: true` in the OpenAPI schema.
 
 ## Compile / RAGAnything
 

@@ -70,21 +70,34 @@ The endpoint spawns a `BatchOrchestrationWorkflow` parent that
 dispatches one per-document child workflow per file. Operators see
 the batch in the Temporal UI as a parent with N children.
 
-### Reindex / refresh-enrich
+### Reindex / manual domain enrichment
 
 ```
 POST /documents/{documentId}/reindex
   → 201 { documentId, reindexRunId, parentRunId, workflowId }
 
-POST /documents/{documentId}/refresh-enrich
-  → 201 { documentId, refreshRunId, parentRunId, reusedCompileFromRunId, workflowId }
+POST /documents/{documentId}/manual-actions/run-domain-enrichment
+  → 200 { documentId, manualAction, manualActionRunId,
+          parentRunId, sourceRunId, sourceSnapshotId,
+          targetSnapshotId, workflowId, status }
 ```
 
 Both are document-scoped. Reindex re-runs the whole workflow
-against a fresh snapshot. Refresh-enrich reuses the previous
-active run's compile output and only re-runs enrichment + graph
-+ index. Both promote a new snapshot atomically on success and
-leave the previous one in place on failure.
+against a fresh snapshot from the original uploaded bytes — it
+**never** reuses old chunks / graph / enrichment data.
+
+`POST /documents/{id}/manual-actions/run-domain-enrichment` is the
+canonical "enrich the current active snapshot" surface. It
+allocates a candidate snapshot, reuses the active snapshot's
+compile artifacts via `metadata.reused_compile_from_run_id`
+(no MinerU re-parse), and promotes the candidate on terminal
+success — same CAS contract as reindex.
+
+The older `POST /ingestion-runs/{run_id}/refresh-enrichment`
+endpoint is **deprecated**. It remains reachable for in-flight
+deployments but new integrations MUST prefer the manual-action
+route. The deprecation is reflected in the OpenAPI schema
+(`deprecated: true`).
 
 ### Lifecycle
 

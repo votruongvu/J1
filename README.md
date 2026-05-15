@@ -39,8 +39,10 @@ J1 is built around three product decisions that fix that:
 - Multi-tenant, multi-project document management with knowledge-state
   lifecycle (attach / detach / remove).
 - Ingestion through Temporal workflows: profile → assess →
-  RAGAnything compile → domain enrichment → graph + index →
-  snapshot promotion.
+  RAGAnything compile → snapshot promotion. Basic queryability is
+  reached at promotion; Domain Enrichment is an optional manual
+  post-compile action (see
+  [docs/ingestion-flow.md](docs/ingestion-flow.md)).
 - Snapshot-centered visibility: queries and answers only see the
   document's currently-promoted snapshot.
 - Hybrid retrieval with RAGAnything (LightRAG-native graph +
@@ -146,16 +148,26 @@ at minimum you need:
 Read in roughly this order. Each doc is standalone, but they assume
 you've at least skimmed `01-overall-architecture.md`.
 
+**Canonical architecture docs**
+
 - [docs/01-overall-architecture.md](docs/01-overall-architecture.md) — Business-friendly system overview.
-- [docs/02-ingestion-flow.md](docs/02-ingestion-flow.md) — Upload → compile → enrich → snapshot.
+- [docs/ingestion-flow.md](docs/ingestion-flow.md) — Canonical end-to-end ingestion: upload → assess → compile → promote → optional Domain Enrichment.
+- [docs/unified-memory-contract.md](docs/unified-memory-contract.md) — Logical projection the query layer reads through.
 - [docs/03-query-flow.md](docs/03-query-flow.md) — Manual query → orchestrator → answer + citations.
 - [docs/04-core-data-model.md](docs/04-core-data-model.md) — Tenant / Project / Document / Snapshot / Profile / Knowledge Base.
+
+**Operations and integration**
+
 - [docs/05-developer-onboarding.md](docs/05-developer-onboarding.md) — Run, test, extend the codebase.
 - [docs/06-risks-and-known-limitations.md](docs/06-risks-and-known-limitations.md) — Where intent and code don't yet line up.
 - [docs/07-deployment-and-scaling.md](docs/07-deployment-and-scaling.md) — Production direction.
 - [docs/08-multi-kb-model.md](docs/08-multi-kb-model.md) — How the per-project knowledge bases compose.
 - [docs/09-external-integration-model.md](docs/09-external-integration-model.md) — REST + event integration with outside systems.
 - [docs/10-domain-configuration.md](docs/10-domain-configuration.md) — Domain packs (general + civil engineering).
+
+The older `docs/02-ingestion-flow.md` is **superseded** by
+[docs/ingestion-flow.md](docs/ingestion-flow.md); the file remains
+as a stub so legacy links resolve.
 
 ## License
 
