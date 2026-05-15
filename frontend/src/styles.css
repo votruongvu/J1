@@ -5883,18 +5883,27 @@ pre.json .b {
 }
 
 /* ─── Main navigation ─────────────────────────────────────────────
-   Horizontal nav bar below the ContextBar. Three sections —
-   Home / Search / Documents — with active-state underline. */
+   Floating segmented-pill control. Sits below the ContextBar on a
+   thin warm divider. The track uses the sunken cream surface, each
+   pill is a button; the active pill "lifts" onto the paper surface
+   with a soft warm shadow and accent-tinted icon. Mirrors the chip
+   styling used elsewhere ("Context set", "INGESTION") so the whole
+   header reads as one design system. */
 .main-nav {
-  background: var(--surface, #fff);
-  border-bottom: 1px solid var(--border, #e1e4e8);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-3) var(--sp-4);
 }
 .main-nav__list {
   list-style: none;
   margin: 0;
-  padding: 0 16px;
-  display: flex;
-  gap: 4px;
+  padding: 4px;
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 2px oklch(30% 0.02 60 / 0.04);
 }
 .main-nav__item {
   margin: 0;
@@ -5902,23 +5911,52 @@ pre.json .b {
 .main-nav__link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 7px 16px;
   background: transparent;
   border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted, #57606a);
-  font-size: 14px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: var(--tracking-body);
   cursor: pointer;
-  transition: color 0.1s ease, border-color 0.1s ease;
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+.main-nav__link .icon-sm {
+  opacity: 0.7;
+  transition: opacity 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 .main-nav__link:hover {
-  color: var(--text, #1f2328);
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.main-nav__link:hover .icon-sm {
+  opacity: 1;
+}
+.main-nav__link:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg-sunken),
+    0 0 0 4px var(--accent-soft);
 }
 .main-nav__link--active {
-  color: var(--primary, #0366d6);
-  border-bottom-color: var(--primary, #0366d6);
+  background: var(--bg-elev);
+  color: var(--accent-soft-fg);
   font-weight: 600;
+  box-shadow: var(--shadow-2);
+}
+.main-nav__link--active:hover {
+  background: var(--bg-elev);
+}
+.main-nav__link--active .icon-sm {
+  color: var(--accent);
+  opacity: 1;
+  transform: scale(1.05);
 }
 
 /* ─── Home Dashboard ─────────────────────────────────────────── */
