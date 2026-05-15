@@ -225,6 +225,7 @@ def status_aliases(value: str | RunStatus) -> tuple[str, ...]:
 # with the safe default ``"initial"`` — see `_run_from_payload`.
 RunType = Literal[
     "initial", "reindex", "resume", "retry", "validation", "refresh_enrich",
+    "run_domain_enrichment",
 ]
 
 

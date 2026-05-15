@@ -36,7 +36,8 @@ export type RunType =
   | "resume"
   | "retry"
   | "validation"
-  | "refresh_enrich";
+  | "refresh_enrich"
+  | "run_domain_enrichment";
 
 /**
  * Server-computed action permission. The FE iterates this array
@@ -212,4 +213,28 @@ export interface RunRefreshEnrichmentResponse {
   workflowId: string;
   runType: RunType;
   reusedCompileFromRunId: string;
+}
+
+/**
+ * Response from
+ * ``POST /documents/{id}/manual-actions/run-domain-enrichment``.
+ *
+ * The endpoint allocates a candidate snapshot + a new
+ * ``run_type="run_domain_enrichment"`` run. The run REUSES the active
+ * snapshot's compile artifacts and writes fresh ``enriched.*``
+ * artifacts under the candidate; promotion to ``activeSnapshotId`` is
+ * CAS-on-terminal-success — a failed manual action preserves the
+ * previous active.
+ */
+export interface RunDomainEnrichmentResponse {
+  documentId: string;
+  manualAction: "run_domain_enrichment";
+  manualActionRunId: string;
+  runType: RunType;
+  parentRunId: string;
+  sourceRunId: string;
+  sourceSnapshotId: string;
+  targetSnapshotId: string | null;
+  workflowId: string;
+  status: "queued";
 }

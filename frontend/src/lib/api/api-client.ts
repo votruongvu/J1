@@ -60,6 +60,7 @@ import type {
   DocumentReindexResponse,
   DocumentRunSummary,
   DocumentSnapshotSummary,
+  RunDomainEnrichmentResponse,
   RunRefreshEnrichmentResponse,
 } from "@/types/documents";
 import {
@@ -999,5 +1000,18 @@ export class ApiClient implements IngestionClient {
       { method: "POST", headers: this.headers() },
     );
     return await this.json<RunRefreshEnrichmentResponse>(resp);
+  }
+
+  async runDomainEnrichment(
+    documentId: string,
+  ): Promise<RunDomainEnrichmentResponse> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}`
+        + `/manual-actions/run-domain-enrichment`,
+      ),
+      { method: "POST", headers: this.headers() },
+    );
+    return await this.json<RunDomainEnrichmentResponse>(resp);
   }
 }

@@ -44,6 +44,7 @@ import type {
   DocumentDetail,
   DocumentLifecycleResponse,
   DocumentListItem,
+  RunDomainEnrichmentResponse,
   RunRefreshEnrichmentResponse,
   DocumentReindexResponse,
   DocumentRunSummary,
@@ -529,6 +530,21 @@ export interface IngestionClient {
  * a failed refresh preserves the previous active.
  */
   refreshRunEnrichment(runId: string): Promise<RunRefreshEnrichmentResponse>;
+
+  /**
+ * POST /documents/{id}/manual-actions/run-domain-enrichment — first
+ * implemented post-index Manual Action. Allocates a candidate
+ * snapshot + a ``run_type="run_domain_enrichment"`` run that reuses
+ * the active snapshot's compile artifacts and re-runs domain
+ * enrichment only (no MinerU re-parse). The candidate becomes
+ * active on terminal success.
+ *
+ * Rejects (HTTP 409) when the document has no active snapshot, is
+ * detached / removed, or already has another run in flight.
+ * Rejects (HTTP 403) when the deployment disabled the action via
+ * ``J1_ENABLE_MANUAL_ACTIONS`` / ``J1_ENABLE_MANUAL_DOMAIN_ENRICHMENT``.
+ */
+  runDomainEnrichment(documentId: string): Promise<RunDomainEnrichmentResponse>;
 }
 
 /** Per-role probe result from `/healthz/llm`. */

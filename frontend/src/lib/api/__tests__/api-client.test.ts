@@ -226,14 +226,18 @@ describe("ApiClient.upload", () => {
     expect(calls[0]!.url).not.toContain("/manual-actions");
   });
 
-  it("does not expose a runManualAction dispatcher (endpoints not yet implemented)", async () => {
-    // Pinned per the showcase spec: the FE MUST NOT advertise a
-    // ``runManualAction`` / ``triggerManualAction`` method on the
-    // API client until the backend implements
-    // ``POST /documents/{id}/manual-actions/{id}``. The FE renders
-    // the suggested next-step buttons as DISABLED instead, so a
-    // wiring oversight surfaces here.
+  it("exposes a typed dispatcher for the wired ``run_domain_enrichment`` action only", async () => {
+    // The first implemented manual action gets a dedicated method
+    // (``runDomainEnrichment``) so the call site is type-safe + the
+    // response shape is the strict ``RunDomainEnrichmentResponse``.
+    // Generic ``runManualAction`` / ``triggerManualAction`` style
+    // dispatchers are intentionally NOT exposed — every future
+    // wired action gets its own method so the FE never accidentally
+    // POSTs to an endpoint that returns 501.
     const client = makeClient();
+    expect(
+      typeof (client as unknown as Record<string, unknown>).runDomainEnrichment,
+    ).toBe("function");
     const forbidden = [
       "runManualAction",
       "triggerManualAction",
@@ -408,6 +412,35 @@ describe("ApiClient.listDocumentManualActions", () => {
     expect(out.actions).toHaveLength(2);
     expect(out.actions[0]!.id).toBe("run_llm_advanced_assessment");
     expect(out.actions[1]!.status).toBe("not_implemented");
+  });
+});
+
+describe("ApiClient.runDomainEnrichment", () => {
+  it("POSTs to /documents/{id}/manual-actions/run-domain-enrichment", async () => {
+    const payload = {
+      data: {
+        documentId: "doc-1",
+        manualAction: "run_domain_enrichment",
+        manualActionRunId: "run-new",
+        runType: "run_domain_enrichment",
+        parentRunId: "r-baseline",
+        sourceRunId: "r-baseline",
+        sourceSnapshotId: "snap-active",
+        targetSnapshotId: "snap-candidate",
+        workflowId: "wf-1",
+        status: "queued",
+      },
+    };
+    const { calls } = withFetch(() => jsonResponse(payload));
+    const out = await makeClient().runDomainEnrichment("doc-1");
+    expect(calls[0]!.url).toBe(
+      "https://api.test.j1.local"
+      + "/documents/doc-1/manual-actions/run-domain-enrichment",
+    );
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(out.manualAction).toBe("run_domain_enrichment");
+    expect(out.manualActionRunId).toBe("run-new");
+    expect(out.status).toBe("queued");
   });
 });
 

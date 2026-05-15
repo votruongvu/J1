@@ -30,7 +30,8 @@ Why a declared vocabulary instead of a free-form list:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -43,10 +44,14 @@ __all__ = [
     "ACTION_RUN_MULTIMODAL_ENRICHMENT",
     "ManualActionDescriptor",
     "list_manual_actions",
+    "is_manual_actions_enabled",
+    "is_manual_action_enabled",
     "MANUAL_ACTIONS",
     "MANUAL_ACTION_STATUS_AVAILABLE",
     "MANUAL_ACTION_STATUS_NOT_IMPLEMENTED",
     "MANUAL_ACTION_STATUS_DISABLED",
+    "ENV_MANUAL_ACTIONS",
+    "ENV_MANUAL_DOMAIN_ENRICHMENT",
 ]
 
 
@@ -136,7 +141,12 @@ MANUAL_ACTIONS: tuple[ManualActionDescriptor, ...] = (
             "Multiple LLM calls, one per enricher. Cost scales "
             "with document length."
         ),
-        status=MANUAL_ACTION_STATUS_NOT_IMPLEMENTED,
+        # First implemented manual action. The endpoint dispatches
+        # a snapshot-scoped enrichment run that REUSES the active
+        # snapshot's compile artifacts (no MinerU / re-parse). Status
+        # is downgraded to ``disabled`` at list time when the
+        # deployment turns the feature off via env.
+        status=MANUAL_ACTION_STATUS_AVAILABLE,
     ),
     ManualActionDescriptor(
         id=ACTION_BUILD_KNOWLEDGE_MEMORY,
@@ -197,12 +207,68 @@ MANUAL_ACTIONS: tuple[ManualActionDescriptor, ...] = (
 _BY_ID = {a.id: a for a in MANUAL_ACTIONS}
 
 
+# ---- Feature-flag env vars ----------------------------------------
+#
+# ``J1_ENABLE_MANUAL_ACTIONS`` is the deployment-wide kill switch. When
+# set to a falsey value every wired action (currently only
+# ``run_llm_advanced_assessment`` + ``run_domain_enrichment``) reports
+# status=``disabled``. The vocabulary list still ships so the FE can
+# render the buttons with a clear "disabled by deployment" disclaimer.
+#
+# ``J1_ENABLE_MANUAL_DOMAIN_ENRICHMENT`` is the per-action override —
+# useful for staged rollouts where the deployment wants the surface
+# enabled but not this specific (cost-bearing) action yet.
+
+ENV_MANUAL_ACTIONS = "J1_ENABLE_MANUAL_ACTIONS"
+ENV_MANUAL_DOMAIN_ENRICHMENT = "J1_ENABLE_MANUAL_DOMAIN_ENRICHMENT"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_manual_actions_enabled() -> bool:
+    """Deployment-wide kill switch. Defaults to True."""
+    return _env_bool(ENV_MANUAL_ACTIONS, True)
+
+
+def is_manual_action_enabled(action_id: str) -> bool:
+    """Per-action gate. Layered: the deployment-wide flag must be on
+    AND the per-action flag (when defined) must not be off.
+
+    Defaults to True so a fresh deployment lights up every wired
+    action without any extra env wiring."""
+    if not is_manual_actions_enabled():
+        return False
+    if action_id == ACTION_RUN_DOMAIN_ENRICHMENT:
+        return _env_bool(ENV_MANUAL_DOMAIN_ENRICHMENT, True)
+    return True
+
+
 def list_manual_actions() -> tuple[ManualActionDescriptor, ...]:
-    """Return the canonical action set."""
-    return MANUAL_ACTIONS
+    """Return the canonical action set, with feature-flag-aware
+    status. A descriptor whose static status is ``available`` is
+    downgraded to ``disabled`` when the deployment turned the
+    corresponding env flag off."""
+    out: list[ManualActionDescriptor] = []
+    for a in MANUAL_ACTIONS:
+        if (
+            a.status == MANUAL_ACTION_STATUS_AVAILABLE
+            and not is_manual_action_enabled(a.id)
+        ):
+            out.append(replace(a, status=MANUAL_ACTION_STATUS_DISABLED))
+        else:
+            out.append(a)
+    return tuple(out)
 
 
 def get_manual_action(action_id: str) -> ManualActionDescriptor | None:
     """Lookup helper. Returns ``None`` for unknown ids so the REST
-    handler can 404 cleanly."""
+    handler can 404 cleanly. Returns the static (pre-feature-flag)
+    descriptor — callers that need the effective status should use
+    :func:`list_manual_actions` or call
+    :func:`is_manual_action_enabled` separately."""
     return _BY_ID.get(action_id)

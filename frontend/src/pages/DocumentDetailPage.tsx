@@ -30,6 +30,7 @@ import {
   ResultStatusBadge,
 } from "./documents/DocumentBadges";
 import { TestActiveKnowledgePanel } from "./documents/TestActiveKnowledgePanel";
+import { ManualActionsPanel } from "./documents/ManualActionsPanel";
 import { AssessmentPlanDialog } from "./upload/AssessmentPlanDialog";
 import type {
   DocumentAction,
@@ -414,6 +415,17 @@ export function DocumentDetailPage({
           detail={detail}
           producingRun={activeProducingRun ?? null}
           activeSnapshot={activeSnapshot}
+        />
+      </section>
+
+      <section className="document-detail__section">
+        <h3>Manual Actions</h3>
+        <ManualActionsPanel
+          client={client}
+          documentId={detail.documentId}
+          activeSnapshotId={detail.activeSnapshotId}
+          hasInflightRun={!!inflightCandidate}
+          onOpenRun={onOpenRun}
         />
       </section>
 

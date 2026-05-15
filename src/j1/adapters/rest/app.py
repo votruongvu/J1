@@ -2254,6 +2254,272 @@ def create_rest_api(
             _req_id(request),
         )
 
+    @app.post(
+        "/documents/{document_id}/manual-actions/run-domain-enrichment",
+        tags=["documents"],
+        summary="Run Domain Enrichment (manual action)",
+        description=(
+            "Operator-triggered post-index enrichment. Reuses the "
+            "active snapshot's compile artifacts (no MinerU / "
+            "RAGAnything re-parse) and runs the active domain pack's "
+            "enricher overlay against them — appending fresh "
+            "``enriched.*`` artifacts under a candidate snapshot.\n\n"
+            "Rejects (HTTP 409) when:\n"
+            "  * the document is detached / removed,\n"
+            "  * the document has no active snapshot (no successful "
+            "baseline run yet),\n"
+            "  * another manual action / ingest run is already in "
+            "flight against the document.\n\n"
+            "Returns the new ``manualActionRunId`` so the FE can poll "
+            "``GET /ingestion-runs/{id}`` for live status. The "
+            "candidate snapshot only becomes active when the "
+            "enrichment workflow reaches a usable terminal state — "
+            "a failed manual action preserves the previous active."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    async def post_document_manual_action_run_domain_enrichment(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        starter: JobStarter = Depends(require_job_starter),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        from j1.processing.manual_actions import (
+            ACTION_RUN_DOMAIN_ENRICHMENT,
+            is_manual_action_enabled,
+        )
+
+        # 1. Feature-flag gate. 403 mirrors the spec's "disabled by
+        # deployment settings" path so the FE can render an
+        # actionable message instead of a 5xx.
+        if not is_manual_action_enabled(ACTION_RUN_DOMAIN_ENRICHMENT):
+            raise HTTPException(
+                403,
+                "Manual action 'run_domain_enrichment' is disabled "
+                "by deployment settings.",
+            )
+
+        store = _require_run_store()
+
+        # 2. Resolve document + attached-state guard.
+        try:
+            doc_dto = facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        _enforce_document_attached_for_action(
+            ctx, document_id, "manual action 'run_domain_enrichment'",
+        )
+
+        # 3. Active-snapshot gate — the manual action operates on
+        # the document's current active snapshot. Without one there
+        # is no baseline compile to enrich against.
+        active_snap_id = getattr(doc_dto, "active_snapshot_id", None)
+        if not active_snap_id:
+            raise HTTPException(
+                409,
+                f"document {document_id!r} has no active snapshot — "
+                "run an initial ingest (or reindex) first before "
+                "triggering Run Domain Enrichment.",
+            )
+
+        # 4. Resolve the producing run of the active snapshot. That
+        # is the source of compile artifacts the manual action will
+        # reuse. ``_protected_run_id_for_document`` reads the
+        # snapshot store; the latest-succeeded heuristic is the
+        # fallback for test harnesses that don't wire the snapshot
+        # service.
+        source_run_id = (
+            _protected_run_id_for_document(ctx, document_id)
+            or _latest_succeeded_run_id(ctx, document_id)
+        )
+        if not source_run_id:
+            raise HTTPException(
+                409,
+                f"document {document_id!r} has no successful baseline "
+                "ingest run to enrich; run an initial ingest first.",
+            )
+
+        # 5. Idempotency / concurrency guard. Two kinds:
+        #
+        #   (a) Soft check on the runs store — refuse when ANY run
+        #       on this document is still in-flight (initial /
+        #       reindex / a previous manual action). This catches
+        #       the common case + ships a clear error message.
+        #
+        #   (b) Atomic CAS on ``DocumentRecord.pending_operation``.
+        #       Two near-concurrent POSTs that both pass (a) still
+        #       race here; the loser sees HTTP 409. The workflow's
+        #       ``report_run_terminal`` activity releases the lock
+        #       on every terminal status.
+        active_states = {
+            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
+            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
+            RunStatus.CREATED.value,
+        }
+        all_runs = store.list_runs(ctx, document_id=document_id)
+        in_flight = next(
+            (r for r in all_runs if str(r.status) in active_states),
+            None,
+        )
+        if in_flight is not None:
+            raise HTTPException(
+                409,
+                f"another run {in_flight.run_id!r} is currently "
+                f"{in_flight.status} on document {document_id!r} — "
+                "wait for it to complete before triggering "
+                "Run Domain Enrichment.",
+            )
+
+        actor = security.subject if security else "system"
+        new_run_id = uuid.uuid4().hex
+
+        try:
+            lookup_for_lock = _require_source_registry()
+            sources_raw = getattr(lookup_for_lock, "_sources", None)
+            try_acquire = (
+                getattr(sources_raw, "try_acquire_operation_lock", None)
+                if sources_raw is not None else None
+            )
+            if try_acquire is not None:
+                acquired = try_acquire(
+                    ctx, document_id,
+                    operation="run_domain_enrichment",
+                    run_id=new_run_id,
+                )
+                if acquired is None:
+                    raise HTTPException(
+                        409,
+                        f"document {document_id!r} already has a "
+                        "pending operation. Wait for it to complete "
+                        "before starting Run Domain Enrichment.",
+                    )
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 — lock unavailable → no atomic guard
+            pass
+
+        # 6. Allocate the candidate snapshot + new run record. The
+        # candidate model exists because the snapshot store treats
+        # snapshots as immutable: appending enrichment artifacts to
+        # the *current* active snapshot would mutate a promoted /
+        # CAS-locked record. We allocate a candidate, write the new
+        # enrichment artifacts under it, and promote on success.
+        now = datetime.now(timezone.utc)
+        previous = store.get(ctx, source_run_id)
+        previous_meta = dict(previous.metadata or {}) if previous else {}
+        previous_version_id = (
+            previous.document_version_id if previous else None
+        )
+        from j1.runs.models import allocate_display_version
+        display_version = allocate_display_version(
+            started_at=now,
+            existing_runs=all_runs,
+            document_id=document_id,
+        )
+        new_run = IngestionRun(
+            run_id=new_run_id,
+            document_id=document_id,
+            workflow_id=None,
+            workflow_run_id=None,
+            status=RunStatus.CREATED,
+            started_at=now,
+            updated_at=now,
+            metadata={
+                "policy": previous_meta.get("policy", "auto"),
+                "mode": previous_meta.get("mode", "STANDARD"),
+                "document_name": previous_meta.get(
+                    "document_name", doc_dto.original_filename,
+                ),
+                # Drives the compile-reuse short-circuit on the
+                # activity layer (see
+                # ProcessingActivities._maybe_reuse_compile_artifacts).
+                "reused_compile_from_run_id": source_run_id,
+                # Manual-action provenance — the run record is the
+                # canonical status surface (queued / running /
+                # succeeded / failed); these metadata keys let the
+                # FE filter the run history for manual-action rows.
+                "manual_action": ACTION_RUN_DOMAIN_ENRICHMENT,
+                "manual_action_source_snapshot_id": active_snap_id,
+                "manual_action_source_run_id": source_run_id,
+            },
+            run_type="run_domain_enrichment",
+            parent_run_id=source_run_id,
+            document_version_id=previous_version_id,
+            display_version=display_version,
+            target_snapshot_id=_allocate_target_snapshot(
+                ctx, document_id, new_run_id,
+            ),
+        )
+        store.upsert(ctx, new_run)
+        if progress_reporter is not None:
+            progress_reporter.report_run_created(
+                ctx, run_id=new_run_id, document_id=document_id,
+                actor=actor,
+            )
+
+        body = IngestRequest(
+            compiler_kind=_resolve_compiler_kind(None),
+            enricher_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.enricher_kinds
+                 if processing_capabilities else frozenset()),
+                "enricherKind",
+            ),
+            graph_builder_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.graph_builder_kinds
+                 if processing_capabilities else frozenset()),
+                "graphBuilderKind",
+            ),
+            indexer_kind=_resolve_optional_processor_kind(
+                None,
+                (processing_capabilities.indexer_kinds
+                 if processing_capabilities else frozenset()),
+                "indexerKind",
+            ),
+            actor=actor,
+            correlation_id=new_run_id,
+            reindex_of=source_run_id,
+            target_snapshot_id=new_run.target_snapshot_id,
+        )
+        try:
+            workflow_id = await starter(ctx, document_id, body)
+        except Exception:
+            try:
+                sources_raw = getattr(
+                    _require_source_registry(), "_sources", None,
+                )
+                release = getattr(
+                    sources_raw, "release_operation_lock", None,
+                ) if sources_raw is not None else None
+                if release is not None:
+                    release(ctx, document_id, expected_run_id=new_run_id)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        new_run.workflow_id = workflow_id
+        new_run.updated_at = datetime.now(timezone.utc)
+        store.upsert(ctx, new_run)
+
+        return envelope(
+            {
+                "documentId": document_id,
+                "manualAction": ACTION_RUN_DOMAIN_ENRICHMENT,
+                "manualActionRunId": new_run_id,
+                "runType": "run_domain_enrichment",
+                "parentRunId": source_run_id,
+                "sourceRunId": source_run_id,
+                "sourceSnapshotId": active_snap_id,
+                "targetSnapshotId": new_run.target_snapshot_id,
+                "workflowId": workflow_id,
+                "status": "queued",
+            },
+            _req_id(request),
+        )
+
     @app.get(
         "/documents/{document_id}/status",
         tags=["documents"],

@@ -287,7 +287,7 @@ def _run_from_payload(payload: dict) -> IngestionRun:
     raw_run_type = payload.get("run_type") or "initial"
     if raw_run_type not in (
         "initial", "reindex", "resume", "retry",
-        "validation", "refresh_enrich",
+        "validation", "refresh_enrich", "run_domain_enrichment",
     ):
         raw_run_type = "initial"
     raw_cleanup = payload.get("cleanup_status") or "live"
