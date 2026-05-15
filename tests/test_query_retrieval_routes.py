@@ -310,6 +310,50 @@ def test_raganything_adapter_refuses_when_no_eligible_snapshot(route_ctx):
     assert candidates[0].score == 0.0
 
 
+def test_raganything_adapter_prefers_eligible_snapshot_pairs_over_resolver(ctx):
+    """When ``RouteContext.eligible_snapshot_pairs`` is supplied, the
+    adapter MUST bypass the scope-driven resolver and fan out against
+    the explicit pairs. This is the Run Detail / ``snapshot_explicit``
+    bug repro: the resolver only sees ACTIVE snapshots, but the
+    caller is validating a CANDIDATE snapshot that hasn't been
+    promoted yet — without the bypass the intersection is empty and
+    the adapter falsely emits ``no_eligible_snapshot``."""
+    provider = _StubRAGProvider(_StubRAGResult(
+        answer="", citations=[],
+        metadata={"evidence_chunks": [{
+            "artifact_id": "a1", "artifact_kind": "chunk", "chunk_id": "c1",
+            "text": "candidate snapshot content",
+            "score": 0.9, "run_id": "run-X", "document_id": "doc-1",
+            "section_path": "Sec 1",
+        }]},
+    ))
+    adapter = RAGAnythingAdapter(
+        provider,
+        # Resolver returns ONLY the active snapshot (snap-active),
+        # mirroring `_resolve_workspace_scope` over a doc whose
+        # active_snapshot_id is the previous run's output.
+        eligible_snapshot_pairs_resolver=_pairs_resolver(
+            ("doc-1", "snap-active"),
+        ),
+    )
+    # Caller (validation service for `snapshot_explicit`) hands the
+    # adapter the candidate snapshot pair directly.
+    ctx_with_explicit_pairs = RouteContext(
+        ctx=ctx,
+        scope=WorkspaceScope(),
+        eligible_snapshot_pairs=frozenset({("doc-1", "snap-candidate")}),
+    )
+    candidates = adapter.execute(
+        RetrievalJob(route=RetrievalRouteKind.RAGANYTHING, query="q"),
+        ctx_with_explicit_pairs,
+    )
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["snapshot_id"] == "snap-candidate"
+    assert provider.calls[0]["document_id"] == "doc-1"
+    # And the chunk projection lands — no `no_eligible_snapshot` marker.
+    assert [c.artifact_kind for c in candidates] == ["chunk"]
+
+
 def test_raganything_adapter_narrows_to_pinned_document_id(ctx):
     """When ``RouteContext.document_id`` is set, only the matching
     pair is queried — a single-document detail page must not fan

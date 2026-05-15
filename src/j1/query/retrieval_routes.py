@@ -61,6 +61,15 @@ class RouteContext:
     scope: QueryScope = default_scope()
     eligible_run_ids: frozenset[str] | None = None
     eligible_snapshot_ids: frozenset[str] | None = None
+    # Pre-resolved ``(document_id, snapshot_id)`` allowlist. When set,
+    # adapters that fan out per pair (RAGAnything) MUST prefer this
+    # over the scope-driven resolver — it carries the caller's
+    # explicit choice (e.g. ``snapshot_explicit`` validating a
+    # CANDIDATE snapshot that hasn't been promoted to active yet, so
+    # the active-snapshot-only eligibility resolver would return an
+    # empty intersection and the adapter would falsely emit
+    # ``no_eligible_snapshot``).
+    eligible_snapshot_pairs: frozenset[tuple[str, str]] | None = None
     document_id: str | None = None
     run_id: str | None = None
 
@@ -226,31 +235,42 @@ class RAGAnythingAdapter:
         """Resolve ``(document_id, snapshot_id)`` pairs for this query.
 
         Preference order:
-          1. ``context.document_id`` + matching pair from the resolver
-             — single-document query.
-          2. Resolver-supplied pairs filtered by
+          0. ``context.eligible_snapshot_pairs`` — caller pre-resolved
+             the pairs (e.g. ``snapshot_explicit`` for a candidate
+             snapshot that isn't promoted to active yet). Skip the
+             scope-driven resolver entirely; the caller already
+             stated which snapshots to query.
+          1. Resolver-supplied pairs filtered by
              ``context.eligible_snapshot_ids`` (the orchestrator
              may have narrowed the set).
-          3. Resolver-supplied pairs as-is (full workspace fan-out).
+          2. Resolver-supplied pairs as-is (full workspace fan-out).
+          3. ``context.document_id`` narrows whichever set above to a
+             single document when the caller pinned one.
         """
-        pairs: frozenset[tuple[str, str]] | None = None
-        if self._eligible_snapshot_pairs_resolver is not None:
-            try:
-                pairs = self._eligible_snapshot_pairs_resolver(
-                    context.ctx, context.scope,
+        pairs: frozenset[tuple[str, str]] | None
+        if context.eligible_snapshot_pairs is not None:
+            pairs = context.eligible_snapshot_pairs
+        else:
+            pairs = None
+            if self._eligible_snapshot_pairs_resolver is not None:
+                try:
+                    pairs = self._eligible_snapshot_pairs_resolver(
+                        context.ctx, context.scope,
+                    )
+                except Exception:  # noqa: BLE001 — resolver failure → no scope
+                    pairs = None
+            if not pairs:
+                return frozenset()
+            # Narrow by the orchestrator-supplied snapshot id set when
+            # present. This lets the orchestrator pre-resolve eligibility
+            # once and keeps BM25 + RAGAnything on the same allowlist.
+            eligible = context.eligible_snapshot_ids
+            if eligible:
+                pairs = frozenset(
+                    p for p in pairs if p[1] in eligible
                 )
-            except Exception:  # noqa: BLE001 — resolver failure → no scope
-                pairs = None
         if not pairs:
             return frozenset()
-        # Narrow by the orchestrator-supplied snapshot id set when
-        # present. This lets the orchestrator pre-resolve eligibility
-        # once and keeps BM25 + RAGAnything on the same allowlist.
-        eligible = context.eligible_snapshot_ids
-        if eligible:
-            pairs = frozenset(
-                p for p in pairs if p[1] in eligible
-            )
         # Narrow to a single document when the caller pinned one.
         if context.document_id:
             pairs = frozenset(

@@ -581,6 +581,19 @@ class IngestionValidationService:
         engine_scope, eligible_snapshot_ids = self._resolve_query_scope(
             ctx=ctx, run=run, request=request,
         )
+        # When the caller passed ``snapshot_explicit`` we resolve the
+        # exact ``(document_id, snapshot_id)`` pairs against the
+        # snapshot store and thread them through. The default
+        # eligibility resolver only sees ACTIVE snapshots, so a query
+        # against a candidate (not-yet-promoted) snapshot would
+        # otherwise resolve to an empty pair set and the RAGAnything
+        # adapter would refuse with ``no_eligible_snapshot``. This is
+        # the exact scenario Run Detail's "Run query" hits when the
+        # produced snapshot from the current run hasn't been
+        # promoted yet.
+        eligible_pairs = self._resolve_snapshot_explicit_pairs(
+            ctx=ctx, request=request,
+        )
         result = self._smart_query_orchestrator.run(OrchestratorRequest(
             ctx=ctx,
             question=request.question,
@@ -592,6 +605,7 @@ class IngestionValidationService:
                 else (run.document_id if run is not None else None)
             ),
             eligible_snapshot_ids=eligible_snapshot_ids,
+            eligible_snapshot_pairs=eligible_pairs,
         ))
 
         retrieved_chunks = _retrieved_chunks_from_trace(result.trace)
@@ -645,6 +659,42 @@ class IngestionValidationService:
             evidence_sent_to_llm=evidence_sent_to_llm,
             debug=debug,
         )
+
+    def _resolve_snapshot_explicit_pairs(
+        self,
+        *,
+        ctx: ProjectContext,
+        request: "ManualTestQueryRequest",
+    ) -> "frozenset[tuple[str, str]] | None":
+        """Translate ``scope.type='snapshot_explicit'`` into a concrete
+        ``(document_id, snapshot_id)`` allowlist via the snapshot store.
+
+        Returns ``None`` when:
+          * the scope isn't ``snapshot_explicit``;
+          * no snapshot store is wired (legacy/test deployments — the
+            adapter falls back to the existing allowlist path, which
+            works for already-active snapshots);
+          * none of the supplied snapshot ids resolve to a known
+            document (caller error / stale id — let the adapter emit
+            its own ``no_eligible_snapshot`` so the operator sees a
+            clear trace).
+        """
+        scope_dto = getattr(request, "scope", None)
+        if scope_dto is None or scope_dto.type != "snapshot_explicit":
+            return None
+        if self._snapshot_store is None:
+            return None
+        ids = tuple(scope_dto.snapshot_ids or ())
+        pairs: set[tuple[str, str]] = set()
+        for snapshot_id in ids:
+            try:
+                snap = self._snapshot_store.get(ctx, snapshot_id)
+            except Exception:  # noqa: BLE001 — store IO fault → drop the entry
+                snap = None
+            if snap is None or not getattr(snap, "document_id", None):
+                continue
+            pairs.add((snap.document_id, snap.snapshot_id))
+        return frozenset(pairs) if pairs else None
 
     def _resolve_query_scope(
         self,

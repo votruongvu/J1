@@ -118,6 +118,14 @@ class OrchestratorRequest:
     run_id: str | None = None
     eligible_run_ids: frozenset[str] | None = None
     eligible_snapshot_ids: frozenset[str] | None = None
+    # Pre-resolved ``(document_id, snapshot_id)`` allowlist. When the
+    # caller already knows the exact pairs to query (e.g. the
+    # validation service translating ``snapshot_explicit`` against
+    # the snapshot store), pass them here so the per-pair fan-out
+    # adapters (RAGAnything) bypass scope-driven eligibility — which
+    # only sees ACTIVE snapshots and would refuse a candidate that
+    # hasn't been promoted yet.
+    eligible_snapshot_pairs: frozenset[tuple[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +207,7 @@ class SmartQueryOrchestrator:
             scope=request.scope,
             eligible_run_ids=request.eligible_run_ids,
             eligible_snapshot_ids=request.eligible_snapshot_ids,
+            eligible_snapshot_pairs=request.eligible_snapshot_pairs,
             document_id=request.document_id,
             run_id=request.run_id,
         )

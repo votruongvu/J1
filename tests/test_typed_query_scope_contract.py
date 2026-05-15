@@ -129,6 +129,113 @@ def test_resolve_query_scope_snapshot_explicit_requires_ids():
         )
 
 
+def test_resolve_snapshot_explicit_pairs_uses_snapshot_store():
+    """``_resolve_snapshot_explicit_pairs`` looks up each snapshot id
+    in the snapshot store and returns ``(document_id, snapshot_id)``
+    pairs. This is the Run Detail fix: candidate snapshots (not yet
+    promoted to ``active_snapshot_id``) must still produce a non-empty
+    pair set so the RAGAnything adapter fans out and queries them.
+    Without this, the adapter's scope-driven resolver — which only
+    sees ACTIVE snapshots — would intersect to empty and refuse with
+    ``no_eligible_snapshot``."""
+    from j1.validation.service import IngestionValidationService
+
+    class _StubSnapshotStore:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+        def get(self, ctx, snapshot_id):
+            self.calls.append(snapshot_id)
+            mapping = {
+                "snap-candidate-A": DocumentSnapshot(
+                    snapshot_id="snap-candidate-A",
+                    document_id="doc-A",
+                    tenant_id="t",
+                    project_id="p",
+                    created_by_run_id="run-A",
+                    state=SnapshotState.BUILDING,
+                    created_at=_NOW,
+                ),
+                "snap-candidate-B": DocumentSnapshot(
+                    snapshot_id="snap-candidate-B",
+                    document_id="doc-B",
+                    tenant_id="t",
+                    project_id="p",
+                    created_by_run_id="run-B",
+                    state=SnapshotState.READY,
+                    created_at=_NOW,
+                ),
+            }
+            return mapping.get(snapshot_id)
+
+    store = _StubSnapshotStore()
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = store  # type: ignore[attr-defined]
+
+    req = ManualTestQueryRequest(
+        question="q",
+        scope=QueryScopeDTO(
+            type="snapshot_explicit",
+            snapshot_ids=("snap-candidate-A", "snap-candidate-B"),
+        ),
+    )
+    pairs = svc._resolve_snapshot_explicit_pairs(  # type: ignore[attr-defined]
+        ctx=_fake_ctx(), request=req,
+    )
+    assert pairs == frozenset({
+        ("doc-A", "snap-candidate-A"),
+        ("doc-B", "snap-candidate-B"),
+    })
+    assert store.calls == ["snap-candidate-A", "snap-candidate-B"]
+
+
+def test_resolve_snapshot_explicit_pairs_returns_none_without_store():
+    """Legacy/test wirings without a snapshot store keep the existing
+    allowlist-only behaviour (the adapter's resolver path still works
+    for ALREADY-ACTIVE snapshots). We just return None so the
+    orchestrator doesn't try to apply a pair allowlist that wasn't
+    built."""
+    from j1.validation.service import IngestionValidationService
+
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = None  # type: ignore[attr-defined]
+
+    req = ManualTestQueryRequest(
+        question="q",
+        scope=QueryScopeDTO(
+            type="snapshot_explicit", snapshot_ids=("snap-A",),
+        ),
+    )
+    assert svc._resolve_snapshot_explicit_pairs(  # type: ignore[attr-defined]
+        ctx=_fake_ctx(), request=req,
+    ) is None
+
+
+def test_resolve_snapshot_explicit_pairs_is_noop_for_other_scopes():
+    """When the scope is anything other than ``snapshot_explicit`` the
+    helper short-circuits to None; no snapshot-store traffic. Keeps
+    the ``WorkspaceScope`` / ``ActiveScope`` paths on the existing
+    eligibility resolver."""
+    from j1.validation.service import IngestionValidationService
+
+    class _ExplodingStore:
+        def get(self, ctx, snapshot_id):
+            raise AssertionError("snapshot store must not be consulted")
+
+    svc = object.__new__(IngestionValidationService)
+    svc._source_registry = None  # type: ignore[attr-defined]
+    svc._snapshot_store = _ExplodingStore()  # type: ignore[attr-defined]
+
+    req = ManualTestQueryRequest(
+        question="q",
+        scope=QueryScopeDTO(type="document_active", document_id="doc-1"),
+    )
+    assert svc._resolve_snapshot_explicit_pairs(  # type: ignore[attr-defined]
+        ctx=_fake_ctx(), request=req,
+    ) is None
+
+
 def test_resolve_query_scope_project_active_returns_workspace_scope():
     """``scope.type='project_active'`` resolves to ``WorkspaceScope``.
     The orchestrator's eligibility resolver narrows to attached
