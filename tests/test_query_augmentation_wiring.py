@@ -34,7 +34,7 @@ from j1.memory import (
     QueryableStatus,
 )
 from j1.query.orchestrator import (
-    ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL,
+    ENV_QUERY_EXPANSION_ENABLED,
     OrchestratorRequest,
     SmartQueryOrchestrator,
 )
@@ -186,7 +186,7 @@ def test_orchestrator_diagnostics_mode_does_not_apply_to_retrieval(
     when expansions are populated. This pins the diagnostics-only
     promise — flipping the broadening on is a separate opt-in."""
     monkeypatch.delenv(
-        ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL, raising=False,
+        ENV_QUERY_EXPANSION_ENABLED, raising=False,
     )
     provider = DomainPackAugmentationProvider(pack=_pack_with_alias())
     orch = _build_orchestrator(provider=provider)
@@ -205,7 +205,7 @@ def test_orchestrator_env_flag_lets_diagnostics_report_applied(monkeypatch):
     REPORTS, so a future retrieval consumer that reads this flag
     can branch consistently."""
     monkeypatch.setenv(
-        ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL, "true",
+        ENV_QUERY_EXPANSION_ENABLED, "true",
     )
     provider = DomainPackAugmentationProvider(pack=_pack_with_alias())
     orch = _build_orchestrator(provider=provider)

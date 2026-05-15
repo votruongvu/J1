@@ -3765,32 +3765,18 @@ def create_rest_api(
         "/ingestion-runs/{run_id}/refresh-enrichment",
         tags=["ingestion-runs"],
         summary=(
-            "(Deprecated) Refresh enrichment on the active run"
+            "(Retired) Refresh enrichment on the active run"
         ),
         description=(
-            "**Deprecated.** This endpoint is being replaced by the "
-            "explicit post-index Manual Actions surface (see "
-            "``GET /documents/{id}/manual-actions``). The default "
-            "Index path should remain lightweight; richer behaviour "
-            "(domain enrichment, knowledge memory, normalisation, "
-            "deep knowledge index, multimodal enrichment) belongs "
-            "in operator-triggered actions with clear cost notes.\n\n"
-            "Kept available for in-flight deployments and tests. "
-            "New FE surfaces SHOULD NOT render a primary 'Refresh "
-            "Enrich' button.\n\n"
-            "Behavior unchanged: starts a new candidate ingestion "
-            "run that REUSES this run's compile output and re-runs "
-            "only enrichment + graph + index. The new run carries "
-            "`runType=refresh_enrich` and "
-            "`metadata.reusedCompileFromRunId=<this run id>`. "
-            "Promotion to `activeSnapshotId` is gated on terminal "
-            "success — a failed refresh preserves the previous "
-            "active.\n\n"
-            "Refuses (HTTP 409) when:\n"
-            "  * `run_id` is not the document's currently active "
-            "run (refresh-enrichment is an active-run-only action);\n"
-            "  * the run is still in-flight;\n"
-            "  * the document is detached or removed."
+            "**Retired.** This endpoint has been replaced by the "
+            "explicit Manual Run Domain Enrichment action:\n\n"
+            "    POST /documents/{document_id}/manual-actions/"
+            "run-domain-enrichment\n\n"
+            "It now returns HTTP 410 Gone — the legacy behaviour "
+            "(allocating a candidate run that reused compile output "
+            "+ re-ran enrichment + graph + index) is no longer "
+            "available. The new manual action takes its place and "
+            "is the canonical path for both UI and external callers."
         ),
         deprecated=True,
         dependencies=[Depends(scope_required(SCOPE_INGEST))],
@@ -3799,147 +3785,41 @@ def create_rest_api(
         request: Request,
         run_id: str,
         ctx: ProjectContext = Depends(get_ctx),
-        starter: JobStarter = Depends(require_job_starter),
-        security: SecurityContext = Depends(get_security),
-    ) -> dict[str, Any]:
-        from datetime import datetime, timezone
-        store = _require_run_store()
-
-        previous = store.get(ctx, run_id)
-        if previous is None:
-            raise HTTPException(404, f"ingestion run {run_id!r} not found")
-        if not previous.document_id:
-            raise HTTPException(
-                400,
-                f"run {run_id!r} has no document_id; cannot "
-                "refresh-enrich",
-            )
-        document_id = previous.document_id
-        _enforce_document_attached_for_action(
-            ctx, document_id, "refresh-enrichment",
+    ) -> JSONResponse:
+        # Honest retirement: emit a structured 410 Gone instead of
+        # silently dispatching the legacy refresh-enrich workflow.
+        # External callers that still hit this route get a clear
+        # redirect message (no FE surface ever reaches this path —
+        # the button was removed in the prior PR set). The handler
+        # is intentionally side-effect free: no run is allocated,
+        # no workflow is started, no audit event is emitted beyond
+        # what FastAPI logs on a non-2xx response.
+        _log.warning(
+            "deprecated endpoint hit: POST /ingestion-runs/%s/"
+            "refresh-enrichment (tenant=%s, project=%s). Caller "
+            "should switch to "
+            "POST /documents/{id}/manual-actions/run-domain-enrichment.",
+            run_id,
+            getattr(ctx, "tenant_id", "?"),
+            getattr(ctx, "project_id", "?"),
         )
-        try:
-            doc_dto = facade.source_lookup.get_source(ctx, document_id)
-        except Exception:
-            raise HTTPException(
-                404, f"document {document_id!r} not found",
-            )
-
-        # Active-run guard: refresh-enrichment only operates on the
-        # document's currently active run.
-        active_run_id = _latest_succeeded_run_id(ctx, document_id)
-        if active_run_id != run_id:
-            if not active_run_id:
-                raise HTTPException(
-                    409,
-                    f"document {document_id!r} has no active run yet; "
-                    "run an initial reindex first via "
-                    "POST /documents/{id}/reindex",
-                )
-            raise HTTPException(
-                409,
-                f"run {run_id!r} is not the active run for document "
-                f"{document_id!r} (active is {active_run_id!r}). "
-                "Refresh-enrichment is only valid on the active run.",
-            )
-
-        # In-flight guard mirrors what the active-run lookup would
-        # have already excluded, but kept explicit so the message is
-        # clear for ASSESSING / CANCELLING edge cases.
-        active_states = {
-            RunStatus.RUNNING.value, RunStatus.PAUSED.value,
-            RunStatus.CANCELLING.value, RunStatus.ASSESSING.value,
-        }
-        if str(previous.status) in active_states:
-            raise HTTPException(
-                409,
-                f"active run {run_id!r} is currently "
-                f"{previous.status} — wait for it to complete before "
-                "refresh-enrichment",
-            )
-
-        actor = security.subject if security else "system"
-        new_run_id = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
-        previous_meta = dict(previous.metadata or {})
-        from j1.runs.models import allocate_display_version
-        prior_runs = store.list_runs(ctx, document_id=document_id)
-        display_version = allocate_display_version(
-            started_at=now,
-            existing_runs=prior_runs,
-            document_id=document_id,
-        )
-        new_run = IngestionRun(
-            run_id=new_run_id,
-            document_id=document_id,
-            workflow_id=None,
-            workflow_run_id=None,
-            status=RunStatus.CREATED,
-            started_at=now,
-            updated_at=now,
-            metadata={
-                "policy": previous_meta.get("policy", "auto"),
-                "mode": previous_meta.get("mode", "STANDARD"),
-                "document_name": previous_meta.get(
-                    "document_name", doc_dto.original_filename,
+        return error_response(
+            status_code=410,
+            code="REFRESH_ENRICHMENT_RETIRED",
+            message=(
+                "This endpoint is retired. Use the manual Domain "
+                "Enrichment action for the active run instead: "
+                "POST /documents/{documentId}/manual-actions/"
+                "run-domain-enrichment."
+            ),
+            request_id=_req_id(request),
+            details={
+                "deprecatedRunId": run_id,
+                "replacementRoute": (
+                    "/documents/{documentId}/manual-actions/"
+                    "run-domain-enrichment"
                 ),
-                # The load-bearing hint: the compile stage reads
-                # this and reuses compile artifacts from that run.
-                "reused_compile_from_run_id": run_id,
             },
-            run_type="refresh_enrich",
-            parent_run_id=run_id,
-            document_version_id=previous.document_version_id,
-            display_version=display_version,
-            target_snapshot_id=_allocate_target_snapshot(
-                ctx, document_id, new_run_id,
-            ),
-        )
-        store.upsert(ctx, new_run)
-        if progress_reporter is not None:
-            progress_reporter.report_run_created(
-                ctx, run_id=new_run_id, document_id=document_id,
-                actor=actor,
-            )
-        body = IngestRequest(
-            compiler_kind=_resolve_compiler_kind(None),
-            enricher_kind=_resolve_optional_processor_kind(
-                None,
-                (processing_capabilities.enricher_kinds
-                 if processing_capabilities else frozenset()),
-                "enricherKind",
-            ),
-            graph_builder_kind=_resolve_optional_processor_kind(
-                None,
-                (processing_capabilities.graph_builder_kinds
-                 if processing_capabilities else frozenset()),
-                "graphBuilderKind",
-            ),
-            indexer_kind=_resolve_optional_processor_kind(
-                None,
-                (processing_capabilities.indexer_kinds
-                 if processing_capabilities else frozenset()),
-                "indexerKind",
-            ),
-            actor=actor,
-            correlation_id=new_run_id,
-            reindex_of=run_id,
-            target_snapshot_id=new_run.target_snapshot_id,
-        )
-        workflow_id = await starter(ctx, document_id, body)
-        new_run.workflow_id = workflow_id
-        new_run.updated_at = datetime.now(timezone.utc)
-        store.upsert(ctx, new_run)
-        return envelope(
-            {
-                "documentId": document_id,
-                "refreshRunId": new_run_id,
-                "parentRunId": run_id,
-                "workflowId": workflow_id,
-                "runType": "refresh_enrich",
-                "reusedCompileFromRunId": run_id,
-            },
-            _req_id(request),
         )
 
     # ---- Document-centric read API (Phase 6) ----------------------

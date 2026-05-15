@@ -127,6 +127,14 @@ class IngestionValidationService:
         # manual-query endpoint.
         imported_test_case_store: ImportedTestCaseStore | None = None,
         imported_test_case_executor: ImportedTestCaseExecutor | None = None,
+        # Optional query-expansion plumbing. The lookup returns the
+        # active ``DomainPack`` for a given ``domain_id``; when wired
+        # AND ``J1_QUERY_EXPANSION_ENABLED=true``, the service computes
+        # alias-driven expansions per query and stamps them on the
+        # memory view before handing it to the orchestrator. ``None``
+        # means "no domain-aware expansion in this deployment" — the
+        # orchestrator falls back to the original query only.
+        domain_pack_lookup: Any | None = None,
     ) -> None:
         self._run_store = run_store
         self._artifacts = artifact_registry
@@ -140,6 +148,7 @@ class IngestionValidationService:
         self._validation_candidate_top_k = validation_candidate_top_k
         self._imported_store = imported_test_case_store
         self._imported_executor = imported_test_case_executor
+        self._domain_pack_lookup = domain_pack_lookup
         # Memory projection — composed lazily so partial wirings
         # (legacy / test) without a source registry still construct.
         # Used as a pre-flight queryability gate on the project /
@@ -632,6 +641,17 @@ class IngestionValidationService:
             ctx=ctx, engine_scope=engine_scope, request=request,
             document_id_override=document_id_override,
         )
+        # Build the memory view the orchestrator's augmentation
+        # stage reads. Stamped with alias-driven expansion variants
+        # when the deployment opted into ``J1_QUERY_EXPANSION_ENABLED``
+        # AND a domain-pack lookup is wired. Returns ``None`` for
+        # scope variants the resolver doesn't model (explicit-pair
+        # scopes); the orchestrator gracefully falls through in
+        # that case.
+        memory_view = self._memory_view_with_expansions(
+            ctx=ctx, engine_scope=engine_scope, request=request,
+            document_id_override=document_id_override,
+        )
         # When the caller passed an explicit-pair scope
         # (``snapshot_explicit``, ``run``, or ``document_run``) we
         # resolve the ``(document_id, snapshot_id)`` pair set HERE,
@@ -658,6 +678,7 @@ class IngestionValidationService:
             ),
             eligible_snapshot_ids=eligible_snapshot_ids,
             eligible_snapshot_pairs=eligible_pairs,
+            memory_view=memory_view,
         ))
 
         retrieved_chunks = _retrieved_chunks_from_trace(result.trace)
@@ -983,6 +1004,96 @@ class IngestionValidationService:
             return
         if not view.queryable:
             raise MemoryNotQueryableError(view)
+
+    def _memory_view_with_expansions(
+        self,
+        *,
+        ctx: ProjectContext,
+        engine_scope: "QueryScope",
+        request: "ManualTestQueryRequest",
+        document_id_override: str | None,
+    ) -> "object | None":
+        """Build the ``DocumentMemoryView`` the orchestrator will read.
+
+        When the deployment opted into
+        ``J1_QUERY_EXPANSION_ENABLED=true`` AND a ``domain_pack_lookup``
+        is wired, this method computes alias-driven expansion variants
+        for the current query and stamps them onto a copy of the view
+        via ``dataclasses.replace``. The orchestrator's augmentation
+        stage prefers ``memory_view.expansions`` over its own provider-
+        derived path — this is the production wire.
+
+        Returns ``None`` when:
+
+          * No source registry is wired (the resolver doesn't exist).
+          * The scope is explicit-pair (snapshot_explicit / run /
+            document_run); these are operator-supplied identities and
+            the orchestrator already handles them without a view.
+          * ``WorkspaceScope`` (project_active): we currently don't
+            attach a single document's pack at the project level —
+            the active document's pack matters per-document only.
+
+        Errors anywhere in the stamping path degrade gracefully to
+        "no expansions" — augmentation must never regress the answer
+        path."""
+        if self._memory_resolver is None:
+            return None
+        # Only active document scope carries a meaningful pack.
+        if not isinstance(engine_scope, ActiveScope):
+            return None
+        doc_id = engine_scope.document_id or document_id_override
+        if not doc_id:
+            return None
+        try:
+            view = self._memory_resolver.resolve_document_active_memory(
+                ctx, doc_id,
+            )
+        except Exception:  # noqa: BLE001 — augmentation never fails the call
+            return None
+        # Compute expansions when both gates are open. The env flag
+        # gates the deployment-wide opt-in; the domain pack lookup
+        # is the wiring that supplies pack-shipped aliases. Either
+        # off → return the bare view (orchestrator falls back to
+        # "no broadening").
+        from j1.query.orchestrator import is_query_expansion_enabled
+        if not is_query_expansion_enabled():
+            return view
+        if self._domain_pack_lookup is None:
+            return view
+        try:
+            pack = self._domain_pack_lookup(view.domain_id)
+        except Exception:  # noqa: BLE001
+            return view
+        if pack is None:
+            return view
+        try:
+            from dataclasses import replace as _replace
+            from j1.memory.augmentation import (
+                DomainPackAugmentationProvider,
+                compute_query_expansion,
+            )
+            provider = DomainPackAugmentationProvider(pack=pack)
+            hints = provider.hints_for(view, request.question)
+            expansions = compute_query_expansion(
+                request.question, hints,
+            )
+            # Strip the original question + empty / whitespace
+            # terms + duplicates. The orchestrator does another
+            # pass via ``_expansions_from_memory_view``, but we
+            # keep the view tight on the way out.
+            seen: dict[str, None] = {}
+            for term in expansions:
+                if not isinstance(term, str):
+                    continue
+                cleaned = term.strip()
+                if not cleaned or cleaned == request.question:
+                    continue
+                if cleaned in seen:
+                    continue
+                seen[cleaned] = None
+            return _replace(view, expansions=tuple(seen.keys()))
+        except Exception:  # noqa: BLE001
+            return view
 
     def _run_native_query(
         self,

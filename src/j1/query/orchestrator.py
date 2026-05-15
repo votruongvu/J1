@@ -81,24 +81,225 @@ def _collect_snapshot_ids(
     return tuple(sorted(seen))
 
 
-# Phase-4 retrieval-broadening gate. Default OFF — the augmentation
-# provider's hints are captured into the trace as diagnostics, but
-# the retrieval routes do NOT see the expanded terms. Flip to true
-# in a deployment that wants to A/B the broadening; even then,
-# retrieval-side consumption is a future patch.
-ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL = (
+# Retrieval-broadening gate.
+#
+# When ON, the orchestrator runs retrieval against ``original_query
+# + alias-driven variants`` and deduplicates the results across
+# variants. When OFF (default), the orchestrator still captures the
+# provider's hints into the trace as diagnostics, but retrieval sees
+# only the original query — the answer path is byte-for-byte
+# identical to the pre-augmentation pipeline.
+#
+# The legacy variable name
+# ``J1_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL`` is accepted as a
+# fallback for one release so deployments mid-rollout don't break.
+ENV_QUERY_EXPANSION_ENABLED = "J1_QUERY_EXPANSION_ENABLED"
+_LEGACY_ENV_APPLIED_TO_RETRIEVAL = (
     "J1_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL"
 )
 
 
-def _augmentation_applied_to_retrieval(
+def _read_truthy(source, name: str) -> bool | None:
+    raw = source.get(name)
+    if raw is None:
+        return None
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_query_expansion_enabled(
     env: dict[str, str] | None = None,
 ) -> bool:
+    """Read the broadening gate.
+
+    Default ``false``. The canonical env name is
+    ``J1_QUERY_EXPANSION_ENABLED``; the legacy
+    ``J1_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL`` is honoured as a
+    one-release fallback so a mid-rollout deployment doesn't break
+    when the new name lands."""
     source = env if env is not None else os.environ
-    raw = source.get(ENV_QUERY_AUGMENTATION_APPLIED_TO_RETRIEVAL)
-    if raw is None:
-        return False
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    canonical = _read_truthy(source, ENV_QUERY_EXPANSION_ENABLED)
+    if canonical is not None:
+        return canonical
+    legacy = _read_truthy(source, _LEGACY_ENV_APPLIED_TO_RETRIEVAL)
+    if legacy is not None:
+        return legacy
+    return False
+
+
+# Cap on variant jobs we spawn per original retrieval job. Bounds
+# the retrieval blowup if a domain pack ships a long alias list.
+# Aligned with ``MAX_QUERY_EXPANSION_TERMS`` so the two limits move
+# together when tuned.
+_MAX_EXPANSION_VARIANTS_PER_JOB = 4
+
+
+_QUERY_VARIANT_EXTRA_KEY = "query_variant"
+
+
+def _expansions_from_memory_view(view) -> tuple[str, ...]:
+    """Read pre-computed expansions off an arbitrary memory view.
+
+    ``DocumentMemoryView`` exposes ``expansions: tuple[str, ...]``;
+    other variants (``ProjectActiveMemoryView`` / ``RunMemoryView``)
+    don't carry the field today. We use ``getattr`` with a default
+    so a view that doesn't expose it returns ``()`` — there's no
+    isinstance dance and no import cycle.
+
+    Whitespace-only / empty strings are dropped; duplicates are
+    deduplicated. The orchestrator's variant-cloning helper
+    (``_build_expansion_jobs``) caps the count downstream.
+    """
+    if view is None:
+        return ()
+    raw = getattr(view, "expansions", None)
+    if not raw:
+        return ()
+    seen: dict[str, None] = {}
+    for term in raw:
+        if not isinstance(term, str):
+            continue
+        cleaned = term.strip()
+        if not cleaned:
+            continue
+        if cleaned in seen:
+            continue
+        seen[cleaned] = None
+    return tuple(seen.keys())
+
+
+def _build_expansion_jobs(
+    original_jobs: tuple,
+    *,
+    variants: tuple[str, ...],
+    original_query: str,
+) -> tuple:
+    """Build the retrieval job set the runner sees.
+
+    Always includes ``original_jobs`` unchanged (the originals carry
+    the query the planner picked — usually the user's question, but
+    sometimes an anchor-stamped variant the planner built itself).
+    When ``variants`` is non-empty AND the deployment opted into
+    expansion, we clone each original job once per variant with the
+    variant text swapped into ``RetrievalJob.query`` and a label
+    stamp.
+
+    Cloning preserves every other field (route, max_results,
+    filters) so scope filtering / per-route eligibility is byte-
+    for-byte identical. The variant label
+    (``"<original>::variant:<text>"``) is what the trace surfaces
+    in ``routes_executed`` so operators can see which job hit which
+    variant.
+    """
+    from dataclasses import replace as _replace
+    out = list(original_jobs)
+    if not variants:
+        return tuple(out)
+    capped_variants = variants[:_MAX_EXPANSION_VARIANTS_PER_JOB]
+    for job in original_jobs:
+        # Only clone the job whose query equals the user's question —
+        # planner-built anchor jobs already encode specific phrasing
+        # the planner wants; broadening THOSE with random alias forms
+        # is a noisy-evidence hazard. The planner's discretion wins.
+        if job.query != original_query:
+            continue
+        for variant in capped_variants:
+            label = (
+                f"{job.label or 'primary'}::variant:{variant[:32]}"
+            )
+            out.append(_replace(job, query=variant, label=label))
+    return tuple(out)
+
+
+def _augmentation_retrieval_stats(
+    records: tuple, *, original_query: str,
+) -> tuple[int, int, dict[str, int]]:
+    """Compute the diagnostic counts the trace surfaces under
+    ``augmentation.retrieval_counts`` + ``final_evidence_distribution``.
+
+    Returns ``(original_count, expanded_count, distribution)``.
+
+    ``distribution`` keys mirror the spec's example shape:
+    ``original_only`` / ``expanded_only`` / ``both``. Computed
+    BEFORE deduplication so callers see how many raw rows each
+    variant contributed; the deduplicator then collapses them. The
+    distribution counts unique ``(route, artifact_id, chunk_id)``
+    triples across all variants of each provenance class.
+    """
+    original_hits: set[tuple] = set()
+    expanded_hits: set[tuple] = set()
+    for rec in records:
+        is_original = rec.query == original_query
+        for cand in rec.candidates:
+            key = (cand.route.value, cand.artifact_id, cand.chunk_id)
+            (original_hits if is_original else expanded_hits).add(key)
+    overlap = original_hits & expanded_hits
+    return (
+        sum(len(rec.candidates)
+            for rec in records if rec.query == original_query),
+        sum(len(rec.candidates)
+            for rec in records if rec.query != original_query),
+        {
+            "original_only": len(original_hits - overlap),
+            "expanded_only": len(expanded_hits - overlap),
+            "both": len(overlap),
+        },
+    )
+
+
+def _deduplicate_candidates(
+    candidates: tuple,
+) -> tuple:
+    """Collapse hits that point at the same chunk across variants.
+
+    Dedup key: ``(route, artifact_id, chunk_id)``. The kept record
+    has the highest score; ``extra["query_variants"]`` is unioned
+    so the trace shows every variant that contributed.
+
+    Returns the dedup'd tuple in stable order (first-seen wins for
+    tie-broken positions). Candidates without a ``chunk_id``
+    deduplicate at the artifact level — RAGAnything occasionally
+    returns artifact-scoped hits and we don't want them collapsed
+    incorrectly with chunk-scoped ones from BM25, so the
+    ``chunk_id`` field is part of the key (None / specific value
+    are distinct)."""
+    from dataclasses import replace as _replace
+    kept: dict[tuple, object] = {}
+    order: list[tuple] = []
+    for cand in candidates:
+        key = (cand.route.value, cand.artifact_id, cand.chunk_id)
+        existing = kept.get(key)
+        if existing is None:
+            new_extra = dict(cand.extra or {})
+            variants: list[str] = []
+            existing_variants = new_extra.get(_QUERY_VARIANT_EXTRA_KEY)
+            if isinstance(existing_variants, list):
+                variants.extend(str(v) for v in existing_variants)
+            elif isinstance(existing_variants, str):
+                variants.append(existing_variants)
+            new_extra[_QUERY_VARIANT_EXTRA_KEY] = (
+                list(dict.fromkeys(variants))
+            )
+            kept[key] = _replace(cand, extra=new_extra)
+            order.append(key)
+            continue
+        # Merge: keep the higher-scoring candidate's identity,
+        # union the variant lists.
+        prior_score = getattr(existing, "score", 0.0) or 0.0
+        new_score = getattr(cand, "score", 0.0) or 0.0
+        winner = cand if new_score > prior_score else existing
+        prior_variants = (
+            dict(existing.extra or {}).get(_QUERY_VARIANT_EXTRA_KEY) or []
+        )
+        new_variants = (
+            dict(cand.extra or {}).get(_QUERY_VARIANT_EXTRA_KEY) or []
+        )
+        union = list(dict.fromkeys(
+            list(prior_variants) + list(new_variants)
+        ))
+        merged_extra = dict(getattr(winner, "extra", {}) or {})
+        merged_extra[_QUERY_VARIANT_EXTRA_KEY] = union
+        kept[key] = _replace(winner, extra=merged_extra)
+    return tuple(kept[key] for key in order)
 
 
 def _any_global_workspace(records: tuple) -> bool:
@@ -241,49 +442,75 @@ class SmartQueryOrchestrator:
         )
         trace = QueryTrace.empty_with_plan(request.question, plan)
 
-        # 1.5. Domain query augmentation (Phase-4, diagnostics-only).
-        # The provider is optional — wirings without it (legacy /
-        # validation diagnostics) skip this stage entirely. When
-        # wired, we capture the hints + a capped expansion list into
-        # the trace so the FE / manual-test view can surface them.
-        # Retrieval routes do NOT consume the expansions yet; the
-        # ``applied_to_retrieval`` flag stays ``False`` unless the
-        # deployment opts in via the env flag (the path for that
-        # opt-in is a follow-up PR).
-        if self._augmentation_provider is not None and request.memory_view is not None:
+        # 1.5. Domain query augmentation.
+        #
+        # Two sources of expansion variants, in precedence order:
+        #
+        #   A. ``request.memory_view.expansions`` — pre-computed by
+        #      the caller (typically the validation service, which
+        #      has access to the active domain pack + query). When
+        #      populated, the orchestrator uses these verbatim. This
+        #      is the production path the spec describes.
+        #   B. An injected ``augmentation_provider`` — derives
+        #      expansions from the memory view + query on the fly.
+        #      Used by tests + future external callers that want
+        #      the orchestrator to own the derivation. Skipped when
+        #      (A) supplied terms.
+        #
+        # The diagnostics stamp the same trace fields either way so
+        # downstream consumers don't need to branch on the source.
+        # Augmentation is advisory — a misconfigured provider / bad
+        # expansion list never regresses the answer path.
+        augmentation_expansions: tuple[str, ...] = ()
+        applied_to_retrieval = False
+        aug_source = ""
+        aug_terms: tuple[str, ...] = ()
+        aug_aliases: tuple[tuple[str, str], ...] = ()
+        pre_computed = _expansions_from_memory_view(request.memory_view)
+        if pre_computed:
+            # Source A — caller-supplied expansions.
+            augmentation_expansions = tuple(
+                t for t in pre_computed if t != request.question
+            )
+            applied_to_retrieval = (
+                bool(augmentation_expansions)
+                and is_query_expansion_enabled()
+            )
+            aug_source = "memory_view"
+        elif (
+            self._augmentation_provider is not None
+            and request.memory_view is not None
+        ):
+            # Source B — provider-derived expansions.
             try:
                 hints = self._augmentation_provider.hints_for(
                     request.memory_view, request.question,
                 )
-                # Local import: avoids a hard dependency on the
-                # ``j1.memory`` package at orchestrator import time
-                # (legacy tests construct the orchestrator without
-                # the memory module wired).
                 from j1.memory.augmentation import compute_query_expansion
                 expansions = compute_query_expansion(
                     request.question, hints,
                 )
-                # ``compute_query_expansion`` prepends the original
-                # query at index 0 — strip it from the diagnostics
-                # field so callers see only the BROADENING terms.
                 augmentation_expansions = tuple(
                     t for t in expansions if t != request.question
                 )
-                trace = trace.with_augmentation(
-                    source=hints.source,
-                    terms=hints.domain_terms,
-                    aliases=hints.aliases,
-                    expansions=augmentation_expansions,
-                    applied_to_retrieval=(
-                        bool(augmentation_expansions)
-                        and _augmentation_applied_to_retrieval()
-                    ),
+                applied_to_retrieval = (
+                    bool(augmentation_expansions)
+                    and is_query_expansion_enabled()
                 )
-            except Exception:  # noqa: BLE001 — diagnostics never fail the call
-                # Augmentation is advisory. A misconfigured provider
-                # must not regress the answer path; the trace just
-                # stays at the empty default.
-                pass
+                aug_source = hints.source
+                aug_terms = hints.domain_terms
+                aug_aliases = hints.aliases
+            except Exception:  # noqa: BLE001 — augmentation never fails the call
+                augmentation_expansions = ()
+                applied_to_retrieval = False
+        if aug_source:
+            trace = trace.with_augmentation(
+                source=aug_source,
+                terms=aug_terms,
+                aliases=aug_aliases,
+                expansions=augmentation_expansions,
+                applied_to_retrieval=applied_to_retrieval,
+            )
 
         # 2. Retrieval routes.
         route_ctx = RouteContext(
@@ -295,10 +522,47 @@ class SmartQueryOrchestrator:
             document_id=request.document_id,
             run_id=request.run_id,
         )
-        records = self._routes.run_all(
-            plan.retrieval_jobs, route_ctx,
+        # Build the job set. When expansion is OFF the job set is
+        # identical to ``plan.retrieval_jobs`` — pre-expansion
+        # behaviour is byte-for-byte preserved.
+        jobs_to_run = _build_expansion_jobs(
+            plan.retrieval_jobs,
+            variants=augmentation_expansions if applied_to_retrieval else (),
+            original_query=request.question,
         )
+        records = self._routes.run_all(jobs_to_run, route_ctx)
         trace = trace.with_routes(records)
+        # Provenance + dedup. Each candidate carries its source
+        # variant in ``extra["query_variant"]``; the deduper unions
+        # variants across hits of the same ``(route, artifact_id,
+        # chunk_id)`` triple so the trace shows which variants
+        # contributed to each candidate.
+        original_count, expanded_count, distribution = (
+            _augmentation_retrieval_stats(
+                records, original_query=request.question,
+            )
+        )
+        deduped = _deduplicate_candidates(trace.all_candidates)
+        # Replace ``all_candidates`` on the trace with the dedup'd
+        # set so the evidence builder sees unique candidates. The
+        # per-route records (``routes_executed``) keep the raw hits
+        # for the manual-test diagnostic surface — operators can
+        # still inspect which variant produced each raw row.
+        trace = trace.with_deduped_candidates(deduped)
+        # Retrieval-side stats are populated ONLY when expansion was
+        # actually applied. Stamping them when ``applied_to_retrieval``
+        # is False would falsely imply variants were dispatched —
+        # operators reading the trace need an honest "expansion did
+        # not run" signal (zero counts) versus "expansion ran and
+        # found nothing" (zero distribution but variant route calls
+        # in ``routes_executed``).
+        if applied_to_retrieval:
+            trace = trace.with_augmentation_retrieval_stats(
+                original_count=original_count,
+                expanded_count=expanded_count,
+                deduplicated_total=len(deduped),
+                distribution=distribution,
+            )
         all_cands = trace.all_candidates
         # Stamp snapshot-scope diagnostics so the trace proves BM25 +
         # RAGAnything used the same eligibility boundary. Empty

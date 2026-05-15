@@ -202,6 +202,16 @@ class DocumentMemoryView(UnifiedMemoryView):
     unsupported_controls: tuple[str, ...] = ()
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Query-expansion variants the orchestrator should run retrieval
+    # against in addition to the original query when
+    # ``J1_QUERY_EXPANSION_ENABLED=true``. Empty by default —
+    # ``UnifiedMemoryResolver`` does not know the query, so callers
+    # (the validation service for active scopes) compute expansions
+    # per request via the augmentation provider and stamp them
+    # onto a copy of the view before handing it to the orchestrator.
+    # Producers MUST already have stripped the original query +
+    # deduplicated; the orchestrator consumes them verbatim.
+    expansions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

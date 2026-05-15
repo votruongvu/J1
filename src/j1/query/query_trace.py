@@ -97,17 +97,25 @@ class QueryTrace:
     queried_raganything_snapshot_ids: tuple[str, ...] = ()
     bm25_allowed_snapshot_ids: tuple[str, ...] = ()
     used_global_workspace: bool = False
-    # Phase-4 augmentation diagnostics — populated when a
+    # Augmentation diagnostics — populated when a
     # ``DomainQueryAugmentationProvider`` was wired into the
-    # orchestrator. The fields are pure diagnostics today; retrieval
-    # behaviour is unchanged ("diagnostics-only" mode). When the
-    # provider is absent or returns ``source="disabled"``, every
-    # augmentation field below stays empty / False.
+    # orchestrator. When the provider is absent or returns
+    # ``source="disabled"``, every augmentation field below stays
+    # empty / False / zero.
     augmentation_source: str = ""  # "domain_pack" / "disabled" / ""
     augmentation_terms: tuple[str, ...] = ()
     augmentation_aliases: tuple[tuple[str, str], ...] = ()
     augmentation_expansions: tuple[str, ...] = ()
+    # ``applied_to_retrieval`` flips True when
+    # ``J1_QUERY_EXPANSION_ENABLED=true`` AND at least one expansion
+    # variant was generated. When True the retrieval counts below
+    # are populated; when False they stay at 0.
     augmentation_applied_to_retrieval: bool = False
+    augmentation_retrieval_counts: tuple[int, int, int] = (0, 0, 0)
+    # Distribution of dedup-key hits: ``(original_only, expanded_only,
+    # both)``. Computed BEFORE dedup but using dedup-keyed identity
+    # so operators see how each provenance class contributed.
+    augmentation_distribution: tuple[int, int, int] = (0, 0, 0)
 
     @classmethod
     def empty_with_plan(cls, question: str, plan: QueryPlan) -> "QueryTrace":
@@ -207,11 +215,12 @@ class QueryTrace:
         expansions: tuple[str, ...] = (),
         applied_to_retrieval: bool = False,
     ) -> "QueryTrace":
-        """Stamp Phase-4 augmentation diagnostics. Pure data —
-        ``applied_to_retrieval`` is the truthful flag the trace
-        surface reports to the FE; in diagnostics-only mode it stays
-        ``False`` even when ``terms`` / ``expansions`` are populated,
-        because the route layer did NOT consume them."""
+        """Stamp augmentation diagnostics on the trace. Pure data —
+        ``applied_to_retrieval`` is the truthful "did retrieval get
+        broader inputs?" flag. When False, the broadening fields
+        below (``augmentation_retrieval_counts`` /
+        ``augmentation_distribution``) stay at their zero
+        defaults."""
         return _replace(
             self,
             augmentation_source=source,
@@ -220,6 +229,42 @@ class QueryTrace:
             augmentation_expansions=expansions,
             augmentation_applied_to_retrieval=applied_to_retrieval,
         )
+
+    def with_augmentation_retrieval_stats(
+        self,
+        *,
+        original_count: int,
+        expanded_count: int,
+        deduplicated_total: int,
+        distribution: dict[str, int],
+    ) -> "QueryTrace":
+        """Stamp the retrieval-side proof that expansion was actually
+        consumed: how many raw candidates came from the original
+        query, how many from variants, what the dedup'd total is,
+        and how the dedup'd identities split across provenance
+        classes (``original_only`` / ``expanded_only`` / ``both``).
+        Diagnostic-only — does not affect retrieval / synthesis."""
+        return _replace(
+            self,
+            augmentation_retrieval_counts=(
+                original_count,
+                expanded_count,
+                deduplicated_total,
+            ),
+            augmentation_distribution=(
+                int(distribution.get("original_only", 0)),
+                int(distribution.get("expanded_only", 0)),
+                int(distribution.get("both", 0)),
+            ),
+        )
+
+    def with_deduped_candidates(
+        self, candidates: tuple,
+    ) -> "QueryTrace":
+        """Replace ``all_candidates`` with the post-dedup set.
+        ``routes_executed`` is intentionally untouched so the per-
+        route raw rows stay visible in the manual-test view."""
+        return _replace(self, all_candidates=tuple(candidates))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-friendly shape rendered by the manual-test endpoint
@@ -263,6 +308,18 @@ class QueryTrace:
                 "applied_to_retrieval": (
                     self.augmentation_applied_to_retrieval
                 ),
+                "retrieval_counts": {
+                    "original": self.augmentation_retrieval_counts[0],
+                    "expanded": self.augmentation_retrieval_counts[1],
+                    "deduplicated_total": (
+                        self.augmentation_retrieval_counts[2]
+                    ),
+                },
+                "final_evidence_distribution": {
+                    "original_only": self.augmentation_distribution[0],
+                    "expanded_only": self.augmentation_distribution[1],
+                    "both": self.augmentation_distribution[2],
+                },
             },
         }
 
