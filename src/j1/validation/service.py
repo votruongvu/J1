@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 from j1.artifacts.registry import ArtifactRegistry
 from j1.audit.recorder import AuditRecorder
 from j1.ingestion_review.exceptions import ReviewNotFound
+from j1.memory import (
+    MemoryNotQueryableError,
+    QueryableStatus,
+    UnifiedMemoryResolver,
+)
 from j1.projects.context import ProjectContext
 from j1.query.scope import ActiveScope, QueryScope, RunScope, WorkspaceScope
 from j1.runs.models import IngestionRun, RunStatus
@@ -135,6 +140,19 @@ class IngestionValidationService:
         self._validation_candidate_top_k = validation_candidate_top_k
         self._imported_store = imported_test_case_store
         self._imported_executor = imported_test_case_executor
+        # Memory projection — composed lazily so partial wirings
+        # (legacy / test) without a source registry still construct.
+        # Used as a pre-flight queryability gate on the project /
+        # document scopes; run-scope queries bypass it (the eligibility
+        # resolver already handles run-keyed identity).
+        self._memory_resolver: UnifiedMemoryResolver | None = (
+            UnifiedMemoryResolver(
+                registry=source_registry,
+                run_store=run_store,
+                artifact_registry=artifact_registry,
+                snapshot_store=snapshot_store,
+            ) if source_registry is not None else None
+        )
 
     # ---- Manual Test Query -----------------------------------------
 
@@ -581,6 +599,21 @@ class IngestionValidationService:
         engine_scope, eligible_snapshot_ids = self._resolve_query_scope(
             ctx=ctx, run=run, request=request,
         )
+        # Unified Memory pre-flight gate.
+        #
+        # Resolves the logical memory view for project / document
+        # active scopes BEFORE handing the request to the orchestrator.
+        # When the view is not queryable we raise a structured
+        # ``MemoryNotQueryableError`` instead of letting the
+        # orchestrator return an empty-evidence answer the FE can't
+        # interpret. Run-explicit and snapshot-explicit scopes bypass
+        # this gate — the eligibility resolver already handles run-
+        # keyed identity, and snapshot-explicit is an operator
+        # allowlist by definition.
+        self._enforce_memory_queryability(
+            ctx=ctx, engine_scope=engine_scope, request=request,
+            document_id_override=document_id_override,
+        )
         # When the caller passed an explicit-pair scope
         # (``snapshot_explicit``, ``run``, or ``document_run``) we
         # resolve the ``(document_id, snapshot_id)`` pair set HERE,
@@ -881,6 +914,57 @@ class IngestionValidationService:
         # ``validation_scope="run"`` — only the diagnostic escape
         # hatch reaches this branch (handler refuses UI traffic).
         return RunScope(run_id=run.run_id), None
+
+    def _enforce_memory_queryability(
+        self,
+        *,
+        ctx: ProjectContext,
+        engine_scope: "QueryScope",
+        request: "ManualTestQueryRequest",
+        document_id_override: str | None,
+    ) -> None:
+        """Raise ``MemoryNotQueryableError`` when the request's
+        logical scope is not queryable.
+
+        The orchestrator + adapters can already refuse on a per-route
+        basis (e.g. ``no_eligible_snapshot``), but the pre-flight
+        gate gives the FE a single, explainable failure shape with
+        the queryability vocabulary the Unified Memory Contract pins.
+
+        Bypassed for:
+
+          * ``snapshot_explicit`` scopes — operator-supplied
+            allowlist; queryability is the caller's claim.
+          * ``run`` / ``document_run`` scopes — explicit run identity;
+            the resolver's ``run_explicit`` path is too strict for
+            these (it expects compile artifacts to still exist, but
+            run-scoped queries are diagnostics where that may not
+            hold).
+          * Wirings without a source registry — the resolver cannot
+            be constructed; fall back to the legacy gate.
+        """
+        if self._memory_resolver is None:
+            return
+        scope_dto = getattr(request, "scope", None)
+        if scope_dto is not None and scope_dto.type in (
+            "snapshot_explicit", "run", "document_run",
+        ):
+            return
+        if isinstance(engine_scope, RunScope):
+            return
+        if isinstance(engine_scope, ActiveScope):
+            doc_id = engine_scope.document_id or document_id_override
+            if not doc_id:
+                return
+            view = self._memory_resolver.resolve_document_active_memory(
+                ctx, doc_id,
+            )
+        elif isinstance(engine_scope, WorkspaceScope):
+            view = self._memory_resolver.resolve_project_active_memory(ctx)
+        else:
+            return
+        if not view.queryable:
+            raise MemoryNotQueryableError(view)
 
     def _run_native_query(
         self,

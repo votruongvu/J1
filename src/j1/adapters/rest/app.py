@@ -1141,6 +1141,29 @@ def create_rest_api(
             request_id=_req_id(request),
         )
 
+    from j1.memory import MemoryNotQueryableError as _MemoryNotQueryableError
+
+    @app.exception_handler(_MemoryNotQueryableError)
+    async def _memory_not_queryable(
+        request, exc: _MemoryNotQueryableError,
+    ) -> JSONResponse:
+        # The Unified Memory Resolver refused a project / document
+        # active query because the scope isn't queryable yet
+        # (compile not finished, document detached, artifacts missing,
+        # etc.). The FE renders the structured payload directly —
+        # ``queryableStatus`` drives the icon, ``queryableReason``
+        # is the operator-facing copy.
+        return error_response(
+            status_code=409,
+            code="MEMORY_NOT_QUERYABLE",
+            message=str(exc),
+            request_id=_req_id(request),
+            details={
+                "queryableStatus": exc.queryable_status.value,
+                "queryableReason": exc.queryable_reason,
+            },
+        )
+
     @app.exception_handler(PathTraversalError)
     async def _path_traversal(request, exc) -> JSONResponse:
         # Defense-in-depth surface for the artifact-content endpoint:
