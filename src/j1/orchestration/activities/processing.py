@@ -1089,17 +1089,47 @@ class ProcessingActivities:
         every exception so a misbehaving extractor cannot fail the
         enrichment activity.
         """
+        from j1.observability.ingest_trace import (
+            TraceContext, trace_event as _trace_event,
+        )
+        trace_ctx = TraceContext(
+            tenant_id=getattr(ctx, "tenant_id", None),
+            project_id=getattr(ctx, "project_id", None),
+            document_id=document_id,
+            run_id=run_id,
+        )
+
+        def _skip(reason: str) -> None:
+            _trace_event(
+                trace_event="ingest.alias_producer.skipped",
+                stage="alias_producer",
+                status="skipped",
+                context=trace_ctx,
+                metadata={"reason": reason},
+            )
+
         if self._run_store is None:
+            _skip("run_store_unwired")
             return None
         try:
             run = self._run_store.get(ctx, run_id)
         except Exception:  # noqa: BLE001 — best-effort
+            _skip("run_lookup_failed")
             return None
         if run is None:
+            _skip("run_not_found")
             return None
         snapshot_id = getattr(run, "target_snapshot_id", None)
         if not snapshot_id:
+            _skip("no_target_snapshot")
             return None
+        trace_ctx = TraceContext(
+            tenant_id=getattr(ctx, "tenant_id", None),
+            project_id=getattr(ctx, "project_id", None),
+            document_id=document_id,
+            run_id=run_id,
+            target_snapshot_id=snapshot_id,
+        )
         chunks = _read_chunks_for_alias_extraction(
             artifacts=self._artifacts,
             ctx=ctx,
@@ -1107,10 +1137,24 @@ class ProcessingActivities:
             snapshot_id=snapshot_id,
         )
         if not chunks:
+            _trace_event(
+                trace_event="ingest.alias_producer.skipped",
+                stage="alias_producer",
+                status="skipped",
+                context=trace_ctx,
+                metadata={"reason": "no_chunks", "chunk_count": 0},
+            )
             return None
         from j1.processing.enrichment_aliases import (
             extract_aliases_from_chunks,
             register_aliases_artifact,
+        )
+        _trace_event(
+            trace_event="ingest.alias_producer.started",
+            stage="alias_producer",
+            status="started",
+            context=trace_ctx,
+            metadata={"chunk_count": len(chunks)},
         )
         extracted = extract_aliases_from_chunks(
             chunks,
@@ -1119,8 +1163,19 @@ class ProcessingActivities:
             document_id=document_id,
         )
         if not extracted:
+            _trace_event(
+                trace_event="ingest.alias_producer.completed",
+                stage="alias_producer",
+                status="completed",
+                context=trace_ctx,
+                metadata={
+                    "chunk_count": len(chunks),
+                    "alias_count": 0,
+                    "persisted": False,
+                },
+            )
             return None
-        return register_aliases_artifact(
+        artifact_id = register_aliases_artifact(
             ctx=ctx,
             artifact_registry=self._artifacts,
             run_id=run_id,
@@ -1129,6 +1184,19 @@ class ProcessingActivities:
             aliases=extracted,
             actor=actor,
         )
+        _trace_event(
+            trace_event="ingest.alias_producer.completed",
+            stage="alias_producer",
+            status="completed",
+            context=trace_ctx,
+            metadata={
+                "chunk_count": len(chunks),
+                "alias_count": len(extracted),
+                "persisted": True,
+                "artifact_id": artifact_id,
+            },
+        )
+        return artifact_id
 
     def _cached_artifact_exists(self, ctx, artifact_id: str) -> bool:
         """True iff ``artifact_id`` still resolves in the registry for
