@@ -271,6 +271,73 @@ class DomainEnrichmentPolicy:
 
 
 @dataclass(frozen=True)
+class EntityAlias:
+    """One canonical-name + aliases bundle.
+
+    Phase-4 entity-alias strategy. Sourced from domain packs (static)
+    or from Domain Enrichment artifacts (runtime). The model is
+    deliberately small — entity normalization is metadata-level
+    today; richer resolution (cross-doc merge, graph mutation)
+    waits on stable RAGAnything APIs.
+
+    Field semantics:
+
+    * ``canonical_name`` — operator-readable canonical form.
+    * ``aliases`` — alternate spellings / abbreviations / fully-
+      qualified expansions. Retrieval may expand a query that
+      mentions any one of these to lookups against the union of
+      ``(canonical_name,) + aliases``.
+    * ``entity_type`` — optional broad bucket
+      (``standard``, ``organisation``, ``concept`` etc.). Generic;
+      domain-specific subtypes stay in the pack's own
+      ``entity_hints``.
+    * ``confidence`` — ``0.0..1.0``. Static pack entries default
+      to ``1.0``; enrichment-derived entries may be lower.
+    * ``source`` — provenance tag
+      (``domain_config`` / ``domain_enrichment`` / ``manual_admin``
+      / ``entity_resolution_job``). Surfaces in diagnostics.
+    """
+
+    canonical_name: str
+    aliases: tuple[str, ...] = ()
+    entity_type: str | None = None
+    confidence: float = 1.0
+    source: str = "domain_config"
+
+    def all_forms(self) -> tuple[str, ...]:
+        """Canonical + every alias, deduplicated, preserving order."""
+        seen: dict[str, None] = {self.canonical_name: None}
+        for a in self.aliases:
+            if a and a not in seen:
+                seen[a] = None
+        return tuple(seen.keys())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "canonical_name": self.canonical_name,
+            "aliases": list(self.aliases),
+            "entity_type": self.entity_type,
+            "confidence": self.confidence,
+            "source": self.source,
+        }
+
+
+# Source-tag vocabulary. Kept here so call sites have a single
+# import point and the resolver can validate strings consistently.
+ENTITY_ALIAS_SOURCE_DOMAIN_CONFIG = "domain_config"
+ENTITY_ALIAS_SOURCE_DOMAIN_ENRICHMENT = "domain_enrichment"
+ENTITY_ALIAS_SOURCE_MANUAL_ADMIN = "manual_admin"
+ENTITY_ALIAS_SOURCE_ENTITY_RESOLUTION_JOB = "entity_resolution_job"
+
+ENTITY_ALIAS_SOURCES = frozenset({
+    ENTITY_ALIAS_SOURCE_DOMAIN_CONFIG,
+    ENTITY_ALIAS_SOURCE_DOMAIN_ENRICHMENT,
+    ENTITY_ALIAS_SOURCE_MANUAL_ADMIN,
+    ENTITY_ALIAS_SOURCE_ENTITY_RESOLUTION_JOB,
+})
+
+
+@dataclass(frozen=True)
 class DomainExtractionHints:
     """Per-domain extraction hints the enrichers will consume.
 
@@ -297,6 +364,9 @@ class DomainExtractionHints:
  * `retrieval_hints` — phrasing/lookup tips the indexer can
  encode as additional keys ("query for 'RFI'/'request for
  information' should match both").
+ * `entity_aliases` — canonical/alias pairs the query layer
+ uses for retrieval expansion. Static, pack-shipped; runtime
+ additions come from enrichment artifacts.
 
  All fields default to empty tuples / dicts so a pack that
  doesn't populate a category is a no-op for that enricher."""
@@ -307,6 +377,7 @@ class DomainExtractionHints:
     image_hints: tuple[str, ...] = ()
     terminology_hints: tuple[str, ...] = ()
     retrieval_hints: tuple[str, ...] = ()
+    entity_aliases: tuple[EntityAlias, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -316,6 +387,7 @@ class DomainExtractionHints:
             "image_hints": list(self.image_hints),
             "terminology_hints": list(self.terminology_hints),
             "retrieval_hints": list(self.retrieval_hints),
+            "entity_aliases": [a.to_dict() for a in self.entity_aliases],
         }
 
 

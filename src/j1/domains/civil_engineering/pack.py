@@ -22,6 +22,7 @@ from j1.domains.models import (
     DomainDetectionResult,
     DomainEnrichmentPolicy,
     DomainExtractionHints,
+    EntityAlias,
     DomainPack,
     DomainPlanningOverlay,
     DomainPromptPack,
@@ -134,7 +135,55 @@ def _parse_extraction_hints(raw: Any) -> DomainExtractionHints:
         image_hints=_tuple("image_hints"),
         terminology_hints=_tuple("terminology_hints"),
         retrieval_hints=_tuple("retrieval_hints"),
+        entity_aliases=_parse_entity_aliases(raw.get("entity_aliases")),
     )
+
+
+def _parse_entity_aliases(raw: Any) -> tuple[EntityAlias, ...]:
+    """Build the static entity-alias bundle from the YAML block.
+
+    Each YAML entry is ``{canonical_name, aliases, entity_type?,
+    confidence?}``. ``source`` is always
+    ``domain_config`` for pack-shipped entries (the resolver lets
+    other sources populate at runtime).
+
+    Tolerant: malformed entries are skipped rather than failing the
+    whole pack load — the alias surface is advisory, never
+    load-bearing for correctness."""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    out: list[EntityAlias] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        canonical = str(entry.get("canonical_name") or "").strip()
+        if not canonical:
+            continue
+        raw_aliases = entry.get("aliases") or ()
+        if not isinstance(raw_aliases, (list, tuple)):
+            raw_aliases = ()
+        aliases = tuple(
+            str(a).strip()
+            for a in raw_aliases
+            if str(a).strip() and str(a).strip() != canonical
+        )
+        entity_type = entry.get("entity_type")
+        if entity_type is not None:
+            entity_type = str(entity_type).strip() or None
+        confidence_raw = entry.get("confidence", 1.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 1.0
+        confidence = max(0.0, min(1.0, confidence))
+        out.append(EntityAlias(
+            canonical_name=canonical,
+            aliases=aliases,
+            entity_type=entity_type,
+            confidence=confidence,
+            source="domain_config",
+        ))
+    return tuple(out)
 
 
 def _parse_validation_rules(raw: Any) -> DomainValidationRules:

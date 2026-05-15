@@ -873,6 +873,31 @@ extraction_hints:
     - "Normalize abbreviations on retrieval (RFI / NCR / BOQ / VO)"
     - "Drawing numbers often follow project-prefixed schemes (e.g. ABC-S-001)"
     - "Specifications cite standards (ACI / EN / BS / AASHTO)"
+  # Static entity-alias bundle. Query-side retrieval reads this via
+  # ``DomainPackAugmentationProvider`` and the ``AliasResolver``; the
+  # forms feed retrieval expansion only — the original user query is
+  # always preserved for answer synthesis. Keep canonical names
+  # operator-readable; aliases include abbreviations + fully-
+  # qualified expansions.
+  entity_aliases:
+    - canonical_name: "Request for Information"
+      aliases: ["RFI"]
+      entity_type: "document_type"
+    - canonical_name: "Non-Conformance Report"
+      aliases: ["NCR"]
+      entity_type: "document_type"
+    - canonical_name: "Bill of Quantities"
+      aliases: ["BOQ"]
+      entity_type: "document_type"
+    - canonical_name: "Variation Order"
+      aliases: ["VO"]
+      entity_type: "document_type"
+    - canonical_name: "Extension of Time"
+      aliases: ["EOT"]
+      entity_type: "concept"
+    - canonical_name: "Inspection and Test Plan"
+      aliases: ["ITP"]
+      entity_type: "document_type"
 
 # ---- Validation rules (analyzer + validation enricher) ----
 #
