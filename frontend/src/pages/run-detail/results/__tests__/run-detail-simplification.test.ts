@@ -32,36 +32,40 @@ function _readSrc(rel: string): string {
 }
 
 
-describe("Run Detail Results tabs — simplified four-tab set", () => {
+describe("Run Detail Results tabs — execution-focused five-tab set", () => {
   const src = _readSrc("pages/run-detail/results/index.tsx");
 
-  it("declares only the four execution-focused tab keys", () => {
+  it("declares the five execution-focused tab keys", () => {
     // The union type at the top of the file pins the tab keys —
     // any future addition has to extend it, which makes this a
-    // useful invariant target.
+    // useful invariant target. Compile already produces the base
+    // graph/index, so `graph` (re-framed as "Compile Graph") is
+    // part of the Run Detail set; enrichment/quality/validation
+    // moved to Document Detail's `ActiveKnowledgeResultPanel`.
     const match = src.match(/type ResultsTab =\s*([^;]+);/);
     const captured = match?.[1];
     expect(captured).toBeTruthy();
     const body = String(captured).replace(/\s+/g, " ");
     expect(body).toContain('"overview"');
     expect(body).toContain('"chunks"');
+    expect(body).toContain('"graph"');
     expect(body).toContain('"raw"');
     expect(body).toContain('"manual-trace"');
     // Dropped tab keys must not reappear.
     expect(body).not.toContain('"assets"');
-    expect(body).not.toContain('"graph"');
     expect(body).not.toContain('"quality"');
     expect(body).not.toContain('"validation"');
   });
 
-  it("renders Chunks / Artifacts / Query Trace tab labels", () => {
+  it("renders Chunks / Compile Graph / Artifacts / Query Trace labels", () => {
     expect(src).toMatch(/label:\s*"Chunks"/);
+    expect(src).toMatch(/label:\s*"Compile Graph"/);
     expect(src).toMatch(/label:\s*"Artifacts"/);
     expect(src).toMatch(/label:\s*"Query Trace"/);
   });
 
-  it("does NOT render Enrichment / Knowledge Graph / Quality / Validation labels", () => {
-    // Note: "Validation" appears as a tab in the SISTER component
+  it("does NOT render the old 'Knowledge Graph' / 'Enrichment' / 'Quality' / 'Validation' labels", () => {
+    // "Validation" stays as a tab in the SISTER component
     // `ActiveKnowledgeResultPanel`, but inside Run Detail's
     // results/index.tsx the four dropped labels must be gone.
     expect(src).not.toMatch(/label:\s*"Enrichment"/);
@@ -71,8 +75,9 @@ describe("Run Detail Results tabs — simplified four-tab set", () => {
   });
 
   it("does NOT import the dropped per-tab leaf components", () => {
+    // GraphTab IS imported because the Compile Graph tab uses it.
+    expect(src).toMatch(/from\s+"\.\/GraphTab"/);
     expect(src).not.toMatch(/from\s+"\.\/AssetsTab"/);
-    expect(src).not.toMatch(/from\s+"\.\/GraphTab"/);
     expect(src).not.toMatch(/from\s+"\.\/QualityTab"/);
     expect(src).not.toMatch(/from\s+"\.\/ValidationTab"/);
   });
@@ -162,6 +167,85 @@ describe("Run Detail Overview — pipeline steps filter", () => {
     const src = _readSrc("pages/run-detail/results/OverviewTab.tsx");
     expect(src).toContain("Document Detail");
     expect(src).toContain("active snapshot");
+  });
+});
+
+
+describe("Run Detail PrimaryStatusPanel — execution-focused banner", () => {
+  const src = readFileSync(
+    resolve(__dirname, "../../PrimaryStatusPanel.tsx"),
+    "utf-8",
+  );
+
+  it("uses 'Compile completed' eyebrow for both completed branches", () => {
+    expect(src).toMatch(/return\s+["'`]Compile completed["'`]/);
+  });
+
+  it("does not present skipped enrichment as a failure title", () => {
+    expect(src).not.toContain(
+      "Base compile succeeded; post-compile enrichment was skipped",
+    );
+    expect(src).not.toMatch(/return\s+["'`]Completed without enrichment["'`]/);
+  });
+
+  it("declares the success lede that points to active knowledge view", () => {
+    expect(src).toContain(
+      "The base Knowledge Index and graph were created",
+    );
+    expect(src).toContain("active knowledge view");
+  });
+});
+
+
+describe("Run Detail PipelineOutputPanel — Assessment Plan + Compile only", () => {
+  const src = readFileSync(
+    resolve(__dirname, "../../PipelineOutputPanel.tsx"),
+    "utf-8",
+  );
+
+  it("renders only AssessmentPlan + CompileStrategy + CompileResult panels", () => {
+    expect(src).toMatch(/<AssessmentPlanPanel\b/);
+    expect(src).toMatch(/<CompileStrategyPanel\b/);
+    expect(src).toMatch(/<CompileResultPanel\b/);
+  });
+
+  it("does NOT render EnrichPlan or EnrichmentResult panels", () => {
+    // Mentions in source docstrings are fine — we only care that
+    // the panels are no longer rendered as children. Match the
+    // JSX element form so a comment that names the dropped panel
+    // doesn't trip the assertion.
+    expect(src).not.toMatch(/<EnrichPlanPanel\b/);
+    expect(src).not.toMatch(/<EnrichmentResultPanel\b/);
+    // Also assert the imports are gone — keeps stale leaf modules
+    // from being pulled into the Run Detail bundle.
+    expect(src).not.toMatch(/from\s+"\.\/EnrichPlanPanel"/);
+    expect(src).not.toMatch(/from\s+"\.\/EnrichmentResultPanel"/);
+  });
+
+  it("declares the active-knowledge-view footer note", () => {
+    expect(src).toContain(
+      "data-testid=\"pipeline-stream-active-snapshot-note\"",
+    );
+    expect(src).toContain("active knowledge view");
+  });
+});
+
+
+describe("Compile Graph tab — framing + empty state", () => {
+  const graphSrc = readFileSync(
+    resolve(__dirname, "../GraphTab.tsx"),
+    "utf-8",
+  );
+
+  it("renders a 'No compile graph artifact' empty state, not 'Graph unavailable'", () => {
+    expect(graphSrc).toContain("No compile graph artifact for this run");
+    expect(graphSrc).not.toMatch(/<strong>Graph unavailable<\/strong>/);
+  });
+
+  it("explains that the compile graph is produced during compile", () => {
+    expect(graphSrc).toContain(
+      "produced by RAGAnything/LightRAG",
+    );
   });
 });
 

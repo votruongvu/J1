@@ -127,15 +127,19 @@ describe("projectFinalStatus", () => {
 
 
 describe("projectUiState — A–F surface", () => {
-  it("A. completed_without_enrichment → COMPLETED_WITH_WARNINGS UI state", () => {
+  it("A. completed_without_enrichment → clean COMPLETED UI state", () => {
+    // Run-execution outcome only: a successful compile is success,
+    // regardless of whether post-compile enrichment ran. The
+    // underlying `finalStatus` still distinguishes the two so
+    // banner copy can refine without flipping the UI tone.
     const r = makeRun({ status: RUN_STATUS.SUCCEEDED });
     const ui = projectUiState(r, { status: "skipped" });
-    expect(ui.uiState).toBe(UI_STATE.COMPLETED_WITH_WARNINGS);
+    expect(ui.uiState).toBe(UI_STATE.COMPLETED);
     expect(ui.underlyingFinalStatus).toBe(
       INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT,
     );
-    expect(ui.severity).toBe("warning");
-    expect(ui.recommendedAction).toBe("review_warnings");
+    expect(ui.severity).toBe("success");
+    expect(ui.recommendedAction).toBe("none");
   });
 
   it("B. completed_with_enrichment → clean COMPLETED UI state", () => {

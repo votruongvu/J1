@@ -20,11 +20,17 @@ import { useEffect, useRef } from "react";
 import { AssessmentPlanPanel } from "./AssessmentPlanPanel";
 import { CompileStrategyPanel } from "./CompileStrategyPanel";
 import { CompileResultPanel } from "./CompileResultPanel";
-import { EnrichPlanPanel } from "./EnrichPlanPanel";
-import { EnrichmentResultPanel } from "./EnrichmentResultPanel";
 import { EVENT_TYPES } from "@/lib/constants/events";
 import type { ProgressEvent } from "@/types/ingestion";
 import type { StreamStatus as StreamStatusKind } from "@/types/ui";
+
+// Run Detail's Pipeline Output is execution-focused — Assessment
+// Plan + Compile only. `EnrichPlanPanel` + `EnrichmentResultPanel`
+// were dropped here because their content is active-snapshot
+// scoped and now lives on Document Detail's
+// `ActiveKnowledgeResultPanel`. The leaf files themselves are
+// kept (they're still rendered by Document Detail's panel
+// indirectly via the `AssetsTab` artifact view).
 
 interface PipelineOutputPanelProps {
   runId: string;
@@ -97,8 +103,14 @@ export function PipelineOutputPanel({
         <AssessmentPlanPanel runId={runId} latestEvent={latestEvent} />
         <CompileStrategyPanel runId={runId} latestEvent={latestEvent} />
         <CompileResultPanel runId={runId} latestEvent={latestEvent} />
-        <EnrichPlanPanel runId={runId} latestEvent={latestEvent} />
-        <EnrichmentResultPanel runId={runId} latestEvent={latestEvent} />
+        <p
+          className="pipeline-stream__footer-note muted"
+          data-testid="pipeline-stream-active-snapshot-note"
+        >
+          Post-compile actions (domain enrichment, Knowledge
+          Memory, validation) are managed from the document&apos;s
+          active knowledge view.
+        </p>
       </div>
     </div>
   );

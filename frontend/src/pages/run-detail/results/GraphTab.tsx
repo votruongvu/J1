@@ -128,11 +128,31 @@ export function GraphTab({ runId }: GraphTabProps) {
     );
   }
   if (snapshot.unavailable) {
+    // Compile-Graph framing: the tab represents the graph/index
+    // RAGAnything/LightRAG produced during compile. "Unavailable"
+    // is rephrased so operators don't read it as a skipped
+    // downstream stage — under the new architecture there's no
+    // separate Build-Knowledge-Graph step, so the right framing
+    // is "no compile graph artifact was found", not "graph step
+    // was skipped".
     return (
-      <div className="results__empty">
-        <strong>Graph unavailable</strong>
+      <div className="results__empty" data-testid="results-graph-empty">
+        <strong>No compile graph artifact for this run</strong>
         <div style={{ color: "var(--text-muted)", marginTop: 6 }}>
           {snapshot.unavailable.reason}
+        </div>
+        <div
+          style={{
+            color: "var(--text-muted)",
+            marginTop: 6,
+            fontSize: 12,
+          }}
+        >
+          The compile graph is produced by RAGAnything/LightRAG
+          during compile. If it&apos;s missing on a successful run,
+          inspect the raw Artifacts tab for the run&apos;s
+          <code style={{ margin: "0 4px" }}>graph_json</code>
+          record.
         </div>
       </div>
     );

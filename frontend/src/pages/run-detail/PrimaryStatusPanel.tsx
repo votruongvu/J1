@@ -373,11 +373,20 @@ function completedEyebrow(
   finalStatus: string | null | undefined,
   warningCount: number,
 ): string {
+  // Run Detail's banner reports the EXECUTION outcome only. Whether
+  // post-compile domain enrichment happened or didn't is an
+  // active-snapshot concern (Document Detail). The eyebrow no
+  // longer says "Completed without enrichment" — that framing
+  // confused operators into reading skipped enrichment as a
+  // degraded run. The two skipped/with-enrichment variants both
+  // collapse to "Compile completed" here, with optional warning
+  // counts.
   switch (finalStatus) {
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT:
-      return "Completed with enrichment";
     case INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT:
-      return "Completed without enrichment";
+      return warningCount > 0
+        ? `Compile completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+        : "Compile completed";
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT_WARNINGS:
       return warningCount > 0
         ? `Completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
@@ -391,9 +400,8 @@ function completedEyebrow(
 function completedTitle(finalStatus: string | null | undefined): string {
   switch (finalStatus) {
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT:
-      return "Document indexed and ready to query";
     case INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT:
-      return "Base compile succeeded; post-compile enrichment was skipped";
+      return "Compile completed";
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT_WARNINGS:
       return "Indexed with warnings";
     default:
@@ -404,26 +412,22 @@ function completedTitle(finalStatus: string | null | undefined): string {
 
 function completedLede(
   finalStatus: string | null | undefined,
-  enrichment: EnrichmentSignals | undefined,
+  _enrichment: EnrichmentSignals | undefined,
   run: IngestionRun,
 ): string {
   switch (finalStatus) {
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT:
+    case INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT:
+      // Run Detail's narrative ends at compile output. The
+      // active-snapshot story (enrichment, Knowledge Memory) is
+      // owned by Document Detail; the second sentence points the
+      // operator there without re-implying enrichment was missed.
       return (
-        "Base compile + post-compile domain enrichment completed "
-        + "successfully. The document is searchable across vector, "
-        + "graph, and structured indexes."
+        "The base Knowledge Index and graph were created "
+        + "successfully for this run. Post-compile enrichment "
+        + "and Knowledge Memory are managed from the document's "
+        + "active knowledge view."
       );
-    case INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT: {
-      const reason = enrichment?.skippedReason
-        || run.final?.warning_summary
-        || "the post-compile assessor determined enrichment wasn't needed";
-      return (
-        `Base compile output is the source of truth for this run — `
-        + `post-compile domain enrichment was skipped (${reason}). `
-        + `This is not a degraded outcome; the raw compile output is fully usable.`
-      );
-    }
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT_WARNINGS:
       return (
         run.final?.warning_summary

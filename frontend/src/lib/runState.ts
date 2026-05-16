@@ -332,12 +332,20 @@ function projectTerminal(
     };
   }
   if (finalStatus === INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT) {
+    // Run-execution outcome only: the base compile succeeded.
+    // Post-compile domain enrichment is an active-snapshot
+    // concern now (Document Detail), so "no enrichment" is not a
+    // warning — it's just the run's execution state. The
+    // underlying `finalStatus` literal is preserved so the panel
+    // banner can still distinguish "compile only" from "compile
+    // + enrichment" in its copy, but the visual treatment is
+    // success, not warning.
     return {
-      uiState: UI_STATE.COMPLETED_WITH_WARNINGS,
-      severity: "warning",
-      headline: "completed without enrichment",
+      uiState: UI_STATE.COMPLETED,
+      severity: "success",
+      headline: "compile completed",
       primaryArtifact: "final_summary",
-      recommendedAction: "review_warnings",
+      recommendedAction: "none",
       underlyingFinalStatus: finalStatus,
     };
   }

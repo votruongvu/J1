@@ -112,11 +112,13 @@ describe("projectUiStateFromReport — fallback for legacy runs", () => {
   });
 
   it("falls back cleanly when report is missing final_status", () => {
+    // SUCCEEDED + no enrichment data → COMPLETED_WITHOUT_ENRICHMENT
+    // → success UI state (the new mapping; see runState.ts comment).
     const run = makeRun({ status: RUN_STATUS.SUCCEEDED });
     // @ts-expect-error — testing malformed payload.
     const ui = projectUiStateFromReport(run, { schema_version: "1.0" });
     expect(ui).not.toBeNull();
-    expect(ui?.uiState).toBe(UI_STATE.COMPLETED_WITH_WARNINGS);
+    expect(ui?.uiState).toBe(UI_STATE.COMPLETED);
   });
 
   it("returns null for a null run", () => {
@@ -130,7 +132,10 @@ describe("projectUiStateFromReport — fallback for legacy runs", () => {
 
 const _A_F_CASES: Array<[string, string]> = [
   [INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT, UI_STATE.COMPLETED],
-  [INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT, UI_STATE.COMPLETED_WITH_WARNINGS],
+  // Run-execution outcome only — "no enrichment" is not a warning.
+  // Post-compile enrichment is an active-snapshot concern shown on
+  // Document Detail; Run Detail's banner stays success.
+  [INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT, UI_STATE.COMPLETED],
   [INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT_WARNINGS, UI_STATE.COMPLETED_WITH_WARNINGS],
   [INGESTION_STATUS.FAILED_COMPILE, UI_STATE.FAILED],
   [INGESTION_STATUS.FAILED_ENRICHMENT_REQUIRED, UI_STATE.FAILED],
