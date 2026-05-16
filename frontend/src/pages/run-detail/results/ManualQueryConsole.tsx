@@ -30,6 +30,10 @@ import type {
   QueryScope,
   ValidationCheck,
 } from "@/types/review";
+import {
+  KnowledgeMemoryQueryDiagnostics,
+  knowledgeMemoryTraceFrom,
+} from "@/pages/search/KnowledgeMemoryQueryDiagnostics";
 
 interface ManualQueryConsoleProps {
   runId: string;
@@ -447,6 +451,12 @@ function ResultPanel({ response, showRaw, onToggleRaw }: ResultPanelProps) {
             </ul>
           )}
         </section>
+
+        <KnowledgeMemoryQueryDiagnostics
+          trace={knowledgeMemoryTraceFrom(
+            response.debug as Record<string, unknown> | undefined,
+          )}
+        />
 
         {response.debug && <DebugPanel debug={response.debug} />}
 

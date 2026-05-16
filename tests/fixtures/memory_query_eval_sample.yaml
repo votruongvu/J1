@@ -1,0 +1,114 @@
+# Phase 6 — sample memory-aware query evaluation fixture.
+#
+# Used by `j1.tools.evaluate_memory_query` to A/B compare baseline
+# (memory disabled) vs memory-aware retrieval. Each entry is a
+# `MemoryQueryEvalQuery`. The harness reads:
+#
+#   * id, question — required.
+#   * scope — `project_active` (default) or `document_active`.
+#     When `document_active` is used, `document_id` should be set.
+#   * expected_terms — case-insensitive substring tokens the
+#     answer should contain. Used to derive `expected_terms_present`
+#     / `expected_terms_missing` on each outcome.
+#   * expected_artifact_types — artifact kinds (e.g.
+#     `enriched.risks`, `knowledge_memory`) the retrieved pool
+#     should include. Used to derive
+#     `expected_artifact_types_present` / `_missing`.
+#   * category — see `_DOMAIN_INDICATOR_CATEGORIES` in the harness;
+#     fewer citations for a domain-relevant category is treated as
+#     "worsened" rather than "unchanged".
+#   * notes — free-form operator commentary surfaced in the
+#     Markdown report.
+#
+# Categories below are inspired by civil engineering domains but
+# the harness itself is generic — these strings are matched
+# against the harness's pinned category set.
+
+queries:
+  - id: risk_001
+    scope: project_active
+    category: risk
+    question: "What risks were found?"
+    expected_terms:
+      - risk
+    expected_artifact_types:
+      - enriched.risks
+    notes: "Memory should surface risk entries and resolve their source refs to compile chunks."
+
+  - id: requirement_001
+    scope: project_active
+    category: requirement
+    question: "Which requirements are missing evidence?"
+    expected_terms:
+      - requirement
+    expected_artifact_types:
+      - enriched.requirements
+    notes: "Domain-relevant — fewer citations memory-side should mark this 'worsened'."
+
+  - id: boq_001
+    scope: project_active
+    category: boq
+    question: "Show BOQ quantity problems."
+    expected_terms:
+      - boq
+    expected_artifact_types:
+      - enriched.tables
+    notes: "Table-summary entries help locate the BOQ chunks via expansion + source-ref injection."
+
+  - id: inspection_001
+    scope: project_active
+    category: inspection_finding
+    question: "Which inspection findings need action?"
+    expected_terms:
+      - inspection
+      - finding
+    expected_artifact_types:
+      - enriched.consistency_findings
+    notes: "Validation-check entries should expand retrieval."
+
+  - id: ncr_001
+    scope: project_active
+    category: ncr
+    question: "Any NCR issues?"
+    expected_terms:
+      - ncr
+    notes: "Alias entries should expand `NCR` to `non-conformance report` via Phase 5A."
+
+  - id: drawing_001
+    scope: project_active
+    category: visual_summary
+    question: "Which drawings mention slab reinforcement?"
+    expected_terms:
+      - slab
+    notes: "Visual-summary memory entries are deferred today; should not regress baseline."
+
+  - id: test_result_001
+    scope: project_active
+    category: test_result
+    question: "What test results failed acceptance criteria?"
+    expected_terms:
+      - test
+      - failed
+    notes: "Memory may or may not help; non-domain category — neutral verdict expected."
+
+  - id: general_001
+    scope: project_active
+    category: general_summary
+    question: "What is this document mainly about?"
+    expected_terms:
+      - summary
+    notes: "Summary-context memory entries used as hints only."
+
+  - id: scope_001
+    scope: project_active
+    category: scope_question
+    question: "Where is the scope of work described?"
+    notes: "Generic recall — memory shouldn't change much."
+
+  - id: parties_001
+    scope: project_active
+    category: parties
+    question: "Which responsible parties are mentioned?"
+    expected_terms:
+      - party
+    notes: "Generic recall — neutral expectation."

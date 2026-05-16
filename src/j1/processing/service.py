@@ -510,6 +510,128 @@ class ProcessingService:
             f"run {run_id!r}"
         )
 
+    def persist_knowledge_memory(
+        self,
+        ctx: ProjectContext,
+        *,
+        run_id: str,
+        document_id: str,
+        snapshot_id: str,
+        payload: dict,
+        actor: str = "system",
+        trigger: str | None = None,
+        includes_domain_insights: bool | None = None,
+    ) -> ArtifactRecord:
+        """Persist a `knowledge_memory` artifact for one snapshot.
+
+        Phase 2 (2026-05-16): materialises the
+        `KnowledgeMemoryPayload` dict produced by
+        `KnowledgeMemoryBuilder` into a single JSON artifact under
+        the ENRICHED workspace area.
+
+        **Idempotency**: before registering the new artifact, any
+        previously-registered `knowledge_memory` artifacts for the
+        same `(document_id, snapshot_id)` pair get their
+        `metadata.search_state` flipped to ``"superseded"`` via
+        the registry's `update_metadata` seam. This keeps at most
+        one ACTIVE memory artifact per snapshot — rebuilds replace
+        the prior build without leaving stale rows visible to
+        future query/projection consumers. The supersede sweep is
+        best-effort: a registry that lacks `update_metadata` (test
+        fakes) is a no-op rather than a hard failure.
+
+        `payload` is the `KnowledgeMemoryPayload.to_payload` dict —
+        the service layer doesn't import `j1.memory` so this
+        module stays thin and tests can pass plain dicts."""
+        import json as _json
+        from j1.processing.results import (
+            ARTIFACT_KIND_KNOWLEDGE_MEMORY,
+            ArtifactDraft,
+            ArtifactProcessingResult,
+            ResultStatus,
+        )
+        from j1.workspace.layout import WorkspaceArea
+
+        if not document_id:
+            raise ValueError(
+                "persist_knowledge_memory requires document_id",
+            )
+        if not snapshot_id:
+            raise ValueError(
+                "persist_knowledge_memory requires snapshot_id "
+                "(memory is snapshot-scoped — refusing to register "
+                "an unscoped row that future query routing would "
+                "have to filter blindly)",
+            )
+
+        # Supersede prior active memory artifacts for this
+        # (document_id, snapshot_id) pair BEFORE registering the
+        # new one. If registration fails afterwards the supersede
+        # still stands, but the prior artifact stays in the
+        # registry and the next rebuild will re-supersede it — no
+        # data loss; the worst-case is a brief window where the
+        # snapshot has no active memory row.
+        superseded = _supersede_prior_knowledge_memory(
+            self._artifacts, ctx,
+            document_id=document_id,
+            snapshot_id=snapshot_id,
+        )
+
+        entry_count = len(payload.get("entries") or [])
+        domain_id = str(payload.get("domain_id") or "none")
+        metadata: dict = {
+            "filename": (
+                f"knowledge_memory_{snapshot_id}.json"
+            ),
+            # Snapshot scope stamped directly so the supersede
+            # filter on the next rebuild can find this row
+            # without re-reading the payload.
+            "snapshot_id": snapshot_id,
+            "document_id": document_id,
+            "domain_id": domain_id,
+            "entry_count": entry_count,
+            "search_state": "active",
+            "superseded_count": superseded,
+        }
+        # Phase 3A (2026-05-16): lifecycle provenance stamped on
+        # the artifact metadata so dashboards / future query
+        # integration can answer "was this memory built after
+        # compile, after enrichment, or by the manual action?"
+        # without re-reading the JSON payload. ``None`` means
+        # "trigger not specified by caller" — keeps Phase 2
+        # callers backwards-compatible.
+        if trigger:
+            metadata["trigger"] = trigger
+        if includes_domain_insights is not None:
+            metadata["includes_domain_insights"] = bool(includes_domain_insights)
+        draft = ArtifactDraft(
+            kind=ARTIFACT_KIND_KNOWLEDGE_MEMORY,
+            content=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            suggested_extension=".json",
+            source_document_ids=[document_id],
+            metadata=metadata,
+        )
+        result = ArtifactProcessingResult(
+            status=ResultStatus.SUCCEEDED, drafts=[draft],
+        )
+        registered = self._handle_artifact_output(
+            ctx, result,
+            area=WorkspaceArea.ENRICHED,
+            action=ACTION_ENRICH_OK,
+            target_kind=TARGET_DOCUMENT,
+            target_id=document_id,
+            actor=actor,
+            correlation_id=run_id,
+            processor_kind=None,
+            source_document_ids=[document_id],
+        )
+        if registered.artifacts:
+            return registered.artifacts[0]
+        raise RuntimeError(
+            "failed to persist knowledge_memory artifact for "
+            f"document={document_id!r} snapshot={snapshot_id!r}"
+        )
+
     def persist_compile_result_summary(
         self,
         ctx: ProjectContext,
@@ -1314,3 +1436,68 @@ def _set_id(ids: list[str]) -> str:
 def _question_id(question: str) -> str:
     digest = hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
     return f"q:{digest}"
+
+
+def _supersede_prior_knowledge_memory(
+    registry,
+    ctx: ProjectContext,
+    *,
+    document_id: str,
+    snapshot_id: str,
+) -> int:
+    """Flip any previously-registered `knowledge_memory` artifacts
+    for the same ``(document_id, snapshot_id)`` pair to
+    ``metadata.search_state="superseded"``.
+
+    Returns the number of rows superseded. Best-effort:
+
+      * Registries that don't implement ``list_artifacts`` /
+        ``update_metadata`` return 0 (test fakes typically lack
+        these — the lack of supersede is a soft signal, not a
+        crash).
+      * Per-row update failures are logged and skipped; the
+        sweep continues so a transient failure doesn't block the
+        whole rebuild.
+      * Rows already in a non-active ``search_state`` are
+        skipped — the operation is idempotent.
+    """
+    list_artifacts = getattr(registry, "list_artifacts", None)
+    update_metadata = getattr(registry, "update_metadata", None)
+    if not callable(list_artifacts) or not callable(update_metadata):
+        return 0
+    try:
+        records = list_artifacts(ctx, kind="knowledge_memory")
+    except TypeError:
+        # Registry's list_artifacts doesn't accept the kind kwarg;
+        # fall back to fetching all and filtering locally.
+        try:
+            records = [
+                r for r in list_artifacts(ctx)
+                if getattr(r, "kind", None) == "knowledge_memory"
+            ]
+        except Exception:  # noqa: BLE001 — best-effort
+            return 0
+    except Exception:  # noqa: BLE001 — best-effort
+        return 0
+
+    stamped = 0
+    for record in records:
+        meta = dict(getattr(record, "metadata", None) or {})
+        if meta.get("document_id") != document_id:
+            continue
+        if meta.get("snapshot_id") != snapshot_id:
+            continue
+        if meta.get("search_state") and meta["search_state"] != "active":
+            continue
+        meta["search_state"] = "superseded"
+        meta["superseded_by_kind"] = "knowledge_memory"
+        try:
+            update_metadata(ctx, record.artifact_id, meta)
+            stamped += 1
+        except Exception:  # noqa: BLE001 — best-effort
+            _log.warning(
+                "failed to supersede prior knowledge_memory %s",
+                getattr(record, "artifact_id", "?"),
+                exc_info=True,
+            )
+    return stamped

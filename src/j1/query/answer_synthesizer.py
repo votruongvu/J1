@@ -165,6 +165,12 @@ def _system_prompt(plan: QueryPlan, profile: DomainProfile) -> str:
         "USING ONLY the provided evidence blocks. "
         "Cite the blocks you use by their number tag in square "
         "brackets — for example: [#1], [#2]. "
+        "Some evidence blocks may be memory-guided — meaning a "
+        "Knowledge Memory hint helped locate the source artifact. "
+        "Treat the cited source artifact, chunk, or page as the "
+        "evidence; never cite a Knowledge Memory entry itself. "
+        "If memory context conflicts with source evidence, prefer "
+        "the source evidence. "
     )
     if plan.synthesis_mode == SynthesisMode.EXTRACT_ONLY:
         base += (

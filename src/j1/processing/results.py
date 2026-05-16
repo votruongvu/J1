@@ -92,6 +92,15 @@ ARTIFACT_KIND_ENRICHMENT_RESULT = "enrichment_result"
 # (success OR failure) so every run carries a single
 # authoritative report rather than a fan-out across artifact kinds.
 ARTIFACT_KIND_FINAL_INGESTION_REPORT = "final_ingestion_report"
+# Phase 2 (2026-05-16): persistent snapshot-scoped knowledge memory
+# artifact materialised by the `ACTION_BUILD_KNOWLEDGE_MEMORY`
+# manual action. Carries selected compile / enrichment / domain-
+# pack signals projected into typed `KnowledgeMemoryEntry` rows
+# (see `j1.memory.knowledge_memory`). One ACTIVE artifact per
+# (document_id, snapshot_id); rebuilding supersedes the previous
+# artifact's `search_state`. Query DOES NOT prefer this artifact
+# yet — Phase 3 will integrate it.
+ARTIFACT_KIND_KNOWLEDGE_MEMORY = "knowledge_memory"
 
 __all__ = [
     "ARTIFACT_KIND_CHUNK",
@@ -102,6 +111,7 @@ __all__ = [
     "ARTIFACT_KIND_COMPILE_RESULT_SUMMARY",
     "ARTIFACT_KIND_ENRICHMENT_RESULT",
     "ARTIFACT_KIND_INITIAL_EXECUTION_PLAN",
+    "ARTIFACT_KIND_KNOWLEDGE_MEMORY",
     "ARTIFACT_KIND_PARSED_CONTENT_MANIFEST",
     "ARTIFACT_KIND_PARSED_SOURCE",
     "ARTIFACT_KIND_PLANNING_RESULT",

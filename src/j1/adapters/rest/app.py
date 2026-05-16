@@ -501,6 +501,16 @@ def create_rest_api(
     # `load_execution_profile_policy()` so env-driven hard caps
     # (`J1_ALLOW_ADVANCED_INGEST=false`, etc.) actually fire.
     execution_profile_policy: "ExecutionProfilePolicy | None" = None,
+    # Phase 2 (2026-05-16): persistent knowledge memory service.
+    # When wired, `POST /documents/{id}/manual-actions/build-
+    # knowledge-memory` builds + persists a snapshot-scoped
+    # `knowledge_memory` artifact via this service. When None,
+    # the endpoint returns 503 — the manual action descriptor
+    # still ships (so the FE renders the button) but operators
+    # see an actionable "service not wired" message instead of
+    # a workflow error. Query routing does NOT yet prefer this
+    # artifact; Phase 3 will integrate it.
+    knowledge_memory_service: "object | None" = None,
     version: str = "0.1.0",
     api_title: str = "J1 Knowledge Base API",
     description: str | None = None,
@@ -2735,6 +2745,99 @@ def create_rest_api(
             _req_id(request),
         )
 
+    @app.post(
+        "/documents/{document_id}/manual-actions/build-knowledge-memory",
+        tags=["documents", "manual-actions"],
+        summary=(
+            "Manually build the persistent knowledge_memory artifact "
+            "for the document's active snapshot."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_INGEST))],
+    )
+    def post_document_manual_action_build_knowledge_memory(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+        security: SecurityContext = Depends(get_security),
+    ) -> dict[str, Any]:
+        """Phase 2: deterministic, synchronous build of a
+        snapshot-scoped `knowledge_memory` artifact.
+
+        Unlike `run_domain_enrichment`, this action does NOT
+        dispatch a workflow. The build is fast + LLM-free; the
+        endpoint runs the builder inline and returns the artifact
+        id + entry count when persistence succeeds.
+
+        Idempotency: rebuilds for the same snapshot supersede the
+        previous memory artifact via
+        `ProcessingService.persist_knowledge_memory`.
+
+        503 when the service isn't wired (deployment-level kill
+        switch); 403 when the per-action feature flag is off;
+        409 when the document has no active compiled snapshot."""
+        from j1.processing.manual_actions import (
+            ACTION_BUILD_KNOWLEDGE_MEMORY,
+            is_manual_action_enabled,
+        )
+
+        if knowledge_memory_service is None:
+            raise HTTPException(
+                503,
+                "knowledge_memory_service is not configured on this "
+                "deployment. Pass `knowledge_memory_service=` to "
+                "`create_rest_api` to enable the build endpoint.",
+            )
+
+        if not is_manual_action_enabled(ACTION_BUILD_KNOWLEDGE_MEMORY):
+            raise HTTPException(
+                403,
+                "Manual action 'build_knowledge_memory' is disabled "
+                "by deployment settings.",
+            )
+
+        # Resolve document for the 404 path; the service does its
+        # own active-snapshot guard.
+        try:
+            facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        _enforce_document_attached_for_action(
+            ctx, document_id, "manual action 'build_knowledge_memory'",
+        )
+
+        from j1.memory.auto_build import TRIGGER_MANUAL
+        from j1.memory.service import NoActiveSnapshotError
+        try:
+            # Phase 3B: stamp `trigger=manual` so the status
+            # projection can distinguish manual rebuilds from
+            # auto-build / rebuild-after-enrichment runs without
+            # re-reading workflow event logs. The service forwards
+            # the value through to `persist_knowledge_memory`,
+            # which writes it onto `metadata.trigger`.
+            result = knowledge_memory_service.build_and_persist(
+                ctx, document_id,
+                actor=security.subject, trigger=TRIGGER_MANUAL,
+            )
+        except NoActiveSnapshotError as exc:
+            raise HTTPException(409, str(exc))
+
+        return envelope(
+            {
+                "documentId": document_id,
+                "manualAction": ACTION_BUILD_KNOWLEDGE_MEMORY,
+                "status": result.status,
+                "snapshotId": result.snapshot_id,
+                "runId": result.run_id,
+                "artifactId": result.artifact_id,
+                "entryCount": result.entry_count,
+                "warnings": list(result.warnings),
+                "message": result.message,
+            },
+            _req_id(request),
+        )
+
     @app.get(
         "/documents/{document_id}/status",
         tags=["documents"],
@@ -2751,6 +2854,69 @@ def create_rest_api(
             document_id=dto.document_id, status=dto.status
         )
         return envelope(record.model_dump(by_alias=True), _req_id(request))
+
+    @app.get(
+        "/documents/{document_id}/knowledge-memory",
+        tags=["documents", "knowledge-memory"],
+        summary=(
+            "Get Knowledge Memory status for the document's active "
+            "snapshot."
+        ),
+        dependencies=[Depends(scope_required(SCOPE_READ))],
+    )
+    def get_document_knowledge_memory_status(
+        request: Request,
+        document_id: str,
+        ctx: ProjectContext = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        """Phase 3B: read-only projection over the active
+        snapshot's `knowledge_memory` artifact metadata.
+
+        Returns a compact status DTO the FE can render without
+        having its own artifact-registry query. The endpoint
+        never builds; it only reads.
+
+        503 when the `knowledge_memory_service` isn't wired. The
+        FE component already gates on this so the section doesn't
+        render in minimal/test deployments.
+        """
+        if knowledge_memory_service is None:
+            raise HTTPException(
+                503,
+                "knowledge_memory_service is not configured on this "
+                "deployment. Pass `knowledge_memory_service=` to "
+                "`create_rest_api` to enable the status endpoint.",
+            )
+        try:
+            facade.source_lookup.get_source(ctx, document_id)
+        except Exception:
+            raise HTTPException(
+                404, f"document {document_id!r} not found",
+            )
+        resolver = getattr(knowledge_memory_service, "resolve_status", None)
+        if not callable(resolver):
+            # Defensive — older service implementations missing the
+            # Phase 3B method. The FE component falls back to
+            # "Not built" when status is `not_built`.
+            from j1.memory.status import KnowledgeMemoryStatus
+            status = KnowledgeMemoryStatus(document_id=document_id)
+        else:
+            status = resolver(ctx, document_id)
+        payload = status.to_payload()
+        # camelCase casing at the adapter boundary — mirrors the
+        # convention used by other run/document DTOs.
+        camel = {
+            "status": payload["status"],
+            "documentId": payload["document_id"],
+            "snapshotId": payload["snapshot_id"],
+            "artifactId": payload["artifact_id"],
+            "entryCount": payload["entry_count"],
+            "includesDomainInsights": payload["includes_domain_insights"],
+            "lastTrigger": payload["last_trigger"],
+            "lastBuiltAt": payload["last_built_at"],
+            "warnings": payload["warnings"],
+        }
+        return envelope(camel, _req_id(request))
 
     # ---- Ingestion jobs ---------------------------------------------
 

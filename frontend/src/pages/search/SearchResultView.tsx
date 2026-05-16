@@ -22,6 +22,10 @@ import { Banner, type BannerKind } from "@/components/Banner";
 import type { ManualTestQueryResponse } from "@/types/review";
 
 import {
+  KnowledgeMemoryQueryDiagnostics,
+  knowledgeMemoryTraceFrom,
+} from "./KnowledgeMemoryQueryDiagnostics";
+import {
   retrievalRowsFrom,
   sourceRowsFrom,
   validationStatusKind,
@@ -59,6 +63,16 @@ export function SearchResultView({
   const sources = sourceRowsFrom(response);
   const retrieval = retrievalRowsFrom(response);
   const verdictLabel = validationStatusLabel(response.validationStatus);
+  // Phase 5C: extract the orchestrator's Knowledge Memory
+  // diagnostic block from the wire response. Lives inside
+  // ``response.debug.orchestrator_trace.knowledge_memory`` (the
+  // validation service stamps it verbatim from
+  // ``QueryTrace.knowledge_memory``). Absent on legacy / disabled-
+  // feature responses — the diagnostics component renders nothing
+  // in that case.
+  const knowledgeMemoryTrace = knowledgeMemoryTraceFrom(
+    response.debug as Record<string, unknown> | undefined,
+  );
 
   return (
     <div className="search-result" data-testid="search-result">
@@ -140,6 +154,8 @@ export function SearchResultView({
           </ul>
         )}
       </section>
+
+      <KnowledgeMemoryQueryDiagnostics trace={knowledgeMemoryTrace} />
 
       {retrieval.length > 0 && (
         <details

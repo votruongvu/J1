@@ -54,6 +54,7 @@ from deploy.dev._wiring import (
     build_application_facade,
     build_batch_run_store,
     build_document_lifecycle_service,
+    build_knowledge_memory_service,
     build_review_service,
     build_snapshot_services,
     build_validation_service,
@@ -623,6 +624,16 @@ def _build_app():
         # in the Document UI and got an immediate "Remove failed"
         # toast because the service wasn't wired.
         document_lifecycle_service=build_document_lifecycle_service(workspace),
+        # Phase 2 (2026-05-16): persistent Knowledge Memory build
+        # service. Wires the `POST /documents/{id}/manual-actions/
+        # build-knowledge-memory` endpoint into the dev runtime so
+        # operators can materialise a snapshot-scoped
+        # `knowledge_memory` artifact on demand. Without this the
+        # endpoint returns 503 with a "service not wired" hint —
+        # which is the documented fallback for minimal / test
+        # deployments. Query routing is NOT yet integrated; Phase 3
+        # will wire that.
+        knowledge_memory_service=build_knowledge_memory_service(workspace),
         # Hand the LLM registry to the REST adapter so `POST
         # /healthz/llm/refresh` (the FE banner's "Retry now" button)
         # can re-probe synchronously instead of waiting for the next

@@ -177,6 +177,40 @@ export interface ManualActionDescriptor {
   status: "available" | "not_implemented" | "disabled";
 }
 
+/** Status enum returned by ``GET /documents/{id}/knowledge-memory``.
+ * Mirrors ``j1.memory.status`` constants — values are stable wire
+ * strings dashboards filter on. */
+export type KnowledgeMemoryStatusValue =
+  | "not_built"
+  | "base_compile_only"
+  | "updated_with_domain_insights"
+  | "failed"
+  | "unknown";
+
+/** Trigger string stamped on the active memory artifact's metadata.
+ * Mirrors ``j1.memory.auto_build`` constants. */
+export type KnowledgeMemoryTrigger =
+  | "after_compile"
+  | "after_domain_enrichment"
+  | "manual";
+
+/** Compact projection over the active snapshot's
+ * `knowledge_memory` artifact metadata. Returned by
+ * ``GET /documents/{id}/knowledge-memory`` for the small status
+ * section on Document Detail. The FE never reaches into the
+ * artifact registry directly — this DTO is the contract. */
+export interface KnowledgeMemoryStatusResponse {
+  status: KnowledgeMemoryStatusValue;
+  documentId: string;
+  snapshotId: string | null;
+  artifactId: string | null;
+  entryCount: number;
+  includesDomainInsights: boolean;
+  lastTrigger: KnowledgeMemoryTrigger | null;
+  lastBuiltAt: string | null;  // ISO 8601
+  warnings: string[];
+}
+
 /** Rule-based hints attached to a winning ``document_profile_rule``.
  * Advisory only — the FE renders these as "likely / suspected"
  * copy, not as facts. */

@@ -906,6 +906,48 @@ export interface QueryTraceSnapshotScope {
   used_global_workspace: boolean;
 }
 
+
+/**
+ * Phase 4 / 5A / 5B Knowledge Memory query diagnostics that ride on
+ * the `QueryTrace.knowledge_memory` field. Every field is optional
+ * — older deployments / disabled-feature traces ship a partial
+ * payload or the entire block is `null`/absent. The renderer treats
+ * undefined as "the orchestrator didn't stamp it" and degrades
+ * gracefully.
+ *
+ * Wire shape is snake_case (the orchestrator stores the provider's
+ * `to_payload()` dict verbatim — no camelCase translation). The FE
+ * keeps the snake_case so the JSON dump in the diagnostics drawer
+ * matches the operator-visible wire shape; we don't camelCase
+ * fields the operator may grep in the raw payload.
+ */
+export interface KnowledgeMemoryQueryTrace {
+  // Phase 4 — base provider diagnostics.
+  status?: string;
+  available?: boolean;
+  scope?: string;
+  project_id?: string | null;
+  artifact_id?: string | null;
+  entry_count?: number | null;
+  document_count?: number | null;
+  memory_artifact_count?: number | null;
+  selected_entry_count?: number | null;
+  selected_entry_types?: string[];
+  expansion_terms?: string[];
+  resolved_source_ref_count?: number | null;
+  warnings?: string[];
+  // Phase 5A — expansion-merge applied state.
+  applied_expansion_terms?: string[];
+  expansion_terms_applied?: boolean;
+  expansion_terms_truncated?: boolean;
+  // Phase 5B — source-ref → evidence resolver diagnostics.
+  injected_evidence_count?: number | null;
+  deduped_evidence_count?: number | null;
+  unresolved_source_ref_count?: number | null;
+  source_ref_resolution_warnings?: string[];
+  evidence_injection_applied?: boolean;
+}
+
 export interface QueryTraceShape {
   question: string;
   normalized_question: string;
@@ -923,6 +965,13 @@ export interface QueryTraceShape {
   final_status: string;
   duration_ms: number;
   snapshot_scope?: QueryTraceSnapshotScope;
+  /**
+   * Phase 4 / 5A / 5B persistent Knowledge Memory query
+   * diagnostics. Absent / null when the orchestrator's memory
+   * provider wasn't consulted (legacy deployments, feature
+   * disabled). Renderers treat absence as "Not consulted".
+   */
+  knowledge_memory?: KnowledgeMemoryQueryTrace | null;
 }
 
 export interface QueryTracePayload {

@@ -50,6 +50,7 @@ import type {
   AdvancedAssessmentResponse,
   AssessmentPlanResponse,
   ExecutionProfileId,
+  KnowledgeMemoryStatusResponse,
   ManualActionDescriptor,
   RequestedCapabilities,
 } from "@/types/execution-profile";
@@ -282,6 +283,24 @@ export class ApiClient implements IngestionClient {
       { method: "GET", headers: this.headers() },
     );
     return this.json(resp);
+  }
+
+  /** Phase 3B: read-only Knowledge Memory status for the document's
+   * active snapshot. Returns a compact projection over the active
+   * `knowledge_memory` artifact's metadata. The endpoint is
+   * deployment-gated (503 when the service isn't wired) — callers
+   * should treat fetch failure as "status unknown" and render the
+   * "Not built" copy as the safe default. */
+  async getDocumentKnowledgeMemoryStatus(
+    documentId: string,
+  ): Promise<KnowledgeMemoryStatusResponse> {
+    const resp = await fetch(
+      this.url(
+        `/documents/${encodeURIComponent(documentId)}/knowledge-memory`,
+      ),
+      { method: "GET", headers: this.headers() },
+    );
+    return this.json<KnowledgeMemoryStatusResponse>(resp);
   }
 
   async registerDocument(

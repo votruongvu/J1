@@ -392,6 +392,8 @@ class SmartQueryOrchestrator:
         binder: CitationBinder,
         quality: AnswerQualityGate,
         augmentation_provider: object | None = None,
+        knowledge_memory_provider: object | None = None,
+        knowledge_memory_evidence_resolver: object | None = None,
     ) -> None:
         self._classifier = classifier
         self._routes = route_runner
@@ -409,6 +411,28 @@ class SmartQueryOrchestrator:
         # only so the seam can be exercised without changing answer
         # behaviour).
         self._augmentation_provider = augmentation_provider
+        # Phase-4 Knowledge Memory query integration (2026-05-16).
+        # Opt-in via `J1_QUERY_KNOWLEDGE_MEMORY_ENABLED`. When the
+        # provider is wired AND the flag is on, the orchestrator
+        # consults the active snapshot's persistent
+        # `knowledge_memory` artifact for query expansion +
+        # derived-evidence hints. The provider is fail-safe by
+        # construction — it never raises into this caller, so a
+        # memory-side failure can't fail the query. See
+        # `j1.memory.query_provider.KnowledgeMemoryContextProvider`
+        # for the hard contract.
+        self._knowledge_memory_provider = knowledge_memory_provider
+        # Phase 5B (2026-05-16): optional source-ref resolver. When
+        # wired AND the memory provider returns selected entries
+        # with source refs, the resolver materialises those refs
+        # into source-grounded `EvidenceCandidate` rows that the
+        # standard evidence pipeline consumes. The resolver is
+        # fail-safe — exceptions never propagate; failures surface
+        # as `resolver_error:*` warnings on the diagnostic block.
+        # Memory entries themselves never become evidence.
+        self._knowledge_memory_evidence_resolver = (
+            knowledge_memory_evidence_resolver
+        )
 
     # ---- Construction helper ---------------------------------
 
@@ -419,6 +443,9 @@ class SmartQueryOrchestrator:
         routes: Mapping[RetrievalRouteKind, RetrievalRoute],
         llm: LLMCallable,
         builder_config: EvidenceBuilderConfig | None = None,
+        augmentation_provider: object | None = None,
+        knowledge_memory_provider: object | None = None,
+        knowledge_memory_evidence_resolver: object | None = None,
     ) -> "SmartQueryOrchestrator":
         return cls(
             classifier=QueryIntentClassifier(),
@@ -428,6 +455,11 @@ class SmartQueryOrchestrator:
             synthesizer=AnswerSynthesizer(llm=llm),
             binder=CitationBinder(),
             quality=AnswerQualityGate(),
+            augmentation_provider=augmentation_provider,
+            knowledge_memory_provider=knowledge_memory_provider,
+            knowledge_memory_evidence_resolver=(
+                knowledge_memory_evidence_resolver
+            ),
         )
 
     # ---- Run ------------------------------------------------
@@ -527,6 +559,48 @@ class SmartQueryOrchestrator:
                     available=available, matched=tuple(matched),
                 )
 
+        # Phase 4 (2026-05-16): persistent Knowledge Memory query
+        # integration. Consults the provider (when wired) for the
+        # active snapshot's `knowledge_memory` artifact. The
+        # provider returns a structured `KnowledgeMemoryQueryContext`
+        # — never raises. Diagnostics surface on the trace; the
+        # rest of the orchestrator pipeline (retrieval / synthesis)
+        # is unchanged. Base source evidence remains the canonical
+        # ground.
+        memory_context = None
+        mem_settings = None
+        if self._knowledge_memory_provider is not None:
+            from j1.memory.query_settings import (
+                load_knowledge_memory_query_settings,
+            )
+            mem_settings = load_knowledge_memory_query_settings()
+            try:
+                memory_context = (
+                    self._knowledge_memory_provider.context_for_query(
+                        ctx=request.ctx,
+                        question=request.question,
+                        document_id=request.document_id,
+                        settings=mem_settings,
+                        # Phase 5A patch (2026-05-16): pass the
+                        # caller's eligibility pairs through so the
+                        # provider's project-active path can filter
+                        # the project-wide artifact walk to the
+                        # right ``(document_id, snapshot_id)``
+                        # subset. ``None`` for document-active /
+                        # default-scope queries — the provider
+                        # decides per-mode whether to use them.
+                        eligible_snapshot_pairs=(
+                            request.eligible_snapshot_pairs
+                        ),
+                    )
+                )
+            except Exception:  # noqa: BLE001 — never fail the query
+                memory_context = None
+        if memory_context is not None:
+            trace = trace.with_knowledge_memory(
+                memory_context.to_payload(),
+            )
+
         # 2. Retrieval routes.
         route_ctx = RouteContext(
             ctx=request.ctx,
@@ -537,12 +611,92 @@ class SmartQueryOrchestrator:
             document_id=request.document_id,
             run_id=request.run_id,
         )
+        # Phase 5A (2026-05-16): fold Knowledge Memory expansion
+        # terms into the existing augmentation-expansion pool that
+        # broadens retrieval. The merge fires only when ALL of:
+        #   * retrieval expansion was enabled
+        #     (``J1_QUERY_EXPANSION_ENABLED=true``)
+        #   * the memory provider was consulted AND returned
+        #     ``status=used``
+        #   * the provider produced at least one expansion term
+        # The merge is fail-safe — exceptions fall back to the
+        # existing augmentation-only variant set. Memory entries
+        # themselves are NEVER injected as evidence; only their
+        # short-headline / alias / hint strings broaden retrieval.
+        # Phase 5A: the memory merge fires whenever retrieval
+        # expansion is enabled (``J1_QUERY_EXPANSION_ENABLED``) —
+        # NOT only when augmentation has terms. A deployment with
+        # the memory provider wired but no domain augmentation
+        # provider still wants memory expansion to broaden
+        # retrieval. ``applied_to_retrieval`` gates the
+        # augmentation source-of-truth on the trace; the
+        # broadening gate below is the more permissive
+        # ``is_query_expansion_enabled()``.
+        retrieval_expansion_enabled = is_query_expansion_enabled()
+        retrieval_variants = (
+            augmentation_expansions if applied_to_retrieval else ()
+        )
+        if (
+            retrieval_expansion_enabled
+            and memory_context is not None
+            and getattr(memory_context, "status", "") == "used"
+            and memory_context.expansion_terms
+            and mem_settings is not None
+        ):
+            try:
+                from j1.memory.expansion_merge import (
+                    merge_memory_expansion_terms,
+                )
+                merge_result = merge_memory_expansion_terms(
+                    augmentation_terms=retrieval_variants,
+                    memory_terms=memory_context.expansion_terms,
+                    max_memory_terms=mem_settings.max_expansion_terms,
+                )
+                retrieval_variants = merge_result.final_terms
+                # Re-stamp the trace with the applied diagnostic.
+                # Phase 4 already stamped the base block; we
+                # replace it with the post-merge view so the FE
+                # / diagnostic JSON shows the actual retrieval
+                # impact.
+                diagnostic = dict(memory_context.to_payload())
+                diagnostic["applied_expansion_terms"] = list(
+                    merge_result.applied_memory_terms,
+                )
+                diagnostic["expansion_terms_applied"] = (
+                    merge_result.applied
+                )
+                diagnostic["expansion_terms_truncated"] = (
+                    merge_result.truncated
+                )
+                trace = trace.with_knowledge_memory(diagnostic)
+            except Exception:  # noqa: BLE001 — fall back to augmentation-only
+                # Memory merge failure must NOT regress retrieval —
+                # surface the warning on the trace and continue
+                # with the augmentation-only variant set.
+                diagnostic = dict(memory_context.to_payload())
+                existing_warnings = list(diagnostic.get("warnings") or [])
+                if (
+                    "knowledge_memory_expansion_merge_failed"
+                    not in existing_warnings
+                ):
+                    existing_warnings.append(
+                        "knowledge_memory_expansion_merge_failed",
+                    )
+                diagnostic["warnings"] = existing_warnings
+                diagnostic["expansion_terms_applied"] = False
+                diagnostic["applied_expansion_terms"] = []
+                diagnostic["expansion_terms_truncated"] = False
+                trace = trace.with_knowledge_memory(diagnostic)
+                retrieval_variants = (
+                    augmentation_expansions if applied_to_retrieval else ()
+                )
+
         # Build the job set. When expansion is OFF the job set is
         # identical to ``plan.retrieval_jobs`` — pre-expansion
         # behaviour is byte-for-byte preserved.
         jobs_to_run = _build_expansion_jobs(
             plan.retrieval_jobs,
-            variants=augmentation_expansions if applied_to_retrieval else (),
+            variants=retrieval_variants,
             original_query=request.question,
         )
         records = self._routes.run_all(jobs_to_run, route_ctx)
@@ -579,6 +733,93 @@ class SmartQueryOrchestrator:
                 distribution=distribution,
             )
         all_cands = trace.all_candidates
+
+        # Phase 5B (2026-05-16): resolve memory entries' source refs
+        # into source-grounded evidence candidates. Runs AFTER the
+        # canonical routes + dedup so the resolver can dedupe its
+        # candidates against the already-retrieved pool — a chunk
+        # already produced by RAGAnything / BM25 never gets re-
+        # injected by the memory side.
+        #
+        # Hard guardrails (mirroring Phase 4 / 5A invariants):
+        #   * Resolver is opt-in via wiring. Unwired → no-op.
+        #   * Memory disabled / not-used → no injection.
+        #   * Failures never propagate — resolver returns an empty
+        #     resolution + a warning code.
+        #   * Memory entries themselves are NEVER added; only their
+        #     resolvable source refs.
+        if (
+            self._knowledge_memory_evidence_resolver is not None
+            and memory_context is not None
+            and getattr(memory_context, "status", "") == "used"
+            and mem_settings is not None
+            and memory_context.selected_entries
+            and memory_context.resolved_source_ref_count > 0
+        ):
+            try:
+                from j1.memory.source_ref_resolver import (
+                    collect_existing_keys,
+                )
+                existing_keys = collect_existing_keys(all_cands)
+                resolution = (
+                    self._knowledge_memory_evidence_resolver.resolve(
+                        ctx=request.ctx,
+                        selected_entries=(
+                            memory_context.selected_entries
+                        ),
+                        settings=mem_settings,
+                        eligible_snapshot_pairs=(
+                            request.eligible_snapshot_pairs
+                        ),
+                        existing_keys=existing_keys,
+                        document_id=request.document_id,
+                        project_id=request.ctx.project_id,
+                    )
+                )
+            except Exception:  # noqa: BLE001 — resolver never fails query
+                resolution = None
+            if resolution is not None:
+                # Fold injected candidates into the canonical pool.
+                # Order: canonical first (so the evidence builder's
+                # priority ranking sees the normal-route candidates
+                # at the front), memory-guided appended.
+                if resolution.injected:
+                    injected_candidates = tuple(
+                        r.candidate for r in resolution.injected
+                    )
+                    all_cands = tuple(all_cands) + injected_candidates
+                    trace = trace.with_deduped_candidates(all_cands)
+                # Stamp the resolution diagnostic onto the memory
+                # trace block alongside the Phase 4 / 5A fields.
+                diagnostic = dict(trace.knowledge_memory or {})
+                diagnostic.update(resolution.to_diagnostic())
+                # Merge warnings additively — the Phase 4 / 5A
+                # warnings stay; resolver warnings append.
+                existing_warnings = list(diagnostic.get("warnings") or [])
+                for w in resolution.warnings:
+                    if w not in existing_warnings:
+                        existing_warnings.append(w)
+                diagnostic["warnings"] = existing_warnings
+                trace = trace.with_knowledge_memory(diagnostic)
+        elif (
+            self._knowledge_memory_evidence_resolver is not None
+            and memory_context is not None
+        ):
+            # Resolver wired but no injection happened (memory
+            # disabled, no entries, or no source refs). Stamp the
+            # zero-state diagnostic so dashboards see "resolver
+            # consulted, nothing to inject" rather than absence.
+            diagnostic = dict(trace.knowledge_memory or {})
+            diagnostic.setdefault("resolved_source_ref_count", 0)
+            diagnostic.setdefault("injected_evidence_count", 0)
+            diagnostic.setdefault("deduped_evidence_count", 0)
+            diagnostic.setdefault("unresolved_source_ref_count", 0)
+            diagnostic.setdefault(
+                "source_ref_resolution_warnings", [],
+            )
+            diagnostic.setdefault("evidence_injection_applied", False)
+            trace = trace.with_knowledge_memory(diagnostic)
+
         # Stamp snapshot-scope diagnostics so the trace proves BM25 +
         # RAGAnything used the same eligibility boundary. Empty
         # eligibility set is a valid answer (no attached documents);

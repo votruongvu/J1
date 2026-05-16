@@ -290,6 +290,24 @@ function EnrichmentResultContent({
           </ul>
         </div>
       )}
+
+      {/* Phase 3B (2026-05-16): cross-link to the Knowledge Memory
+          status section on Document Detail. We deliberately don't
+          re-fetch the memory status here — the enrichment panel
+          stays focused on enrichment outcomes. The Document Detail
+          page is the canonical place to inspect whether enrichment
+          insights actually got projected into Knowledge Memory. */}
+      {!isSkipped && (
+        <p
+          className="run-panel__hint enrichment-result__memory-note muted"
+          data-testid="enrichment-result-memory-note"
+        >
+          Domain insights from this enrichment can be projected into
+          Knowledge Memory. The Knowledge Memory section on the
+          Document Detail page shows whether memory has been updated
+          with these insights.
+        </p>
+      )}
     </div>
   );
 }

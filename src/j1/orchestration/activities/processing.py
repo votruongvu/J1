@@ -547,6 +547,16 @@ class ProcessingActivities:
         enrichment_vision_client: object | None = None,
         enrichment_llm_call_limiter: object | None = None,
         diagnostic_recorder: "DiagnosticRecorder | None" = None,
+        # Phase 3A (2026-05-16): persistent Knowledge Memory build
+        # service. When wired AND the corresponding env flag is on,
+        # the compile + enrichment activities call
+        # ``maybe_build_after_compile`` / ``maybe_build_after_enrichment``
+        # at their success-return paths to materialise a snapshot-
+        # scoped ``knowledge_memory`` artifact. ``None`` keeps the
+        # legacy behaviour — the hooks return ``skipped`` with
+        # reason ``service_not_wired`` and emit a structured log
+        # event. Query routing is NOT yet integrated.
+        knowledge_memory_service: object | None = None,
     ) -> None:
         self._processing = processing
         self._sources = sources
@@ -602,6 +612,10 @@ class ProcessingActivities:
         # audit event and accumulates into the per-run report that
         # lands at terminal time.
         self._diagnostics = diagnostic_recorder
+        # Phase 3A: knowledge_memory build service. None preserves
+        # legacy behaviour (the hooks return ``skipped`` instead of
+        # raising).
+        self._knowledge_memory_service = knowledge_memory_service
 
     def all_activities(self) -> list:
         # This MUST list every `@activity.defn`-decorated method on the
@@ -970,7 +984,39 @@ class ProcessingActivities:
                 )
         except Exception:  # noqa: BLE001 — diagnostics must not break compile
             pass
+        # Phase 3A (2026-05-16): optional auto-build of the
+        # persistent knowledge_memory artifact after a successful
+        # compile. Best-effort — the hook never raises into the
+        # activity, so a memory-build failure can't fail an
+        # otherwise-successful compile. Feature-gated by
+        # ``J1_KNOWLEDGE_MEMORY_AUTO_BUILD_ENABLED`` (default off).
+        # Skipped when ``out.status != "succeeded"`` so failed
+        # compiles never produce a memory artifact.
+        if getattr(out, "status", None) == "succeeded":
+            self._maybe_build_knowledge_memory_after_compile(
+                ctx=ctx, document_id=input.document_id,
+            )
         return out
+
+    def _maybe_build_knowledge_memory_after_compile(
+        self, *, ctx, document_id: str,
+    ) -> None:
+        """Phase 3A hook. Imports lazily so the auto-build module
+        doesn't load on every activity call when the feature is
+        off."""
+        from j1.memory.auto_build import maybe_build_after_compile
+        from j1.processing.knowledge_memory_settings import (
+            load_knowledge_memory_lifecycle_settings,
+        )
+        settings = load_knowledge_memory_lifecycle_settings()
+        if not settings.auto_build_after_compile:
+            return  # Disabled — short-circuit before any work.
+        maybe_build_after_compile(
+            ctx=ctx,
+            document_id=document_id,
+            service=self._knowledge_memory_service,
+            settings=settings,
+        )
 
     def _maybe_reuse_compile_artifacts(
         self,
@@ -1832,12 +1878,46 @@ class ProcessingActivities:
                 "domain-enrichment alias producer failed (best-effort)",
                 exc_info=True,
             )
+        # Phase 3A (2026-05-16): optional auto-rebuild of the
+        # persistent knowledge_memory artifact after a successful
+        # enrichment. Feature-gated by
+        # ``J1_KNOWLEDGE_MEMORY_REBUILD_AFTER_ENRICHMENT`` (default
+        # off). Phase 2's supersede sweep flips the previous
+        # base-only artifact (if any) to ``superseded`` — one
+        # active memory per snapshot stays invariant. Best-effort
+        # — the hook never raises into the activity, so a memory-
+        # build failure can't convert a successful enrichment
+        # into a failed run.
+        if result.status in ("succeeded", "succeeded_with_warnings"):
+            self._maybe_build_knowledge_memory_after_enrichment(
+                ctx=ctx, document_id=input.document_id,
+            )
         return RunEnrichmentStageResult(
             status=result.status,
             plan_payload=payload,
             artifact_id=persist_outcome.artifact_id,
             require_enrichment_success=enrich_plan.require_enrichment_success,
             persist_error=persist_outcome.error,
+        )
+
+    def _maybe_build_knowledge_memory_after_enrichment(
+        self, *, ctx, document_id: str,
+    ) -> None:
+        """Phase 3A hook. Mirrors the compile-side helper above;
+        imports lazily so the auto-build module stays untouched
+        when the feature is off."""
+        from j1.memory.auto_build import maybe_build_after_enrichment
+        from j1.processing.knowledge_memory_settings import (
+            load_knowledge_memory_lifecycle_settings,
+        )
+        settings = load_knowledge_memory_lifecycle_settings()
+        if not settings.rebuild_after_enrichment:
+            return  # Disabled — short-circuit.
+        maybe_build_after_enrichment(
+            ctx=ctx,
+            document_id=document_id,
+            service=self._knowledge_memory_service,
+            settings=settings,
         )
 
     @activity.defn(name=ACTIVITY_PERSIST_COMPILE_RESULT_SUMMARY)

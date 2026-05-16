@@ -152,15 +152,24 @@ MANUAL_ACTIONS: tuple[ManualActionDescriptor, ...] = (
         id=ACTION_BUILD_KNOWLEDGE_MEMORY,
         label="Build Knowledge Memory",
         description=(
-            "Persist a structured knowledge memory layer on top of "
-            "the compiled chunks (entities, relationships, "
-            "summary cache)."
+            "Creates a snapshot-scoped memory artifact from compile "
+            "output and available domain enrichment results. This "
+            "prepares better context for future query improvements."
         ),
         cost_note=(
-            "LLM-heavy. Suitable for documents that will be "
-            "queried frequently."
+            "Deterministic build — no LLM calls. Fast and idempotent: "
+            "re-running supersedes the previous memory artifact for "
+            "the same snapshot."
         ),
-        status=MANUAL_ACTION_STATUS_NOT_IMPLEMENTED,
+        # Phase 2 (2026-05-16): wired. Endpoint dispatches the
+        # `KnowledgeMemoryBuilder` against the active snapshot's
+        # compile + enrichment artifacts and persists a typed
+        # `knowledge_memory` artifact via
+        # `ProcessingService.persist_knowledge_memory`. Status
+        # downgraded to ``disabled`` at list time when the
+        # deployment turns the feature off via
+        # ``J1_ENABLE_MANUAL_BUILD_KNOWLEDGE_MEMORY``.
+        status=MANUAL_ACTION_STATUS_AVAILABLE,
     ),
     ManualActionDescriptor(
         id=ACTION_NORMALIZE_ENTITIES,
@@ -221,6 +230,11 @@ _BY_ID = {a.id: a for a in MANUAL_ACTIONS}
 
 ENV_MANUAL_ACTIONS = "J1_ENABLE_MANUAL_ACTIONS"
 ENV_MANUAL_DOMAIN_ENRICHMENT = "J1_ENABLE_MANUAL_DOMAIN_ENRICHMENT"
+# Phase 2 (2026-05-16): per-action override for the
+# `build_knowledge_memory` action. Defaults to True; deployments
+# that want to stage the rollout disable it here without taking
+# the rest of the manual-action surface down.
+ENV_MANUAL_BUILD_KNOWLEDGE_MEMORY = "J1_ENABLE_MANUAL_BUILD_KNOWLEDGE_MEMORY"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -245,6 +259,8 @@ def is_manual_action_enabled(action_id: str) -> bool:
         return False
     if action_id == ACTION_RUN_DOMAIN_ENRICHMENT:
         return _env_bool(ENV_MANUAL_DOMAIN_ENRICHMENT, True)
+    if action_id == ACTION_BUILD_KNOWLEDGE_MEMORY:
+        return _env_bool(ENV_MANUAL_BUILD_KNOWLEDGE_MEMORY, True)
     return True
 
 

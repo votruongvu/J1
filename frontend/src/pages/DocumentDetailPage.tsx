@@ -30,6 +30,7 @@ import {
   ResultStatusBadge,
 } from "./documents/DocumentBadges";
 import { TestActiveKnowledgePanel } from "./documents/TestActiveKnowledgePanel";
+import { KnowledgeMemoryStatusPanel } from "./documents/KnowledgeMemoryStatusPanel";
 import { ManualActionsPanel } from "./documents/ManualActionsPanel";
 import { AssessmentPlanDialog } from "./upload/AssessmentPlanDialog";
 import type {
@@ -433,6 +434,16 @@ export function DocumentDetailPage({
           activeSnapshotId={detail.activeSnapshotId}
           hasInflightRun={!!inflightCandidate}
           onOpenRun={onOpenRun}
+        />
+        {/* Phase 3B (2026-05-16): small Knowledge Memory status
+            section. Compact informational view over the active
+            snapshot's `knowledge_memory` artifact metadata —
+            never claims persistent memory drives query (that's
+            Phase 4). Hides itself on 503 (service not wired). */}
+        <KnowledgeMemoryStatusPanel
+          client={client}
+          documentId={detail.documentId}
+          activeSnapshotId={detail.activeSnapshotId}
         />
       </section>
 

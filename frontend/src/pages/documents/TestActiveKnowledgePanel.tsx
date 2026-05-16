@@ -27,6 +27,10 @@ import { ApiError } from "@/lib/api/client";
 import { useClient } from "@/lib/hooks/useClient";
 import { validationStatusMeta } from "@/lib/display";
 import type { ManualTestQueryResponse } from "@/types/review";
+import {
+  KnowledgeMemoryQueryDiagnostics,
+  knowledgeMemoryTraceFrom,
+} from "@/pages/search/KnowledgeMemoryQueryDiagnostics";
 
 
 interface TestActiveKnowledgePanelProps {
@@ -169,6 +173,11 @@ function TestActiveKnowledgeResult(
           <span className="muted">No answer produced.</span>
         )}
       </div>
+      <KnowledgeMemoryQueryDiagnostics
+        trace={knowledgeMemoryTraceFrom(
+          response.debug as Record<string, unknown> | undefined,
+        )}
+      />
     </div>
   );
 }

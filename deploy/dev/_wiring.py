@@ -336,6 +336,71 @@ def build_application_facade(workspace: WorkspaceResolver) -> ApplicationFacade:
     )
 
 
+def build_knowledge_memory_service(workspace: WorkspaceResolver):
+    """Construct the `KnowledgeMemoryService` used by the
+    ``POST /documents/{id}/manual-actions/build-knowledge-memory``
+    endpoint.
+
+    Phase 2 wiring (2026-05-16): wires the service into the normal
+    dev composition root so the manual action returns 200 with an
+    artifact id instead of 503 ``knowledge_memory_service not
+    wired``. Dependencies follow the same JSONL-backed singleton
+    pattern as the other services here — every registry is a thin
+    wrapper over workspace-rooted JSONL files, so constructing a
+    fresh instance per service is safe (they all read / write the
+    same on-disk state).
+
+    Dependency map:
+      * ``source_lookup``  — ``SourceLookupService`` over
+        ``JsonSourceRegistry`` (mirrors ``facade.source_lookup``).
+      * ``artifact_registry`` — fresh ``JsonArtifactRegistry``;
+        shares the workspace JSONL with every other artifact-
+        registry instance here.
+      * ``workspace`` — the resolver, used to read enrichment
+        artifact bytes when their payload isn't inlined in
+        metadata.
+      * ``processing_service`` — fresh ``ProcessingService``; the
+        persist seam (`persist_knowledge_memory`) writes through
+        the same artifact registry + workspace area
+        (``WorkspaceArea.ENRICHED``) the legacy enrichers already
+        use. No audit / cost recorders needed because the persist
+        path doesn't emit cost events for the deterministic build.
+      * ``domain_registry`` — the in-process singleton from
+        ``j1.domains.default_registry``. Used to resolve domain
+        pack aliases / terminology / retrieval hints when the
+        document has a domain id stamped on its record.
+
+    The service is constructed at app-build time and held by the
+    REST adapter; each request reuses the same instance.
+    """
+    from j1.audit.recorder import DefaultAuditRecorder
+    from j1.audit.sink import JsonlAuditSink
+    from j1.cost.recorder import DefaultCostRecorder
+    from j1.cost.sink import JsonlCostSink
+    from j1.domains import default_registry as _default_domain_registry
+    from j1.memory.service import KnowledgeMemoryService
+
+    audit_recorder = DefaultAuditRecorder(JsonlAuditSink(workspace))
+    cost_recorder = DefaultCostRecorder(JsonlCostSink(workspace))
+    artifacts = JsonArtifactRegistry(workspace)
+    sources = JsonSourceRegistry(workspace)
+    processing = ProcessingService(
+        workspace=workspace, artifact_registry=artifacts,
+        audit=audit_recorder, cost=cost_recorder,
+        # ``smart_query_orchestrator=None`` is fine — the persist
+        # path doesn't touch query. ProcessingService.query (the
+        # only consumer) raises a clear error if called.
+        smart_query_orchestrator=None,
+    )
+    return KnowledgeMemoryService(
+        source_lookup=SourceLookupService(sources),
+        artifact_registry=artifacts,
+        workspace=workspace,
+        processing_service=processing,
+        domain_registry=_default_domain_registry(),
+    )
+
+
 def build_document_lifecycle_service(workspace: WorkspaceResolver):
     """Build the ``DocumentLifecycleService`` for the REST adapter.
 
@@ -556,8 +621,67 @@ def build_smart_query_orchestrator(
         except Exception as exc:  # noqa: BLE001 — surface to gate
             return f"[llm error: {type(exc).__name__}: {exc}]"
 
+    # Phase 4 (2026-05-16): persistent Knowledge Memory query
+    # integration. Construct the provider against the same shared
+    # registries the orchestrator already sees. The orchestrator
+    # invocation is gated by
+    # ``J1_QUERY_KNOWLEDGE_MEMORY_ENABLED`` (default off) — wiring
+    # the provider here is zero-cost when the flag is unset.
+    from j1.memory.query_provider import KnowledgeMemoryContextProvider
+    knowledge_memory_provider = KnowledgeMemoryContextProvider(
+        source_lookup=SourceLookupService(sources),
+        artifact_registry=artifacts,
+        workspace=workspace,
+    )
+
+    # Phase 5B (2026-05-16): memory-guided source-evidence resolver.
+    # The resolver materialises selected memory entries' source refs
+    # into evidence candidates the orchestrator's standard evidence
+    # pipeline consumes. Wired alongside the provider so both share
+    # the same artifact registry; memory entries themselves are
+    # never injected as evidence — the resolver only produces
+    # candidates for refs that point at real source artifacts.
+    from j1.memory.source_ref_resolver import (
+        KnowledgeMemoryEvidenceResolver,
+    )
+
+    def _resolver_body_loader(record) -> str:
+        """Read the source-artifact body bytes off disk. Used by
+        the resolver to populate the evidence candidate's body so
+        the synthesizer has the actual text. Best-effort — any
+        failure returns an empty body and the candidate still
+        surfaces as a citation marker."""
+        try:
+            location = getattr(record, "location", None)
+            if not location:
+                return ""
+            from pathlib import PurePosixPath
+            from j1.workspace.layout import WorkspaceArea
+            parts = PurePosixPath(str(location)).parts
+            if not parts:
+                return ""
+            area_name, *rest = parts
+            area = WorkspaceArea(area_name)
+            area_root = workspace.area(record.project, area).resolve()
+            candidate = area_root.joinpath(*rest).resolve()
+            candidate.relative_to(area_root)
+            if not candidate.exists():
+                return ""
+            return candidate.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    knowledge_memory_evidence_resolver = KnowledgeMemoryEvidenceResolver(
+        artifact_registry=artifacts,
+        body_loader=_resolver_body_loader,
+    )
+
     return SmartQueryOrchestrator.from_components(
         routes=routes, llm=_llm_callable,
+        knowledge_memory_provider=knowledge_memory_provider,
+        knowledge_memory_evidence_resolver=(
+            knowledge_memory_evidence_resolver
+        ),
     )
 
 
@@ -627,6 +751,46 @@ def build_review_service(workspace: WorkspaceResolver):
         # caller path (REST + future CLI / scripted callers).
         source_registry=JsonSourceRegistry(workspace),
     )
+
+
+def build_validation_service_for_tool(
+    *,
+    tenant_id: str,
+    project_id: str,
+):
+    """Construct a fully-wired `IngestionValidationService` for
+    CLI evaluation tools (`j1.tools.evaluate_retrieval_broadening`
+    + `j1.tools.evaluate_memory_query`).
+
+    Tools call this without a pre-built workspace because they don't
+    own the rest of the dev composition root. We assemble the same
+    `WorkspaceResolver` the REST adapter uses, then delegate to
+    `build_validation_service` so the eval surface and the REST
+    surface read the exact same registries.
+
+    Returns the service or raises ``SystemExit`` with a precise
+    message when the dev wiring can't construct one (missing
+    profile / missing LLM / unwired RAGAnything) — the tool's CLI
+    surface treats that as a precondition error, not a query
+    failure."""
+    del tenant_id, project_id  # Accepted for API parity; the
+    # validation service uses the ctx the runner threads through.
+    settings = build_settings()
+    workspace = build_workspace(settings)
+    service = build_validation_service(workspace)
+    if service is None:
+        raise SystemExit(
+            "evaluation CLI cannot construct IngestionValidationService"
+            " — the dev wiring returned None. Common causes:"
+            " (a) no profile loaded — set J1_PROFILE_ID and the"
+            " profile loader's data path;"
+            " (b) no LLM client wired — set the LLM env keys the"
+            " dev composition root expects;"
+            " (c) RAGAnything / LightRAG backend not available."
+            " Check `deploy.dev._wiring.build_validation_service`"
+            " for the precise dependency chain."
+        )
+    return service
 
 
 def build_validation_service(workspace: WorkspaceResolver):
@@ -1259,6 +1423,28 @@ def build_worker_spec(
         # current run's compile-image artifacts.
         enrichment_vision_client = vision_client
 
+    # Phase 3A (2026-05-16): persistent knowledge_memory build
+    # service threaded into the activities so the
+    # ``after_compile`` + ``after_domain_enrichment`` hooks can
+    # materialise a snapshot-scoped artifact when the env flags
+    # are on (``J1_KNOWLEDGE_MEMORY_AUTO_BUILD_ENABLED`` and
+    # ``J1_KNOWLEDGE_MEMORY_REBUILD_AFTER_ENRICHMENT``). When the
+    # flags are off the service is still wired but the hooks
+    # short-circuit before doing any work — zero overhead. The
+    # shared ``processing`` + ``artifacts`` instances reach the
+    # service so prior memory artifacts are correctly superseded
+    # via the Phase 2 helper. Domain registry is the in-process
+    # singleton — same as the REST wiring.
+    from j1.domains import default_registry as _default_domain_registry
+    from j1.memory.service import KnowledgeMemoryService
+    knowledge_memory_service_for_activities = KnowledgeMemoryService(
+        source_lookup=SourceLookupService(sources),
+        artifact_registry=artifacts,
+        workspace=workspace,
+        processing_service=processing,
+        domain_registry=_default_domain_registry(),
+    )
+
     activities += ProcessingActivities(
         processing=processing,
         sources=sources,
@@ -1294,6 +1480,9 @@ def build_worker_spec(
         # processing activities (stage timing + LLM calls) and
         # the terminal hook (report-write).
         diagnostic_recorder=diagnostic_recorder,
+        # Phase 3A: knowledge_memory build service. See block
+        # above the constructor for the rationale.
+        knowledge_memory_service=knowledge_memory_service_for_activities,
     ).all_activities()
     activities += KnowledgeProcessingActivities(
         workspace=workspace,

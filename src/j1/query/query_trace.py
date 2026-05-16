@@ -126,6 +126,13 @@ class QueryTrace:
     # contributed to the expansion list).
     enrichment_aliases_available: int = 0
     enrichment_aliases_matched: tuple[tuple[str, str], ...] = ()
+    # Phase 4 (2026-05-16): persistent Knowledge Memory diagnostics.
+    # Populated when the orchestrator invokes the
+    # `KnowledgeMemoryContextProvider`. When the provider is
+    # disabled / unwired / fails, the status string still surfaces
+    # so dashboards can distinguish "memory not consulted" from
+    # "memory consulted, no match" from "memory failed".
+    knowledge_memory: dict | None = None
 
     @classmethod
     def empty_with_plan(cls, question: str, plan: QueryPlan) -> "QueryTrace":
@@ -293,6 +300,21 @@ class QueryTrace:
             enrichment_aliases_matched=tuple(matched),
         )
 
+    def with_knowledge_memory(
+        self, payload: dict | None,
+    ) -> "QueryTrace":
+        """Phase 4 (2026-05-16): stamp the persistent Knowledge
+        Memory diagnostic block. ``payload`` is a JSON-friendly
+        dict produced by `KnowledgeMemoryQueryContext.to_payload()`;
+        the trace stores it verbatim so the FE rendering layer
+        (or operator-facing JSON consumers) sees the provider's
+        own keys without re-mapping. ``None`` clears any previous
+        stamp — used by tests that build a trace from scratch."""
+        return _replace(
+            self,
+            knowledge_memory=dict(payload) if payload is not None else None,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-friendly shape rendered by the manual-test endpoint
         verbatim. Keys are stable; new ones land at the end so
@@ -355,6 +377,13 @@ class QueryTrace:
                     for canonical, alias in self.enrichment_aliases_matched
                 ],
             },
+            # Phase 4: persistent Knowledge Memory diagnostics.
+            # Carried verbatim from the
+            # `KnowledgeMemoryQueryContext.to_payload()` shape so
+            # the FE rendering layer can iterate keys without
+            # re-mapping. ``None`` when the provider was never
+            # consulted (legacy / disabled deployments).
+            "knowledge_memory": self.knowledge_memory,
         }
 
 
