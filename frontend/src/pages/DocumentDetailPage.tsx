@@ -32,6 +32,7 @@ import {
 import { TestActiveKnowledgePanel } from "./documents/TestActiveKnowledgePanel";
 import { KnowledgeMemoryStatusPanel } from "./documents/KnowledgeMemoryStatusPanel";
 import { ManualActionsPanel } from "./documents/ManualActionsPanel";
+import { ActiveKnowledgeResultPanel } from "./documents/ActiveKnowledgeResultPanel";
 import { AssessmentPlanDialog } from "./upload/AssessmentPlanDialog";
 import type {
   DocumentAction,
@@ -344,6 +345,16 @@ export function DocumentDetailPage({
                 onClick={() => handleAction(action)}
               />
             ))}
+            {otherActions.includes("reindex") && (
+              <p
+                className="document-detail__reindex-hint muted"
+                data-testid="document-detail-reindex-hint"
+              >
+                Re-index creates a new knowledge snapshot from the
+                source file. The current active snapshot remains
+                queryable until the new compile succeeds.
+              </p>
+            )}
           </div>
         </div>
 
@@ -420,8 +431,36 @@ export function DocumentDetailPage({
         />
       </section>
 
-      <section className="document-detail__section">
-        <h3>Manual Actions</h3>
+      {/* Full active-snapshot inspection — the document-level
+          counterpart to Run Detail's simplified Results panel.
+          Renders the rich tab set (Overview / Enrichment /
+          Knowledge Graph / Quality / Validation) scoped to the
+          active producing run. Hidden when there's no active
+          producing run (in-flight first-time ingest) since none
+          of the tabs would have data to render. */}
+      {activeRunId && (
+        <section
+          className="document-detail__section"
+          data-testid="document-detail-active-knowledge-result"
+        >
+          <ActiveKnowledgeResultPanel
+            activeRunId={activeRunId}
+            documentId={detail.documentId}
+            activeSnapshotId={detail.activeSnapshotId}
+          />
+        </section>
+      )}
+
+      <section
+        className="document-detail__section"
+        data-testid="document-detail-active-knowledge-actions"
+      >
+        <h3>Active Knowledge Actions</h3>
+        <p className="muted document-detail__hint">
+          These actions apply to the document&apos;s current
+          active snapshot. Re-index is separate — see the
+          Re-Index button above.
+        </p>
         {/* TODO: Thread ``recommendedNextSteps`` once Document Detail
             fetches the latest AssessmentDecision (or equivalent LLM
             advanced-assessment payload). The panel already accepts

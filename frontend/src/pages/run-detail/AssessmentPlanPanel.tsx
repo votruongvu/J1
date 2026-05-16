@@ -161,6 +161,31 @@ export function AssessmentPlanPanel({
     };
   }, [loadPrePlan, loadPostReport]);
 
+  // Short retry-polling for the freshly-started-run case. When the
+  // panel mounts mid-flight and the SSE event for the assess-compile
+  // step has ALREADY fired before subscription (race), the panel
+  // would otherwise stick on `missing` until the next event arrives.
+  // Poll every 1.5 s for up to 15 s while we're in `missing` state
+  // and the latest event indicates the run isn't terminal — the
+  // artifact lands within a second of the activity completing in
+  // practice, so this catches the eventual-consistency window
+  // without becoming a steady-state poll.
+  useEffect(() => {
+    if (preState.kind !== "missing") return;
+    if (latestEvent && isTerminalEvent(latestEvent.event)) return;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 10;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (attempts > MAX_ATTEMPTS) {
+        clearInterval(timer);
+        return;
+      }
+      loadPrePlan();
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [preState.kind, latestEvent, loadPrePlan]);
+
   // SSE-driven refresh: re-fetch both artifacts when lifecycle events
   // arrive. The pre-compile plan lands within a second of upload; the
   // post-compile report lands when compile completes. Refreshing on
@@ -205,13 +230,43 @@ export function AssessmentPlanPanel({
   }
   if (preState.kind === "missing") {
     return (
-      <div className="card" data-testid="assessment-plan-missing">
+      <div
+        className="card assessment-plan-panel--missing"
+        data-testid="assessment-plan-missing"
+      >
         <div className="card__body">
           <h3>Assessment Plan</h3>
-          <p style={{ color: "var(--text-muted)" }}>
-            {preState.reason
-              ?? "Assessment plan is not available for this run yet."}
+          <p>
+            <span className="muted">
+              Waiting for the pre-compile planner to persist the
+              initial execution plan for this run.
+            </span>
           </p>
+          <p style={{ color: "var(--text-muted)", fontSize: 12.5 }}>
+            The panel refreshes automatically when each pipeline
+            stage completes. If the run is still indexing this is
+            expected — give it a few seconds. If the run has
+            terminated and this panel stays empty, the
+            <code style={{ margin: "0 4px" }}>
+              build_initial_execution_plan
+            </code>
+            activity may have failed to persist —{" "}
+            <strong>Technical details</strong> shows the workflow
+            history.
+          </p>
+          {preState.reason && (
+            <details
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: "var(--text-muted)",
+              }}
+              data-testid="assessment-plan-missing-reason"
+            >
+              <summary>Server reason</summary>
+              <p style={{ marginTop: 4 }}>{preState.reason}</p>
+            </details>
+          )}
         </div>
       </div>
     );

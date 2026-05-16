@@ -1362,6 +1362,25 @@ pre,
   gap: 16px;
   letter-spacing: var(--tracking-display);
   line-height: var(--lh-tight);
+  /* The H2 itself can shrink inside its column without pushing the
+     ``flex-shrink: 0`` doc icon or status badge off-screen. */
+  min-width: 0;
+}
+/* Title-text span — between the doc icon and the StatusBadge. The
+   inline ``style={{ minWidth: 0, overflow: hidden, textOverflow:
+   ellipsis }}`` set in RunHeader.tsx is incomplete without
+   ``white-space: nowrap`` AND ``display: block``: without nowrap
+   the text wraps onto the next line; without an explicit block
+   the flex item doesn't enforce the overflow boundary. When the
+   right column briefly hogs the row (long-form hints) the title
+   was rendering character-per-line — fix is purely declarative. */
+.run-hero h2 > span:not([class]) {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .run-hero__doc-icon {
   width: 42px;
@@ -1402,6 +1421,131 @@ pre,
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+  /* Right-column actions can wrap their own children (the
+     ``only-run-hint`` paragraph below, action buttons) instead of
+     forcing the parent flex row to grow. */
+  flex-wrap: wrap;
+  align-items: flex-start;
+  /* Cap the column. Without this, a long ``only-run-hint`` paragraph
+     stretches the column to its prose width and pushes the title
+     column to ~10px wide, where the filename breaks into one
+     character per line. */
+  max-width: 360px;
+}
+/* The "only run" advisory paragraph rendered inside `.run-hero__actions`
+   by RunControls. Cap width + wrap whole words so the hint reads as
+   a sidebar tip rather than a full-row banner. */
+.run-controls__only-run-hint {
+  flex-basis: 100%;
+  max-width: 360px;
+  margin: 6px 0 0;
+  font-size: var(--text-xs, 12px);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* ─── Manual Actions panel (Document Detail) ─────────────────────
+   The panel shipped without CSS; the raw `<ul>` rendered as a
+   bullet list with action title + description + small + button +
+   reason all flowing inline. The rules below give each manual
+   action its own bordered card with a 2-line head (title +
+   "Recommended" pill + status chip), a flowing description, a
+   small cost-note line, and a button row at the bottom. Disabled
+   states get an explicit "Coming soon" treatment so the operator
+   doesn't have to read the small reason text to know which
+   buttons are inert. */
+.manual-actions-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.manual-actions-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.manual-actions-panel__card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #e1e4e8);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.manual-actions-panel__card:hover {
+  border-color: var(--primary, #0366d6);
+}
+.manual-actions-panel__card--recommended {
+  border-color: var(--accent-fg, #1a5fb4);
+  background: var(--accent-soft, #e7f0fb);
+}
+.manual-actions-panel__card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  flex-wrap: wrap;
+}
+.manual-actions-panel__card-header strong {
+  font-size: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.manual-actions-panel__recommended-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-fg, #1a5fb4);
+  color: #fff;
+  line-height: 1.5;
+}
+.manual-actions-panel__card-description {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.manual-actions-panel__card small {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.manual-actions-panel__card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border, #e1e4e8);
+}
+.manual-actions-panel__card-actions small {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+/* Disabled buttons inside the panel — make the "Coming soon" state
+   visually distinct from the active actions without using the
+   browser's default greyed-out treatment, which is hard to read on
+   the cream surface. */
+.manual-actions-panel__card-actions .btn:disabled,
+.manual-actions-panel__card-actions .btn[aria-disabled="true"] {
+  background: var(--bg-tinted, #f6f8fa);
+  color: var(--text-muted);
+  border-color: var(--border, #e1e4e8);
+  cursor: not-allowed;
+  opacity: 0.85;
 }
 
 /* Summary strip below hero */
@@ -3129,7 +3273,54 @@ pre.json .b {
 .results-section__tab.is-disabled {
   color: var(--text-subtle);
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.85;
+  /* Reserve space for the inline hint chip so disabled labels stay
+     readable rather than dimming into invisibility. The dimmer
+     opacity was making it impossible to tell at a glance which
+     tabs were skipped vs which were active — now the chip carries
+     the disambiguation. */
+}
+.results-section__tab-hint {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-tinted, #f6f8fa);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.6;
+  vertical-align: middle;
+}
+.results-section__helper {
+  margin: 4px 0 12px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.results-overview__step-note {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.active-knowledge-result-panel .results-section__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Re-index hint — appears under the Re-Index action button on the
+   document hero so the operator sees the snapshot-creation copy
+   without hovering. Cap width so it reads as a sidebar tip rather
+   than a banner that grows the right column past the title. */
+.document-detail__reindex-hint {
+  flex-basis: 100%;
+  max-width: 360px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .results-section__body {
   padding: 18px;
@@ -5907,6 +6098,153 @@ pre.json .b {
 }
 .assessment-plan-dialog__profile-card-bullets li {
   line-height: 1.4;
+}
+
+/* ─── Capability checkboxes block ─────────────────────────────────
+   The "Additional content processing" fieldset shipped without
+   styles, so checkboxes + descriptions + recommendation hints all
+   collapsed onto inline runs of text. These rules give each
+   capability row breathing space, surface the "Recommended" pill,
+   format the per-recommendation reason list, and visually
+   separate the trailing help footer from the rows themselves. */
+.assessment-plan-dialog__capabilities {
+  margin: 16px 0 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border, #e1e4e8);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.assessment-plan-dialog__capabilities legend {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 6px;
+  margin-left: -4px;
+}
+.assessment-plan-dialog__capabilities-help {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.assessment-plan-dialog__capabilities > label {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 4px 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e1e4e8);
+  border-radius: 6px;
+  background: var(--bg-tinted, #fafbfc);
+  cursor: pointer;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.assessment-plan-dialog__capabilities > label:hover {
+  border-color: var(--primary, #0366d6);
+}
+.assessment-plan-dialog__capabilities > label > input[type="checkbox"] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+.assessment-plan-dialog__capabilities > label > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.assessment-plan-dialog__capabilities > label > span > strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.3;
+}
+.assessment-plan-dialog__capabilities > label > span > small {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.assessment-plan-dialog__rec-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft, #e7f0fb);
+  color: var(--accent-fg, #1a5fb4);
+  line-height: 1.5;
+}
+.assessment-plan-dialog__rec-reasons {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  list-style: disc;
+}
+.assessment-plan-dialog__rec-reasons li {
+  margin: 1px 0;
+}
+.assessment-plan-dialog__capabilities > small {
+  display: block;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border, #e1e4e8);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* ─── Recommendation banner refinements ──────────────────────────
+   The `RecommendationBanner` renders the section title + the
+   `DOMAIN_GUIDANCE_TOOLTIP` helper text inline. Without rules the
+   helper sentence collides with the short "Domain guidance"
+   label. Stacking the label above the helper, with a slightly
+   indented helper and an emphasized "Recommended: <profile>"
+   line, gives the banner a clear hierarchy. */
+.assessment-plan-dialog__recommendation-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.assessment-plan-dialog__recommendation-header strong {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.assessment-plan-dialog__recommendation-tooltip {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.assessment-plan-dialog__recommendation > div {
+  font-size: 14px;
+}
+.assessment-plan-dialog__recommendation > div strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ─── Advanced Assessment block ────────────────────────────────── */
+.assessment-plan-dialog__advanced {
+  gap: 8px;
+}
+.assessment-plan-dialog__advanced > button {
+  align-self: flex-start;
+}
+.assessment-plan-dialog__advanced > small {
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 .visually-hidden {
   position: absolute;

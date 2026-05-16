@@ -24,6 +24,16 @@ import type { IngestionRun } from "@/types/ingestion";
 
 export const RUN_DOMAIN_ENRICHMENT_ID = "run_domain_enrichment";
 
+// Action ids the FE intentionally hides from the Manual Actions
+// list. These belong to features whose FE handler isn't wired
+// yet, so showing them as permanently-disabled "Coming soon" rows
+// adds visual noise without giving the operator anything to do.
+// When the FE handler ships for one of these ids, drop it from
+// the set + register the click handler in the panel body.
+const HIDDEN_ACTION_IDS: ReadonlySet<string> = new Set([
+  "run_llm_advanced_assessment",
+]);
+
 
 /** Terminal status set for an IngestionRun — once the run lands in
  * one of these states the polling loop stops and the summary
@@ -178,19 +188,21 @@ export function ManualActionsPanel({
 
       {actions !== null && (
         <ul className="manual-actions-panel__list">
-          {actions.map((a) => (
-            <ManualActionCard
-              key={a.id}
-              action={a}
-              activeSnapshotId={activeSnapshotId}
-              hasInflightRun={hasInflightRun}
-              lifecycle={lifecycle}
-              recommended={
-                (recommendedNextSteps ?? []).includes(a.id)
-              }
-              onConfirm={a.id === RUN_DOMAIN_ENRICHMENT_ID ? onConfirm : undefined}
-            />
-          ))}
+          {actions
+            .filter((a) => !HIDDEN_ACTION_IDS.has(a.id))
+            .map((a) => (
+              <ManualActionCard
+                key={a.id}
+                action={a}
+                activeSnapshotId={activeSnapshotId}
+                hasInflightRun={hasInflightRun}
+                lifecycle={lifecycle}
+                recommended={
+                  (recommendedNextSteps ?? []).includes(a.id)
+                }
+                onConfirm={a.id === RUN_DOMAIN_ENRICHMENT_ID ? onConfirm : undefined}
+              />
+            ))}
         </ul>
       )}
 

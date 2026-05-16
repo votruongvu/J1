@@ -17,30 +17,24 @@ import { useClient } from "@/lib/hooks/useClient";
 import type { IngestionRun, ProgressEvent } from "@/types/ingestion";
 import { COMPLETED_STATUSES } from "@/lib/constants/runStatus";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
-import type { ReviewQualityReport, ReviewRunSummary } from "@/types/review";
-import { AssetsTab } from "./AssetsTab";
+import type { ReviewRunSummary } from "@/types/review";
 import { ChunksTab } from "./ChunksTab";
-import { GraphTab } from "./GraphTab";
 import { ManualQueryTraceViewTab } from "./ManualQueryTraceViewTab";
 import { OverviewTab } from "./OverviewTab";
-import { QualityTab } from "./QualityTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
-import { ValidationTab } from "./ValidationTab";
 
+// Run Detail Results — execution-focused tab set. Active-snapshot
+// concerns (enrichment, knowledge graph, quality, validation
+// dashboards) moved to `ActiveKnowledgeResultPanel` on Document
+// Detail so each surface answers exactly one question:
+//
+//   * Run Detail  → "What happened in this execution run?"
+//   * Document Detail → "What is the current active knowledge state?"
 type ResultsTab =
   | "overview"
   | "chunks"
-  | "assets"
-  | "graph"
-  | "quality"
   | "raw"
-  | "manual-trace"
-  | "validation";
-
-// Post 2026-05-14 refactor: the Validation tab is the home of two
-// flows — imported test cases (CSV → execute → summary) and the
-// existing Manual Test Query. Both are always available once the
-// run reaches a state that supports queries.
+  | "manual-trace";
 
 interface ResultsSectionProps {
   run: IngestionRun | null;
@@ -61,18 +55,11 @@ export function ResultsSection({
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
-  const [quality, setQuality] = useState<ReviewQualityReport | null>(null);
-  const [qualityLoading, setQualityLoading] = useState(false);
-  const [qualityError, setQualityError] = useState<string | null>(null);
-
   // Reset cache when the run id changes.
   useEffect(() => {
     setSummary(null);
     setSummaryLoading(false);
     setSummaryError(null);
-    setQuality(null);
-    setQualityLoading(false);
-    setQualityError(null);
     setTab("overview");
   }, [runId]);
 
@@ -135,23 +122,6 @@ export function ResultsSection({
     }
   }, [latestEvent, loadSummary]);
 
-  // Lazy quality-report load — only on first Quality tab open.
-  const loadQuality = useCallback(() => {
-    if (quality || qualityLoading) return;
-    setQualityLoading(true);
-    setQualityError(null);
-    void (async () => {
-      try {
-        const r = await client.getRunQualityReport(runId);
-        setQuality(r);
-      } catch (e) {
-        setQualityError(e instanceof Error ? e.message : "Failed to load.");
-      } finally {
-        setQualityLoading(false);
-      }
-    })();
-  }, [client, runId, quality, qualityLoading]);
-
   // Render the section as long as we have a run reference at all.
   // Hiding it pre-CREATED only — once the run record exists, the
   // Overview tab renders immediately and other tabs unlock as their
@@ -170,54 +140,40 @@ export function ResultsSection({
     available: boolean;
     reason?: string | null;
   }> = [
-    // Tab order mirrors the user-facing processing journey:
-    //  Overview → Knowledge Chunks → Enrichment → Knowledge Graph →
-    //  Quality → Raw → Validation. Operators read top-to-bottom in
-    //  the same sequence the run produces them.
-    { key: "overview", label: "Overview", available: true },
+    // Run Detail Results — execution-focused. Four tabs that
+    // describe what happened in THIS execution. Active-snapshot
+    // surfaces (enrichment, graph, quality, validation) live on
+    // Document Detail's `ActiveKnowledgeResultPanel`.
+    //
+    //   Overview     → run status, duration, artifacts, warnings
+    //   Chunks       → compiled output produced by this run
+    //   Artifacts    → raw artifact list (operator/dev inspection)
+    //   Query Trace  → base/manual query against the run's snapshot
+    //
     // Use safe optional chaining (?. on EVERY field) so a partially-
     // missing `views` object — older API response, in-flight network
     // error retried by the FE, malformed payload — can't crash the
-    // tab list rendering. Previously `views?.chunks.available` would
-    // throw `TypeError: cannot read 'available' of undefined` when
-    // `views.chunks` was missing, blanking the whole results panel.
+    // tab list rendering.
+    { key: "overview", label: "Overview", available: true },
     {
       key: "chunks",
-      label: "Knowledge Chunks",
+      label: "Chunks",
       available: views?.chunks?.available ?? false,
       reason: views?.chunks?.reason ?? "Loading…",
     },
     {
-      key: "assets",
-      label: "Enrichment",
-      available: views?.assets?.available ?? false,
-      reason: views?.assets?.reason ?? "Loading…",
-    },
-    {
-      key: "graph",
-      label: "Knowledge Graph",
-      available: views?.graph?.available ?? false,
-      reason: views?.graph?.reason ?? "Loading…",
-    },
-    {
-      key: "quality",
-      label: "Quality",
-      available: views?.quality?.available ?? false,
-      reason: views?.quality?.reason ?? "Loading…",
-    },
-    {
       key: "raw",
-      label: "Raw artifacts",
+      label: "Artifacts",
       available: views?.rawArtifacts?.available ?? false,
       reason: views?.rawArtifacts?.reason ?? "Loading…",
     },
     {
-      // SmartQueryOrchestrator trace surface — gated on the run
-      // reaching a completed status. Querying before the index is
-      // built produces a misleading "no answer" result, so we hide
-      // the tab until the document is actually processed.
+      // SmartQueryOrchestrator trace against this run's compiled
+      // output. Gated on the run reaching a completed status —
+      // querying before compile finishes produces a misleading "no
+      // answer" result.
       key: "manual-trace",
-      label: "Manual Query Trace",
+      label: "Query Trace",
       available:
         run !== null && COMPLETED_STATUSES.has(run.status),
       reason:
@@ -226,12 +182,6 @@ export function ResultsSection({
           : COMPLETED_STATUSES.has(run.status)
             ? undefined
             : "Available once the document is processed.",
-    },
-    {
-      key: "validation",
-      label: "Validation",
-      available: views?.validation?.available ?? false,
-      reason: views?.validation?.reason ?? "Loading…",
     },
   ];
 
@@ -257,10 +207,18 @@ export function ResultsSection({
               onClick={() => {
                 if (disabled) return;
                 setTab(t.key);
-                if (t.key === "quality") loadQuality();
               }}
+              data-testid={`results-tab-${t.key}`}
             >
               {t.label}
+              {disabled && (
+                <span
+                  className="results-section__tab-hint"
+                  aria-hidden="true"
+                >
+                  {summariseDisabledReason(t.reason)}
+                </span>
+              )}
             </button>
           );
         })}
@@ -274,26 +232,54 @@ export function ResultsSection({
             error={summaryError}
           />
         )}
-        {tab === "quality" && (
-          <QualityTab
-            report={quality}
-            loading={qualityLoading}
-            error={qualityError}
-          />
-        )}
         {tab === "chunks" && <ChunksTab runId={runId} />}
-        {tab === "assets" && <AssetsTab runId={runId} />}
-        {tab === "graph" && <GraphTab runId={runId} />}
         {tab === "raw" && <RawArtifactsTab runId={runId} />}
-        {tab === "manual-trace" && <ManualQueryTraceViewTab runId={runId} />}
-        {tab === "validation" && (
-          <ValidationTab
-            runId={runId}
-            documentId={run?.document_id ?? null}
-            targetSnapshotId={run?.target_snapshot_id ?? null}
-          />
+        {tab === "manual-trace" && (
+          <>
+            <p
+              className="results-section__helper muted"
+              data-testid="results-query-trace-helper"
+            >
+              Tests retrieval against the compiled output for this
+              run/snapshot. Post-compile domain enrichment and
+              Knowledge Memory are shown on the document&apos;s
+              active knowledge view.
+            </p>
+            <ManualQueryTraceViewTab runId={runId} />
+          </>
         )}
       </div>
     </section>
   );
+}
+
+
+/**
+ * Project the backend's free-form `availableViews[*].reason` string
+ * into a 1-3 word chip the operator can read at a glance on a
+ * disabled tab. Hover still surfaces the full reason via the
+ * button's `title` attribute.
+ *
+ * Patterns are intentional — operators previously couldn't tell
+ * the difference between "stage skipped by execution profile" and
+ * "stage in progress, will unlock soon" without hovering each tab.
+ */
+export function summariseDisabledReason(
+  reason: string | null | undefined,
+): string {
+  if (!reason) return "";
+  const lower = reason.toLowerCase();
+  if (lower.includes("disabled by selected execution profile")) {
+    return "skipped";
+  }
+  if (lower.includes("execution profile")) return "skipped";
+  if (lower.includes("not provided in request")) return "skipped";
+  if (lower.startsWith("loading")) return "loading…";
+  if (lower.includes("available once") || lower.includes("once the run")) {
+    return "soon";
+  }
+  if (lower.includes("not yet") || lower.includes("not ready")) {
+    return "soon";
+  }
+  return "n/a";
 }

@@ -6,9 +6,72 @@
  * (artifacts produced, total bytes, warnings, duration), the
  * per-stage step table, and the warnings list. Drives availability
  * for sibling tabs via `summary.availableViews`.
+ *
+ * Run Detail (simplified): the Pipeline Steps table filters to
+ * the steps that are part of the run-execution model — Assessment
+ * Plan + Compile. Legacy rows like `enrich SKIPPED disabled by
+ * selected execution profile 'standard'` are stripped because
+ * those concerns moved to Document Detail's
+ * `ActiveKnowledgeResultPanel`; surfacing them here as "skipped"
+ * was confusing operators into thinking the run was incomplete.
  */
 
 import type { ReviewRunSummary, ReviewStepResult } from "@/types/review";
+
+
+// Run-step ids that are part of the current run-execution model
+// and should always appear in the Pipeline Steps table when the
+// run summary lists them. Anything outside this set (enrich,
+// graph, index, quality, validation) is a snapshot-level concern
+// shown elsewhere; we additionally guard against showing it here
+// when it's flagged as `skipped` with an execution-profile reason
+// (the legacy noise the operator complained about).
+const RUN_PRIMARY_STEPS: ReadonlySet<string> = new Set([
+  "assess_compile_strategy",
+  "assessment_plan",
+  "build_initial_execution_plan",
+  "compile",
+]);
+
+// Reasons that mean "this step exists in the summary only because
+// the planner records every pipeline slot — there's nothing for
+// the operator to act on". The row gets filtered out so the
+// Pipeline Steps table reads as the run's actual execution model.
+const LEGACY_SKIP_REASON_FRAGMENTS: ReadonlyArray<string> = [
+  "disabled by selected execution profile",
+  "indexer_kind not provided",
+];
+
+
+function _isLegacySkipped(step: ReviewStepResult): boolean {
+  if (step.status !== "skipped") return false;
+  const reason = (step.reason ?? "").toLowerCase();
+  return LEGACY_SKIP_REASON_FRAGMENTS.some(
+    (frag) => reason.includes(frag),
+  );
+}
+
+
+/**
+ * Filter the backend's step list to the rows that belong on Run
+ * Detail's Pipeline Steps table.
+ *
+ * Kept exported so the contract test can drive it directly with
+ * synthetic step rows.
+ */
+export function filterPrimaryRunSteps(
+  steps: ReviewStepResult[],
+): ReviewStepResult[] {
+  return steps.filter((step) => {
+    if (_isLegacySkipped(step)) return false;
+    if (RUN_PRIMARY_STEPS.has(step.step)) return true;
+    // Keep rows whose status is meaningfully non-trivial (failed,
+    // running, completed with data) even when the step id isn't
+    // in the canonical primary set — this preserves visibility for
+    // future step ids we haven't added to the allowlist yet.
+    return step.status !== "skipped";
+  });
+}
 
 interface OverviewTabProps {
   summary: ReviewRunSummary | null;
@@ -60,30 +123,48 @@ export function OverviewTab({ summary, loading, error }: OverviewTabProps) {
 
       <section className="results-overview__section">
         <h3 className="results-overview__section-title">Pipeline steps</h3>
-        {summary.steps.length === 0 ? (
-          <div className="results__empty results__empty--inline">
-            No step results were recorded for this run.
-          </div>
-        ) : (
-          <table className="results-step-table" role="table">
-            <thead>
-              <tr>
-                <th>Step</th>
-                <th>Status</th>
-                <th>Required</th>
-                <th>Source</th>
-                <th>Duration</th>
-                <th>Artifacts</th>
-                <th>Reason / error</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.steps.map((step) => (
-                <StepRow key={`${step.step}-${step.source}`} step={step} />
-              ))}
-            </tbody>
-          </table>
-        )}
+        {(() => {
+          const visibleSteps = filterPrimaryRunSteps(summary.steps);
+          if (visibleSteps.length === 0) {
+            return (
+              <div className="results__empty results__empty--inline">
+                No step results were recorded for this run.
+              </div>
+            );
+          }
+          return (
+            <table
+              className="results-step-table"
+              role="table"
+              data-testid="results-pipeline-steps"
+            >
+              <thead>
+                <tr>
+                  <th>Step</th>
+                  <th>Status</th>
+                  <th>Required</th>
+                  <th>Source</th>
+                  <th>Duration</th>
+                  <th>Artifacts</th>
+                  <th>Reason / error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleSteps.map((step) => (
+                  <StepRow key={`${step.step}-${step.source}`} step={step} />
+                ))}
+              </tbody>
+            </table>
+          );
+        })()}
+        <p
+          className="muted results-overview__step-note"
+          data-testid="results-pipeline-steps-note"
+        >
+          Post-compile domain enrichment and Knowledge Memory are
+          managed on the document&apos;s active snapshot — see
+          Document Detail.
+        </p>
       </section>
 
       <section className="results-overview__section">
