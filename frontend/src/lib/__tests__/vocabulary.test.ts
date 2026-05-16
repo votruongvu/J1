@@ -75,11 +75,22 @@ describe("New macro-event labels (macro-event labels)", () => {
     );
   });
 
-  it("renders 'Domain enrichment' for enrich macro events", () => {
-    expect(EventTypeDisplay["enrich.started"]).toContain("Domain enrichment");
-    expect(EventTypeDisplay["enrich.completed"]).toContain("Domain enrichment");
-    expect(EventTypeDisplay["enrich.failed"]).toContain("Domain enrichment");
-    expect(EventTypeDisplay["enrich.skipped"]).toContain("Domain enrichment");
+  it("renders 'Post-compile domain enrichment' for enrich macro events", () => {
+    // Naming hygiene: enrich.* events refer to the SEPARATE
+    // post-compile stage, never the domain-guided compile that
+    // happens inside the base compile.
+    expect(EventTypeDisplay["enrich.started"]).toContain(
+      "Post-compile domain enrichment",
+    );
+    expect(EventTypeDisplay["enrich.completed"]).toContain(
+      "Post-compile domain enrichment",
+    );
+    expect(EventTypeDisplay["enrich.failed"]).toContain(
+      "Post-compile domain enrichment",
+    );
+    expect(EventTypeDisplay["enrich.skipped"]).toContain(
+      "Post-compile domain enrichment",
+    );
   });
 });
 

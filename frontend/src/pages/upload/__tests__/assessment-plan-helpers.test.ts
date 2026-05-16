@@ -189,18 +189,31 @@ describe("capabilityBullets", () => {
     expect(bullets.some((b) => b === "Graph extraction: no")).toBe(false);
   });
 
-  it("hedges domain enrichment as a post-index manual action", () => {
-    // Domain enrichment is a manual action after indexing per the
-    // showcase spec, so a profile with it off should say so —
-    // never just "Enrichment: no".
+  it("hedges post-compile domain enrichment as a manual action after indexing", () => {
+    // Naming hygiene: the bullet must distinguish the SEPARATE
+    // post-compile stage from the domain-guided compile (capability
+    // recommendations + compile prompt context) that happens
+    // DURING the base compile. The user prompt explicitly forbids
+    // labelling everything "Domain enrichment".
     const bullets = capabilityBullets(
       _details({ enrichment_enabled: false }),
     );
     const enrichBullet = bullets.find((b) =>
-      b.toLowerCase().includes("enrichment"),
+      b.toLowerCase().includes("post-compile domain enrichment"),
     );
     expect(enrichBullet).toBeDefined();
     expect(enrichBullet).toContain("manual action");
+    // Negative: never just the ambiguous "Domain enrichment: …" prefix.
+    expect(bullets.some((b) => /^Domain enrichment:/i.test(b))).toBe(false);
+  });
+
+  it("uses 'Post-compile domain enrichment: yes' when enabled", () => {
+    const bullets = capabilityBullets(
+      _details({ enrichment_enabled: true }),
+    );
+    expect(
+      bullets.some((b) => b === "Post-compile domain enrichment: yes"),
+    ).toBe(true);
   });
 
   it("emits the honesty bullet for standard (LightRAG tax still fires)", () => {

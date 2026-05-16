@@ -49,27 +49,68 @@ export function profileTagline(_id: ExecutionProfileId): string {
 
 
 /** Source-aware copy for the "Why this recommendation?" line.
- * Mirrors the backend ``recommendation_resolver`` vocabulary. */
+ * Mirrors the backend ``recommendation_resolver`` vocabulary.
+ *
+ * Naming hygiene: every label here describes COMPILE-TIME
+ * recommendations (image / table / equation processing + base
+ * profile). It is the "Domain guidance" surface, NOT the
+ * post-compile domain enrichment stage — see
+ * [[DOMAIN_GUIDANCE_TOOLTIP]] below for the operator-facing
+ * distinction. */
 export function recommendationSourceLabel(
   source: RecommendationSource,
 ): string {
   switch (source) {
     case "user_override":
-      return "Recommended by operator override";
+      return "Domain guidance — operator override";
     case "llm_advanced_assessment":
-      return "Recommended by LLM assessment";
+      return "Domain guidance — LLM assessment";
     case "active_domain_rule":
-      return "Recommended by domain rule";
+      return "Domain guidance — domain rule";
     case "general_domain_rule":
-      return "Recommended by general rule";
+      return "Domain guidance — general rule";
     case "lightweight_assessment":
-      return "Recommended by lightweight assessment";
+      return "Domain guidance — lightweight assessment";
     case "lightweight_assessment_fallback":
-      return "Recommended by lightweight assessment fallback";
+      return "Domain guidance — lightweight assessment fallback";
     case "system_default":
-      return "Recommended by system default";
+      return "Domain guidance — system default";
   }
 }
+
+
+/** Product-explainer tooltip body. Two-sentence version surfaced
+ * under the recommendation panel + on a help icon. Pinned in
+ * tests so the user-facing distinction stays explicit:
+ *
+ *   * Domain-guided compile — domain hints used to improve the
+ *     BASE Knowledge Index DURING compile.
+ *   * Post-compile domain enrichment — separate optional stage
+ *     AFTER compile that creates extra domain artifacts /
+ *     insights.
+ *
+ * Kept as a module constant (not inlined into the dialog) so
+ * other surfaces (Run Detail compile-status panel, Reports tab)
+ * can reuse the same copy without drift.
+ */
+export const DOMAIN_GUIDANCE_TOOLTIP =
+  "Domain guidance improves the base compile. Post-compile "
+  + "enrichment creates extra domain insights after the "
+  + "Knowledge Index is ready.";
+
+
+/** Longer-form tooltip used where the UI has the room (e.g. a
+ * help drawer). Mirrors the prompt's "Product Explanation
+ * Tooltip" copy verbatim. */
+export const DOMAIN_GUIDANCE_TOOLTIP_LONG =
+  "Domain-guided compile uses domain hints to improve the base "
+  + "Knowledge Index during compile. It can recommend image, "
+  + "table, or equation processing and may add a short domain "
+  + "context to the compiler.\n\n"
+  + "Post-compile domain enrichment is a separate stage after "
+  + "compile. It can generate additional domain-specific "
+  + "artifacts, checks, or insights when enabled or run "
+  + "manually.";
 
 
 /** Standard fallback warning. Pinned in tests; backend emits the
@@ -150,11 +191,17 @@ export function capabilityBullets(
       ? "Multimodal processing: yes"
       : "Multimodal processing: no",
   );
+  // Naming hygiene: "Domain enrichment" here always means the
+  // SEPARATE post-compile stage that creates extra domain artifacts
+  // / insights. It is NOT the same as the domain-guided compile
+  // (capability recommendations + compile prompt context) that
+  // happens DURING the base compile and is surfaced by the
+  // recommendation panel below.
   bullets.push(
     details.enrichment_enabled
-      ? "Domain enrichment: yes"
-      : "Domain enrichment: no — available as a manual action "
-        + "after indexing",
+      ? "Post-compile domain enrichment: yes"
+      : "Post-compile domain enrichment: no — available as a "
+        + "manual action after indexing",
   );
   // Honesty bullet — only emit when the profile inherits the
   // library-internal extraction tax. Hidden for `minimum_queryable`

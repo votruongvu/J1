@@ -311,7 +311,7 @@ function AssessmentPlanContent({
         <dd data-testid="assessment-plan-domain">
           <span className="badge">{plan.domain_profile_id ?? "general"}</span>
         </dd>
-        <dt>Domain enrichment policy</dt>
+        <dt>Post-compile domain enrichment policy</dt>
         <dd data-testid="assessment-plan-policy">
           <span
             className={`badge enrich-policy enrich-policy--${plan.enrichment_policy ?? "auto"}`}
@@ -319,11 +319,11 @@ function AssessmentPlanContent({
             {policyLabel(plan.enrichment_policy)}
           </span>
         </dd>
-        <dt>Require enrichment success</dt>
+        <dt>Require post-compile enrichment success</dt>
         <dd data-testid="assessment-plan-require-success">
           {plan.require_enrichment_success
-            ? "Yes — a failed enrichment will fail the run"
-            : "No — enrichment is best-effort"}
+            ? "Yes — a failed post-compile enrichment will fail the run"
+            : "No — post-compile enrichment is best-effort"}
         </dd>
       </dl>
 
@@ -583,9 +583,12 @@ function policyLabel(policy: string | null | undefined): string {
     case "auto":
       return "Auto — decide per-run from compile signals";
     case "always":
-      return "Always — run enrichment whenever compile succeeds";
+      return (
+        "Always — run post-compile domain enrichment whenever "
+        + "compile succeeds"
+      );
     case "never":
-      return "Never — domain enrichment is disabled";
+      return "Never — post-compile domain enrichment is disabled";
     default:
       return policy;
   }

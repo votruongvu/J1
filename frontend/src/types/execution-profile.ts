@@ -239,7 +239,7 @@ export interface AssessmentPlanResponse {
   recommendedProfile: ExecutionProfileId;
   /** Which layer of the precedence chain produced the
    * recommendation. The dialog renders source-specific copy
-   * (e.g. "Recommended by domain rule") so the operator
+   * (e.g. "Domain guidance — domain rule") so the operator
    * understands the authority. */
   recommendationSource: RecommendationSource;
   /** True when no domain or general rule matched the document's

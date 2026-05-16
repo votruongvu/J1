@@ -189,7 +189,7 @@ function EnrichmentResultContent({
         className={`banner enrichment-banner enrichment-banner--${status}`}
         data-testid="enrichment-result-banner"
       >
-        <strong>Domain enrichment: {statusLabel(status)}</strong>
+        <strong>Post-compile domain enrichment: {statusLabel(status)}</strong>
         {plan.reason ? (
           <span>
             {" "}— <Typewriter text={plan.reason} speed={140} cursor />
@@ -203,7 +203,7 @@ function EnrichmentResultContent({
           data-testid="enrichment-result-skipped-explainer"
         >
           <Typewriter
-            text="Domain enrichment was skipped for this run. The base compile output is unchanged and remains the source of truth for downstream consumers."
+            text="Post-compile domain enrichment was skipped for this run. The base compile output is unchanged and remains the source of truth for downstream consumers."
             speed={140}
             cursor
           />

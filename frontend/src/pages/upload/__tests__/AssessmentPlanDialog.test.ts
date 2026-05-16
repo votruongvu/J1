@@ -231,7 +231,7 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
         fallbackUsed: false,
       }),
     });
-    expect(html).toContain("Recommended by domain rule");
+    expect(html).toContain("Domain guidance — domain rule");
     // And NOT the fallback banner.
     expect(html).not.toContain("assessment-plan-fallback-warning");
   });
@@ -243,7 +243,7 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
         fallbackUsed: false,
       }),
     });
-    expect(html).toContain("Recommended by general rule");
+    expect(html).toContain("Domain guidance — general rule");
     expect(html).not.toContain("assessment-plan-fallback-warning");
   });
 
@@ -257,7 +257,7 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
         fallbackUsed: false,
       }),
     });
-    expect(html).toContain("Recommended by LLM assessment");
+    expect(html).toContain("Domain guidance — LLM assessment");
   });
 
   it("renders the fallback warning when fallbackUsed=true", () => {
@@ -272,7 +272,7 @@ describe("AssessmentPlanDialog — recommendation source + fallback", () => {
     expect(html).toContain("No domain-specific document rule matched");
     expect(html).toContain("lightweight assessment only");
     expect(html).toContain("visible complexity");
-    expect(html).toContain("Recommended by lightweight assessment fallback");
+    expect(html).toContain("Domain guidance — lightweight assessment fallback");
   });
 
   it("renders the compile-option preview with hedged language", () => {

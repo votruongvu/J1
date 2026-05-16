@@ -393,7 +393,7 @@ function completedTitle(finalStatus: string | null | undefined): string {
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT:
       return "Document indexed and ready to query";
     case INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT:
-      return "Base compile succeeded; enrichment was skipped";
+      return "Base compile succeeded; post-compile enrichment was skipped";
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT_WARNINGS:
       return "Indexed with warnings";
     default:
@@ -410,8 +410,9 @@ function completedLede(
   switch (finalStatus) {
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT:
       return (
-        "Base compile + domain enrichment completed successfully. "
-        + "The document is searchable across vector, graph, and structured indexes."
+        "Base compile + post-compile domain enrichment completed "
+        + "successfully. The document is searchable across vector, "
+        + "graph, and structured indexes."
       );
     case INGESTION_STATUS.COMPLETED_WITHOUT_ENRICHMENT: {
       const reason = enrichment?.skippedReason
@@ -419,15 +420,16 @@ function completedLede(
         || "the post-compile assessor determined enrichment wasn't needed";
       return (
         `Base compile output is the source of truth for this run — `
-        + `domain enrichment was skipped (${reason}). `
+        + `post-compile domain enrichment was skipped (${reason}). `
         + `This is not a degraded outcome; the raw compile output is fully usable.`
       );
     }
     case INGESTION_STATUS.COMPLETED_WITH_ENRICHMENT_WARNINGS:
       return (
         run.final?.warning_summary
-        || "The pipeline completed but enrichment flagged issues. "
-          + "Raw compile output remains available and unaffected."
+        || "The pipeline completed but post-compile enrichment "
+          + "flagged issues. Raw compile output remains available "
+          + "and unaffected."
       );
     default:
       return "Run completed.";

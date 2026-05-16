@@ -40,6 +40,7 @@ import type {
 import {
   capabilityBullets,
   defaultInitialSelection,
+  DOMAIN_GUIDANCE_TOOLTIP,
   FALLBACK_WARNING_BODY,
   orderedProfiles,
   profileLabel,
@@ -320,6 +321,16 @@ function RecommendationBanner({ plan }: { plan: AssessmentPlanResponse }) {
       className="assessment-plan-dialog__recommendation"
       data-testid="assessment-plan-recommendation"
     >
+      <div className="assessment-plan-dialog__recommendation-header">
+        <strong>Domain guidance</strong>
+        <span
+          className="assessment-plan-dialog__recommendation-tooltip muted"
+          data-testid="assessment-plan-domain-guidance-tooltip"
+          title={DOMAIN_GUIDANCE_TOOLTIP}
+        >
+          {DOMAIN_GUIDANCE_TOOLTIP}
+        </span>
+      </div>
       <div>
         Recommended: <strong>{profileLabel(plan.recommendedProfile)}</strong>
       </div>
@@ -410,6 +421,16 @@ function CapabilityCheckboxes({
       data-testid="assessment-plan-capabilities"
     >
       <legend>Additional content processing</legend>
+      {recommendations !== null && (
+        <p
+          className="assessment-plan-dialog__capabilities-help muted"
+          data-testid="assessment-plan-capabilities-help"
+        >
+          Domain guidance may recommend these options based on the
+          file name, title, document type, and lightweight document
+          signals. You can change these choices before indexing.
+        </p>
+      )}
       <CapabilityCheckboxRow
         label="Process images"
         description={
@@ -448,7 +469,9 @@ function CapabilityCheckboxes({
         document content when supported by the installed
         RAGAnything/MinerU adapter. If a requested option is not
         supported directly, J1 records a warning and continues with
-        the safest supported compile configuration.
+        the safest supported compile configuration. Post-compile
+        domain enrichment is a separate stage and is not affected by
+        these checkboxes.
       </small>
     </fieldset>
   );
@@ -530,9 +553,9 @@ function CapabilityOverrideWarning({
   if (overrides.length === 0) return null;
   return (
     <div data-testid="assessment-plan-capability-override-warning">
-      <Banner kind="warn" title="High-confidence recommendation disabled">
+      <Banner kind="warn" title="Domain guidance overridden">
         <p>
-          The assessment strongly recommended the following but they
+          Domain guidance strongly recommended the following but they
           are currently disabled:{" "}
           <strong>{overrides.join(", ")}</strong>. You can proceed —
           the run will still index — but the compiler will not

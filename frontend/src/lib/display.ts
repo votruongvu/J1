@@ -126,10 +126,10 @@ export const EventTypeDisplay: Readonly<Record<ProgressEventType, string>> = {
   "assess_enrichment.started": "Compile quality analysis started",
   "assess_enrichment.completed": "Compile quality analysis completed",
   "assess_enrichment.skipped": "Compile quality analysis skipped",
-  "enrich.started": "Domain enrichment started",
-  "enrich.completed": "Domain enrichment completed",
-  "enrich.failed": "Domain enrichment failed",
-  "enrich.skipped": "Domain enrichment skipped",
+  "enrich.started": "Post-compile domain enrichment started",
+  "enrich.completed": "Post-compile domain enrichment completed",
+  "enrich.failed": "Post-compile domain enrichment failed",
+  "enrich.skipped": "Post-compile domain enrichment skipped",
 };
 
 export function eventTypeLabel(type: string): string {
