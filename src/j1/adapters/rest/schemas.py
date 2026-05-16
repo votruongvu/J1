@@ -96,6 +96,35 @@ class IngestRequest(CamelModel):
     # becomes the authoritative gate for every downstream
     # "should this stage run?" check.
     selected_profile: str | None = None
+    # User-selected per-modality capability checkboxes from the
+    # Knowledge Index picker. When omitted (None), the workflow
+    # falls back to the deterministic planner's defaults. When
+    # explicitly supplied, the user's pick overrides the planner —
+    # they're the authoritative "what should the compiler try to
+    # process?" signal for image / table / equation extraction.
+    # See [`RequestedCapabilities`](#RequestedCapabilities) for the
+    # wire shape.
+    requested_capabilities: "RequestedCapabilities | None" = None
+
+
+class RequestedCapabilities(CamelModel):
+    """User-selected per-modality capability flags from the
+    Knowledge Index ingest picker.
+
+    Three independent booleans — the operator's checkbox state at
+    submit time. When the field is absent on the request the
+    workflow falls back to the deterministic planner's defaults;
+    when it is present, the user's pick wins for new runs (the
+    legacy per-profile capability matrix is replay-compat only and
+    does NOT contribute to ``required_capabilities`` derivation).
+    """
+
+    # Wire-shape uses the same snake_case the FE camelCase model
+    # parser converts on the way in. Three checkboxes only — no
+    # other modality knobs travel on this surface.
+    image_processing: bool = False
+    table_processing: bool = False
+    equation_processing: bool = False
 
 
 class AssessmentPlanRequest(CamelModel):

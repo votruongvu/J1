@@ -413,8 +413,11 @@ def test_assessment_plan_endpoint_returns_recommendation_and_catalogue(
     client, ctx, registry, workspace,
 ):
     """`POST /documents/{id}/assessment-plan` runs synchronously,
-    returns the recommended profile + the full profile catalogue.
-    Pins the response shape the FE picker keys off."""
+    returns the recommended profile + the (now single-entry)
+    profile catalogue. Post-collapse there is ONE user-facing
+    profile (``knowledge_index``); the FE picker renders a single
+    card + three capability checkboxes. Pinned so a future
+    re-fragmentation of the catalogue is intentional."""
     _stage_document_with_file(ctx, registry, workspace)
     response = client.post(
         "/documents/doc-prof/assessment-plan",
@@ -423,12 +426,20 @@ def test_assessment_plan_endpoint_returns_recommendation_and_catalogue(
     assert response.status_code == 200
     data = _assert_success_envelope(response.json())
     assert data["documentId"] == "doc-prof"
-    # Plain-text doc → no images, no tables → recommendation is
-    # `standard` (the keystone behaviour for text-only inputs).
-    assert data["recommendedProfile"] == "standard"
-    # The catalogue must include every profile, in declaration order.
+    # Recommendation is one of the legacy profile names for replay
+    # compat with old dashboards; the FE renders the single
+    # ``knowledge_index`` card regardless of which legacy value
+    # appears here.
+    assert data["recommendedProfile"] in {
+        "knowledge_index", "minimum_queryable", "standard", "advanced",
+    }
+    # The catalogue must contain exactly the single canonical
+    # profile post-collapse.
     profile_ids = [p["id"] for p in data["availableProfiles"]]
-    assert profile_ids == ["minimum_queryable", "standard", "advanced"]
+    assert profile_ids == ["knowledge_index"], (
+        f"profile catalogue should expose only knowledge_index; "
+        f"got {profile_ids!r}"
+    )
     # Each profile must carry the FE-renderable fields.
     for entry in data["availableProfiles"]:
         assert "label" in entry
@@ -438,23 +449,23 @@ def test_assessment_plan_endpoint_returns_recommendation_and_catalogue(
         assert "compile_lightrag_extraction" in entry
 
 
-def test_assessment_plan_minimum_queryable_is_honest_about_cost(
+def test_assessment_plan_catalogue_shows_only_knowledge_index(
     client, ctx, registry, workspace,
 ):
-    """The `minimum_queryable` card must disclose that LightRAG's
-    built-in extraction is OFF — that's the whole point of the
-    profile vs `standard`. Pinned so a future refactor doesn't
-    quietly remove the honesty signal."""
+    """The catalogue MUST NOT expose the legacy profile vocabulary
+    (minimum_queryable / standard / advanced) to the FE. After
+    the profile collapse those values exist only for replay compat
+    with on-disk run records."""
     _stage_document_with_file(ctx, registry, workspace)
     response = client.post(
         "/documents/doc-prof/assessment-plan",
         headers=_headers(),
     )
     data = _assert_success_envelope(response.json())
-    by_id = {p["id"]: p for p in data["availableProfiles"]}
-    assert by_id["minimum_queryable"]["compile_lightrag_extraction"] is False
-    assert by_id["standard"]["compile_lightrag_extraction"] is True
-    assert by_id["advanced"]["compile_lightrag_extraction"] is True
+    profile_ids = {p["id"] for p in data["availableProfiles"]}
+    assert profile_ids == {"knowledge_index"}
+    for legacy in {"minimum_queryable", "standard", "advanced"}:
+        assert legacy not in profile_ids
 
 
 def test_assessment_plan_missing_document_returns_404(client):

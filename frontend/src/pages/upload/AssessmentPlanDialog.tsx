@@ -29,9 +29,12 @@ import { Banner } from "@/components/Banner";
 import { manualActionsEnabled } from "@/lib/constants/feature-flags";
 import type {
   AssessmentPlanResponse,
+  CapabilityRecommendationEntry,
+  CapabilityRecommendationsPayload,
   CompileOptionPreview,
   ExecutionProfileDetails,
   ExecutionProfileId,
+  RequestedCapabilities,
 } from "@/types/execution-profile";
 
 import {
@@ -59,8 +62,15 @@ interface AssessmentPlanDialogProps {
    * the message so the user can retry. */
   loadError: string | null;
   /** Called when the user clicks Start Indexing. Owner kicks
-   * off `client.upload(file, ctx, selectedProfile)` from here. */
-  onConfirm: (selectedProfile: ExecutionProfileId) => void;
+   * off `client.upload(file, ctx, selectedProfile, decisionId,
+   * requestedCapabilities)` from here. The capabilities reflect
+   * the operator's three Knowledge Index checkboxes at submit
+   * time — they override the planner's defaults for the new
+   * run. */
+  onConfirm: (
+    selectedProfile: ExecutionProfileId,
+    requestedCapabilities: RequestedCapabilities,
+  ) => void;
   /** Called when the user clicks Cancel or the backdrop. */
   onCancel: () => void;
   /** Called when the user clicks "Run Advanced Assessment". The
@@ -90,15 +100,27 @@ export function AssessmentPlanDialog({
   const initial = plan !== null ? defaultInitialSelection(plan) : "standard";
   const [selected, setSelected] = useState<ExecutionProfileId>(initial);
 
+  // Lifted Knowledge Index checkbox state. Defaults to all-off;
+  // pre-checked when the backend recommendation arrives with
+  // ``confidence === "high"``. Operators can override.
+  const [imageProcessing, setImageProcessing] = useState(false);
+  const [tableProcessing, setTableProcessing] = useState(false);
+  const [equationProcessing, setEquationProcessing] = useState(false);
+
   // Owner-passed `plan` may arrive after the dialog mounts (while
-  // the fetch resolves). Re-sync `selected` to the recommendation
-  // the first time a plan shows up, but only when the user
-  // hasn't already changed their pick — `selected` is the source
-  // of truth otherwise.
+  // the fetch resolves). Re-sync `selected` AND pre-check the
+  // checkbox state the first time a plan shows up — but only
+  // when the user hasn't already changed anything.
   const [synced, setSynced] = useState(false);
   if (plan !== null && !synced) {
     setSynced(true);
     setSelected(defaultInitialSelection(plan));
+    const recs = plan.capabilityRecommendations ?? null;
+    if (recs !== null) {
+      setImageProcessing(_isPreChecked(recs.image_processing));
+      setTableProcessing(_isPreChecked(recs.table_processing));
+      setEquationProcessing(_isPreChecked(recs.equation_processing));
+    }
   }
 
   return (
@@ -115,7 +137,7 @@ export function AssessmentPlanDialog({
         aria-labelledby="assessment-plan-dialog__title"
       >
         <h3 id="assessment-plan-dialog__title">
-          How thorough should this ingest be?
+          Configure knowledge indexing
         </h3>
         <p className="assessment-plan-dialog__filename">
           <strong>{filename}</strong>
@@ -179,7 +201,9 @@ export function AssessmentPlanDialog({
           </p>
         )}
 
-        {/* Profile picker */}
+        {/* Profile picker — post-collapse the catalogue is a single
+            card (knowledge_index). The component still renders the
+            list to handle legacy responses that include extra entries. */}
         {plan !== null && (
           <ProfilePicker
             profiles={orderedProfiles(plan)}
@@ -188,6 +212,34 @@ export function AssessmentPlanDialog({
             onSelect={setSelected}
           />
         )}
+
+        {/* Capability checkboxes — three independent flags the
+            compiler tries to honour when supported by the installed
+            RAGAnything adapter. State lifted to the dialog body so
+            the submitted ``requestedCapabilities`` reflects the
+            operator's selection. Recommendations from the
+            backend's lightweight assessor drive the initial
+            pre-check + the reason copy under each box. */}
+        <CapabilityCheckboxes
+          imageProcessing={imageProcessing}
+          tableProcessing={tableProcessing}
+          equationProcessing={equationProcessing}
+          onImageChange={setImageProcessing}
+          onTableChange={setTableProcessing}
+          onEquationChange={setEquationProcessing}
+          recommendations={plan?.capabilityRecommendations ?? null}
+        />
+
+        {/* Override-warning banner — fires when the user
+            unchecks a high-confidence recommendation. The
+            information is non-blocking; the user keeps their
+            override and the run still kicks off. */}
+        <CapabilityOverrideWarning
+          recommendations={plan?.capabilityRecommendations ?? null}
+          imageProcessing={imageProcessing}
+          tableProcessing={tableProcessing}
+          equationProcessing={equationProcessing}
+        />
 
         {/* Sample-text status warning — surfaces only when the
             LLM result indicates extraction wasn't reliable. */}
@@ -245,7 +297,11 @@ export function AssessmentPlanDialog({
           <button
             type="button"
             className="btn btn--primary"
-            onClick={() => onConfirm(selected)}
+            onClick={() => onConfirm(selected, {
+              imageProcessing,
+              tableProcessing,
+              equationProcessing,
+            })}
             disabled={plan === null || loadError !== null}
             data-testid="assessment-plan-confirm"
           >
@@ -322,6 +378,177 @@ function CompileOptionPreviewPanel({
       <small>{preview.note}</small>
     </div>
   );
+}
+
+
+/** Three capability checkboxes (Process images / tables /
+ * equations). The user can override the lightweight assessment's
+ * defaults before indexing.
+ *
+ * Controlled component — state lives on the dialog body so the
+ * Start Indexing button can read the final values and pass them
+ * to ``client.upload`` as ``requestedCapabilities``. The
+ * recommendations payload drives the per-box reason copy + the
+ * "recommended" pill on high-confidence suggestions.
+ */
+function CapabilityCheckboxes({
+  imageProcessing, tableProcessing, equationProcessing,
+  onImageChange, onTableChange, onEquationChange,
+  recommendations,
+}: {
+  imageProcessing: boolean;
+  tableProcessing: boolean;
+  equationProcessing: boolean;
+  onImageChange: (next: boolean) => void;
+  onTableChange: (next: boolean) => void;
+  onEquationChange: (next: boolean) => void;
+  recommendations: CapabilityRecommendationsPayload | null;
+}) {
+  return (
+    <fieldset
+      className="assessment-plan-dialog__capabilities"
+      data-testid="assessment-plan-capabilities"
+    >
+      <legend>Additional content processing</legend>
+      <CapabilityCheckboxRow
+        label="Process images"
+        description={
+          "Extract useful content from diagrams, screenshots, "
+          + "figures, scanned pages, or visual content."
+        }
+        checked={imageProcessing}
+        onChange={onImageChange}
+        rec={recommendations?.image_processing ?? null}
+        testid="assessment-plan-capability-image"
+      />
+      <CapabilityCheckboxRow
+        label="Process tables"
+        description={
+          "Extract structured information from tables, grids, "
+          + "forms, or repeated row/column content."
+        }
+        checked={tableProcessing}
+        onChange={onTableChange}
+        rec={recommendations?.table_processing ?? null}
+        testid="assessment-plan-capability-table"
+      />
+      <CapabilityCheckboxRow
+        label="Process equations"
+        description={
+          "Extract formulas, mathematical notation, engineering "
+          + "expressions, or technical equations."
+        }
+        checked={equationProcessing}
+        onChange={onEquationChange}
+        rec={recommendations?.equation_processing ?? null}
+        testid="assessment-plan-capability-equation"
+      />
+      <small className="muted">
+        These options help the compiler choose how to process richer
+        document content when supported by the installed
+        RAGAnything/MinerU adapter. If a requested option is not
+        supported directly, J1 records a warning and continues with
+        the safest supported compile configuration.
+      </small>
+    </fieldset>
+  );
+}
+
+
+function CapabilityCheckboxRow({
+  label, description, checked, onChange, rec, testid,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  rec: CapabilityRecommendationEntry | null;
+  testid: string;
+}) {
+  const isHigh = rec !== null && rec.confidence === "high" && rec.recommended;
+  return (
+    <label data-testid={testid}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span>
+        <strong>{label}</strong>
+        {isHigh && (
+          <span
+            className="assessment-plan-dialog__rec-pill"
+            data-testid={`${testid}-recommended`}
+          >
+            Recommended
+          </span>
+        )}
+        <small>{description}</small>
+        {rec !== null && rec.reasons.length > 0 && rec.recommended && (
+          <ul
+            className="assessment-plan-dialog__rec-reasons"
+            data-testid={`${testid}-reasons`}
+          >
+            {rec.reasons.map((reason, i) => (
+              <li key={i}>{reason}</li>
+            ))}
+          </ul>
+        )}
+      </span>
+    </label>
+  );
+}
+
+
+/** Informational banner that fires when the user has unchecked
+ * a high-confidence recommendation. Non-blocking — the run still
+ * goes through with the user's override. */
+function CapabilityOverrideWarning({
+  recommendations, imageProcessing, tableProcessing, equationProcessing,
+}: {
+  recommendations: CapabilityRecommendationsPayload | null;
+  imageProcessing: boolean;
+  tableProcessing: boolean;
+  equationProcessing: boolean;
+}) {
+  if (recommendations === null) return null;
+  const overrides: string[] = [];
+  const checkOverride = (
+    rec: CapabilityRecommendationEntry,
+    label: string,
+    checked: boolean,
+  ) => {
+    if (rec.recommended && rec.confidence === "high" && !checked) {
+      overrides.push(label);
+    }
+  };
+  checkOverride(recommendations.image_processing, "Process images", imageProcessing);
+  checkOverride(recommendations.table_processing, "Process tables", tableProcessing);
+  checkOverride(
+    recommendations.equation_processing, "Process equations", equationProcessing,
+  );
+  if (overrides.length === 0) return null;
+  return (
+    <div data-testid="assessment-plan-capability-override-warning">
+      <Banner kind="warn" title="High-confidence recommendation disabled">
+        <p>
+          The assessment strongly recommended the following but they
+          are currently disabled:{" "}
+          <strong>{overrides.join(", ")}</strong>. You can proceed —
+          the run will still index — but the compiler will not
+          attempt the disabled extractions.
+        </p>
+      </Banner>
+    </div>
+  );
+}
+
+
+/** Pre-check predicate: only high-confidence + recommended
+ * boxes auto-tick. Medium / low surface as suggestions but do
+ * not change the default. */
+function _isPreChecked(rec: CapabilityRecommendationEntry): boolean {
+  return rec.recommended && rec.confidence === "high";
 }
 
 

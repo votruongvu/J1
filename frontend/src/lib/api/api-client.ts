@@ -51,6 +51,7 @@ import type {
   AssessmentPlanResponse,
   ExecutionProfileId,
   ManualActionDescriptor,
+  RequestedCapabilities,
 } from "@/types/execution-profile";
 import type { AuthConfig, ProjectContext } from "@/types/ui";
 import type {
@@ -189,6 +190,7 @@ export class ApiClient implements IngestionClient {
     ctx: ProjectContext,
     selectedProfile?: ExecutionProfileId,
     assessmentDecisionId?: string | null,
+    requestedCapabilities?: RequestedCapabilities | null,
   ): Promise<{ runId: string }> {
     if (!ctx?.tenant || !ctx?.project) {
       throw new ApiError(400, "Tenant and Project are required.");
@@ -223,6 +225,21 @@ export class ApiClient implements IngestionClient {
     // workflow's rebuild fallback (server-side warning, not a 4xx).
     if (assessmentDecisionId) {
       fd.append("assessmentDecisionId", assessmentDecisionId);
+    }
+    // ``requestedCapabilities`` carries the three Knowledge Index
+    // checkboxes the operator submitted (Process images / tables /
+    // equations). The backend folds them onto the AssessmentPlan's
+    // ``required_capabilities`` and stamps
+    // ``capability_source="user_selection"`` so audits can tell
+    // operator overrides apart from planner defaults. Sent as a
+    // JSON string in a FormData field because multipart fields are
+    // string-shaped; the backend re-parses via
+    // ``RequestedCapabilities.model_validate_json``.
+    if (requestedCapabilities) {
+      fd.append(
+        "requestedCapabilities",
+        JSON.stringify(requestedCapabilities),
+      );
     }
     const resp = await fetch(this.url("/ingestion-runs"), {
       method: "POST",

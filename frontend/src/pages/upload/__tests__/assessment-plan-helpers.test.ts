@@ -85,20 +85,23 @@ function _response(
 
 
 describe("profileLabel", () => {
-  it("renders Quick / Standard / Deep Knowledge Index labels", () => {
-    // The labels frame the tradeoff as "what you GET" rather than
-    // the wire enum names — this is the contract the picker copy
-    // depends on.
-    expect(profileLabel("minimum_queryable")).toBe("Quick Index");
-    expect(profileLabel("standard")).toBe("Standard Index");
-    expect(profileLabel("advanced")).toBe("Deep Knowledge Index");
+  it("renders Knowledge Index for every profile id", () => {
+    // Post-collapse there is ONE user-facing profile. The legacy
+    // wire values render the same label so historical run records
+    // display consistently.
+    expect(profileLabel("knowledge_index")).toBe("Knowledge Index");
+    expect(profileLabel("minimum_queryable")).toBe("Knowledge Index");
+    expect(profileLabel("standard")).toBe("Knowledge Index");
+    expect(profileLabel("advanced")).toBe("Knowledge Index");
   });
 });
 
 
 describe("profileTagline", () => {
-  it("returns a non-empty tagline for every profile", () => {
-    for (const id of ["minimum_queryable", "standard", "advanced"] as const) {
+  it("returns a non-empty tagline for every profile id", () => {
+    for (const id of [
+      "knowledge_index", "minimum_queryable", "standard", "advanced",
+    ] as const) {
       const tag = profileTagline(id);
       expect(tag).toBeTruthy();
       expect(tag.length).toBeGreaterThan(10);
@@ -109,7 +112,9 @@ describe("profileTagline", () => {
     // Regression guard: the old tagline asserted "Skips graph,
     // enrichment, and validation" which drifted out of sync every
     // time the backend's capability matrix changed.
-    for (const id of ["minimum_queryable", "standard", "advanced"] as const) {
+    for (const id of [
+      "knowledge_index", "minimum_queryable", "standard", "advanced",
+    ] as const) {
       const tag = profileTagline(id).toLowerCase();
       expect(tag).not.toContain("skips graph");
       expect(tag).not.toContain("enrichment, and validation");
@@ -117,16 +122,16 @@ describe("profileTagline", () => {
     }
   });
 
-  it("describes what the operator GETS, not what is skipped", () => {
-    // Pinned per the demo / showcase spec: Quick / Standard / Deep
-    // each explain their suitability + tradeoff in operator
-    // language.
-    expect(profileTagline("minimum_queryable").toLowerCase())
-      .toContain("fastest");
-    expect(profileTagline("standard").toLowerCase())
-      .toContain("balanced");
-    expect(profileTagline("advanced").toLowerCase())
-      .toContain("complex documents");
+  it("describes the base searchable knowledge graph promise", () => {
+    // Post-collapse every profile id renders the same tagline —
+    // the operator-facing promise is "base searchable knowledge
+    // graph/index" regardless of which legacy value was persisted.
+    for (const id of [
+      "knowledge_index", "minimum_queryable", "standard", "advanced",
+    ] as const) {
+      const tag = profileTagline(id).toLowerCase();
+      expect(tag).toContain("searchable knowledge");
+    }
   });
 });
 

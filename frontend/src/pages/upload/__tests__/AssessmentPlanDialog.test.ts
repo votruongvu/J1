@@ -113,9 +113,8 @@ describe("AssessmentPlanDialog — recommendation banner", () => {
       plan: _response({ recommendedProfile: "advanced" }),
     });
     expect(html).toContain("Recommended:");
-    // The label is now "Deep Knowledge Index" — framing what the
-    // operator GETS, not the wire enum name.
-    expect(html).toContain("Deep Knowledge Index");
+    // Post-collapse every profile id renders the same label.
+    expect(html).toContain("Knowledge Index");
   });
 
   it("renders every reason from the backend", () => {
@@ -156,12 +155,14 @@ describe("AssessmentPlanDialog — profile picker", () => {
   });
 
   it("renders profile labels via the FE-side label helper", () => {
-    // Per the showcase spec: each card shows the "what you GET"
-    // label — Quick Index / Standard Index / Deep Knowledge Index.
+    // Post-collapse every card renders "Knowledge Index". The
+    // legacy "Quick / Standard / Deep" vocabulary is retired in
+    // favour of one profile + three capability checkboxes.
     const html = _render();
-    expect(html).toContain("Quick Index");
-    expect(html).toContain("Standard Index");
-    expect(html).toContain("Deep Knowledge Index");
+    expect(html).toContain("Knowledge Index");
+    expect(html).not.toContain("Quick Index");
+    expect(html).not.toContain("Standard Index");
+    expect(html).not.toContain("Deep Knowledge Index");
   });
 
   it("renders the LightRAG-extraction honesty bullet on standard", () => {

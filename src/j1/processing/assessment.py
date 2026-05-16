@@ -146,6 +146,66 @@ class RecommendedProcessingPath(StrEnum):
 
 
 @dataclass(frozen=True)
+class UserSelectedCapabilities:
+    """User's per-modality capability checkboxes from the
+    Knowledge Index ingest picker, persisted on the
+    ``AssessmentPlan`` for audit + adapter consumption.
+
+    The wire shape mirrors the REST ``RequestedCapabilities``
+    model. ``to_required_capabilities()`` projects the booleans
+    onto the vendor-neutral ``Capability`` set the compile
+    adapter consumes; ``TEXT_EXTRACTION`` is always added (it's
+    the implicit floor — every compile path needs text).
+    """
+
+    image_processing: bool = False
+    table_processing: bool = False
+    equation_processing: bool = False
+
+    def to_required_capabilities(self) -> frozenset["Capability"]:
+        """Project the three booleans onto the canonical capability
+        set. Every checked box adds the matching vendor-neutral
+        capability; ``TEXT_EXTRACTION`` + ``LAYOUT_DETECTION`` are
+        the always-on floor (parsed content + chunks are the
+        minimum valid J1 ingest output)."""
+        caps: set[Capability] = {
+            Capability.TEXT_EXTRACTION, Capability.LAYOUT_DETECTION,
+        }
+        if self.image_processing:
+            caps.add(Capability.IMAGE_EXTRACTION)
+        if self.table_processing:
+            caps.add(Capability.TABLE_EXTRACTION)
+        if self.equation_processing:
+            caps.add(Capability.FORMULA_EXTRACTION)
+        return frozenset(caps)
+
+    def to_payload(self) -> dict:
+        return {
+            "image_processing": self.image_processing,
+            "table_processing": self.table_processing,
+            "equation_processing": self.equation_processing,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "UserSelectedCapabilities":
+        """Build from a plain dict (e.g. ``ProjectProcessingRequest.
+        requested_capabilities``). Tolerates missing keys via
+        safe-defaults so a partial payload doesn't crash replay."""
+        return cls(
+            image_processing=bool(payload.get("image_processing", False)),
+            table_processing=bool(payload.get("table_processing", False)),
+            equation_processing=bool(payload.get(
+                "equation_processing", False,
+            )),
+        )
+
+
+# Stable wire-string values for ``AssessmentPlan.capability_source``.
+CAPABILITY_SOURCE_USER = "user_selection"
+CAPABILITY_SOURCE_PLANNER = "planner_default"
+
+
+@dataclass(frozen=True)
 class AssessmentPlan:
     """The planner's compile-stage decision for one document.
 
@@ -179,6 +239,36 @@ class AssessmentPlan:
     recommended_path: RecommendedProcessingPath = (
         RecommendedProcessingPath.STANDARD_COMPILE
     )
+    # User-selected per-modality capability checkboxes from the
+    # Knowledge Index ingest picker. Three booleans the operator
+    # checked at submit time. The workflow folds these into
+    # ``required_capabilities`` for new runs; legacy / replayed
+    # payloads carry ``None`` and fall back to the planner's
+    # deterministic defaults.
+    user_selected_capabilities: "UserSelectedCapabilities | None" = None
+    # Provenance for ``required_capabilities``. ``"user_selection"``
+    # when the user's checkboxes drove the field;
+    # ``"planner_default"`` when the deterministic planner did.
+    # Stable wire string — dashboards filter on it.
+    capability_source: str = "planner_default"
+    # Snapshot of the lightweight assessment's per-capability
+    # recommendations at submit time. Carried alongside the
+    # user's actual selection so audits / dashboards can render
+    # "we recommended X but the user picked Y". None on legacy
+    # plans that pre-date the recommendation field. Serialised
+    # via the dict-shaped wire payload from
+    # ``CapabilityRecommendations.to_payload()``; structural
+    # round-trip lives on the dataclass itself (we keep this as
+    # a plain dict here to avoid a circular import between
+    # ``assessment`` and ``execution_profile``).
+    assessment_recommendations: dict | None = None
+    # Operator-readable warnings produced when the user disabled
+    # a high-confidence recommendation (e.g. the assessor
+    # strongly recommended Process images and the user
+    # un-checked it). Empty when there's no mismatch. The
+    # workflow surfaces these on the run's metadata so the FE
+    # can render an info banner without re-deriving.
+    override_warnings: tuple[str, ...] = ()
 
     def requires(self, capability: Capability) -> bool:
         return capability in self.required_capabilities
@@ -191,6 +281,88 @@ class AssessmentPlan:
             capability in self.required_capabilities
             or capability in self.optional_capabilities
         )
+
+    def with_user_selection(
+        self, selection: "UserSelectedCapabilities",
+    ) -> "AssessmentPlan":
+        """Return a new plan whose ``required_capabilities`` reflects
+        the user's checkbox selection. The selection wins over the
+        deterministic planner's defaults — operators are the
+        source of truth once they've seen the UI and submitted.
+
+        Records the selection on ``user_selected_capabilities`` (for
+        audit) and stamps ``capability_source="user_selection"`` so
+        downstream readers can distinguish operator overrides from
+        planner defaults.
+
+        Compares the user's pick against the persisted
+        ``assessment_recommendations`` snapshot and stamps
+        ``override_warnings`` for any high-confidence
+        recommendation the user disabled. Empty when there's no
+        mismatch or no recommendation snapshot.
+
+        Pure: returns a new frozen dataclass. The planner's
+        ``optional_capabilities`` set is preserved verbatim — those
+        are hints the adapter MAY enable even when the user didn't
+        check the box, and they don't claim user intent.
+        """
+        warnings = self._build_override_warnings(selection)
+        return AssessmentPlan(
+            document_id=self.document_id,
+            mode=self.mode,
+            document_type=self.document_type,
+            complexity=self.complexity,
+            confidence=self.confidence,
+            required_capabilities=selection.to_required_capabilities(),
+            optional_capabilities=self.optional_capabilities,
+            risk_flags=self.risk_flags,
+            fallback_policy=self.fallback_policy,
+            reason=self.reason,
+            recommended_path=self.recommended_path,
+            user_selected_capabilities=selection,
+            capability_source=CAPABILITY_SOURCE_USER,
+            assessment_recommendations=self.assessment_recommendations,
+            override_warnings=tuple(warnings),
+        )
+
+    def _build_override_warnings(
+        self, selection: "UserSelectedCapabilities",
+    ) -> list[str]:
+        """Compare each checkbox against the persisted
+        recommendation snapshot. When the recommendation is
+        ``confidence="high"`` AND ``recommended=True`` but the
+        user disabled it, emit one informational warning per
+        capability. Empty when there's no snapshot or no mismatch.
+        """
+        if not isinstance(self.assessment_recommendations, dict):
+            return []
+        warnings: list[str] = []
+        pairs: tuple[tuple[str, str, bool], ...] = (
+            ("image_processing", "Process images", selection.image_processing),
+            ("table_processing", "Process tables", selection.table_processing),
+            (
+                "equation_processing",
+                "Process equations",
+                selection.equation_processing,
+            ),
+        )
+        for key, label, user_value in pairs:
+            entry = self.assessment_recommendations.get(key)
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("recommended"):
+                continue
+            confidence = str(entry.get("confidence") or "")
+            if confidence != "high":
+                continue
+            if user_value:
+                continue
+            warnings.append(
+                f"The assessment strongly recommended {label!s} "
+                "(high-confidence signal) but it was disabled by "
+                "the user."
+            )
+        return warnings
 
     def to_payload(self) -> dict:
         """JSON-friendly dict for Temporal data-converter transit.
@@ -211,6 +383,16 @@ class AssessmentPlan:
             "fallback_policy": self.fallback_policy.value,
             "reason": self.reason,
             "recommended_path": self.recommended_path.value,
+            "user_selected_capabilities": (
+                self.user_selected_capabilities.to_payload()
+                if self.user_selected_capabilities is not None else None
+            ),
+            "capability_source": self.capability_source,
+            "assessment_recommendations": (
+                dict(self.assessment_recommendations)
+                if self.assessment_recommendations is not None else None
+            ),
+            "override_warnings": list(self.override_warnings),
         }
 
     @classmethod
@@ -247,6 +429,25 @@ class AssessmentPlan:
         # STANDARD_COMPILE (see ``_coerce_legacy_recommended_path``).
         raw_path = payload.get("recommended_path")
         path = _coerce_legacy_recommended_path(raw_path)
+        # Additive: ``user_selected_capabilities`` + ``capability_source``
+        # were added when the Knowledge Index checkboxes started
+        # flowing through the workflow. Older payloads omit them
+        # entirely; we tolerate that with None / planner_default.
+        usc_raw = payload.get("user_selected_capabilities")
+        usc = (
+            UserSelectedCapabilities.from_payload(usc_raw)
+            if isinstance(usc_raw, dict) else None
+        )
+        source = str(
+            payload.get("capability_source", CAPABILITY_SOURCE_PLANNER),
+        )
+        if source not in {CAPABILITY_SOURCE_USER, CAPABILITY_SOURCE_PLANNER}:
+            source = CAPABILITY_SOURCE_PLANNER
+        # Additive: ``assessment_recommendations`` + ``override_warnings``
+        # surfaced when the lightweight recommender shipped. Older
+        # payloads omit them entirely.
+        recs_raw = payload.get("assessment_recommendations")
+        recs = dict(recs_raw) if isinstance(recs_raw, dict) else None
         return cls(
             document_id=str(payload.get("document_id", "")),
             mode=mode,
@@ -259,6 +460,12 @@ class AssessmentPlan:
             fallback_policy=policy,
             reason=str(payload.get("reason", "")),
             recommended_path=path,
+            user_selected_capabilities=usc,
+            capability_source=source,
+            assessment_recommendations=recs,
+            override_warnings=tuple(
+                str(w) for w in (payload.get("override_warnings") or ())
+            ),
         )
 
 

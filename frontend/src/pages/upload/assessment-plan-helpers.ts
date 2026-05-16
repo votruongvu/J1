@@ -21,21 +21,15 @@ import {
 
 /** Human-readable label rendered on the profile card.
  *
- * The labels are intentionally framed as "what you GET" (Quick /
- * Standard / Deep Knowledge Index) rather than the wire enum names
- * (minimum_queryable / standard / advanced) so the operator sees
- * an honest tradeoff axis. The wire strings stay stable — this
- * function is the single source of truth for the visible label.
+ * Post-collapse there is ONE user-facing profile: Knowledge Index.
+ * Every legacy wire value also renders the same label so historical
+ * run records render consistently. The legacy distinctions (Quick /
+ * Standard / Deep) are retired — operators now control
+ * image/table/equation processing via the per-request capability
+ * checkboxes, not by picking a different profile.
  */
-export function profileLabel(id: ExecutionProfileId): string {
-  switch (id) {
-    case "minimum_queryable":
-      return "Quick Index";
-    case "standard":
-      return "Standard Index";
-    case "advanced":
-      return "Deep Knowledge Index";
-  }
+export function profileLabel(_id: ExecutionProfileId): string {
+  return "Knowledge Index";
 }
 
 
@@ -46,25 +40,11 @@ export function profileLabel(id: ExecutionProfileId): string {
  * capability bullets where it can disclaim base RAGAnything
  * behaviour — see ``capabilityBullets`` below.
  */
-export function profileTagline(id: ExecutionProfileId): string {
-  switch (id) {
-    case "minimum_queryable":
-      return (
-        "Quick Index: fastest, basic searchable document. "
-        + "Best when you just need text retrieval."
-      );
-    case "standard":
-      return (
-        "Standard Index: balanced default for normal documents. "
-        + "Suitable for most uploads."
-      );
-    case "advanced":
-      return (
-        "Deep Knowledge Index: slower, richer knowledge build. "
-        + "Best for complex documents with tables, diagrams, or "
-        + "requirements."
-      );
-  }
+export function profileTagline(_id: ExecutionProfileId): string {
+  return (
+    "Builds the base searchable knowledge graph/index. "
+    + "This is the minimum valid J1 ingest output."
+  );
 }
 
 

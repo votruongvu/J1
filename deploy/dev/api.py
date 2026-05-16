@@ -89,6 +89,31 @@ from j1.integration.services import ApplicationFacade
 _log = logging.getLogger("j1.dev.api")
 
 
+def _requested_capabilities_dict(body) -> dict | None:
+    """Project ``IngestRequest.requested_capabilities`` onto a
+    plain dict for the workflow payload.
+
+    Returns ``None`` when the field is absent — the workflow then
+    falls back to the deterministic planner's defaults. Returns a
+    three-key dict when present so downstream code can index it
+    without a None check.
+    """
+    raw = getattr(body, "requested_capabilities", None)
+    if raw is None:
+        return None
+    # Pydantic model → dict via ``model_dump``; tolerate plain dicts
+    # passed in by test wirings.
+    dump = (
+        raw.model_dump() if hasattr(raw, "model_dump")
+        else dict(raw)
+    )
+    return {
+        "image_processing": bool(dump.get("image_processing", False)),
+        "table_processing": bool(dump.get("table_processing", False)),
+        "equation_processing": bool(dump.get("equation_processing", False)),
+    }
+
+
 # Renamed from ``J1_INGEST_PLANNER_ENABLED`` in Phase 2. The legacy
 # name is honoured for one release cycle with a deprecation warning;
 # remove the fallback once operators have migrated.
@@ -224,6 +249,14 @@ def make_per_document_starter(
                 assessment_decision_warnings=tuple(getattr(
                     body, "assessment_decision_warnings", (),
                 ) or ()),
+                # User-selected per-modality capability checkboxes
+                # from the Knowledge Index picker. None when the
+                # FE didn't supply them (legacy callers / bulk-job
+                # dispatch); the workflow falls back to the
+                # deterministic planner's defaults in that case.
+                requested_capabilities=_requested_capabilities_dict(
+                    body,
+                ),
             ),
             id=workflow_id,
             task_queue=task_queue,

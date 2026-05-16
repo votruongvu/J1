@@ -11,14 +11,66 @@
  * as plain strings.
  */
 
+/** User-selected per-modality capability checkboxes from the
+ * Knowledge Index ingest picker.
+ *
+ * Mirrors the backend ``RequestedCapabilities`` Pydantic model.
+ * Three independent booleans — the operator's checkbox state at
+ * submit time. Sent on the multipart upload as a JSON string in
+ * the ``requestedCapabilities`` field; the backend parses it
+ * back into the typed model. */
+export interface RequestedCapabilities {
+  imageProcessing: boolean;
+  tableProcessing: boolean;
+  equationProcessing: boolean;
+}
+
+
+/** Confidence levels for a capability recommendation. The
+ * picker pre-checks only on ``"high"``. */
+export type RecommendationConfidence = "low" | "medium" | "high";
+
+
+/** Per-capability recommendation from the lightweight assessor.
+ * Mirrors the backend ``CapabilityRecommendation`` dataclass. */
+export interface CapabilityRecommendationEntry {
+  recommended: boolean;
+  confidence: RecommendationConfidence;
+  sources: string[];
+  reasons: string[];
+}
+
+
+/** Bundle of the three per-capability recommendations + the
+ * domain hints the assessor matched from the filename / title.
+ * Mirrors the backend ``CapabilityRecommendations`` payload. */
+export interface CapabilityRecommendationsPayload {
+  image_processing: CapabilityRecommendationEntry;
+  table_processing: CapabilityRecommendationEntry;
+  equation_processing: CapabilityRecommendationEntry;
+  domain_hints: string[];
+}
+
+
 export type ExecutionProfileId =
+  // Canonical post-collapse profile. The FE picker shows this as
+  // a single card; the three capability checkboxes
+  // (Process images / Process tables / Process equations) sit
+  // alongside, not as separate profiles.
+  | "knowledge_index"
+  // Legacy values — preserved so the FE can render historical
+  // run records that persisted these wire strings. New code MUST
+  // emit "knowledge_index"; the REST coercion layer accepts the
+  // legacy values and maps them to KNOWLEDGE_INDEX server-side.
   | "minimum_queryable"
   | "standard"
   | "advanced";
 
-/** Stable ordering for the profile picker UI. Matches backend
- * declaration order; tests pin this so reorders are intentional. */
+/** Stable ordering for the profile picker UI. Post-collapse the
+ * picker renders one card; the legacy values appear in the
+ * ordering only for backwards-compat with picker tests. */
 export const PROFILE_ORDER: readonly ExecutionProfileId[] = [
+  "knowledge_index",
   "minimum_queryable",
   "standard",
   "advanced",
@@ -212,6 +264,13 @@ export interface AssessmentPlanResponse {
   /** Rule-based hints about compile-time behaviour. Advisory; the
    * compile / RAGAnything layers decide actual behaviour. */
   compileOptionPreview: CompileOptionPreview;
+  /** Lightweight assessor's per-capability recommendations for
+   * the three Knowledge Index checkboxes. The picker pre-checks
+   * a box when its entry is ``recommended: true && confidence:
+   * "high"``; medium / low show the suggestion via the reasons
+   * list without auto-checking. ``null`` when the recommender
+   * hasn't run (legacy responses). */
+  capabilityRecommendations?: CapabilityRecommendationsPayload | null;
   /** Resolver warnings (env-disable downgrade messages, fallback
    * notice, profiler warnings). */
   warnings: string[];

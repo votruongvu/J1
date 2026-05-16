@@ -1288,6 +1288,34 @@ def create_rest_api(
 
     # ---- Dependencies ------------------------------------------------
 
+    def _parse_requested_capabilities_or_400(
+        raw: str | None,
+    ) -> "RequestedCapabilities | None":
+        """Parse the multipart ``requestedCapabilities`` JSON field
+        into the typed ``RequestedCapabilities`` model.
+
+        ``None`` / empty string → ``None`` (workflow falls back to
+        deterministic planner defaults). Malformed JSON or wrong
+        shape → raises ``HTTPException`` with 400 so the caller
+        knows the request was malformed rather than getting silent
+        defaults.
+        """
+        if raw is None or raw.strip() == "":
+            return None
+        from j1.adapters.rest.schemas import RequestedCapabilities
+        try:
+            return RequestedCapabilities.model_validate_json(raw)
+        except Exception as exc:  # noqa: BLE001 — pydantic ValidationError
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "requestedCapabilities field is not a valid "
+                    "RequestedCapabilities JSON object "
+                    "({image,table,equation}_processing booleans): "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
     def _resolve_profile_or_400(
         provided: str | None,
     ) -> tuple[ExecutionProfile, str]:
@@ -1865,7 +1893,41 @@ def create_rest_api(
 
         # 6. Build the profile catalogue. Stable shape — the FE
         # renders these as radio buttons + cost copy.
-        available = [profile_details(p) for p in ExecutionProfile]
+        # Post-collapse the FE shows ONE profile (KNOWLEDGE_INDEX) +
+        # three capability checkboxes. The legacy enum values still
+        # exist for replay compat but are not part of the operator-
+        # facing catalogue. Surface only the canonical profile.
+        available = [profile_details(ExecutionProfile.KNOWLEDGE_INDEX)]
+
+        # 6b. Lightweight capability recommendations from the
+        # deterministic assessor. The FE picker uses these to:
+        #   * pre-check checkboxes when ``confidence == "high"``,
+        #   * render the reason next to each box,
+        #   * raise an info banner if the user disables a
+        #     high-confidence recommendation.
+        # No LLM calls — file extension / scanned-page / table
+        # signals + filename/title hints + optional sample-text
+        # equation-symbol heuristic.
+        from j1.processing.execution_profile import (
+            recommend_capabilities_from_assessment,
+        )
+        domain_keywords = frozenset(
+            kw.lower() for kw in getattr(active_domain, "filter_keywords", ())
+        ) if active_domain is not None else frozenset()
+        capability_recs = recommend_capabilities_from_assessment(
+            has_images=bool(getattr(profile, "has_images", False)),
+            has_tables=bool(getattr(profile, "has_tables", False)),
+            has_scanned_pages=bool(
+                getattr(profile, "has_scanned_pages", False),
+            ),
+            text_extractable_ratio=getattr(
+                profile, "text_extractable_ratio", None,
+            ),
+            page_count=getattr(profile, "page_count", None),
+            filename=doc_dto.original_filename,
+            sample_text=None,  # pre-compile — no body slice yet
+            domain_keywords=domain_keywords if domain_keywords else None,
+        )
 
         # 7. Compile-option preview — a small set of hedged hints
         # the FE can render BELOW the picker without claiming exact
@@ -1997,6 +2059,7 @@ def create_rest_api(
             "fallbackUsed": outcome.fallback_used,
             "matchedRules": [r.to_payload() for r in outcome.matched_rules],
             "availableProfiles": available,
+            "capabilityRecommendations": capability_recs.to_payload(),
             "reasons": list(outcome.reasons),
             "assessment": assessment_plan_payload,
             "compileOptionPreview": compile_option_preview,
@@ -5705,6 +5768,17 @@ def create_rest_api(
         assessment_decision_id: str | None = Form(
             default=None, alias="assessmentDecisionId",
         ),
+        # User-selected Knowledge Index capability checkboxes
+        # serialized as a JSON string in the multipart field
+        # ``requestedCapabilities``. Three independent booleans
+        # (image / table / equation). The backend folds these onto
+        # the AssessmentPlan's ``required_capabilities`` and stamps
+        # ``capability_source="user_selection"``. Missing / empty
+        # falls back to the deterministic planner's defaults —
+        # legacy callers keep working.
+        requested_capabilities_raw: str | None = Form(
+            default=None, alias="requestedCapabilities",
+        ),
         ctx: ProjectContext = Depends(get_ctx),
         starter: JobStarter = Depends(require_job_starter),
         security: SecurityContext = Depends(get_security),
@@ -5725,6 +5799,15 @@ def create_rest_api(
         # fail fast regardless of deployment wiring.
         resolved_profile, profile_source = _resolve_profile_or_400(
             selected_profile,
+        )
+
+        # Parse the user-selected capability checkboxes if the FE
+        # supplied them. Invalid JSON / wrong shape → 400
+        # INVALID_ARGUMENT so the caller knows their request was
+        # malformed (vs silently dropped). Missing → None →
+        # workflow falls back to planner defaults.
+        requested_capabilities_model = _parse_requested_capabilities_or_400(
+            requested_capabilities_raw,
         )
 
         store = _require_run_store()
@@ -5921,6 +6004,7 @@ def create_rest_api(
                 dict(assessment_decision_metadata)
                 if assessment_decision_metadata is not None else None
             ),
+            requested_capabilities=requested_capabilities_model,
             assessment_decision_warnings=(
                 (assessment_decision_warning,)
                 if assessment_decision_warning is not None else ()

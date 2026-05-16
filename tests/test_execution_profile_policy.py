@@ -35,13 +35,14 @@ from j1.processing.execution_profile_policy import (
 # ---- load_execution_profile_policy ------------------------------
 
 
-def test_default_load_allows_every_profile_and_defaults_to_standard():
-    """Out-of-the-box deployment: every profile allowed, default
-    is `standard`. Pinned so an accidental flip of the safe-default
-    is intentional."""
+def test_default_load_allows_every_profile_and_defaults_to_knowledge_index():
+    """Out-of-the-box deployment: every profile allowed (including
+    the legacy aliases for replay compat), default is the new
+    canonical ``KNOWLEDGE_INDEX``. Pinned so an accidental flip
+    of the safe-default is intentional."""
     policy = load_execution_profile_policy(env={})
     assert policy.allowed == frozenset(ExecutionProfile)
-    assert policy.default_profile == ExecutionProfile.STANDARD
+    assert policy.default_profile == ExecutionProfile.KNOWLEDGE_INDEX
 
 
 def test_load_respects_advanced_disable():
@@ -89,8 +90,12 @@ def test_load_rejects_unknown_default_profile():
 def test_load_rejects_empty_allow_list():
     """If every profile is disabled, the deployment can't ingest
     anything. Fail at load rather than 503-ing every request."""
+    from j1.processing.execution_profile_policy import (
+        ENV_ALLOW_KNOWLEDGE_INDEX,
+    )
     with pytest.raises(InvalidProfilePolicyError):
         load_execution_profile_policy(env={
+            ENV_ALLOW_KNOWLEDGE_INDEX: "false",
             ENV_ALLOW_MINIMUM_QUERYABLE: "false",
             ENV_ALLOW_STANDARD: "false",
             ENV_ALLOW_ADVANCED: "false",

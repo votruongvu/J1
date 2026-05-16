@@ -20,6 +20,7 @@ import type { ProjectContext } from "@/types/ui";
 import type {
   AssessmentPlanResponse,
   ExecutionProfileId,
+  RequestedCapabilities,
 } from "@/types/execution-profile";
 import { AssessmentPlanDialog } from "./upload/AssessmentPlanDialog";
 
@@ -119,6 +120,7 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
 
   const onAssessmentConfirm = async (
     selectedProfile: ExecutionProfileId,
+    requestedCapabilities: RequestedCapabilities,
   ) => {
     if (pendingFile === null) return;
     const file = pendingFile;
@@ -134,7 +136,7 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
     setBusy(true);
     try {
       const { runId } = await client.upload(
-        file, ctx, selectedProfile, decisionId,
+        file, ctx, selectedProfile, decisionId, requestedCapabilities,
       );
       onUploaded(runId);
     } catch (e) {
@@ -237,7 +239,9 @@ export function UploadPage({ ctx, onUploaded, onBack }: UploadPageProps) {
           filename={pendingFile.name}
           plan={planResponse}
           loadError={planError}
-          onConfirm={(profile) => void onAssessmentConfirm(profile)}
+          onConfirm={(profile, capabilities) => void onAssessmentConfirm(
+            profile, capabilities,
+          )}
           onCancel={onAssessmentCancel}
           onRunAdvancedAssessment={() => void onRunAdvancedAssessment()}
           advancedAssessmentRunning={advancedRunning}

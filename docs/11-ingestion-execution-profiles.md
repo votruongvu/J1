@@ -7,6 +7,42 @@ This document is the Part 1 deliverable for the execution-profile refactor.
 
 ---
 
+## Update — Post-collapse Knowledge Index profile
+
+J1 has since collapsed the three-profile picker (Quick / Standard / Deep) into ONE user-facing profile: **Knowledge Index**. The retained investigation below is the historical reference; the current product model is summarised here.
+
+**Current product mental model:**
+
+- **One profile**: `knowledge_index`. Every user-facing ingest builds the base searchable knowledge graph/index — parsed content, chunks, base graph/index artifacts, and a queryable run.
+- **Three optional capability checkboxes** on the ingest dialog:
+  - **Process images** — extract diagrams, screenshots, figures, scanned pages.
+  - **Process tables** — extract grids, forms, repeated row/column structures.
+  - **Process equations** — extract formulas, mathematical notation, technical expressions.
+- **Lightweight assessment** recommends defaults for the three checkboxes from deterministic document signals (file type, page count, image-heavy hints, table-like layout). The user can override before indexing.
+- **Domain Enrichment is a separate post-compile stage**. It runs automatically only when `J1_DOMAIN_ENRICHMENT_AUTO_ENABLED=true`; otherwise the stage is shown as skipped/manual-available and the operator triggers it from Run Detail.
+
+**Legacy wire values** (`minimum_queryable`, `standard`, `advanced`) remain valid on the REST surface for one release cycle. The REST layer accepts them, advertises them as deprecated, and downstream resolves every value to `knowledge_index` via `coerce_legacy_profile`. New code MUST emit `knowledge_index`.
+
+**Adapter capability honesty.** The current RAGAnything adapter DOES support independent image/table/equation toggles at config construction time (`enable_image_processing` / `enable_table_processing` / `enable_equation_processing` on `RAGAnythingConfig`). When the installed adapter cannot honour a requested capability, the compile request records the gap in `unhandled_capabilities` and the run's `unsupported_profile_controls` metadata field — operators see "requested but not enforced" rather than a silent ignore.
+
+**Domain Enrichment env contract:**
+
+```env
+J1_DOMAIN_ENRICHMENT_AUTO_ENABLED=false    # default
+J1_ENRICHMENT_REQUIRE_SUCCESS=false        # default
+```
+
+| State | Final-run effect |
+|---|---|
+| Auto disabled (default) | Compile succeeds → enrichment stage shows "Skipped — automatic enrichment is disabled" + a `Run Domain Enrichment` action on Run Detail. |
+| Auto enabled, enrichment succeeds | Final status: `Completed with Enrichment`. |
+| Auto enabled, enrichment fails, require-success=false | Run remains queryable; final status: `Completed — Enrichment Failed` + `Retry Domain Enrichment` action. |
+| Auto enabled, enrichment fails, require-success=true | Run fails; final status: `Failed — Enrichment Required`. |
+
+The investigation below documents how we got here and remains accurate for the compile-stage semantics; the profile-picker section is superseded by this update.
+
+---
+
 ## TL;DR
 
 1. The **workflow itself** (post compile-first refactor) already gates enrich / graph / index reasonably — graph and indexer only run when the caller supplies `graph_builder_kind` / `indexer_kind`, and enrich runs only when the `PostCompileEnrichPlan` recommends it.

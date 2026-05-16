@@ -260,10 +260,11 @@ def test_profile_labels_cover_every_profile():
         assert PROFILE_LABELS[profile], "label must be non-empty"
 
 
-def test_default_profile_is_standard():
-    """Until the FE selection lands, `standard` is the safe default.
-    Pinned in tests so a flip to `MINIMUM_QUERYABLE` is intentional."""
-    assert DEFAULT_PROFILE == ExecutionProfile.STANDARD
+def test_default_profile_is_knowledge_index():
+    """Post-collapse, the default profile is the new canonical
+    ``KNOWLEDGE_INDEX``. Pinned so a future flip back to a legacy
+    value is intentional."""
+    assert DEFAULT_PROFILE == ExecutionProfile.KNOWLEDGE_INDEX
 
 
 # ---- detect_unsupported_controls --------------------------------

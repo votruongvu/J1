@@ -15,6 +15,7 @@ import type {
   AssessmentPlanResponse,
   ExecutionProfileId,
   ManualActionDescriptor,
+  RequestedCapabilities,
 } from "@/types/execution-profile";
 import type {
   ContentInventory,
@@ -107,6 +108,7 @@ export interface IngestionClient {
     ctx: ProjectContext,
     selectedProfile?: ExecutionProfileId,
     assessmentDecisionId?: string | null,
+    requestedCapabilities?: RequestedCapabilities | null,
   ): Promise<{ runId: string }>;
 
   /** POST `/documents/{id}/assessment-plan`. Synchronous, no

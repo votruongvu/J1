@@ -425,6 +425,16 @@ class ProjectProcessingRequest:
     # final report reflects what happened even when validation
     # failed BEFORE the workflow could see the decision.
     assessment_decision_warnings: tuple[str, ...] = ()
+    # User-selected per-modality capability checkboxes from the
+    # Knowledge Index ingest picker. Wire shape:
+    # ``{"image_processing": bool, "table_processing": bool,
+    # "equation_processing": bool}``. None when the caller didn't
+    # supply checkbox state (legacy / bulk-job flows); the
+    # workflow falls back to the deterministic planner's defaults
+    # in that case. When present, the user's pick overrides the
+    # planner — they're the authoritative "what should the
+    # compiler try to process?" signal for new runs.
+    requested_capabilities: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -799,6 +809,38 @@ def _parse_method_for_mode(mode: str | None) -> str | None:
     if mode is None:
         return None
     return {"standard": "auto", "deep": "auto"}.get(mode)
+
+
+def _apply_user_capability_selection(
+    assessment_payload: dict | None,
+    request: "ProjectProcessingRequest",
+) -> dict | None:
+    """Fold user-selected capability checkboxes onto the assessment
+    plan's ``required_capabilities``.
+
+    When ``request.requested_capabilities`` is None (legacy / bulk
+    job / replay) the plan passes through unchanged — the
+    deterministic planner's defaults still drive compile. When
+    present, the user's three booleans become the canonical
+    ``required_capabilities`` source for the new run, and the
+    plan stamps ``capability_source="user_selection"`` so audits
+    can tell the override apart from the planner default.
+
+    Pure: takes / returns dicts so the workflow doesn't need to
+    materialise the ``AssessmentPlan`` dataclass before serialising.
+    """
+    if assessment_payload is None:
+        return assessment_payload
+    requested = getattr(request, "requested_capabilities", None)
+    if not isinstance(requested, dict):
+        return assessment_payload
+    from j1.processing.assessment import (
+        AssessmentPlan, UserSelectedCapabilities,
+    )
+    selection = UserSelectedCapabilities.from_payload(requested)
+    plan = AssessmentPlan.from_payload(assessment_payload)
+    overridden = plan.with_user_selection(selection)
+    return overridden.to_payload()
 
 
 def _project_search_attr_final_status(
@@ -3063,6 +3105,12 @@ class ProjectProcessingWorkflow:
                     # the one we run.
                     assessment_payload = persisted_assessment
                     initial_plan_payload = None
+                    # User-checkbox overrides still apply to the
+                    # persisted-decision path so a re-index that
+                    # toggles capabilities respects the new picks.
+                    assessment_payload = _apply_user_capability_selection(
+                        assessment_payload, request,
+                    )
                     self._log_step(
                         request,
                         event="ingestion.assessment.used_persisted",
@@ -3113,6 +3161,15 @@ class ProjectProcessingWorkflow:
                         fallback = DefaultAssessmentPlanner().assess(profile)
                         assessment_payload = fallback.to_payload()
                         initial_plan_payload = None
+                    # Apply user-selected per-modality capability
+                    # checkboxes from the Knowledge Index picker.
+                    # When the request carries them, they override
+                    # the planner's ``required_capabilities`` for
+                    # new runs. Legacy / bulk-job requests don't
+                    # supply them; the planner's defaults stay.
+                    assessment_payload = _apply_user_capability_selection(
+                        assessment_payload, request,
+                    )
                     # Emit a single audit event so the final report can
                     # tell apart "no decision supplied" vs "decision
                     # supplied but workflow rebuilt anyway". The actual

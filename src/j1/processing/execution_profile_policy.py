@@ -57,6 +57,10 @@ from j1.processing.execution_profile import (
 
 
 ENV_DEFAULT_PROFILE = "J1_DEFAULT_INGEST_PROFILE"
+ENV_ALLOW_KNOWLEDGE_INDEX = "J1_ALLOW_KNOWLEDGE_INDEX_INGEST"
+# Legacy allow-flags — retained so existing deployments don't fail
+# bootstrap. New deployments should set
+# ``J1_ALLOW_KNOWLEDGE_INDEX_INGEST`` and ignore these.
 ENV_ALLOW_MINIMUM_QUERYABLE = "J1_ALLOW_MINIMUM_QUERYABLE_INGEST"
 ENV_ALLOW_STANDARD = "J1_ALLOW_STANDARD_INGEST"
 ENV_ALLOW_ADVANCED = "J1_ALLOW_ADVANCED_INGEST"
@@ -65,6 +69,7 @@ ENV_ALLOW_ADVANCED = "J1_ALLOW_ADVANCED_INGEST"
 # Maps every profile to its corresponding "allowed" env var so the
 # loader can iterate. Keep in lockstep with `ExecutionProfile`.
 _ALLOW_ENV_BY_PROFILE: dict[ExecutionProfile, str] = {
+    ExecutionProfile.KNOWLEDGE_INDEX: ENV_ALLOW_KNOWLEDGE_INDEX,
     ExecutionProfile.MINIMUM_QUERYABLE: ENV_ALLOW_MINIMUM_QUERYABLE,
     ExecutionProfile.STANDARD: ENV_ALLOW_STANDARD,
     ExecutionProfile.ADVANCED: ENV_ALLOW_ADVANCED,
