@@ -396,7 +396,7 @@ function ManualActionStatus({
     );
   }
   if (lifecycle.kind === "running") {
-    const stage = lifecycle.run?.currentStage ?? "queued";
+    const stage = lifecycle.run?.current_stage ?? "queued";
     return (
       <div
         className="manual-actions-panel__status"
@@ -420,16 +420,23 @@ function ManualActionStatus({
       </div>
     );
   }
-  // terminal
+  // terminal — caller only renders the status panel when kind is
+  // one of error/starting/running/terminal (see the parent
+  // component's render guard), so this branch is the terminal
+  // variant by elimination. Narrow explicitly so TypeScript can
+  // see it.
+  if (lifecycle.kind !== "terminal") return null;
   const status = lifecycle.run.status.toLowerCase();
   const ok = status === "succeeded" || status === "succeeded_with_warnings";
+  const failureCode = lifecycle.run.final?.failure_code;
+  const warningCount = lifecycle.run.warning_count ?? 0;
   return (
     <div
       className="manual-actions-panel__status"
       data-testid={`manual-action-status-${ok ? "succeeded" : "failed"}`}
     >
       <Banner
-        kind={ok ? "ok" : "err"}
+        kind={ok ? "info" : "err"}
         title={
           ok
             ? "Domain Enrichment finished"
@@ -439,14 +446,14 @@ function ManualActionStatus({
         <p>
           Run <span className="mono">{lifecycle.runId}</span> ended with status
           {" "}<strong>{lifecycle.run.status}</strong>
-          {lifecycle.run.failureCode && (
-            <> · code <code className="mono">{lifecycle.run.failureCode}</code></>
+          {failureCode && (
+            <> · code <code className="mono">{failureCode}</code></>
           )}
           .
         </p>
-        {lifecycle.run.warningCount > 0 && (
+        {warningCount > 0 && (
           <p className="muted">
-            {lifecycle.run.warningCount} warning(s) reported.
+            {warningCount} warning(s) reported.
           </p>
         )}
       </Banner>
