@@ -537,6 +537,9 @@ def test_raganything_provider_propagates_workspace_scope_missing():
 
     class _StubLLMRegistry:
         def text(self): return None
+        def query(self): return None
+        def indexing(self): return None
+        def enrichment(self): return None
         def try_embedding(self): return None
 
     def _raising_callable(request: RAGAnythingQueryRequest):

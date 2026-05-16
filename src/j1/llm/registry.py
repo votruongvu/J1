@@ -35,8 +35,40 @@ LLM_ROLE_FAST = "fast"
 # without a separate premium provider keep working.
 LLM_ROLE_PREMIUM = "premium"
 
+# Stage-keyed roles. Each is OPTIONAL — the resolver helpers below
+# fall back to `LLM_ROLE_TEXT` when the stage-specific client isn't
+# registered, so single-model deployments keep working unchanged.
+# Operators wire a separate client per stage when indexing,
+# user-facing query, and post-compile enrichment have different
+# cost / latency / accuracy budgets:
+#
+#   * `LLM_ROLE_INDEXING`   — drives LightRAG's `llm_model_func`
+#     during compile (entity / relationship extraction) and the
+#     post-compile graph build. The volume of calls is dominated
+#     by chunk count; deployments typically want a cheap+fast
+#     model here.
+#   * `LLM_ROLE_QUERY`      — drives the synthesizer during
+#     user-facing question answering (RAGAnything `aquery`). Often
+#     the largest / most-accurate model.
+#   * `LLM_ROLE_ENRICHMENT` — drives post-compile enrichment
+#     modules (Domain Enrichment, future entity normalisation,
+#     etc.). Triggered by operator action, so latency matters less
+#     than accuracy.
+LLM_ROLE_INDEXING = "indexing"
+LLM_ROLE_QUERY = "query"
+LLM_ROLE_ENRICHMENT = "enrichment"
+
 KNOWN_ROLES: frozenset[str] = frozenset(
-    {LLM_ROLE_TEXT, LLM_ROLE_VISION, LLM_ROLE_EMBEDDING, LLM_ROLE_FAST, LLM_ROLE_PREMIUM}
+    {
+        LLM_ROLE_TEXT,
+        LLM_ROLE_VISION,
+        LLM_ROLE_EMBEDDING,
+        LLM_ROLE_FAST,
+        LLM_ROLE_PREMIUM,
+        LLM_ROLE_INDEXING,
+        LLM_ROLE_QUERY,
+        LLM_ROLE_ENRICHMENT,
+    }
 )
 
 
@@ -152,3 +184,73 @@ class LLMProviderRegistry:
         if client is not None:
             return client  # type: ignore[return-value]
         return self.try_resolve(LLM_ROLE_TEXT)  # type: ignore[return-value]
+
+    # ---- Stage-keyed helpers -----------------------------------------
+    #
+    # Each helper returns the stage-specific client when registered,
+    # otherwise falls back to TEXT. Callers use these instead of
+    # `text()` so a deployment can split indexing / query /
+    # enrichment onto separate models without every call site
+    # learning about the split.
+
+    def indexing(self) -> TextLLMClient:
+        """Resolve INDEXING, falling back to TEXT.
+ Raises `LLMRoleNotRegistered` only when neither role is wired."""
+        client = self.try_resolve(LLM_ROLE_INDEXING)
+        if client is not None:
+            return client  # type: ignore[return-value]
+        return self.resolve(LLM_ROLE_TEXT)  # type: ignore[return-value]
+
+    def query(self) -> TextLLMClient:
+        """Resolve QUERY, falling back to TEXT.
+ Raises `LLMRoleNotRegistered` only when neither role is wired."""
+        client = self.try_resolve(LLM_ROLE_QUERY)
+        if client is not None:
+            return client  # type: ignore[return-value]
+        return self.resolve(LLM_ROLE_TEXT)  # type: ignore[return-value]
+
+    def enrichment(self) -> TextLLMClient:
+        """Resolve ENRICHMENT, falling back to TEXT.
+ Raises `LLMRoleNotRegistered` only when neither role is wired."""
+        client = self.try_resolve(LLM_ROLE_ENRICHMENT)
+        if client is not None:
+            return client  # type: ignore[return-value]
+        return self.resolve(LLM_ROLE_TEXT)  # type: ignore[return-value]
+
+    def try_indexing(self) -> TextLLMClient | None:
+        """Optional INDEXING role — returns None when not wired AND
+ no TEXT fallback exists. Most call sites should use
+ `indexing()` instead so they pick up the TEXT fallback."""
+        return self.try_resolve(LLM_ROLE_INDEXING)  # type: ignore[return-value]
+
+    def try_query(self) -> TextLLMClient | None:
+        return self.try_resolve(LLM_ROLE_QUERY)  # type: ignore[return-value]
+
+    def try_enrichment(self) -> TextLLMClient | None:
+        return self.try_resolve(LLM_ROLE_ENRICHMENT)  # type: ignore[return-value]
+
+    def stage_diagnostics(self) -> dict[str, dict]:
+        """Per-stage resolved-client summary (which model fires for
+ indexing / query / enrichment after fallback resolution).
+ Useful at startup so operators can log the effective plan
+ even when stage-specific roles aren't wired."""
+        def _summary(client: object | None) -> dict[str, object | None]:
+            if client is None:
+                return {"client_type": None, "provider": None, "model": None}
+            return {
+                "client_type": type(client).__name__,
+                "provider": getattr(client, "provider", None),
+                "model": getattr(client, "model", None),
+            }
+        text_fallback = self.try_resolve(LLM_ROLE_TEXT)
+        return {
+            "indexing": _summary(
+                self.try_resolve(LLM_ROLE_INDEXING) or text_fallback,
+            ),
+            "query": _summary(
+                self.try_resolve(LLM_ROLE_QUERY) or text_fallback,
+            ),
+            "enrichment": _summary(
+                self.try_resolve(LLM_ROLE_ENRICHMENT) or text_fallback,
+            ),
+        }

@@ -208,7 +208,7 @@ class RAGAnythingCompiler:
             ctx=ctx,
             document_id=document_id,
             settings=self._settings,
-            text_client=self._llm_registry.text(),
+            text_client=self._llm_registry.indexing(),
             vision_client=self._llm_registry.try_vision(),
             embedding_client=self._llm_registry.try_embedding(),
             progress_reporter=progress_reporter,

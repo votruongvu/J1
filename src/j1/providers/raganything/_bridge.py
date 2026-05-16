@@ -71,6 +71,14 @@ from j1.providers.raganything._llm_audit import (
     load_llm_audit_config,
     wrap_audited_async,
 )
+from j1.providers.raganything._perf_trace import (
+    STAGE_EMBEDDING,
+    STAGE_GRAPH_EXTRACTION,
+    STAGE_INSERT,
+    STAGE_PARSE,
+    STAGE_VISION_ANALYSIS,
+    IngestPerfTrace,
+)
 
 if TYPE_CHECKING:
     from j1.providers.raganything.compiler import RAGAnythingCompileRequest
@@ -197,6 +205,17 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # No-op for the default `auto` parse method.
     _apply_vlm_http_client_env(request.settings)
 
+    # Per-compile performance trace. Captures wall-clock for parse +
+    # insert stretches, per-call duration for entity-extraction +
+    # vision LLM calls (via the audit wrapper), and embedding-batch
+    # latency. Emitted once at the end as `ingest.perf.summary` and
+    # folded into the compile metadata under the `perf` key.
+    perf_trace = IngestPerfTrace(
+        document_id=request.document_id,
+        run_id=getattr(request, "run_id", None),
+        selected_profile=getattr(request, "selected_execution_profile", None),
+    )
+
     # Resolve the AssessmentPlan-derived compile config UPFRONT so
     # we can pass `config_overrides` into `_prepare_compile` (which
     # builds the RAGAnything instance + applies them to the
@@ -209,6 +228,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             compile_plan_config.to_config_overrides()
             if compile_plan_config is not None else None
         ),
+        perf_trace=perf_trace,
     )
     # Operator-readable path log — folks debugging slow MinerU runs
     # on macOS Docker Desktop want to confirm the parse output is
@@ -440,6 +460,14 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
         raise
     finally:
         parse_elapsed_ms = int((time.monotonic() - parse_start) * 1000)
+        # The compile window (parse + LightRAG insert + entity
+        # extraction + embedding) is all inside this `try` block.
+        # We sample it as ``parse`` for the perf trace's stage
+        # clocks; the trace's LLM-call buckets break out the
+        # graph-extraction + embedding subsets separately, so the
+        # operator can do ``parse_elapsed_ms - sum(llm + embed)``
+        # to estimate LightRAG insert/bookkeeping overhead.
+        perf_trace.record_stage(STAGE_PARSE, elapsed_ms=parse_elapsed_ms)
         _log.info(
             "MinerU parse complete: document=%s parse_elapsed_ms=%d output_dir=%s",
             request.document_id, parse_elapsed_ms, output_dir,
@@ -553,6 +581,13 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     )
     if plan_resolved_mode[0]:
         metadata["assessment_mode"] = plan_resolved_mode[0]
+
+    # Per-compile performance summary. Emits a single
+    # `ingest.perf.summary` event AND folds the payload into the
+    # compile metadata under `perf` so downstream consumers
+    # (activity diagnostic report, run-detail panel) can render it
+    # without reading the worker log aggregator.
+    metadata["perf"] = perf_trace.emit_summary()
 
     # Persist a normalized `ParsedContentManifest` alongside the
     # compile output so downstream consumers (post-compile replan,
@@ -1080,6 +1115,7 @@ def _prepare_compile(
     request: "RAGAnythingCompileRequest",
     *,
     config_overrides: dict[str, Any] | None = None,
+    perf_trace: IngestPerfTrace | None = None,
 ):
     """Build a RAGAnything instance + resolve I/O paths for compile.
 
@@ -1116,6 +1152,7 @@ def _prepare_compile(
         disable_entity_extraction=getattr(
             request, "disable_entity_extraction", False,
         ),
+        perf_trace=perf_trace,
         # Carry the user-selected profile into every audit line
         # the bridge emits — heavy-operation events, llm-call
         # events, and the no-op short-circuit notification all
@@ -1273,6 +1310,7 @@ def _build_rag_instance(
     working_dir_override: Path | None = None,
     disable_entity_extraction: bool = False,
     selected_profile: str | None = None,
+    perf_trace: IngestPerfTrace | None = None,
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
@@ -1363,6 +1401,8 @@ def _build_rag_instance(
             selected_profile=selected_profile or "minimum_queryable",
             always_audit=True,
             config=audit_cfg,
+            perf_trace=perf_trace,
+            perf_stage=STAGE_GRAPH_EXTRACTION,
         )
         _log.info(
             "compile-side llm_model_func swapped for no-op "
@@ -1370,25 +1410,39 @@ def _build_rag_instance(
         )
     else:
         kwargs["llm_model_func"] = wrap_audited_async(
-            _make_text_callable(text_client),
+            _make_text_callable(
+                text_client,
+                perf_trace=perf_trace,
+                perf_stage=STAGE_GRAPH_EXTRACTION,
+            ),
             purpose=PURPOSE_ENTITY_EXTRACTION,
             stage="compile",
             provider=text_provider,
             model=text_model,
             selected_profile=selected_profile,
             config=audit_cfg,
+            perf_trace=perf_trace,
+            perf_stage=STAGE_GRAPH_EXTRACTION,
         )
     if embedding_client is not None:
-        kwargs["embedding_func"] = _make_embedding_func(embedding_client)
+        kwargs["embedding_func"] = _make_embedding_func(
+            embedding_client, perf_trace=perf_trace,
+        )
     if vision_client is not None and not disable_entity_extraction:
         kwargs["vision_model_func"] = wrap_audited_async(
-            _make_vision_callable(vision_client),
+            _make_vision_callable(
+                vision_client,
+                perf_trace=perf_trace,
+                perf_stage=STAGE_VISION_ANALYSIS,
+            ),
             purpose=PURPOSE_VISION_ANALYSIS,
             stage="compile",
             provider=vision_provider or "vision-llm",
             model=vision_model,
             selected_profile=selected_profile,
             config=audit_cfg,
+            perf_trace=perf_trace,
+            perf_stage=STAGE_VISION_ANALYSIS,
         )
 
     try:
@@ -1472,7 +1526,12 @@ def _build_rag_config(
 # ---- LLM-callable adapters: J1 client → vendor-callable shape ------
 
 
-def _make_text_callable(text_client) -> Callable[..., Any]:
+def _make_text_callable(
+    text_client,
+    *,
+    perf_trace: IngestPerfTrace | None = None,
+    perf_stage: str = STAGE_GRAPH_EXTRACTION,
+) -> Callable[..., Any]:
     """RAGAnything (via LightRAG) `await`s
  ``llm_model_func(prompt, system_prompt=..., history_messages=[...], **kw)``
  → str.
@@ -1540,17 +1599,33 @@ def _make_text_callable(text_client) -> Callable[..., Any]:
         else:
             full_system = no_think
         full_prompt = f"{no_think}\n\n{full_prompt}"
-        text, _usage = await asyncio.to_thread(
+        text, usage = await asyncio.to_thread(
             text_client.generate,
             full_prompt,
             system_prompt=full_system,
         )
+        # Forward token usage to the perf trace when wired. Duration
+        # + call_count are sampled by the audit wrapper; we only
+        # contribute the token-count column the wrap layer can't
+        # see (RAGAnything drops usage at the vendor boundary).
+        if perf_trace is not None and usage is not None:
+            perf_trace.record_llm_usage(
+                stage=perf_stage,
+                model=getattr(usage, "model", None)
+                or getattr(text_client, "model", None),
+                usage=usage,
+            )
         return text
 
     return _llm_callable
 
 
-def _make_vision_callable(vision_client) -> Callable[..., Any]:
+def _make_vision_callable(
+    vision_client,
+    *,
+    perf_trace: IngestPerfTrace | None = None,
+    perf_stage: str = STAGE_VISION_ANALYSIS,
+) -> Callable[..., Any]:
     """RAGAnything `await`s vision_model_func(prompt, image_data, **kw) → str.
 
  `image_data` arrives in one of two shapes depending on which call
@@ -1613,9 +1688,16 @@ def _make_vision_callable(vision_client) -> Callable[..., Any]:
             )
             if history_text:
                 full_prompt = f"{history_text}\n\nUSER: {full_prompt}"
-        text, _usage = await asyncio.to_thread(
+        text, usage = await asyncio.to_thread(
             vision_client.analyze_image, image_bytes, prompt=full_prompt,
         )
+        if perf_trace is not None and usage is not None:
+            perf_trace.record_llm_usage(
+                stage=perf_stage,
+                model=getattr(usage, "model", None)
+                or getattr(vision_client, "model", None),
+                usage=usage,
+            )
         return text
 
     return _vision_callable
@@ -1646,7 +1728,11 @@ def _coerce_image_bytes(image_data: Any) -> bytes:
     )
 
 
-def _make_embedding_func(embedding_client):
+def _make_embedding_func(
+    embedding_client,
+    *,
+    perf_trace: IngestPerfTrace | None = None,
+):
     """Wrap an `EmbeddingClient` in `lightrag.utils.EmbeddingFunc`.
 
  LightRAG does NOT accept a plain callable here — it accesses
@@ -1677,12 +1763,42 @@ def _make_embedding_func(embedding_client):
     # transformers) — safe to import unconditionally inside this branch.
     import numpy as np
 
+    embedding_model = getattr(embedding_client, "model", None)
+
     async def _embedding_callable(texts, *args, **kwargs):
         if isinstance(texts, str):
             texts = [texts]
-        vectors, _usage = await asyncio.to_thread(
-            embedding_client.embed_batch, list(texts),
-        )
+        text_list = list(texts)
+        start_ns = time.monotonic_ns()
+        success = False
+        try:
+            vectors, usage = await asyncio.to_thread(
+                embedding_client.embed_batch, text_list,
+            )
+            success = True
+        finally:
+            if perf_trace is not None:
+                duration_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+                # Embedding is treated as an LLM-style stage in the
+                # trace: each batch counts as one call, with
+                # input_tokens populated from `LLMUsage` when the
+                # provider surfaces them. RAGAnything's embedding
+                # path isn't routed through `wrap_audited_async`
+                # (the audit module's purpose vocabulary doesn't
+                # cover embeddings yet) so we record the
+                # call_count + duration directly here.
+                perf_trace.record_llm_call(
+                    stage=STAGE_EMBEDDING,
+                    model=embedding_model,
+                    duration_ms=int(duration_ms),
+                    success=success,
+                )
+                if success and usage is not None:
+                    perf_trace.record_llm_usage(
+                        stage=STAGE_EMBEDDING,
+                        model=embedding_model,
+                        usage=usage,
+                    )
         return np.asarray(vectors, dtype=np.float32)
 
     return EmbeddingFunc(

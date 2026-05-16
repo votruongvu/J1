@@ -94,6 +94,8 @@ def wrap_audited_async(
     selected_profile: str | None,
     always_audit: bool = False,
     config: LLMAuditConfig | None = None,
+    perf_trace: object | None = None,
+    perf_stage: str | None = None,
 ) -> Callable[..., object]:
     """Wrap an async LLM callable with start/complete audit events.
 
@@ -106,12 +108,41 @@ def wrap_audited_async(
     `always_audit=True` short-circuits the env-flag gate — used by
     the no-op callable so its events fire even when the
     deployment hasn't enabled real-LLM auditing.
+
+    `perf_trace` is an optional `IngestPerfTrace` instance. When
+    supplied, the wrapper records per-call duration onto the
+    trace under `perf_stage` (defaults to `stage`). Token usage
+    is NOT inferred here — the inner callable is responsible for
+    surfacing `LLMUsage` via the separate `record_llm_usage`
+    helper (see `_build_text_callable` in `_bridge.py`). The
+    audit wrapper's only contribution is duration + call_count;
+    that way the per-call accounting works even for vendor
+    callables we can't see the inside of (e.g. a no-op).
     """
     cfg = config if config is not None else load_llm_audit_config()
+    effective_perf_stage = perf_stage if perf_stage is not None else stage
 
     async def _audited(*args, **kwargs):
         if not (always_audit or cfg.should_audit_real_calls()):
-            return await inner(*args, **kwargs)
+            if perf_trace is None:
+                return await inner(*args, **kwargs)
+            # Even when full auditing is off, the perf trace still
+            # wants the per-call duration sample. Run the timing
+            # path without the start/complete log volume.
+            start_ns = time.monotonic_ns()
+            success = False
+            try:
+                result = await inner(*args, **kwargs)
+                success = True
+                return result
+            finally:
+                duration_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+                perf_trace.record_llm_call(
+                    stage=effective_perf_stage,
+                    model=model,
+                    duration_ms=int(duration_ms),
+                    success=success,
+                )
         started_extra = {
             "event": "ingest.stage.llm_call_started",
             "stage": stage,
@@ -142,6 +173,13 @@ def wrap_audited_async(
                     "success": success,
                 },
             )
+            if perf_trace is not None:
+                perf_trace.record_llm_call(
+                    stage=effective_perf_stage,
+                    model=model,
+                    duration_ms=int(duration_ms),
+                    success=success,
+                )
 
     # Preserve the no-op's `call_count` attribute if present so
     # tests + the existing `_noop_llm` audit hook still see it.

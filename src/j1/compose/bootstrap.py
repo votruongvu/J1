@@ -28,7 +28,10 @@ from dataclasses import dataclass, field
 from j1.errors.exceptions import ConfigError
 from j1.llm import (
     LLM_ROLE_EMBEDDING,
+    LLM_ROLE_ENRICHMENT,
     LLM_ROLE_FAST,
+    LLM_ROLE_INDEXING,
+    LLM_ROLE_QUERY,
     LLM_ROLE_TEXT,
     LLM_ROLE_VISION,
     LLMConfigError,
@@ -502,6 +505,25 @@ def _build_llm_registry(settings: LLMSettings) -> LLMProviderRegistry:
         )
         if fast_client is not None:
             registry.register(LLM_ROLE_FAST, fast_client)
+
+    # Optional stage-keyed roles. Each is text-shaped; the
+    # registry's `indexing/query/enrichment` helpers fall back to
+    # `LLM_ROLE_TEXT` when the stage-specific role isn't wired, so
+    # single-model deployments need no env-var changes.
+    for stage_settings, role_name in (
+        (settings.indexing, LLM_ROLE_INDEXING),
+        (settings.query, LLM_ROLE_QUERY),
+        (settings.enrichment, LLM_ROLE_ENRICHMENT),
+    ):
+        if stage_settings is None:
+            continue
+        stage_client = _build_role_client(
+            settings=stage_settings, role=role_name,
+            openai_factory=OpenAICompatTextLLMClient,
+            langchain_factory=LangChainTextLLMClient.from_settings,
+        )
+        if stage_client is not None:
+            registry.register(role_name, stage_client)
 
     return registry
 

@@ -92,7 +92,7 @@ class RAGAnythingGraphBuilder:
             ctx=ctx,
             artifact_ids=list(artifact_ids),
             settings=self._settings,
-            text_client=self._llm_registry.text(),
+            text_client=self._llm_registry.indexing(),
             embedding_client=self._llm_registry.try_embedding(),
             document_id=document_id,
             run_id=run_id,

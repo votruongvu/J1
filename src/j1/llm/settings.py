@@ -65,6 +65,47 @@ ENV_EMBEDDING_TIMEOUT = "J1_EMBEDDING_TIMEOUT_SECONDS"
 ENV_EMBEDDING_MAX_RETRIES = "J1_EMBEDDING_MAX_RETRIES"
 ENV_EMBEDDING_LANGCHAIN_CONFIG = "J1_EMBEDDING_LANGCHAIN_CONFIG"
 
+# Stage-keyed roles. Each is OPTIONAL — when the env vars below
+# are unset, the registry's `indexing()/query()/enrichment()`
+# helpers fall back to the base TEXT client. Operators wire these
+# only when they want a different model for indexing (cheap+fast),
+# user-facing query (large+accurate), or post-compile enrichment.
+ENV_INDEXING_PROVIDER = "J1_INDEXING_LLM_PROVIDER"
+ENV_INDEXING_BASE_URL = "J1_INDEXING_LLM_BASE_URL"
+ENV_INDEXING_API_KEY = "J1_INDEXING_LLM_API_KEY"
+ENV_INDEXING_MODEL = "J1_INDEXING_LLM_MODEL"
+ENV_INDEXING_TIMEOUT = "J1_INDEXING_LLM_TIMEOUT_SECONDS"
+ENV_INDEXING_MAX_RETRIES = "J1_INDEXING_LLM_MAX_RETRIES"
+ENV_INDEXING_TEMPERATURE = "J1_INDEXING_LLM_TEMPERATURE"
+ENV_INDEXING_MAX_OUTPUT_TOKENS = "J1_INDEXING_LLM_MAX_OUTPUT_TOKENS"
+ENV_INDEXING_CONTEXT_WINDOW_TOKENS = "J1_INDEXING_LLM_CONTEXT_WINDOW_TOKENS"
+ENV_INDEXING_SAFETY_MARGIN_TOKENS = "J1_INDEXING_LLM_SAFETY_MARGIN_TOKENS"
+ENV_INDEXING_LANGCHAIN_CONFIG = "J1_INDEXING_LLM_LANGCHAIN_CONFIG"
+
+ENV_QUERY_PROVIDER = "J1_QUERY_LLM_PROVIDER"
+ENV_QUERY_BASE_URL = "J1_QUERY_LLM_BASE_URL"
+ENV_QUERY_API_KEY = "J1_QUERY_LLM_API_KEY"
+ENV_QUERY_MODEL = "J1_QUERY_LLM_MODEL"
+ENV_QUERY_TIMEOUT = "J1_QUERY_LLM_TIMEOUT_SECONDS"
+ENV_QUERY_MAX_RETRIES = "J1_QUERY_LLM_MAX_RETRIES"
+ENV_QUERY_TEMPERATURE = "J1_QUERY_LLM_TEMPERATURE"
+ENV_QUERY_MAX_OUTPUT_TOKENS = "J1_QUERY_LLM_MAX_OUTPUT_TOKENS"
+ENV_QUERY_CONTEXT_WINDOW_TOKENS = "J1_QUERY_LLM_CONTEXT_WINDOW_TOKENS"
+ENV_QUERY_SAFETY_MARGIN_TOKENS = "J1_QUERY_LLM_SAFETY_MARGIN_TOKENS"
+ENV_QUERY_LANGCHAIN_CONFIG = "J1_QUERY_LLM_LANGCHAIN_CONFIG"
+
+ENV_ENRICHMENT_PROVIDER = "J1_ENRICHMENT_LLM_PROVIDER"
+ENV_ENRICHMENT_BASE_URL = "J1_ENRICHMENT_LLM_BASE_URL"
+ENV_ENRICHMENT_API_KEY = "J1_ENRICHMENT_LLM_API_KEY"
+ENV_ENRICHMENT_MODEL = "J1_ENRICHMENT_LLM_MODEL"
+ENV_ENRICHMENT_TIMEOUT = "J1_ENRICHMENT_LLM_TIMEOUT_SECONDS"
+ENV_ENRICHMENT_MAX_RETRIES = "J1_ENRICHMENT_LLM_MAX_RETRIES"
+ENV_ENRICHMENT_TEMPERATURE = "J1_ENRICHMENT_LLM_TEMPERATURE"
+ENV_ENRICHMENT_MAX_OUTPUT_TOKENS = "J1_ENRICHMENT_LLM_MAX_OUTPUT_TOKENS"
+ENV_ENRICHMENT_CONTEXT_WINDOW_TOKENS = "J1_ENRICHMENT_LLM_CONTEXT_WINDOW_TOKENS"
+ENV_ENRICHMENT_SAFETY_MARGIN_TOKENS = "J1_ENRICHMENT_LLM_SAFETY_MARGIN_TOKENS"
+ENV_ENRICHMENT_LANGCHAIN_CONFIG = "J1_ENRICHMENT_LLM_LANGCHAIN_CONFIG"
+
 # Fast role. Optional — used by the adaptive ingestion planner for
 # short structured tasks. Same env-var shape as text so deployments
 # can reuse base_url + api_key with just a different model.
@@ -181,6 +222,41 @@ class FastLLMSettings(_BudgetedLLMSettings):
 
 
 @dataclass(frozen=True)
+class IndexingLLMSettings(_BudgetedLLMSettings):
+    """Optional INDEXING role — text-shape settings, used during
+ compile for LightRAG's entity/relationship extraction and the
+ post-compile graph build. Defaults mirror TextLLMSettings; the
+ split exists so deployments can route indexing calls to a
+ cheaper / faster model than the user-facing query role.
+
+ When `is_configured=False`, the registry falls back to the base
+ TEXT role — no behavior change for single-model deployments."""
+
+    temperature: float = 0.2
+    max_output_tokens: int = 4096
+
+
+@dataclass(frozen=True)
+class QueryLLMSettings(_BudgetedLLMSettings):
+    """Optional QUERY role — drives the synthesizer during
+ user-facing question answering. Falls back to TEXT when
+ unconfigured."""
+
+    temperature: float = 0.2
+    max_output_tokens: int = 4096
+
+
+@dataclass(frozen=True)
+class EnrichmentLLMSettings(_BudgetedLLMSettings):
+    """Optional ENRICHMENT role — drives post-compile enrichment
+ modules (Domain Enrichment, future entity normalisation).
+ Falls back to TEXT when unconfigured."""
+
+    temperature: float = 0.2
+    max_output_tokens: int = 4096
+
+
+@dataclass(frozen=True)
 class LLMSettings:
     """Aggregate of the role settings + cross-cutting validators."""
     text: TextLLMSettings
@@ -190,6 +266,13 @@ class LLMSettings:
     # `fast.is_configured` may be False and the rest of the framework
     # still works (deterministic-only planning).
     fast: FastLLMSettings | None = None
+    # Optional stage-keyed roles. Each may be `None` (legacy
+    # constructor calls don't break) OR carry an unconfigured
+    # settings object (`is_configured=False`) — bootstrap treats
+    # both as "no stage-specific client, fall back to TEXT."
+    indexing: IndexingLLMSettings | None = None
+    query: QueryLLMSettings | None = None
+    enrichment: EnrichmentLLMSettings | None = None
 
 
 # ---- Loaders --------------------------------------------------------
@@ -208,6 +291,9 @@ def load_llm_settings(env: Mapping[str, str] | None = None) -> LLMSettings:
         vision=_load_vision_settings(source),
         embedding=_load_embedding_settings(source),
         fast=_load_fast_settings(source),
+        indexing=_load_indexing_settings(source),
+        query=_load_query_settings(source),
+        enrichment=_load_enrichment_settings(source),
     )
 
 
@@ -266,6 +352,57 @@ def _load_fast_settings(env: Mapping[str, str]) -> FastLLMSettings:
         max_output_tokens=_int(env, ENV_FAST_MAX_OUTPUT_TOKENS, 512),
         context_window_tokens=_int_or_none(env, ENV_FAST_CONTEXT_WINDOW_TOKENS),
         safety_margin_tokens=_int(env, ENV_FAST_SAFETY_MARGIN_TOKENS, 256),
+    )
+
+
+def _load_indexing_settings(env: Mapping[str, str]) -> IndexingLLMSettings:
+    provider = _provider(env, ENV_INDEXING_PROVIDER, PROVIDER_OPENAI_COMPAT)
+    return IndexingLLMSettings(
+        provider=provider,
+        base_url=_str(env, ENV_INDEXING_BASE_URL),
+        api_key=_str(env, ENV_INDEXING_API_KEY),
+        model=_str(env, ENV_INDEXING_MODEL),
+        timeout_seconds=_float(env, ENV_INDEXING_TIMEOUT, 60.0),
+        max_retries=_int(env, ENV_INDEXING_MAX_RETRIES, 3),
+        provider_config=_json(env, ENV_INDEXING_LANGCHAIN_CONFIG),
+        temperature=_float(env, ENV_INDEXING_TEMPERATURE, 0.2),
+        max_output_tokens=_int(env, ENV_INDEXING_MAX_OUTPUT_TOKENS, 4096),
+        context_window_tokens=_int_or_none(env, ENV_INDEXING_CONTEXT_WINDOW_TOKENS),
+        safety_margin_tokens=_int(env, ENV_INDEXING_SAFETY_MARGIN_TOKENS, 256),
+    )
+
+
+def _load_query_settings(env: Mapping[str, str]) -> QueryLLMSettings:
+    provider = _provider(env, ENV_QUERY_PROVIDER, PROVIDER_OPENAI_COMPAT)
+    return QueryLLMSettings(
+        provider=provider,
+        base_url=_str(env, ENV_QUERY_BASE_URL),
+        api_key=_str(env, ENV_QUERY_API_KEY),
+        model=_str(env, ENV_QUERY_MODEL),
+        timeout_seconds=_float(env, ENV_QUERY_TIMEOUT, 60.0),
+        max_retries=_int(env, ENV_QUERY_MAX_RETRIES, 3),
+        provider_config=_json(env, ENV_QUERY_LANGCHAIN_CONFIG),
+        temperature=_float(env, ENV_QUERY_TEMPERATURE, 0.2),
+        max_output_tokens=_int(env, ENV_QUERY_MAX_OUTPUT_TOKENS, 4096),
+        context_window_tokens=_int_or_none(env, ENV_QUERY_CONTEXT_WINDOW_TOKENS),
+        safety_margin_tokens=_int(env, ENV_QUERY_SAFETY_MARGIN_TOKENS, 256),
+    )
+
+
+def _load_enrichment_settings(env: Mapping[str, str]) -> EnrichmentLLMSettings:
+    provider = _provider(env, ENV_ENRICHMENT_PROVIDER, PROVIDER_OPENAI_COMPAT)
+    return EnrichmentLLMSettings(
+        provider=provider,
+        base_url=_str(env, ENV_ENRICHMENT_BASE_URL),
+        api_key=_str(env, ENV_ENRICHMENT_API_KEY),
+        model=_str(env, ENV_ENRICHMENT_MODEL),
+        timeout_seconds=_float(env, ENV_ENRICHMENT_TIMEOUT, 60.0),
+        max_retries=_int(env, ENV_ENRICHMENT_MAX_RETRIES, 3),
+        provider_config=_json(env, ENV_ENRICHMENT_LANGCHAIN_CONFIG),
+        temperature=_float(env, ENV_ENRICHMENT_TEMPERATURE, 0.2),
+        max_output_tokens=_int(env, ENV_ENRICHMENT_MAX_OUTPUT_TOKENS, 4096),
+        context_window_tokens=_int_or_none(env, ENV_ENRICHMENT_CONTEXT_WINDOW_TOKENS),
+        safety_margin_tokens=_int(env, ENV_ENRICHMENT_SAFETY_MARGIN_TOKENS, 256),
     )
 
 
