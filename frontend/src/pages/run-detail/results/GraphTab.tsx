@@ -128,33 +128,17 @@ export function GraphTab({ runId }: GraphTabProps) {
     );
   }
   if (snapshot.unavailable) {
-    // Compile-Graph framing: the tab represents the graph/index
-    // RAGAnything/LightRAG produced during compile. "Unavailable"
-    // is rephrased so operators don't read it as a skipped
-    // downstream stage — under the new architecture there's no
-    // separate Build-Knowledge-Graph step, so the right framing
-    // is "no compile graph artifact was found", not "graph step
-    // was skipped".
+    // Compile-Graph fallback view. The strict graph-snapshot view
+    // requires a registered `graph_json` artifact, which the
+    // simplified compile flow does not produce — LightRAG writes
+    // its graph data into the per-snapshot workdir instead. We
+    // surface a lightweight summary from `compile_result_summary`
+    // so the tab is informative rather than a dead end.
     return (
-      <div className="results__empty" data-testid="results-graph-empty">
-        <strong>No compile graph artifact for this run</strong>
-        <div style={{ color: "var(--text-muted)", marginTop: 6 }}>
-          {snapshot.unavailable.reason}
-        </div>
-        <div
-          style={{
-            color: "var(--text-muted)",
-            marginTop: 6,
-            fontSize: 12,
-          }}
-        >
-          The compile graph is produced by RAGAnything/LightRAG
-          during compile. If it&apos;s missing on a successful run,
-          inspect the raw Artifacts tab for the run&apos;s
-          <code style={{ margin: "0 4px" }}>graph_json</code>
-          record.
-        </div>
-      </div>
+      <CompileGraphSummaryFallback
+        runId={runId}
+        reason={snapshot.unavailable.reason}
+      />
     );
   }
 
@@ -328,4 +312,231 @@ function sourceChunkLabel(ids: string[]): string {
   if (ids.length === 0) return "—";
   if (ids.length <= 3) return ids.join(", ");
   return `${ids.slice(0, 3).join(", ")} +${ids.length - 3}`;
+}
+
+
+// ---- Compile Graph Summary fallback -----------------------------
+
+
+/**
+ * Operator-readable explanation for the typical case where compile
+ * produced a graph inside LightRAG's workspace but didn't register
+ * a `graph_json` artifact in J1's artifact registry. The fallback
+ * reads `compile_result_summary` (which is always written when
+ * compile succeeds) and projects whatever graph-relevant fields it
+ * has — compile engine, chunks count, graph artifact refs (when
+ * the vendor surfaced them), detected content types — so the tab
+ * is informative even without a registered graph snapshot.
+ *
+ * Tests drive this component through the exported helper
+ * `projectCompileGraphSummary` to keep the data-shape contract
+ * stable across compile_result_summary schema additions.
+ */
+interface CompileGraphSummary {
+  compileEngine: string;
+  engineVersion: string | null;
+  status: string | null;
+  chunksCount: number | null;
+  pageCount: number | null;
+  detectedContentTypes: string[];
+  graphArtifactRefs: string[];
+  indexArtifactRefs: string[];
+}
+
+
+export function projectCompileGraphSummary(
+  payload: unknown,
+): CompileGraphSummary {
+  const obj = (payload && typeof payload === "object")
+    ? payload as Record<string, unknown>
+    : {};
+  const strOrNull = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const s = v.trim();
+    return s ? s : null;
+  };
+  const numOrNull = (v: unknown): number | null => {
+    if (typeof v !== "number" || Number.isNaN(v)) return null;
+    return v;
+  };
+  const arrOfStr = (v: unknown): string[] => {
+    if (!Array.isArray(v)) return [];
+    return v.filter((x): x is string => typeof x === "string");
+  };
+  return {
+    compileEngine: strOrNull(obj.compile_engine) ?? "raganything",
+    engineVersion: strOrNull(obj.engine_version),
+    status: strOrNull(obj.status),
+    chunksCount: numOrNull(obj.chunks_count),
+    pageCount: numOrNull(obj.page_count),
+    detectedContentTypes: arrOfStr(obj.detected_content_types),
+    graphArtifactRefs: arrOfStr(obj.graph_artifact_refs),
+    indexArtifactRefs: arrOfStr(obj.index_artifact_refs),
+  };
+}
+
+
+interface CompileGraphSummaryFallbackProps {
+  runId: string;
+  reason: string;
+}
+
+
+function CompileGraphSummaryFallback({
+  runId, reason,
+}: CompileGraphSummaryFallbackProps) {
+  const client = useClient();
+  const [summary, setSummary] = useState<CompileGraphSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        // `compile_result_summary` is written by the
+        // ProcessingService whenever compile succeeds. The list
+        // call is cheap (one JSONL page) and the content fetch is
+        // bytes-only — no LLM, no orchestration.
+        const page = await client.listRunArtifacts(runId, {
+          kind: "compile_result_summary",
+        });
+        const artifact = page.items[0];
+        if (!artifact) {
+          if (!cancelled) {
+            setSummary(null);
+            setLoading(false);
+          }
+          return;
+        }
+        const content = await client.getRunArtifactContent(
+          runId, artifact.artifactId,
+        );
+        const text = await content.blob.text();
+        const parsed = JSON.parse(text) as unknown;
+        if (!cancelled) {
+          setSummary(projectCompileGraphSummary(parsed));
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            e instanceof Error ? e.message : "Failed to load.",
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [client, runId]);
+
+  return (
+    <div
+      className="results__empty results-graph__summary-fallback"
+      data-testid="results-graph-summary-fallback"
+    >
+      <strong>Compile Graph Summary</strong>
+      <p style={{ color: "var(--text-muted)", marginTop: 6 }}>
+        The base graph/index is produced by RAGAnything/LightRAG
+        during compile and lives inside the run&apos;s LightRAG
+        workspace. No <code>graph_json</code> artifact is
+        registered in J1&apos;s artifact registry for this run.
+      </p>
+
+      {loading && (
+        <p
+          className="muted"
+          style={{ marginTop: 12 }}
+          aria-busy="true"
+        >
+          Loading compile summary…
+        </p>
+      )}
+
+      {error && (
+        <p style={{ color: "var(--error-fg)", marginTop: 12 }}>
+          Couldn&apos;t load compile summary: {error}
+        </p>
+      )}
+
+      {summary && (
+        <dl
+          className="kv results-graph__summary-kv"
+          data-testid="results-graph-summary-kv"
+          style={{ marginTop: 12 }}
+        >
+          <dt>Compile engine</dt>
+          <dd>
+            <code>{summary.compileEngine}</code>
+            {summary.engineVersion && (
+              <span className="muted"> v{summary.engineVersion}</span>
+            )}
+          </dd>
+          <dt>Status</dt>
+          <dd>{summary.status ?? "—"}</dd>
+          <dt>Chunks compiled</dt>
+          <dd>
+            {summary.chunksCount == null
+              ? "—"
+              : summary.chunksCount.toLocaleString()}
+          </dd>
+          <dt>Pages</dt>
+          <dd>
+            {summary.pageCount == null
+              ? "—"
+              : summary.pageCount.toLocaleString()}
+          </dd>
+          <dt>Detected content types</dt>
+          <dd>
+            {summary.detectedContentTypes.length === 0
+              ? "—"
+              : summary.detectedContentTypes.join(", ")}
+          </dd>
+          <dt>Graph artifact refs</dt>
+          <dd>
+            {summary.graphArtifactRefs.length === 0
+              ? (
+                <span className="muted">
+                  No graph artifacts surfaced by the vendor for
+                  this run.
+                </span>
+              )
+              : (
+                <ul className="results-graph__ref-list">
+                  {summary.graphArtifactRefs.map((ref) => (
+                    <li key={ref}>
+                      <code>{ref}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+          </dd>
+          <dt>Index artifact refs</dt>
+          <dd>
+            {summary.indexArtifactRefs.length === 0
+              ? <span className="muted">—</span>
+              : (
+                <ul className="results-graph__ref-list">
+                  {summary.indexArtifactRefs.map((ref) => (
+                    <li key={ref}>
+                      <code>{ref}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+          </dd>
+        </dl>
+      )}
+
+      <p
+        className="muted"
+        style={{ marginTop: 16, fontSize: 12 }}
+        data-testid="results-graph-summary-reason"
+      >
+        Graph snapshot reason: {reason}
+      </p>
+    </div>
+  );
 }

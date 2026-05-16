@@ -100,6 +100,15 @@ export function OverviewTab({ summary, loading, error }: OverviewTabProps) {
     (sum, n) => sum + (n || 0),
     0,
   );
+  // RAGAnything/LightRAG builds the base graph/index during
+  // compile, but stores it inside the snapshot-scoped LightRAG
+  // workspace — not as a registered J1 artifact. The legacy
+  // `build_graph` activity (which would copy those workspace
+  // files into a `graph_json` artifact) is off by default on the
+  // standard profile. Surface this once in the Overview rather
+  // than pretending the run produced no graph at all.
+  const graphArtifactCount = summary.artifactCounts["graph_json"] ?? 0;
+  const showGraphNote = graphArtifactCount === 0;
 
   return (
     <div className="results-overview">
@@ -120,6 +129,24 @@ export function OverviewTab({ summary, loading, error }: OverviewTabProps) {
           />
         ) : null}
       </div>
+
+      {showGraphNote && (
+        <section
+          className="results-overview__section results-overview__graph-note"
+          data-testid="results-overview-graph-note"
+        >
+          <strong>Base graph / index</strong>
+          <p className="muted">
+            Managed by the RAGAnything/LightRAG workspace for this
+            snapshot. J1 does not currently persist a separate
+            graph artifact for this run — query reads the workspace
+            directly via{" "}
+            <code>RAGAnything.aquery(mode=&quot;hybrid&quot;)</code>.
+            Domain enrichment and Knowledge Memory are shown on
+            Document Detail.
+          </p>
+        </section>
+      )}
 
       <section className="results-overview__section">
         <h3 className="results-overview__section-title">Pipeline steps</h3>

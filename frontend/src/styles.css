@@ -3305,6 +3305,32 @@ pre.json .b {
   font-size: 12px;
   line-height: 1.5;
 }
+/* Neutral note in Run Detail Overview explaining that the base
+   graph/index lives in RAGAnything/LightRAG's workspace and isn't
+   registered as a J1 graph artifact. Plain, informational — not a
+   warning. Renders only when `artifactCounts.graph_json === 0`. */
+.results-overview__graph-note {
+  padding: 12px 14px;
+  border: 1px dashed var(--border, #e1e4e8);
+  border-radius: 8px;
+  background: var(--bg-tinted, #fafbfc);
+}
+.results-overview__graph-note strong {
+  display: block;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.results-overview__graph-note p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.results-overview__graph-note code {
+  font-size: 12px;
+}
 .active-knowledge-result-panel .results-section__head {
   display: flex;
   flex-direction: column;

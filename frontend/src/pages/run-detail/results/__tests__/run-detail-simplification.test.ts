@@ -32,52 +32,54 @@ function _readSrc(rel: string): string {
 }
 
 
-describe("Run Detail Results tabs — execution-focused five-tab set", () => {
+describe("Run Detail Results tabs — execution-focused four-tab set", () => {
   const src = _readSrc("pages/run-detail/results/index.tsx");
 
-  it("declares the five execution-focused tab keys", () => {
+  it("declares only the four execution-focused tab keys", () => {
     // The union type at the top of the file pins the tab keys —
     // any future addition has to extend it, which makes this a
-    // useful invariant target. Compile already produces the base
-    // graph/index, so `graph` (re-framed as "Compile Graph") is
-    // part of the Run Detail set; enrichment/quality/validation
-    // moved to Document Detail's `ActiveKnowledgeResultPanel`.
+    // useful invariant target. Post-audit: there is NO `graph`
+    // tab in Run Detail. The base graph/index lives in
+    // RAGAnything/LightRAG's workspace, not in J1's artifact
+    // registry, and the Overview now carries a neutral note
+    // explaining that. Enrichment/quality/validation moved to
+    // Document Detail's `ActiveKnowledgeResultPanel`.
     const match = src.match(/type ResultsTab =\s*([^;]+);/);
     const captured = match?.[1];
     expect(captured).toBeTruthy();
     const body = String(captured).replace(/\s+/g, " ");
     expect(body).toContain('"overview"');
     expect(body).toContain('"chunks"');
-    expect(body).toContain('"graph"');
     expect(body).toContain('"raw"');
     expect(body).toContain('"manual-trace"');
     // Dropped tab keys must not reappear.
     expect(body).not.toContain('"assets"');
+    expect(body).not.toContain('"graph"');
     expect(body).not.toContain('"quality"');
     expect(body).not.toContain('"validation"');
   });
 
-  it("renders Chunks / Compile Graph / Artifacts / Query Trace labels", () => {
+  it("renders Chunks / Artifacts / Query Trace labels", () => {
     expect(src).toMatch(/label:\s*"Chunks"/);
-    expect(src).toMatch(/label:\s*"Compile Graph"/);
     expect(src).toMatch(/label:\s*"Artifacts"/);
     expect(src).toMatch(/label:\s*"Query Trace"/);
   });
 
-  it("does NOT render the old 'Knowledge Graph' / 'Enrichment' / 'Quality' / 'Validation' labels", () => {
-    // "Validation" stays as a tab in the SISTER component
-    // `ActiveKnowledgeResultPanel`, but inside Run Detail's
-    // results/index.tsx the four dropped labels must be gone.
-    expect(src).not.toMatch(/label:\s*"Enrichment"/);
+  it("does NOT render Compile Graph / Knowledge Graph / Enrichment / Quality / Validation labels", () => {
+    // Per audit recommendation: Run Detail surfaces the no-graph-
+    // artifact situation as a neutral note in Overview rather
+    // than a permanently-empty tab. "Validation" stays as a tab
+    // in the SISTER component `ActiveKnowledgeResultPanel` only.
+    expect(src).not.toMatch(/label:\s*"Compile Graph"/);
     expect(src).not.toMatch(/label:\s*"Knowledge Graph"/);
+    expect(src).not.toMatch(/label:\s*"Enrichment"/);
     expect(src).not.toMatch(/label:\s*"Quality"/);
     expect(src).not.toMatch(/label:\s*"Validation"/);
   });
 
   it("does NOT import the dropped per-tab leaf components", () => {
-    // GraphTab IS imported because the Compile Graph tab uses it.
-    expect(src).toMatch(/from\s+"\.\/GraphTab"/);
     expect(src).not.toMatch(/from\s+"\.\/AssetsTab"/);
+    expect(src).not.toMatch(/from\s+"\.\/GraphTab"/);
     expect(src).not.toMatch(/from\s+"\.\/QualityTab"/);
     expect(src).not.toMatch(/from\s+"\.\/ValidationTab"/);
   });
@@ -231,21 +233,44 @@ describe("Run Detail PipelineOutputPanel — Assessment Plan + Compile only", ()
 });
 
 
-describe("Compile Graph tab — framing + empty state", () => {
-  const graphSrc = readFileSync(
-    resolve(__dirname, "../GraphTab.tsx"),
+describe("Run Detail Overview — neutral graph/index note", () => {
+  const src = readFileSync(
+    resolve(__dirname, "../OverviewTab.tsx"),
     "utf-8",
   );
 
-  it("renders a 'No compile graph artifact' empty state, not 'Graph unavailable'", () => {
-    expect(graphSrc).toContain("No compile graph artifact for this run");
-    expect(graphSrc).not.toMatch(/<strong>Graph unavailable<\/strong>/);
+  it("renders the graph note only when graph_json count is zero", () => {
+    // Note gated on `artifactCounts.graph_json === 0`. If a
+    // future advanced run registers a `graph_json` artifact, the
+    // count is non-zero and the note hides itself.
+    expect(src).toContain(`summary.artifactCounts["graph_json"]`);
+    expect(src).toContain("showGraphNote");
   });
 
-  it("explains that the compile graph is produced during compile", () => {
-    expect(graphSrc).toContain(
-      "produced by RAGAnything/LightRAG",
+  it("explains the LightRAG workspace and the lack of a J1 graph artifact", () => {
+    expect(src).toContain("RAGAnything/LightRAG workspace");
+    expect(src).toContain("does not currently persist a separate");
+    expect(src).toContain("graph artifact");
+  });
+
+  it("declares the note's stable testid", () => {
+    expect(src).toContain(
+      'data-testid="results-overview-graph-note"',
     );
+  });
+
+  it("does NOT describe the missing graph as a failure or skipped step", () => {
+    // Neutral framing only — no "skipped" / "failed" / "missing"
+    // headlines for the graph note specifically. We assert the
+    // forbidden phrases are absent from the note's source span.
+    const noteMatch = src.match(
+      /results-overview__graph-note[\s\S]*?<\/section>/,
+    );
+    expect(noteMatch).not.toBeNull();
+    const noteBlock = String(noteMatch?.[0] ?? "");
+    expect(noteBlock.toLowerCase()).not.toContain("failed");
+    expect(noteBlock.toLowerCase()).not.toContain("skipped");
+    expect(noteBlock.toLowerCase()).not.toContain("missing");
   });
 });
 

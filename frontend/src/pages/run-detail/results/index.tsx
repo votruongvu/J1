@@ -19,7 +19,6 @@ import { COMPLETED_STATUSES } from "@/lib/constants/runStatus";
 import { EVENT_TYPES, isTerminalEvent } from "@/lib/constants/events";
 import type { ReviewRunSummary } from "@/types/review";
 import { ChunksTab } from "./ChunksTab";
-import { GraphTab } from "./GraphTab";
 import { ManualQueryTraceViewTab } from "./ManualQueryTraceViewTab";
 import { OverviewTab } from "./OverviewTab";
 import { RawArtifactsTab } from "./RawArtifactsTab";
@@ -32,14 +31,20 @@ import { RawArtifactsTab } from "./RawArtifactsTab";
 //   * Run Detail  → "What happened in this execution run?"
 //   * Document Detail → "What is the current active knowledge state?"
 //
-// The `graph` tab stays in Run Detail because compile already
-// produces the base graph/index via RAGAnything/LightRAG; the
-// tab is reframed as "Compile Graph" to make clear it shows the
-// compile-stage output (not a separate downstream graph step).
+// **No `graph` tab here.** The RAGAnything/LightRAG compile DOES
+// build the base graph/index — but it lives inside the snapshot's
+// LightRAG workspace, not as a registered J1 artifact. Until the
+// backend persists a compile graph summary artifact (see the
+// audit report's Backend Follow-up Options), Run Detail surfaces
+// the situation as a neutral note in Overview rather than a
+// permanently-empty tab. The legacy `build_graph` activity that
+// would copy LightRAG's workdir into a `graph_json` artifact is
+// off by default on `standard` and was renamed/removed from the
+// timeline because it was misleading: it doesn't build the
+// graph, it just registers files compile already wrote.
 type ResultsTab =
   | "overview"
   | "chunks"
-  | "graph"
   | "raw"
   | "manual-trace";
 
@@ -147,17 +152,18 @@ export function ResultsSection({
     available: boolean;
     reason?: string | null;
   }> = [
-    // Run Detail Results — execution-focused. Five tabs that
+    // Run Detail Results — execution-focused. Four tabs that
     // describe what happened in THIS execution. Active-snapshot
     // surfaces (enrichment overlay, quality, validation) live on
     // Document Detail's `ActiveKnowledgeResultPanel`.
     //
-    //   Overview        → run status, duration, artifacts, warnings
-    //   Chunks          → compiled output produced by this run
-    //   Compile Graph   → base graph/index produced by Compile
-    //                     (RAGAnything/LightRAG)
-    //   Artifacts       → raw artifact list (operator/dev inspection)
-    //   Query Trace     → base/manual query against the run's snapshot
+    //   Overview     → run status, duration, artifacts, warnings,
+    //                  + neutral graph/index note (since the base
+    //                  graph lives in the LightRAG workspace, not
+    //                  in J1's artifact registry).
+    //   Chunks       → compiled output produced by this run.
+    //   Artifacts    → raw artifact list (operator/dev inspection).
+    //   Query Trace  → base/manual query against the run's snapshot.
     //
     // Use safe optional chaining (?. on EVERY field) so a partially-
     // missing `views` object — older API response, in-flight network
@@ -169,17 +175,6 @@ export function ResultsSection({
       label: "Chunks",
       available: views?.chunks?.available ?? false,
       reason: views?.chunks?.reason ?? "Loading…",
-    },
-    {
-      // Compile-produced graph/index — surfaced by RAGAnything's
-      // LightRAG bridge during compile. The label is intentional:
-      // operators previously read "Knowledge Graph" as a separate
-      // downstream stage. "Compile Graph" frames it as a compile
-      // output.
-      key: "graph",
-      label: "Compile Graph",
-      available: views?.graph?.available ?? false,
-      reason: views?.graph?.reason ?? "Loading…",
     },
     {
       key: "raw",
@@ -253,7 +248,6 @@ export function ResultsSection({
           />
         )}
         {tab === "chunks" && <ChunksTab runId={runId} />}
-        {tab === "graph" && <GraphTab runId={runId} />}
         {tab === "raw" && <RawArtifactsTab runId={runId} />}
         {tab === "manual-trace" && (
           <>
