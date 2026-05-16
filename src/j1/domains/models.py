@@ -25,6 +25,9 @@ __all__ = [
     "ENRICHMENT_POLICY_NEVER",
     "DocumentProfileRule",
     "DocumentProfileRuleHints",
+    "DomainAssessmentCapabilityHint",
+    "DomainAssessmentCapabilityHints",
+    "DomainCompilePromptContext",
     "DomainContext",
     "DomainDetectionResult",
     "DomainEnrichmentPolicy",
@@ -36,6 +39,7 @@ __all__ = [
     "DomainValidationRules",
     "KeywordSignal",
     "UnsupportedCapability",
+    "resolve_compile_prompt_addon",
 ]
 
 
@@ -481,6 +485,105 @@ class DomainPromptPack:
 
 
 @dataclass(frozen=True)
+class DomainAssessmentCapabilityHint:
+    """Per-capability domain recommendation for one document type.
+
+    Mirrors the assessor's `CapabilityRecommendationEntry` shape but
+    is the DOMAIN's opinion ("BOQ documents are usually table-dense
+    → recommend `process_tables`"). The deterministic assessor folds
+    these in alongside its filename / equation-symbol / domain-
+    keyword signals; the user can always override.
+
+    Fields:
+      * `recommended` — whether the domain suggests pre-checking
+        the capability.
+      * `confidence` — `low` / `medium` / `high`. Pre-check only
+        fires on `high`; medium / low surface reasons without
+        flipping the box.
+      * `reason` — operator-readable copy rendered in the picker.
+        Empty string is allowed (use when the recommendation is
+        too obvious to need explanation, e.g. low-confidence
+        not-recommended entries).
+
+    All fields default to a "low-confidence, not recommended,
+    no reason" shape so packs that only configure a subset of
+    capabilities are well-defined."""
+
+    recommended: bool = False
+    confidence: str = "low"
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class DomainAssessmentCapabilityHints:
+    """Per-document-type bundle of three capability hints (image /
+    table / equation). Pack YAML declares this under
+    `assessment_capability_hints: <document_type>: { process_images:
+    {...}, process_tables: {...}, process_equations: {...} }`.
+
+    Missing capabilities default to the
+    `DomainAssessmentCapabilityHint` zero-value (low / not
+    recommended / no reason) so a pack can opt into hints for one
+    capability without configuring the others."""
+
+    process_images: DomainAssessmentCapabilityHint = field(
+        default_factory=DomainAssessmentCapabilityHint,
+    )
+    process_tables: DomainAssessmentCapabilityHint = field(
+        default_factory=DomainAssessmentCapabilityHint,
+    )
+    process_equations: DomainAssessmentCapabilityHint = field(
+        default_factory=DomainAssessmentCapabilityHint,
+    )
+
+
+@dataclass(frozen=True)
+class DomainCompilePromptContext:
+    """Optional indexing-time system-prompt addon for a domain.
+
+    Surfaced to the LightRAG entity / relationship extraction LLM
+    callable during compile. The addon is PREPENDED to RAGAnything's
+    own system prompt — never replaces it — so LightRAG's
+    structured-extraction template still drives the call.
+
+    Hard contract — this surface MUST NOT:
+
+      * trigger a separate LLM call,
+      * perform any kind of assessment,
+      * fire post-compile enrichment,
+      * replace RAGAnything's / LightRAG's original prompts.
+
+    It's a tiny piece of domain CONTEXT, not a new pipeline stage.
+
+    Fields:
+      * `enabled` — master switch. When False, the addon is
+        suppressed regardless of `system_addon` content.
+      * `system_addon` — the prepend string. Operator-readable;
+        kept short (a few hundred tokens at most).
+      * `max_tokens_budget_hint` — informational ceiling so the
+        budget pre-flight check at the OpenAI-compat boundary
+        can warn when the addon plus LightRAG's prompt is close
+        to the context window.
+      * `apply_to` — purpose vocabulary the addon should apply to
+        (mirrors the LLM-call audit's `purpose` strings). Empty
+        tuple means "apply to all compile-stage LLM purposes."
+
+    Empty defaults make this a no-op for packs (like `general`)
+    that don't want a domain addon at compile time."""
+
+    enabled: bool = False
+    system_addon: str = ""
+    max_tokens_budget_hint: int = 0
+    apply_to: tuple[str, ...] = ()
+
+    @property
+    def has_addon(self) -> bool:
+        """True iff the addon should actually fire — both the flag
+        is on AND there's a non-empty string to prepend."""
+        return self.enabled and bool(self.system_addon.strip())
+
+
+@dataclass(frozen=True)
 class DocumentProfileRuleHints:
     """Rule-based, NON-AUTHORITATIVE hints attached to a recommendation.
 
@@ -616,6 +719,32 @@ class DomainPack:
     # contributes BOQ / specs / drawings). See
     # :class:`DocumentProfileRule` for the contract.
     document_profile_rules: tuple["DocumentProfileRule", ...] = ()
+    # Per-document-type capability-checkbox hints surfaced to the
+    # deterministic capability assessor. Keys are document-type
+    # strings (matching `document_types` / detection results);
+    # values are the per-capability bundles. Empty dict means
+    # "no domain hints" — the assessor falls back to its
+    # filename / equation-symbol / domain-keyword signals.
+    assessment_capability_hints: dict[
+        str, "DomainAssessmentCapabilityHints",
+    ] = field(default_factory=dict)
+    # Optional indexing-time system-prompt addon prepended to
+    # LightRAG's entity / relationship extraction calls. ``None``
+    # or `compile_prompt_context.enabled=False` means "no
+    # addon" — RAGAnything's prompts run unchanged. See
+    # :class:`DomainCompilePromptContext` for the hard contract
+    # (no new LLM calls, no replace of original prompts).
+    compile_prompt_context: "DomainCompilePromptContext | None" = None
+    # Optional per-document-type compile-prompt focus snippets.
+    # Each value is a tuple of short strings appended to the
+    # domain-level `system_addon` when the document type is
+    # detected. Keep snippets tight (one or two lines each); the
+    # operator-readable LLM-call audit will surface them. Empty
+    # dict means "no per-document-type focus" — the domain
+    # addon (if any) runs alone.
+    compile_prompt_focus: dict[str, tuple[str, ...]] = field(
+        default_factory=dict,
+    )
 
 
 class DetectionContext(Protocol):
@@ -633,3 +762,49 @@ class DetectionContext(Protocol):
     table_captions: tuple[str, ...]
     image_captions: tuple[str, ...]
     document_type_hint: str | None  # generic detector's call
+
+
+# ---- Helpers --------------------------------------------------------
+
+
+def resolve_compile_prompt_addon(
+    pack: DomainPack | None,
+    *,
+    document_type: str | None = None,
+) -> str | None:
+    """Materialise the compile-time system-prompt addon for ``pack``
+    + ``document_type``, or ``None`` when no addon should fire.
+
+    Combines two layers:
+      1. The domain-level ``compile_prompt_context.system_addon``
+         (whole-pack context — applies regardless of document type).
+      2. The per-document-type focus snippets from
+         ``compile_prompt_focus`` (each rendered as a short
+         "Focus: <line>" block appended after the domain context).
+
+    Returns ``None`` when ``pack`` is ``None``, when the pack has
+    no ``compile_prompt_context`` configured, when
+    ``context.enabled`` is False, or when the resolved addon would
+    be an empty string. Callers use the ``None`` short-circuit to
+    skip the prepend path entirely — never inject an empty addon
+    (LightRAG would still see the noisy newline pair)."""
+    if pack is None or pack.compile_prompt_context is None:
+        return None
+    context = pack.compile_prompt_context
+    if not context.has_addon:
+        # Even if focus snippets exist, the master switch being off
+        # means the operator wants no addon for this domain — the
+        # snippets stay dormant rather than firing alone.
+        return None
+
+    parts: list[str] = [context.system_addon.strip()]
+    focus = pack.compile_prompt_focus.get(document_type or "")
+    if focus:
+        focus_lines = [s.strip() for s in focus if s and s.strip()]
+        if focus_lines:
+            parts.append(
+                "Document-type focus:\n"
+                + "\n".join(f"- {line}" for line in focus_lines)
+            )
+    rendered = "\n\n".join(parts).strip()
+    return rendered or None

@@ -59,7 +59,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # Type-checking-only import — avoids a runtime cycle through
+    # `j1.domains.models` (which itself doesn't import this
+    # module). The recommender accepts hints as a forward-
+    # referenced annotation; the actual code path doesn't touch
+    # any DomainAssessmentCapabilityHints internals beyond the
+    # public attributes (`recommended`, `confidence`, `reason`).
+    from j1.domains.models import (
+        DomainAssessmentCapabilityHint,
+        DomainAssessmentCapabilityHints,
+    )
 
 
 SCHEMA_VERSION = "1"
@@ -638,6 +650,7 @@ def recommend_capabilities_from_assessment(
     filename: str | None = None,
     sample_text: str | None = None,
     domain_keywords: frozenset[str] | None = None,
+    domain_capability_hints: "DomainAssessmentCapabilityHints | None" = None,
 ) -> CapabilityRecommendations:
     """Lightweight, conservative defaults for the three checkboxes.
 
@@ -654,14 +667,39 @@ def recommend_capabilities_from_assessment(
         for the equation-symbol heuristic. None disables the
         signal; the assessment is honest about not knowing.
       * ``domain_keywords`` — caller-supplied vocabulary (e.g.
-        from the active ``DomainPack``). Hits bump confidence
-        and surface as ``domain_hint`` sources. Defaults to the
-        empty set; core stays domain-neutral.
+        from the active ``DomainPack.keyword_signals``). Hits
+        bump confidence and surface as ``domain_hint`` sources.
+        Defaults to the empty set; core stays domain-neutral.
+      * ``domain_capability_hints`` — per-document-type opinions
+        from the active domain pack (e.g. "BOQ documents are
+        usually table-dense → recommend `process_tables`"). When
+        the hint says ``recommended=True && confidence='high'``,
+        that ALONE is enough to elevate the capability to high
+        confidence — the operator named the file
+        ``boq_2024.pdf`` and the domain knows BOQs need tables.
+        Medium-confidence hints count as one contributing source.
+        Hints never SUPPRESS positive signals — they only add.
     """
     filename_norm = _normalised_filename_hints(filename)
     if domain_keywords is None:
         domain_keywords = _DEFAULT_DOMAIN_KEYWORDS
     domain_matches = _filename_matches(filename_norm, domain_keywords)
+
+    # Per-capability domain hints. None when no active pack or no
+    # document type was detected. Each branch below threads the
+    # corresponding hint into `_build_capability_rec`.
+    image_hint = (
+        domain_capability_hints.process_images
+        if domain_capability_hints is not None else None
+    )
+    table_hint = (
+        domain_capability_hints.process_tables
+        if domain_capability_hints is not None else None
+    )
+    equation_hint = (
+        domain_capability_hints.process_equations
+        if domain_capability_hints is not None else None
+    )
 
     # ---- Images -------------------------------------------------
     image_sources: list[str] = []
@@ -700,6 +738,7 @@ def recommend_capabilities_from_assessment(
             "was detected."
         ),
         domain_matches=domain_matches,
+        domain_hint=image_hint,
     )
 
     # ---- Tables -------------------------------------------------
@@ -727,6 +766,7 @@ def recommend_capabilities_from_assessment(
             "No strong table or grid signal was detected."
         ),
         domain_matches=domain_matches,
+        domain_hint=table_hint,
     )
 
     # ---- Equations ----------------------------------------------
@@ -757,6 +797,7 @@ def recommend_capabilities_from_assessment(
             "was detected."
         ),
         domain_matches=domain_matches,
+        domain_hint=equation_hint,
     )
 
     return CapabilityRecommendations(
@@ -773,6 +814,7 @@ def _build_capability_rec(
     reasons: list[str],
     no_signal_reason: str,
     domain_matches: tuple[str, ...],
+    domain_hint: "DomainAssessmentCapabilityHint | None" = None,
 ) -> CapabilityRecommendation:
     """Compose a recommendation from its accumulated signals.
 
@@ -785,7 +827,54 @@ def _build_capability_rec(
 
     Domain hint elevates a single signal to high — operators who
     name a file ``boq_2024.pdf`` are signalling intent strongly.
+
+    ``domain_hint`` is the per-document-type opinion from the
+    active pack (e.g. ``boq.process_tables``). Semantics:
+
+      * Hint with ``recommended=True && confidence='high'`` is
+        AUTHORITATIVE — alone it returns high+recommended, even
+        when no other signal fired. The pack says "BOQ documents
+        ALWAYS want tables" and the operator confirmed the
+        document type, so the assessment defers to that.
+      * Hint with ``recommended=True && confidence='medium'``
+        contributes one source toward the normal confidence
+        ladder.
+      * ``recommended=False`` hints are silent — they neither
+        suppress positive signals nor add reasons. The user can
+        always uncheck.
     """
+    # Domain hint, when high+recommended, overrides the source-
+    # count ladder. The detected document type is a strong signal
+    # the pack codifies.
+    if (
+        domain_hint is not None
+        and domain_hint.recommended
+        and domain_hint.confidence == CONFIDENCE_HIGH
+    ):
+        forced_sources = list(sources)
+        forced_reasons = list(reasons)
+        if "domain_type_hint" not in forced_sources:
+            forced_sources.append("domain_type_hint")
+        if domain_hint.reason:
+            forced_reasons.append(domain_hint.reason)
+        return CapabilityRecommendation(
+            recommended=True,
+            confidence=CONFIDENCE_HIGH,
+            sources=tuple(forced_sources),
+            reasons=tuple(forced_reasons) or (no_signal_reason,),
+        )
+
+    # Medium-confidence + recommended hint contributes one
+    # source. Low / not-recommended hints are silent.
+    if (
+        domain_hint is not None
+        and domain_hint.recommended
+        and domain_hint.confidence == CONFIDENCE_MEDIUM
+    ):
+        sources = [*sources, "domain_type_hint"]
+        if domain_hint.reason:
+            reasons = [*reasons, domain_hint.reason]
+
     if not sources:
         return CapabilityRecommendation(
             recommended=False,

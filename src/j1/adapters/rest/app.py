@@ -222,6 +222,61 @@ BatchStarter = Callable[
 ]
 
 
+def _detect_document_type_pre_compile(
+    *,
+    active_domain,
+    filename: str | None,
+    title: str | None,
+) -> str | None:
+    """Best-effort document-type detection at `/assessment-plan` time.
+
+    Used by the lightweight capability assessor to look up domain-
+    supplied per-document-type recommendations. Pre-compile we only
+    have filename + title; the domain's `detect` callable is happy
+    with that — it reads via `getattr` with defaults so missing body
+    evidence just means a lower score. Returns `None` when:
+
+      * the active pack has no detector (e.g. `general`),
+      * the detector raises (treated as non-fatal — domain hints
+        are advisory, never load-bearing for correctness),
+      * the detector returns `None` (no candidate fired),
+      * the detector's result has no `detected_document_type`
+        (baseline pack-level match only).
+    """
+    if active_domain is None:
+        return None
+    detect = getattr(active_domain, "detect", None)
+    if detect is None:
+        return None
+
+    class _PreCompileDetectionContext:
+        """Minimal context — only the fields a domain detector's
+        corpus builder reads. Empty defaults for fields the
+        pre-compile path doesn't have (heading outline, table /
+        image captions, body text)."""
+        def __init__(self) -> None:
+            self.title = title or ""
+            self.title_quality = "unknown"
+            self.filename = filename
+            self.early_page_text = ""
+            self.heading_outline: tuple[tuple[int, str, int | None], ...] = ()
+            self.table_captions: tuple[str, ...] = ()
+            self.image_captions: tuple[str, ...] = ()
+            self.document_type_hint: str | None = None
+            self.table_header_rows: tuple[tuple[str, ...], ...] = ()
+
+    try:
+        result = detect(_PreCompileDetectionContext())
+    except Exception:  # noqa: BLE001 — advisory only
+        return None
+    if result is None:
+        return None
+    detected = getattr(result, "detected_document_type", None)
+    if not detected:
+        return None
+    return str(detected).strip() or None
+
+
 def _default_context_resolver(request: Request) -> ProjectContext:
     tenant_id = request.headers.get(TENANT_HEADER)
     project_id = request.headers.get(PROJECT_HEADER)
@@ -1914,6 +1969,28 @@ def create_rest_api(
         domain_keywords = frozenset(
             kw.lower() for kw in getattr(active_domain, "filter_keywords", ())
         ) if active_domain is not None else frozenset()
+        # Lightweight pre-compile detection: feed the active domain
+        # pack's detector a minimal context built from filename + title
+        # so it can surface a `detected_document_type` (e.g. `"boq"`).
+        # The detector reads via getattr-with-defaults, so a context
+        # missing body/heading evidence is safe — score may be lower
+        # but filename-based hits still fire. Used solely to look up
+        # the matching `assessment_capability_hints` entry below.
+        detected_document_type = _detect_document_type_pre_compile(
+            active_domain=active_domain,
+            filename=doc_dto.original_filename,
+            title=getattr(doc_dto, "title", None),
+        )
+        domain_capability_hints = None
+        if (
+            active_domain is not None
+            and detected_document_type
+        ):
+            domain_capability_hints = (
+                active_domain.assessment_capability_hints.get(
+                    detected_document_type,
+                )
+            )
         capability_recs = recommend_capabilities_from_assessment(
             has_images=bool(getattr(profile, "has_images", False)),
             has_tables=bool(getattr(profile, "has_tables", False)),
@@ -1927,7 +2004,27 @@ def create_rest_api(
             filename=doc_dto.original_filename,
             sample_text=None,  # pre-compile — no body slice yet
             domain_keywords=domain_keywords if domain_keywords else None,
+            domain_capability_hints=domain_capability_hints,
         )
+
+        # 6c. Resolve the compile-prompt addon (if any) the active
+        # domain pack supplied for this document type. Stamp it on
+        # the `AssessmentPlan` payload so the compile activity sees
+        # it on the request side. `None` means "no addon — LightRAG
+        # runs unchanged"; the bridge handles that as a no-op. No
+        # LLM call, no separate assessment — just metadata.
+        from j1.domains.models import resolve_compile_prompt_addon
+        compile_prompt_addon_str = resolve_compile_prompt_addon(
+            active_domain,
+            document_type=detected_document_type,
+        )
+        if (
+            compile_prompt_addon_str is not None
+            and assessment_plan_payload is not None
+        ):
+            assessment_plan_payload["compile_prompt_addon"] = (
+                compile_prompt_addon_str
+            )
 
         # 7. Compile-option preview — a small set of hedged hints
         # the FE can render BELOW the picker without claiming exact

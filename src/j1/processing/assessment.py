@@ -269,6 +269,15 @@ class AssessmentPlan:
     # workflow surfaces these on the run's metadata so the FE
     # can render an info banner without re-deriving.
     override_warnings: tuple[str, ...] = ()
+    # Optional indexing-time system-prompt addon resolved from the
+    # active domain pack's `compile_prompt_context` + per-document-
+    # type `compile_prompt_focus`. ``None`` means "no addon — run
+    # LightRAG's prompts unchanged." When set, the compile bridge
+    # PREPENDS this string to LightRAG's `system_prompt` argument
+    # at call time; it never replaces the vendor's prompt. See
+    # ``DomainCompilePromptContext`` for the hard contract (no new
+    # LLM call, no assessment, no enrichment behaviour change).
+    compile_prompt_addon: str | None = None
 
     def requires(self, capability: Capability) -> bool:
         return capability in self.required_capabilities
@@ -393,6 +402,7 @@ class AssessmentPlan:
                 if self.assessment_recommendations is not None else None
             ),
             "override_warnings": list(self.override_warnings),
+            "compile_prompt_addon": self.compile_prompt_addon,
         }
 
     @classmethod
@@ -448,6 +458,11 @@ class AssessmentPlan:
         # payloads omit them entirely.
         recs_raw = payload.get("assessment_recommendations")
         recs = dict(recs_raw) if isinstance(recs_raw, dict) else None
+        addon_raw = payload.get("compile_prompt_addon")
+        if isinstance(addon_raw, str) and addon_raw.strip():
+            compile_addon: str | None = addon_raw
+        else:
+            compile_addon = None
         return cls(
             document_id=str(payload.get("document_id", "")),
             mode=mode,
@@ -466,6 +481,7 @@ class AssessmentPlan:
             override_warnings=tuple(
                 str(w) for w in (payload.get("override_warnings") or ())
             ),
+            compile_prompt_addon=compile_addon,
         )
 
 

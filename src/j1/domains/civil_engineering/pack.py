@@ -19,6 +19,9 @@ from typing import Any
 import yaml
 
 from j1.domains.models import (
+    DomainAssessmentCapabilityHint,
+    DomainAssessmentCapabilityHints,
+    DomainCompilePromptContext,
     DomainDetectionResult,
     DomainEnrichmentPolicy,
     DomainExtractionHints,
@@ -110,7 +113,116 @@ def build_civil_engineering_pack() -> DomainPack:
         document_profile_rules=parse_document_profile_rules(
             data.get("document_profile_rules"),
         ),
+        assessment_capability_hints=_parse_assessment_capability_hints(
+            data.get("assessment_capability_hints"),
+        ),
+        compile_prompt_context=_parse_compile_prompt_context(
+            data.get("compile_prompt_context"),
+        ),
+        compile_prompt_focus=_parse_compile_prompt_focus(
+            data.get("compile_prompt_focus"),
+        ),
     )
+
+
+# ---- New section parsers ----------------------------------------
+
+
+_VALID_CONFIDENCE_LEVELS: frozenset[str] = frozenset({"low", "medium", "high"})
+
+
+def _parse_assessment_capability_hints(
+    raw: Any,
+) -> dict[str, DomainAssessmentCapabilityHints]:
+    """Parse the `assessment_capability_hints` block.
+
+    Shape: ``{document_type: {process_images: {recommended, confidence,
+    reason}, process_tables: {...}, process_equations: {...}}}``.
+    Tolerant of malformed entries — bad rows are skipped, not fatal,
+    so a typo in one document type doesn't take down the pack load."""
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out: dict[str, DomainAssessmentCapabilityHints] = {}
+    for doc_type, capabilities in raw.items():
+        if not isinstance(doc_type, str) or not doc_type.strip():
+            continue
+        if not isinstance(capabilities, dict):
+            continue
+        out[doc_type.strip()] = DomainAssessmentCapabilityHints(
+            process_images=_parse_capability_hint(
+                capabilities.get("process_images"),
+            ),
+            process_tables=_parse_capability_hint(
+                capabilities.get("process_tables"),
+            ),
+            process_equations=_parse_capability_hint(
+                capabilities.get("process_equations"),
+            ),
+        )
+    return out
+
+
+def _parse_capability_hint(raw: Any) -> DomainAssessmentCapabilityHint:
+    """Build one `DomainAssessmentCapabilityHint`. Missing or malformed
+    rows produce the zero value (low / not recommended / no reason)."""
+    if not isinstance(raw, dict):
+        return DomainAssessmentCapabilityHint()
+    confidence = str(raw.get("confidence") or "low").strip().lower()
+    if confidence not in _VALID_CONFIDENCE_LEVELS:
+        # Defensive: typo'd confidence falls back to "low" rather than
+        # crashing the pack load.
+        confidence = "low"
+    reason = str(raw.get("reason") or "").strip()
+    return DomainAssessmentCapabilityHint(
+        recommended=bool(raw.get("recommended", False)),
+        confidence=confidence,
+        reason=reason,
+    )
+
+
+def _parse_compile_prompt_context(
+    raw: Any,
+) -> DomainCompilePromptContext | None:
+    """Parse the optional `compile_prompt_context` block. Returns
+    ``None`` when missing so the resolver short-circuits."""
+    if not isinstance(raw, dict):
+        return None
+    apply_to_raw = raw.get("apply_to") or ()
+    if not isinstance(apply_to_raw, (list, tuple)):
+        apply_to_raw = ()
+    apply_to = tuple(
+        str(s).strip() for s in apply_to_raw if str(s).strip()
+    )
+    max_budget = raw.get("max_tokens_budget_hint")
+    try:
+        max_budget_int = int(max_budget) if max_budget is not None else 0
+    except (TypeError, ValueError):
+        max_budget_int = 0
+    return DomainCompilePromptContext(
+        enabled=bool(raw.get("enabled", False)),
+        system_addon=str(raw.get("system_addon") or ""),
+        max_tokens_budget_hint=max_budget_int,
+        apply_to=apply_to,
+    )
+
+
+def _parse_compile_prompt_focus(raw: Any) -> dict[str, tuple[str, ...]]:
+    """Parse the optional per-document-type focus block. Each value
+    is a list of short strings."""
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for doc_type, lines in raw.items():
+        if not isinstance(doc_type, str) or not doc_type.strip():
+            continue
+        if not isinstance(lines, (list, tuple)):
+            continue
+        clean = tuple(
+            str(line).strip() for line in lines if str(line).strip()
+        )
+        if clean:
+            out[doc_type.strip()] = clean
+    return out
 
 
 def _parse_extraction_hints(raw: Any) -> DomainExtractionHints:

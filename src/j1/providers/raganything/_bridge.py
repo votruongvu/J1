@@ -222,6 +222,18 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
     # `RAGAnythingConfig`). Holds parser_kwargs + warnings for the
     # downstream call site + the SUCCEEDED-path metadata builder.
     compile_plan_config = _resolve_compile_config(request)
+    # Resolve the domain compile-prompt addon from the request's
+    # assessment plan (when present). The REST endpoint stamps
+    # the addon onto the AssessmentPlan based on the active domain
+    # pack + detected document type — see
+    # `j1.domains.models.resolve_compile_prompt_addon` for the
+    # contract. ``None`` means "no addon — LightRAG's prompts run
+    # unchanged."
+    assessment_plan = getattr(request, "assessment_plan", None)
+    compile_prompt_addon = (
+        getattr(assessment_plan, "compile_prompt_addon", None)
+        if assessment_plan is not None else None
+    )
     rag, output_dir, source_path, dropped_config_overrides = _prepare_compile(
         request,
         config_overrides=(
@@ -229,6 +241,7 @@ def default_compile(request: "RAGAnythingCompileRequest") -> ArtifactProcessingR
             if compile_plan_config is not None else None
         ),
         perf_trace=perf_trace,
+        compile_prompt_addon=compile_prompt_addon,
     )
     # Operator-readable path log — folks debugging slow MinerU runs
     # on macOS Docker Desktop want to confirm the parse output is
@@ -1116,6 +1129,7 @@ def _prepare_compile(
     *,
     config_overrides: dict[str, Any] | None = None,
     perf_trace: IngestPerfTrace | None = None,
+    compile_prompt_addon: str | None = None,
 ):
     """Build a RAGAnything instance + resolve I/O paths for compile.
 
@@ -1153,6 +1167,7 @@ def _prepare_compile(
             request, "disable_entity_extraction", False,
         ),
         perf_trace=perf_trace,
+        compile_prompt_addon=compile_prompt_addon,
         # Carry the user-selected profile into every audit line
         # the bridge emits — heavy-operation events, llm-call
         # events, and the no-op short-circuit notification all
@@ -1311,6 +1326,7 @@ def _build_rag_instance(
     disable_entity_extraction: bool = False,
     selected_profile: str | None = None,
     perf_trace: IngestPerfTrace | None = None,
+    compile_prompt_addon: str | None = None,
 ):
     """Construct a `raganything.RAGAnything` instance with J1 callables.
 
@@ -1414,6 +1430,7 @@ def _build_rag_instance(
                 text_client,
                 perf_trace=perf_trace,
                 perf_stage=STAGE_GRAPH_EXTRACTION,
+                system_addon=compile_prompt_addon,
             ),
             purpose=PURPOSE_ENTITY_EXTRACTION,
             stage="compile",
@@ -1531,6 +1548,7 @@ def _make_text_callable(
     *,
     perf_trace: IngestPerfTrace | None = None,
     perf_stage: str = STAGE_GRAPH_EXTRACTION,
+    system_addon: str | None = None,
 ) -> Callable[..., Any]:
     """RAGAnything (via LightRAG) `await`s
  ``llm_model_func(prompt, system_prompt=..., history_messages=[...], **kw)``
@@ -1598,6 +1616,14 @@ def _make_text_callable(
             full_system = f"{no_think}\n\n{system_prompt}"
         else:
             full_system = no_think
+        # Domain compile-prompt addon — PREPENDED to LightRAG's
+        # system prompt when the active pack supplied one. Never
+        # replaces the vendor's prompt; the entity-extraction
+        # template + few-shot examples still drive the call. See
+        # `j1.domains.models.DomainCompilePromptContext` for the
+        # hard contract.
+        if system_addon and system_addon.strip():
+            full_system = f"{system_addon.strip()}\n\n{full_system}"
         full_prompt = f"{no_think}\n\n{full_prompt}"
         text, usage = await asyncio.to_thread(
             text_client.generate,

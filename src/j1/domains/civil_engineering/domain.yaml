@@ -1030,3 +1030,198 @@ document_profile_rules:
     hints:
       likely_requirements: true
       likely_long_document: true
+
+
+# ----------------------------------------------------------------------
+# Assessment Capability Hints (NEW — 2026-05-16)
+#
+# Per-document-type checkbox-default recommendations consumed by the
+# deterministic capability assessor. Each entry is a hint, never a
+# decision — the user can always uncheck. The assessor folds these
+# alongside its filename / equation-symbol / domain-keyword signals;
+# `confidence: high` pre-checks the box, medium / low surface the
+# reason without flipping the default.
+# ----------------------------------------------------------------------
+assessment_capability_hints:
+  boq:
+    process_tables:
+      recommended: true
+      confidence: high
+      reason: "BOQ documents are usually table-dense and table processing is recommended."
+    process_images:
+      recommended: false
+      confidence: low
+      reason: "BOQ documents are usually text/table based unless drawing or scanned signals are present."
+    process_equations:
+      recommended: false
+      confidence: low
+      reason: ""
+
+  construction_drawing:
+    process_images:
+      recommended: true
+      confidence: high
+      reason: "Drawing documents are usually visual and image processing is recommended."
+    process_tables:
+      recommended: true
+      confidence: medium
+      reason: "Drawing sheets may contain schedules or title-block tables."
+    process_equations:
+      recommended: false
+      confidence: low
+      reason: ""
+
+  structural_drawing:
+    process_images:
+      recommended: true
+      confidence: high
+      reason: "Structural drawings carry the bulk of their information visually."
+    process_tables:
+      recommended: true
+      confidence: medium
+      reason: "Structural drawings often include rebar / section / member schedules."
+    process_equations:
+      recommended: false
+      confidence: low
+      reason: ""
+
+  structural_calculation:
+    process_equations:
+      recommended: true
+      confidence: high
+      reason: "Structural calculation documents usually contain formulas, load combinations, and numeric checks."
+    process_tables:
+      recommended: true
+      confidence: medium
+      reason: "Structural calculations often include tabular calculation summaries."
+    process_images:
+      recommended: false
+      confidence: low
+      reason: ""
+
+  inspection_report:
+    process_images:
+      recommended: true
+      confidence: medium
+      reason: "Inspection reports may include site photos or scanned evidence."
+    process_tables:
+      recommended: true
+      confidence: medium
+      reason: "Inspection reports often include checklist or findings tables."
+    process_equations:
+      recommended: false
+      confidence: low
+      reason: ""
+
+  test_report:
+    process_tables:
+      recommended: true
+      confidence: high
+      reason: "Test reports usually contain tabular result values, limits, and pass/fail status."
+    process_images:
+      recommended: false
+      confidence: low
+      reason: ""
+    process_equations:
+      recommended: false
+      confidence: low
+      reason: ""
+
+  specification:
+    process_tables:
+      recommended: true
+      confidence: medium
+      reason: "Specifications may contain requirement matrices, schedules, or acceptance criteria tables."
+    process_images:
+      recommended: false
+      confidence: low
+      reason: ""
+    process_equations:
+      recommended: false
+      confidence: low
+      reason: ""
+
+
+# ----------------------------------------------------------------------
+# Compile Prompt Context (NEW — 2026-05-16)
+#
+# Small indexing-time system-prompt addon prepended to LightRAG's
+# entity / relationship extraction LLM callable. NEVER replaces
+# RAGAnything's / LightRAG's own prompt — purely prepends so the
+# structured extraction template still runs unchanged.
+#
+# Hard contract:
+#   * No new LLM call.
+#   * No assessment.
+#   * No enrichment behavior change.
+#
+# `enabled: false` (or omitting the block) makes this a no-op.
+# ----------------------------------------------------------------------
+compile_prompt_context:
+  enabled: true
+  max_tokens_budget_hint: 250
+  apply_to:
+    - entity_extraction
+  system_addon: |-
+    You are indexing a Civil Engineering / Construction document.
+
+    When extracting knowledge graph entities and relationships, prioritize:
+    - projects, sites, locations, zones, and levels
+    - drawings, drawing numbers, revisions, disciplines, and title-block metadata
+    - specifications, standards, acceptance criteria, and code references
+    - work packages, construction activities, materials, and structural elements
+    - BOQ items, descriptions, units, quantities, rates, and amounts
+    - inspection findings, defects, NCRs, RFIs, approvals, responsible parties, and action items
+    - test reports, sample IDs, test methods, result values, limits, and pass/fail status
+
+    Preserve relationships only when they are explicitly supported by the source document.
+
+    Do not infer missing quantities, costs, compliance status, safety conclusions, engineering conclusions, or responsibility assignments that are not present in the source.
+
+    Keep extracted names, numbers, units, drawing references, specification references, and document identifiers exactly as written when possible.
+
+
+# ----------------------------------------------------------------------
+# Compile Prompt Focus (NEW — 2026-05-16, optional)
+#
+# Short per-document-type focus snippets appended to the
+# `compile_prompt_context.system_addon` when the detected document
+# type matches. Keep snippets tight — the addon as a whole stays
+# inside `max_tokens_budget_hint`.
+# ----------------------------------------------------------------------
+compile_prompt_focus:
+  boq:
+    - "Preserve BOQ item, description, unit, quantity, rate, and amount relationships."
+    - "Do not infer missing quantities, rates, totals, or cost values."
+
+  construction_drawing:
+    - "Prioritize drawing title, drawing number, revision, discipline, scale, levels, zones, and referenced components."
+    - "Do not infer dimensions or specifications that are not legible or explicitly present."
+
+  structural_drawing:
+    - "Prioritize structural elements, grids, levels, rebar/detail references, drawing numbers, and revisions."
+    - "Preserve explicit references between drawing sheets, details, sections, and components."
+
+  structural_calculation:
+    - "Prioritize load combinations, design checks, code references, formulas, assumptions, units, and result values."
+    - "Do not validate or reinterpret calculations unless the result is explicitly stated."
+
+  inspection_report:
+    - "Prioritize inspection date, location, finding, defect, affected component, severity, responsible party, and recommended action."
+    - "Preserve links between findings, photos, locations, and action items when explicitly present."
+
+  test_report:
+    - "Prioritize sample ID, test method, standard, result value, acceptance limit, and pass/fail status."
+    - "Keep numeric values and units exactly as written."
+
+  rfi:
+    - "Prioritize question, response, reference drawing, responsible party, response date, and decision status."
+    - "Preserve explicit references to drawings, specifications, and affected work packages."
+
+  non_conformance_report:
+    - "Prioritize NCR number, defect, location, root cause, corrective action, preventive action, responsible party, and closure status."
+    - "Preserve explicit links between defect, location, responsible party, and corrective action."
+
+  tender_document:
+    - "Prioritize scope of work, submission requirements, responsibilities, acceptance criteria, specifications, schedules, and BOQ references."
+    - "Do not infer commercial or contractual obligations beyond the source text."
