@@ -1,0 +1,149 @@
+# Phase 6B — civil engineering sample memory query evaluation fixture.
+#
+# Consumed by `j1.tools.evaluate_memory_query` against the sample
+# dataset in this directory's `data/` subfolder. See README.md for
+# how to ingest the dataset and run the A/B harness.
+#
+# Cross-document linkage in the sample (Knowledge Memory should
+# help connect these on project-active queries):
+#
+#   CE-002 inspection Finding F-12 → CE-003 NCR-007 → root cause
+#     low concrete grade C30/37 → CE-001 BOQ rows 03.03–03.06 →
+#     CE-005 specification 03 30 00 → CE-005 drawing D-302 →
+#     CE-004 deflection check (C25/30 FAIL → C40/50 PASS)
+#
+# expected_terms are operator-readable phrases that should appear
+# in the answer when memory-aware retrieval works. They are NOT
+# ground-truth labels — the harness uses them as a quality proxy.
+
+queries:
+  - id: risk_001
+    scope: project_active
+    category: risk
+    question: "What risks or issues were found across the project?"
+    expected_terms:
+      - defect
+      - corrective action
+      - NCR
+    expected_artifact_types:
+      - enriched.risks
+      - knowledge_memory
+    notes: "Memory should connect inspection Finding F-12 with NCR-007 and the BOQ row held open pending closeout."
+
+  - id: requirement_001
+    scope: project_active
+    category: requirement
+    question: "Which requirements mention inspection or testing?"
+    expected_terms:
+      - inspection
+      - testing
+      - cube
+    expected_artifact_types:
+      - enriched.requirements
+    notes: "Specification 03 30 00 and 03 20 00 carry inspection + testing requirements; memory should surface them."
+
+  - id: action_item_001
+    scope: project_active
+    category: action_item
+    question: "Which action items are still open?"
+    expected_terms:
+      - patch
+      - re-pour
+      - tool-box
+    notes: "Open action items: surface honeycomb patch (F-11), NCR-007 re-pour, acceptance procedure update."
+
+  - id: boq_001
+    scope: project_active
+    category: boq
+    question: "Which BOQ rows look incomplete or have quantity problems?"
+    expected_terms:
+      - BOQ
+      - row 03.05
+      - rate
+    expected_artifact_types:
+      - enriched.tables
+    notes: "Two BOQ problem rows: 03.05 (missing rate + amount), 20.03 (missing rate)."
+
+  - id: inspection_finding_001
+    scope: project_active
+    category: inspection_finding
+    question: "Which inspection findings need action on slab S-205?"
+    expected_terms:
+      - F-12
+      - S-205
+      - cover
+    expected_artifact_types:
+      - enriched.consistency_findings
+    notes: "F-11 honeycomb, F-12 concrete grade, F-13 cover variance — all on slab S-205."
+
+  - id: ncr_001
+    scope: project_active
+    category: ncr
+    question: "Any NCR issues and their corrective actions?"
+    expected_terms:
+      - NCR-007
+      - corrective action
+      - C40/50
+    notes: "Memory's alias entry should expand NCR to Non-Conformance Report. Phase 5A expansion path."
+
+  - id: drawing_revision_001
+    scope: project_active
+    category: drawing_revision
+    question: "Which drawings mention slab reinforcement?"
+    expected_terms:
+      - D-302
+      - revision B
+      - reinforcement
+    expected_artifact_types:
+      - enriched.visuals
+    notes: "Drawing D-302 (Slab S-205 Reinforcement Plan, rev B) is the governing drawing."
+
+  - id: test_result_001
+    scope: project_active
+    category: test_result
+    question: "What calculation checks failed acceptance criteria?"
+    expected_terms:
+      - deflection
+      - FAIL
+      - C25/30
+    notes: "The CE-004 deflection check fails for C25/30 and passes for the C40/50 re-pour grade."
+
+  - id: calculation_001
+    scope: project_active
+    category: calculation
+    question: "Show the deflection calculation results for slab S-205."
+    expected_terms:
+      - deflection
+      - 8.6
+      - L/250
+    expected_artifact_types:
+      - enriched.formulas
+    notes: "The deflection formula δ = 5wL⁴/(384EI) is documented in CE-004."
+
+  - id: general_summary_001
+    scope: project_active
+    category: general_summary
+    question: "What is this project mainly about?"
+    expected_terms:
+      - bridge
+      - substructure
+    notes: "All five sample documents describe a river crossing bridge substructure package."
+
+  - id: source_lookup_001
+    scope: project_active
+    category: source_lookup
+    question: "Where is concrete grade C30/37 specified?"
+    expected_terms:
+      - 03 30 00
+      - C30/37
+    notes: "Specification section 03 30 00; appears in CE-001 (BOQ), CE-003 (NCR), CE-005 (spec extract)."
+
+  - id: cross_document_001
+    scope: project_active
+    category: cross_document
+    question: "What links the inspection report to the NCR?"
+    expected_terms:
+      - F-12
+      - NCR-007
+      - slab S-205
+    notes: "Inspection Finding F-12 (CE-002) is the originating defect for NCR-007 (CE-003). Memory's cross-document linkage is the value here."
